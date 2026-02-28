@@ -178,17 +178,20 @@ export class ModerationService {
       }
     }
 
-    const action = await this.sanctionService.resolveAction({
-      chatId,
-      userId: senderId,
-      warnThreshold: settings.warnThreshold,
-      repeatBanWindowDays: settings.repeatBanWindowDays,
-    });
+    let action: SanctionAction = SanctionAction.NONE;
+    if (topViolation.ruleCode !== 'LINK_BLOCKED') {
+      action = await this.sanctionService.resolveAction({
+        chatId,
+        userId: senderId,
+        warnThreshold: settings.warnThreshold,
+        repeatBanWindowDays: settings.repeatBanWindowDays,
+      });
 
-    if (action === SanctionAction.KICK) {
-      await this.maxClient.kickMember(chatId, senderId);
-    } else if (action === SanctionAction.BAN) {
-      await this.maxClient.banMember(chatId, senderId);
+      if (action === SanctionAction.KICK) {
+        await this.maxClient.kickMember(chatId, senderId);
+      } else if (action === SanctionAction.BAN) {
+        await this.maxClient.banMember(chatId, senderId);
+      }
     }
 
     await this.prisma.moderationEvent.create({

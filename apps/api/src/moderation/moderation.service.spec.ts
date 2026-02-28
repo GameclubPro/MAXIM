@@ -214,7 +214,7 @@ describe('ModerationService', () => {
     );
   });
 
-  it('keeps legacy sanction flow for non-duplicate violations', async () => {
+  it('keeps legacy sanction flow for non-link and non-duplicate violations', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -237,7 +237,7 @@ describe('ModerationService', () => {
     };
     const ruleEngine = {
       detect: jest.fn().mockResolvedValue({
-        violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Link detected' }],
+        violations: [{ ruleCode: 'PROFANITY', score: 0.95, reason: 'Profanity detected' }],
       }),
     };
     const sanctionService = {
@@ -262,21 +262,17 @@ describe('ModerationService', () => {
 
     expect(prisma.violation.create).toHaveBeenCalledTimes(1);
     expect(sanctionService.resolveAction).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
-      'chat-1',
-      'Сообщение пользователя user-1 удалено: ссылки в этом чате ограничены.',
-    );
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
       data: expect.objectContaining({
-        ruleCode: 'LINK_BLOCKED_DELETE',
+        ruleCode: 'PROFANITY_DELETE',
         action: SanctionAction.DELETE_MESSAGE,
       }),
     });
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
-        ruleCode: 'LINK_BLOCKED',
+        ruleCode: 'PROFANITY',
         action: SanctionAction.WARN,
       }),
     });
@@ -330,7 +326,16 @@ describe('ModerationService', () => {
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        ruleCode: 'LINK_BLOCKED',
+        action: SanctionAction.NONE,
+      }),
+    });
   });
 
   it('sends link explanation for old messages when link bot toggle is enabled', async () => {
@@ -382,6 +387,9 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(maxClient.notifyModerators).toHaveBeenCalledTimes(1);
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Сообщение пользователя user-1 нарушает правила: ссылки в этом чате ограничены.',
