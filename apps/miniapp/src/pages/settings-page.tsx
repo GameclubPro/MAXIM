@@ -15,6 +15,8 @@ type FieldErrors = Partial<Record<keyof ChatSettings, string>>;
 
 const DOMAIN_PATTERN = /^(?=.{3,253}$)(?!-)(?:[a-z0-9-]{1,63}\.)+[a-z]{2,63}$/i;
 const AUTO_SAVE_DELAY_MS = 650;
+const BAN_DURATION_MIN_HOURS = 1;
+const BAN_DURATION_MAX_HOURS = 36;
 
 type DuplicateEnabledKey = 'duplicateWarnEnabled' | 'duplicateKickEnabled' | 'duplicateBanEnabled';
 type DuplicateWindowKey =
@@ -322,6 +324,19 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     const maxCount = Number.parseInt(rawValue, 10);
     const safeMaxCount = Number.isNaN(maxCount) ? 0 : Math.max(0, maxCount);
     setFieldValue(key, safeMaxCount as ChatSettings[DuplicateMaxCountKey]);
+  }
+
+  function adjustBanDuration(deltaHours: number) {
+    if (!draft) {
+      return;
+    }
+
+    const next = Math.min(
+      BAN_DURATION_MAX_HOURS,
+      Math.max(BAN_DURATION_MIN_HOURS, Number(draft.banDurationHours) + deltaHours),
+    );
+
+    setFieldValue('banDurationHours', next as ChatSettings['banDurationHours']);
   }
 
   useEffect(() => {
@@ -639,6 +654,47 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 <p id="duplicate-bot-message-hint" className="settings-native-toggle__hint">
                   При срабатывании правила дублей бот публикует поясняющее сообщение.
                 </p>
+              ) : null}
+            </div>
+
+            <div className={cn('settings-native-toggle', fieldErrors.banDurationHours && 'field--error')}>
+              <div className="settings-native-toggle__row">
+                <span className="settings-native-toggle__title">Длительность бана</span>
+
+                <div className="ban-duration-stepper" role="group" aria-label="Длительность бана в часах">
+                  <button
+                    type="button"
+                    className="ban-duration-stepper__button"
+                    onClick={() => adjustBanDuration(-1)}
+                    disabled={draft.banDurationHours <= BAN_DURATION_MIN_HOURS}
+                    aria-label="Уменьшить длительность бана"
+                  >
+                    -
+                  </button>
+
+                  <output className="ban-duration-stepper__value" aria-live="polite">
+                    {draft.banDurationHours}ч
+                  </output>
+
+                  <button
+                    type="button"
+                    className="ban-duration-stepper__button"
+                    onClick={() => adjustBanDuration(1)}
+                    disabled={draft.banDurationHours >= BAN_DURATION_MAX_HOURS}
+                    aria-label="Увеличить длительность бана"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+
+              <p className="settings-native-toggle__hint">
+                После выдачи бана сообщения пользователя удаляются автоматически в течение этого
+                времени.
+              </p>
+
+              {fieldErrors.banDurationHours ? (
+                <small className="field__hint">{fieldErrors.banDurationHours}</small>
               ) : null}
             </div>
 

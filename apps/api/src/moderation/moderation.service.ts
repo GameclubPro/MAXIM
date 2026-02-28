@@ -18,10 +18,10 @@ type ActiveBan = {
   eventId: string;
   issuedAt: Date;
   expiresAt: Date;
+  durationHours: number;
 };
 
-const ACTIVE_BAN_WINDOW_MS = 6 * 60 * 60 * 1000;
-const ACTIVE_BAN_WINDOW_LABEL = '6ч';
+const DEFAULT_BAN_DURATION_HOURS = 6;
 
 @Injectable()
 export class ModerationService {
@@ -109,7 +109,7 @@ export class ModerationService {
       return;
     }
 
-    const activeBan = await this.getActiveBan(chatId, senderId);
+    const activeBan = await this.getActiveBan(chatId, senderId, settings.banDurationHours);
     if (activeBan) {
       await this.handleActiveBanMessage({
         chatId,
@@ -141,6 +141,7 @@ export class ModerationService {
         createdAt,
         decision: detection.duplicateDecision,
         userLabel,
+        banDurationHours: settings.banDurationHours,
         duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
       });
       return;
@@ -235,6 +236,7 @@ export class ModerationService {
         action,
         userLabel,
         messageId,
+        banDurationHours: settings.banDurationHours,
       });
     }
 
@@ -252,6 +254,7 @@ export class ModerationService {
         metadata: {
           reason: topViolation.reason,
           action,
+          ...(action === SanctionAction.BAN ? { banDurationHours: settings.banDurationHours } : {}),
         },
       },
     });
@@ -265,9 +268,20 @@ export class ModerationService {
     createdAt: string;
     decision: DuplicateDecision;
     userLabel: string;
+    banDurationHours: number;
     duplicateBotMessageEnabled: boolean;
   }) {
-    const { chatId, userId, messageId, text, createdAt, decision, userLabel, duplicateBotMessageEnabled } =
+    const {
+      chatId,
+      userId,
+      messageId,
+      text,
+      createdAt,
+      decision,
+      userLabel,
+      banDurationHours,
+      duplicateBotMessageEnabled,
+    } =
       params;
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
@@ -314,7 +328,10 @@ export class ModerationService {
 
     if (duplicateBotMessageEnabled && decision.action !== 'BAN') {
       try {
-        await this.maxClient.sendMessage(chatId, this.buildDuplicateExplanation(userLabel, decision));
+        await this.maxClient.sendMessage(
+          chatId,
+          this.buildDuplicateExplanation(userLabel, decision, banDurationHours),
+        );
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -335,6 +352,7 @@ export class ModerationService {
       action,
       userLabel,
       messageId,
+      banDurationHours,
     });
 
     await this.prisma.moderationEvent.create({
@@ -353,6 +371,7 @@ export class ModerationService {
           count: decision.count,
           threshold: decision.threshold,
           nextStep: decision.nextAction,
+          ...(action === SanctionAction.BAN ? { banDurationHours } : {}),
         },
       },
     });
@@ -449,7 +468,11 @@ export class ModerationService {
     return `Сообщение пользователя ${userLabel} нарушает правила: ссылки в этом чате запрещены.`;
   }
 
-  private buildDuplicateExplanation(userLabel: string, decision: DuplicateDecision): string {
+  private buildDuplicateExplanation(
+    userLabel: string,
+    decision: DuplicateDecision,
+    banDurationHours: number,
+  ): string {
     if (decision.action === 'WARN') {
       return `Сообщение пользователя ${userLabel} удалено за дубли сообщений. Пользователю вынесено предупреждение.`;
     }
@@ -458,7 +481,7 @@ export class ModerationService {
       return `Сообщение пользователя ${userLabel} удалено за дубли сообщений. Пользователь удален из чата.`;
     }
 
-    return `Сообщение пользователя ${userLabel} удалено за дубли сообщений. Пользователю выдан бан на ${ACTIVE_BAN_WINDOW_LABEL}.`;
+    return `Сообщение пользователя ${userLabel} удалено за дубли сообщений. Пользователю выдан бан на ${this.formatBanDurationLabel(banDurationHours)}.`;
   }
 
   private buildDuplicateHitExplanation(userLabel: string, canDeleteMessage: boolean): string {
@@ -481,8 +504,9 @@ export class ModerationService {
     action: SanctionAction;
     userLabel: string;
     messageId: string;
+    banDurationHours: number;
   }) {
-    const { chatId, userId, action, userLabel, messageId } = params;
+    const { chatId, userId, action, userLabel, messageId, banDurationHours } = params;
     if (action === SanctionAction.KICK) {
       try {
         await this.maxClient.kickMember(chatId, userId);
@@ -510,6 +534,7 @@ export class ModerationService {
       userId,
       messageId,
       userLabel,
+      banDurationHours,
     });
   }
 
@@ -518,10 +543,11 @@ export class ModerationService {
     userId: string;
     messageId: string;
     userLabel: string;
+    banDurationHours: number;
   }) {
-    const { chatId, userId, messageId, userLabel } = params;
+    const { chatId, userId, messageId, userLabel, banDurationHours } = params;
     try {
-      await this.maxClient.sendMessage(chatId, this.buildBanNotice(userLabel));
+      await this.maxClient.sendMessage(chatId, this.buildBanNotice(userLabel, banDurationHours));
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -535,11 +561,15 @@ export class ModerationService {
     }
   }
 
-  private buildBanNotice(userLabel: string): string {
-    return `Пользователю ${userLabel} выдан бан на ${ACTIVE_BAN_WINDOW_LABEL}.`;
+  private buildBanNotice(userLabel: string, banDurationHours: number): string {
+    return `Пользователю ${userLabel} выдан бан на ${this.formatBanDurationLabel(banDurationHours)}.`;
   }
 
-  private async getActiveBan(chatId: string, userId: string): Promise<ActiveBan | null> {
+  private async getActiveBan(
+    chatId: string,
+    userId: string,
+    fallbackBanDurationHours: number,
+  ): Promise<ActiveBan | null> {
     const latestBan = await this.prisma.moderationEvent.findFirst({
       where: {
         chatId,
@@ -552,6 +582,7 @@ export class ModerationService {
       select: {
         id: true,
         createdAt: true,
+        metadata: true,
       },
     });
 
@@ -559,7 +590,11 @@ export class ModerationService {
       return null;
     }
 
-    const expiresAt = new Date(latestBan.createdAt.getTime() + ACTIVE_BAN_WINDOW_MS);
+    const durationHours = this.readBanDurationHoursFromMetadata(
+      latestBan.metadata,
+      fallbackBanDurationHours,
+    );
+    const expiresAt = new Date(latestBan.createdAt.getTime() + durationHours * 60 * 60 * 1000);
     if (expiresAt.getTime() <= Date.now()) {
       return null;
     }
@@ -568,6 +603,7 @@ export class ModerationService {
       eventId: latestBan.id,
       issuedAt: latestBan.createdAt,
       expiresAt,
+      durationHours,
     };
   }
 
@@ -609,6 +645,7 @@ export class ModerationService {
             banEventId: ban.eventId,
             banIssuedAt: ban.issuedAt.toISOString(),
             banExpiresAt: ban.expiresAt.toISOString(),
+            banDurationHours: ban.durationHours,
           },
         },
       });
@@ -663,6 +700,27 @@ export class ModerationService {
 
   private readLowerString(value: unknown): string | null {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim().toLowerCase() : null;
+  }
+
+  private readBanDurationHoursFromMetadata(metadata: unknown, fallback: number): number {
+    if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
+      const value = (metadata as Record<string, unknown>).banDurationHours;
+      if (typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 36) {
+        return value;
+      }
+    }
+
+    if (Number.isInteger(fallback) && fallback >= 1 && fallback <= 36) {
+      return fallback;
+    }
+
+    return DEFAULT_BAN_DURATION_HOURS;
+  }
+
+  private formatBanDurationLabel(hours: number): string {
+    const safeHours =
+      Number.isInteger(hours) && hours >= 1 && hours <= 36 ? hours : DEFAULT_BAN_DURATION_HOURS;
+    return `${safeHours}ч`;
   }
 }
 

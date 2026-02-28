@@ -24,6 +24,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     linkPolicy: 'ALLOWLIST_ONLY',
     linkBotMessageEnabled: true,
     duplicateBotMessageEnabled: false,
+    banDurationHours: 6,
     warnThreshold: 3,
     repeatBanWindowDays: 7,
     logRetentionDays: 90,
@@ -415,6 +416,68 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Пользователю "Алексей" выдан бан на 6ч.',
+    );
+  });
+
+  it('uses configured ban duration in ban notice', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ duplicateBotMessageEnabled: false, banDurationHours: 12 }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [],
+        duplicateDecision: {
+          action: 'BAN',
+          count: 4,
+          threshold: 4,
+          windowSec: 48 * 60 * 60,
+          hash: 'dup-ban-12h',
+          nextAction: null,
+        },
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Пользователю "Алексей" выдан бан на 12ч.',
     );
   });
 

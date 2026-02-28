@@ -539,6 +539,47 @@
   align-items: center;
 }
 
+.settings-native-toggle.field--error {
+  border-color: rgba(228, 83, 99, 0.32);
+}
+
+.settings-native-toggle.field--error .field__hint {
+  color: var(--danger);
+}
+
+.ban-duration-stepper {
+  display: inline-grid;
+  grid-template-columns: 32px auto 32px;
+  align-items: center;
+  gap: 8px;
+}
+
+.ban-duration-stepper__button {
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(62, 96, 127, 0.24);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.84);
+  color: var(--text-primary);
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.ban-duration-stepper__button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ban-duration-stepper__value {
+  min-width: 58px;
+  text-align: center;
+  font-size: 0.86rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
 .duplicate-stage-list {
   display: grid;
   gap: 8px;

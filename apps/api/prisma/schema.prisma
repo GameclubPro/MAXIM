@@ -82,6 +82,7 @@ model ChatSettings {
   linkPolicy             LinkPolicy     @default(ALLOWLIST_ONLY) @map("link_policy")
   linkBotMessageEnabled  Boolean        @default(true) @map("link_bot_message_enabled")
   duplicateBotMessageEnabled Boolean     @default(false) @map("duplicate_bot_message_enabled")
+  banDurationHours       Int            @default(6) @map("ban_duration_hours")
   warnThreshold          Int            @default(3) @map("warn_threshold")
   repeatBanWindowDays    Int            @default(7) @map("repeat_ban_window_days")
   logRetentionDays       Int            @default(90) @map("log_retention_days")

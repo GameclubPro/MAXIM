@@ -24,6 +24,7 @@ export const chatSettingsSchema = z
     linkPolicy: linkPolicySchema.default('ALLOWLIST_ONLY'),
     linkBotMessageEnabled: z.boolean().default(true),
     duplicateBotMessageEnabled: z.boolean().default(false),
+    banDurationHours: z.number().int().min(1).max(36).default(6),
     warnThreshold: z.number().int().min(1).max(10).default(3),
     repeatBanWindowDays: z.number().int().min(1).max(30).default(7),
     logRetentionDays: z.number().int().min(7).max(365).default(90),

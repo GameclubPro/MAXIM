@@ -33,6 +33,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     linkPolicy: LinkPolicy.ALLOWLIST_ONLY,
     linkBotMessageEnabled: true,
     duplicateBotMessageEnabled: false,
+    banDurationHours: 6,
     warnThreshold: 3,
     repeatBanWindowDays: 7,
     logRetentionDays: 90,
