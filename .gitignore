@@ -1,0 +1,29 @@
+# Node
+node_modules/
+.npm/
+
+# Build
+build/
+dist/
+coverage/
+.vite/
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS/IDE
+.DS_Store
+.idea/
+.vscode/
+
+# Docker
+*.pid
+
+# Local data
+infra/data/

@@ -1,0 +1,181 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ProfanityLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum LinkPolicy {
+  ALLOWLIST_ONLY
+  BLOCKLIST_ONLY
+  ALERT_ONLY
+}
+
+enum EventType {
+  MESSAGE
+  MEMBER_ACTION
+  SYSTEM
+}
+
+enum SanctionAction {
+  NONE
+  WARN
+  DELETE_MESSAGE
+  KICK
+  BAN
+}
+
+enum Operator {
+  BOT
+  ADMIN
+}
+
+enum WebhookStatus {
+  RECEIVED
+  PROCESSED
+  DUPLICATE
+  FAILED
+}
+
+model Chat {
+  id        String   @id
+  title     String
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  settings   ChatSettings?
+  admins     ChatAdminAllowlist[]
+  domains    DomainAllowlist[]
+  violations Violation[]
+  events     ModerationEvent[]
+  auditLogs  AuditLog[]
+
+  @@map("chats")
+}
+
+model ChatSettings {
+  id                String         @id @default(cuid())
+  chatId            String         @unique @map("chat_id")
+  profanityLevel    ProfanityLevel @default(MEDIUM) @map("profanity_level")
+  capsThreshold     Int            @default(70) @map("caps_threshold")
+  floodWindowSec    Int            @default(10) @map("flood_window_sec")
+  floodMaxMessages  Int            @default(5) @map("flood_max_messages")
+  duplicateWindowSec Int           @default(60) @map("duplicate_window_sec")
+  duplicateMaxCount Int            @default(3) @map("duplicate_max_count")
+  linkPolicy        LinkPolicy     @default(ALLOWLIST_ONLY) @map("link_policy")
+  warnThreshold     Int            @default(3) @map("warn_threshold")
+  repeatBanWindowDays Int          @default(7) @map("repeat_ban_window_days")
+  logRetentionDays  Int            @default(90) @map("log_retention_days")
+  createdAt         DateTime       @default(now()) @map("created_at")
+  updatedAt         DateTime       @updatedAt @map("updated_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@map("chat_settings")
+}
+
+model ChatAdminAllowlist {
+  chatId    String   @map("chat_id")
+  userId    String   @map("user_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@id([chatId, userId])
+  @@map("chat_admin_allowlist")
+}
+
+model DomainAllowlist {
+  chatId    String   @map("chat_id")
+  domain    String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@id([chatId, domain])
+  @@map("domain_allowlist")
+}
+
+model BadwordDictionary {
+  id          String   @id @default(cuid())
+  language    String
+  word        String
+  severity    Int      @default(2)
+  isException Boolean  @default(false) @map("is_exception")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@unique([language, word])
+  @@map("badword_dictionary")
+}
+
+model Violation {
+  id        String   @id @default(cuid())
+  chatId    String   @map("chat_id")
+  userId    String   @map("user_id")
+  ruleCode  String   @map("rule_code")
+  score     Float    @default(1)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([chatId, userId, createdAt])
+  @@map("violations")
+}
+
+model ModerationEvent {
+  id            String         @id @default(cuid())
+  chatId         String         @map("chat_id")
+  userId         String         @map("user_id")
+  messageId      String?        @map("message_id")
+  eventType      EventType      @map("event_type")
+  ruleCode       String         @map("rule_code")
+  action         SanctionAction
+  maskedExcerpt  String?        @map("masked_excerpt")
+  score          Float          @default(1)
+  operator       Operator       @default(BOT)
+  metadata       Json?
+  createdAt      DateTime       @default(now()) @map("created_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([chatId, createdAt])
+  @@index([chatId, userId, createdAt])
+  @@map("moderation_events")
+}
+
+model WebhookEvent {
+  id                String        @id @default(cuid())
+  dedupKey          String        @unique @map("dedup_key")
+  status            WebhookStatus @default(RECEIVED)
+  sourceIp          String?       @map("source_ip")
+  rawPayload        Json          @map("raw_payload")
+  normalizedPayload Json          @map("normalized_payload")
+  errorMessage      String?       @map("error_message")
+  createdAt         DateTime      @default(now()) @map("created_at")
+  processedAt       DateTime?     @map("processed_at")
+
+  @@index([status, createdAt])
+  @@map("webhook_events")
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  chatId       String   @map("chat_id")
+  actorUserId  String   @map("actor_user_id")
+  action       String
+  payload      Json
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@index([chatId, createdAt])
+  @@map("audit_logs")
+}
