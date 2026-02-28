@@ -80,6 +80,8 @@ model ChatSettings {
   duplicateBanWindowSec  Int            @default(172800) @map("duplicate_ban_window_sec")
   duplicateBanMaxCount   Int            @default(4) @map("duplicate_ban_max_count")
   linkPolicy             LinkPolicy     @default(ALLOWLIST_ONLY) @map("link_policy")
+  linkBotMessageEnabled  Boolean        @default(true) @map("link_bot_message_enabled")
+  duplicateBotMessageEnabled Boolean     @default(false) @map("duplicate_bot_message_enabled")
   warnThreshold          Int            @default(3) @map("warn_threshold")
   repeatBanWindowDays    Int            @default(7) @map("repeat_ban_window_days")
   logRetentionDays       Int            @default(90) @map("log_retention_days")

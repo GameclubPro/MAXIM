@@ -468,6 +468,21 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 {linkPolicyError ? <small className="field__hint">{linkPolicyError}</small> : null}
               </div>
 
+              <label className="settings-toggle-row">
+                <input
+                  type="checkbox"
+                  checked={draft.linkBotMessageEnabled}
+                  onChange={(event) => setFieldValue('linkBotMessageEnabled', event.target.checked)}
+                />
+                <span className="toggle-switch" aria-hidden>
+                  <span className="toggle-switch__thumb" />
+                </span>
+                <span className="settings-toggle-row__content">
+                  <span className="settings-toggle-row__title">Сообщение от бота</span>
+                  <small>После удаления ссылки бот отправит объяснение в чат.</small>
+                </span>
+              </label>
+
               {isAllowlistMode ? (
                 <div
                   className={cn(
@@ -555,6 +570,23 @@ export function SettingsPage({ api }: { api: ApiClient }) {
             <div className="settings-section__head">
               <h3>Дубли сообщений</h3>
             </div>
+
+            <label className="settings-toggle-row">
+              <input
+                type="checkbox"
+                checked={draft.duplicateBotMessageEnabled}
+                onChange={(event) =>
+                  setFieldValue('duplicateBotMessageEnabled', event.target.checked)
+                }
+              />
+              <span className="toggle-switch" aria-hidden>
+                <span className="toggle-switch__thumb" />
+              </span>
+              <span className="settings-toggle-row__content">
+                <span className="settings-toggle-row__title">Сообщение от бота</span>
+                <small>Бот отправляет пояснение при срабатывании правила дублей.</small>
+              </span>
+            </label>
 
             <div className="duplicate-stage-list">
               <div className="duplicate-stage-list__head" aria-hidden>

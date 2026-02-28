@@ -2,7 +2,7 @@ import type { MaxUpdate } from '@maxim/contracts';
 import { SanctionAction } from '@prisma/client';
 import { ModerationService } from './moderation.service';
 
-function createSettings() {
+function createSettings(overrides: Record<string, unknown> = {}) {
   return {
     id: 'settings-1',
     chatId: 'chat-1',
@@ -22,11 +22,14 @@ function createSettings() {
     duplicateBanWindowSec: 48 * 60 * 60,
     duplicateBanMaxCount: 4,
     linkPolicy: 'ALLOWLIST_ONLY',
+    linkBotMessageEnabled: true,
+    duplicateBotMessageEnabled: false,
     warnThreshold: 3,
     repeatBanWindowDays: 7,
     logRetentionDays: 90,
     createdAt: new Date(),
     updatedAt: new Date(),
+    ...overrides,
   };
 }
 
@@ -103,7 +106,7 @@ describe('ModerationService', () => {
     expect(prisma.violation.create).not.toHaveBeenCalled();
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-1');
     expect(maxClient.banMember).not.toHaveBeenCalled();
 
@@ -132,6 +135,68 @@ describe('ModerationService', () => {
         }),
       }),
     });
+  });
+
+  it('sends duplicate explanation when duplicate bot toggle is enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ duplicateBotMessageEnabled: true }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [],
+        duplicateDecision: {
+          action: 'WARN',
+          count: 2,
+          threshold: 2,
+          windowSec: 12 * 60 * 60,
+          hash: 'dup-hash-1',
+          nextAction: 'KICK',
+        },
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      expect.stringContaining('Дубли сообщений: пользователь user-1.'),
+    );
   });
 
   it('keeps legacy sanction flow for non-duplicate violations', async () => {
@@ -182,7 +247,11 @@ describe('ModerationService', () => {
 
     expect(prisma.violation.create).toHaveBeenCalledTimes(1);
     expect(sanctionService.resolveAction).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Сообщение пользователя user-1 удалено: ссылки в этом чате ограничены.',
+    );
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
       data: expect.objectContaining({
@@ -198,13 +267,64 @@ describe('ModerationService', () => {
     });
   });
 
+  it('does not send link explanation when link bot toggle is disabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ linkBotMessageEnabled: false }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Link detected' }],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn().mockResolvedValue(SanctionAction.WARN),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
+  });
+
   it('still sends duplicate explanation when message deletion fails', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
           id: 'chat-1',
           title: 'Chat 1',
-          settings: createSettings(),
+          settings: createSettings({ duplicateBotMessageEnabled: true }),
           domains: [],
         }),
       },

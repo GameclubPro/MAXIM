@@ -460,6 +460,33 @@
   color: var(--danger);
 }
 
+.settings-toggle-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+  min-width: 0;
+}
+
+.settings-toggle-row__content {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-toggle-row__title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  line-height: 1.2;
+}
+
+.settings-toggle-row__content small {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
 .duplicate-stage-list {
   display: grid;
   gap: 8px;
@@ -502,7 +529,8 @@
   min-width: 0;
 }
 
-.duplicate-stage__toggle input {
+.duplicate-stage__toggle input,
+.settings-toggle-row input {
   position: absolute;
   opacity: 0;
   pointer-events: none;
@@ -532,12 +560,14 @@
   transition: transform 0.2s ease;
 }
 
-.duplicate-stage__toggle input:checked + .toggle-switch {
+.duplicate-stage__toggle input:checked + .toggle-switch,
+.settings-toggle-row input:checked + .toggle-switch {
   border-color: rgba(11, 132, 255, 0.46);
   background: rgba(11, 132, 255, 0.3);
 }
 
-.duplicate-stage__toggle input:checked + .toggle-switch .toggle-switch__thumb {
+.duplicate-stage__toggle input:checked + .toggle-switch .toggle-switch__thumb,
+.settings-toggle-row input:checked + .toggle-switch .toggle-switch__thumb {
   transform: translateX(14px);
 }
 

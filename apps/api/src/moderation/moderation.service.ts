@@ -111,6 +111,7 @@ export class ModerationService {
         text,
         createdAt,
         decision: detection.duplicateDecision,
+        duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
       });
       return;
     }
@@ -151,6 +152,25 @@ export class ModerationService {
           },
         },
       });
+
+      if (topViolation.ruleCode === 'LINK_BLOCKED' && settings.linkBotMessageEnabled) {
+        try {
+          await this.maxClient.sendMessage(
+            chatId,
+            `Сообщение пользователя ${senderId} удалено: ссылки в этом чате ограничены.`,
+          );
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              userId: senderId,
+              messageId,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to send link explanation message',
+          );
+        }
+      }
     } else {
       await this.maxClient.notifyModerators(
         chatId,
@@ -197,8 +217,10 @@ export class ModerationService {
     text: string;
     createdAt: string;
     decision: DuplicateDecision;
+    duplicateBotMessageEnabled: boolean;
   }) {
-    const { chatId, userId, messageId, text, createdAt, decision } = params;
+    const { chatId, userId, messageId, text, createdAt, decision, duplicateBotMessageEnabled } =
+      params;
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
 
@@ -242,18 +264,20 @@ export class ModerationService {
       );
     }
 
-    try {
-      await this.maxClient.sendMessage(chatId, this.buildDuplicateExplanation(userId, decision));
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          userId,
-          messageId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to send duplicate explanation message',
-      );
+    if (duplicateBotMessageEnabled) {
+      try {
+        await this.maxClient.sendMessage(chatId, this.buildDuplicateExplanation(userId, decision));
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            userId,
+            messageId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to send duplicate explanation message',
+        );
+      }
     }
 
     const action = this.toSanctionAction(decision.action);

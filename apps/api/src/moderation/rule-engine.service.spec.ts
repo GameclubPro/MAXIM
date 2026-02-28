@@ -31,6 +31,8 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     duplicateBanWindowSec: 48 * 60 * 60,
     duplicateBanMaxCount: 4,
     linkPolicy: LinkPolicy.ALLOWLIST_ONLY,
+    linkBotMessageEnabled: true,
+    duplicateBotMessageEnabled: false,
     warnThreshold: 3,
     repeatBanWindowDays: 7,
     logRetentionDays: 90,
