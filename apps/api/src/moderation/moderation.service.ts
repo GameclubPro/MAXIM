@@ -296,9 +296,17 @@ export class ModerationService {
 
   private buildDuplicateExplanation(userId: string, decision: DuplicateDecision): string {
     const actionLabel =
-      decision.action === 'WARN' ? 'предупреждение' : decision.action === 'KICK' ? 'кик' : 'бан';
+      decision.action === 'WARN'
+        ? 'предупреждение'
+        : decision.action === 'KICK'
+          ? 'удаление участника'
+          : 'бан';
     const nextActionLabel =
-      decision.nextAction === 'KICK' ? 'кик' : decision.nextAction === 'BAN' ? 'бан' : null;
+      decision.nextAction === 'KICK'
+        ? 'удаление участника'
+        : decision.nextAction === 'BAN'
+          ? 'бан'
+          : null;
 
     return [
       `Дубли сообщений: пользователь ${userId}.`,

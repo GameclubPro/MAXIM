@@ -41,18 +41,18 @@ const DUPLICATE_STAGE_OPTIONS: Array<{
     maxCountKey: 'duplicateWarnMaxCount',
   },
   {
-    id: 'KICK',
-    label: 'Кик',
-    enabledKey: 'duplicateKickEnabled',
-    windowKey: 'duplicateKickWindowSec',
-    maxCountKey: 'duplicateKickMaxCount',
-  },
-  {
     id: 'BAN',
     label: 'Бан',
     enabledKey: 'duplicateBanEnabled',
     windowKey: 'duplicateBanWindowSec',
     maxCountKey: 'duplicateBanMaxCount',
+  },
+  {
+    id: 'KICK',
+    label: 'Удаление участника',
+    enabledKey: 'duplicateKickEnabled',
+    windowKey: 'duplicateKickWindowSec',
+    maxCountKey: 'duplicateKickMaxCount',
   },
 ];
 
@@ -515,7 +515,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                   {domainsQuery.error ? (
                     <p className="allowlist-empty allowlist-empty--error">
-                      Ошибка: {(domainsQuery.error as Error).message}
+                      Ошибка: {formatApiError(domainsQuery.error)}
                     </p>
                   ) : null}
 
@@ -557,6 +557,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
             </div>
 
             <div className="duplicate-stage-list">
+              <div className="duplicate-stage-list__head" aria-hidden>
+                <span>Ступень</span>
+                <span>Окно, ч</span>
+                <span>Лимит</span>
+              </div>
+
               {DUPLICATE_STAGE_OPTIONS.map((stage) => {
                 const enabled = draft[stage.enabledKey];
                 const windowSec = draft[stage.windowKey];
@@ -586,41 +592,44 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       <span className="duplicate-stage__title">{stage.label}</span>
                     </label>
 
-                    <div className="duplicate-stage__fields">
-                      <label className={cn('field', windowError && 'field--error')}>
-                        <span className="field__label">Окно, часы</span>
-                        <input
-                          type="number"
-                          min={1}
-                          max={168}
-                          step={1}
-                          value={secondsToHours(Number(windowSec))}
-                          onChange={(event) =>
-                            handleDuplicateWindowHoursChange(stage.windowKey, event.target.value)
-                          }
-                          disabled={!enabled}
-                        />
-                        {windowError ? <small className="field__hint">{windowError}</small> : null}
-                      </label>
+                    <label className={cn('duplicate-stage__field', windowError && 'field--error')}>
+                      <input
+                        type="number"
+                        min={1}
+                        max={168}
+                        step={1}
+                        value={secondsToHours(Number(windowSec))}
+                        onChange={(event) =>
+                          handleDuplicateWindowHoursChange(stage.windowKey, event.target.value)
+                        }
+                        disabled={!enabled}
+                        aria-label={`Окно для ступени ${stage.label} в часах`}
+                      />
+                    </label>
 
-                      <label className={cn('field', maxCountError && 'field--error')}>
-                        <span className="field__label">Лимит повторов</span>
-                        <input
-                          type="number"
-                          min={2}
-                          max={20}
-                          step={1}
-                          value={Number(maxCount)}
-                          onChange={(event) =>
-                            handleDuplicateMaxCountChange(stage.maxCountKey, event.target.value)
-                          }
-                          disabled={!enabled}
-                        />
+                    <label className={cn('duplicate-stage__field', maxCountError && 'field--error')}>
+                      <input
+                        type="number"
+                        min={2}
+                        max={20}
+                        step={1}
+                        value={Number(maxCount)}
+                        onChange={(event) =>
+                          handleDuplicateMaxCountChange(stage.maxCountKey, event.target.value)
+                        }
+                        disabled={!enabled}
+                        aria-label={`Лимит повторов для ступени ${stage.label}`}
+                      />
+                    </label>
+
+                    {windowError || maxCountError ? (
+                      <div className="duplicate-stage__errors">
+                        {windowError ? <small className="field__hint">{windowError}</small> : null}
                         {maxCountError ? (
                           <small className="field__hint">{maxCountError}</small>
                         ) : null}
-                      </label>
-                    </div>
+                      </div>
+                    ) : null}
                   </article>
                 );
               })}
