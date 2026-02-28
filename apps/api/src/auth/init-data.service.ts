@@ -8,7 +8,7 @@ export class InitDataService {
   constructor(private readonly configService: ConfigService) {}
 
   validate(initData: string): AuthUser {
-    const params = new URLSearchParams(initData);
+    const params = new URLSearchParams(this.normalizeInitData(initData));
     const receivedHash = params.get('hash');
 
     if (!receivedHash) {
@@ -21,14 +21,22 @@ export class InitDataService {
       .map(([key, value]) => `${key}=${value}`)
       .join('\n');
 
-    const secret = this.configService.getOrThrow<string>('INIT_DATA_HMAC_SECRET');
-    const calculatedHash = createHmac('sha256', secret).update(sortedPairs).digest('hex');
+    const botToken = this.configService.getOrThrow<string>('MAX_BOT_TOKEN');
+    const secretKey = createHmac('sha256', 'WebAppData').update(botToken).digest('hex');
+    const calculatedHash = createHmac('sha256', secretKey).update(sortedPairs).digest('hex');
+
+    if (!/^[a-f0-9]{64}$/i.test(receivedHash)) {
+      throw new UnauthorizedException('Invalid init data signature');
+    }
 
     if (receivedHash.length !== calculatedHash.length) {
       throw new UnauthorizedException('Invalid init data signature');
     }
 
-    const valid = timingSafeEqual(Buffer.from(calculatedHash), Buffer.from(receivedHash));
+    const valid = timingSafeEqual(
+      Buffer.from(calculatedHash, 'hex'),
+      Buffer.from(receivedHash.toLowerCase(), 'hex'),
+    );
     if (!valid) {
       throw new UnauthorizedException('Invalid init data signature');
     }
@@ -59,5 +67,27 @@ export class InitDataService {
           ? String(parsedUser.first_name)
           : null,
     };
+  }
+
+  private normalizeInitData(raw: string): string {
+    let current = raw.trim();
+
+    for (let i = 0; i < 2; i += 1) {
+      if (current.includes('hash=')) {
+        return current;
+      }
+
+      try {
+        const decoded = decodeURIComponent(current);
+        if (decoded === current) {
+          break;
+        }
+        current = decoded;
+      } catch {
+        break;
+      }
+    }
+
+    return current;
   }
 }

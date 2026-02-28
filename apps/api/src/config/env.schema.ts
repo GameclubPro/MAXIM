@@ -14,7 +14,7 @@ const envSchema = z.object({
   DATABASE_URL: z.string().min(10),
   REDIS_URL: z.string().url(),
 
-  INIT_DATA_HMAC_SECRET: z.string().min(8),
+  INIT_DATA_HMAC_SECRET: z.string().optional(),
 
   WEBHOOK_RPS_LIMIT: z.coerce.number().int().positive().default(30),
   JSON_BODY_LIMIT: z.coerce.number().int().positive().default(1_048_576),
