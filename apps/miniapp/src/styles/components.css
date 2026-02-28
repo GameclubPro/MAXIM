@@ -594,6 +594,16 @@
   height: 36px;
 }
 
+.settings-text-field input {
+  min-height: 36px;
+  height: 36px;
+}
+
+.settings-button-fields {
+  display: grid;
+  gap: 8px;
+}
+
 .settings-native-toggle.field--error {
   border-color: rgba(228, 83, 99, 0.32);
 }

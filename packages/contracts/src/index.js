@@ -5,6 +5,7 @@ export const linkPolicySchema = z.enum(['ALLOWLIST_ONLY', 'BLOCKLIST_ONLY', 'ALE
 const duplicateWindowSecSchema = z.number().int().min(3600).max(604800);
 const duplicateMaxCountSchema = z.number().int().min(2).max(20);
 const botButtonUrlSchema = z.string().trim().max(2048).default('');
+const botButtonTextSchema = z.string().trim().max(32).default('Открыть');
 function isValidBotButtonUrl(value) {
   const normalized = value.trim();
   if (!normalized) {
@@ -16,6 +17,10 @@ function isValidBotButtonUrl(value) {
   } catch {
     return false;
   }
+}
+function isValidBotButtonText(value) {
+  const normalized = value.trim();
+  return normalized.length > 0 && normalized.length <= 32;
 }
 export const chatSettingsSchema = z
   .object({
@@ -45,12 +50,15 @@ export const chatSettingsSchema = z
     messageLimitsBotMessageEnabled: z.boolean().default(false),
     messageLimitsBotButtonEnabled: z.boolean().default(false),
     messageLimitsBotButtonUrl: botButtonUrlSchema,
+    messageLimitsBotButtonText: botButtonTextSchema,
     linkBotMessageEnabled: z.boolean().default(true),
     linkBotButtonEnabled: z.boolean().default(false),
     linkBotButtonUrl: botButtonUrlSchema,
+    linkBotButtonText: botButtonTextSchema,
     duplicateBotMessageEnabled: z.boolean().default(false),
     duplicateBotButtonEnabled: z.boolean().default(false),
     duplicateBotButtonUrl: botButtonUrlSchema,
+    duplicateBotButtonText: botButtonTextSchema,
     banDurationHours: z.number().int().min(1).max(36).default(6),
     warnThreshold: z.number().int().min(1).max(10).default(3),
     repeatBanWindowDays: z.number().int().min(1).max(30).default(7),
@@ -104,6 +112,17 @@ export const chatSettingsSchema = z
       });
     }
     if (
+      value.linkBotMessageEnabled &&
+      value.linkBotButtonEnabled &&
+      !isValidBotButtonText(value.linkBotButtonText)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['linkBotButtonText'],
+        message: 'Введите название кнопки.',
+      });
+    }
+    if (
       value.duplicateBotMessageEnabled &&
       value.duplicateBotButtonEnabled &&
       !isValidBotButtonUrl(value.duplicateBotButtonUrl)
@@ -115,6 +134,17 @@ export const chatSettingsSchema = z
       });
     }
     if (
+      value.duplicateBotMessageEnabled &&
+      value.duplicateBotButtonEnabled &&
+      !isValidBotButtonText(value.duplicateBotButtonText)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['duplicateBotButtonText'],
+        message: 'Введите название кнопки.',
+      });
+    }
+    if (
       value.messageLimitsBotMessageEnabled &&
       value.messageLimitsBotButtonEnabled &&
       !isValidBotButtonUrl(value.messageLimitsBotButtonUrl)
@@ -123,6 +153,17 @@ export const chatSettingsSchema = z
         code: z.ZodIssueCode.custom,
         path: ['messageLimitsBotButtonUrl'],
         message: 'Укажите корректную ссылку для кнопки (http/https).',
+      });
+    }
+    if (
+      value.messageLimitsBotMessageEnabled &&
+      value.messageLimitsBotButtonEnabled &&
+      !isValidBotButtonText(value.messageLimitsBotButtonText)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['messageLimitsBotButtonText'],
+        message: 'Введите название кнопки.',
       });
     }
   });

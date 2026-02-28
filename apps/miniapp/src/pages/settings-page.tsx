@@ -434,6 +434,34 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const linkPolicyError = fieldErrors.linkPolicy;
   const allowlistDomains = domainsQuery.data ?? [];
   const isAllowlistMode = draft?.linkPolicy === 'ALLOWLIST_ONLY';
+  const showLinkBotButtonErrors = Boolean(draft?.linkBotMessageEnabled && draft?.linkBotButtonEnabled);
+  const linkBotButtonUrlError = showLinkBotButtonErrors ? fieldErrors.linkBotButtonUrl : undefined;
+  const linkBotButtonTextError = showLinkBotButtonErrors ? fieldErrors.linkBotButtonText : undefined;
+  const hasLinkBotButtonError = Boolean(linkBotButtonUrlError || linkBotButtonTextError);
+  const showDuplicateBotButtonErrors = Boolean(
+    draft?.duplicateBotMessageEnabled && draft?.duplicateBotButtonEnabled,
+  );
+  const duplicateBotButtonUrlError = showDuplicateBotButtonErrors
+    ? fieldErrors.duplicateBotButtonUrl
+    : undefined;
+  const duplicateBotButtonTextError = showDuplicateBotButtonErrors
+    ? fieldErrors.duplicateBotButtonText
+    : undefined;
+  const hasDuplicateBotButtonError = Boolean(
+    duplicateBotButtonUrlError || duplicateBotButtonTextError,
+  );
+  const showMessageLimitsBotButtonErrors = Boolean(
+    draft?.messageLimitsBotMessageEnabled && draft?.messageLimitsBotButtonEnabled,
+  );
+  const messageLimitsBotButtonUrlError = showMessageLimitsBotButtonErrors
+    ? fieldErrors.messageLimitsBotButtonUrl
+    : undefined;
+  const messageLimitsBotButtonTextError = showMessageLimitsBotButtonErrors
+    ? fieldErrors.messageLimitsBotButtonText
+    : undefined;
+  const hasMessageLimitsBotButtonError = Boolean(
+    messageLimitsBotButtonUrlError || messageLimitsBotButtonTextError,
+  );
 
   return (
     <div className="page-stack page-enter">
@@ -533,6 +561,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         setFieldValue('linkBotMessageEnabled', enabled);
                         if (!enabled) {
                           setFieldValue('linkBotButtonEnabled', false);
+                          clearFieldError('linkBotButtonUrl');
+                          clearFieldError('linkBotButtonText');
                         }
                       }}
                     />
@@ -554,7 +584,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   className={cn(
                     'settings-native-toggle',
                     'settings-native-toggle--nested',
-                    fieldErrors.linkBotButtonUrl && 'field--error',
+                    hasLinkBotButtonError && 'field--error',
                   )}
                 >
                   <div className="settings-native-toggle__row">
@@ -567,9 +597,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       <input
                         type="checkbox"
                         checked={draft.linkBotButtonEnabled}
-                        onChange={(event) =>
-                          setFieldValue('linkBotButtonEnabled', event.target.checked)
-                        }
+                        onChange={(event) => {
+                          const enabled = event.target.checked;
+                          setFieldValue('linkBotButtonEnabled', enabled);
+                          if (!enabled) {
+                            clearFieldError('linkBotButtonUrl');
+                            clearFieldError('linkBotButtonText');
+                          }
+                        }}
                       />
                       <span className="toggle-switch" aria-hidden>
                         <span className="toggle-switch__thumb" />
@@ -578,26 +613,52 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   </div>
 
                   {draft.linkBotButtonEnabled ? (
-                    <label className="field settings-url-field">
-                      <span className="field__label">Ссылка кнопки</span>
-                      <input
-                        type="url"
-                        inputMode="url"
-                        value={draft.linkBotButtonUrl}
-                        onChange={(event) => setFieldValue('linkBotButtonUrl', event.target.value)}
-                        placeholder="https://max.ru/channel/..."
-                      />
-                    </label>
+                    <div className="settings-button-fields">
+                      <label
+                        className={cn('field settings-url-field', linkBotButtonUrlError && 'field--error')}
+                      >
+                        <span className="field__label">Ссылка кнопки</span>
+                        <input
+                          type="url"
+                          inputMode="url"
+                          value={draft.linkBotButtonUrl}
+                          onChange={(event) => setFieldValue('linkBotButtonUrl', event.target.value)}
+                          placeholder="https://max.ru/channel/..."
+                        />
+                        {linkBotButtonUrlError ? (
+                          <small className="field__hint">{linkBotButtonUrlError}</small>
+                        ) : null}
+                      </label>
+
+                      <label
+                        className={cn(
+                          'field settings-text-field',
+                          linkBotButtonTextError && 'field--error',
+                        )}
+                      >
+                        <span className="field__label">Название кнопки</span>
+                        <input
+                          type="text"
+                          maxLength={32}
+                          value={draft.linkBotButtonText}
+                          onChange={(event) =>
+                            setFieldValue('linkBotButtonText', event.target.value)
+                          }
+                          placeholder="Открыть"
+                        />
+                        {linkBotButtonTextError ? (
+                          <small className="field__hint">{linkBotButtonTextError}</small>
+                        ) : null}
+                      </label>
+                    </div>
                   ) : null}
 
-                  {fieldErrors.linkBotButtonUrl ? (
-                    <small className="field__hint">{fieldErrors.linkBotButtonUrl}</small>
-                  ) : (
+                  {!hasLinkBotButtonError ? (
                     <p className="settings-native-toggle__hint">
                       Добавляет кнопку в сообщение бота. Подходит для ссылки на чат, канал или
                       профиль.
                     </p>
-                  )}
+                  ) : null}
                 </div>
               ) : null}
 
@@ -721,6 +782,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       setFieldValue('duplicateBotMessageEnabled', enabled);
                       if (!enabled) {
                         setFieldValue('duplicateBotButtonEnabled', false);
+                        clearFieldError('duplicateBotButtonUrl');
+                        clearFieldError('duplicateBotButtonText');
                       }
                     }}
                   />
@@ -742,7 +805,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 className={cn(
                   'settings-native-toggle',
                   'settings-native-toggle--nested',
-                  fieldErrors.duplicateBotButtonUrl && 'field--error',
+                  hasDuplicateBotButtonError && 'field--error',
                 )}
               >
                 <div className="settings-native-toggle__row">
@@ -755,9 +818,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     <input
                       type="checkbox"
                       checked={draft.duplicateBotButtonEnabled}
-                      onChange={(event) =>
-                        setFieldValue('duplicateBotButtonEnabled', event.target.checked)
-                      }
+                      onChange={(event) => {
+                        const enabled = event.target.checked;
+                        setFieldValue('duplicateBotButtonEnabled', enabled);
+                        if (!enabled) {
+                          clearFieldError('duplicateBotButtonUrl');
+                          clearFieldError('duplicateBotButtonText');
+                        }
+                      }}
                     />
                     <span className="toggle-switch" aria-hidden>
                       <span className="toggle-switch__thumb" />
@@ -766,28 +834,57 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 </div>
 
                 {draft.duplicateBotButtonEnabled ? (
-                  <label className="field settings-url-field">
-                    <span className="field__label">Ссылка кнопки</span>
-                    <input
-                      type="url"
-                      inputMode="url"
-                      value={draft.duplicateBotButtonUrl}
-                      onChange={(event) =>
-                        setFieldValue('duplicateBotButtonUrl', event.target.value)
-                      }
-                      placeholder="https://max.ru/profile/..."
-                    />
-                  </label>
+                  <div className="settings-button-fields">
+                    <label
+                      className={cn(
+                        'field settings-url-field',
+                        duplicateBotButtonUrlError && 'field--error',
+                      )}
+                    >
+                      <span className="field__label">Ссылка кнопки</span>
+                      <input
+                        type="url"
+                        inputMode="url"
+                        value={draft.duplicateBotButtonUrl}
+                        onChange={(event) =>
+                          setFieldValue('duplicateBotButtonUrl', event.target.value)
+                        }
+                        placeholder="https://max.ru/profile/..."
+                      />
+                      {duplicateBotButtonUrlError ? (
+                        <small className="field__hint">{duplicateBotButtonUrlError}</small>
+                      ) : null}
+                    </label>
+
+                    <label
+                      className={cn(
+                        'field settings-text-field',
+                        duplicateBotButtonTextError && 'field--error',
+                      )}
+                    >
+                      <span className="field__label">Название кнопки</span>
+                      <input
+                        type="text"
+                        maxLength={32}
+                        value={draft.duplicateBotButtonText}
+                        onChange={(event) =>
+                          setFieldValue('duplicateBotButtonText', event.target.value)
+                        }
+                        placeholder="Открыть"
+                      />
+                      {duplicateBotButtonTextError ? (
+                        <small className="field__hint">{duplicateBotButtonTextError}</small>
+                      ) : null}
+                    </label>
+                  </div>
                 ) : null}
 
-                {fieldErrors.duplicateBotButtonUrl ? (
-                  <small className="field__hint">{fieldErrors.duplicateBotButtonUrl}</small>
-                ) : (
+                {!hasDuplicateBotButtonError ? (
                   <p className="settings-native-toggle__hint">
                     Добавляет кнопку в сообщение бота. Можно отправить пользователя в нужный чат,
                     канал или профиль.
                   </p>
-                )}
+                ) : null}
               </div>
             ) : null}
 
@@ -950,6 +1047,129 @@ export function SettingsPage({ api }: { api: ApiClient }) {
             <div className="settings-section__head">
               <h3>Ограничения сообщений</h3>
             </div>
+
+            <div className="settings-subsection-divider" role="separator" aria-label="Блок сообщений бота">
+              <span>Сообщения бота</span>
+            </div>
+
+            <div className="settings-native-toggle">
+              <div className="settings-native-toggle__row">
+                <span className="settings-native-toggle__title">Сообщение от бота</span>
+
+                <label
+                  className="settings-native-switch"
+                  aria-label="Включить сообщение от бота для ограничений сообщений"
+                >
+                  <input
+                    type="checkbox"
+                    checked={draft.messageLimitsBotMessageEnabled}
+                    onChange={(event) => {
+                      const enabled = event.target.checked;
+                      setFieldValue('messageLimitsBotMessageEnabled', enabled);
+                      if (!enabled) {
+                        setFieldValue('messageLimitsBotButtonEnabled', false);
+                        clearFieldError('messageLimitsBotButtonUrl');
+                        clearFieldError('messageLimitsBotButtonText');
+                      }
+                    }}
+                  />
+                  <span className="toggle-switch" aria-hidden>
+                    <span className="toggle-switch__thumb" />
+                  </span>
+                </label>
+              </div>
+
+              <p className="settings-native-toggle__hint">
+                Бот отправляет пояснение при удалении сообщения по правилам этого блока.
+              </p>
+            </div>
+
+            {draft.messageLimitsBotMessageEnabled ? (
+              <div
+                className={cn(
+                  'settings-native-toggle',
+                  'settings-native-toggle--nested',
+                  hasMessageLimitsBotButtonError && 'field--error',
+                )}
+              >
+                <div className="settings-native-toggle__row">
+                  <span className="settings-native-toggle__title">Добавить кнопку</span>
+
+                  <label
+                    className="settings-native-switch"
+                    aria-label="Добавить кнопку в сообщение бота для ограничений сообщений"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={draft.messageLimitsBotButtonEnabled}
+                      onChange={(event) => {
+                        const enabled = event.target.checked;
+                        setFieldValue('messageLimitsBotButtonEnabled', enabled);
+                        if (!enabled) {
+                          clearFieldError('messageLimitsBotButtonUrl');
+                          clearFieldError('messageLimitsBotButtonText');
+                        }
+                      }}
+                    />
+                    <span className="toggle-switch" aria-hidden>
+                      <span className="toggle-switch__thumb" />
+                    </span>
+                  </label>
+                </div>
+
+                {draft.messageLimitsBotButtonEnabled ? (
+                  <div className="settings-button-fields">
+                    <label
+                      className={cn(
+                        'field settings-url-field',
+                        messageLimitsBotButtonUrlError && 'field--error',
+                      )}
+                    >
+                      <span className="field__label">Ссылка кнопки</span>
+                      <input
+                        type="url"
+                        inputMode="url"
+                        value={draft.messageLimitsBotButtonUrl}
+                        onChange={(event) =>
+                          setFieldValue('messageLimitsBotButtonUrl', event.target.value)
+                        }
+                        placeholder="https://max.ru/channel/..."
+                      />
+                      {messageLimitsBotButtonUrlError ? (
+                        <small className="field__hint">{messageLimitsBotButtonUrlError}</small>
+                      ) : null}
+                    </label>
+
+                    <label
+                      className={cn(
+                        'field settings-text-field',
+                        messageLimitsBotButtonTextError && 'field--error',
+                      )}
+                    >
+                      <span className="field__label">Название кнопки</span>
+                      <input
+                        type="text"
+                        maxLength={32}
+                        value={draft.messageLimitsBotButtonText}
+                        onChange={(event) =>
+                          setFieldValue('messageLimitsBotButtonText', event.target.value)
+                        }
+                        placeholder="Открыть"
+                      />
+                      {messageLimitsBotButtonTextError ? (
+                        <small className="field__hint">{messageLimitsBotButtonTextError}</small>
+                      ) : null}
+                    </label>
+                  </div>
+                ) : null}
+
+                {!hasMessageLimitsBotButtonError ? (
+                  <p className="settings-native-toggle__hint">
+                    Добавляет кнопку в сообщение бота с переходом на чат, канал или профиль.
+                  </p>
+                ) : null}
+              </div>
+            ) : null}
 
             <div className={cn('settings-native-toggle', fieldErrors.maxMessageLength && 'field--error')}>
               <div className="settings-native-toggle__row">
@@ -1136,92 +1356,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               </div>
             </div>
 
-            <div className="settings-subsection-divider" role="separator" aria-label="Блок сообщений бота">
-              <span>Сообщения бота</span>
-            </div>
-
-            <div className="settings-native-toggle">
-              <div className="settings-native-toggle__row">
-                <span className="settings-native-toggle__title">Сообщение от бота</span>
-
-                <label
-                  className="settings-native-switch"
-                  aria-label="Включить сообщение от бота для ограничений сообщений"
-                >
-                  <input
-                    type="checkbox"
-                    checked={draft.messageLimitsBotMessageEnabled}
-                    onChange={(event) => {
-                      const enabled = event.target.checked;
-                      setFieldValue('messageLimitsBotMessageEnabled', enabled);
-                      if (!enabled) {
-                        setFieldValue('messageLimitsBotButtonEnabled', false);
-                      }
-                    }}
-                  />
-                  <span className="toggle-switch" aria-hidden>
-                    <span className="toggle-switch__thumb" />
-                  </span>
-                </label>
-              </div>
-
-              <p className="settings-native-toggle__hint">
-                Бот отправляет пояснение при удалении сообщения по правилам этого блока.
-              </p>
-            </div>
-
-            {draft.messageLimitsBotMessageEnabled ? (
-              <div
-                className={cn(
-                  'settings-native-toggle',
-                  'settings-native-toggle--nested',
-                  fieldErrors.messageLimitsBotButtonUrl && 'field--error',
-                )}
-              >
-                <div className="settings-native-toggle__row">
-                  <span className="settings-native-toggle__title">Добавить кнопку</span>
-
-                  <label
-                    className="settings-native-switch"
-                    aria-label="Добавить кнопку в сообщение бота для ограничений сообщений"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={draft.messageLimitsBotButtonEnabled}
-                      onChange={(event) =>
-                        setFieldValue('messageLimitsBotButtonEnabled', event.target.checked)
-                      }
-                    />
-                    <span className="toggle-switch" aria-hidden>
-                      <span className="toggle-switch__thumb" />
-                    </span>
-                  </label>
-                </div>
-
-                {draft.messageLimitsBotButtonEnabled ? (
-                  <label className="field settings-url-field">
-                    <span className="field__label">Ссылка кнопки</span>
-                    <input
-                      type="url"
-                      inputMode="url"
-                      value={draft.messageLimitsBotButtonUrl}
-                      onChange={(event) =>
-                        setFieldValue('messageLimitsBotButtonUrl', event.target.value)
-                      }
-                      placeholder="https://max.ru/channel/..."
-                    />
-                  </label>
-                ) : null}
-
-                {fieldErrors.messageLimitsBotButtonUrl ? (
-                  <small className="field__hint">{fieldErrors.messageLimitsBotButtonUrl}</small>
-                ) : (
-                  <p className="settings-native-toggle__hint">
-                    Добавляет кнопку в сообщение бота с переходом на чат, канал или профиль.
-                  </p>
-                )}
-              </div>
-            ) : null}
           </GlassCard>
         </section>
       ) : null}

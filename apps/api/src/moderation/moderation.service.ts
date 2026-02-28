@@ -22,7 +22,7 @@ type ActiveBan = {
 };
 
 const DEFAULT_BAN_DURATION_HOURS = 6;
-const BOT_BUTTON_TEXT = 'Открыть';
+const DEFAULT_BOT_BUTTON_TEXT = 'Открыть';
 const MAX_FORWARD_SCAN_DEPTH = 8;
 const NON_SANCTION_RULE_CODES = new Set([
   'LINK_BLOCKED',
@@ -178,6 +178,7 @@ export class ModerationService {
         duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
         duplicateBotButtonEnabled: settings.duplicateBotButtonEnabled,
         duplicateBotButtonUrl: settings.duplicateBotButtonUrl,
+        duplicateBotButtonText: settings.duplicateBotButtonText,
       });
       return;
     }
@@ -194,6 +195,7 @@ export class ModerationService {
         duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
         duplicateBotButtonEnabled: settings.duplicateBotButtonEnabled,
         duplicateBotButtonUrl: settings.duplicateBotButtonUrl,
+        duplicateBotButtonText: settings.duplicateBotButtonText,
       });
       return;
     }
@@ -251,6 +253,7 @@ export class ModerationService {
       const linkMessageOptions = this.buildBotMessageOptions(
         settings.linkBotButtonEnabled,
         settings.linkBotButtonUrl,
+        settings.linkBotButtonText,
       );
       try {
         if (linkMessageOptions) {
@@ -282,6 +285,7 @@ export class ModerationService {
       const limitsMessageOptions = this.buildBotMessageOptions(
         settings.messageLimitsBotButtonEnabled,
         settings.messageLimitsBotButtonUrl,
+        settings.messageLimitsBotButtonText,
       );
       try {
         if (limitsMessageOptions) {
@@ -370,6 +374,7 @@ export class ModerationService {
     duplicateBotMessageEnabled: boolean;
     duplicateBotButtonEnabled: boolean;
     duplicateBotButtonUrl: string;
+    duplicateBotButtonText: string;
   }) {
     const {
       chatId,
@@ -383,6 +388,7 @@ export class ModerationService {
       duplicateBotMessageEnabled,
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
+      duplicateBotButtonText,
     } =
       params;
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
@@ -431,6 +437,7 @@ export class ModerationService {
     const duplicateMessageOptions = this.buildBotMessageOptions(
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
+      duplicateBotButtonText,
     );
 
     if (duplicateBotMessageEnabled && decision.action !== 'BAN') {
@@ -504,6 +511,7 @@ export class ModerationService {
     duplicateBotMessageEnabled: boolean;
     duplicateBotButtonEnabled: boolean;
     duplicateBotButtonUrl: string;
+    duplicateBotButtonText: string;
   }) {
     const {
       chatId,
@@ -516,6 +524,7 @@ export class ModerationService {
       duplicateBotMessageEnabled,
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
+      duplicateBotButtonText,
     } = params;
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
@@ -562,6 +571,7 @@ export class ModerationService {
     const duplicateMessageOptions = this.buildBotMessageOptions(
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
+      duplicateBotButtonText,
     );
 
     if (duplicateBotMessageEnabled) {
@@ -1078,6 +1088,7 @@ export class ModerationService {
   private buildBotMessageOptions(
     buttonEnabled: boolean,
     buttonUrl: string,
+    buttonText: string,
   ): MaxSendMessageOptions | null {
     if (!buttonEnabled) {
       return null;
@@ -1088,9 +1099,11 @@ export class ModerationService {
       return null;
     }
 
+    const normalizedText = this.normalizeBotButtonText(buttonText);
+
     return {
       button: {
-        text: BOT_BUTTON_TEXT,
+        text: normalizedText,
         url: normalizedUrl,
       },
     };
@@ -1112,6 +1125,15 @@ export class ModerationService {
     } catch {
       return null;
     }
+  }
+
+  private normalizeBotButtonText(value: string): string {
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    if (!normalized) {
+      return DEFAULT_BOT_BUTTON_TEXT;
+    }
+
+    return normalized.slice(0, 32);
   }
 
   private async getActiveBan(

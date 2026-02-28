@@ -32,12 +32,15 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     messageLimitsBotMessageEnabled: false,
     messageLimitsBotButtonEnabled: false,
     messageLimitsBotButtonUrl: '',
+    messageLimitsBotButtonText: 'Открыть',
     linkBotMessageEnabled: true,
     linkBotButtonEnabled: false,
     linkBotButtonUrl: '',
+    linkBotButtonText: 'Открыть',
     duplicateBotMessageEnabled: false,
     duplicateBotButtonEnabled: false,
     duplicateBotButtonUrl: '',
+    duplicateBotButtonText: 'Открыть',
     banDurationHours: 6,
     warnThreshold: 3,
     repeatBanWindowDays: 7,
@@ -460,6 +463,7 @@ describe('ModerationService', () => {
             duplicateBotMessageEnabled: true,
             duplicateBotButtonEnabled: true,
             duplicateBotButtonUrl: 'https://max.ru/help/bots',
+            duplicateBotButtonText: 'Правила',
           }),
           domains: [],
         }),
@@ -514,7 +518,7 @@ describe('ModerationService', () => {
       'Сообщение пользователя "Алексей" удалено за дубли сообщений. Пользователю вынесено предупреждение.',
       {
         button: {
-          text: 'Открыть',
+          text: 'Правила',
           url: 'https://max.ru/help/bots',
         },
       },
@@ -928,6 +932,7 @@ describe('ModerationService', () => {
             linkBotMessageEnabled: true,
             linkBotButtonEnabled: true,
             linkBotButtonUrl: 'https://max.ru/channel/news',
+            linkBotButtonText: 'Канал',
           }),
           domains: [],
         }),
@@ -974,7 +979,7 @@ describe('ModerationService', () => {
       'Сообщение пользователя "Алексей" удалено: ссылки в этом чате запрещены.',
       {
         button: {
-          text: 'Открыть',
+          text: 'Канал',
           url: 'https://max.ru/channel/news',
         },
       },
@@ -1276,6 +1281,7 @@ describe('ModerationService', () => {
             messageLimitsBotMessageEnabled: true,
             messageLimitsBotButtonEnabled: true,
             messageLimitsBotButtonUrl: 'https://max.ru/channel/rules',
+            messageLimitsBotButtonText: 'Правила чата',
           }),
           domains: [],
         }),
@@ -1333,7 +1339,7 @@ describe('ModerationService', () => {
       'Сообщение пользователя "Алексей" удалено: голосовые сообщения в этом чате отключены.',
       {
         button: {
-          text: 'Открыть',
+          text: 'Правила чата',
           url: 'https://max.ru/channel/rules',
         },
       },
