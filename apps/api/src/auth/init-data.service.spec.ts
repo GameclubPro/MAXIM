@@ -10,7 +10,7 @@ function sign(params: URLSearchParams): string {
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([key, value]) => `${key}=${value}`)
     .join('\n');
-  const secretKey = createHmac('sha256', 'WebAppData').update(botToken).digest('hex');
+  const secretKey = createHmac('sha256', 'WebAppData').update(botToken).digest();
   return createHmac('sha256', secretKey).update(rows).digest('hex');
 }
 

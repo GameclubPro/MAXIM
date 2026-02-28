@@ -22,7 +22,7 @@ export class InitDataService {
       .join('\n');
 
     const botToken = this.configService.getOrThrow<string>('MAX_BOT_TOKEN');
-    const secretKey = createHmac('sha256', 'WebAppData').update(botToken).digest('hex');
+    const secretKey = createHmac('sha256', 'WebAppData').update(botToken).digest();
     const calculatedHash = createHmac('sha256', secretKey).update(sortedPairs).digest('hex');
 
     if (!/^[a-f0-9]{64}$/i.test(receivedHash)) {
