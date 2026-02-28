@@ -32,6 +32,10 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     duplicateBanMaxCount: 4,
     linkPolicy: LinkPolicy.ALLOWLIST_ONLY,
     maxMessageLength: 1500,
+    photoMessageCooldownEnabled: false,
+    photoMessageCooldownHours: 1,
+    videoMessagesEnabled: true,
+    fileMessagesEnabled: true,
     linkBotMessageEnabled: true,
     linkBotButtonEnabled: false,
     linkBotButtonUrl: '',
@@ -75,6 +79,63 @@ describe('RuleEngineService', () => {
     });
 
     expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_TOO_LONG')).toBe(true);
+  });
+
+  it('detects VIDEO_BLOCKED when video messages are disabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings: buildSettings({ videoMessagesEnabled: false }),
+      domainAllowlist: [],
+      hasVideoAttachment: true,
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'VIDEO_BLOCKED')).toBe(true);
+  });
+
+  it('detects FILE_BLOCKED when file messages are disabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings: buildSettings({ fileMessagesEnabled: false }),
+      domainAllowlist: [],
+      hasFileAttachment: true,
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'FILE_BLOCKED')).toBe(true);
+  });
+
+  it('detects PHOTO_RATE_LIMIT from second photo when cooldown is enabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      photoMessageCooldownEnabled: true,
+      photoMessageCooldownHours: 2,
+    });
+
+    const first = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings,
+      domainAllowlist: [],
+      hasPhotoAttachment: true,
+    });
+
+    const second = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings,
+      domainAllowlist: [],
+      hasPhotoAttachment: true,
+    });
+
+    expect(first.violations.some((item) => item.ruleCode === 'PHOTO_RATE_LIMIT')).toBe(false);
+    expect(second.violations.some((item) => item.ruleCode === 'PHOTO_RATE_LIMIT')).toBe(true);
   });
 
   it('escalates duplicate action to WARN/KICK/BAN for 12h/24h/48h windows', async () => {

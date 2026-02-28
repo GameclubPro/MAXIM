@@ -500,6 +500,12 @@
   line-height: 1.2;
 }
 
+.settings-native-toggle__title--sub {
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
 .settings-info-button {
   width: 24px;
   height: 24px;

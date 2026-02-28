@@ -24,6 +24,13 @@ type ActiveBan = {
 const DEFAULT_BAN_DURATION_HOURS = 6;
 const BOT_BUTTON_TEXT = 'Открыть';
 const MAX_FORWARD_SCAN_DEPTH = 8;
+const NON_SANCTION_RULE_CODES = new Set([
+  'LINK_BLOCKED',
+  'MESSAGE_TOO_LONG',
+  'VIDEO_BLOCKED',
+  'FILE_BLOCKED',
+  'PHOTO_RATE_LIMIT',
+]);
 
 @Injectable()
 export class ModerationService {
@@ -125,6 +132,7 @@ export class ModerationService {
     }
 
     const effectiveMessageLength = this.calculateEffectiveMessageLength(update);
+    const mediaFlags = this.detectMediaFlags(update);
 
     const detection = await this.ruleEngine.detect({
       chatId,
@@ -133,11 +141,19 @@ export class ModerationService {
       settings,
       domainAllowlist: chat.domains.map((item: { domain: string }) => item.domain),
       effectiveLength: effectiveMessageLength,
+      hasPhotoAttachment: mediaFlags.hasPhotoAttachment,
+      hasVideoAttachment: mediaFlags.hasVideoAttachment,
+      hasFileAttachment: mediaFlags.hasFileAttachment,
     });
 
     const { violations } = detection;
     const hasBlockingDeleteViolation = violations.some(
-      (item) => item.ruleCode === 'LINK_BLOCKED' || item.ruleCode === 'MESSAGE_TOO_LONG',
+      (item) =>
+        item.ruleCode === 'LINK_BLOCKED' ||
+        item.ruleCode === 'MESSAGE_TOO_LONG' ||
+        item.ruleCode === 'VIDEO_BLOCKED' ||
+        item.ruleCode === 'FILE_BLOCKED' ||
+        item.ruleCode === 'PHOTO_RATE_LIMIT',
     );
     if (!hasBlockingDeleteViolation && detection.duplicateDecision) {
       await this.handleDuplicateDecision({
@@ -179,6 +195,9 @@ export class ModerationService {
     const topViolation =
       violations.find((item) => item.ruleCode === 'LINK_BLOCKED') ??
       violations.find((item) => item.ruleCode === 'MESSAGE_TOO_LONG') ??
+      violations.find((item) => item.ruleCode === 'VIDEO_BLOCKED') ??
+      violations.find((item) => item.ruleCode === 'FILE_BLOCKED') ??
+      violations.find((item) => item.ruleCode === 'PHOTO_RATE_LIMIT') ??
       violations[0];
     await this.prisma.violation.create({
       data: {
@@ -648,7 +667,7 @@ export class ModerationService {
   }
 
   private shouldResolveSanction(ruleCode: string): boolean {
-    return ruleCode !== 'LINK_BLOCKED' && ruleCode !== 'MESSAGE_TOO_LONG';
+    return !NON_SANCTION_RULE_CODES.has(ruleCode);
   }
 
   private calculateEffectiveMessageLength(update: MaxUpdate): number {
@@ -798,6 +817,129 @@ export class ModerationService {
         this.collectTextSnippets(value, acc, depth + 1);
       }
     }
+  }
+
+  private detectMediaFlags(update: MaxUpdate): {
+    hasPhotoAttachment: boolean;
+    hasVideoAttachment: boolean;
+    hasFileAttachment: boolean;
+  } {
+    const rawRecord = this.asRecord(update.raw);
+    if (!rawRecord) {
+      return {
+        hasPhotoAttachment: false,
+        hasVideoAttachment: false,
+        hasFileAttachment: false,
+      };
+    }
+
+    const messageNode = this.extractRawMessageNode(rawRecord) ?? rawRecord;
+    const flags = {
+      hasPhotoAttachment: false,
+      hasVideoAttachment: false,
+      hasFileAttachment: false,
+    };
+    this.collectMediaFlags(messageNode, flags);
+    return flags;
+  }
+
+  private collectMediaFlags(
+    node: unknown,
+    flags: {
+      hasPhotoAttachment: boolean;
+      hasVideoAttachment: boolean;
+      hasFileAttachment: boolean;
+    },
+    depth = 0,
+  ) {
+    if (
+      depth > MAX_FORWARD_SCAN_DEPTH ||
+      node === null ||
+      node === undefined ||
+      (flags.hasPhotoAttachment && flags.hasVideoAttachment && flags.hasFileAttachment)
+    ) {
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        this.collectMediaFlags(item, flags, depth + 1);
+      }
+      return;
+    }
+
+    if (typeof node !== 'object') {
+      return;
+    }
+
+    const row = node as Record<string, unknown>;
+    const type = this.readLowerString(row.type);
+    const mimeType = this.readLowerString(row.mime_type ?? row.mimeType);
+    const fileName = this.readLowerString(row.file_name ?? row.fileName ?? row.filename);
+    const mediaType = this.readLowerString(row.media_type ?? row.mediaType);
+
+    if (
+      type === 'photo' ||
+      type === 'image' ||
+      type === 'picture' ||
+      type === 'sticker' ||
+      mimeType?.startsWith('image/') ||
+      mediaType === 'photo' ||
+      mediaType === 'image'
+    ) {
+      flags.hasPhotoAttachment = true;
+    }
+
+    if (
+      type === 'video' ||
+      mimeType?.startsWith('video/') ||
+      mediaType === 'video' ||
+      this.isLikelyVideoFileName(fileName)
+    ) {
+      flags.hasVideoAttachment = true;
+    }
+
+    if (
+      type === 'file' ||
+      type === 'document' ||
+      type === 'doc' ||
+      mediaType === 'file' ||
+      mediaType === 'document'
+    ) {
+      flags.hasFileAttachment = true;
+    }
+
+    for (const [key, value] of Object.entries(row)) {
+      const keyLower = key.toLowerCase();
+      if (
+        keyLower === 'photo' ||
+        keyLower === 'image' ||
+        keyLower === 'picture' ||
+        keyLower === 'images'
+      ) {
+        flags.hasPhotoAttachment = true;
+      }
+
+      if (keyLower === 'video' || keyLower === 'videos') {
+        flags.hasVideoAttachment = true;
+      }
+
+      if (keyLower === 'file' || keyLower === 'files' || keyLower === 'document') {
+        flags.hasFileAttachment = true;
+      }
+
+      if (value && (typeof value === 'object' || Array.isArray(value))) {
+        this.collectMediaFlags(value, flags, depth + 1);
+      }
+    }
+  }
+
+  private isLikelyVideoFileName(value: string | null): boolean {
+    if (!value) {
+      return false;
+    }
+
+    return /\.(mp4|mov|avi|mkv|webm|m4v)$/i.test(value);
   }
 
   private buildBotMessageOptions(

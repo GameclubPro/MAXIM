@@ -56,8 +56,21 @@ export class RuleEngineService {
     settings: ChatSettings;
     domainAllowlist: string[];
     effectiveLength?: number;
+    hasPhotoAttachment?: boolean;
+    hasVideoAttachment?: boolean;
+    hasFileAttachment?: boolean;
   }): Promise<DetectionResult> {
-    const { chatId, userId, text, settings, domainAllowlist, effectiveLength } = params;
+    const {
+      chatId,
+      userId,
+      text,
+      settings,
+      domainAllowlist,
+      effectiveLength,
+      hasPhotoAttachment,
+      hasVideoAttachment,
+      hasFileAttachment,
+    } = params;
     const violations: RuleViolation[] = [];
     const normalized = text.toLowerCase();
     const measuredLength = typeof effectiveLength === 'number' ? effectiveLength : text.length;
@@ -77,6 +90,35 @@ export class RuleEngineService {
         score: 0.82,
         reason: `Message length ${measuredLength} exceeds limit ${settings.maxMessageLength}`,
       });
+    }
+
+    if (hasVideoAttachment && !settings.videoMessagesEnabled) {
+      violations.push({
+        ruleCode: 'VIDEO_BLOCKED',
+        score: 0.88,
+        reason: 'Video messages are disabled by chat settings',
+      });
+    }
+
+    if (hasFileAttachment && !settings.fileMessagesEnabled) {
+      violations.push({
+        ruleCode: 'FILE_BLOCKED',
+        score: 0.88,
+        reason: 'File messages are disabled by chat settings',
+      });
+    }
+
+    if (hasPhotoAttachment && settings.photoMessageCooldownEnabled) {
+      const cooldownSec = settings.photoMessageCooldownHours * 60 * 60;
+      const key = `photo:cooldown:${chatId}:${userId}`;
+      const count = await this.redisCounter.incrementWithTtl(key, cooldownSec + 1);
+      if (count > 1) {
+        violations.push({
+          ruleCode: 'PHOTO_RATE_LIMIT',
+          score: 0.86,
+          reason: `Photo messages are limited to one per ${settings.photoMessageCooldownHours}h`,
+        });
+      }
     }
 
     if (this.isCapsAbuse(text, settings.capsThreshold)) {

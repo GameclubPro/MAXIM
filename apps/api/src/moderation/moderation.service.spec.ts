@@ -23,6 +23,10 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     duplicateBanMaxCount: 4,
     linkPolicy: 'ALLOWLIST_ONLY',
     maxMessageLength: 1500,
+    photoMessageCooldownEnabled: false,
+    photoMessageCooldownHours: 1,
+    videoMessagesEnabled: true,
+    fileMessagesEnabled: true,
     linkBotMessageEnabled: true,
     linkBotButtonEnabled: false,
     linkBotButtonUrl: '',
@@ -116,6 +120,33 @@ function createForwardedUpdate(forwardedText: string): MaxUpdate {
             },
           },
         },
+      },
+    },
+  };
+}
+
+function createVideoAttachmentUpdate(): MaxUpdate {
+  return {
+    updateId: 'upd-video-1',
+    type: 'message_created',
+    message: {
+      messageId: 'msg-video-1',
+      chatId: 'chat-1',
+      senderId: 'user-1',
+      senderName: 'Алексей',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      message: {
+        attachments: [
+          {
+            type: 'video',
+            payload: {
+              url: 'https://cdn.example/video.mp4',
+            },
+          },
+        ],
       },
     },
   };
@@ -1127,6 +1158,76 @@ describe('ModerationService', () => {
         userId: 'user-1',
         messageId: 'msg-forwarded-1',
         ruleCode: 'MESSAGE_TOO_LONG',
+        action: SanctionAction.NONE,
+      }),
+    });
+  });
+
+  it('detects video attachment in raw payload and deletes message without sanctions', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ videoMessagesEnabled: false }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockImplementation(async (params: { hasVideoAttachment?: boolean }) => {
+        if (params.hasVideoAttachment) {
+          return {
+            violations: [{ ruleCode: 'VIDEO_BLOCKED', score: 0.88, reason: 'Video disabled' }],
+          };
+        }
+
+        return { violations: [] };
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createVideoAttachmentUpdate());
+
+    const detectionArgs = (ruleEngine.detect as jest.Mock).mock.calls[0][0] as {
+      hasVideoAttachment?: boolean;
+    };
+    expect(detectionArgs.hasVideoAttachment).toBe(true);
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-video-1');
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        ruleCode: 'VIDEO_BLOCKED',
         action: SanctionAction.NONE,
       }),
     });

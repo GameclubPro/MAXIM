@@ -21,6 +21,8 @@ const DUPLICATE_COUNT_MIN = 2;
 const DUPLICATE_COUNT_MAX = 20;
 const MESSAGE_LENGTH_MIN = 50;
 const MESSAGE_LENGTH_MAX = 1500;
+const PHOTO_COOLDOWN_MIN_HOURS = 1;
+const PHOTO_COOLDOWN_MAX_HOURS = 24;
 
 type DuplicateEnabledKey = 'duplicateWarnEnabled' | 'duplicateKickEnabled' | 'duplicateBanEnabled';
 type DuplicateWindowKey =
@@ -595,44 +597,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 </div>
               ) : null}
 
-              <div className={cn('settings-native-toggle', fieldErrors.maxMessageLength && 'field--error')}>
-                <div className="settings-native-toggle__row">
-                  <span className="settings-native-toggle__title">Лимит длины сообщения</span>
-                  <output className="settings-length-limit__value" aria-live="polite">
-                    {draft.maxMessageLength} симв.
-                  </output>
-                </div>
-
-                <input
-                  className="settings-length-limit__slider"
-                  type="range"
-                  min={MESSAGE_LENGTH_MIN}
-                  max={MESSAGE_LENGTH_MAX}
-                  step={1}
-                  value={draft.maxMessageLength}
-                  onChange={(event) =>
-                    setFieldValue(
-                      'maxMessageLength',
-                      Number(event.target.value) as ChatSettings['maxMessageLength'],
-                    )
-                  }
-                  aria-label="Лимит длины сообщения"
-                />
-
-                <div className="settings-length-limit__labels" aria-hidden>
-                  <span>{MESSAGE_LENGTH_MIN}</span>
-                  <span>{MESSAGE_LENGTH_MAX}</span>
-                </div>
-
-                <p className="settings-native-toggle__hint">
-                  Учитывается длина обычного текста и пересланных сообщений.
-                </p>
-
-                {fieldErrors.maxMessageLength ? (
-                  <small className="field__hint">{fieldErrors.maxMessageLength}</small>
-                ) : null}
-              </div>
-
               {isAllowlistMode ? (
                 <div
                   className={cn(
@@ -967,6 +931,155 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   </article>
                 );
               })}
+            </div>
+          </GlassCard>
+
+          <GlassCard
+            className="settings-section stagger-in"
+            style={{ animationDelay: '90ms' }}
+            aria-label="Ограничения сообщений"
+          >
+            <div className="settings-section__head">
+              <h3>Ограничения сообщений</h3>
+            </div>
+
+            <div className={cn('settings-native-toggle', fieldErrors.maxMessageLength && 'field--error')}>
+              <div className="settings-native-toggle__row">
+                <span className="settings-native-toggle__title">Лимит длины сообщения</span>
+                <output className="settings-length-limit__value" aria-live="polite">
+                  {draft.maxMessageLength} симв.
+                </output>
+              </div>
+
+              <input
+                className="settings-length-limit__slider"
+                type="range"
+                min={MESSAGE_LENGTH_MIN}
+                max={MESSAGE_LENGTH_MAX}
+                step={1}
+                value={draft.maxMessageLength}
+                onChange={(event) =>
+                  setFieldValue(
+                    'maxMessageLength',
+                    Number(event.target.value) as ChatSettings['maxMessageLength'],
+                  )
+                }
+                aria-label="Лимит длины сообщения"
+              />
+
+              <div className="settings-length-limit__labels" aria-hidden>
+                <span>{MESSAGE_LENGTH_MIN}</span>
+                <span>{MESSAGE_LENGTH_MAX}</span>
+              </div>
+
+              <p className="settings-native-toggle__hint">
+                Учитывается длина обычного текста и пересланных сообщений.
+              </p>
+
+              {fieldErrors.maxMessageLength ? (
+                <small className="field__hint">{fieldErrors.maxMessageLength}</small>
+              ) : null}
+            </div>
+
+            <div
+              className={cn(
+                'settings-native-toggle',
+                fieldErrors.photoMessageCooldownHours && 'field--error',
+              )}
+            >
+              <div className="settings-native-toggle__row">
+                <span className="settings-native-toggle__title">Фото: не чаще 1 раза</span>
+
+                <label
+                  className="settings-native-switch"
+                  aria-label="Ограничить отправку фото по времени"
+                >
+                  <input
+                    type="checkbox"
+                    checked={draft.photoMessageCooldownEnabled}
+                    onChange={(event) =>
+                      setFieldValue('photoMessageCooldownEnabled', event.target.checked)
+                    }
+                  />
+                  <span className="toggle-switch" aria-hidden>
+                    <span className="toggle-switch__thumb" />
+                  </span>
+                </label>
+              </div>
+
+              {draft.photoMessageCooldownEnabled ? (
+                <>
+                  <div className="settings-native-toggle__row">
+                    <span className="settings-native-toggle__title settings-native-toggle__title--sub">
+                      Интервал
+                    </span>
+                    <output className="settings-length-limit__value" aria-live="polite">
+                      {draft.photoMessageCooldownHours}ч
+                    </output>
+                  </div>
+                  <input
+                    className="settings-length-limit__slider"
+                    type="range"
+                    min={PHOTO_COOLDOWN_MIN_HOURS}
+                    max={PHOTO_COOLDOWN_MAX_HOURS}
+                    step={1}
+                    value={draft.photoMessageCooldownHours}
+                    onChange={(event) =>
+                      setFieldValue(
+                        'photoMessageCooldownHours',
+                        Number(event.target.value) as ChatSettings['photoMessageCooldownHours'],
+                      )
+                    }
+                    aria-label="Интервал отправки фото в часах"
+                  />
+                  <div className="settings-length-limit__labels" aria-hidden>
+                    <span>{PHOTO_COOLDOWN_MIN_HOURS}ч</span>
+                    <span>{PHOTO_COOLDOWN_MAX_HOURS}ч</span>
+                  </div>
+                </>
+              ) : null}
+
+              {fieldErrors.photoMessageCooldownHours ? (
+                <small className="field__hint">{fieldErrors.photoMessageCooldownHours}</small>
+              ) : (
+                <p className="settings-native-toggle__hint">
+                  При включении пользователь может отправить только одно фото за выбранный интервал.
+                </p>
+              )}
+            </div>
+
+            <div className="settings-native-toggle">
+              <div className="settings-native-toggle__row">
+                <span className="settings-native-toggle__title">Разрешить видео</span>
+
+                <label className="settings-native-switch" aria-label="Разрешить отправку видео">
+                  <input
+                    type="checkbox"
+                    checked={draft.videoMessagesEnabled}
+                    onChange={(event) => setFieldValue('videoMessagesEnabled', event.target.checked)}
+                  />
+                  <span className="toggle-switch" aria-hidden>
+                    <span className="toggle-switch__thumb" />
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            <div className="settings-native-toggle">
+              <div className="settings-native-toggle__row">
+                <span className="settings-native-toggle__title">Разрешить файлы</span>
+
+                <label className="settings-native-switch" aria-label="Разрешить отправку файлов">
+                  <input
+                    type="checkbox"
+                    checked={draft.fileMessagesEnabled}
+                    onChange={(event) => setFieldValue('fileMessagesEnabled', event.target.checked)}
+                  />
+                  <span className="toggle-switch" aria-hidden>
+                    <span className="toggle-switch__thumb" />
+                  </span>
+                </label>
+              </div>
             </div>
           </GlassCard>
         </section>
