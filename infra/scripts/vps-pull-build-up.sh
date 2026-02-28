@@ -4,7 +4,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
-COMPOSE_FILE="infra/docker-compose.yml"
+COMPOSE_FILES=(-f "infra/docker-compose.yml")
+if [[ -f "infra/docker-compose.vps.yml" ]]; then
+  COMPOSE_FILES+=(-f "infra/docker-compose.vps.yml")
+fi
 BRANCH="${1:-main}"
 
 if [[ $# -ge 2 ]]; then
@@ -42,7 +45,7 @@ wait_for_url() {
 }
 
 run_migrations() {
-  docker compose -f "$COMPOSE_FILE" run --rm --no-deps api npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
+  docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps api npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
 }
 
 if ! command -v docker >/dev/null 2>&1; then
@@ -60,11 +63,11 @@ fi
 
 git pull --ff-only origin "$BRANCH"
 
-docker compose -f "$COMPOSE_FILE" build api
+docker compose "${COMPOSE_FILES[@]}" build api
 
 if ! run_migrations; then
   echo "First migration attempt failed. Trying to start postgres/redis and retry once..."
-  if ! docker compose -f "$COMPOSE_FILE" up -d postgres redis; then
+  if ! docker compose "${COMPOSE_FILES[@]}" up -d postgres redis; then
     echo "Failed to start postgres/redis."
     echo "Check occupied ports:"
     echo "  ss -ltnp | grep -E ':5432|:6379'"
@@ -73,8 +76,8 @@ if ! run_migrations; then
   run_migrations
 fi
 
-docker compose -f "$COMPOSE_FILE" build "${SERVICES[@]}"
-docker compose -f "$COMPOSE_FILE" up -d --no-deps --force-recreate "${SERVICES[@]}"
+docker compose "${COMPOSE_FILES[@]}" build "${SERVICES[@]}"
+docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "${SERVICES[@]}"
 
 wait_for_url "http://127.0.0.1:3001/api/health/live" 180
 wait_for_url "https://maxim.play-team.ru/api/health/live" 180
