@@ -37,14 +37,30 @@ export class MaxClientService {
     });
   }
 
+  async getChatTitle(chatId: string): Promise<string | null> {
+    const data = await this.request<Record<string, unknown>>('get', `/chats/${chatId}`);
+    const value = data.title ?? data.name;
+
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
   async notifyModerators(chatId: string, text: string) {
     this.logger.warn({ chatId, text }, 'Moderator alert');
   }
 
-  private async request(method: 'delete' | 'post' | 'get', path: string, config: Record<string, unknown> = {}) {
+  private async request<T = unknown>(
+    method: 'delete' | 'post' | 'get',
+    path: string,
+    config: Record<string, unknown> = {},
+  ): Promise<T> {
     const url = `${this.baseUrl}${path}`;
-    await firstValueFrom(
-      this.httpService.request({
+    const response = await firstValueFrom(
+      this.httpService.request<T>({
         method,
         url,
         ...config,
@@ -54,5 +70,7 @@ export class MaxClientService {
         },
       }),
     );
+
+    return response.data;
   }
 }

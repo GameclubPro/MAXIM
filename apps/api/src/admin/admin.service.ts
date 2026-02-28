@@ -8,13 +8,19 @@ import {
   type ModerationEvent,
   type ChatSummary,
 } from '@maxim/contracts';
-import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
+import { MaxClientService } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class AdminService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(AdminService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly maxClient: MaxClientService,
+  ) {}
 
   getMe(user: AuthUser): Me {
     return {
@@ -35,11 +41,44 @@ export class AdminService {
       },
     });
 
-    return rows.map((row: { chat: { id: string; title: string; createdAt: Date } }) => ({
+    const chats = rows.map((row: { chat: { id: string; title: string; createdAt: Date } }) => ({
       id: row.chat.id,
       title: row.chat.title,
       createdAt: row.chat.createdAt.toISOString(),
     }));
+
+    await Promise.all(
+      chats.map(async (chat) => {
+        if (!this.isFallbackTitle(chat.id, chat.title)) {
+          return;
+        }
+
+        try {
+          const refreshedTitle = await this.maxClient.getChatTitle(chat.id);
+          if (!refreshedTitle) {
+            return;
+          }
+
+          chat.title = refreshedTitle;
+          await this.prisma.chat.update({
+            where: { id: chat.id },
+            data: {
+              title: refreshedTitle,
+            },
+          });
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId: chat.id,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Failed to refresh chat title from MAX API',
+          );
+        }
+      }),
+    );
+
+    return chats;
   }
 
   async getSettings(chatId: string, user: AuthUser): Promise<ChatSettings> {
@@ -315,5 +354,9 @@ export class AdminService {
     if (!admin) {
       throw new ForbiddenException('User is not in chat admin allowlist');
     }
+  }
+
+  private isFallbackTitle(chatId: string, title: string): boolean {
+    return title.trim() === `Chat ${chatId}`;
   }
 }
