@@ -47,38 +47,22 @@ export class AdminService {
       createdAt: row.chat.createdAt.toISOString(),
     }));
 
-    await Promise.all(
+    const resolvedChats = await Promise.all(
       chats.map(async (chat) => {
-        if (!this.isFallbackTitle(chat.id, chat.title)) {
-          return;
+        const hasAdminAccess = await this.hasUserAndBotAdminAccess(chat.id, user.userId);
+        if (!hasAdminAccess) {
+          return null;
         }
 
-        try {
-          const refreshedTitle = await this.maxClient.getChatTitle(chat.id);
-          if (!refreshedTitle) {
-            return;
-          }
-
-          chat.title = refreshedTitle;
-          await this.prisma.chat.update({
-            where: { id: chat.id },
-            data: {
-              title: refreshedTitle,
-            },
-          });
-        } catch (error: unknown) {
-          this.logger.warn(
-            {
-              chatId: chat.id,
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Failed to refresh chat title from MAX API',
-          );
+        if (this.isFallbackTitle(chat.id, chat.title)) {
+          await this.refreshChatTitle(chat);
         }
+
+        return chat;
       }),
     );
 
-    return chats;
+    return resolvedChats.filter((chat): chat is ChatSummary => chat !== null);
   }
 
   async getSettings(chatId: string, user: AuthUser): Promise<ChatSettings> {
@@ -358,5 +342,47 @@ export class AdminService {
 
   private isFallbackTitle(chatId: string, title: string): boolean {
     return title.trim() === `Chat ${chatId}`;
+  }
+
+  private async hasUserAndBotAdminAccess(chatId: string, userId: string): Promise<boolean> {
+    try {
+      const adminIds = await this.maxClient.getChatAdminIds(chatId);
+      return adminIds.includes(userId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Chat hidden: failed to validate bot/user admin access',
+      );
+      return false;
+    }
+  }
+
+  private async refreshChatTitle(chat: ChatSummary): Promise<void> {
+    try {
+      const refreshedTitle = await this.maxClient.getChatTitle(chat.id);
+      if (!refreshedTitle) {
+        return;
+      }
+
+      chat.title = refreshedTitle;
+      await this.prisma.chat.update({
+        where: { id: chat.id },
+        data: {
+          title: refreshedTitle,
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: chat.id,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to refresh chat title from MAX API',
+      );
+    }
   }
 }

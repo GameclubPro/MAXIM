@@ -49,6 +49,26 @@ export class MaxClientService {
     return normalized.length > 0 ? normalized : null;
   }
 
+  async getChatAdminIds(chatId: string): Promise<string[]> {
+    const data = await this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/admins`);
+    const members = Array.isArray(data.members) ? data.members : [];
+
+    return members
+      .map((member) => {
+        if (!member || typeof member !== 'object') {
+          return null;
+        }
+
+        const row = member as Record<string, unknown>;
+        const value = row.user_id ?? row.userId ?? row.id;
+        if (typeof value === 'number' || typeof value === 'string') {
+          return String(value);
+        }
+        return null;
+      })
+      .filter((value): value is string => value !== null);
+  }
+
   async notifyModerators(chatId: string, text: string) {
     this.logger.warn({ chatId, text }, 'Moderator alert');
   }
