@@ -1,6 +1,5 @@
 /** @type {import('jest').Config} */
 module.exports = {
-  roots: ['<rootDir>/src', '<rootDir>/test'],
   testRegex: '.*\\.(spec|test)\\.ts$',
   moduleNameMapper: {
     '^@maxim/contracts$': '<rootDir>/../../packages/contracts/src/index.ts',
