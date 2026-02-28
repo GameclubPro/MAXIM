@@ -34,8 +34,10 @@ export class MaxClientService {
 
   async sendMessage(chatId: string, text: string) {
     await this.request('post', '/messages', {
-      data: {
+      params: {
         chat_id: chatId,
+      },
+      data: {
         text,
       },
     });
