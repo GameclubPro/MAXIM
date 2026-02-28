@@ -62,18 +62,26 @@ export class ModerationService {
       return;
     }
 
-    const { chatId, senderId, text, createdAt, messageId } = update.message;
+    const { chatId, chatTitle, senderId, text, createdAt, messageId } = update.message;
+    const fallbackTitle = `Chat ${chatId}`;
+    const resolvedTitle = chatTitle?.trim() || fallbackTitle;
 
     const chat = await this.prisma.chat.upsert({
       where: { id: chatId },
       create: {
         id: chatId,
-        title: `Chat ${chatId}`,
+        title: resolvedTitle,
         settings: {
           create: {},
         },
       },
-      update: {},
+      update: {
+        ...(chatTitle?.trim()
+          ? {
+              title: chatTitle.trim(),
+            }
+          : {}),
+      },
       include: {
         settings: true,
         domains: true,

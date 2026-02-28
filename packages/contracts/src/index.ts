@@ -72,6 +72,7 @@ export const addDomainRequestSchema = z.object({
 export const maxMessagePayloadSchema = z.object({
   messageId: z.string(),
   chatId: z.string(),
+  chatTitle: z.string().optional(),
   senderId: z.string(),
   text: z.string().default(''),
   createdAt: z.string().datetime(),

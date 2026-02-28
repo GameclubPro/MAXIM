@@ -6,15 +6,18 @@ import { randomUUID } from 'node:crypto';
 export class WebhookParser {
   parse(payload: Record<string, unknown>): MaxUpdate {
     const message = (payload.message as Record<string, unknown> | undefined) ?? undefined;
+    const chatTitle = this.extractChatTitle(message);
 
     const normalized: MaxUpdate = {
       updateId: String(payload.updateId ?? payload.update_id ?? payload.eventId ?? randomUUID()),
       type: String(payload.type ?? payload.event_type ?? 'unknown'),
       message:
-        message && (message.text || message.message_id || message.chat_id)
+        message &&
+        (message.text || message.message_id || message.messageId || message.chat_id || message.chatId)
           ? {
               messageId: String(message.messageId ?? message.message_id ?? message.id ?? ''),
               chatId: String(message.chatId ?? message.chat_id ?? ''),
+              ...(chatTitle ? { chatTitle } : {}),
               senderId: String(
                 message.senderId ??
                   message.sender_id ??
@@ -36,5 +39,35 @@ export class WebhookParser {
     }
 
     return parsed.data;
+  }
+
+  private extractChatTitle(message: Record<string, unknown> | undefined): string | undefined {
+    if (!message) {
+      return undefined;
+    }
+
+    const recipient = (message.recipient as Record<string, unknown> | undefined) ?? undefined;
+    const chat = (message.chat as Record<string, unknown> | undefined) ?? undefined;
+    const candidates = [
+      message.chatTitle,
+      message.chat_title,
+      message.chatName,
+      message.chat_name,
+      chat?.title,
+      chat?.name,
+      recipient?.title,
+      recipient?.chat_title,
+      recipient?.chatTitle,
+      recipient?.name,
+      recipient?.display_name,
+    ];
+
+    for (const value of candidates) {
+      if (typeof value === 'string' && value.trim().length > 0) {
+        return value.trim();
+      }
+    }
+
+    return undefined;
   }
 }
