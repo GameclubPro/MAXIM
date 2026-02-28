@@ -3,7 +3,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import type { MaxUpdate } from '@maxim/contracts';
 import { EventType, Operator, SanctionAction, WebhookStatus } from '@prisma/client';
 import type { Job } from 'bullmq';
-import { MaxClientService } from '../max/max-client.service';
+import { MaxClientService, type MaxSendMessageOptions } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
 import type { DuplicateAction, DuplicateDecision, DuplicateHit } from './rule-engine.service';
 import { RuleEngineService } from './rule-engine.service';
@@ -22,6 +22,7 @@ type ActiveBan = {
 };
 
 const DEFAULT_BAN_DURATION_HOURS = 6;
+const BOT_BUTTON_TEXT = 'Открыть';
 
 @Injectable()
 export class ModerationService {
@@ -143,6 +144,8 @@ export class ModerationService {
         userLabel,
         banDurationHours: settings.banDurationHours,
         duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
+        duplicateBotButtonEnabled: settings.duplicateBotButtonEnabled,
+        duplicateBotButtonUrl: settings.duplicateBotButtonUrl,
       });
       return;
     }
@@ -157,6 +160,8 @@ export class ModerationService {
         hit: detection.duplicateHit,
         userLabel,
         duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
+        duplicateBotButtonEnabled: settings.duplicateBotButtonEnabled,
+        duplicateBotButtonUrl: settings.duplicateBotButtonUrl,
       });
       return;
     }
@@ -204,11 +209,23 @@ export class ModerationService {
     }
 
     if (topViolation.ruleCode === 'LINK_BLOCKED' && settings.linkBotMessageEnabled) {
+      const linkMessageOptions = this.buildBotMessageOptions(
+        settings.linkBotButtonEnabled,
+        settings.linkBotButtonUrl,
+      );
       try {
-        await this.maxClient.sendMessage(
-          chatId,
-          this.buildLinkExplanation(userLabel, canDeleteMessage),
-        );
+        if (linkMessageOptions) {
+          await this.maxClient.sendMessage(
+            chatId,
+            this.buildLinkExplanation(userLabel, canDeleteMessage),
+            linkMessageOptions,
+          );
+        } else {
+          await this.maxClient.sendMessage(
+            chatId,
+            this.buildLinkExplanation(userLabel, canDeleteMessage),
+          );
+        }
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -270,6 +287,8 @@ export class ModerationService {
     userLabel: string;
     banDurationHours: number;
     duplicateBotMessageEnabled: boolean;
+    duplicateBotButtonEnabled: boolean;
+    duplicateBotButtonUrl: string;
   }) {
     const {
       chatId,
@@ -281,6 +300,8 @@ export class ModerationService {
       userLabel,
       banDurationHours,
       duplicateBotMessageEnabled,
+      duplicateBotButtonEnabled,
+      duplicateBotButtonUrl,
     } =
       params;
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
@@ -326,12 +347,25 @@ export class ModerationService {
       );
     }
 
+    const duplicateMessageOptions = this.buildBotMessageOptions(
+      duplicateBotButtonEnabled,
+      duplicateBotButtonUrl,
+    );
+
     if (duplicateBotMessageEnabled && decision.action !== 'BAN') {
       try {
-        await this.maxClient.sendMessage(
-          chatId,
-          this.buildDuplicateExplanation(userLabel, decision, banDurationHours),
-        );
+        if (duplicateMessageOptions) {
+          await this.maxClient.sendMessage(
+            chatId,
+            this.buildDuplicateExplanation(userLabel, decision, banDurationHours),
+            duplicateMessageOptions,
+          );
+        } else {
+          await this.maxClient.sendMessage(
+            chatId,
+            this.buildDuplicateExplanation(userLabel, decision, banDurationHours),
+          );
+        }
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -353,6 +387,7 @@ export class ModerationService {
       userLabel,
       messageId,
       banDurationHours,
+      botMessageOptions: duplicateMessageOptions ?? undefined,
     });
 
     await this.prisma.moderationEvent.create({
@@ -386,8 +421,21 @@ export class ModerationService {
     hit: DuplicateHit;
     userLabel: string;
     duplicateBotMessageEnabled: boolean;
+    duplicateBotButtonEnabled: boolean;
+    duplicateBotButtonUrl: string;
   }) {
-    const { chatId, userId, messageId, text, createdAt, hit, userLabel, duplicateBotMessageEnabled } = params;
+    const {
+      chatId,
+      userId,
+      messageId,
+      text,
+      createdAt,
+      hit,
+      userLabel,
+      duplicateBotMessageEnabled,
+      duplicateBotButtonEnabled,
+      duplicateBotButtonUrl,
+    } = params;
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
 
@@ -430,12 +478,25 @@ export class ModerationService {
       );
     }
 
+    const duplicateMessageOptions = this.buildBotMessageOptions(
+      duplicateBotButtonEnabled,
+      duplicateBotButtonUrl,
+    );
+
     if (duplicateBotMessageEnabled) {
       try {
-        await this.maxClient.sendMessage(
-          chatId,
-          this.buildDuplicateHitExplanation(userLabel, canDeleteMessage),
-        );
+        if (duplicateMessageOptions) {
+          await this.maxClient.sendMessage(
+            chatId,
+            this.buildDuplicateHitExplanation(userLabel, canDeleteMessage),
+            duplicateMessageOptions,
+          );
+        } else {
+          await this.maxClient.sendMessage(
+            chatId,
+            this.buildDuplicateHitExplanation(userLabel, canDeleteMessage),
+          );
+        }
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -505,8 +566,10 @@ export class ModerationService {
     userLabel: string;
     messageId: string;
     banDurationHours: number;
+    botMessageOptions?: MaxSendMessageOptions;
   }) {
-    const { chatId, userId, action, userLabel, messageId, banDurationHours } = params;
+    const { chatId, userId, action, userLabel, messageId, banDurationHours, botMessageOptions } =
+      params;
     if (action === SanctionAction.KICK) {
       try {
         await this.maxClient.kickMember(chatId, userId);
@@ -535,6 +598,7 @@ export class ModerationService {
       messageId,
       userLabel,
       banDurationHours,
+      botMessageOptions,
     });
   }
 
@@ -544,10 +608,19 @@ export class ModerationService {
     messageId: string;
     userLabel: string;
     banDurationHours: number;
+    botMessageOptions?: MaxSendMessageOptions;
   }) {
-    const { chatId, userId, messageId, userLabel, banDurationHours } = params;
+    const { chatId, userId, messageId, userLabel, banDurationHours, botMessageOptions } = params;
     try {
-      await this.maxClient.sendMessage(chatId, this.buildBanNotice(userLabel, banDurationHours));
+      if (botMessageOptions) {
+        await this.maxClient.sendMessage(
+          chatId,
+          this.buildBanNotice(userLabel, banDurationHours),
+          botMessageOptions,
+        );
+      } else {
+        await this.maxClient.sendMessage(chatId, this.buildBanNotice(userLabel, banDurationHours));
+      }
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -563,6 +636,45 @@ export class ModerationService {
 
   private buildBanNotice(userLabel: string, banDurationHours: number): string {
     return `Пользователю ${userLabel} выдан бан на ${this.formatBanDurationLabel(banDurationHours)}.`;
+  }
+
+  private buildBotMessageOptions(
+    buttonEnabled: boolean,
+    buttonUrl: string,
+  ): MaxSendMessageOptions | null {
+    if (!buttonEnabled) {
+      return null;
+    }
+
+    const normalizedUrl = this.normalizeBotButtonUrl(buttonUrl);
+    if (!normalizedUrl) {
+      return null;
+    }
+
+    return {
+      button: {
+        text: BOT_BUTTON_TEXT,
+        url: normalizedUrl,
+      },
+    };
+  }
+
+  private normalizeBotButtonUrl(value: string): string | null {
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    if (!normalized) {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(normalized);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return null;
+      }
+
+      return parsed.toString();
+    } catch {
+      return null;
+    }
   }
 
   private async getActiveBan(

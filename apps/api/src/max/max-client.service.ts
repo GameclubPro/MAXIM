@@ -9,6 +9,15 @@ export type MaxBotChat = {
   lastEventTime: number | null;
 };
 
+export type MaxMessageButton = {
+  text: string;
+  url: string;
+};
+
+export type MaxSendMessageOptions = {
+  button?: MaxMessageButton;
+};
+
 @Injectable()
 export class MaxClientService {
   private readonly logger = new Logger(MaxClientService.name);
@@ -32,13 +41,15 @@ export class MaxClientService {
     });
   }
 
-  async sendMessage(chatId: string, text: string) {
+  async sendMessage(chatId: string, text: string, options?: MaxSendMessageOptions) {
+    const attachment = this.buildInlineKeyboardAttachment(options?.button);
     await this.request('post', '/messages', {
       params: {
         chat_id: chatId,
       },
       data: {
         text,
+        ...(attachment ? { attachments: [attachment] } : {}),
       },
     });
   }
@@ -156,6 +167,27 @@ export class MaxClientService {
 
   async notifyModerators(chatId: string, text: string) {
     this.logger.warn({ chatId, text }, 'Moderator alert');
+  }
+
+  private buildInlineKeyboardAttachment(button?: MaxMessageButton): Record<string, unknown> | null {
+    if (!button) {
+      return null;
+    }
+
+    return {
+      type: 'inline_keyboard',
+      payload: {
+        buttons: [
+          [
+            {
+              type: 'link',
+              text: button.text,
+              url: button.url,
+            },
+          ],
+        ],
+      },
+    };
   }
 
   private async request<T = unknown>(

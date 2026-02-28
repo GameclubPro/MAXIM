@@ -4,6 +4,19 @@ export const profanityLevelSchema = z.enum(['LOW', 'MEDIUM', 'HIGH']);
 export const linkPolicySchema = z.enum(['ALLOWLIST_ONLY', 'BLOCKLIST_ONLY', 'ALERT_ONLY']);
 const duplicateWindowSecSchema = z.number().int().min(3600).max(604800);
 const duplicateMaxCountSchema = z.number().int().min(2).max(20);
+const botButtonUrlSchema = z.string().trim().max(2048).default('');
+function isValidBotButtonUrl(value) {
+  const normalized = value.trim();
+  if (!normalized) {
+    return false;
+  }
+  try {
+    const parsed = new URL(normalized);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
 export const chatSettingsSchema = z
   .object({
     profanityLevel: profanityLevelSchema.default('MEDIUM'),
@@ -23,7 +36,11 @@ export const chatSettingsSchema = z
     duplicateBanMaxCount: duplicateMaxCountSchema.default(4),
     linkPolicy: linkPolicySchema.default('ALLOWLIST_ONLY'),
     linkBotMessageEnabled: z.boolean().default(true),
+    linkBotButtonEnabled: z.boolean().default(false),
+    linkBotButtonUrl: botButtonUrlSchema,
     duplicateBotMessageEnabled: z.boolean().default(false),
+    duplicateBotButtonEnabled: z.boolean().default(false),
+    duplicateBotButtonUrl: botButtonUrlSchema,
     banDurationHours: z.number().int().min(1).max(36).default(6),
     warnThreshold: z.number().int().min(1).max(10).default(3),
     repeatBanWindowDays: z.number().int().min(1).max(30).default(7),
@@ -64,6 +81,28 @@ export const chatSettingsSchema = z
           message: 'Лимит должен быть не меньше предыдущей ступени.',
         });
       }
+    }
+    if (
+      value.linkBotMessageEnabled &&
+      value.linkBotButtonEnabled &&
+      !isValidBotButtonUrl(value.linkBotButtonUrl)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['linkBotButtonUrl'],
+        message: 'Укажите корректную ссылку для кнопки (http/https).',
+      });
+    }
+    if (
+      value.duplicateBotMessageEnabled &&
+      value.duplicateBotButtonEnabled &&
+      !isValidBotButtonUrl(value.duplicateBotButtonUrl)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['duplicateBotButtonUrl'],
+        message: 'Укажите корректную ссылку для кнопки (http/https).',
+      });
     }
   });
 export const moderationEventSchema = z.object({

@@ -471,6 +471,14 @@
   gap: 8px;
 }
 
+.settings-native-toggle--nested {
+  margin-top: -2px;
+  border-style: dashed;
+  background:
+    linear-gradient(152deg, rgba(255, 255, 255, 0.7), rgba(238, 247, 255, 0.5)),
+    rgba(255, 255, 255, 0.56);
+}
+
 .settings-native-toggle__row {
   display: flex;
   align-items: center;
@@ -537,6 +545,16 @@
   position: relative;
   display: inline-flex;
   align-items: center;
+}
+
+.settings-url-field {
+  display: grid;
+  gap: 6px;
+}
+
+.settings-url-field input {
+  min-height: 36px;
+  height: 36px;
 }
 
 .settings-native-toggle.field--error {
@@ -658,6 +676,10 @@
 .settings-native-switch input:checked + .toggle-switch {
   border-color: rgba(11, 132, 255, 0.46);
   background: rgba(11, 132, 255, 0.3);
+}
+
+.settings-native-switch input:disabled + .toggle-switch {
+  opacity: 0.52;
 }
 
 .duplicate-stage__toggle input:checked + .toggle-switch .toggle-switch__thumb,

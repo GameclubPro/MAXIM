@@ -520,9 +520,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     <input
                       type="checkbox"
                       checked={draft.linkBotMessageEnabled}
-                      onChange={(event) =>
-                        setFieldValue('linkBotMessageEnabled', event.target.checked)
-                      }
+                      onChange={(event) => {
+                        const enabled = event.target.checked;
+                        setFieldValue('linkBotMessageEnabled', enabled);
+                        if (!enabled) {
+                          setFieldValue('linkBotButtonEnabled', false);
+                        }
+                      }}
                     />
                     <span className="toggle-switch" aria-hidden>
                       <span className="toggle-switch__thumb" />
@@ -535,6 +539,57 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     После удаления ссылки бот отправляет короткое пояснение в чат.
                   </p>
                 ) : null}
+              </div>
+
+              <div
+                className={cn(
+                  'settings-native-toggle',
+                  'settings-native-toggle--nested',
+                  fieldErrors.linkBotButtonUrl && 'field--error',
+                )}
+              >
+                <div className="settings-native-toggle__row">
+                  <span className="settings-native-toggle__title">Добавить кнопку</span>
+
+                  <label
+                    className="settings-native-switch"
+                    aria-label="Добавить кнопку в сообщение бота для модерации ссылок"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={draft.linkBotButtonEnabled}
+                      disabled={!draft.linkBotMessageEnabled}
+                      onChange={(event) =>
+                        setFieldValue('linkBotButtonEnabled', event.target.checked)
+                      }
+                    />
+                    <span className="toggle-switch" aria-hidden>
+                      <span className="toggle-switch__thumb" />
+                    </span>
+                  </label>
+                </div>
+
+                {draft.linkBotButtonEnabled ? (
+                  <label className="field settings-url-field">
+                    <span className="field__label">Ссылка кнопки</span>
+                    <input
+                      type="url"
+                      inputMode="url"
+                      value={draft.linkBotButtonUrl}
+                      onChange={(event) => setFieldValue('linkBotButtonUrl', event.target.value)}
+                      placeholder="https://max.ru/channel/..."
+                    />
+                  </label>
+                ) : null}
+
+                {fieldErrors.linkBotButtonUrl ? (
+                  <small className="field__hint">{fieldErrors.linkBotButtonUrl}</small>
+                ) : (
+                  <p className="settings-native-toggle__hint">
+                    Добавляет кнопку в сообщение бота. Подходит для ссылки на чат, канал или
+                    профиль.
+                  </p>
+                )}
               </div>
 
               {isAllowlistMode ? (
@@ -648,9 +703,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   <input
                     type="checkbox"
                     checked={draft.duplicateBotMessageEnabled}
-                    onChange={(event) =>
-                      setFieldValue('duplicateBotMessageEnabled', event.target.checked)
-                    }
+                    onChange={(event) => {
+                      const enabled = event.target.checked;
+                      setFieldValue('duplicateBotMessageEnabled', enabled);
+                      if (!enabled) {
+                        setFieldValue('duplicateBotButtonEnabled', false);
+                      }
+                    }}
                   />
                   <span className="toggle-switch" aria-hidden>
                     <span className="toggle-switch__thumb" />
@@ -663,6 +722,59 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   При срабатывании правила дублей бот публикует поясняющее сообщение.
                 </p>
               ) : null}
+            </div>
+
+            <div
+              className={cn(
+                'settings-native-toggle',
+                'settings-native-toggle--nested',
+                fieldErrors.duplicateBotButtonUrl && 'field--error',
+              )}
+            >
+              <div className="settings-native-toggle__row">
+                <span className="settings-native-toggle__title">Добавить кнопку</span>
+
+                <label
+                  className="settings-native-switch"
+                  aria-label="Добавить кнопку в сообщение бота для дублей сообщений"
+                >
+                  <input
+                    type="checkbox"
+                    checked={draft.duplicateBotButtonEnabled}
+                    disabled={!draft.duplicateBotMessageEnabled}
+                    onChange={(event) =>
+                      setFieldValue('duplicateBotButtonEnabled', event.target.checked)
+                    }
+                  />
+                  <span className="toggle-switch" aria-hidden>
+                    <span className="toggle-switch__thumb" />
+                  </span>
+                </label>
+              </div>
+
+              {draft.duplicateBotButtonEnabled ? (
+                <label className="field settings-url-field">
+                  <span className="field__label">Ссылка кнопки</span>
+                  <input
+                    type="url"
+                    inputMode="url"
+                    value={draft.duplicateBotButtonUrl}
+                    onChange={(event) =>
+                      setFieldValue('duplicateBotButtonUrl', event.target.value)
+                    }
+                    placeholder="https://max.ru/profile/..."
+                  />
+                </label>
+              ) : null}
+
+              {fieldErrors.duplicateBotButtonUrl ? (
+                <small className="field__hint">{fieldErrors.duplicateBotButtonUrl}</small>
+              ) : (
+                <p className="settings-native-toggle__hint">
+                  Добавляет кнопку в сообщение бота. Можно отправить пользователя в нужный чат,
+                  канал или профиль.
+                </p>
+              )}
             </div>
 
             {draft.duplicateBanEnabled ? (

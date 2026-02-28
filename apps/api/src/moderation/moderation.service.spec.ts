@@ -23,7 +23,11 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     duplicateBanMaxCount: 4,
     linkPolicy: 'ALLOWLIST_ONLY',
     linkBotMessageEnabled: true,
+    linkBotButtonEnabled: false,
+    linkBotButtonUrl: '',
     duplicateBotMessageEnabled: false,
+    duplicateBotButtonEnabled: false,
+    duplicateBotButtonUrl: '',
     banDurationHours: 6,
     warnThreshold: 3,
     repeatBanWindowDays: 7,
@@ -352,6 +356,77 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Сообщение пользователя "Алексей" удалено за дубли сообщений. Пользователю вынесено предупреждение.',
+    );
+  });
+
+  it('sends duplicate explanation with inline button when button toggle is enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            duplicateBotMessageEnabled: true,
+            duplicateBotButtonEnabled: true,
+            duplicateBotButtonUrl: 'https://max.ru/help/bots',
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [],
+        duplicateDecision: {
+          action: 'WARN',
+          count: 2,
+          threshold: 2,
+          windowSec: 12 * 60 * 60,
+          hash: 'dup-hash-button',
+          nextAction: 'KICK',
+        },
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Сообщение пользователя "Алексей" удалено за дубли сообщений. Пользователю вынесено предупреждение.',
+      {
+        button: {
+          text: 'Открыть',
+          url: 'https://max.ru/help/bots',
+        },
+      },
     );
   });
 
@@ -750,6 +825,69 @@ describe('ModerationService', () => {
         action: SanctionAction.NONE,
       }),
     });
+  });
+
+  it('sends link explanation with inline button when button toggle is enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            linkBotMessageEnabled: true,
+            linkBotButtonEnabled: true,
+            linkBotButtonUrl: 'https://max.ru/channel/news',
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Link detected' }],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Сообщение пользователя "Алексей" удалено: ссылки в этом чате запрещены.',
+      {
+        button: {
+          text: 'Открыть',
+          url: 'https://max.ru/channel/news',
+        },
+      },
+    );
   });
 
   it('sends link explanation for old messages when link bot toggle is enabled', async () => {
