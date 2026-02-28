@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useParams } from 'react-router-dom';
 import { cn } from '../lib/cn';
+import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { readLastChatId, saveLastChatId } from '../lib/last-chat';
 
 type ScreenInfo = {
@@ -8,18 +9,18 @@ type ScreenInfo = {
   subtitle: string;
 };
 
-function resolveScreenInfo(pathname: string, chatId: string): ScreenInfo {
+function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
   if (pathname.includes('/settings')) {
     return {
       title: 'Настройки модерации',
-      subtitle: chatId ? `Чат: ${chatId}` : 'Выберите чат, чтобы изменить правила.',
+      subtitle: chatLabel ? `Чат: ${chatLabel}` : 'Выберите чат, чтобы изменить правила.',
     };
   }
 
   if (pathname.includes('/events')) {
     return {
       title: 'Журнал модерации',
-      subtitle: chatId ? `Чат: ${chatId}` : 'Выберите чат, чтобы посмотреть события.',
+      subtitle: chatLabel ? `Чат: ${chatLabel}` : 'Выберите чат, чтобы посмотреть события.',
     };
   }
 
@@ -34,6 +35,13 @@ export function Shell() {
   const location = useLocation();
   const [lastChatId, setLastChatId] = useState<string>(() => readLastChatId());
   const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
+  const routeChatTitle =
+    typeof location.state === 'object' &&
+    location.state &&
+    'chatTitle' in location.state &&
+    typeof location.state.chatTitle === 'string'
+      ? location.state.chatTitle.trim()
+      : '';
 
   useEffect(() => {
     if (!chatId) {
@@ -42,14 +50,33 @@ export function Shell() {
 
     saveLastChatId(chatId);
     setLastChatId(chatId);
-  }, [chatId]);
+
+    if (!routeChatTitle) {
+      return;
+    }
+
+    saveChatTitle(chatId, routeChatTitle);
+  }, [chatId, routeChatTitle]);
 
   const resolvedChatId = chatId || lastChatId;
+
+  const resolvedChatTitle = useMemo(() => {
+    if (!resolvedChatId) {
+      return '';
+    }
+
+    if (chatId && routeChatTitle) {
+      return routeChatTitle;
+    }
+
+    return readChatTitle(resolvedChatId);
+  }, [chatId, resolvedChatId, routeChatTitle]);
   const isChatsRoute = location.pathname === '/';
+  const isSettingsRoute = location.pathname.includes('/settings');
 
   const screen = useMemo(
-    () => resolveScreenInfo(location.pathname, resolvedChatId),
-    [location.pathname, resolvedChatId],
+    () => resolveScreenInfo(location.pathname, resolvedChatTitle || resolvedChatId),
+    [location.pathname, resolvedChatId, resolvedChatTitle],
   );
 
   useEffect(() => {
@@ -96,7 +123,7 @@ export function Shell() {
 
   return (
     <div className="app-shell">
-      {!isChatsRoute ? (
+      {!isChatsRoute && !isSettingsRoute ? (
         <header className="shell-topbar glass-card glass-card--sm">
           <div className="shell-topbar__brand-row">
             <Link to="/" className="shell-brand">

@@ -37,6 +37,29 @@ export class ApiClient {
     return chatSettingsSchema.parse(response);
   }
 
+  async getDomainAllowlist(chatId: string): Promise<string[]> {
+    const response = await this.request(`/chats/${chatId}/domain-allowlist`);
+
+    if (!Array.isArray(response) || response.some((item) => typeof item !== 'string')) {
+      throw new Error('Invalid domain allowlist response');
+    }
+
+    return response;
+  }
+
+  async addDomain(chatId: string, domain: string): Promise<void> {
+    await this.request(`/chats/${chatId}/domain-allowlist`, {
+      method: 'POST',
+      body: JSON.stringify({ domain }),
+    });
+  }
+
+  async removeDomain(chatId: string, domain: string): Promise<void> {
+    await this.request(`/chats/${chatId}/domain-allowlist/${encodeURIComponent(domain)}`, {
+      method: 'DELETE',
+    });
+  }
+
   async getEvents(chatId: string): Promise<ModerationEvent[]> {
     const response = await this.request(`/chats/${chatId}/moderation-events?limit=50&page=1`);
     return response.map((item: unknown) => moderationEventSchema.parse(item));

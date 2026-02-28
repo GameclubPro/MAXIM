@@ -283,6 +283,18 @@ export class AdminService {
     return { ok: true };
   }
 
+  async getDomainAllowlist(chatId: string, user: AuthUser): Promise<string[]> {
+    await this.assertChatAdmin(chatId, user.userId);
+
+    const rows = await this.prisma.domainAllowlist.findMany({
+      where: { chatId },
+      orderBy: { domain: 'asc' },
+      select: { domain: true },
+    });
+
+    return rows.map((row: { domain: string }) => row.domain);
+  }
+
   async addDomain(chatId: string, user: AuthUser, body: unknown) {
     await this.assertChatAdmin(chatId, user.userId);
     const parsed = addDomainRequestSchema.safeParse(body);

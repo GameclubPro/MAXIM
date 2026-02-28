@@ -60,6 +60,11 @@ export class AdminController {
     return this.adminService.addDomain(chatId, user, body);
   }
 
+  @Get('chats/:chatId/domain-allowlist')
+  getDomainAllowlist(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.adminService.getDomainAllowlist(chatId, user);
+  }
+
   @Delete('chats/:chatId/domain-allowlist/:domain')
   removeDomain(
     @Param('chatId') chatId: string,

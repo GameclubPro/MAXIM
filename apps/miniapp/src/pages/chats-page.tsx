@@ -1,10 +1,11 @@
 import { useQuery } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import type { ApiClient } from '../lib/api-client';
+import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import { saveLastChatId } from '../lib/last-chat';
 
 export function ChatsPage({ api }: { api: ApiClient }) {
@@ -28,6 +29,14 @@ export function ChatsPage({ api }: { api: ApiClient }) {
       return haystack.includes(normalized);
     });
   }, [chatsQuery.data, query]);
+
+  useEffect(() => {
+    if (!chatsQuery.data) {
+      return;
+    }
+
+    saveChatTitles(chatsQuery.data);
+  }, [chatsQuery.data]);
 
   return (
     <div className="page-stack page-enter">
@@ -113,14 +122,22 @@ export function ChatsPage({ api }: { api: ApiClient }) {
                 <Link
                   to={`/chat/${chat.id}/settings`}
                   className="button button--accent"
-                  onClick={() => saveLastChatId(chat.id)}
+                  state={{ chatTitle: chat.title }}
+                  onClick={() => {
+                    saveLastChatId(chat.id);
+                    saveChatTitle(chat.id, chat.title);
+                  }}
                 >
                   Настройки
                 </Link>
                 <Link
                   to={`/chat/${chat.id}/events`}
                   className="button button--ghost"
-                  onClick={() => saveLastChatId(chat.id)}
+                  state={{ chatTitle: chat.title }}
+                  onClick={() => {
+                    saveLastChatId(chat.id);
+                    saveChatTitle(chat.id, chat.title);
+                  }}
                 >
                   Логи
                 </Link>

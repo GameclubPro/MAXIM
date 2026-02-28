@@ -219,6 +219,10 @@
   gap: var(--space-3);
 }
 
+.settings-grid--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 @media (min-width: 720px) {
   .app-shell {
     max-width: 960px;
@@ -252,6 +256,10 @@
 
   .settings-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .settings-grid--single {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .events-stats {

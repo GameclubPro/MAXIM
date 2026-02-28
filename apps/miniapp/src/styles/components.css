@@ -306,6 +306,66 @@
   font-size: 0.86rem;
 }
 
+.allowlist-add-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.allowlist-add-row__button {
+  white-space: nowrap;
+}
+
+.allowlist-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.allowlist-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  border-radius: 10px;
+  border: 1px solid rgba(62, 96, 127, 0.16);
+  background: rgba(255, 255, 255, 0.65);
+  padding: 8px 10px;
+}
+
+.allowlist-item span {
+  overflow-wrap: anywhere;
+}
+
+.allowlist-item__remove {
+  border: 0;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: #a22f3f;
+  background: rgba(228, 83, 99, 0.14);
+  cursor: pointer;
+}
+
+.allowlist-item__remove:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.allowlist-empty {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.allowlist-empty--error {
+  color: var(--danger);
+}
+
 .segmented-control {
   width: 100%;
   display: flex;
