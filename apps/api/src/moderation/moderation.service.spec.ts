@@ -48,6 +48,21 @@ function createUpdate(): MaxUpdate {
   };
 }
 
+function createOldUpdate(): MaxUpdate {
+  return {
+    updateId: 'upd-old-1',
+    type: 'message_created',
+    message: {
+      messageId: 'msg-old-1',
+      chatId: 'chat-1',
+      senderId: 'user-1',
+      text: 'old text',
+      createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
+    },
+    raw: {},
+  };
+}
+
 describe('ModerationService', () => {
   it('handles duplicate escalation separately and does not call SanctionService', async () => {
     const prisma = {
@@ -316,6 +331,61 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('sends link explanation for old messages when link bot toggle is enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ linkBotMessageEnabled: true }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Link detected' }],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn().mockResolvedValue(SanctionAction.WARN),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createOldUpdate());
+
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.notifyModerators).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Сообщение пользователя user-1 нарушает правила: ссылки в этом чате ограничены.',
+    );
   });
 
   it('still sends duplicate explanation when message deletion fails', async () => {

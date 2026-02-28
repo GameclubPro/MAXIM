@@ -49,6 +49,13 @@
 - В API добавлен endpoint чтения allowlist доменов:
   - `GET /api/v1/chats/:chatId/domain-allowlist` -> `string[]`.
 - После `docker compose ... up -d --no-deps --force-recreate ...` возможен кратковременный `502` до старта upstream; это может быть нормой на коротком интервале.
+- Актуализированы deploy-скрипты:
+  - `infra/scripts/local-commit-push.sh` проверяет, что при изменении `apps/api/prisma/schema.prisma` в commit добавлена migration (`apps/api/prisma/migrations/*/migration.sql`).
+  - `infra/scripts/vps-pull-build-up.sh` поднимает `postgres/redis`, ждёт готовность Postgres через `pg_isready`, применяет миграции и только потом пересоздаёт `api/miniapp-static`.
+- Актуализирован Docker Compose:
+  - `infra/docker-compose.yml` (базовый, для VPS) **без** host-портов `postgres/redis`.
+  - `infra/docker-compose.local.yml` добавляет host-порты `5432/6379` только для локальной разработки (если Docker установлен локально).
+  - `infra/docker-compose.vps.yml` удалён и больше не используется.
 
 ## Nginx и роутинг miniapp (критично)
 - HTTP (`:80`) должен редиректить на HTTPS.
@@ -62,6 +69,8 @@
 ## Docker Compose на VPS (актуально)
 - VPS переведён на Docker CE + Compose v2 plugin (`docker compose`).
 - Не использовать `docker-compose` v1.
+- На VPS использовать только базовый файл: `infra/docker-compose.yml`.
+- В базовом compose на VPS не пробрасываются host-порты `postgres/redis`, чтобы не конфликтовать с уже занятыми `5432/6379` на хосте.
 - Историческая ошибка `KeyError: 'ContainerConfig'` относилась к v1; при v2 стандартный путь:
   - `docker compose ... build`
   - `docker compose ... up -d --no-deps --force-recreate <service>`
@@ -76,6 +85,8 @@
   - `docker --version`
   - `docker compose version`
   и только после этого давать локальные docker-команды как основной путь.
+- Для локального запуска `postgres/redis` (если Docker появился локально) использовать два файла:
+  - `docker compose -f infra/docker-compose.yml -f infra/docker-compose.local.yml ...`
 
 ## Актуальность MAX (2026)
 - Для вопросов по MAX Bot API / Mini Apps / `init_data` / webhook / `open_app` агент должен сверяться с актуальными официальными источниками MAX, а не с памятью.
@@ -113,22 +124,22 @@
 - В командах с шаблоном `git push origin <BRANCH>`/`git pull origin <BRANCH>` нужно подставлять реальную ветку (например `main`), не копировать `<BRANCH>` буквально.
 - Если пользователь просит «только команды», агент отвечает только командами без длинных пояснений.
 
+## Рекомендуемый короткий сценарий деплоя (основной)
+- Локально:
+  - `cd /home/yourname/projects/MAXIM && ./infra/scripts/local-commit-push.sh "<COMMIT_MESSAGE>" main`
+- VPS:
+  - `cd /var/www/Chat_bot && git pull origin main && ./infra/scripts/vps-pull-build-up.sh main`
+
 ## Шаблоны команд
 
 ### Локально commit/push + VPS pull/deploy (основной сценарий)
 - Локально:
   - `cd /home/yourname/projects/MAXIM`
-  - `git status -s`
-  - `git add <FILES_OR_DIRS>`
-  - `git commit -m "<COMMIT_MESSAGE>"`
-  - `git push origin <BRANCH>`
+  - `./infra/scripts/local-commit-push.sh "<COMMIT_MESSAGE>" main`
 - VPS:
   - `cd /var/www/Chat_bot`
-  - `git pull origin <BRANCH>`
-  - `docker compose -f infra/docker-compose.yml exec -T api npx prisma migrate deploy --schema apps/api/prisma/schema.prisma`
-  - `docker compose -f infra/docker-compose.yml build <CHANGED_SERVICES>`
-  - `docker compose -f infra/docker-compose.yml up -d --no-deps --force-recreate <CHANGED_SERVICES>`
-  - `curl -i https://maxim.play-team.ru/api/health/live`
+  - `git pull origin main`
+  - `./infra/scripts/vps-pull-build-up.sh main`
 
 ### Пересборка только API
 - Локально:
@@ -170,16 +181,13 @@
 - Локально:
   - `cd /home/yourname/projects/MAXIM`
   - `npm run prisma:migrate:deploy --workspace @maxim/api`
-  - `docker compose -f infra/docker-compose.yml build api miniapp-static`
-  - `docker compose -f infra/docker-compose.yml up -d --no-deps api miniapp-static`
+  - `docker compose -f infra/docker-compose.yml -f infra/docker-compose.local.yml build api miniapp-static`
+  - `docker compose -f infra/docker-compose.yml -f infra/docker-compose.local.yml up -d --no-deps api miniapp-static`
   - `curl -i http://127.0.0.1:3001/api/health/live`
 - VPS:
   - `cd /var/www/Chat_bot`
-  - `docker compose -f infra/docker-compose.yml exec -T api npx prisma migrate deploy --schema apps/api/prisma/schema.prisma`
-  - `docker compose -f infra/docker-compose.yml build api miniapp-static`
-  - `docker compose -f infra/docker-compose.yml up -d --no-deps --force-recreate api miniapp-static`
-  - `until curl -fsS http://127.0.0.1:3001/api/health/live >/dev/null; do sleep 1; done`
-  - `curl -i https://maxim.play-team.ru/api/health/live`
+  - `git pull origin main`
+  - `./infra/scripts/vps-pull-build-up.sh main`
 
 ## GitHub авторизация (локально)
 - Если при `git push` ошибка `ECONNREFUSED ... vscode-git-*.sock`/`Missing or invalid credentials`:
@@ -227,6 +235,7 @@
 - `401 Invalid init data signature`: неверная подпись (часто неправильный `MAX_BOT_TOKEN` в API или ошибка алгоритма HMAC).
 - `404 Chat settings not found`: старый API без автосоздания настроек или отсутствует bootstrap `chat_settings`.
 - `P2021 table does not exist`: не применены миграции Prisma.
+- `P1001 Can't reach database server at postgres:5432` при `migrate deploy`: не готов Postgres/не запущен сервис; сначала поднять `postgres`, дождаться `pg_isready`, затем повторить миграции (или использовать `./infra/scripts/vps-pull-build-up.sh main`).
 - `webhook_events.status = FAILED` при ссылках: сначала смотреть `error_message` и `docker compose ... logs api`; частая причина — ошибка вызова MAX API удаления сообщения.
 - `502 Bad Gateway` сразу после recreate: часто кратковременно до старта `api`/`miniapp-static`; сначала проверять `curl http://127.0.0.1:3001/api/health/live`, потом домен.
 - `curl: (56) Recv failure: Connection reset by peer` на `127.0.0.1:3001`: обычно `api` падает/рестартит, смотреть `docker compose ... logs api` и обязательные ENV.

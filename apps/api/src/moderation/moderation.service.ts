@@ -152,30 +152,30 @@ export class ModerationService {
           },
         },
       });
-
-      if (topViolation.ruleCode === 'LINK_BLOCKED' && settings.linkBotMessageEnabled) {
-        try {
-          await this.maxClient.sendMessage(
-            chatId,
-            `Сообщение пользователя ${senderId} удалено: ссылки в этом чате ограничены.`,
-          );
-        } catch (error: unknown) {
-          this.logger.warn(
-            {
-              chatId,
-              userId: senderId,
-              messageId,
-              error: error instanceof Error ? error.message : 'Unknown error',
-            },
-            'Failed to send link explanation message',
-          );
-        }
-      }
     } else {
       await this.maxClient.notifyModerators(
         chatId,
         `Нарушение ${topViolation.ruleCode} от ${senderId}, но сообщение старше 24 часов и не может быть удалено`,
       );
+    }
+
+    if (topViolation.ruleCode === 'LINK_BLOCKED' && settings.linkBotMessageEnabled) {
+      try {
+        await this.maxClient.sendMessage(
+          chatId,
+          this.buildLinkExplanation(senderId, canDeleteMessage),
+        );
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            userId: senderId,
+            messageId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to send link explanation message',
+        );
+      }
     }
 
     const action = await this.sanctionService.resolveAction({
@@ -316,6 +316,14 @@ export class ModerationService {
       return SanctionAction.KICK;
     }
     return SanctionAction.BAN;
+  }
+
+  private buildLinkExplanation(userId: string, canDeleteMessage: boolean): string {
+    if (canDeleteMessage) {
+      return `Сообщение пользователя ${userId} удалено: ссылки в этом чате ограничены.`;
+    }
+
+    return `Сообщение пользователя ${userId} нарушает правила: ссылки в этом чате ограничены.`;
   }
 
   private buildDuplicateExplanation(userId: string, decision: DuplicateDecision): string {
