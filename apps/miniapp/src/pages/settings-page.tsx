@@ -665,46 +665,48 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               ) : null}
             </div>
 
-            <div className={cn('settings-native-toggle', fieldErrors.banDurationHours && 'field--error')}>
-              <div className="settings-native-toggle__row">
-                <span className="settings-native-toggle__title">Длительность бана</span>
+            {draft.duplicateBanEnabled ? (
+              <div className={cn('settings-native-toggle', fieldErrors.banDurationHours && 'field--error')}>
+                <div className="settings-native-toggle__row">
+                  <span className="settings-native-toggle__title">Длительность бана</span>
 
-                <div className="ban-duration-stepper" role="group" aria-label="Длительность бана в часах">
-                  <button
-                    type="button"
-                    className="ban-duration-stepper__button"
-                    onClick={() => adjustBanDuration(-1)}
-                    disabled={draft.banDurationHours <= BAN_DURATION_MIN_HOURS}
-                    aria-label="Уменьшить длительность бана"
-                  >
-                    -
-                  </button>
+                  <div className="ban-duration-stepper" role="group" aria-label="Длительность бана в часах">
+                    <button
+                      type="button"
+                      className="ban-duration-stepper__button"
+                      onClick={() => adjustBanDuration(-1)}
+                      disabled={draft.banDurationHours <= BAN_DURATION_MIN_HOURS}
+                      aria-label="Уменьшить длительность бана"
+                    >
+                      -
+                    </button>
 
-                  <output className="ban-duration-stepper__value" aria-live="polite">
-                    {draft.banDurationHours}ч
-                  </output>
+                    <output className="ban-duration-stepper__value" aria-live="polite">
+                      {draft.banDurationHours}ч
+                    </output>
 
-                  <button
-                    type="button"
-                    className="ban-duration-stepper__button"
-                    onClick={() => adjustBanDuration(1)}
-                    disabled={draft.banDurationHours >= BAN_DURATION_MAX_HOURS}
-                    aria-label="Увеличить длительность бана"
-                  >
-                    +
-                  </button>
+                    <button
+                      type="button"
+                      className="ban-duration-stepper__button"
+                      onClick={() => adjustBanDuration(1)}
+                      disabled={draft.banDurationHours >= BAN_DURATION_MAX_HOURS}
+                      aria-label="Увеличить длительность бана"
+                    >
+                      +
+                    </button>
+                  </div>
                 </div>
+
+                <p className="settings-native-toggle__hint">
+                  После выдачи бана сообщения пользователя удаляются автоматически в течение этого
+                  времени.
+                </p>
+
+                {fieldErrors.banDurationHours ? (
+                  <small className="field__hint">{fieldErrors.banDurationHours}</small>
+                ) : null}
               </div>
-
-              <p className="settings-native-toggle__hint">
-                После выдачи бана сообщения пользователя удаляются автоматически в течение этого
-                времени.
-              </p>
-
-              {fieldErrors.banDurationHours ? (
-                <small className="field__hint">{fieldErrors.banDurationHours}</small>
-              ) : null}
-            </div>
+            ) : null}
 
             <div className="duplicate-stage-list">
               <p className="duplicate-stage-list__caption">Количество дублей</p>

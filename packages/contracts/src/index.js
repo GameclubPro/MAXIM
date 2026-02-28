@@ -30,43 +30,37 @@ export const chatSettingsSchema = z
     logRetentionDays: z.number().int().min(7).max(365).default(90),
   })
   .superRefine((value, ctx) => {
-    const stages = [
-      {
-        enabled: value.duplicateWarnEnabled,
-        window: value.duplicateWarnWindowSec,
-        threshold: value.duplicateWarnMaxCount,
-        windowPath: ['duplicateWarnWindowSec'],
-        thresholdPath: ['duplicateWarnMaxCount'],
-      },
-      {
-        enabled: value.duplicateKickEnabled,
-        window: value.duplicateKickWindowSec,
-        threshold: value.duplicateKickMaxCount,
-        windowPath: ['duplicateKickWindowSec'],
-        thresholdPath: ['duplicateKickMaxCount'],
-      },
-      {
-        enabled: value.duplicateBanEnabled,
-        window: value.duplicateBanWindowSec,
-        threshold: value.duplicateBanMaxCount,
-        windowPath: ['duplicateBanWindowSec'],
-        thresholdPath: ['duplicateBanMaxCount'],
-      },
-    ].filter((stage) => stage.enabled);
-    for (let index = 1; index < stages.length; index += 1) {
-      const previous = stages[index - 1];
-      const current = stages[index];
-      if (current.window < previous.window) {
+    const warnEnabled = value.duplicateWarnEnabled;
+    const banEnabled = value.duplicateBanEnabled;
+    const kickEnabled = value.duplicateKickEnabled;
+    if (warnEnabled && banEnabled) {
+      if (value.duplicateBanWindowSec < value.duplicateWarnWindowSec) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: current.windowPath,
+          path: ['duplicateBanWindowSec'],
           message: 'Окно должно быть не меньше предыдущей ступени.',
         });
       }
-      if (current.threshold < previous.threshold) {
+      if (value.duplicateBanMaxCount < value.duplicateWarnMaxCount) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
-          path: current.thresholdPath,
+          path: ['duplicateBanMaxCount'],
+          message: 'Лимит должен быть не меньше предыдущей ступени.',
+        });
+      }
+    }
+    if (warnEnabled && kickEnabled) {
+      if (value.duplicateKickWindowSec < value.duplicateWarnWindowSec) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['duplicateKickWindowSec'],
+          message: 'Окно должно быть не меньше предыдущей ступени.',
+        });
+      }
+      if (value.duplicateKickMaxCount < value.duplicateWarnMaxCount) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['duplicateKickMaxCount'],
           message: 'Лимит должен быть не меньше предыдущей ступени.',
         });
       }
