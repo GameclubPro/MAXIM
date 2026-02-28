@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
+COMPOSE_FILE="infra/docker-compose.yml"
 BRANCH="${1:-main}"
 
 if [[ $# -ge 2 ]]; then
@@ -11,6 +12,34 @@ if [[ $# -ge 2 ]]; then
 else
   SERVICES=("api" "miniapp-static")
 fi
+
+contains_service() {
+  local needle="$1"
+  shift
+  local item
+  for item in "$@"; do
+    if [[ "$item" == "$needle" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+wait_for_url() {
+  local url="$1"
+  local attempts="${2:-120}"
+  local i
+
+  for ((i = 1; i <= attempts; i += 1)); do
+    if curl -fsS "$url" >/dev/null; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "Health check timeout: $url"
+  return 1
+}
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker not found"
@@ -27,15 +56,20 @@ fi
 
 git pull --ff-only origin "$BRANCH"
 
-docker compose -f infra/docker-compose.yml exec -T api npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
-docker compose -f infra/docker-compose.yml build "${SERVICES[@]}"
-docker compose -f infra/docker-compose.yml up -d --no-deps --force-recreate "${SERVICES[@]}"
+docker compose -f "$COMPOSE_FILE" up -d postgres redis
+docker compose -f "$COMPOSE_FILE" build api
+docker compose -f "$COMPOSE_FILE" run --rm --no-deps api npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
+docker compose -f "$COMPOSE_FILE" build "${SERVICES[@]}"
+docker compose -f "$COMPOSE_FILE" up -d --no-deps --force-recreate "${SERVICES[@]}"
 
-until curl -fsS http://127.0.0.1:3001/api/health/live >/dev/null; do
-  sleep 1
-done
+wait_for_url "http://127.0.0.1:3001/api/health/live" 180
+wait_for_url "https://maxim.play-team.ru/api/health/live" 180
 
 curl -i http://127.0.0.1:3001/api/health/live
 curl -i https://maxim.play-team.ru/api/health/live
+
+if contains_service "miniapp-static" "${SERVICES[@]}"; then
+  curl -i https://maxim.play-team.ru/app/
+fi
 
 echo "Done: branch=$BRANCH services=${SERVICES[*]}"

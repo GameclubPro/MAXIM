@@ -22,8 +22,24 @@ if [[ -z "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
+ensure_migration_for_schema_change() {
+  local staged
+  staged="$(git diff --cached --name-only)"
+
+  if printf '%s\n' "$staged" | grep -qx 'apps/api/prisma/schema.prisma'; then
+    if ! printf '%s\n' "$staged" | grep -Eq '^apps/api/prisma/migrations/[^/]+/migration\.sql$'; then
+      echo "schema.prisma changed, but no migration.sql is staged."
+      echo "Create migration before push, then rerun this script."
+      echo "Example:"
+      echo "  npm run prisma:migrate:dev --workspace @maxim/api -- --name <migration_name>"
+      exit 1
+    fi
+  fi
+}
+
 git status -s
 git add -A
+ensure_migration_for_schema_change
 git commit -m "$COMMIT_MESSAGE"
 git push origin "$BRANCH"
 
