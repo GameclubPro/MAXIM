@@ -35,6 +35,14 @@
   - `message.body.text` (текст).
 - Модерация должна удалять целиком сообщение, если в тексте есть ссылка (а не “вырезать” часть текста).
 - Исправлен вызов удаления через MAX API: `DELETE /messages` с query `message_id` + `chat_id`.
+- Экран `Настройки` в miniapp обновлён:
+  - убран верхний блок в `Settings`,
+  - удалены заглушки (оставлена только рабочая логика по ссылкам),
+  - в режиме `ALLOWLIST_ONLY` есть реальный ввод/список разрешённых доменов,
+  - в `Настройках` показывается название чата, а не только `chat_id`.
+- В API добавлен endpoint чтения allowlist доменов:
+  - `GET /api/v1/chats/:chatId/domain-allowlist` -> `string[]`.
+- После `docker compose ... up -d --no-deps --force-recreate ...` возможен кратковременный `502` до старта upstream; это может быть нормой на коротком интервале.
 
 ## Nginx и роутинг miniapp (критично)
 - HTTP (`:80`) должен редиректить на HTTPS.
@@ -77,7 +85,9 @@
 1. Применить миграции Prisma.
 2. Пересобрать только измененные сервисы (`api` и/или `miniapp-static`).
 3. Пересоздать контейнеры c `--force-recreate`.
-4. Проверить health и ключевые эндпоинты.
+4. Проверить готовность API:
+   - сначала локально на VPS: `http://127.0.0.1:3001/api/health/live`,
+   - затем через домен: `https://maxim.play-team.ru/api/health/live`.
 5. Если задача про модерацию ссылок: проверить `webhook_events` (`status`, `normalized_payload`) и `moderation_events`.
 
 ## Правило для команд (обязательно)
@@ -90,7 +100,29 @@
   - первичным считать `VPS`-блок,
   - в `Локально` обязательно предупреждать, что на текущей машине Docker не установлен (если статус не изменился).
 
+## Git flow для деплоя (обязательно)
+- Для задач вида «выкатить изменения» агент должен давать порядок **строго так**:
+  1. `Локально`: `git add` -> `git commit` -> `git push`.
+  2. `VPS`: `git pull` той же ветки -> обязательные post-pull шаги (миграции, build, recreate, проверки).
+- В командах с шаблоном `git push origin <BRANCH>`/`git pull origin <BRANCH>` нужно подставлять реальную ветку (например `main`), не копировать `<BRANCH>` буквально.
+- Если пользователь просит «только команды», агент отвечает только командами без длинных пояснений.
+
 ## Шаблоны команд
+
+### Локально commit/push + VPS pull/deploy (основной сценарий)
+- Локально:
+  - `cd /home/yourname/projects/MAXIM`
+  - `git status -s`
+  - `git add <FILES_OR_DIRS>`
+  - `git commit -m "<COMMIT_MESSAGE>"`
+  - `git push origin <BRANCH>`
+- VPS:
+  - `cd /var/www/Chat_bot`
+  - `git pull origin <BRANCH>`
+  - `docker compose -f infra/docker-compose.yml exec -T api npx prisma migrate deploy --schema apps/api/prisma/schema.prisma`
+  - `docker compose -f infra/docker-compose.yml build <CHANGED_SERVICES>`
+  - `docker compose -f infra/docker-compose.yml up -d --no-deps --force-recreate <CHANGED_SERVICES>`
+  - `curl -i https://maxim.play-team.ru/api/health/live`
 
 ### Пересборка только API
 - Локально:
@@ -140,7 +172,18 @@
   - `docker compose -f infra/docker-compose.yml exec -T api npx prisma migrate deploy --schema apps/api/prisma/schema.prisma`
   - `docker compose -f infra/docker-compose.yml build api miniapp-static`
   - `docker compose -f infra/docker-compose.yml up -d --no-deps --force-recreate api miniapp-static`
+  - `until curl -fsS http://127.0.0.1:3001/api/health/live >/dev/null; do sleep 1; done`
   - `curl -i https://maxim.play-team.ru/api/health/live`
+
+## GitHub авторизация (локально)
+- Если при `git push` ошибка `ECONNREFUSED ... vscode-git-*.sock`/`Missing or invalid credentials`:
+  - очистить переменные askpass:
+    - `unset GIT_ASKPASS SSH_ASKPASS VSCODE_GIT_ASKPASS_NODE VSCODE_GIT_ASKPASS_MAIN VSCODE_GIT_IPC_HANDLE`
+- Если SSH даёт `Permission denied ... deploy key`:
+  - использовать `HTTPS + PAT` для push, или
+  - использовать user SSH key (не deploy key).
+- Если нужна авторизация через браузер:
+  - установить `gh` и выполнить `gh auth login --web` + `gh auth setup-git`.
 
 ## SQL шпаргалка (из этого чата)
 
@@ -179,6 +222,8 @@
 - `404 Chat settings not found`: старый API без автосоздания настроек или отсутствует bootstrap `chat_settings`.
 - `P2021 table does not exist`: не применены миграции Prisma.
 - `webhook_events.status = FAILED` при ссылках: сначала смотреть `error_message` и `docker compose ... logs api`; частая причина — ошибка вызова MAX API удаления сообщения.
+- `502 Bad Gateway` сразу после recreate: часто кратковременно до старта `api`/`miniapp-static`; сначала проверять `curl http://127.0.0.1:3001/api/health/live`, потом домен.
+- `curl: (56) Recv failure: Connection reset by peer` на `127.0.0.1:3001`: обычно `api` падает/рестартит, смотреть `docker compose ... logs api` и обязательные ENV.
 
 ## Rollback
 ### Откат на предыдущий коммит
@@ -201,3 +246,7 @@
 ## Безопасность
 - Никогда не вставлять в ответы реальные токены, секреты и init_data целиком.
 - В логах/примерах маскировать `Authorization`, `MAX_BOT_TOKEN`, webhook secret path/header secret.
+- Если секрет/токен уже утёк в чат/логи, считать скомпрометированным:
+  - немедленно ротировать в MAX/GitHub,
+  - обновить `.env`,
+  - пересоздать затронутые контейнеры (`api` минимум).
