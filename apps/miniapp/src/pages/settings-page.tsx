@@ -1081,6 +1081,108 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 </label>
               </div>
             </div>
+
+            <div className="settings-native-toggle">
+              <div className="settings-native-toggle__row">
+                <span className="settings-native-toggle__title">Разрешить голосовые</span>
+
+                <label className="settings-native-switch" aria-label="Разрешить отправку голосовых">
+                  <input
+                    type="checkbox"
+                    checked={draft.voiceMessagesEnabled}
+                    onChange={(event) =>
+                      setFieldValue('voiceMessagesEnabled', event.target.checked)
+                    }
+                  />
+                  <span className="toggle-switch" aria-hidden>
+                    <span className="toggle-switch__thumb" />
+                  </span>
+                </label>
+              </div>
+            </div>
+
+            <div className="settings-native-toggle">
+              <div className="settings-native-toggle__row">
+                <span className="settings-native-toggle__title">Сообщение от бота</span>
+
+                <label
+                  className="settings-native-switch"
+                  aria-label="Включить сообщение от бота для ограничений сообщений"
+                >
+                  <input
+                    type="checkbox"
+                    checked={draft.messageLimitsBotMessageEnabled}
+                    onChange={(event) => {
+                      const enabled = event.target.checked;
+                      setFieldValue('messageLimitsBotMessageEnabled', enabled);
+                      if (!enabled) {
+                        setFieldValue('messageLimitsBotButtonEnabled', false);
+                      }
+                    }}
+                  />
+                  <span className="toggle-switch" aria-hidden>
+                    <span className="toggle-switch__thumb" />
+                  </span>
+                </label>
+              </div>
+
+              <p className="settings-native-toggle__hint">
+                Бот отправляет пояснение при удалении сообщения по правилам этого блока.
+              </p>
+            </div>
+
+            {draft.messageLimitsBotMessageEnabled ? (
+              <div
+                className={cn(
+                  'settings-native-toggle',
+                  'settings-native-toggle--nested',
+                  fieldErrors.messageLimitsBotButtonUrl && 'field--error',
+                )}
+              >
+                <div className="settings-native-toggle__row">
+                  <span className="settings-native-toggle__title">Добавить кнопку</span>
+
+                  <label
+                    className="settings-native-switch"
+                    aria-label="Добавить кнопку в сообщение бота для ограничений сообщений"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={draft.messageLimitsBotButtonEnabled}
+                      onChange={(event) =>
+                        setFieldValue('messageLimitsBotButtonEnabled', event.target.checked)
+                      }
+                    />
+                    <span className="toggle-switch" aria-hidden>
+                      <span className="toggle-switch__thumb" />
+                    </span>
+                  </label>
+                </div>
+
+                {draft.messageLimitsBotButtonEnabled ? (
+                  <label className="field settings-url-field">
+                    <span className="field__label">Ссылка кнопки</span>
+                    <input
+                      type="url"
+                      inputMode="url"
+                      value={draft.messageLimitsBotButtonUrl}
+                      onChange={(event) =>
+                        setFieldValue('messageLimitsBotButtonUrl', event.target.value)
+                      }
+                      placeholder="https://max.ru/channel/..."
+                    />
+                  </label>
+                ) : null}
+
+                {fieldErrors.messageLimitsBotButtonUrl ? (
+                  <small className="field__hint">{fieldErrors.messageLimitsBotButtonUrl}</small>
+                ) : (
+                  <p className="settings-native-toggle__hint">
+                    Добавляет кнопку в сообщение бота с переходом на чат, канал или профиль.
+                  </p>
+                )}
+              </div>
+            ) : null}
           </GlassCard>
         </section>
       ) : null}

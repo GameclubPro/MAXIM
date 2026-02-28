@@ -36,6 +36,10 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     photoMessageCooldownHours: 1,
     videoMessagesEnabled: true,
     fileMessagesEnabled: true,
+    voiceMessagesEnabled: true,
+    messageLimitsBotMessageEnabled: false,
+    messageLimitsBotButtonEnabled: false,
+    messageLimitsBotButtonUrl: '',
     linkBotMessageEnabled: true,
     linkBotButtonEnabled: false,
     linkBotButtonUrl: '',
@@ -107,6 +111,20 @@ describe('RuleEngineService', () => {
     });
 
     expect(result.violations.some((item) => item.ruleCode === 'FILE_BLOCKED')).toBe(true);
+  });
+
+  it('detects VOICE_BLOCKED when voice messages are disabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings: buildSettings({ voiceMessagesEnabled: false }),
+      domainAllowlist: [],
+      hasVoiceAttachment: true,
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'VOICE_BLOCKED')).toBe(true);
   });
 
   it('detects PHOTO_RATE_LIMIT from second photo when cooldown is enabled', async () => {

@@ -59,6 +59,7 @@ export class RuleEngineService {
     hasPhotoAttachment?: boolean;
     hasVideoAttachment?: boolean;
     hasFileAttachment?: boolean;
+    hasVoiceAttachment?: boolean;
   }): Promise<DetectionResult> {
     const {
       chatId,
@@ -70,6 +71,7 @@ export class RuleEngineService {
       hasPhotoAttachment,
       hasVideoAttachment,
       hasFileAttachment,
+      hasVoiceAttachment,
     } = params;
     const violations: RuleViolation[] = [];
     const normalized = text.toLowerCase();
@@ -105,6 +107,14 @@ export class RuleEngineService {
         ruleCode: 'FILE_BLOCKED',
         score: 0.88,
         reason: 'File messages are disabled by chat settings',
+      });
+    }
+
+    if (hasVoiceAttachment && !settings.voiceMessagesEnabled) {
+      violations.push({
+        ruleCode: 'VOICE_BLOCKED',
+        score: 0.88,
+        reason: 'Voice messages are disabled by chat settings',
       });
     }
 

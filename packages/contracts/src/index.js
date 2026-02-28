@@ -40,6 +40,10 @@ export const chatSettingsSchema = z
     photoMessageCooldownHours: z.number().int().min(1).max(24).default(1),
     videoMessagesEnabled: z.boolean().default(true),
     fileMessagesEnabled: z.boolean().default(true),
+    voiceMessagesEnabled: z.boolean().default(true),
+    messageLimitsBotMessageEnabled: z.boolean().default(false),
+    messageLimitsBotButtonEnabled: z.boolean().default(false),
+    messageLimitsBotButtonUrl: botButtonUrlSchema,
     linkBotMessageEnabled: z.boolean().default(true),
     linkBotButtonEnabled: z.boolean().default(false),
     linkBotButtonUrl: botButtonUrlSchema,
@@ -106,6 +110,17 @@ export const chatSettingsSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['duplicateBotButtonUrl'],
+        message: 'Укажите корректную ссылку для кнопки (http/https).',
+      });
+    }
+    if (
+      value.messageLimitsBotMessageEnabled &&
+      value.messageLimitsBotButtonEnabled &&
+      !isValidBotButtonUrl(value.messageLimitsBotButtonUrl)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['messageLimitsBotButtonUrl'],
         message: 'Укажите корректную ссылку для кнопки (http/https).',
       });
     }

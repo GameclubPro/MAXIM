@@ -29,6 +29,14 @@ const NON_SANCTION_RULE_CODES = new Set([
   'MESSAGE_TOO_LONG',
   'VIDEO_BLOCKED',
   'FILE_BLOCKED',
+  'VOICE_BLOCKED',
+  'PHOTO_RATE_LIMIT',
+]);
+const MESSAGE_LIMITS_RULE_CODES = new Set([
+  'MESSAGE_TOO_LONG',
+  'VIDEO_BLOCKED',
+  'FILE_BLOCKED',
+  'VOICE_BLOCKED',
   'PHOTO_RATE_LIMIT',
 ]);
 
@@ -144,6 +152,7 @@ export class ModerationService {
       hasPhotoAttachment: mediaFlags.hasPhotoAttachment,
       hasVideoAttachment: mediaFlags.hasVideoAttachment,
       hasFileAttachment: mediaFlags.hasFileAttachment,
+      hasVoiceAttachment: mediaFlags.hasVoiceAttachment,
     });
 
     const { violations } = detection;
@@ -153,6 +162,7 @@ export class ModerationService {
         item.ruleCode === 'MESSAGE_TOO_LONG' ||
         item.ruleCode === 'VIDEO_BLOCKED' ||
         item.ruleCode === 'FILE_BLOCKED' ||
+        item.ruleCode === 'VOICE_BLOCKED' ||
         item.ruleCode === 'PHOTO_RATE_LIMIT',
     );
     if (!hasBlockingDeleteViolation && detection.duplicateDecision) {
@@ -197,6 +207,7 @@ export class ModerationService {
       violations.find((item) => item.ruleCode === 'MESSAGE_TOO_LONG') ??
       violations.find((item) => item.ruleCode === 'VIDEO_BLOCKED') ??
       violations.find((item) => item.ruleCode === 'FILE_BLOCKED') ??
+      violations.find((item) => item.ruleCode === 'VOICE_BLOCKED') ??
       violations.find((item) => item.ruleCode === 'PHOTO_RATE_LIMIT') ??
       violations[0];
     await this.prisma.violation.create({
@@ -263,6 +274,48 @@ export class ModerationService {
             error: error instanceof Error ? error.message : 'Unknown error',
           },
           'Failed to send link explanation message',
+        );
+      }
+    }
+
+    if (this.isMessageLimitsViolation(topViolation.ruleCode) && settings.messageLimitsBotMessageEnabled) {
+      const limitsMessageOptions = this.buildBotMessageOptions(
+        settings.messageLimitsBotButtonEnabled,
+        settings.messageLimitsBotButtonUrl,
+      );
+      try {
+        if (limitsMessageOptions) {
+          await this.maxClient.sendMessage(
+            chatId,
+            this.buildMessageLimitsExplanation(
+              userLabel,
+              topViolation.ruleCode,
+              canDeleteMessage,
+              settings.photoMessageCooldownHours,
+            ),
+            limitsMessageOptions,
+          );
+        } else {
+          await this.maxClient.sendMessage(
+            chatId,
+            this.buildMessageLimitsExplanation(
+              userLabel,
+              topViolation.ruleCode,
+              canDeleteMessage,
+              settings.photoMessageCooldownHours,
+            ),
+          );
+        }
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            userId: senderId,
+            messageId,
+            ruleCode: topViolation.ruleCode,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to send message limits explanation message',
         );
       }
     }
@@ -670,6 +723,49 @@ export class ModerationService {
     return !NON_SANCTION_RULE_CODES.has(ruleCode);
   }
 
+  private isMessageLimitsViolation(ruleCode: string): boolean {
+    return MESSAGE_LIMITS_RULE_CODES.has(ruleCode);
+  }
+
+  private buildMessageLimitsExplanation(
+    userLabel: string,
+    ruleCode: string,
+    canDeleteMessage: boolean,
+    photoCooldownHours: number,
+  ): string {
+    if (ruleCode === 'MESSAGE_TOO_LONG') {
+      return canDeleteMessage
+        ? `Сообщение пользователя ${userLabel} удалено: превышен лимит длины сообщения.`
+        : `Сообщение пользователя ${userLabel} нарушает правила: превышен лимит длины сообщения.`;
+    }
+
+    if (ruleCode === 'VIDEO_BLOCKED') {
+      return canDeleteMessage
+        ? `Сообщение пользователя ${userLabel} удалено: отправка видео в этом чате отключена.`
+        : `Сообщение пользователя ${userLabel} нарушает правила: отправка видео в этом чате отключена.`;
+    }
+
+    if (ruleCode === 'FILE_BLOCKED') {
+      return canDeleteMessage
+        ? `Сообщение пользователя ${userLabel} удалено: отправка файлов в этом чате отключена.`
+        : `Сообщение пользователя ${userLabel} нарушает правила: отправка файлов в этом чате отключена.`;
+    }
+
+    if (ruleCode === 'VOICE_BLOCKED') {
+      return canDeleteMessage
+        ? `Сообщение пользователя ${userLabel} удалено: голосовые сообщения в этом чате отключены.`
+        : `Сообщение пользователя ${userLabel} нарушает правила: голосовые сообщения в этом чате отключены.`;
+    }
+
+    const hours =
+      Number.isInteger(photoCooldownHours) && photoCooldownHours >= 1 && photoCooldownHours <= 24
+        ? photoCooldownHours
+        : 1;
+    return canDeleteMessage
+      ? `Сообщение пользователя ${userLabel} удалено: фото можно отправлять не чаще 1 раза в ${hours}ч.`
+      : `Сообщение пользователя ${userLabel} нарушает правила: фото можно отправлять не чаще 1 раза в ${hours}ч.`;
+  }
+
   private calculateEffectiveMessageLength(update: MaxUpdate): number {
     const baseText = update.message?.text ?? '';
     const baseLength = baseText.length;
@@ -823,6 +919,7 @@ export class ModerationService {
     hasPhotoAttachment: boolean;
     hasVideoAttachment: boolean;
     hasFileAttachment: boolean;
+    hasVoiceAttachment: boolean;
   } {
     const rawRecord = this.asRecord(update.raw);
     if (!rawRecord) {
@@ -830,6 +927,7 @@ export class ModerationService {
         hasPhotoAttachment: false,
         hasVideoAttachment: false,
         hasFileAttachment: false,
+        hasVoiceAttachment: false,
       };
     }
 
@@ -838,6 +936,7 @@ export class ModerationService {
       hasPhotoAttachment: false,
       hasVideoAttachment: false,
       hasFileAttachment: false,
+      hasVoiceAttachment: false,
     };
     this.collectMediaFlags(messageNode, flags);
     return flags;
@@ -849,6 +948,7 @@ export class ModerationService {
       hasPhotoAttachment: boolean;
       hasVideoAttachment: boolean;
       hasFileAttachment: boolean;
+      hasVoiceAttachment: boolean;
     },
     depth = 0,
   ) {
@@ -856,7 +956,10 @@ export class ModerationService {
       depth > MAX_FORWARD_SCAN_DEPTH ||
       node === null ||
       node === undefined ||
-      (flags.hasPhotoAttachment && flags.hasVideoAttachment && flags.hasFileAttachment)
+      (flags.hasPhotoAttachment &&
+        flags.hasVideoAttachment &&
+        flags.hasFileAttachment &&
+        flags.hasVoiceAttachment)
     ) {
       return;
     }
@@ -900,6 +1003,19 @@ export class ModerationService {
     }
 
     if (
+      type === 'voice' ||
+      type === 'audio' ||
+      type === 'audio_message' ||
+      type === 'ptt' ||
+      mimeType?.startsWith('audio/') ||
+      mediaType === 'voice' ||
+      mediaType === 'audio' ||
+      this.isLikelyVoiceFileName(fileName)
+    ) {
+      flags.hasVoiceAttachment = true;
+    }
+
+    if (
       type === 'file' ||
       type === 'document' ||
       type === 'doc' ||
@@ -924,6 +1040,15 @@ export class ModerationService {
         flags.hasVideoAttachment = true;
       }
 
+      if (
+        keyLower === 'voice' ||
+        keyLower === 'voices' ||
+        keyLower === 'audio' ||
+        keyLower === 'audio_message'
+      ) {
+        flags.hasVoiceAttachment = true;
+      }
+
       if (keyLower === 'file' || keyLower === 'files' || keyLower === 'document') {
         flags.hasFileAttachment = true;
       }
@@ -940,6 +1065,14 @@ export class ModerationService {
     }
 
     return /\.(mp4|mov|avi|mkv|webm|m4v)$/i.test(value);
+  }
+
+  private isLikelyVoiceFileName(value: string | null): boolean {
+    if (!value) {
+      return false;
+    }
+
+    return /\.(ogg|opus|mp3|m4a|wav|flac)$/i.test(value);
   }
 
   private buildBotMessageOptions(
