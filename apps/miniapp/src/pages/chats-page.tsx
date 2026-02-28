@@ -2,7 +2,6 @@ import { useQuery } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { GlassCard } from '../components/ui/glass-card';
-import { PageHeader } from '../components/ui/page-header';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import type { ApiClient } from '../lib/api-client';
@@ -32,28 +31,27 @@ export function ChatsPage({ api }: { api: ApiClient }) {
 
   return (
     <div className="page-stack page-enter">
-      <GlassCard className="hero-card" elevated>
-        <PageHeader
-          title="Чаты"
-          subtitle="Выберите чат, чтобы настроить правила модерации или посмотреть журнал событий."
-          badge="MAXIM Moderator"
-        />
-        <div className="hero-card__row">
-          <label className="field field--search" htmlFor="chat-search">
-            <span>Поиск по названию или ID</span>
-            <input
-              id="chat-search"
-              type="search"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Например: support"
-            />
-          </label>
-          <div className="hero-card__meta">
-            <span>{filteredChats.length}</span>
-            <small>чатов найдено</small>
+      <GlassCard className="chats-search-card" padding="sm" elevated>
+        <div className="chats-search-card__head">
+          <div className="chats-search-card__title">
+            <h1>Чаты</h1>
+            <p>Быстрый доступ к настройкам и логам.</p>
+          </div>
+          <div className="chats-search-card__meta" aria-live="polite">
+            <strong>{filteredChats.length}</strong>
+            <small>найдено</small>
           </div>
         </div>
+        <label className="field field--search chats-search-card__field" htmlFor="chat-search">
+          <span>Поиск по названию или ID</span>
+          <input
+            id="chat-search"
+            type="search"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Например: support"
+          />
+        </label>
       </GlassCard>
 
       {chatsQuery.isLoading ? (

@@ -2,7 +2,7 @@
   min-height: 100vh;
   display: grid;
   grid-template-rows: auto 1fr auto;
-  gap: var(--space-4);
+  gap: var(--space-3);
   padding: var(--space-4);
   padding-bottom: calc(var(--space-5) + var(--safe-bottom));
 }
@@ -13,9 +13,6 @@
 }
 
 .shell-topbar {
-  position: sticky;
-  top: var(--space-4);
-  z-index: 5;
   display: grid;
   gap: var(--space-2);
 }
@@ -62,6 +59,14 @@
   grid-template-columns: repeat(3, 1fr);
   gap: var(--space-2);
   z-index: 5;
+  transition: transform 0.24s ease, opacity 0.2s ease;
+  will-change: transform, opacity;
+}
+
+.bottom-nav.is-keyboard-open {
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(calc(100% + var(--space-4)));
 }
 
 .bottom-nav__item {
@@ -98,7 +103,7 @@
 
 .page-stack {
   display: grid;
-  gap: var(--space-4);
+  gap: var(--space-3);
 }
 
 .hero-card {
@@ -106,26 +111,58 @@
   gap: var(--space-3);
 }
 
-.hero-card__row {
+.chats-search-card {
   display: grid;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
-.hero-card__meta {
-  align-self: end;
-  justify-self: start;
-  display: grid;
-  gap: 2px;
+.chats-search-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
 }
 
-.hero-card__meta span {
-  font-size: 1.5rem;
+.chats-search-card__title {
+  display: grid;
+  gap: 4px;
+}
+
+.chats-search-card__title h1 {
+  font-size: 1.08rem;
+}
+
+.chats-search-card__title p {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.chats-search-card__meta {
+  align-self: center;
+  display: grid;
+  justify-items: end;
+  text-align: right;
+  gap: 0;
+}
+
+.chats-search-card__meta strong {
+  font-size: 1.35rem;
+  line-height: 1.05;
   font-family: var(--font-heading);
   color: var(--text-primary);
 }
 
-.hero-card__meta small {
+.chats-search-card__meta small {
+  font-size: 0.75rem;
   color: var(--text-muted);
+}
+
+.chats-search-card__field {
+  gap: 4px;
+}
+
+.chats-search-card__field > span {
+  font-size: 0.74rem;
 }
 
 .chat-grid,
@@ -167,9 +204,6 @@
 }
 
 .settings-action-bar {
-  position: sticky;
-  bottom: calc(var(--safe-bottom) + 82px);
-  z-index: 4;
   display: grid;
   gap: var(--space-3);
 }
@@ -197,9 +231,19 @@
     font-size: 1.35rem;
   }
 
-  .hero-card__row {
+  .chats-search-card {
     grid-template-columns: minmax(0, 1fr) auto;
-    align-items: end;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .chats-search-card__head {
+    align-items: center;
+    gap: var(--space-4);
+  }
+
+  .chats-search-card__field {
+    max-width: 320px;
   }
 
   .chat-grid {
