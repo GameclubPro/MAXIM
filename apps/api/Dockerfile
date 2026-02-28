@@ -24,4 +24,4 @@ COPY --from=base /app/packages/contracts/dist ./packages/contracts/dist
 COPY --from=base /app/packages/contracts/package.json ./packages/contracts/package.json
 
 EXPOSE 3001
-CMD ["node", "apps/api/dist/main.js"]
+CMD ["node", "apps/api/dist/apps/api/src/main.js"]
