@@ -676,13 +676,14 @@
 
 .duplicate-stage__controls {
   display: grid;
-  grid-template-columns: 116px minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: end;
   gap: 8px;
 }
 
 .duplicate-stage__field {
   display: grid;
-  gap: 6px;
+  gap: 5px;
   position: relative;
   min-width: 0;
 }
@@ -725,14 +726,14 @@
 
 .duplicate-count-stepper {
   display: inline-grid;
-  grid-template-columns: 30px minmax(0, 1fr) 30px;
+  grid-template-columns: 28px minmax(0, 1fr) 28px;
   align-items: center;
   gap: 6px;
 }
 
 .duplicate-count-stepper__button {
-  width: 30px;
-  height: 30px;
+  width: 28px;
+  height: 28px;
   border: 1px solid rgba(62, 96, 127, 0.24);
   border-radius: 9px;
   background: rgba(255, 255, 255, 0.84);
@@ -749,7 +750,7 @@
 }
 
 .duplicate-count-stepper__value {
-  min-height: 30px;
+  min-height: 28px;
   border-radius: 9px;
   border: 1px solid rgba(62, 96, 127, 0.18);
   background: rgba(255, 255, 255, 0.78);
@@ -780,7 +781,6 @@
   }
 
   .duplicate-stage__controls {
-    display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
   }
@@ -791,12 +791,6 @@
 
   .duplicate-stage__field-label {
     font-size: 0.64rem;
-  }
-}
-
-@media (max-width: 410px) {
-  .duplicate-stage__controls {
-    grid-template-columns: minmax(0, 1fr);
   }
 }
 

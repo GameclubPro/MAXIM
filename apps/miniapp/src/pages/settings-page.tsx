@@ -46,18 +46,18 @@ const DUPLICATE_STAGE_OPTIONS: Array<{
     maxCountKey: 'duplicateWarnMaxCount',
   },
   {
-    id: 'KICK',
-    label: 'Удаление участника',
-    enabledKey: 'duplicateKickEnabled',
-    windowKey: 'duplicateKickWindowSec',
-    maxCountKey: 'duplicateKickMaxCount',
-  },
-  {
     id: 'BAN',
     label: 'Бан',
     enabledKey: 'duplicateBanEnabled',
     windowKey: 'duplicateBanWindowSec',
     maxCountKey: 'duplicateBanMaxCount',
+  },
+  {
+    id: 'KICK',
+    label: 'Удаление участника',
+    enabledKey: 'duplicateKickEnabled',
+    windowKey: 'duplicateKickWindowSec',
+    maxCountKey: 'duplicateKickMaxCount',
   },
 ];
 
