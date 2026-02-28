@@ -41,6 +41,10 @@ wait_for_url() {
   return 1
 }
 
+run_migrations() {
+  docker compose -f "$COMPOSE_FILE" run --rm --no-deps api npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
+}
+
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker not found"
   exit 1
@@ -56,9 +60,19 @@ fi
 
 git pull --ff-only origin "$BRANCH"
 
-docker compose -f "$COMPOSE_FILE" up -d postgres redis
 docker compose -f "$COMPOSE_FILE" build api
-docker compose -f "$COMPOSE_FILE" run --rm --no-deps api npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
+
+if ! run_migrations; then
+  echo "First migration attempt failed. Trying to start postgres/redis and retry once..."
+  if ! docker compose -f "$COMPOSE_FILE" up -d postgres redis; then
+    echo "Failed to start postgres/redis."
+    echo "Check occupied ports:"
+    echo "  ss -ltnp | grep -E ':5432|:6379'"
+    exit 1
+  fi
+  run_migrations
+fi
+
 docker compose -f "$COMPOSE_FILE" build "${SERVICES[@]}"
 docker compose -f "$COMPOSE_FILE" up -d --no-deps --force-recreate "${SERVICES[@]}"
 
