@@ -424,22 +424,21 @@
 
 .settings-section__chevron-line {
   position: absolute;
-  top: 12px;
-  width: 8px;
+  top: 50%;
+  left: 50%;
+  width: 9px;
   height: 2px;
   border-radius: 2px;
   background: rgba(25, 55, 80, 0.88);
-  transform-origin: center;
+  transform-origin: center center;
 }
 
 .settings-section__chevron-line--left {
-  left: 8px;
-  transform: rotate(36deg);
+  transform: translate(-92%, -50%) rotate(40deg);
 }
 
 .settings-section__chevron-line--right {
-  right: 8px;
-  transform: rotate(-36deg);
+  transform: translate(-8%, -50%) rotate(-40deg);
 }
 
 .settings-section__collapse {
