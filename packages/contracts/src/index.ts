@@ -42,6 +42,7 @@ export const chatSettingsSchema = z
     duplicateBanWindowSec: duplicateWindowSecSchema.default(172_800),
     duplicateBanMaxCount: duplicateMaxCountSchema.default(4),
     linkPolicy: linkPolicySchema.default('ALLOWLIST_ONLY'),
+    maxMessageLengthEnabled: z.boolean().default(false),
     maxMessageLength: z.number().int().min(50).max(1500).default(1500),
     photoMessageCooldownEnabled: z.boolean().default(false),
     photoMessageCooldownHours: z.number().int().min(1).max(24).default(1),

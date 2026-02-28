@@ -86,7 +86,7 @@ export class RuleEngineService {
       violations.push({ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: linkViolation });
     }
 
-    if (measuredLength > settings.maxMessageLength) {
+    if (settings.maxMessageLengthEnabled && measuredLength > settings.maxMessageLength) {
       violations.push({
         ruleCode: 'MESSAGE_TOO_LONG',
         score: 0.82,
@@ -126,7 +126,7 @@ export class RuleEngineService {
         violations.push({
           ruleCode: 'PHOTO_RATE_LIMIT',
           score: 0.86,
-          reason: `Photo messages are limited to one per ${settings.photoMessageCooldownHours}h`,
+          reason: `Messages with photos are limited to one per ${settings.photoMessageCooldownHours}h`,
         });
       }
     }

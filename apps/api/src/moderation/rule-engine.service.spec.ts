@@ -31,6 +31,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     duplicateBanWindowSec: 48 * 60 * 60,
     duplicateBanMaxCount: 4,
     linkPolicy: LinkPolicy.ALLOWLIST_ONLY,
+    maxMessageLengthEnabled: false,
     maxMessageLength: 1500,
     photoMessageCooldownEnabled: false,
     photoMessageCooldownHours: 1,
@@ -77,7 +78,7 @@ describe('RuleEngineService', () => {
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'short text',
-      settings: buildSettings({ maxMessageLength: 50 }),
+      settings: buildSettings({ maxMessageLengthEnabled: true, maxMessageLength: 50 }),
       domainAllowlist: [],
       effectiveLength: 120,
     });

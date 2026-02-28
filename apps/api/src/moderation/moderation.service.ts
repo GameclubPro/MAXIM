@@ -762,8 +762,8 @@ export class ModerationService {
         ? photoCooldownHours
         : 1;
     return canDeleteMessage
-      ? `Сообщение пользователя ${userLabel} удалено: фото можно отправлять не чаще 1 раза в ${hours}ч.`
-      : `Сообщение пользователя ${userLabel} нарушает правила: фото можно отправлять не чаще 1 раза в ${hours}ч.`;
+      ? `Сообщение пользователя ${userLabel} удалено: сообщение с фотографиями можно отправлять не чаще 1 раза в ${hours}ч.`
+      : `Сообщение пользователя ${userLabel} нарушает правила: сообщение с фотографиями можно отправлять не чаще 1 раза в ${hours}ч.`;
   }
 
   private calculateEffectiveMessageLength(update: MaxUpdate): number {

@@ -22,6 +22,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     duplicateBanWindowSec: 48 * 60 * 60,
     duplicateBanMaxCount: 4,
     linkPolicy: 'ALLOWLIST_ONLY',
+    maxMessageLengthEnabled: false,
     maxMessageLength: 1500,
     photoMessageCooldownEnabled: false,
     photoMessageCooldownHours: 1,
@@ -1116,7 +1117,7 @@ describe('ModerationService', () => {
         upsert: jest.fn().mockResolvedValue({
           id: 'chat-1',
           title: 'Chat 1',
-          settings: createSettings({ maxMessageLength: 100 }),
+          settings: createSettings({ maxMessageLengthEnabled: true, maxMessageLength: 100 }),
           domains: [],
         }),
       },

@@ -946,31 +946,57 @@ export function SettingsPage({ api }: { api: ApiClient }) {
             <div className={cn('settings-native-toggle', fieldErrors.maxMessageLength && 'field--error')}>
               <div className="settings-native-toggle__row">
                 <span className="settings-native-toggle__title">Лимит длины сообщения</span>
-                <output className="settings-length-limit__value" aria-live="polite">
-                  {draft.maxMessageLength} симв.
-                </output>
+
+                <label
+                  className="settings-native-switch"
+                  aria-label="Включить ограничение длины сообщения"
+                >
+                  <input
+                    type="checkbox"
+                    checked={draft.maxMessageLengthEnabled}
+                    onChange={(event) =>
+                      setFieldValue('maxMessageLengthEnabled', event.target.checked)
+                    }
+                  />
+                  <span className="toggle-switch" aria-hidden>
+                    <span className="toggle-switch__thumb" />
+                  </span>
+                </label>
               </div>
 
-              <input
-                className="settings-length-limit__slider"
-                type="range"
-                min={MESSAGE_LENGTH_MIN}
-                max={MESSAGE_LENGTH_MAX}
-                step={1}
-                value={draft.maxMessageLength}
-                onChange={(event) =>
-                  setFieldValue(
-                    'maxMessageLength',
-                    Number(event.target.value) as ChatSettings['maxMessageLength'],
-                  )
-                }
-                aria-label="Лимит длины сообщения"
-              />
+              {draft.maxMessageLengthEnabled ? (
+                <>
+                  <div className="settings-native-toggle__row">
+                    <span className="settings-native-toggle__title settings-native-toggle__title--sub">
+                      Максимум
+                    </span>
+                    <output className="settings-length-limit__value" aria-live="polite">
+                      {draft.maxMessageLength} симв.
+                    </output>
+                  </div>
 
-              <div className="settings-length-limit__labels" aria-hidden>
-                <span>{MESSAGE_LENGTH_MIN}</span>
-                <span>{MESSAGE_LENGTH_MAX}</span>
-              </div>
+                  <input
+                    className="settings-length-limit__slider"
+                    type="range"
+                    min={MESSAGE_LENGTH_MIN}
+                    max={MESSAGE_LENGTH_MAX}
+                    step={1}
+                    value={draft.maxMessageLength}
+                    onChange={(event) =>
+                      setFieldValue(
+                        'maxMessageLength',
+                        Number(event.target.value) as ChatSettings['maxMessageLength'],
+                      )
+                    }
+                    aria-label="Лимит длины сообщения"
+                  />
+
+                  <div className="settings-length-limit__labels" aria-hidden>
+                    <span>{MESSAGE_LENGTH_MIN}</span>
+                    <span>{MESSAGE_LENGTH_MAX}</span>
+                  </div>
+                </>
+              ) : null}
 
               <p className="settings-native-toggle__hint">
                 Учитывается длина обычного текста и пересланных сообщений.
@@ -1043,7 +1069,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 <small className="field__hint">{fieldErrors.photoMessageCooldownHours}</small>
               ) : (
                 <p className="settings-native-toggle__hint">
-                  При включении пользователь может отправить только одно фото за выбранный интервал.
+                  При включении пользователь может отправить только одно сообщение с фотографиями
+                  за выбранный интервал.
                 </p>
               )}
             </div>
