@@ -14,6 +14,7 @@ import { saveLastChatId } from '../lib/last-chat';
 type FieldErrors = Partial<Record<keyof ChatSettings, string>>;
 
 const DOMAIN_PATTERN = /^(?=.{3,253}$)(?!-)(?:[a-z0-9-]{1,63}\.)+[a-z]{2,63}$/i;
+const AUTO_SAVE_DELAY_MS = 650;
 
 const LINK_POLICY_OPTIONS: Array<{
   value: ChatSettings['linkPolicy'];
@@ -66,6 +67,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [domainInput, setDomainInput] = useState('');
   const [domainInputError, setDomainInputError] = useState('');
+  const [lastSaveError, setLastSaveError] = useState<string>('');
+  const [failedSnapshot, setFailedSnapshot] = useState<string>('');
 
   const routeChatTitle = getRouteChatTitle(location.state);
 
@@ -142,30 +145,34 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     setFieldErrors({});
   }, [settingsQuery.data]);
 
-  const hasChanges = useMemo(() => {
-    if (!draft || !settingsQuery.data) {
-      return false;
-    }
+  const draftSnapshot = useMemo(() => (draft ? JSON.stringify(draft) : ''), [draft]);
 
-    return JSON.stringify(draft) !== JSON.stringify(settingsQuery.data);
-  }, [draft, settingsQuery.data]);
+  const serverSnapshot = useMemo(
+    () => (settingsQuery.data ? JSON.stringify(settingsQuery.data) : ''),
+    [settingsQuery.data],
+  );
+
+  const hasChanges = Boolean(draft && settingsQuery.data && draftSnapshot !== serverSnapshot);
 
   const saveMutation = useMutation({
     mutationFn: (payload: ChatSettings) => api.updateSettings(chatId ?? '', payload),
+    onMutate: () => {
+      setLastSaveError('');
+    },
     onSuccess: (saved) => {
       setDraft(saved);
       setFieldErrors({});
+      setLastSaveError('');
+      setFailedSnapshot('');
       queryClient.setQueryData(['settings', chatId], saved);
-      pushToast({ tone: 'success', title: 'Настройки сохранены' });
     },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Сохранение не удалось',
-        description: (error as Error).message,
-      });
+    onError: (error, payload) => {
+      setLastSaveError((error as Error).message);
+      setFailedSnapshot(JSON.stringify(payload));
     },
   });
+  const isSavingSettings = saveMutation.isPending;
+  const mutateSettings = saveMutation.mutate;
 
   const addDomainMutation = useMutation({
     mutationFn: (domain: string) => api.addDomain(chatId ?? '', domain),
@@ -237,35 +244,37 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     return null;
   }
 
-  function handleSave() {
-    if (!draft) {
+  useEffect(() => {
+    if (!failedSnapshot || failedSnapshot === draftSnapshot) {
+      return;
+    }
+
+    setFailedSnapshot('');
+    setLastSaveError('');
+  }, [draftSnapshot, failedSnapshot]);
+
+  useEffect(() => {
+    if (!chatId || !draft || !hasChanges || isSavingSettings) {
+      return;
+    }
+
+    if (failedSnapshot && failedSnapshot === draftSnapshot) {
       return;
     }
 
     const parsed = validateDraft(draft);
     if (!parsed) {
-      pushToast({
-        tone: 'danger',
-        title: 'Проверьте поля формы',
-        description: 'В некоторых настройках есть ошибки валидации.',
-      });
       return;
     }
 
-    saveMutation.mutate(parsed);
-  }
+    const timeoutId = window.setTimeout(() => {
+      mutateSettings(parsed);
+    }, AUTO_SAVE_DELAY_MS);
 
-  function handleReset() {
-    if (!settingsQuery.data) {
-      return;
-    }
-
-    setDraft(settingsQuery.data);
-    setFieldErrors({});
-    setDomainInput('');
-    setDomainInputError('');
-    pushToast({ title: 'Изменения сброшены' });
-  }
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [chatId, draft, draftSnapshot, failedSnapshot, hasChanges, isSavingSettings, mutateSettings]);
 
   function handleAddDomain() {
     if (!chatId) {
@@ -315,6 +324,21 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const linkPolicyError = fieldErrors.linkPolicy;
   const allowlistDomains = domainsQuery.data ?? [];
   const isAllowlistMode = draft?.linkPolicy === 'ALLOWLIST_ONLY';
+  const hasSaveError = Boolean(lastSaveError && failedSnapshot === draftSnapshot);
+  const statusToneClass = isSavingSettings
+    ? 'chip--warning'
+    : hasSaveError
+      ? 'chip--danger'
+      : hasChanges
+        ? 'chip--warning'
+        : 'chip--success';
+  const statusLabel = isSavingSettings
+    ? 'Сохраняем...'
+    : hasSaveError
+      ? 'Не сохранено'
+      : hasChanges
+        ? 'Есть изменения'
+        : 'Сохранено';
 
   return (
     <div className="page-stack page-enter">
@@ -476,27 +500,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       {!settingsQuery.isLoading && !settingsQuery.error && draft ? (
         <div className="settings-action-bar glass-card glass-card--sm">
           <div className="settings-action-bar__info">
-            <span className={cn('chip', hasChanges ? 'chip--warning' : 'chip--success')}>
-              {hasChanges ? 'Есть изменения' : 'Сохранено'}
-            </span>
-          </div>
-          <div className="settings-action-bar__buttons">
-            <button
-              type="button"
-              className="button button--ghost"
-              onClick={handleReset}
-              disabled={!hasChanges || saveMutation.isPending}
-            >
-              Сбросить
-            </button>
-            <button
-              type="button"
-              className="button button--accent"
-              onClick={handleSave}
-              disabled={!hasChanges || saveMutation.isPending}
-            >
-              {saveMutation.isPending ? 'Сохраняем...' : 'Сохранить'}
-            </button>
+            <span className={cn('chip', statusToneClass)}>{statusLabel}</span>
+            {hasSaveError ? <p className="settings-action-bar__error">{lastSaveError}</p> : null}
           </div>
         </div>
       ) : null}
