@@ -506,6 +506,37 @@
   color: var(--text-secondary);
 }
 
+.settings-subsection-divider {
+  position: relative;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.settings-subsection-divider::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  border-top: 1px solid rgba(62, 96, 127, 0.2);
+}
+
+.settings-subsection-divider span {
+  position: relative;
+  z-index: 1;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  background: rgba(245, 251, 255, 0.88);
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 .settings-info-button {
   width: 24px;
   height: 24px;

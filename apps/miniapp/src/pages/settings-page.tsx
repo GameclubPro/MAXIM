@@ -501,6 +501,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 {linkPolicyError ? <small className="field__hint">{linkPolicyError}</small> : null}
               </div>
 
+              <div className="settings-subsection-divider" role="separator" aria-label="Блок сообщений бота">
+                <span>Сообщения бота</span>
+              </div>
+
               <div className="settings-native-toggle">
                 <div className="settings-native-toggle__row">
                   <div className="settings-native-toggle__title-wrap">
@@ -683,6 +687,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
           >
             <div className="settings-section__head">
               <h3>Дубли сообщений</h3>
+            </div>
+
+            <div className="settings-subsection-divider" role="separator" aria-label="Блок сообщений бота">
+              <span>Сообщения бота</span>
             </div>
 
             <div className="settings-native-toggle">
@@ -1126,6 +1134,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   </span>
                 </label>
               </div>
+            </div>
+
+            <div className="settings-subsection-divider" role="separator" aria-label="Блок сообщений бота">
+              <span>Сообщения бота</span>
             </div>
 
             <div className="settings-native-toggle">
