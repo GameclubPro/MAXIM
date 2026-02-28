@@ -13,7 +13,7 @@ import { saveLastChatId } from '../lib/last-chat';
 
 type FieldErrors = Partial<Record<keyof ChatSettings, string>>;
 
-const DOMAIN_PATTERN = /^(?=.{3,253}$)(?!-)(?:[a-z0-9-]{1,63}\.)+[a-z]{2,63}$/i;
+const DOMAIN_PATTERN = /^(?=.{3,253}$)(?!-)(?:[a-z0-9-]{1,63}\.)+[a-z0-9-]{2,63}$/i;
 const AUTO_SAVE_DELAY_MS = 650;
 const BAN_DURATION_MIN_HOURS = 1;
 const BAN_DURATION_MAX_HOURS = 36;
@@ -71,11 +71,15 @@ const LINK_POLICY_OPTIONS: Array<{
   label: string;
   description: string;
 }> = [
-  { value: 'ALERT_ONLY', label: 'Только предупреждать', description: 'Сообщение не удаляется.' },
+  {
+    value: 'ALERT_ONLY',
+    label: 'Не удалять ссылки',
+    description: 'Ссылки остаются в чате, блок санкций скрыт.',
+  },
   {
     value: 'ALLOWLIST_ONLY',
-    label: 'Удалять кроме allowlist',
-    description: 'Работает по списку разрешенных доменов.',
+    label: 'Удалять кроме...',
+    description: 'Разрешите нужные ссылки в нижней панели.',
   },
   {
     value: 'BLOCKLIST_ONLY',
@@ -108,13 +112,24 @@ function formatApiError(error: unknown): string {
 }
 
 function normalizeDomain(value: string): string {
-  return (
-    value
-      .trim()
-      .toLowerCase()
-      .replace(/^https?:\/\//, '')
-      .split('/')[0] ?? ''
-  );
+  const raw = value.trim().toLowerCase();
+  if (!raw) {
+    return '';
+  }
+
+  const withScheme = /^[a-z][a-z\d+\-.]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+
+  try {
+    const hostname = new URL(withScheme).hostname.toLowerCase();
+    return hostname.replace(/^www\./, '').replace(/\.$/, '');
+  } catch {
+    return raw
+      .replace(/^[a-z][a-z\d+\-.]*:\/\//i, '')
+      .split(/[/?#]/)[0]
+      .replace(/:\d+$/, '')
+      .replace(/^www\./, '')
+      .replace(/\.$/, '');
+  }
 }
 
 function getRouteChatTitle(state: unknown): string {
@@ -279,12 +294,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       setDomainInput('');
       setDomainInputError('');
       void queryClient.invalidateQueries({ queryKey: ['domains', chatId] });
-      pushToast({ tone: 'success', title: 'Домен добавлен в разрешенные' });
+      pushToast({ tone: 'success', title: 'Ссылка добавлена в разрешенные' });
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось добавить домен',
+        title: 'Не удалось добавить ссылку',
         description: formatApiError(error),
       });
     },
@@ -294,12 +309,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     mutationFn: (domain: string) => api.removeDomain(chatId ?? '', domain),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['domains', chatId] });
-      pushToast({ tone: 'success', title: 'Домен удален из разрешенных' });
+      pushToast({ tone: 'success', title: 'Ссылка удалена из разрешенных' });
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось удалить домен',
+        title: 'Не удалось удалить ссылку',
         description: formatApiError(error),
       });
     },
@@ -416,12 +431,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
     const normalized = normalizeDomain(domainInput);
     if (!normalized) {
-      setDomainInputError('Введите домен, например example.com');
+      setDomainInputError('Введите домен или полную ссылку');
       return;
     }
 
     if (!DOMAIN_PATTERN.test(normalized)) {
-      setDomainInputError('Неверный формат домена');
+      setDomainInputError('Не удалось распознать домен в ссылке');
       return;
     }
 
@@ -429,7 +444,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     if (alreadyExists) {
       setDomainInputError('');
       setDomainInput('');
-      pushToast({ title: 'Домен уже есть в списке' });
+      pushToast({ title: 'Ссылка уже есть в списке' });
       return;
     }
 
@@ -465,6 +480,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const linkPolicyError = fieldErrors.linkPolicy;
   const allowlistDomains = domainsQuery.data ?? [];
   const isAllowlistMode = draft?.linkPolicy === 'ALLOWLIST_ONLY';
+  const shouldShowLinkStages = draft?.linkPolicy !== 'ALERT_ONLY';
   const showLinkBotButtonErrors = Boolean(draft?.linkBotMessageEnabled && draft?.linkBotButtonEnabled);
   const linkBotButtonUrlError = showLinkBotButtonErrors ? fieldErrors.linkBotButtonUrl : undefined;
   const linkBotButtonTextError = showLinkBotButtonErrors ? fieldErrors.linkBotButtonText : undefined;
@@ -499,6 +515,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     draft?.linkBanEnabled,
     draft?.linkKickEnabled,
   ].filter(Boolean).length;
+  const linksHeaderSummary =
+    draft?.linkPolicy === 'ALERT_ONLY'
+      ? 'Ссылки не удаляются'
+      : draft?.linkPolicy === 'ALLOWLIST_ONLY'
+        ? `Разрешено: ${allowlistDomains.length}`
+        : `${linkStagesEnabledCount}/4 ступени включено`;
   const duplicateStagesEnabledCount = [
     draft?.duplicateWarnEnabled,
     draft?.duplicateBanEnabled,
@@ -559,7 +581,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               >
                 <span className="settings-section__toggle-main">
                   <h3>Модерация ссылок</h3>
-                  <small>{linkStagesEnabledCount}/4 ступени включено</small>
+                  <small>{linksHeaderSummary}</small>
                 </span>
                 <SectionChevron isOpen={expandedSections.links} />
               </button>
@@ -587,10 +609,19 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         type="button"
                         role="radio"
                         aria-checked={isActive}
-                        className={cn('policy-card', isActive && 'is-active')}
+                        className={cn(
+                          'policy-card',
+                          option.value === 'ALERT_ONLY' && 'policy-card--alert',
+                          option.value === 'ALLOWLIST_ONLY' && 'policy-card--allowlist',
+                          option.value === 'BLOCKLIST_ONLY' && 'policy-card--blocklist',
+                          isActive && 'is-active',
+                        )}
                         onClick={() => setFieldValue('linkPolicy', option.value)}
                       >
-                        <span>{option.label}</span>
+                        <span className="policy-card__title-row">
+                          <span className="policy-card__marker" aria-hidden />
+                          <span>{option.label}</span>
+                        </span>
                         <small>{option.description}</small>
                       </button>
                     );
@@ -600,280 +631,306 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               </div>
 
               {isAllowlistMode ? (
-                <div
-                  className={cn(
-                    'field',
-                    'allowlist-panel',
-                    domainInputError && 'allowlist-panel--error',
-                  )}
-                >
-                  <div className="allowlist-panel__head">
-                    <span className="field__label">Allowlist доменов</span>
-                    <span className="chip">{allowlistDomains.length}</span>
-                  </div>
-                  <div className="allowlist-add-row">
-                    <input
-                      type="text"
-                      value={domainInput}
-                      onChange={(event) => {
-                        setDomainInput(event.target.value);
-                        setDomainInputError('');
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          event.preventDefault();
-                          handleAddDomain();
-                        }
-                      }}
-                      placeholder="example.com"
-                    />
-                    <button
-                      type="button"
-                      className="button button--accent allowlist-add-row__button"
-                      onClick={handleAddDomain}
-                      disabled={addDomainMutation.isPending || removeDomainMutation.isPending}
+                <div className="allowlist-drawer">
+                  <div className="allowlist-drawer__inner">
+                    <div
+                      className={cn(
+                        'field',
+                        'allowlist-panel',
+                        domainInputError && 'allowlist-panel--error',
+                      )}
                     >
-                      {addDomainMutation.isPending ? 'Добавляем...' : 'Добавить'}
-                    </button>
-                  </div>
-                  {domainInputError ? (
-                    <small className="field__hint">{domainInputError}</small>
-                  ) : null}
+                      <div className="allowlist-panel__handle" aria-hidden />
 
-                  {domainsQuery.isLoading ? (
-                    <p className="allowlist-empty">Загрузка списка...</p>
-                  ) : null}
+                      <div className="allowlist-panel__head">
+                        <span className="field__label">Разрешенные ссылки</span>
+                        <span className="chip">{allowlistDomains.length}</span>
+                      </div>
 
-                  {domainsQuery.error ? (
-                    <p className="allowlist-empty allowlist-empty--error">
-                      Ошибка: {formatApiError(domainsQuery.error)}
-                    </p>
-                  ) : null}
+                      <p className="allowlist-panel__subtitle">
+                        Можно вставить полный URL, сохраним домен автоматически.
+                      </p>
 
-                  {!domainsQuery.isLoading && !domainsQuery.error ? (
-                    allowlistDomains.length > 0 ? (
-                      <ul className="allowlist-list" aria-label="Разрешенные домены">
-                        {allowlistDomains.map((domain) => (
-                          <li key={domain} className="allowlist-item">
-                            <span className="allowlist-item__domain">{domain}</span>
-                            <button
-                              type="button"
-                              className="allowlist-item__remove"
-                              onClick={() => removeDomainMutation.mutate(domain)}
-                              disabled={
-                                removeDomainMutation.isPending || addDomainMutation.isPending
-                              }
-                            >
-                              Удалить
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="allowlist-empty">Список пуст</p>
-                    )
-                  ) : null}
-                </div>
-              ) : null}
-
-              <div className="settings-subsection-divider" role="separator" aria-label="Блок сообщений бота">
-                <span>Сообщения бота</span>
-              </div>
-
-              <div className="settings-native-toggle">
-                <div className="settings-native-toggle__row">
-                  <div className="settings-native-toggle__title-wrap">
-                    <span className="settings-native-toggle__title">1. Объяснение</span>
-                    <button
-                      type="button"
-                      className={cn('settings-info-button', openHintKey === 'link' && 'is-open')}
-                      aria-label="Пояснение для тумблера сообщений о ссылках"
-                      aria-controls="link-bot-message-hint"
-                      aria-expanded={openHintKey === 'link'}
-                      onClick={() => toggleHint('link')}
-                    >
-                      <span aria-hidden>i</span>
-                    </button>
-                  </div>
-
-                  <label
-                    className="settings-native-switch"
-                    aria-label="Включить объяснение для модерации ссылок"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={draft.linkBotMessageEnabled}
-                      onChange={(event) => {
-                        const enabled = event.target.checked;
-                        setFieldValue('linkBotMessageEnabled', enabled);
-                        if (!enabled) {
-                          setFieldValue('linkBotButtonEnabled', false);
-                          clearFieldError('linkBotButtonUrl');
-                          clearFieldError('linkBotButtonText');
-                        }
-                      }}
-                    />
-                    <span className="toggle-switch" aria-hidden>
-                      <span className="toggle-switch__thumb" />
-                    </span>
-                  </label>
-                </div>
-
-                {openHintKey === 'link' ? (
-                  <p id="link-bot-message-hint" className="settings-native-toggle__hint">
-                    Санкции усиливаются по ступеням, если пользователь повторно отправляет ссылки в течение 24 часов: сначала объяснение, затем предупреждение, потом бан на 6 часов и далее удаление из группы.
-                  </p>
-                ) : null}
-              </div>
-
-              <div className="settings-native-toggle settings-native-toggle--nested">
-                <div className="settings-native-toggle__row">
-                  <span className="settings-native-toggle__title">2. Предупреждение</span>
-
-                  <label
-                    className="settings-native-switch"
-                    aria-label="Включить предупреждение за вторую ссылку в 24 часа"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={draft.linkWarnEnabled}
-                      onChange={(event) =>
-                        setFieldValue('linkWarnEnabled', event.target.checked)
-                      }
-                    />
-                    <span className="toggle-switch" aria-hidden>
-                      <span className="toggle-switch__thumb" />
-                    </span>
-                  </label>
-                </div>
-              </div>
-
-              <div className="settings-native-toggle settings-native-toggle--nested">
-                <div className="settings-native-toggle__row">
-                  <span className="settings-native-toggle__title">3. Бан на 6ч</span>
-
-                  <label
-                    className="settings-native-switch"
-                    aria-label="Включить бан на шесть часов за третью ссылку в 24 часа"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={draft.linkBanEnabled}
-                      onChange={(event) =>
-                        setFieldValue('linkBanEnabled', event.target.checked)
-                      }
-                    />
-                    <span className="toggle-switch" aria-hidden>
-                      <span className="toggle-switch__thumb" />
-                    </span>
-                  </label>
-                </div>
-              </div>
-
-              <div className="settings-native-toggle settings-native-toggle--nested">
-                <div className="settings-native-toggle__row">
-                  <span className="settings-native-toggle__title">4. Удаление из группы</span>
-
-                  <label
-                    className="settings-native-switch"
-                    aria-label="Включить удаление из группы за четвертую ссылку в 24 часа"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={draft.linkKickEnabled}
-                      onChange={(event) =>
-                        setFieldValue('linkKickEnabled', event.target.checked)
-                      }
-                    />
-                    <span className="toggle-switch" aria-hidden>
-                      <span className="toggle-switch__thumb" />
-                    </span>
-                  </label>
-                </div>
-              </div>
-
-              {draft.linkBotMessageEnabled ? (
-                <div
-                  className={cn(
-                    'settings-native-toggle',
-                    'settings-native-toggle--nested',
-                    hasLinkBotButtonError && 'field--error',
-                  )}
-                >
-                  <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title">Добавить кнопку</span>
-
-                    <label
-                      className="settings-native-switch"
-                      aria-label="Добавить кнопку в сообщение бота для модерации ссылок"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={draft.linkBotButtonEnabled}
-                        onChange={(event) => {
-                          const enabled = event.target.checked;
-                          setFieldValue('linkBotButtonEnabled', enabled);
-                          if (!enabled) {
-                            clearFieldError('linkBotButtonUrl');
-                            clearFieldError('linkBotButtonText');
-                          }
-                        }}
-                      />
-                      <span className="toggle-switch" aria-hidden>
-                        <span className="toggle-switch__thumb" />
-                      </span>
-                    </label>
-                  </div>
-
-                  {draft.linkBotButtonEnabled ? (
-                    <div className="settings-button-fields">
-                      <label
-                        className={cn('field settings-url-field', linkBotButtonUrlError && 'field--error')}
-                      >
-                        <span className="field__label">Ссылка кнопки</span>
-                        <input
-                          type="url"
-                          inputMode="url"
-                          value={draft.linkBotButtonUrl}
-                          onChange={(event) => setFieldValue('linkBotButtonUrl', event.target.value)}
-                          placeholder="https://max.ru/channel/..."
-                        />
-                        {linkBotButtonUrlError ? (
-                          <small className="field__hint">{linkBotButtonUrlError}</small>
-                        ) : null}
-                      </label>
-
-                      <label
-                        className={cn(
-                          'field settings-text-field',
-                          linkBotButtonTextError && 'field--error',
-                        )}
-                      >
-                        <span className="field__label">Название кнопки</span>
+                      <div className="allowlist-add-row">
                         <input
                           type="text"
-                          maxLength={32}
-                          value={draft.linkBotButtonText}
-                          onChange={(event) =>
-                            setFieldValue('linkBotButtonText', event.target.value)
-                          }
-                          placeholder="Открыть"
+                          inputMode="url"
+                          value={domainInput}
+                          onChange={(event) => {
+                            setDomainInput(event.target.value);
+                            setDomainInputError('');
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              event.preventDefault();
+                              handleAddDomain();
+                            }
+                          }}
+                          placeholder="https://example.com/path"
                         />
-                        {linkBotButtonTextError ? (
-                          <small className="field__hint">{linkBotButtonTextError}</small>
-                        ) : null}
-                      </label>
-                    </div>
-                  ) : null}
+                        <button
+                          type="button"
+                          className="button button--accent allowlist-add-row__button"
+                          onClick={handleAddDomain}
+                          disabled={addDomainMutation.isPending || removeDomainMutation.isPending}
+                        >
+                          {addDomainMutation.isPending ? 'Добавляем...' : 'Добавить'}
+                        </button>
+                      </div>
 
-                  {!hasLinkBotButtonError ? (
-                    <p className="settings-native-toggle__hint">
-                      Добавляет кнопку в сообщение бота. Подходит для ссылки на чат, канал или
-                      профиль.
-                    </p>
-                  ) : null}
+                      {domainInputError ? (
+                        <small className="field__hint">{domainInputError}</small>
+                      ) : null}
+
+                      {domainsQuery.isLoading ? (
+                        <p className="allowlist-empty">Загрузка списка...</p>
+                      ) : null}
+
+                      {domainsQuery.error ? (
+                        <p className="allowlist-empty allowlist-empty--error">
+                          Ошибка: {formatApiError(domainsQuery.error)}
+                        </p>
+                      ) : null}
+
+                      {!domainsQuery.isLoading && !domainsQuery.error ? (
+                        allowlistDomains.length > 0 ? (
+                          <ul className="allowlist-list" aria-label="Разрешенные ссылки">
+                            {allowlistDomains.map((domain) => (
+                              <li key={domain} className="allowlist-item">
+                                <span className="allowlist-item__domain">{domain}</span>
+                                <button
+                                  type="button"
+                                  className="allowlist-item__remove"
+                                  onClick={() => removeDomainMutation.mutate(domain)}
+                                  disabled={
+                                    removeDomainMutation.isPending || addDomainMutation.isPending
+                                  }
+                                >
+                                  Удалить
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        ) : (
+                          <p className="allowlist-empty">Список пуст</p>
+                        )
+                      ) : null}
+                    </div>
+                  </div>
                 </div>
               ) : null}
+
+              {shouldShowLinkStages ? (
+                <>
+                  <div
+                    className="settings-subsection-divider"
+                    role="separator"
+                    aria-label="Блок сообщений бота"
+                  >
+                    <span>Сообщения бота</span>
+                  </div>
+
+                  <div className="settings-native-toggle">
+                    <div className="settings-native-toggle__row">
+                      <div className="settings-native-toggle__title-wrap">
+                        <span className="settings-native-toggle__title">1. Объяснение</span>
+                        <button
+                          type="button"
+                          className={cn('settings-info-button', openHintKey === 'link' && 'is-open')}
+                          aria-label="Пояснение для тумблера сообщений о ссылках"
+                          aria-controls="link-bot-message-hint"
+                          aria-expanded={openHintKey === 'link'}
+                          onClick={() => toggleHint('link')}
+                        >
+                          <span aria-hidden>i</span>
+                        </button>
+                      </div>
+
+                      <label
+                        className="settings-native-switch"
+                        aria-label="Включить объяснение для модерации ссылок"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={draft.linkBotMessageEnabled}
+                          onChange={(event) => {
+                            const enabled = event.target.checked;
+                            setFieldValue('linkBotMessageEnabled', enabled);
+                            if (!enabled) {
+                              setFieldValue('linkBotButtonEnabled', false);
+                              clearFieldError('linkBotButtonUrl');
+                              clearFieldError('linkBotButtonText');
+                            }
+                          }}
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
+
+                    {openHintKey === 'link' ? (
+                      <p id="link-bot-message-hint" className="settings-native-toggle__hint">
+                        Санкции усиливаются по ступеням, если пользователь повторно отправляет
+                        ссылки в течение 24 часов: сначала объяснение, затем предупреждение, потом
+                        бан на 6 часов и далее удаление из группы.
+                      </p>
+                    ) : null}
+                  </div>
+
+                  <div className="settings-native-toggle settings-native-toggle--nested">
+                    <div className="settings-native-toggle__row">
+                      <span className="settings-native-toggle__title">2. Предупреждение</span>
+
+                      <label
+                        className="settings-native-switch"
+                        aria-label="Включить предупреждение за вторую ссылку в 24 часа"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={draft.linkWarnEnabled}
+                          onChange={(event) => setFieldValue('linkWarnEnabled', event.target.checked)}
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="settings-native-toggle settings-native-toggle--nested">
+                    <div className="settings-native-toggle__row">
+                      <span className="settings-native-toggle__title">3. Бан на 6ч</span>
+
+                      <label
+                        className="settings-native-switch"
+                        aria-label="Включить бан на шесть часов за третью ссылку в 24 часа"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={draft.linkBanEnabled}
+                          onChange={(event) => setFieldValue('linkBanEnabled', event.target.checked)}
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="settings-native-toggle settings-native-toggle--nested">
+                    <div className="settings-native-toggle__row">
+                      <span className="settings-native-toggle__title">4. Удаление из группы</span>
+
+                      <label
+                        className="settings-native-switch"
+                        aria-label="Включить удаление из группы за четвертую ссылку в 24 часа"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={draft.linkKickEnabled}
+                          onChange={(event) => setFieldValue('linkKickEnabled', event.target.checked)}
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+
+                  {draft.linkBotMessageEnabled ? (
+                    <div
+                      className={cn(
+                        'settings-native-toggle',
+                        'settings-native-toggle--nested',
+                        hasLinkBotButtonError && 'field--error',
+                      )}
+                    >
+                      <div className="settings-native-toggle__row">
+                        <span className="settings-native-toggle__title">Добавить кнопку</span>
+
+                        <label
+                          className="settings-native-switch"
+                          aria-label="Добавить кнопку в сообщение бота для модерации ссылок"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={draft.linkBotButtonEnabled}
+                            onChange={(event) => {
+                              const enabled = event.target.checked;
+                              setFieldValue('linkBotButtonEnabled', enabled);
+                              if (!enabled) {
+                                clearFieldError('linkBotButtonUrl');
+                                clearFieldError('linkBotButtonText');
+                              }
+                            }}
+                          />
+                          <span className="toggle-switch" aria-hidden>
+                            <span className="toggle-switch__thumb" />
+                          </span>
+                        </label>
+                      </div>
+
+                      {draft.linkBotButtonEnabled ? (
+                        <div className="settings-button-fields">
+                          <label
+                            className={cn(
+                              'field settings-url-field',
+                              linkBotButtonUrlError && 'field--error',
+                            )}
+                          >
+                            <span className="field__label">Ссылка кнопки</span>
+                            <input
+                              type="url"
+                              inputMode="url"
+                              value={draft.linkBotButtonUrl}
+                              onChange={(event) =>
+                                setFieldValue('linkBotButtonUrl', event.target.value)
+                              }
+                              placeholder="https://max.ru/channel/..."
+                            />
+                            {linkBotButtonUrlError ? (
+                              <small className="field__hint">{linkBotButtonUrlError}</small>
+                            ) : null}
+                          </label>
+
+                          <label
+                            className={cn(
+                              'field settings-text-field',
+                              linkBotButtonTextError && 'field--error',
+                            )}
+                          >
+                            <span className="field__label">Название кнопки</span>
+                            <input
+                              type="text"
+                              maxLength={32}
+                              value={draft.linkBotButtonText}
+                              onChange={(event) =>
+                                setFieldValue('linkBotButtonText', event.target.value)
+                              }
+                              placeholder="Открыть"
+                            />
+                            {linkBotButtonTextError ? (
+                              <small className="field__hint">{linkBotButtonTextError}</small>
+                            ) : null}
+                          </label>
+                        </div>
+                      ) : null}
+
+                      {!hasLinkBotButtonError ? (
+                        <p className="settings-native-toggle__hint">
+                          Добавляет кнопку в сообщение бота. Подходит для ссылки на чат, канал или
+                          профиль.
+                        </p>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </>
+              ) : (
+                <div className="policy-mode-hint" role="note">
+                  Режим без удаления включен: тумблеры санкций скрыты.
+                </div>
+              )}
                 </div>
               </div>
             </div>
