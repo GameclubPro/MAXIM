@@ -48,6 +48,29 @@ function createUpdate(): MaxUpdate {
   };
 }
 
+function createBotAuthoredUpdate(): MaxUpdate {
+  return {
+    updateId: 'upd-bot-1',
+    type: 'message_created',
+    message: {
+      messageId: 'msg-bot-1',
+      chatId: 'chat-1',
+      senderId: 'bot-1',
+      text: 'service notice',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      message: {
+        sender: {
+          id: 'bot-1',
+          type: 'bot',
+          is_bot: true,
+        },
+      },
+    },
+  };
+}
+
 function createOldUpdate(): MaxUpdate {
   return {
     updateId: 'upd-old-1',
@@ -64,6 +87,55 @@ function createOldUpdate(): MaxUpdate {
 }
 
 describe('ModerationService', () => {
+  it('ignores bot-authored messages from webhook payload', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createBotAuthoredUpdate());
+
+    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+  });
+
   it('handles duplicate escalation separately and does not call SanctionService', async () => {
     const prisma = {
       chat: {

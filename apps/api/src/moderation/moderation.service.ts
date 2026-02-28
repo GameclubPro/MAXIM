@@ -63,6 +63,10 @@ export class ModerationService {
       return;
     }
 
+    if (this.isBotAuthoredMessage(update)) {
+      return;
+    }
+
     const { chatId, chatTitle, senderId, text, createdAt, messageId } = update.message;
     const fallbackTitle = `Chat ${chatId}`;
     const resolvedTitle = chatTitle?.trim() || fallbackTitle;
@@ -455,6 +459,46 @@ export class ModerationService {
     }
 
     return `${windowSec}с`;
+  }
+
+  private isBotAuthoredMessage(update: MaxUpdate): boolean {
+    const raw = this.asRecord(update.raw);
+    const message = this.asRecord(raw?.message);
+    const candidates = [
+      this.asRecord(message?.sender),
+      this.asRecord(message?.from),
+      this.asRecord(raw?.sender),
+      this.asRecord(raw?.from),
+    ].filter((item): item is Record<string, unknown> => item !== null);
+
+    for (const sender of candidates) {
+      const type = this.readLowerString(sender.type) ?? this.readLowerString(sender.kind);
+      if (type === 'bot' || type === 'service') {
+        return true;
+      }
+
+      if (
+        sender.is_bot === true ||
+        sender.isBot === true ||
+        sender.bot === true ||
+        sender.is_service === true ||
+        sender.isService === true
+      ) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  }
+
+  private readLowerString(value: unknown): string | null {
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim().toLowerCase() : null;
   }
 }
 
