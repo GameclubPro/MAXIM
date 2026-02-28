@@ -651,14 +651,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                 {openHintKey === 'link' ? (
                   <p id="link-bot-message-hint" className="settings-native-toggle__hint">
-                    Ступени работают в окне 24ч: 1-я ссылка - объяснение, 2-я - предупреждение, 3-я - бан 6ч, 4-я - удаление из группы.
+                    Санкции усиливаются по ступеням, если пользователь повторно отправляет ссылки в течение 24 часов: сначала объяснение, затем предупреждение, потом бан на 6 часов и далее удаление из группы.
                   </p>
                 ) : null}
               </div>
 
               <div className="settings-native-toggle settings-native-toggle--nested">
                 <div className="settings-native-toggle__row">
-                  <span className="settings-native-toggle__title">2. Предупреждение (24ч)</span>
+                  <span className="settings-native-toggle__title">2. Предупреждение</span>
 
                   <label
                     className="settings-native-switch"
@@ -680,7 +680,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
               <div className="settings-native-toggle settings-native-toggle--nested">
                 <div className="settings-native-toggle__row">
-                  <span className="settings-native-toggle__title">3. Бан на 6ч (24ч)</span>
+                  <span className="settings-native-toggle__title">3. Бан на 6ч</span>
 
                   <label
                     className="settings-native-switch"
@@ -702,7 +702,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
               <div className="settings-native-toggle settings-native-toggle--nested">
                 <div className="settings-native-toggle__row">
-                  <span className="settings-native-toggle__title">4. Удаление из группы (24ч)</span>
+                  <span className="settings-native-toggle__title">4. Удаление из группы</span>
 
                   <label
                     className="settings-native-switch"
