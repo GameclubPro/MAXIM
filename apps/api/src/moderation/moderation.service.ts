@@ -14,6 +14,15 @@ type ProcessWebhookJob = {
   webhookEventId: string;
 };
 
+type ActiveBan = {
+  eventId: string;
+  issuedAt: Date;
+  expiresAt: Date;
+};
+
+const ACTIVE_BAN_WINDOW_MS = 6 * 60 * 60 * 1000;
+const ACTIVE_BAN_WINDOW_LABEL = '6ч';
+
 @Injectable()
 export class ModerationService {
   private readonly logger = new Logger(ModerationService.name);
@@ -97,6 +106,19 @@ export class ModerationService {
     const settings = chat.settings;
     if (!settings) {
       this.logger.warn({ chatId }, 'Chat settings missing after upsert');
+      return;
+    }
+
+    const activeBan = await this.getActiveBan(chatId, senderId);
+    if (activeBan) {
+      await this.handleActiveBanMessage({
+        chatId,
+        userId: senderId,
+        messageId,
+        text,
+        createdAt,
+        ban: activeBan,
+      });
       return;
     }
 
@@ -207,12 +229,13 @@ export class ModerationService {
         warnThreshold: settings.warnThreshold,
         repeatBanWindowDays: settings.repeatBanWindowDays,
       });
-
-      if (action === SanctionAction.KICK) {
-        await this.maxClient.kickMember(chatId, senderId);
-      } else if (action === SanctionAction.BAN) {
-        await this.maxClient.banMember(chatId, senderId);
-      }
+      await this.applySanctionAction({
+        chatId,
+        userId: senderId,
+        action,
+        userLabel,
+        messageId,
+      });
     }
 
     await this.prisma.moderationEvent.create({
@@ -289,7 +312,7 @@ export class ModerationService {
       );
     }
 
-    if (duplicateBotMessageEnabled) {
+    if (duplicateBotMessageEnabled && decision.action !== 'BAN') {
       try {
         await this.maxClient.sendMessage(chatId, this.buildDuplicateExplanation(userLabel, decision));
       } catch (error: unknown) {
@@ -306,11 +329,13 @@ export class ModerationService {
     }
 
     const action = this.toSanctionAction(decision.action);
-    if (action === SanctionAction.KICK) {
-      await this.maxClient.kickMember(chatId, userId);
-    } else if (action === SanctionAction.BAN) {
-      await this.maxClient.banMember(chatId, userId);
-    }
+    await this.applySanctionAction({
+      chatId,
+      userId,
+      action,
+      userLabel,
+      messageId,
+    });
 
     await this.prisma.moderationEvent.create({
       data: {
@@ -433,7 +458,7 @@ export class ModerationService {
       return `Сообщение пользователя ${userLabel} удалено за дубли сообщений. Пользователь удален из чата.`;
     }
 
-    return `Сообщение пользователя ${userLabel} удалено за дубли сообщений. Пользователь заблокирован в чате.`;
+    return `Сообщение пользователя ${userLabel} удалено за дубли сообщений. Пользователю выдан бан на ${ACTIVE_BAN_WINDOW_LABEL}.`;
   }
 
   private buildDuplicateHitExplanation(userLabel: string, canDeleteMessage: boolean): string {
@@ -448,6 +473,169 @@ export class ModerationService {
     const normalized = typeof senderName === 'string' ? senderName.trim() : '';
     const safe = normalized.length > 0 ? normalized.replace(/"/g, "'") : 'Пользователь';
     return `"${safe}"`;
+  }
+
+  private async applySanctionAction(params: {
+    chatId: string;
+    userId: string;
+    action: SanctionAction;
+    userLabel: string;
+    messageId: string;
+  }) {
+    const { chatId, userId, action, userLabel, messageId } = params;
+    if (action === SanctionAction.KICK) {
+      try {
+        await this.maxClient.kickMember(chatId, userId);
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            userId,
+            messageId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to kick member',
+        );
+      }
+      return;
+    }
+
+    if (action !== SanctionAction.BAN) {
+      return;
+    }
+
+    try {
+      await this.maxClient.banMember(chatId, userId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to ban member',
+      );
+    }
+
+    await this.sendBanNotice({
+      chatId,
+      userId,
+      messageId,
+      userLabel,
+    });
+  }
+
+  private async sendBanNotice(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    userLabel: string;
+  }) {
+    const { chatId, userId, messageId, userLabel } = params;
+    try {
+      await this.maxClient.sendMessage(chatId, this.buildBanNotice(userLabel));
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to send ban notice message',
+      );
+    }
+  }
+
+  private buildBanNotice(userLabel: string): string {
+    return `Пользователю ${userLabel} выдан бан на ${ACTIVE_BAN_WINDOW_LABEL}.`;
+  }
+
+  private async getActiveBan(chatId: string, userId: string): Promise<ActiveBan | null> {
+    const latestBan = await this.prisma.moderationEvent.findFirst({
+      where: {
+        chatId,
+        userId,
+        action: SanctionAction.BAN,
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+      select: {
+        id: true,
+        createdAt: true,
+      },
+    });
+
+    if (!latestBan) {
+      return null;
+    }
+
+    const expiresAt = new Date(latestBan.createdAt.getTime() + ACTIVE_BAN_WINDOW_MS);
+    if (expiresAt.getTime() <= Date.now()) {
+      return null;
+    }
+
+    return {
+      eventId: latestBan.id,
+      issuedAt: latestBan.createdAt,
+      expiresAt,
+    };
+  }
+
+  private async handleActiveBanMessage(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    text: string;
+    createdAt: string;
+    ban: ActiveBan;
+  }) {
+    const { chatId, userId, messageId, text, createdAt, ban } = params;
+    const messageAgeMs = Date.now() - new Date(createdAt).getTime();
+    const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
+
+    if (!canDeleteMessage) {
+      await this.maxClient.notifyModerators(
+        chatId,
+        `Сообщение от ${userId} попало под активный бан, но старше 24 часов и не может быть удалено`,
+      );
+      return;
+    }
+
+    try {
+      await this.maxClient.deleteMessage(chatId, messageId);
+      await this.prisma.moderationEvent.create({
+        data: {
+          chatId,
+          userId,
+          messageId,
+          eventType: EventType.MESSAGE,
+          ruleCode: 'BAN_ACTIVE_DELETE',
+          action: SanctionAction.DELETE_MESSAGE,
+          maskedExcerpt: maskText(text),
+          score: 1,
+          operator: Operator.BOT,
+          metadata: {
+            reason: 'Message removed during active ban window',
+            banEventId: ban.eventId,
+            banIssuedAt: ban.issuedAt.toISOString(),
+            banExpiresAt: ban.expiresAt.toISOString(),
+          },
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to delete message during active ban',
+      );
+    }
   }
 
   private isBotAuthoredMessage(update: MaxUpdate): boolean {

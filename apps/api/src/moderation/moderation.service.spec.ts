@@ -98,6 +98,7 @@ describe('ModerationService', () => {
         create: jest.fn(),
       },
       moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn(),
       },
       webhookEvent: {
@@ -138,6 +139,69 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
   });
 
+  it('deletes messages silently while 6h active ban is in effect', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'ban-1',
+          createdAt: new Date(Date.now() - 5 * 60 * 1000),
+        }),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'msg-1',
+        ruleCode: 'BAN_ACTIVE_DELETE',
+        action: SanctionAction.DELETE_MESSAGE,
+      }),
+    });
+  });
+
   it('handles duplicate escalation separately and does not call SanctionService', async () => {
     const prisma = {
       chat: {
@@ -152,6 +216,7 @@ describe('ModerationService', () => {
         create: jest.fn(),
       },
       moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn(),
       },
       webhookEvent: {
@@ -240,6 +305,7 @@ describe('ModerationService', () => {
         create: jest.fn(),
       },
       moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn(),
       },
       webhookEvent: {
@@ -288,6 +354,70 @@ describe('ModerationService', () => {
     );
   });
 
+  it('sends 6h ban notice for duplicate BAN even when duplicate toggle is disabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ duplicateBotMessageEnabled: false }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [],
+        duplicateDecision: {
+          action: 'BAN',
+          count: 4,
+          threshold: 4,
+          windowSec: 48 * 60 * 60,
+          hash: 'dup-ban-1',
+          nextAction: null,
+        },
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-1');
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Пользователю "Алексей" выдан бан на 6ч.',
+    );
+  });
+
   it('deletes duplicate hit and sends explanation before WARN stage', async () => {
     const prisma = {
       chat: {
@@ -302,6 +432,7 @@ describe('ModerationService', () => {
         create: jest.fn(),
       },
       moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn(),
       },
       webhookEvent: {
@@ -374,6 +505,7 @@ describe('ModerationService', () => {
         create: jest.fn(),
       },
       moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn(),
       },
       webhookEvent: {
@@ -438,6 +570,7 @@ describe('ModerationService', () => {
         create: jest.fn(),
       },
       moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn(),
       },
       webhookEvent: {
@@ -498,6 +631,7 @@ describe('ModerationService', () => {
         create: jest.fn(),
       },
       moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn(),
       },
       webhookEvent: {
@@ -569,6 +703,7 @@ describe('ModerationService', () => {
         create: jest.fn(),
       },
       moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn(),
       },
       webhookEvent: {
@@ -627,6 +762,7 @@ describe('ModerationService', () => {
         create: jest.fn(),
       },
       moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn(),
       },
       webhookEvent: {
