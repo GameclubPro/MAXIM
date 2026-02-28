@@ -606,6 +606,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           disabled={!enabled}
                           aria-label={`Окно для ступени ${stage.label} в часах`}
                         />
+                        <span className="duplicate-stage__suffix" aria-hidden>
+                          время
+                        </span>
                       </label>
 
                       <label
@@ -623,6 +626,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           disabled={!enabled}
                           aria-label={`Лимит повторов для ступени ${stage.label}`}
                         />
+                        <span className="duplicate-stage__suffix" aria-hidden>
+                          количество
+                        </span>
                       </label>
                     </div>
 

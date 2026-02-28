@@ -78,8 +78,8 @@
 
 .field input:focus,
 .field select:focus {
-  border-color: rgba(11, 132, 255, 0.55);
-  box-shadow: 0 0 0 3px rgba(11, 132, 255, 0.13);
+  border-color: rgba(62, 96, 127, 0.42);
+  box-shadow: 0 0 0 3px rgba(62, 96, 127, 0.13);
 }
 
 .field__hint {
@@ -467,7 +467,7 @@
 
 .duplicate-stage-list__head {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 78px 66px;
+  grid-template-columns: minmax(0, 1fr) 118px 146px;
   align-items: center;
   gap: 8px;
   padding: 0 10px;
@@ -484,7 +484,7 @@
   background: rgba(255, 255, 255, 0.45);
   padding: 8px 10px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 78px 66px;
+  grid-template-columns: minmax(0, 1fr) 118px 146px;
   align-items: center;
   gap: 8px;
 }
@@ -556,6 +556,7 @@
 
 .duplicate-stage__field {
   display: block;
+  position: relative;
   min-width: 0;
 }
 
@@ -564,11 +565,23 @@
   min-height: 34px;
   height: 34px;
   border-radius: 10px;
-  text-align: center;
+  text-align: left;
   font-size: 0.84rem;
   font-weight: 700;
-  padding: 6px 8px;
+  padding: 6px 84px 6px 10px;
   background: rgba(255, 255, 255, 0.82);
+}
+
+.duplicate-stage__suffix {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 0.7rem;
+  line-height: 1;
+  color: var(--text-muted);
+  white-space: nowrap;
+  pointer-events: none;
 }
 
 .duplicate-stage__errors {
@@ -585,7 +598,7 @@
 @media (min-width: 620px) {
   .duplicate-stage-list__head,
   .duplicate-stage {
-    grid-template-columns: minmax(0, 1fr) 92px 76px;
+    grid-template-columns: minmax(0, 1fr) 128px 156px;
   }
 }
 
@@ -608,8 +621,7 @@
   }
 
   .duplicate-stage__field input {
-    text-align: left;
-    padding: 6px 10px;
+    padding-right: 86px;
   }
 }
 

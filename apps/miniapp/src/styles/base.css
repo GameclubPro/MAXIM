@@ -1,5 +1,11 @@
 * {
   box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+*::selection {
+  background: rgba(62, 96, 127, 0.24);
+  color: var(--text-primary);
 }
 
 html,
@@ -61,6 +67,7 @@ p {
 
 a {
   color: inherit;
+  -webkit-tap-highlight-color: transparent;
 }
 
 button,
@@ -68,4 +75,21 @@ input,
 select {
   font: inherit;
   color: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+
+button,
+input,
+select,
+textarea,
+a {
+  outline: none;
+}
+
+button:focus,
+input:focus,
+select:focus,
+textarea:focus,
+a:focus {
+  outline: none;
 }
