@@ -20,8 +20,15 @@ export type DuplicateDecision = {
   nextAction: DuplicateAction | null;
 };
 
+export type DuplicateHit = {
+  count: number;
+  windowSec: number;
+  hash: string;
+};
+
 export type DetectionResult = {
   violations: RuleViolation[];
+  duplicateHit?: DuplicateHit;
   duplicateDecision?: DuplicateDecision;
 };
 
@@ -76,9 +83,9 @@ export class RuleEngineService {
     }
 
     const compactText = normalized.replace(/\s+/g, ' ').trim();
-    const duplicateDecision =
+    const duplicateState =
       compactText.length > 0
-        ? await this.detectDuplicateDecision({
+        ? await this.detectDuplicateState({
             chatId,
             userId,
             compactText,
@@ -88,29 +95,45 @@ export class RuleEngineService {
 
     return {
       violations,
-      ...(duplicateDecision ? { duplicateDecision } : {}),
+      ...(duplicateState?.hit ? { duplicateHit: duplicateState.hit } : {}),
+      ...(duplicateState?.decision ? { duplicateDecision: duplicateState.decision } : {}),
     };
   }
 
-  private async detectDuplicateDecision(params: {
+  private async detectDuplicateState(params: {
     chatId: string;
     userId: string;
     compactText: string;
     settings: ChatSettings;
-  }): Promise<DuplicateDecision | undefined> {
+  }): Promise<{
+    hit?: DuplicateHit;
+    decision?: DuplicateDecision;
+  }> {
     const { chatId, userId, compactText, settings } = params;
+    const hash = createHash('sha256').update(compactText).digest('hex').slice(0, 20);
+    const hitKey = `dup:v3:${chatId}:${userId}:${hash}:hit`;
+    const hitTotal = await this.redisCounter.incrementWithTtl(hitKey, settings.duplicateWindowSec + 1);
+    const hitCount = Math.max(0, hitTotal - 1);
+    const hit =
+      hitCount > 0
+        ? {
+            count: hitCount,
+            windowSec: settings.duplicateWindowSec,
+            hash,
+          }
+        : undefined;
+
     const stages = this.getEnabledDuplicateStages(settings);
     if (stages.length === 0) {
-      return undefined;
+      return { hit };
     }
 
-    const hash = createHash('sha256').update(compactText).digest('hex').slice(0, 20);
-    const counts = new Map<DuplicateStageName, number>();
+    const repeatCounts = new Map<DuplicateStageName, number>();
 
     for (const stage of stages) {
-      const key = `dup:v2:${chatId}:${userId}:${hash}:${stage.name}`;
+      const key = `dup:v3:${chatId}:${userId}:${hash}:${stage.name}`;
       const count = await this.redisCounter.incrementWithTtl(key, stage.windowSec + 1);
-      counts.set(stage.name, count);
+      repeatCounts.set(stage.name, Math.max(0, count - 1));
     }
 
     const priority: DuplicateStageName[] = ['ban', 'kick', 'warn'];
@@ -120,22 +143,25 @@ export class RuleEngineService {
         continue;
       }
 
-      const count = counts.get(stageName) ?? 0;
+      const count = repeatCounts.get(stageName) ?? 0;
       if (count < stage.threshold) {
         continue;
       }
 
       return {
-        action: stage.action,
-        count,
-        threshold: stage.threshold,
-        windowSec: stage.windowSec,
-        hash,
-        nextAction: this.resolveNextDuplicateAction(stages, stageName),
+        hit,
+        decision: {
+          action: stage.action,
+          count,
+          threshold: stage.threshold,
+          windowSec: stage.windowSec,
+          hash,
+          nextAction: this.resolveNextDuplicateAction(stages, stageName),
+        },
       };
     }
 
-    return undefined;
+    return { hit };
   }
 
   private getEnabledDuplicateStages(settings: ChatSettings): DuplicateStage[] {

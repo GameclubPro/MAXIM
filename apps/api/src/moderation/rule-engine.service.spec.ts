@@ -89,13 +89,22 @@ describe('RuleEngineService', () => {
       settings: buildSettings(),
       domainAllowlist: [],
     });
+    const fifth = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'same text',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
 
-    expect(second.duplicateDecision?.action).toBe('WARN');
-    expect(second.duplicateDecision?.windowSec).toBe(12 * 60 * 60);
-    expect(third.duplicateDecision?.action).toBe('KICK');
-    expect(third.duplicateDecision?.windowSec).toBe(24 * 60 * 60);
-    expect(fourth.duplicateDecision?.action).toBe('BAN');
-    expect(fourth.duplicateDecision?.windowSec).toBe(48 * 60 * 60);
+    expect(second.duplicateHit?.count).toBe(1);
+    expect(second.duplicateDecision).toBeUndefined();
+    expect(third.duplicateDecision?.action).toBe('WARN');
+    expect(third.duplicateDecision?.windowSec).toBe(12 * 60 * 60);
+    expect(fourth.duplicateDecision?.action).toBe('KICK');
+    expect(fourth.duplicateDecision?.windowSec).toBe(24 * 60 * 60);
+    expect(fifth.duplicateDecision?.action).toBe('BAN');
+    expect(fifth.duplicateDecision?.windowSec).toBe(48 * 60 * 60);
   });
 
   it('falls back to KICK when BAN stage is disabled', async () => {
@@ -163,7 +172,8 @@ describe('RuleEngineService', () => {
       domainAllowlist: [],
     });
 
-    expect(user1Second.duplicateDecision?.action).toBe('WARN');
+    expect(user1Second.duplicateHit?.count).toBe(1);
+    expect(user1Second.duplicateDecision).toBeUndefined();
     expect(user2First.duplicateDecision).toBeUndefined();
   });
 

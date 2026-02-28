@@ -5,7 +5,7 @@ import { EventType, Operator, SanctionAction, WebhookStatus } from '@prisma/clie
 import type { Job } from 'bullmq';
 import { MaxClientService } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
-import type { DuplicateAction, DuplicateDecision } from './rule-engine.service';
+import type { DuplicateAction, DuplicateDecision, DuplicateHit } from './rule-engine.service';
 import { RuleEngineService } from './rule-engine.service';
 import { SanctionService } from './sanction.service';
 import { maskText } from './text-mask.util';
@@ -103,7 +103,9 @@ export class ModerationService {
       domainAllowlist: chat.domains.map((item: { domain: string }) => item.domain),
     });
 
-    if (detection.duplicateDecision) {
+    const { violations } = detection;
+    const hasLinkViolation = violations.some((item) => item.ruleCode === 'LINK_BLOCKED');
+    if (!hasLinkViolation && detection.duplicateDecision) {
       await this.handleDuplicateDecision({
         chatId,
         userId: senderId,
@@ -116,12 +118,24 @@ export class ModerationService {
       return;
     }
 
-    const { violations } = detection;
+    if (!hasLinkViolation && detection.duplicateHit) {
+      await this.handleDuplicateHit({
+        chatId,
+        userId: senderId,
+        messageId,
+        text,
+        createdAt,
+        hit: detection.duplicateHit,
+        duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
+      });
+      return;
+    }
+
     if (violations.length === 0) {
       return;
     }
 
-    const topViolation = violations[0];
+    const topViolation = violations.find((item) => item.ruleCode === 'LINK_BLOCKED') ?? violations[0];
     await this.prisma.violation.create({
       data: {
         chatId,
@@ -311,6 +325,75 @@ export class ModerationService {
     });
   }
 
+  private async handleDuplicateHit(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    text: string;
+    createdAt: string;
+    hit: DuplicateHit;
+    duplicateBotMessageEnabled: boolean;
+  }) {
+    const { chatId, userId, messageId, text, createdAt, hit, duplicateBotMessageEnabled } = params;
+    const messageAgeMs = Date.now() - new Date(createdAt).getTime();
+    const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
+
+    if (canDeleteMessage) {
+      try {
+        await this.maxClient.deleteMessage(chatId, messageId);
+        await this.prisma.moderationEvent.create({
+          data: {
+            chatId,
+            userId,
+            messageId,
+            eventType: EventType.MESSAGE,
+            ruleCode: 'DUPLICATE_DELETE',
+            action: SanctionAction.DELETE_MESSAGE,
+            maskedExcerpt: maskText(text),
+            score: 0.8,
+            operator: Operator.BOT,
+            metadata: {
+              windowSec: hit.windowSec,
+              count: hit.count,
+              reason: 'Duplicate message removed',
+            },
+          },
+        });
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            userId,
+            messageId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to delete duplicate message',
+        );
+      }
+    } else {
+      await this.maxClient.notifyModerators(
+        chatId,
+        `Нарушение DUPLICATE от ${userId}, но сообщение старше 24 часов и не может быть удалено`,
+      );
+    }
+
+    if (duplicateBotMessageEnabled) {
+      try {
+        await this.maxClient.sendMessage(chatId, this.buildDuplicateHitExplanation(userId, hit, canDeleteMessage));
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            userId,
+            messageId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to send duplicate explanation message',
+        );
+      }
+    }
+  }
+
   private toSanctionAction(action: DuplicateAction): SanctionAction {
     if (action === 'WARN') {
       return SanctionAction.WARN;
@@ -351,6 +434,19 @@ export class ModerationService {
     ]
       .filter((line): line is string => Boolean(line))
       .join(' ');
+  }
+
+  private buildDuplicateHitExplanation(userId: string, hit: DuplicateHit, canDeleteMessage: boolean): string {
+    const repeatLabel = hit.count === 1 ? 'повтор' : 'повтора';
+    const statusLine = canDeleteMessage
+      ? 'Сообщение удалено как дубль.'
+      : 'Сообщение помечено как дубль.';
+
+    return [
+      `Дубли сообщений: пользователь ${userId}.`,
+      `Окно ${this.formatWindow(hit.windowSec)}: ${hit.count} ${repeatLabel}.`,
+      statusLine,
+    ].join(' ');
   }
 
   private formatWindow(windowSec: number): string {
