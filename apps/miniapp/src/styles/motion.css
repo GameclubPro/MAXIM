@@ -1,0 +1,54 @@
+.page-enter {
+  animation: pageReveal 0.45s ease both;
+}
+
+.stagger-in {
+  animation: riseIn 0.45s ease both;
+}
+
+.button:not(:disabled):active,
+.bottom-nav__item:active,
+.segmented-control__item:active {
+  transform: scale(0.98);
+}
+
+@keyframes pageReveal {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes riseIn {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes skeletonPulse {
+  from {
+    background-position: -220px 0;
+  }
+  to {
+    background-position: 220px 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

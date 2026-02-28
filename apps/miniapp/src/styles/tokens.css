@@ -1,0 +1,33 @@
+:root {
+  --font-body: 'Manrope', 'Segoe UI', sans-serif;
+  --font-heading: 'Sora', 'Manrope', sans-serif;
+
+  --text-primary: #0e1f2d;
+  --text-secondary: #3f5366;
+  --text-muted: #667c90;
+
+  --accent: #0b84ff;
+  --accent-soft: rgba(11, 132, 255, 0.14);
+  --success: #1fa97e;
+  --warning: #f0a42b;
+  --danger: #e45363;
+
+  --glass-bg: rgba(255, 255, 255, 0.58);
+  --glass-border: rgba(255, 255, 255, 0.62);
+  --glass-shadow: 0 20px 45px rgba(42, 78, 110, 0.16);
+  --glass-blur: 18px;
+
+  --radius-xs: 10px;
+  --radius-sm: 14px;
+  --radius-md: 18px;
+  --radius-lg: 24px;
+
+  --space-1: 6px;
+  --space-2: 10px;
+  --space-3: 14px;
+  --space-4: 18px;
+  --space-5: 24px;
+  --space-6: 32px;
+
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
