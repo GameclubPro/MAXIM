@@ -75,4 +75,57 @@ describe('WebhookParser', () => {
 
     expect(parsed.message?.text).toContain('https://bad.com/path');
   });
+
+  it('parses message from message_created.message envelope and fills ids', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      timestamp: '2026-02-28T05:10:00.000Z',
+      message_created: {
+        message: {
+          id: 'msg-5',
+          sender: { id: 'user-5' },
+          recipient: {
+            chat_id: '-71527248136199',
+            title: 'MAXIM Test Chat',
+          },
+          body: {
+            text: 'check https://example.org',
+          },
+        },
+      },
+    });
+
+    expect(parsed.type).toBe('message_created');
+    expect(parsed.message?.messageId).toBe('msg-5');
+    expect(parsed.message?.chatId).toBe('-71527248136199');
+    expect(parsed.message?.senderId).toBe('user-5');
+    expect(parsed.message?.chatTitle).toBe('MAXIM Test Chat');
+    expect(parsed.message?.text).toContain('https://example.org');
+  });
+
+  it('parses message from message_created object when nested message key is absent', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message_created: {
+        message_id: 'msg-6',
+        chat: {
+          id: 'chat-6',
+          title: 'Envelope Chat',
+        },
+        from: {
+          id: 'user-6',
+        },
+        content: {
+          text: 'hello from envelope',
+        },
+        created_at: '2026-02-28T05:11:00.000Z',
+      },
+    });
+
+    expect(parsed.message?.messageId).toBe('msg-6');
+    expect(parsed.message?.chatId).toBe('chat-6');
+    expect(parsed.message?.senderId).toBe('user-6');
+    expect(parsed.message?.chatTitle).toBe('Envelope Chat');
+    expect(parsed.message?.text).toBe('hello from envelope');
+  });
 });
