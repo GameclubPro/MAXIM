@@ -15,14 +15,32 @@ type FieldErrors = Partial<Record<keyof ChatSettings, string>>;
 
 const DOMAIN_PATTERN = /^(?=.{3,253}$)(?!-)(?:[a-z0-9-]{1,63}\.)+[a-z]{2,63}$/i;
 
-const LINK_POLICY_OPTIONS: Array<{ value: ChatSettings['linkPolicy']; label: string }> = [
-  { value: 'ALERT_ONLY', label: 'Только предупреждать' },
-  { value: 'ALLOWLIST_ONLY', label: 'Удалять, кроме разрешенных' },
-  { value: 'BLOCKLIST_ONLY', label: 'Удалять все ссылки' },
+const LINK_POLICY_OPTIONS: Array<{
+  value: ChatSettings['linkPolicy'];
+  label: string;
+  description: string;
+}> = [
+  { value: 'ALERT_ONLY', label: 'Только предупреждать', description: 'Сообщение не удаляется.' },
+  {
+    value: 'ALLOWLIST_ONLY',
+    label: 'Удалять кроме allowlist',
+    description: 'Работает по списку разрешенных доменов.',
+  },
+  {
+    value: 'BLOCKLIST_ONLY',
+    label: 'Удалять все ссылки',
+    description: 'Любая ссылка удаляется сразу.',
+  },
 ];
 
 function normalizeDomain(value: string): string {
-  return value.trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0] ?? '';
+  return (
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .split('/')[0] ?? ''
+  );
 }
 
 function getRouteChatTitle(state: unknown): string {
@@ -331,33 +349,51 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         <section className="settings-sections" aria-label="Настройки модерации ссылок">
           <GlassCard className="settings-section stagger-in">
             <div className="settings-section__head">
-              <h3>Ссылки</h3>
-              <p>{chatTitle ? `Чат: ${chatTitle}` : 'Название чата загружается...'}</p>
+              <h3>Модерация ссылок</h3>
+              <span className="settings-section__chat-chip">{chatTitle || chatId}</span>
             </div>
 
             <div className="settings-grid settings-grid--single">
-              <label className={cn('field', linkPolicyError && 'field--error')}>
-                <span className="field__label">Политика ссылок</span>
-                <select
-                  value={draft.linkPolicy}
-                  onChange={(event) =>
-                    setFieldValue('linkPolicy', event.target.value as ChatSettings['linkPolicy'])
-                  }
+              <div className={cn('settings-policy', linkPolicyError && 'field--error')}>
+                <span className="field__label">Режим</span>
+                <div
+                  className={cn('policy-grid', linkPolicyError && 'policy-grid--error')}
+                  role="radiogroup"
+                  aria-label="Режим модерации ссылок"
                 >
-                  {LINK_POLICY_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <small className="field__hint">
-                  {linkPolicyError ?? 'Выберите, как бот должен обрабатывать сообщения со ссылками.'}
-                </small>
-              </label>
+                  {LINK_POLICY_OPTIONS.map((option) => {
+                    const isActive = draft.linkPolicy === option.value;
+
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        role="radio"
+                        aria-checked={isActive}
+                        className={cn('policy-card', isActive && 'is-active')}
+                        onClick={() => setFieldValue('linkPolicy', option.value)}
+                      >
+                        <span>{option.label}</span>
+                        <small>{option.description}</small>
+                      </button>
+                    );
+                  })}
+                </div>
+                {linkPolicyError ? <small className="field__hint">{linkPolicyError}</small> : null}
+              </div>
 
               {isAllowlistMode ? (
-                <div className={cn('field', domainInputError && 'field--error')}>
-                  <span className="field__label">Разрешенные домены</span>
+                <div
+                  className={cn(
+                    'field',
+                    'allowlist-panel',
+                    domainInputError && 'allowlist-panel--error',
+                  )}
+                >
+                  <div className="allowlist-panel__head">
+                    <span className="field__label">Allowlist доменов</span>
+                    <span className="chip">{allowlistDomains.length}</span>
+                  </div>
                   <div className="allowlist-add-row">
                     <input
                       type="text"
@@ -376,24 +412,24 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     />
                     <button
                       type="button"
-                      className="button button--ghost allowlist-add-row__button"
+                      className="button button--accent allowlist-add-row__button"
                       onClick={handleAddDomain}
                       disabled={addDomainMutation.isPending || removeDomainMutation.isPending}
                     >
                       {addDomainMutation.isPending ? 'Добавляем...' : 'Добавить'}
                     </button>
                   </div>
-                  <small className="field__hint">
-                    {domainInputError || 'Указывайте домены без http:// и без пути. Пример: docs.max.ru'}
-                  </small>
+                  {domainInputError ? (
+                    <small className="field__hint">{domainInputError}</small>
+                  ) : null}
 
                   {domainsQuery.isLoading ? (
-                    <p className="allowlist-empty">Загружаю список разрешённых доменов...</p>
+                    <p className="allowlist-empty">Загрузка списка...</p>
                   ) : null}
 
                   {domainsQuery.error ? (
                     <p className="allowlist-empty allowlist-empty--error">
-                      Не удалось загрузить allowlist: {(domainsQuery.error as Error).message}
+                      Ошибка: {(domainsQuery.error as Error).message}
                     </p>
                   ) : null}
 
@@ -402,12 +438,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       <ul className="allowlist-list" aria-label="Разрешенные домены">
                         {allowlistDomains.map((domain) => (
                           <li key={domain} className="allowlist-item">
-                            <span>{domain}</span>
+                            <span className="allowlist-item__domain">{domain}</span>
                             <button
                               type="button"
                               className="allowlist-item__remove"
                               onClick={() => removeDomainMutation.mutate(domain)}
-                              disabled={removeDomainMutation.isPending || addDomainMutation.isPending}
+                              disabled={
+                                removeDomainMutation.isPending || addDomainMutation.isPending
+                              }
                             >
                               Удалить
                             </button>
@@ -415,9 +453,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         ))}
                       </ul>
                     ) : (
-                      <p className="allowlist-empty">
-                        Список пуст. Все ссылки будут удаляться, пока не добавите разрешенные домены.
-                      </p>
+                      <p className="allowlist-empty">Список пуст</p>
                     )
                   ) : null}
                 </div>
@@ -429,7 +465,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
       {!settingsQuery.isLoading && !settingsQuery.error && !draft ? (
         <GlassCard>
-          <StatusState tone="warning" title="Настройки не найдены" description="Повторите загрузку страницы." />
+          <StatusState
+            tone="warning"
+            title="Настройки не найдены"
+            description="Повторите загрузку страницы."
+          />
         </GlassCard>
       ) : null}
 
@@ -437,7 +477,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         <div className="settings-action-bar glass-card glass-card--sm">
           <div className="settings-action-bar__info">
             <span className={cn('chip', hasChanges ? 'chip--warning' : 'chip--success')}>
-              {hasChanges ? 'Есть несохраненные изменения' : 'Все изменения сохранены'}
+              {hasChanges ? 'Есть изменения' : 'Сохранено'}
             </span>
           </div>
           <div className="settings-action-bar__buttons">

@@ -8,6 +8,7 @@
 
 .button:not(:disabled):active,
 .bottom-nav__item:active,
+.policy-card:active,
 .segmented-control__item:active {
   transform: scale(0.98);
 }

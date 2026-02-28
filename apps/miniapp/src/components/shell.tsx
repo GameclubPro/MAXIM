@@ -146,9 +146,15 @@ export function Shell() {
         className={cn('bottom-nav glass-card glass-card--sm', isKeyboardOpen && 'is-keyboard-open')}
         aria-label="Навигация miniapp"
       >
-        <NavLink to="/" end className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}>
-          <span aria-hidden>◉</span>
-          <span>Чаты</span>
+        <NavLink
+          to="/"
+          end
+          className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
+        >
+          <span className="bottom-nav__icon" aria-hidden>
+            ◉
+          </span>
+          <span className="bottom-nav__label">Чаты</span>
         </NavLink>
 
         {resolvedChatId ? (
@@ -156,13 +162,17 @@ export function Shell() {
             to={`/chat/${resolvedChatId}/settings`}
             className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
           >
-            <span aria-hidden>⚙</span>
-            <span>Настройки</span>
+            <span className="bottom-nav__icon" aria-hidden>
+              ⚙
+            </span>
+            <span className="bottom-nav__label">Настройки</span>
           </NavLink>
         ) : (
           <span className="bottom-nav__item is-disabled" aria-disabled>
-            <span aria-hidden>⚙</span>
-            <span>Настройки</span>
+            <span className="bottom-nav__icon" aria-hidden>
+              ⚙
+            </span>
+            <span className="bottom-nav__label">Настройки</span>
           </span>
         )}
 
@@ -171,13 +181,17 @@ export function Shell() {
             to={`/chat/${resolvedChatId}/events`}
             className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
           >
-            <span aria-hidden>◷</span>
-            <span>Логи</span>
+            <span className="bottom-nav__icon" aria-hidden>
+              ◷
+            </span>
+            <span className="bottom-nav__label">Логи</span>
           </NavLink>
         ) : (
           <span className="bottom-nav__item is-disabled" aria-disabled>
-            <span aria-hidden>◷</span>
-            <span>Логи</span>
+            <span className="bottom-nav__icon" aria-hidden>
+              ◷
+            </span>
+            <span className="bottom-nav__label">Логи</span>
           </span>
         )}
       </nav>

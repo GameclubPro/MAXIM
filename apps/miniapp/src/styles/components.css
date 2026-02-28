@@ -128,7 +128,10 @@
   padding: 0 14px;
   font-weight: 700;
   cursor: pointer;
-  transition: transform 0.16s ease, box-shadow 0.2s ease, background-color 0.2s ease;
+  transition:
+    transform 0.16s ease,
+    box-shadow 0.2s ease,
+    background-color 0.2s ease;
 }
 
 .button:disabled {
@@ -234,7 +237,12 @@
 .skeleton {
   display: block;
   border-radius: 8px;
-  background: linear-gradient(90deg, rgba(234, 243, 250, 0.35), rgba(255, 255, 255, 0.8), rgba(234, 243, 250, 0.35));
+  background: linear-gradient(
+    90deg,
+    rgba(234, 243, 250, 0.35),
+    rgba(255, 255, 255, 0.8),
+    rgba(234, 243, 250, 0.35)
+  );
   background-size: 220px 100%;
   animation: skeletonPulse 1.6s linear infinite;
 }
@@ -269,8 +277,7 @@
   position: relative;
   border-color: rgba(255, 255, 255, 0.76);
   background:
-    linear-gradient(170deg, rgba(255, 255, 255, 0.85), rgba(236, 247, 255, 0.55)),
-    var(--glass-bg);
+    linear-gradient(170deg, rgba(255, 255, 255, 0.85), rgba(236, 247, 255, 0.55)), var(--glass-bg);
 }
 
 .chat-card__header h3 {
@@ -294,16 +301,101 @@
 }
 
 .settings-section__head {
-  display: grid;
-  gap: 4px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-2);
+  flex-wrap: wrap;
 }
 
 .settings-section__head h3 {
-  font-size: 1rem;
+  font-size: 1.08rem;
 }
 
-.settings-section__head p {
-  font-size: 0.86rem;
+.settings-section__chat-chip {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  background: rgba(255, 255, 255, 0.7);
+  padding: 4px 10px;
+  font-size: 0.74rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+
+.settings-policy {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.policy-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.policy-card {
+  width: 100%;
+  border: 1px solid rgba(62, 96, 127, 0.2);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 10px 12px;
+  text-align: left;
+  display: grid;
+  gap: 2px;
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    transform 0.16s ease;
+}
+
+.policy-card span {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.policy-card small {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.policy-card.is-active {
+  border-color: rgba(11, 132, 255, 0.42);
+  background: linear-gradient(155deg, rgba(11, 132, 255, 0.12), rgba(255, 255, 255, 0.86));
+}
+
+.policy-grid--error .policy-card {
+  border-color: rgba(228, 83, 99, 0.24);
+}
+
+.allowlist-panel {
+  display: grid;
+  gap: var(--space-2);
+  border-radius: 14px;
+  border: 1px solid rgba(62, 96, 127, 0.14);
+  background: rgba(255, 255, 255, 0.45);
+  padding: 10px;
+}
+
+.allowlist-panel--error {
+  border-color: rgba(228, 83, 99, 0.32);
+}
+
+.allowlist-panel--error input {
+  border-color: rgba(228, 83, 99, 0.45);
+}
+
+.allowlist-panel--error .field__hint {
+  color: var(--danger);
+}
+
+.allowlist-panel__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
 }
 
 .allowlist-add-row {
@@ -315,6 +407,7 @@
 
 .allowlist-add-row__button {
   white-space: nowrap;
+  min-width: 106px;
 }
 
 .allowlist-list {
@@ -336,8 +429,9 @@
   padding: 8px 10px;
 }
 
-.allowlist-item span {
+.allowlist-item__domain {
   overflow-wrap: anywhere;
+  font-size: 0.84rem;
 }
 
 .allowlist-item__remove {
