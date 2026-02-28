@@ -9,6 +9,7 @@
 - VPS путь проекта: `/var/www/Chat_bot`.
 - GitHub репозиторий: `https://github.com/GameclubPro/MAXIM.git`.
 - Прод-домен: `https://maxim.play-team.ru`.
+- Локальная машина пользователя (`yourname@sex`) на текущий момент без Docker CLI (`docker: command not found`).
 
 ## Стек и сервисы
 - API: NestJS + Fastify + Prisma + BullMQ.
@@ -27,6 +28,13 @@
 - Проблема `404 Chat settings not found` решена логикой автосоздания настроек чата в API при чтении настроек.
 - Прямой `curl` с фейковым `Authorization: InitData ...` без корректного `hash` всегда даст `401` (`Missing hash`/`Invalid signature`) и не подходит для проверки auth-флоу.
 - В miniapp уже добавлялся bridge-скрипт MAX и fallback-чтение `init_data` из query/hash/bridge-источника.
+- Для `message_created` в MAX реальные поля часто такие:
+  - `message.body.mid` (ID сообщения),
+  - `message.recipient.chat_id` (ID чата),
+  - `message.sender.user_id` (ID автора),
+  - `message.body.text` (текст).
+- Модерация должна удалять целиком сообщение, если в тексте есть ссылка (а не “вырезать” часть текста).
+- Исправлен вызов удаления через MAX API: `DELETE /messages` с query `message_id` + `chat_id`.
 
 ## Nginx и роутинг miniapp (критично)
 - HTTP (`:80`) должен редиректить на HTTPS.
@@ -37,19 +45,40 @@
   - для webhook должен прокидываться заголовок `X-Max-Bot-Api-Secret` в API.
 - Если открывается не из `open_app`, `init_data` может отсутствовать даже при правильном прокси.
 
-## Частая проблема на VPS (docker-compose v1)
-- На VPS используется `docker-compose 1.29.2`, из-за чего часто падает на:
-  - `KeyError: 'ContainerConfig'`
-- Рабочий обход:
-  1. Явно удалить старый контейнер сервиса (`docker rm -f ...`).
-  2. Сделать `docker-compose ... build <service>`.
-  3. Поднять `docker-compose ... up -d --no-deps --force-recreate <service>`.
+## Docker Compose на VPS (актуально)
+- VPS переведён на Docker CE + Compose v2 plugin (`docker compose`).
+- Не использовать `docker-compose` v1.
+- Историческая ошибка `KeyError: 'ContainerConfig'` относилась к v1; при v2 стандартный путь:
+  - `docker compose ... build`
+  - `docker compose ... up -d --no-deps --force-recreate <service>`
+
+## Локальная среда (февраль 2026)
+- По умолчанию локально выполнять:
+  - разработку кода,
+  - тесты/сборку через `npm`,
+  - git-операции.
+- Контейнерные действия (build/recreate/logs через Docker Compose) считать VPS-задачей, пока Docker не установлен локально.
+- Если нужен именно локальный Docker-сценарий, сначала предлагать проверить:
+  - `docker --version`
+  - `docker compose version`
+  и только после этого давать локальные docker-команды как основной путь.
+
+## Актуальность MAX (2026)
+- Для вопросов по MAX Bot API / Mini Apps / `init_data` / webhook / `open_app` агент должен сверяться с актуальными официальными источниками MAX, а не с памятью.
+- Приоритет источников:
+  1. `https://dev.max.ru/docs/`
+  2. `https://dev.max.ru/docs-api/`
+  3. `https://help.max.ru/help/bots`
+  4. `https://github.com/max-messenger`
+- Сторонние сайты использовать только как вторичный контекст; в спорных местах опираться на `dev.max.ru`.
+- Если есть риск устаревания, в ответе явно указывать, что информация сверена с актуальной документацией MAX на момент запроса.
 
 ## Обязательные шаги после `git pull` на VPS
 1. Применить миграции Prisma.
 2. Пересобрать только измененные сервисы (`api` и/или `miniapp-static`).
-3. Пересоздать контейнеры c `--force-recreate` (из-за бага compose v1).
+3. Пересоздать контейнеры c `--force-recreate`.
 4. Проверить health и ключевые эндпоинты.
+5. Если задача про модерацию ссылок: проверить `webhook_events` (`status`, `normalized_payload`) и `moderation_events`.
 
 ## Правило для команд (обязательно)
 - Если действие можно выполнять и локально, и на VPS, агент должен давать **оба варианта**:
@@ -57,6 +86,9 @@
   - блок `VPS`
 - Если отличается только путь, показывать обе версии с корректными путями.
 - Если команда одинаковая, всё равно явно отмечать, что она применима в обоих окружениях.
+- Для docker-команд:
+  - первичным считать `VPS`-блок,
+  - в `Локально` обязательно предупреждать, что на текущей машине Docker не установлен (если статус не изменился).
 
 ## Шаблоны команд
 
@@ -67,9 +99,8 @@
   - `docker compose -f infra/docker-compose.yml up -d --no-deps api`
 - VPS:
   - `cd /var/www/Chat_bot`
-  - `docker ps -aq --filter "name=infra_api_1" | xargs -r docker rm -f`
-  - `docker-compose -f infra/docker-compose.yml build api`
-  - `docker-compose -f infra/docker-compose.yml up -d --no-deps --force-recreate api`
+  - `docker compose -f infra/docker-compose.yml build api`
+  - `docker compose -f infra/docker-compose.yml up -d --no-deps --force-recreate api`
 
 ### Пересборка только miniapp
 - Локально:
@@ -78,9 +109,8 @@
   - `docker compose -f infra/docker-compose.yml up -d --no-deps miniapp-static`
 - VPS:
   - `cd /var/www/Chat_bot`
-  - `docker ps -aq --filter "name=infra_miniapp-static_1" | xargs -r docker rm -f`
-  - `docker-compose -f infra/docker-compose.yml build miniapp-static`
-  - `docker-compose -f infra/docker-compose.yml up -d --no-deps --force-recreate miniapp-static`
+  - `docker compose -f infra/docker-compose.yml build miniapp-static`
+  - `docker compose -f infra/docker-compose.yml up -d --no-deps --force-recreate miniapp-static`
 
 ### Логи API
 - Локально:
@@ -88,7 +118,7 @@
   - `docker compose -f infra/docker-compose.yml logs -f api`
 - VPS:
   - `cd /var/www/Chat_bot`
-  - `docker-compose -f infra/docker-compose.yml logs -f api`
+  - `docker compose -f infra/docker-compose.yml logs -f api`
 
 ### Prisma миграции
 - Локально:
@@ -96,7 +126,7 @@
   - `npm run prisma:migrate:deploy --workspace @maxim/api`
 - VPS:
   - `cd /var/www/Chat_bot`
-  - `docker-compose -f infra/docker-compose.yml exec -T api npx prisma migrate deploy --schema apps/api/prisma/schema.prisma`
+  - `docker compose -f infra/docker-compose.yml exec -T api npx prisma migrate deploy --schema apps/api/prisma/schema.prisma`
 
 ### Полный порядок деплоя (после `git pull`)
 - Локально:
@@ -107,11 +137,9 @@
   - `curl -i http://127.0.0.1:3001/api/health/live`
 - VPS:
   - `cd /var/www/Chat_bot`
-  - `docker-compose -f infra/docker-compose.yml exec -T api npx prisma migrate deploy --schema apps/api/prisma/schema.prisma`
-  - `docker ps -aq --filter "name=infra_api_1" | xargs -r docker rm -f`
-  - `docker ps -aq --filter "name=infra_miniapp-static_1" | xargs -r docker rm -f`
-  - `docker-compose -f infra/docker-compose.yml build api miniapp-static`
-  - `docker-compose -f infra/docker-compose.yml up -d --no-deps --force-recreate api miniapp-static`
+  - `docker compose -f infra/docker-compose.yml exec -T api npx prisma migrate deploy --schema apps/api/prisma/schema.prisma`
+  - `docker compose -f infra/docker-compose.yml build api miniapp-static`
+  - `docker compose -f infra/docker-compose.yml up -d --no-deps --force-recreate api miniapp-static`
   - `curl -i https://maxim.play-team.ru/api/health/live`
 
 ## SQL шпаргалка (из этого чата)
@@ -119,17 +147,17 @@
 ### Достать реальные chat_id / user_id из webhook payload
 - VPS:
   - `cd /var/www/Chat_bot`
-  - `docker-compose -f infra/docker-compose.yml exec -T postgres psql -U maxim -d maxim -c "select created_at, coalesce(raw_payload->'message'->'recipient'->>'chat_id', raw_payload->'message'->>'chat_id', jsonb_path_query_first(raw_payload, '$.**.chat_id') #>> '{}') as chat_id, coalesce(raw_payload->'message'->'sender'->>'user_id', raw_payload->'message'->>'sender_id', jsonb_path_query_first(raw_payload, '$.**.user_id') #>> '{}') as user_id, raw_payload->>'update_type' as update_type from webhook_events order by created_at desc limit 20;"`
+  - `docker compose -f infra/docker-compose.yml exec -T postgres psql -U maxim -d maxim -c "select created_at, coalesce(raw_payload->'message'->'recipient'->>'chat_id', raw_payload->'message'->>'chat_id', jsonb_path_query_first(raw_payload, '$.**.chat_id') #>> '{}') as chat_id, coalesce(raw_payload->'message'->'sender'->>'user_id', raw_payload->'message'->>'sender_id', jsonb_path_query_first(raw_payload, '$.**.user_id') #>> '{}') as user_id, raw_payload->>'update_type' as update_type from webhook_events order by created_at desc limit 20;"`
 
 ### Добавить админа в allowlist (после появления чата в `chats`)
 - VPS:
   - `cd /var/www/Chat_bot`
-  - `docker-compose -f infra/docker-compose.yml exec -T postgres psql -U maxim -d maxim -c "insert into chat_admin_allowlist (chat_id,user_id) values ('<CHAT_ID>','<USER_ID>') on conflict do nothing;"`
+  - `docker compose -f infra/docker-compose.yml exec -T postgres psql -U maxim -d maxim -c "insert into chat_admin_allowlist (chat_id,user_id) values ('<CHAT_ID>','<USER_ID>') on conflict do nothing;"`
 
 ### Заполнить отсутствующие chat_settings
 - VPS:
   - `cd /var/www/Chat_bot`
-  - `docker-compose -f infra/docker-compose.yml exec -T postgres psql -U maxim -d maxim -c "insert into chat_settings (id, chat_id, updated_at) select md5(random()::text || clock_timestamp()::text), c.id, now() from chats c left join chat_settings s on s.chat_id = c.id where s.chat_id is null;"`
+  - `docker compose -f infra/docker-compose.yml exec -T postgres psql -U maxim -d maxim -c "insert into chat_settings (id, chat_id, updated_at) select md5(random()::text || clock_timestamp()::text), c.id, now() from chats c left join chat_settings s on s.chat_id = c.id where s.chat_id is null;"`
 
 ## Чеклист после деплоя
 - `api/health/live` отвечает `200` локально и через домен.
@@ -150,6 +178,7 @@
 - `401 Invalid init data signature`: неверная подпись (часто неправильный `MAX_BOT_TOKEN` в API или ошибка алгоритма HMAC).
 - `404 Chat settings not found`: старый API без автосоздания настроек или отсутствует bootstrap `chat_settings`.
 - `P2021 table does not exist`: не применены миграции Prisma.
+- `webhook_events.status = FAILED` при ссылках: сначала смотреть `error_message` и `docker compose ... logs api`; частая причина — ошибка вызова MAX API удаления сообщения.
 
 ## Rollback
 ### Откат на предыдущий коммит
@@ -163,9 +192,8 @@
   - `cd /var/www/Chat_bot`
   - `git log --oneline -n 5`
   - `git checkout <COMMIT_SHA>`
-  - `docker ps -aq --filter "name=infra_api_1" | xargs -r docker rm -f`
-  - `docker-compose -f infra/docker-compose.yml build api`
-  - `docker-compose -f infra/docker-compose.yml up -d --no-deps --force-recreate api`
+  - `docker compose -f infra/docker-compose.yml build api`
+  - `docker compose -f infra/docker-compose.yml up -d --no-deps --force-recreate api`
 
 ## Нештатные, но не блокирующие логи
 - Предупреждение `LegacyRouteConverter` про путь `/api/*` уже наблюдалось; это warning маршрутизации, не причина падения авторизации miniapp.
