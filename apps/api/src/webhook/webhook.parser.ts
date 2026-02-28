@@ -103,6 +103,8 @@ export class WebhookParser {
       message.messageId,
       message.message_id,
       message.id,
+      body?.mid,
+      body?.seq,
       body?.message_id,
       body?.messageId,
       body?.id,

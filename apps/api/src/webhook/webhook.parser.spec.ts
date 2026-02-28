@@ -128,4 +128,37 @@ describe('WebhookParser', () => {
     expect(parsed.message?.chatTitle).toBe('Envelope Chat');
     expect(parsed.message?.text).toBe('hello from envelope');
   });
+
+  it('parses MAX payload with body.mid and numeric sender/chat ids', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      timestamp: 1772249118580,
+      message: {
+        body: {
+          mid: 'mid.ffffbef220e477f9019ca24777741421',
+          seq: 116146118235264030,
+          text: 'Gffc https://web.telegram.org/',
+          markup: [
+            {
+              url: 'https://web.telegram.org/',
+              type: 'link',
+            },
+          ],
+        },
+        sender: {
+          user_id: 195714583,
+        },
+        recipient: {
+          chat_id: -71527833503751,
+          chat_type: 'chat',
+        },
+        timestamp: 1772249118580,
+      },
+    });
+
+    expect(parsed.message?.messageId).toBe('mid.ffffbef220e477f9019ca24777741421');
+    expect(parsed.message?.chatId).toBe('-71527833503751');
+    expect(parsed.message?.senderId).toBe('195714583');
+    expect(parsed.message?.text).toContain('https://web.telegram.org/');
+  });
 });
