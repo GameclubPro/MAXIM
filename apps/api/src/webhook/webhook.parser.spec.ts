@@ -54,6 +54,74 @@ describe('WebhookParser', () => {
     expect(parsed.message?.text).toContain('https://example.com/abc');
   });
 
+  it('adds urls from forwarded payload when outer text has no links', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-4a',
+        chat_id: 'chat-4a',
+        sender_id: 'user-4a',
+        created_at: '2026-02-28T05:00:00.000Z',
+        body: {
+          text: 'пересланное сообщение',
+          forwarded_message: {
+            body: {
+              text: 'источник: https://spam-forwarded.example/path',
+            },
+          },
+        },
+      },
+    });
+
+    expect(parsed.message?.text).toContain('пересланное сообщение');
+    expect(parsed.message?.text).toContain('https://spam-forwarded.example/path');
+  });
+
+  it('does not duplicate urls already present in direct text', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-4b',
+        chat_id: 'chat-4b',
+        sender_id: 'user-4b',
+        created_at: '2026-02-28T05:00:00.000Z',
+        body: {
+          text: 'ссылка https://dup.example/path',
+          forwarded_message: {
+            body: {
+              text: 'https://dup.example/path',
+            },
+          },
+        },
+      },
+    });
+
+    const matches = parsed.message?.text.match(/https?:\/\/dup\.example\/path/gi) ?? [];
+    expect(matches).toHaveLength(1);
+  });
+
+  it('extracts urls from MAX message.link payload', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-4c',
+        chat_id: 'chat-4c',
+        sender_id: 'user-4c',
+        created_at: '2026-02-28T05:00:00.000Z',
+        body: {
+          text: 'переслано',
+        },
+        link: {
+          body: {
+            text: 'оригинал: https://forward-link.example/news',
+          },
+        },
+      },
+    });
+
+    expect(parsed.message?.text).toContain('https://forward-link.example/news');
+  });
+
   it('extracts url from nested structures when plain text is missing', () => {
     const parsed = parser.parse({
       update_type: 'message_created',

@@ -290,18 +290,95 @@ export class WebhookParser {
       messageNode?.text,
     ];
 
+    let directText = '';
     for (const value of directCandidates) {
       if (typeof value === 'string' && value.trim().length > 0) {
-        return value.trim();
+        directText = value.trim();
+        break;
       }
     }
 
-    const urls = this.collectUrlsFromNode(message, new Set<string>());
-    if (urls.length > 0) {
-      return urls.join(' ');
+    const supplementalUrls = this.collectSupplementalUrls(message);
+    if (!directText) {
+      if (supplementalUrls.length > 0) {
+        return supplementalUrls.join(' ');
+      }
+
+      const fallbackUrls = this.collectUrlsFromNode(message, new Set<string>());
+      if (fallbackUrls.length > 0) {
+        return fallbackUrls.join(' ');
+      }
+
+      return '';
     }
 
-    return '';
+    if (supplementalUrls.length === 0) {
+      return directText;
+    }
+
+    const directTextUrls = new Set(
+      this.extractUrlsFromString(directText).map((url) => this.normalizeUrlForCompare(url)),
+    );
+    const missingUrls = supplementalUrls.filter(
+      (url) => !directTextUrls.has(this.normalizeUrlForCompare(url)),
+    );
+
+    if (missingUrls.length === 0) {
+      return directText;
+    }
+
+    return `${directText} ${missingUrls.join(' ')}`.trim();
+  }
+
+  private collectSupplementalUrls(message: Record<string, unknown>): string[] {
+    const body = this.asRecord(message.body);
+    const content = this.asRecord(message.content);
+    const payload = this.asRecord(message.payload);
+    const messageNode = this.asRecord(message.message);
+
+    const candidates: unknown[] = [
+      message.markup,
+      message.attachments,
+      message.link,
+      message.forward,
+      message.forwarded_message,
+      message.forwardedMessage,
+      body?.markup,
+      body?.attachments,
+      body?.link,
+      body?.forward,
+      body?.forwarded_message,
+      body?.forwardedMessage,
+      content?.markup,
+      content?.attachments,
+      content?.link,
+      content?.forward,
+      content?.forwarded_message,
+      content?.forwardedMessage,
+      payload?.markup,
+      payload?.attachments,
+      payload?.link,
+      payload?.forward,
+      payload?.forwarded_message,
+      payload?.forwardedMessage,
+      messageNode?.link,
+      messageNode?.markup,
+      messageNode?.attachments,
+      messageNode?.forward,
+      messageNode?.forwarded_message,
+      messageNode?.forwardedMessage,
+    ];
+
+    const acc = new Set<string>();
+    for (const candidate of candidates) {
+      this.collectUrlsFromNode(candidate, acc);
+    }
+
+    return [...acc];
+  }
+
+  private normalizeUrlForCompare(url: string): string {
+    return url.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
   }
 
   private collectUrlsFromNode(node: unknown, acc: Set<string>, depth = 0): string[] {
