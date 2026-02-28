@@ -3,6 +3,12 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { firstValueFrom } from 'rxjs';
 
+export type MaxBotChat = {
+  chatId: string;
+  title: string | null;
+  lastEventTime: number | null;
+};
+
 @Injectable()
 export class MaxClientService {
   private readonly logger = new Logger(MaxClientService.name);
@@ -67,6 +73,65 @@ export class MaxClientService {
         return null;
       })
       .filter((value): value is string => value !== null);
+  }
+
+  async listBotChats(): Promise<MaxBotChat[]> {
+    const results: MaxBotChat[] = [];
+    const seenMarkers = new Set<string>();
+    let marker: string | number | null = null;
+
+    for (let i = 0; i < 20; i += 1) {
+      const pageData: Record<string, unknown> = await this.request('get', '/chats', {
+        params: {
+          count: 100,
+          ...(marker !== null ? { marker } : {}),
+        },
+      });
+
+      const pageChats = Array.isArray(pageData.chats) ? pageData.chats : [];
+      for (const item of pageChats) {
+        if (!item || typeof item !== 'object') {
+          continue;
+        }
+
+        const row = item as Record<string, unknown>;
+        const chatId = row.chat_id ?? row.chatId ?? row.id;
+        if (typeof chatId !== 'string' && typeof chatId !== 'number') {
+          continue;
+        }
+
+        const title = row.title ?? row.name;
+        const lastEventTime = row.last_event_time ?? row.lastEventTime;
+        results.push({
+          chatId: String(chatId),
+          title: typeof title === 'string' ? title : null,
+          lastEventTime:
+            typeof lastEventTime === 'number'
+              ? lastEventTime
+              : typeof lastEventTime === 'string' && lastEventTime.trim() !== ''
+                ? Number(lastEventTime)
+                : null,
+        });
+      }
+
+      const nextMarker: unknown = pageData.marker;
+      if (
+        nextMarker === null ||
+        nextMarker === undefined ||
+        (typeof nextMarker !== 'string' && typeof nextMarker !== 'number')
+      ) {
+        break;
+      }
+
+      const markerKey = String(nextMarker);
+      if (seenMarkers.has(markerKey)) {
+        break;
+      }
+      seenMarkers.add(markerKey);
+      marker = nextMarker;
+    }
+
+    return results;
   }
 
   async notifyModerators(chatId: string, text: string) {

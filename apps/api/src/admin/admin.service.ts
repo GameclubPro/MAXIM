@@ -31,40 +31,56 @@ export class AdminService {
   }
 
   async listChats(user: AuthUser): Promise<ChatSummary[]> {
-    const rows = await this.prisma.chatAdminAllowlist.findMany({
-      where: { userId: user.userId },
-      include: { chat: true },
-      orderBy: {
-        chat: {
-          createdAt: 'desc',
-        },
-      },
-    });
+    try {
+      const remoteChats = await this.maxClient.listBotChats();
+      const resolvedChats = await Promise.all(
+        remoteChats.map(async (remoteChat) => {
+          const hasAdminAccess = await this.hasUserAndBotAdminAccess(remoteChat.chatId, user.userId);
+          if (!hasAdminAccess) {
+            return null;
+          }
 
-    const chats = rows.map((row: { chat: { id: string; title: string; createdAt: Date } }) => ({
-      id: row.chat.id,
-      title: row.chat.title,
-      createdAt: row.chat.createdAt.toISOString(),
-    }));
+          const persistedChat = await this.upsertUserChatAccess(
+            remoteChat.chatId,
+            user.userId,
+            remoteChat.title,
+          );
 
-    const resolvedChats = await Promise.all(
-      chats.map(async (chat) => {
-        const hasAdminAccess = await this.hasUserAndBotAdminAccess(chat.id, user.userId);
-        if (!hasAdminAccess) {
-          return null;
-        }
+          const chat: ChatSummary = {
+            id: persistedChat.id,
+            title: persistedChat.title,
+            createdAt: persistedChat.createdAt.toISOString(),
+          };
 
-        if (this.isFallbackTitle(chat.id, chat.title)) {
-          await this.refreshChatTitle(chat);
-        }
+          if (this.isFallbackTitle(chat.id, chat.title)) {
+            await this.refreshChatTitle(chat);
+          }
 
-        return chat;
-      }),
-    );
+          return {
+            chat,
+            lastEventTime: remoteChat.lastEventTime ?? 0,
+          };
+        }),
+      );
 
-    const filtered = resolvedChats.filter((chat): chat is ChatSummary => chat !== null);
-    if (filtered.length > 0) {
-      return filtered;
+      const filtered = resolvedChats.filter(
+        (item): item is { chat: ChatSummary; lastEventTime: number } => item !== null,
+      );
+
+      if (filtered.length > 0) {
+        filtered.sort((a, b) => b.lastEventTime - a.lastEventTime);
+        return filtered.map((item) => item.chat);
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        'Failed to auto-discover chats via MAX API',
+      );
+    }
+
+    const cached = await this.listChatsFromAllowlist(user.userId);
+    if (cached.length > 0) {
+      return cached;
     }
 
     const bootstrapped = await this.bootstrapCurrentChat(user);
@@ -332,18 +348,12 @@ export class AdminService {
   }
 
   async assertChatAdmin(chatId: string, userId: string) {
-    const admin = await this.prisma.chatAdminAllowlist.findUnique({
-      where: {
-        chatId_userId: {
-          chatId,
-          userId,
-        },
-      },
-    });
-
-    if (!admin) {
-      throw new ForbiddenException('User is not in chat admin allowlist');
+    const hasAdminAccess = await this.hasUserAndBotAdminAccess(chatId, userId);
+    if (!hasAdminAccess) {
+      throw new ForbiddenException('User is not chat admin');
     }
+
+    await this.upsertUserChatAccess(chatId, userId, null);
   }
 
   private isFallbackTitle(chatId: string, title: string): boolean {
@@ -392,6 +402,58 @@ export class AdminService {
     }
   }
 
+  private async listChatsFromAllowlist(userId: string): Promise<ChatSummary[]> {
+    const rows = await this.prisma.chatAdminAllowlist.findMany({
+      where: { userId },
+      include: { chat: true },
+      orderBy: {
+        chat: {
+          createdAt: 'desc',
+        },
+      },
+    });
+
+    return rows.map((row: { chat: { id: string; title: string; createdAt: Date } }) => ({
+      id: row.chat.id,
+      title: row.chat.title,
+      createdAt: row.chat.createdAt.toISOString(),
+    }));
+  }
+
+  private async upsertUserChatAccess(chatId: string, userId: string, chatTitle: string | null) {
+    const normalizedTitle = chatTitle?.trim() ? chatTitle.trim() : null;
+    const persistedChat = await this.prisma.chat.upsert({
+      where: { id: chatId },
+      create: {
+        id: chatId,
+        title: normalizedTitle ?? `Chat ${chatId}`,
+      },
+      update: {
+        ...(normalizedTitle
+          ? {
+              title: normalizedTitle,
+            }
+          : {}),
+      },
+    });
+
+    await this.prisma.chatAdminAllowlist.upsert({
+      where: {
+        chatId_userId: {
+          chatId,
+          userId,
+        },
+      },
+      create: {
+        chatId,
+        userId,
+      },
+      update: {},
+    });
+
+    return persistedChat;
+  }
+
   private async bootstrapCurrentChat(user: AuthUser): Promise<ChatSummary | null> {
     if (!user.chatId) {
       return null;
@@ -402,36 +464,7 @@ export class AdminService {
       return null;
     }
 
-    const fallbackTitle = user.chatTitle?.trim() || `Chat ${user.chatId}`;
-
-    const persistedChat = await this.prisma.chat.upsert({
-      where: { id: user.chatId },
-      create: {
-        id: user.chatId,
-        title: fallbackTitle,
-      },
-      update: {
-        ...(user.chatTitle?.trim()
-          ? {
-              title: user.chatTitle.trim(),
-            }
-          : {}),
-      },
-    });
-
-    await this.prisma.chatAdminAllowlist.upsert({
-      where: {
-        chatId_userId: {
-          chatId: user.chatId,
-          userId: user.userId,
-        },
-      },
-      create: {
-        chatId: user.chatId,
-        userId: user.userId,
-      },
-      update: {},
-    });
+    const persistedChat = await this.upsertUserChatAccess(user.chatId, user.userId, user.chatTitle ?? null);
 
     const chat: ChatSummary = {
       id: user.chatId,

@@ -17,7 +17,7 @@ export function ChatsPage({ api }: { api: ApiClient }) {
   }
 
   if (!chatsQuery.data || chatsQuery.data.length === 0) {
-    return <p>Доступных чатов нет. Добавьте ваш userId в allowlist для нужного чата.</p>;
+    return <p>Доступных чатов нет. Убедитесь, что вы и бот являетесь админами одного чата.</p>;
   }
 
   return (
