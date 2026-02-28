@@ -24,8 +24,9 @@ export class MaxClientService {
   }
 
   async deleteMessage(chatId: string, messageId: string) {
-    await this.request('delete', `/messages/${messageId}`, {
+    await this.request('delete', '/messages', {
       params: {
+        message_id: messageId,
         chat_id: chatId,
       },
     });
