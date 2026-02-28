@@ -34,6 +34,7 @@ type DuplicateMaxCountKey =
   | 'duplicateKickMaxCount'
   | 'duplicateBanMaxCount';
 type BotHintKey = 'link' | 'duplicate';
+type SettingsSectionKey = 'links' | 'duplicates' | 'limits';
 
 const DUPLICATE_STAGE_OPTIONS: Array<{
   id: 'WARN' | 'KICK' | 'BAN';
@@ -141,6 +142,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [domainInputError, setDomainInputError] = useState('');
   const [failedSnapshot, setFailedSnapshot] = useState<string>('');
   const [openHintKey, setOpenHintKey] = useState<BotHintKey | null>(null);
+  const [expandedSections, setExpandedSections] = useState<Record<SettingsSectionKey, boolean>>({
+    links: true,
+    duplicates: false,
+    limits: false,
+  });
 
   const routeChatTitle = getRouteChatTitle(location.state);
 
@@ -414,6 +420,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     setOpenHintKey((current) => (current === key ? null : key));
   }
 
+  function toggleSection(section: SettingsSectionKey) {
+    setExpandedSections((current) => ({ ...current, [section]: !current[section] }));
+  }
+
   if (!chatId) {
     return (
       <GlassCard>
@@ -462,6 +472,24 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const hasMessageLimitsBotButtonError = Boolean(
     messageLimitsBotButtonUrlError || messageLimitsBotButtonTextError,
   );
+  const linkStagesEnabledCount = [
+    draft?.linkBotMessageEnabled,
+    draft?.linkWarnEnabled,
+    draft?.linkBanEnabled,
+    draft?.linkKickEnabled,
+  ].filter(Boolean).length;
+  const duplicateStagesEnabledCount = [
+    draft?.duplicateWarnEnabled,
+    draft?.duplicateBanEnabled,
+    draft?.duplicateKickEnabled,
+  ].filter(Boolean).length;
+  const limitsRulesEnabledCount = [
+    draft?.maxMessageLengthEnabled,
+    draft?.photoMessageCooldownEnabled,
+    draft ? !draft.videoMessagesEnabled : false,
+    draft ? !draft.fileMessagesEnabled : false,
+    draft ? !draft.voiceMessagesEnabled : false,
+  ].filter(Boolean).length;
 
   return (
     <div className="page-stack page-enter">
@@ -495,12 +523,34 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       {!settingsQuery.isLoading && !settingsQuery.error && draft ? (
         <section className="settings-sections" aria-label="Настройки модерации">
           <GlassCard className="settings-section stagger-in">
-            <div className="settings-section__head">
-              <h3>Модерация ссылок</h3>
+            <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+              <button
+                type="button"
+                className="settings-section__toggle"
+                aria-expanded={expandedSections.links}
+                aria-controls="settings-links-content"
+                onClick={() => toggleSection('links')}
+              >
+                <span className="settings-section__toggle-main">
+                  <h3>Модерация ссылок</h3>
+                  <small>{linkStagesEnabledCount}/4 ступени включено</small>
+                </span>
+                <span
+                  className={cn('settings-section__chevron', expandedSections.links && 'is-open')}
+                  aria-hidden
+                >
+                  ⌄
+                </span>
+              </button>
               <span className="settings-section__chat-chip">{chatTitle || chatId}</span>
             </div>
 
-            <div className="settings-grid settings-grid--single">
+            <div
+              id="settings-links-content"
+              className={cn('settings-section__collapse', expandedSections.links && 'is-open')}
+            >
+              <div className="settings-section__collapse-inner">
+                <div className="settings-grid settings-grid--single">
               <div className={cn('settings-policy', linkPolicyError && 'field--error')}>
                 <span className="field__label">Режим</span>
                 <div
@@ -804,6 +854,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   ) : null}
                 </div>
               ) : null}
+                </div>
+              </div>
             </div>
           </GlassCard>
 
@@ -812,11 +864,36 @@ export function SettingsPage({ api }: { api: ApiClient }) {
             style={{ animationDelay: '45ms' }}
             aria-label="Настройки дублей"
           >
-            <div className="settings-section__head">
-              <h3>Дубли сообщений</h3>
+            <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+              <button
+                type="button"
+                className="settings-section__toggle"
+                aria-expanded={expandedSections.duplicates}
+                aria-controls="settings-duplicates-content"
+                onClick={() => toggleSection('duplicates')}
+              >
+                <span className="settings-section__toggle-main">
+                  <h3>Дубли сообщений</h3>
+                  <small>{duplicateStagesEnabledCount}/3 ступени включено</small>
+                </span>
+                <span
+                  className={cn(
+                    'settings-section__chevron',
+                    expandedSections.duplicates && 'is-open',
+                  )}
+                  aria-hidden
+                >
+                  ⌄
+                </span>
+              </button>
             </div>
 
-            {draft.duplicateBanEnabled ? (
+            <div
+              id="settings-duplicates-content"
+              className={cn('settings-section__collapse', expandedSections.duplicates && 'is-open')}
+            >
+              <div className="settings-section__collapse-inner">
+                {draft.duplicateBanEnabled ? (
               <div className={cn('settings-native-toggle', fieldErrors.banDurationHours && 'field--error')}>
                 <div className="settings-native-toggle__row">
                   <span className="settings-native-toggle__title">Длительность бана</span>
@@ -1103,6 +1180,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 ) : null}
               </div>
             ) : null}
+              </div>
+            </div>
           </GlassCard>
 
           <GlassCard
@@ -1110,11 +1189,33 @@ export function SettingsPage({ api }: { api: ApiClient }) {
             style={{ animationDelay: '90ms' }}
             aria-label="Ограничения сообщений"
           >
-            <div className="settings-section__head">
-              <h3>Ограничения сообщений</h3>
+            <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+              <button
+                type="button"
+                className="settings-section__toggle"
+                aria-expanded={expandedSections.limits}
+                aria-controls="settings-limits-content"
+                onClick={() => toggleSection('limits')}
+              >
+                <span className="settings-section__toggle-main">
+                  <h3>Ограничения сообщений</h3>
+                  <small>{limitsRulesEnabledCount} ограничений активно</small>
+                </span>
+                <span
+                  className={cn('settings-section__chevron', expandedSections.limits && 'is-open')}
+                  aria-hidden
+                >
+                  ⌄
+                </span>
+              </button>
             </div>
 
-            <div className={cn('settings-native-toggle', fieldErrors.maxMessageLength && 'field--error')}>
+            <div
+              id="settings-limits-content"
+              className={cn('settings-section__collapse', expandedSections.limits && 'is-open')}
+            >
+              <div className="settings-section__collapse-inner">
+                <div className={cn('settings-native-toggle', fieldErrors.maxMessageLength && 'field--error')}>
               <div className="settings-native-toggle__row">
                 <span className="settings-native-toggle__title">Лимит длины сообщения</span>
 
@@ -1421,6 +1522,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 ) : null}
               </div>
             ) : null}
+              </div>
+            </div>
 
           </GlassCard>
         </section>
