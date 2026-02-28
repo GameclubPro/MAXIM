@@ -522,6 +522,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
       {!settingsQuery.isLoading && !settingsQuery.error && draft ? (
         <section className="settings-sections" aria-label="Настройки модерации">
+          <header className="settings-page-header stagger-in">
+            <p className="settings-page-header__eyebrow">Чат</p>
+            <h2 className="settings-page-header__title">{chatTitle || chatId}</h2>
+          </header>
+
           <GlassCard className="settings-section stagger-in">
             <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
               <button
@@ -539,10 +544,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   className={cn('settings-section__chevron', expandedSections.links && 'is-open')}
                   aria-hidden
                 >
-                  ⌄
+                  <span className="settings-section__chevron-line settings-section__chevron-line--left" />
+                  <span className="settings-section__chevron-line settings-section__chevron-line--right" />
                 </span>
               </button>
-              <span className="settings-section__chat-chip">{chatTitle || chatId}</span>
             </div>
 
             <div
@@ -883,7 +888,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   )}
                   aria-hidden
                 >
-                  ⌄
+                  <span className="settings-section__chevron-line settings-section__chevron-line--left" />
+                  <span className="settings-section__chevron-line settings-section__chevron-line--right" />
                 </span>
               </button>
             </div>
@@ -1205,7 +1211,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   className={cn('settings-section__chevron', expandedSections.limits && 'is-open')}
                   aria-hidden
                 >
-                  ⌄
+                  <span className="settings-section__chevron-line settings-section__chevron-line--left" />
+                  <span className="settings-section__chevron-line settings-section__chevron-line--right" />
                 </span>
               </button>
             </div>
