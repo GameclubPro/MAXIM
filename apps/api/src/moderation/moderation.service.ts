@@ -23,6 +23,7 @@ type ActiveBan = {
 
 const DEFAULT_BAN_DURATION_HOURS = 6;
 const BOT_BUTTON_TEXT = 'Открыть';
+const MAX_FORWARD_SCAN_DEPTH = 8;
 
 @Injectable()
 export class ModerationService {
@@ -123,17 +124,22 @@ export class ModerationService {
       return;
     }
 
+    const effectiveMessageLength = this.calculateEffectiveMessageLength(update);
+
     const detection = await this.ruleEngine.detect({
       chatId,
       userId: senderId,
       text,
       settings,
       domainAllowlist: chat.domains.map((item: { domain: string }) => item.domain),
+      effectiveLength: effectiveMessageLength,
     });
 
     const { violations } = detection;
-    const hasLinkViolation = violations.some((item) => item.ruleCode === 'LINK_BLOCKED');
-    if (!hasLinkViolation && detection.duplicateDecision) {
+    const hasBlockingDeleteViolation = violations.some(
+      (item) => item.ruleCode === 'LINK_BLOCKED' || item.ruleCode === 'MESSAGE_TOO_LONG',
+    );
+    if (!hasBlockingDeleteViolation && detection.duplicateDecision) {
       await this.handleDuplicateDecision({
         chatId,
         userId: senderId,
@@ -150,7 +156,7 @@ export class ModerationService {
       return;
     }
 
-    if (!hasLinkViolation && detection.duplicateHit) {
+    if (!hasBlockingDeleteViolation && detection.duplicateHit) {
       await this.handleDuplicateHit({
         chatId,
         userId: senderId,
@@ -170,7 +176,10 @@ export class ModerationService {
       return;
     }
 
-    const topViolation = violations.find((item) => item.ruleCode === 'LINK_BLOCKED') ?? violations[0];
+    const topViolation =
+      violations.find((item) => item.ruleCode === 'LINK_BLOCKED') ??
+      violations.find((item) => item.ruleCode === 'MESSAGE_TOO_LONG') ??
+      violations[0];
     await this.prisma.violation.create({
       data: {
         chatId,
@@ -240,7 +249,7 @@ export class ModerationService {
     }
 
     let action: SanctionAction = SanctionAction.NONE;
-    if (topViolation.ruleCode !== 'LINK_BLOCKED') {
+    if (this.shouldResolveSanction(topViolation.ruleCode)) {
       action = await this.sanctionService.resolveAction({
         chatId,
         userId: senderId,
@@ -636,6 +645,159 @@ export class ModerationService {
 
   private buildBanNotice(userLabel: string, banDurationHours: number): string {
     return `Пользователю ${userLabel} выдан бан на ${this.formatBanDurationLabel(banDurationHours)}.`;
+  }
+
+  private shouldResolveSanction(ruleCode: string): boolean {
+    return ruleCode !== 'LINK_BLOCKED' && ruleCode !== 'MESSAGE_TOO_LONG';
+  }
+
+  private calculateEffectiveMessageLength(update: MaxUpdate): number {
+    const baseText = update.message?.text ?? '';
+    const baseLength = baseText.length;
+    const forwardedSnippets = this.collectForwardedTextSnippets(update.raw);
+
+    if (forwardedSnippets.length === 0) {
+      return baseLength;
+    }
+
+    const normalizedBaseText = baseText.toLowerCase();
+    let totalLength = baseLength;
+
+    for (const snippet of forwardedSnippets) {
+      if (!snippet) {
+        continue;
+      }
+
+      if (normalizedBaseText.includes(snippet.toLowerCase())) {
+        continue;
+      }
+
+      totalLength += snippet.length;
+    }
+
+    return totalLength;
+  }
+
+  private collectForwardedTextSnippets(raw: unknown): string[] {
+    const rawRecord = this.asRecord(raw);
+    if (!rawRecord) {
+      return [];
+    }
+
+    const messageNode = this.extractRawMessageNode(rawRecord) ?? rawRecord;
+    const forwardedNodes = this.collectForwardedNodes(messageNode);
+    if (forwardedNodes.length === 0) {
+      return [];
+    }
+
+    const snippets = new Set<string>();
+    for (const node of forwardedNodes) {
+      this.collectTextSnippets(node, snippets);
+    }
+
+    return [...snippets];
+  }
+
+  private extractRawMessageNode(raw: Record<string, unknown>): Record<string, unknown> | null {
+    const directMessage = this.asRecord(raw.message);
+    if (directMessage) {
+      return directMessage;
+    }
+
+    const envelopeKeys = ['message_created', 'data', 'event'];
+    if (typeof raw.update_type === 'string') {
+      envelopeKeys.push(raw.update_type);
+    }
+    if (typeof raw.type === 'string') {
+      envelopeKeys.push(raw.type);
+    }
+
+    for (const key of envelopeKeys) {
+      const envelope = this.asRecord(raw[key]);
+      if (!envelope) {
+        continue;
+      }
+
+      const nestedMessage = this.asRecord(envelope.message);
+      if (nestedMessage) {
+        return nestedMessage;
+      }
+    }
+
+    return null;
+  }
+
+  private collectForwardedNodes(node: unknown, depth = 0, acc: unknown[] = []): unknown[] {
+    if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined) {
+      return acc;
+    }
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        this.collectForwardedNodes(item, depth + 1, acc);
+      }
+      return acc;
+    }
+
+    if (typeof node !== 'object') {
+      return acc;
+    }
+
+    const row = node as Record<string, unknown>;
+    for (const [key, value] of Object.entries(row)) {
+      if (/forward/i.test(key)) {
+        acc.push(value);
+      }
+
+      if (value && (typeof value === 'object' || Array.isArray(value))) {
+        this.collectForwardedNodes(value, depth + 1, acc);
+      }
+    }
+
+    return acc;
+  }
+
+  private collectTextSnippets(node: unknown, acc: Set<string>, depth = 0) {
+    if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined) {
+      return;
+    }
+
+    if (typeof node === 'string') {
+      const normalized = node.trim();
+      if (normalized.length > 0) {
+        acc.add(normalized);
+      }
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        this.collectTextSnippets(item, acc, depth + 1);
+      }
+      return;
+    }
+
+    if (typeof node !== 'object') {
+      return;
+    }
+
+    const row = node as Record<string, unknown>;
+    for (const [key, value] of Object.entries(row)) {
+      if (
+        (key === 'text' || key === 'caption' || key === 'plain' || key === 'message_text' || key === 'messageText') &&
+        typeof value === 'string'
+      ) {
+        const normalized = value.trim();
+        if (normalized.length > 0) {
+          acc.add(normalized);
+        }
+        continue;
+      }
+
+      if (value && (typeof value === 'object' || Array.isArray(value) || typeof value === 'string')) {
+        this.collectTextSnippets(value, acc, depth + 1);
+      }
+    }
   }
 
   private buildBotMessageOptions(

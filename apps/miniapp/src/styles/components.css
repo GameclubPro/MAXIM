@@ -565,6 +565,28 @@
   color: var(--danger);
 }
 
+.settings-length-limit__value {
+  min-width: 88px;
+  text-align: right;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.settings-length-limit__slider {
+  width: 100%;
+  accent-color: #0b84ff;
+}
+
+.settings-length-limit__labels {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1;
+}
+
 .ban-duration-stepper {
   display: inline-grid;
   grid-template-columns: 32px auto 32px;

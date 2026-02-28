@@ -31,6 +31,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     duplicateBanWindowSec: 48 * 60 * 60,
     duplicateBanMaxCount: 4,
     linkPolicy: LinkPolicy.ALLOWLIST_ONLY,
+    maxMessageLength: 1500,
     linkBotMessageEnabled: true,
     linkBotButtonEnabled: false,
     linkBotButtonUrl: '',
@@ -60,6 +61,20 @@ describe('RuleEngineService', () => {
 
     expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
     expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
+  });
+
+  it('detects MESSAGE_TOO_LONG when effective length exceeds limit', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'short text',
+      settings: buildSettings({ maxMessageLength: 50 }),
+      domainAllowlist: [],
+      effectiveLength: 120,
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_TOO_LONG')).toBe(true);
   });
 
   it('escalates duplicate action to WARN/KICK/BAN for 12h/24h/48h windows', async () => {

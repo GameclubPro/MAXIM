@@ -22,6 +22,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     duplicateBanWindowSec: 48 * 60 * 60,
     duplicateBanMaxCount: 4,
     linkPolicy: 'ALLOWLIST_ONLY',
+    maxMessageLength: 1500,
     linkBotMessageEnabled: true,
     linkBotButtonEnabled: false,
     linkBotButtonUrl: '',
@@ -90,6 +91,33 @@ function createOldUpdate(): MaxUpdate {
       createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
     },
     raw: {},
+  };
+}
+
+function createForwardedUpdate(forwardedText: string): MaxUpdate {
+  return {
+    updateId: 'upd-forwarded-1',
+    type: 'message_created',
+    message: {
+      messageId: 'msg-forwarded-1',
+      chatId: 'chat-1',
+      senderId: 'user-1',
+      senderName: 'Алексей',
+      text: 'коротко',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      message: {
+        body: {
+          text: 'коротко',
+          forwarded_message: {
+            body: {
+              text: forwardedText,
+            },
+          },
+        },
+      },
+    },
   };
 }
 
@@ -1016,6 +1044,90 @@ describe('ModerationService', () => {
         messageId: 'msg-1',
         ruleCode: 'DUPLICATE_WARN',
         action: SanctionAction.WARN,
+      }),
+    });
+  });
+
+  it('counts forwarded text length for MESSAGE_TOO_LONG and skips sanctions', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ maxMessageLength: 100 }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockImplementation(async (params: { effectiveLength?: number; settings: { maxMessageLength: number } }) => {
+        const length = params.effectiveLength ?? 0;
+        if (length > params.settings.maxMessageLength) {
+          return {
+            violations: [
+              {
+                ruleCode: 'MESSAGE_TOO_LONG',
+                score: 0.82,
+                reason: 'Message too long',
+              },
+            ],
+          };
+        }
+
+        return { violations: [] };
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn().mockResolvedValue(SanctionAction.WARN),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    const forwarded = 'x'.repeat(180);
+    await service.handleUpdate(createForwardedUpdate(forwarded));
+
+    expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
+    const detectionArgs = (ruleEngine.detect as jest.Mock).mock.calls[0][0] as {
+      effectiveLength?: number;
+    };
+    expect(detectionArgs.effectiveLength).toBeGreaterThan('коротко'.length);
+    expect(detectionArgs.effectiveLength).toBeGreaterThan(100);
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-forwarded-1');
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'msg-forwarded-1',
+        ruleCode: 'MESSAGE_TOO_LONG',
+        action: SanctionAction.NONE,
       }),
     });
   });

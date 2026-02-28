@@ -55,10 +55,12 @@ export class RuleEngineService {
     text: string;
     settings: ChatSettings;
     domainAllowlist: string[];
+    effectiveLength?: number;
   }): Promise<DetectionResult> {
-    const { chatId, userId, text, settings, domainAllowlist } = params;
+    const { chatId, userId, text, settings, domainAllowlist, effectiveLength } = params;
     const violations: RuleViolation[] = [];
     const normalized = text.toLowerCase();
+    const measuredLength = typeof effectiveLength === 'number' ? effectiveLength : text.length;
 
     if (this.hasProfanity(normalized, settings.profanityLevel)) {
       violations.push({ ruleCode: 'PROFANITY', score: 0.95, reason: 'Detected profanity pattern' });
@@ -67,6 +69,14 @@ export class RuleEngineService {
     const linkViolation = this.hasBlockedLink(normalized, settings.linkPolicy, domainAllowlist);
     if (linkViolation) {
       violations.push({ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: linkViolation });
+    }
+
+    if (measuredLength > settings.maxMessageLength) {
+      violations.push({
+        ruleCode: 'MESSAGE_TOO_LONG',
+        score: 0.82,
+        reason: `Message length ${measuredLength} exceeds limit ${settings.maxMessageLength}`,
+      });
     }
 
     if (this.isCapsAbuse(text, settings.capsThreshold)) {
