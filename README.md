@@ -11,7 +11,8 @@ Production-ready monorepo for MAX chat moderation bot and admin mini-app.
 ## Quick start
 1. Copy `.env.example` to `.env` and set secrets.
 2. Install dependencies: `npm install`.
-3. Start infra (db/redis): `docker compose -f infra/docker-compose.yml up -d postgres redis`.
+3. Start infra (db/redis) for local host access:
+   `docker compose -f infra/docker-compose.yml -f infra/docker-compose.local.yml up -d postgres redis`.
 4. Run API: `npm run dev --workspace @maxim/api`.
 5. Run mini-app: `npm run dev --workspace @maxim/miniapp`.
 

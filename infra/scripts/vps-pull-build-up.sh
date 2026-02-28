@@ -5,9 +5,6 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT_DIR"
 
 COMPOSE_FILES=(-f "infra/docker-compose.yml")
-if [[ -f "infra/docker-compose.vps.yml" ]]; then
-  COMPOSE_FILES+=(-f "infra/docker-compose.vps.yml")
-fi
 BRANCH="${1:-main}"
 
 if [[ $# -ge 2 ]]; then
