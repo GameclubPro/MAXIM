@@ -73,6 +73,7 @@ export function Shell() {
   }, [chatId, resolvedChatId, routeChatTitle]);
   const isChatsRoute = location.pathname === '/';
   const isSettingsRoute = location.pathname.includes('/settings');
+  const hasTopbar = !isChatsRoute && !isSettingsRoute;
 
   const screen = useMemo(
     () => resolveScreenInfo(location.pathname, resolvedChatTitle || resolvedChatId),
@@ -122,8 +123,8 @@ export function Shell() {
   }, []);
 
   return (
-    <div className="app-shell">
-      {!isChatsRoute && !isSettingsRoute ? (
+    <div className={cn('app-shell', !hasTopbar && 'app-shell--no-topbar')}>
+      {hasTopbar ? (
         <header className="shell-topbar glass-card glass-card--sm">
           <div className="shell-topbar__brand-row">
             <Link to="/" className="shell-brand">

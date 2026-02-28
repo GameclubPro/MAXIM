@@ -7,6 +7,10 @@
   padding-bottom: calc(var(--space-5) + var(--safe-bottom));
 }
 
+.app-shell--no-topbar {
+  grid-template-rows: 1fr auto;
+}
+
 .app-shell--centered {
   place-items: center;
   padding-top: max(20vh, 80px);
