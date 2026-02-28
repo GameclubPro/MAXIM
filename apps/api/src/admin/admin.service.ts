@@ -62,7 +62,13 @@ export class AdminService {
       }),
     );
 
-    return resolvedChats.filter((chat): chat is ChatSummary => chat !== null);
+    const filtered = resolvedChats.filter((chat): chat is ChatSummary => chat !== null);
+    if (filtered.length > 0) {
+      return filtered;
+    }
+
+    const bootstrapped = await this.bootstrapCurrentChat(user);
+    return bootstrapped ? [bootstrapped] : [];
   }
 
   async getSettings(chatId: string, user: AuthUser): Promise<ChatSettings> {
@@ -384,5 +390,59 @@ export class AdminService {
         'Failed to refresh chat title from MAX API',
       );
     }
+  }
+
+  private async bootstrapCurrentChat(user: AuthUser): Promise<ChatSummary | null> {
+    if (!user.chatId) {
+      return null;
+    }
+
+    const hasAdminAccess = await this.hasUserAndBotAdminAccess(user.chatId, user.userId);
+    if (!hasAdminAccess) {
+      return null;
+    }
+
+    const fallbackTitle = user.chatTitle?.trim() || `Chat ${user.chatId}`;
+
+    const persistedChat = await this.prisma.chat.upsert({
+      where: { id: user.chatId },
+      create: {
+        id: user.chatId,
+        title: fallbackTitle,
+      },
+      update: {
+        ...(user.chatTitle?.trim()
+          ? {
+              title: user.chatTitle.trim(),
+            }
+          : {}),
+      },
+    });
+
+    await this.prisma.chatAdminAllowlist.upsert({
+      where: {
+        chatId_userId: {
+          chatId: user.chatId,
+          userId: user.userId,
+        },
+      },
+      create: {
+        chatId: user.chatId,
+        userId: user.userId,
+      },
+      update: {},
+    });
+
+    const chat: ChatSummary = {
+      id: user.chatId,
+      title: persistedChat.title,
+      createdAt: persistedChat.createdAt.toISOString(),
+    };
+
+    if (this.isFallbackTitle(chat.id, chat.title)) {
+      await this.refreshChatTitle(chat);
+    }
+
+    return chat;
   }
 }

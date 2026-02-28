@@ -55,4 +55,18 @@ describe('InitDataService', () => {
     const user = service.validate(encoded);
     expect(user.userId).toBe('100');
   });
+
+  it('extracts chat context when chat payload is present', () => {
+    const service = new InitDataService(configService);
+    const params = new URLSearchParams();
+    params.set('user', JSON.stringify({ id: '777' }));
+    params.set('chat', JSON.stringify({ id: '152517912', title: 'MAXIM Chat' }));
+    params.set('auth_date', '1700000002');
+    params.set('hash', sign(params));
+
+    const user = service.validate(params.toString());
+    expect(user.userId).toBe('777');
+    expect(user.chatId).toBe('152517912');
+    expect(user.chatTitle).toBe('MAXIM Chat');
+  });
 });

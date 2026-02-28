@@ -58,6 +58,9 @@ export class InitDataService {
       throw new UnauthorizedException('Missing user id');
     }
 
+    const chatPayload = params.get('chat');
+    const parsedChat = this.parseChat(chatPayload);
+
     return {
       userId,
       username: parsedUser.username ? String(parsedUser.username) : null,
@@ -66,6 +69,7 @@ export class InitDataService {
         : parsedUser.first_name
           ? String(parsedUser.first_name)
           : null,
+      ...(parsedChat ? parsedChat : {}),
     };
   }
 
@@ -89,5 +93,27 @@ export class InitDataService {
     }
 
     return current;
+  }
+
+  private parseChat(chatPayload: string | null): { chatId?: string; chatTitle?: string | null } | null {
+    if (!chatPayload) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(chatPayload) as Record<string, unknown>;
+      const chatId = parsed.id ?? parsed.chat_id;
+      if (typeof chatId !== 'string' && typeof chatId !== 'number') {
+        return null;
+      }
+
+      const chatTitle = parsed.title ?? parsed.chat_title;
+      return {
+        chatId: String(chatId),
+        chatTitle: typeof chatTitle === 'string' ? chatTitle : null,
+      };
+    } catch {
+      return null;
+    }
   }
 }
