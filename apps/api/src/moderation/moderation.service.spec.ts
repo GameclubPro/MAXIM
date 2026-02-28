@@ -410,7 +410,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-1');
+    expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',

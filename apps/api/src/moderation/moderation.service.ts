@@ -504,20 +504,7 @@ export class ModerationService {
       return;
     }
 
-    try {
-      await this.maxClient.banMember(chatId, userId);
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          userId,
-          messageId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to ban member',
-      );
-    }
-
+    // Soft-ban mode: do not remove member from chat, enforce ban via active-ban auto-delete window.
     await this.sendBanNotice({
       chatId,
       userId,
