@@ -187,6 +187,103 @@ function createVoiceAttachmentUpdate(): MaxUpdate {
   };
 }
 
+function createForwardedVideoAttachmentUpdate(): MaxUpdate {
+  return {
+    updateId: 'upd-forwarded-video-1',
+    type: 'message_created',
+    message: {
+      messageId: 'msg-forwarded-video-1',
+      chatId: 'chat-1',
+      senderId: 'user-1',
+      senderName: 'Алексей',
+      text: 'переслано',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      message: {
+        body: {
+          text: 'переслано',
+          forwarded_message: {
+            attachments: [
+              {
+                type: 'video',
+                payload: {
+                  url: 'https://cdn.example/forwarded-video.mp4',
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+  };
+}
+
+function createForwardedVoiceAttachmentUpdate(): MaxUpdate {
+  return {
+    updateId: 'upd-forwarded-voice-1',
+    type: 'message_created',
+    message: {
+      messageId: 'msg-forwarded-voice-1',
+      chatId: 'chat-1',
+      senderId: 'user-1',
+      senderName: 'Алексей',
+      text: 'переслано',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      message: {
+        body: {
+          text: 'переслано',
+          forwarded_message: {
+            attachments: [
+              {
+                type: 'voice',
+                payload: {
+                  url: 'https://cdn.example/forwarded-voice.ogg',
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+  };
+}
+
+function createForwardedFileAttachmentUpdate(): MaxUpdate {
+  return {
+    updateId: 'upd-forwarded-file-1',
+    type: 'message_created',
+    message: {
+      messageId: 'msg-forwarded-file-1',
+      chatId: 'chat-1',
+      senderId: 'user-1',
+      senderName: 'Алексей',
+      text: 'переслано',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      message: {
+        body: {
+          text: 'переслано',
+          forwarded_message: {
+            attachments: [
+              {
+                type: 'file',
+                payload: {
+                  file_name: 'forwarded.pdf',
+                  url: 'https://cdn.example/forwarded.pdf',
+                },
+              },
+            ],
+          },
+        },
+      },
+    },
+  };
+}
+
 describe('ModerationService', () => {
   it('ignores bot-authored messages from webhook payload', async () => {
     const prisma = {
@@ -1265,6 +1362,216 @@ describe('ModerationService', () => {
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
         ruleCode: 'VIDEO_BLOCKED',
+        action: SanctionAction.NONE,
+      }),
+    });
+  });
+
+  it('detects forwarded video attachment and moderates it as regular message content', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ videoMessagesEnabled: false }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockImplementation(async (params: { hasVideoAttachment?: boolean }) => {
+        if (params.hasVideoAttachment) {
+          return {
+            violations: [{ ruleCode: 'VIDEO_BLOCKED', score: 0.88, reason: 'Video disabled' }],
+          };
+        }
+
+        return { violations: [] };
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createForwardedVideoAttachmentUpdate());
+
+    const detectionArgs = (ruleEngine.detect as jest.Mock).mock.calls[0][0] as {
+      hasVideoAttachment?: boolean;
+    };
+    expect(detectionArgs.hasVideoAttachment).toBe(true);
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-forwarded-video-1');
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        ruleCode: 'VIDEO_BLOCKED',
+        action: SanctionAction.NONE,
+      }),
+    });
+  });
+
+  it('detects forwarded voice attachment and moderates it as regular message content', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ voiceMessagesEnabled: false }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockImplementation(async (params: { hasVoiceAttachment?: boolean }) => {
+        if (params.hasVoiceAttachment) {
+          return {
+            violations: [{ ruleCode: 'VOICE_BLOCKED', score: 0.88, reason: 'Voice disabled' }],
+          };
+        }
+
+        return { violations: [] };
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createForwardedVoiceAttachmentUpdate());
+
+    const detectionArgs = (ruleEngine.detect as jest.Mock).mock.calls[0][0] as {
+      hasVoiceAttachment?: boolean;
+    };
+    expect(detectionArgs.hasVoiceAttachment).toBe(true);
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-forwarded-voice-1');
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        ruleCode: 'VOICE_BLOCKED',
+        action: SanctionAction.NONE,
+      }),
+    });
+  });
+
+  it('detects forwarded file attachment and moderates it as regular message content', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ fileMessagesEnabled: false }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockImplementation(async (params: { hasFileAttachment?: boolean }) => {
+        if (params.hasFileAttachment) {
+          return {
+            violations: [{ ruleCode: 'FILE_BLOCKED', score: 0.88, reason: 'File disabled' }],
+          };
+        }
+
+        return { violations: [] };
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createForwardedFileAttachmentUpdate());
+
+    const detectionArgs = (ruleEngine.detect as jest.Mock).mock.calls[0][0] as {
+      hasFileAttachment?: boolean;
+    };
+    expect(detectionArgs.hasFileAttachment).toBe(true);
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-forwarded-file-1');
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        ruleCode: 'FILE_BLOCKED',
         action: SanctionAction.NONE,
       }),
     });
