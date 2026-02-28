@@ -296,6 +296,8 @@ export class ModerationService {
               topViolation.ruleCode,
               canDeleteMessage,
               settings.photoMessageCooldownHours,
+              effectiveMessageLength,
+              settings.maxMessageLength,
             ),
             limitsMessageOptions,
           );
@@ -307,6 +309,8 @@ export class ModerationService {
               topViolation.ruleCode,
               canDeleteMessage,
               settings.photoMessageCooldownHours,
+              effectiveMessageLength,
+              settings.maxMessageLength,
             ),
           );
         }
@@ -742,11 +746,28 @@ export class ModerationService {
     ruleCode: string,
     canDeleteMessage: boolean,
     photoCooldownHours: number,
+    messageLength?: number,
+    maxMessageLength?: number,
   ): string {
     if (ruleCode === 'MESSAGE_TOO_LONG') {
+      const actualLength =
+        typeof messageLength === 'number' && Number.isFinite(messageLength) && messageLength > 0
+          ? Math.round(messageLength)
+          : null;
+      const maxLength =
+        typeof maxMessageLength === 'number' &&
+        Number.isFinite(maxMessageLength) &&
+        maxMessageLength > 0
+          ? Math.round(maxMessageLength)
+          : null;
+      const lengthDetails =
+        actualLength !== null && maxLength !== null
+          ? ` длина сообщения ${actualLength} символов, максимум ${maxLength}.`
+          : ' превышен лимит длины сообщения.';
+
       return canDeleteMessage
-        ? `Сообщение пользователя ${userLabel} удалено: превышен лимит длины сообщения.`
-        : `Сообщение пользователя ${userLabel} нарушает правила: превышен лимит длины сообщения.`;
+        ? `Сообщение пользователя ${userLabel} удалено:${lengthDetails}`
+        : `Сообщение пользователя ${userLabel} нарушает правила:${lengthDetails}`;
     }
 
     if (ruleCode === 'VIDEO_BLOCKED') {
