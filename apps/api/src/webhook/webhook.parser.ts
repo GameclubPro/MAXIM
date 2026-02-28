@@ -375,39 +375,74 @@ export class WebhookParser {
       }
     }
 
-    const supplementalUrls = this.collectSupplementalUrls(message);
+    const supplementalTextSnippets = this.collectSupplementalTextSnippets(message);
+    const supplementalLinkUrls = this.collectSupplementalLinkUrls(message);
+
     if (!directText) {
-      if (supplementalUrls.length > 0) {
-        return supplementalUrls.join(' ');
+      const textOnly = this.mergeTextSnippets([], supplementalTextSnippets);
+      if (textOnly.length > 0) {
+        return textOnly.join(' ');
       }
 
-      const fallbackUrls = this.collectUrlsFromNode(message, new Set<string>());
-      if (fallbackUrls.length > 0) {
-        return fallbackUrls.join(' ');
+      if (supplementalLinkUrls.length > 0) {
+        return supplementalLinkUrls.join(' ');
       }
 
       return '';
     }
 
-    if (supplementalUrls.length === 0) {
-      return directText;
-    }
-
-    const directTextUrls = new Set(
+    const knownDirectUrls = new Set(
       this.extractUrlsFromString(directText).map((url) => this.normalizeUrlForCompare(url)),
     );
-    const missingUrls = supplementalUrls.filter(
-      (url) => !directTextUrls.has(this.normalizeUrlForCompare(url)),
+    const filteredSupplementalSnippets: string[] = [];
+    for (const snippet of supplementalTextSnippets) {
+      const normalizedSnippet = snippet.replace(/\s+/g, ' ').trim();
+      if (!normalizedSnippet) {
+        continue;
+      }
+
+      const snippetUrls = this.extractUrlsFromString(normalizedSnippet);
+      const hasNewUrl = snippetUrls.some(
+        (url) => !knownDirectUrls.has(this.normalizeUrlForCompare(url)),
+      );
+      const snippetWithoutUrls = this.stripUrlsFromText(normalizedSnippet).trim();
+
+      if (!hasNewUrl && snippetWithoutUrls.length === 0) {
+        continue;
+      }
+
+      if (!hasNewUrl && snippetWithoutUrls.length > 0) {
+        filteredSupplementalSnippets.push(snippetWithoutUrls);
+        continue;
+      }
+
+      filteredSupplementalSnippets.push(normalizedSnippet);
+      for (const url of snippetUrls) {
+        knownDirectUrls.add(this.normalizeUrlForCompare(url));
+      }
+    }
+
+    let composedText = this.mergeTextSnippets([directText], filteredSupplementalSnippets).join(' ');
+    if (supplementalLinkUrls.length === 0) {
+      return composedText;
+    }
+
+    const composedUrls = new Set(
+      this.extractUrlsFromString(composedText).map((url) => this.normalizeUrlForCompare(url)),
+    );
+    const missingUrls = supplementalLinkUrls.filter(
+      (url) => !composedUrls.has(this.normalizeUrlForCompare(url)),
     );
 
     if (missingUrls.length === 0) {
-      return directText;
+      return composedText;
     }
 
-    return `${directText} ${missingUrls.join(' ')}`.trim();
+    composedText = `${composedText} ${missingUrls.join(' ')}`.trim();
+    return composedText;
   }
 
-  private collectSupplementalUrls(message: Record<string, unknown>): string[] {
+  private collectSupplementalTextSnippets(message: Record<string, unknown>): string[] {
     const body = this.asRecord(message.body);
     const content = this.asRecord(message.content);
     const payload = this.asRecord(message.payload);
@@ -448,57 +483,221 @@ export class WebhookParser {
 
     const acc = new Set<string>();
     for (const candidate of candidates) {
-      this.collectUrlsFromNode(candidate, acc);
+      this.collectTextSnippetsFromNode(candidate, acc);
     }
 
     return [...acc];
+  }
+
+  private collectSupplementalLinkUrls(message: Record<string, unknown>): string[] {
+    const body = this.asRecord(message.body);
+    const content = this.asRecord(message.content);
+    const payload = this.asRecord(message.payload);
+    const messageNode = this.asRecord(message.message);
+    const candidates: unknown[] = [
+      message.link,
+      message.markup,
+      message.attachments,
+      body?.link,
+      body?.markup,
+      body?.attachments,
+      content?.link,
+      content?.markup,
+      content?.attachments,
+      payload?.link,
+      payload?.markup,
+      payload?.attachments,
+      messageNode?.link,
+      messageNode?.markup,
+      messageNode?.attachments,
+    ];
+
+    const acc = new Set<string>();
+    for (const candidate of candidates) {
+      this.collectLinkUrlsFromEntities(candidate, acc);
+    }
+
+    return [...acc];
+  }
+
+  private mergeTextSnippets(base: string[], supplemental: string[]): string[] {
+    const merged: string[] = [];
+    const seen = new Set<string>();
+
+    for (const value of [...base, ...supplemental]) {
+      const normalized = value.replace(/\s+/g, ' ').trim();
+      if (!normalized) {
+        continue;
+      }
+
+      const key = normalized.toLowerCase();
+      if (seen.has(key)) {
+        continue;
+      }
+
+      seen.add(key);
+      merged.push(normalized);
+    }
+
+    return merged;
   }
 
   private normalizeUrlForCompare(url: string): string {
     return url.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/$/, '');
   }
 
-  private collectUrlsFromNode(node: unknown, acc: Set<string>, depth = 0): string[] {
+  private collectTextSnippetsFromNode(
+    node: unknown,
+    acc: Set<string>,
+    parentKey = '',
+    depth = 0,
+  ) {
     if (depth > 8 || node === null || node === undefined) {
-      return [...acc];
+      return;
     }
 
     if (typeof node === 'string') {
-      for (const url of this.extractUrlsFromString(node)) {
-        acc.add(url);
+      if (!this.isContentTextKey(parentKey)) {
+        return;
       }
-      return [...acc];
+
+      const normalized = node.trim();
+      if (normalized.length > 0) {
+        acc.add(normalized);
+      }
+      return;
     }
 
     if (Array.isArray(node)) {
       for (const item of node) {
-        this.collectUrlsFromNode(item, acc, depth + 1);
+        this.collectTextSnippetsFromNode(item, acc, parentKey, depth + 1);
       }
-      return [...acc];
+      return;
     }
 
-    if (typeof node === 'object') {
-      const row = node as Record<string, unknown>;
-      for (const [key, value] of Object.entries(row)) {
-        if (typeof value === 'string') {
-          const urls = this.extractUrlsFromString(value);
-          for (const url of urls) {
-            acc.add(url);
-          }
-        } else if (value && (typeof value === 'object' || Array.isArray(value))) {
-          this.collectUrlsFromNode(value, acc, depth + 1);
+    const row = this.asRecord(node);
+    if (!row) {
+      return;
+    }
+
+    for (const [key, value] of Object.entries(row)) {
+      this.collectTextSnippetsFromNode(value, acc, key, depth + 1);
+    }
+  }
+
+  private collectLinkUrlsFromEntities(
+    node: unknown,
+    acc: Set<string>,
+    parentKey = '',
+    depth = 0,
+    trustedLinkContext = false,
+  ) {
+    if (depth > 8 || node === null || node === undefined) {
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        this.collectLinkUrlsFromEntities(item, acc, parentKey, depth + 1, trustedLinkContext);
+      }
+      return;
+    }
+
+    const row = this.asRecord(node);
+    if (!row) {
+      return;
+    }
+
+    const type = this.readLowerString(row.type ?? row.kind ?? row.entity_type ?? row.entityType);
+    const parent = parentKey.toLowerCase();
+    const isExplicitLinkEntity =
+      type === 'link' ||
+      type === 'url' ||
+      type === 'hyperlink' ||
+      parent === 'link' ||
+      parent === 'links' ||
+      parent === 'markup' ||
+      parent === 'entity' ||
+      parent === 'entities';
+    const hasLinkContext = trustedLinkContext || isExplicitLinkEntity;
+
+    if (hasLinkContext) {
+      const linkCandidates = [
+        row.url,
+        row.href,
+        row.link,
+        row.link_url,
+        row.linkUrl,
+        row.target_url,
+        row.targetUrl,
+        row.uri,
+      ];
+
+      for (const candidate of linkCandidates) {
+        if (typeof candidate !== 'string') {
+          continue;
         }
 
-        if (typeof value === 'string' && /(url|href|link)$/i.test(key)) {
-          const urls = this.extractUrlsFromString(value);
-          for (const url of urls) {
-            acc.add(url);
-          }
+        for (const url of this.extractUrlsFromString(candidate)) {
+          acc.add(url);
         }
       }
     }
 
-    return [...acc];
+    for (const [key, value] of Object.entries(row)) {
+      if (typeof value === 'string' && this.isContentTextKey(key)) {
+        for (const url of this.extractUrlsFromString(value)) {
+          acc.add(url);
+        }
+      }
+
+      if (typeof value === 'string' && hasLinkContext && this.isLinkFieldKey(key)) {
+        for (const url of this.extractUrlsFromString(value)) {
+          acc.add(url);
+        }
+      }
+
+      if (value && (typeof value === 'object' || Array.isArray(value))) {
+        this.collectLinkUrlsFromEntities(value, acc, key, depth + 1, hasLinkContext);
+      }
+    }
+  }
+
+  private isContentTextKey(value: string): boolean {
+    const key = value.toLowerCase();
+    return (
+      key === 'text' ||
+      key === 'caption' ||
+      key === 'plain' ||
+      key === 'message_text' ||
+      key === 'messagetext' ||
+      key === 'description'
+    );
+  }
+
+  private isLinkFieldKey(value: string): boolean {
+    const key = value.toLowerCase();
+    return (
+      key === 'url' ||
+      key === 'href' ||
+      key === 'link' ||
+      key === 'uri' ||
+      key === 'link_url' ||
+      key === 'linkurl' ||
+      key === 'target_url' ||
+      key === 'targeturl' ||
+      key.endsWith('_url') ||
+      key.endsWith('url')
+    );
+  }
+
+  private stripUrlsFromText(value: string): string {
+    if (!value) {
+      return '';
+    }
+
+    const regex = /((https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,})(\/\S*)?/gi;
+    return value.replace(regex, ' ').replace(/\s+/g, ' ').trim();
   }
 
   private extractUrlsFromString(value: string): string[] {
@@ -632,5 +831,14 @@ export class WebhookParser {
 
     const normalized = value.trim();
     return normalized.length > 0 ? normalized : undefined;
+  }
+
+  private readLowerString(value: unknown): string | undefined {
+    const normalized = this.readString(value);
+    if (!normalized) {
+      return undefined;
+    }
+
+    return normalized.toLowerCase();
   }
 }

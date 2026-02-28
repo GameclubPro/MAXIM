@@ -96,6 +96,29 @@ describe('WebhookParser', () => {
     expect(parsed.message?.text).toContain('https://spam-forwarded.example/path');
   });
 
+  it('does not append service urls from forwarded metadata when forwarded text has no links', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-4a-meta',
+        chat_id: 'chat-4a-meta',
+        sender_id: 'user-4a-meta',
+        created_at: '2026-02-28T05:00:00.000Z',
+        body: {
+          text: 'пересланное сообщение',
+          forwarded_message: {
+            source: {
+              message_url: 'https://max.ru/chats/source/message/123',
+            },
+          },
+        },
+      },
+    });
+
+    expect(parsed.message?.text).toBe('пересланное сообщение');
+    expect(parsed.message?.text).not.toContain('https://max.ru/chats/source/message/123');
+  });
+
   it('does not duplicate urls already present in direct text', () => {
     const parsed = parser.parse({
       update_type: 'message_created',
