@@ -41,6 +41,7 @@ function createUpdate(): MaxUpdate {
       messageId: 'msg-1',
       chatId: 'chat-1',
       senderId: 'user-1',
+      senderName: 'Алексей',
       text: 'same text',
       createdAt: new Date().toISOString(),
     },
@@ -79,6 +80,7 @@ function createOldUpdate(): MaxUpdate {
       messageId: 'msg-old-1',
       chatId: 'chat-1',
       senderId: 'user-1',
+      senderName: 'Алексей',
       text: 'old text',
       createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString(),
     },
@@ -282,7 +284,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      expect.stringContaining('Дубли сообщений: пользователь user-1.'),
+      'Сообщение пользователя "Алексей" удалено за дубли сообщений. Пользователю вынесено предупреждение.',
     );
   });
 
@@ -342,7 +344,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      expect.stringContaining('Сообщение удалено как дубль.'),
+      'Сообщение пользователя "Алексей" удалено: дубли сообщений в этом чате запрещены.',
     );
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -539,7 +541,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Сообщение пользователя user-1 удалено: ссылки в этом чате ограничены.',
+      'Сообщение пользователя "Алексей" удалено: ссылки в этом чате запрещены.',
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
@@ -607,7 +609,7 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Сообщение пользователя user-1 нарушает правила: ссылки в этом чате ограничены.',
+      'Сообщение пользователя "Алексей" нарушает правила: ссылки в этом чате запрещены.',
     );
   });
 

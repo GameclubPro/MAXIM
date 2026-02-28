@@ -67,9 +67,10 @@ export class ModerationService {
       return;
     }
 
-    const { chatId, chatTitle, senderId, text, createdAt, messageId } = update.message;
+    const { chatId, chatTitle, senderId, senderName, text, createdAt, messageId } = update.message;
     const fallbackTitle = `Chat ${chatId}`;
     const resolvedTitle = chatTitle?.trim() || fallbackTitle;
+    const userLabel = this.formatUserLabel(senderName);
 
     const chat = await this.prisma.chat.upsert({
       where: { id: chatId },
@@ -117,6 +118,7 @@ export class ModerationService {
         text,
         createdAt,
         decision: detection.duplicateDecision,
+        userLabel,
         duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
       });
       return;
@@ -130,6 +132,7 @@ export class ModerationService {
         text,
         createdAt,
         hit: detection.duplicateHit,
+        userLabel,
         duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
       });
       return;
@@ -181,7 +184,7 @@ export class ModerationService {
       try {
         await this.maxClient.sendMessage(
           chatId,
-          this.buildLinkExplanation(senderId, canDeleteMessage),
+          this.buildLinkExplanation(userLabel, canDeleteMessage),
         );
       } catch (error: unknown) {
         this.logger.warn(
@@ -238,9 +241,10 @@ export class ModerationService {
     text: string;
     createdAt: string;
     decision: DuplicateDecision;
+    userLabel: string;
     duplicateBotMessageEnabled: boolean;
   }) {
-    const { chatId, userId, messageId, text, createdAt, decision, duplicateBotMessageEnabled } =
+    const { chatId, userId, messageId, text, createdAt, decision, userLabel, duplicateBotMessageEnabled } =
       params;
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
@@ -287,7 +291,7 @@ export class ModerationService {
 
     if (duplicateBotMessageEnabled) {
       try {
-        await this.maxClient.sendMessage(chatId, this.buildDuplicateExplanation(userId, decision));
+        await this.maxClient.sendMessage(chatId, this.buildDuplicateExplanation(userLabel, decision));
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -336,9 +340,10 @@ export class ModerationService {
     text: string;
     createdAt: string;
     hit: DuplicateHit;
+    userLabel: string;
     duplicateBotMessageEnabled: boolean;
   }) {
-    const { chatId, userId, messageId, text, createdAt, hit, duplicateBotMessageEnabled } = params;
+    const { chatId, userId, messageId, text, createdAt, hit, userLabel, duplicateBotMessageEnabled } = params;
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
 
@@ -383,7 +388,10 @@ export class ModerationService {
 
     if (duplicateBotMessageEnabled) {
       try {
-        await this.maxClient.sendMessage(chatId, this.buildDuplicateHitExplanation(userId, hit, canDeleteMessage));
+        await this.maxClient.sendMessage(
+          chatId,
+          this.buildDuplicateHitExplanation(userLabel, canDeleteMessage),
+        );
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -408,57 +416,38 @@ export class ModerationService {
     return SanctionAction.BAN;
   }
 
-  private buildLinkExplanation(userId: string, canDeleteMessage: boolean): string {
+  private buildLinkExplanation(userLabel: string, canDeleteMessage: boolean): string {
     if (canDeleteMessage) {
-      return `Сообщение пользователя ${userId} удалено: ссылки в этом чате ограничены.`;
+      return `Сообщение пользователя ${userLabel} удалено: ссылки в этом чате запрещены.`;
     }
 
-    return `Сообщение пользователя ${userId} нарушает правила: ссылки в этом чате ограничены.`;
+    return `Сообщение пользователя ${userLabel} нарушает правила: ссылки в этом чате запрещены.`;
   }
 
-  private buildDuplicateExplanation(userId: string, decision: DuplicateDecision): string {
-    const actionLabel =
-      decision.action === 'WARN'
-        ? 'предупреждение'
-        : decision.action === 'KICK'
-          ? 'удаление участника'
-          : 'бан';
-    const nextActionLabel =
-      decision.nextAction === 'KICK'
-        ? 'удаление участника'
-        : decision.nextAction === 'BAN'
-          ? 'бан'
-          : null;
-
-    return [
-      `Дубли сообщений: пользователь ${userId}.`,
-      `Окно ${this.formatWindow(decision.windowSec)}: ${decision.count}/${decision.threshold}.`,
-      `Действие: ${actionLabel}.`,
-      nextActionLabel ? `Следующая ступень: ${nextActionLabel}.` : null,
-    ]
-      .filter((line): line is string => Boolean(line))
-      .join(' ');
-  }
-
-  private buildDuplicateHitExplanation(userId: string, hit: DuplicateHit, canDeleteMessage: boolean): string {
-    const repeatLabel = hit.count === 1 ? 'повтор' : 'повтора';
-    const statusLine = canDeleteMessage
-      ? 'Сообщение удалено как дубль.'
-      : 'Сообщение помечено как дубль.';
-
-    return [
-      `Дубли сообщений: пользователь ${userId}.`,
-      `Окно ${this.formatWindow(hit.windowSec)}: ${hit.count} ${repeatLabel}.`,
-      statusLine,
-    ].join(' ');
-  }
-
-  private formatWindow(windowSec: number): string {
-    if (windowSec % 3600 === 0) {
-      return `${windowSec / 3600}ч`;
+  private buildDuplicateExplanation(userLabel: string, decision: DuplicateDecision): string {
+    if (decision.action === 'WARN') {
+      return `Сообщение пользователя ${userLabel} удалено за дубли сообщений. Пользователю вынесено предупреждение.`;
     }
 
-    return `${windowSec}с`;
+    if (decision.action === 'KICK') {
+      return `Сообщение пользователя ${userLabel} удалено за дубли сообщений. Пользователь удален из чата.`;
+    }
+
+    return `Сообщение пользователя ${userLabel} удалено за дубли сообщений. Пользователь заблокирован в чате.`;
+  }
+
+  private buildDuplicateHitExplanation(userLabel: string, canDeleteMessage: boolean): string {
+    if (canDeleteMessage) {
+      return `Сообщение пользователя ${userLabel} удалено: дубли сообщений в этом чате запрещены.`;
+    }
+
+    return `Сообщение пользователя ${userLabel} нарушает правила: дубли сообщений в этом чате запрещены.`;
+  }
+
+  private formatUserLabel(senderName?: string): string {
+    const normalized = typeof senderName === 'string' ? senderName.trim() : '';
+    const safe = normalized.length > 0 ? normalized.replace(/"/g, "'") : 'Пользователь';
+    return `"${safe}"`;
   }
 
   private isBotAuthoredMessage(update: MaxUpdate): boolean {

@@ -10,6 +10,7 @@ export class WebhookParser {
     const messageId = this.extractMessageId(message, payload);
     const chatId = this.extractChatId(message, payload);
     const senderId = this.extractSenderId(message, payload);
+    const senderName = this.extractSenderName(message, payload);
     const chatTitle = this.extractChatTitle(message);
     const messageText = this.extractMessageText(message);
     const createdAt = this.extractCreatedAt(message, payload);
@@ -27,6 +28,7 @@ export class WebhookParser {
               chatId,
               ...(chatTitle ? { chatTitle } : {}),
               senderId,
+              ...(senderName ? { senderName } : {}),
               text: messageText,
               createdAt,
             }
@@ -208,6 +210,81 @@ export class WebhookParser {
     }
 
     return '';
+  }
+
+  private extractSenderName(
+    message: Record<string, unknown> | undefined,
+    payload: Record<string, unknown>,
+  ): string | undefined {
+    if (!message) {
+      return undefined;
+    }
+
+    const sender = this.asRecord(message.sender);
+    const from = this.asRecord(message.from);
+    const user = this.asRecord(message.user);
+    const actor = this.asRecord(message.actor);
+    const payloadSender = this.asRecord(payload.sender);
+
+    const directCandidates = [
+      message.sender_name,
+      message.senderName,
+      message.display_name,
+      message.displayName,
+      sender?.display_name,
+      sender?.displayName,
+      sender?.name,
+      sender?.full_name,
+      sender?.fullName,
+      sender?.nickname,
+      from?.display_name,
+      from?.displayName,
+      from?.name,
+      from?.full_name,
+      from?.fullName,
+      user?.display_name,
+      user?.displayName,
+      user?.name,
+      user?.full_name,
+      user?.fullName,
+      actor?.display_name,
+      actor?.displayName,
+      actor?.name,
+      actor?.full_name,
+      actor?.fullName,
+      payloadSender?.display_name,
+      payloadSender?.displayName,
+      payloadSender?.name,
+      payloadSender?.full_name,
+      payloadSender?.fullName,
+    ];
+
+    for (const value of directCandidates) {
+      const text = this.readString(value);
+      if (text) {
+        return text;
+      }
+    }
+
+    const nameNodes = [sender, from, user, actor, payloadSender].filter(
+      (item): item is Record<string, unknown> => Boolean(item),
+    );
+
+    for (const node of nameNodes) {
+      const firstName = this.readString(
+        node.first_name ?? node.firstName ?? node.given_name ?? node.givenName,
+      );
+      const lastName = this.readString(
+        node.last_name ?? node.lastName ?? node.family_name ?? node.familyName,
+      );
+
+      const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
+      if (fullName.length > 0) {
+        return fullName;
+      }
+    }
+
+    return undefined;
   }
 
   private extractCreatedAt(
@@ -546,5 +623,14 @@ export class WebhookParser {
     }
 
     return value as Record<string, unknown>;
+  }
+
+  private readString(value: unknown): string | undefined {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+
+    const normalized = value.trim();
+    return normalized.length > 0 ? normalized : undefined;
   }
 }

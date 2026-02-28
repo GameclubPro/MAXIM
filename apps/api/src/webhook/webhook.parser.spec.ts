@@ -37,6 +37,25 @@ describe('WebhookParser', () => {
     expect(parsed.message?.chatTitle).toBe('Another Chat');
   });
 
+  it('extracts senderName from sender profile fields', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-name-1',
+        chat_id: 'chat-name-1',
+        sender: {
+          user_id: 'user-name-1',
+          first_name: 'Иван',
+          last_name: 'Петров',
+        },
+        text: 'hello',
+        created_at: '2026-02-28T05:00:00.000Z',
+      },
+    });
+
+    expect(parsed.message?.senderName).toBe('Иван Петров');
+  });
+
   it('extracts text from nested body.text when message.text is missing', () => {
     const parsed = parser.parse({
       update_type: 'message_created',

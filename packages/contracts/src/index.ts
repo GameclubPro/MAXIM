@@ -135,6 +135,7 @@ export const maxMessagePayloadSchema = z.object({
   chatId: z.string(),
   chatTitle: z.string().optional(),
   senderId: z.string(),
+  senderName: z.string().optional(),
   text: z.string().default(''),
   createdAt: z.string().datetime(),
 });
