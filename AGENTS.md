@@ -41,6 +41,9 @@
   - `message.body.text` (текст).
 - Модерация должна удалять целиком сообщение, если в тексте есть ссылка (а не “вырезать” часть текста).
 - Исправлен вызов удаления через MAX API: `DELETE /messages` с query `message_id` + `chat_id`.
+- Исправлен вызов отправки сообщения через MAX API: `POST /messages` должен передавать `chat_id` в query, а `text` в body.
+- Модерация дублей обновлена: при включённом `duplicateBotMessageEnabled` первый дубль удаляется и бот отправляет объяснение; предупреждение начинается со следующего повтора, дальше `KICK/BAN` по ступеням настроек.
+- Модерация игнорирует сообщения, отправленные ботом/сервисом (`sender.type=bot/service` или `is_bot=true`), чтобы бот не удалял собственные служебные сообщения.
 - Экран `Настройки` в miniapp обновлён:
   - убран верхний блок в `Settings`,
   - удалены заглушки (оставлена только рабочая логика по ссылкам),
@@ -116,6 +119,7 @@
 - Для docker-команд:
   - первичным считать `VPS`-блок,
   - в `Локально` обязательно предупреждать, что на текущей машине Docker не установлен (если статус не изменился).
+- Команды давать как “чистый shell”: не дописывать в конце `✅`/эмодзи/лишние токены, иначе CLI может падать (пример: `TS5042` у `tsc`).
 
 ## Git flow для деплоя (обязательно)
 - Для задач вида «выкатить изменения» агент должен давать порядок **строго так**:
@@ -168,6 +172,7 @@
 - VPS:
   - `cd /var/www/Chat_bot`
   - `docker compose -f infra/docker-compose.yml logs -f api`
+  - если нужен фильтр и на VPS нет `rg`: `docker compose -f infra/docker-compose.yml logs -f api | grep --line-buffered -En "<PATTERN>"`
 
 ### Prisma миграции
 - Локально:
@@ -237,6 +242,10 @@
 - `P2021 table does not exist`: не применены миграции Prisma.
 - `P1001 Can't reach database server at postgres:5432` при `migrate deploy`: не готов Postgres/не запущен сервис; сначала поднять `postgres`, дождаться `pg_isready`, затем повторить миграции (или использовать `./infra/scripts/vps-pull-build-up.sh main`).
 - `webhook_events.status = FAILED` при ссылках: сначала смотреть `error_message` и `docker compose ... logs api`; частая причина — ошибка вызова MAX API удаления сообщения.
+- `Failed to send duplicate explanation message` / `Failed to send link explanation message` + `Request failed with status code 400`: обычно неверный формат запроса в MAX API или на VPS запущен старый `api`-контейнер; для `POST /messages` проверить, что `chat_id` идёт в query.
+- `Validation Error: Directory .../apps/api/test in the roots[1] option was not found`: старый `jest.config.cjs` с жёстким `roots` на `<rootDir>/test`; обновить конфиг или временно создать каталог `apps/api/test`.
+- `TS5042: Option 'project' cannot be mixed with source files`: в команду попал лишний токен (часто `✅` в конце); запускать команду без декоративных символов.
+- `rg: command not found` на VPS: использовать `grep -En` или установить `ripgrep` (`apt install -y ripgrep`).
 - `502 Bad Gateway` сразу после recreate: часто кратковременно до старта `api`/`miniapp-static`; сначала проверять `curl http://127.0.0.1:3001/api/health/live`, потом домен.
 - `curl: (56) Recv failure: Connection reset by peer` на `127.0.0.1:3001`: обычно `api` падает/рестартит, смотреть `docker compose ... logs api` и обязательные ENV.
 

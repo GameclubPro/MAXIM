@@ -17,6 +17,8 @@ const DOMAIN_PATTERN = /^(?=.{3,253}$)(?!-)(?:[a-z0-9-]{1,63}\.)+[a-z]{2,63}$/i;
 const AUTO_SAVE_DELAY_MS = 650;
 const BAN_DURATION_MIN_HOURS = 1;
 const BAN_DURATION_MAX_HOURS = 36;
+const DUPLICATE_COUNT_MIN = 2;
+const DUPLICATE_COUNT_MAX = 20;
 
 type DuplicateEnabledKey = 'duplicateWarnEnabled' | 'duplicateKickEnabled' | 'duplicateBanEnabled';
 type DuplicateWindowKey =
@@ -320,12 +322,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     setFieldValue(key, (safeHours * 3600) as ChatSettings[DuplicateWindowKey]);
   }
 
-  function handleDuplicateMaxCountChange(key: DuplicateMaxCountKey, rawValue: string) {
-    const maxCount = Number.parseInt(rawValue, 10);
-    const safeMaxCount = Number.isNaN(maxCount) ? 0 : Math.max(0, maxCount);
-    setFieldValue(key, safeMaxCount as ChatSettings[DuplicateMaxCountKey]);
-  }
-
   function adjustBanDuration(deltaHours: number) {
     if (!draft) {
       return;
@@ -337,6 +333,18 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     );
 
     setFieldValue('banDurationHours', next as ChatSettings['banDurationHours']);
+  }
+
+  function adjustDuplicateMaxCount(
+    key: DuplicateMaxCountKey,
+    currentValue: number,
+    delta: number,
+  ) {
+    const next = Math.min(
+      DUPLICATE_COUNT_MAX,
+      Math.max(DUPLICATE_COUNT_MIN, Number(currentValue) + delta),
+    );
+    setFieldValue(key, next as ChatSettings[DuplicateMaxCountKey]);
   }
 
   useEffect(() => {
@@ -702,7 +710,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               <div className="duplicate-stage-list__head" aria-hidden>
                 <span>Ступень</span>
                 <span>Окно, ч</span>
-                <span>Лимит</span>
+                <span>Количество дублей</span>
               </div>
 
               {DUPLICATE_STAGE_OPTIONS.map((stage) => {
@@ -753,25 +761,42 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         </span>
                       </label>
 
-                      <label
-                        className={cn('duplicate-stage__field', maxCountError && 'field--error')}
-                      >
-                        <input
-                          type="number"
-                          min={2}
-                          max={20}
-                          step={1}
-                          value={Number(maxCount)}
-                          onChange={(event) =>
-                            handleDuplicateMaxCountChange(stage.maxCountKey, event.target.value)
-                          }
-                          disabled={!enabled}
-                          aria-label={`Лимит повторов для ступени ${stage.label}`}
-                        />
-                        <span className="duplicate-stage__suffix" aria-hidden>
-                          количество
-                        </span>
-                      </label>
+                      <div className={cn('duplicate-stage__field', maxCountError && 'field--error')}>
+                        <span className="duplicate-stage__field-label">Количество дублей</span>
+                        <div
+                          className="duplicate-count-stepper"
+                          role="group"
+                          aria-label={`Количество дублей для ступени ${stage.label}`}
+                        >
+                          <button
+                            type="button"
+                            className="duplicate-count-stepper__button"
+                            onClick={() =>
+                              adjustDuplicateMaxCount(stage.maxCountKey, Number(maxCount), -1)
+                            }
+                            disabled={!enabled || Number(maxCount) <= DUPLICATE_COUNT_MIN}
+                            aria-label={`Уменьшить количество дублей для ${stage.label}`}
+                          >
+                            -
+                          </button>
+
+                          <output className="duplicate-count-stepper__value" aria-live="polite">
+                            {Number(maxCount)}
+                          </output>
+
+                          <button
+                            type="button"
+                            className="duplicate-count-stepper__button"
+                            onClick={() =>
+                              adjustDuplicateMaxCount(stage.maxCountKey, Number(maxCount), 1)
+                            }
+                            disabled={!enabled || Number(maxCount) >= DUPLICATE_COUNT_MAX}
+                            aria-label={`Увеличить количество дублей для ${stage.label}`}
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
                     </div>
 
                     {windowError || maxCountError ? (
