@@ -1,0 +1,4 @@
+ALTER TABLE "chat_settings"
+  ADD COLUMN IF NOT EXISTS "link_warn_enabled" BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS "link_ban_enabled" BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS "link_kick_enabled" BOOLEAN NOT NULL DEFAULT false;

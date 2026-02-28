@@ -23,6 +23,8 @@ type ActiveBan = {
 
 const DEFAULT_BAN_DURATION_HOURS = 6;
 const DEFAULT_BOT_BUTTON_TEXT = 'Открыть';
+const LINK_ESCALATION_WINDOW_HOURS = 24;
+const LINK_ESCALATION_BAN_HOURS = 6;
 const MAX_FORWARD_SCAN_DEPTH = 8;
 const NON_SANCTION_RULE_CODES = new Set([
   'LINK_BLOCKED',
@@ -249,12 +251,24 @@ export class ModerationService {
       );
     }
 
-    if (topViolation.ruleCode === 'LINK_BLOCKED' && settings.linkBotMessageEnabled) {
-      const linkMessageOptions = this.buildBotMessageOptions(
-        settings.linkBotButtonEnabled,
-        settings.linkBotButtonUrl,
-        settings.linkBotButtonText,
-      );
+    const linkMessageOptions =
+      topViolation.ruleCode === 'LINK_BLOCKED'
+        ? this.buildBotMessageOptions(
+            settings.linkBotButtonEnabled,
+            settings.linkBotButtonUrl,
+            settings.linkBotButtonText,
+          )
+        : null;
+    const linkViolationCount24h =
+      topViolation.ruleCode === 'LINK_BLOCKED'
+        ? await this.countRecentLinkViolations(chatId, senderId)
+        : null;
+
+    if (
+      topViolation.ruleCode === 'LINK_BLOCKED' &&
+      settings.linkBotMessageEnabled &&
+      linkViolationCount24h === 1
+    ) {
       try {
         if (linkMessageOptions) {
           await this.maxClient.sendMessage(
@@ -329,21 +343,68 @@ export class ModerationService {
     }
 
     let action: SanctionAction = SanctionAction.NONE;
-    if (this.shouldResolveSanction(topViolation.ruleCode)) {
+    let actionBanDurationHours = settings.banDurationHours;
+
+    if (topViolation.ruleCode === 'LINK_BLOCKED') {
+      const linkAction = this.resolveLinkEscalationAction(linkViolationCount24h ?? 1, {
+        warnEnabled: settings.linkWarnEnabled,
+        banEnabled: settings.linkBanEnabled,
+        kickEnabled: settings.linkKickEnabled,
+      });
+      action = linkAction;
+      if (linkAction === SanctionAction.BAN) {
+        actionBanDurationHours = LINK_ESCALATION_BAN_HOURS;
+      }
+
+      if (linkAction === SanctionAction.WARN) {
+        try {
+          await this.maxClient.sendMessage(chatId, this.buildLinkWarnExplanation(userLabel));
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              userId: senderId,
+              messageId,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to send link warning message',
+          );
+        }
+      }
+    } else if (this.shouldResolveSanction(topViolation.ruleCode)) {
       action = await this.sanctionService.resolveAction({
         chatId,
         userId: senderId,
         warnThreshold: settings.warnThreshold,
         repeatBanWindowDays: settings.repeatBanWindowDays,
       });
+    }
+
+    if (action !== SanctionAction.NONE) {
       await this.applySanctionAction({
         chatId,
         userId: senderId,
         action,
         userLabel,
         messageId,
-        banDurationHours: settings.banDurationHours,
+        banDurationHours: actionBanDurationHours,
       });
+
+      if (topViolation.ruleCode === 'LINK_BLOCKED' && action === SanctionAction.KICK) {
+        try {
+          await this.maxClient.sendMessage(chatId, this.buildLinkKickExplanation(userLabel));
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              userId: senderId,
+              messageId,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to send link kick message',
+          );
+        }
+      }
     }
 
     await this.prisma.moderationEvent.create({
@@ -360,7 +421,13 @@ export class ModerationService {
         metadata: {
           reason: topViolation.reason,
           action,
-          ...(action === SanctionAction.BAN ? { banDurationHours: settings.banDurationHours } : {}),
+          ...(action === SanctionAction.BAN ? { banDurationHours: actionBanDurationHours } : {}),
+          ...(topViolation.ruleCode === 'LINK_BLOCKED' && linkViolationCount24h !== null
+            ? {
+                linkViolationCount24h,
+                linkEscalationWindowHours: LINK_ESCALATION_WINDOW_HOURS,
+              }
+            : {}),
         },
       },
     });
@@ -624,6 +691,14 @@ export class ModerationService {
     return `Сообщение пользователя ${userLabel} нарушает правила: ссылки в этом чате запрещены.`;
   }
 
+  private buildLinkWarnExplanation(userLabel: string): string {
+    return `Пользователю ${userLabel} вынесено предупреждение: ссылки в этом чате запрещены.`;
+  }
+
+  private buildLinkKickExplanation(userLabel: string): string {
+    return `Пользователь ${userLabel} удален из чата за повторные ссылки.`;
+  }
+
   private buildDuplicateExplanation(
     userLabel: string,
     decision: DuplicateDecision,
@@ -735,6 +810,44 @@ export class ModerationService {
 
   private shouldResolveSanction(ruleCode: string): boolean {
     return !NON_SANCTION_RULE_CODES.has(ruleCode);
+  }
+
+  private resolveLinkEscalationAction(
+    linkViolationCount24h: number,
+    settings: { warnEnabled: boolean; banEnabled: boolean; kickEnabled: boolean },
+  ): SanctionAction {
+    const count = Number.isInteger(linkViolationCount24h)
+      ? Math.max(1, linkViolationCount24h)
+      : 1;
+
+    if (count >= 4) {
+      if (settings.kickEnabled) {
+        return SanctionAction.KICK;
+      }
+      if (settings.banEnabled) {
+        return SanctionAction.BAN;
+      }
+      if (settings.warnEnabled) {
+        return SanctionAction.WARN;
+      }
+      return SanctionAction.NONE;
+    }
+
+    if (count === 3) {
+      if (settings.banEnabled) {
+        return SanctionAction.BAN;
+      }
+      if (settings.warnEnabled) {
+        return SanctionAction.WARN;
+      }
+      return SanctionAction.NONE;
+    }
+
+    if (count === 2 && settings.warnEnabled) {
+      return SanctionAction.WARN;
+    }
+
+    return SanctionAction.NONE;
   }
 
   private isMessageLimitsViolation(ruleCode: string): boolean {
@@ -1155,6 +1268,37 @@ export class ModerationService {
     }
 
     return normalized.slice(0, 32);
+  }
+
+  private async countRecentLinkViolations(chatId: string, userId: string): Promise<number> {
+    const violationModel = this.prisma.violation as unknown as {
+      count?: (args: {
+        where: {
+          chatId: string;
+          userId: string;
+          ruleCode: string;
+          createdAt: { gte: Date };
+        };
+      }) => Promise<number>;
+    };
+
+    if (typeof violationModel.count !== 'function') {
+      return 1;
+    }
+
+    const since = new Date(
+      Date.now() - LINK_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000,
+    );
+    const count = await violationModel.count({
+      where: {
+        chatId,
+        userId,
+        ruleCode: 'LINK_BLOCKED',
+        createdAt: { gte: since },
+      },
+    });
+
+    return Number.isInteger(count) && count > 0 ? count : 1;
   }
 
   private async getActiveBan(

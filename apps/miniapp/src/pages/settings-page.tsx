@@ -613,7 +613,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               <div className="settings-native-toggle">
                 <div className="settings-native-toggle__row">
                   <div className="settings-native-toggle__title-wrap">
-                    <span className="settings-native-toggle__title">Сообщение от бота</span>
+                    <span className="settings-native-toggle__title">1. Объяснение</span>
                     <button
                       type="button"
                       className={cn('settings-info-button', openHintKey === 'link' && 'is-open')}
@@ -628,7 +628,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                   <label
                     className="settings-native-switch"
-                    aria-label="Включить сообщение от бота для модерации ссылок"
+                    aria-label="Включить объяснение для модерации ссылок"
                   >
                     <input
                       type="checkbox"
@@ -651,9 +651,75 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                 {openHintKey === 'link' ? (
                   <p id="link-bot-message-hint" className="settings-native-toggle__hint">
-                    После удаления ссылки бот отправляет короткое пояснение в чат.
+                    Ступени работают в окне 24ч: 1-я ссылка - объяснение, 2-я - предупреждение, 3-я - бан 6ч, 4-я - удаление из группы.
                   </p>
                 ) : null}
+              </div>
+
+              <div className="settings-native-toggle settings-native-toggle--nested">
+                <div className="settings-native-toggle__row">
+                  <span className="settings-native-toggle__title">2. Предупреждение (24ч)</span>
+
+                  <label
+                    className="settings-native-switch"
+                    aria-label="Включить предупреждение за вторую ссылку в 24 часа"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={draft.linkWarnEnabled}
+                      onChange={(event) =>
+                        setFieldValue('linkWarnEnabled', event.target.checked)
+                      }
+                    />
+                    <span className="toggle-switch" aria-hidden>
+                      <span className="toggle-switch__thumb" />
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+              <div className="settings-native-toggle settings-native-toggle--nested">
+                <div className="settings-native-toggle__row">
+                  <span className="settings-native-toggle__title">3. Бан на 6ч (24ч)</span>
+
+                  <label
+                    className="settings-native-switch"
+                    aria-label="Включить бан на шесть часов за третью ссылку в 24 часа"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={draft.linkBanEnabled}
+                      onChange={(event) =>
+                        setFieldValue('linkBanEnabled', event.target.checked)
+                      }
+                    />
+                    <span className="toggle-switch" aria-hidden>
+                      <span className="toggle-switch__thumb" />
+                    </span>
+                  </label>
+                </div>
+              </div>
+
+              <div className="settings-native-toggle settings-native-toggle--nested">
+                <div className="settings-native-toggle__row">
+                  <span className="settings-native-toggle__title">4. Удаление из группы (24ч)</span>
+
+                  <label
+                    className="settings-native-switch"
+                    aria-label="Включить удаление из группы за четвертую ссылку в 24 часа"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={draft.linkKickEnabled}
+                      onChange={(event) =>
+                        setFieldValue('linkKickEnabled', event.target.checked)
+                      }
+                    />
+                    <span className="toggle-switch" aria-hidden>
+                      <span className="toggle-switch__thumb" />
+                    </span>
+                  </label>
+                </div>
               </div>
 
               {draft.linkBotMessageEnabled ? (
