@@ -46,18 +46,18 @@ const DUPLICATE_STAGE_OPTIONS: Array<{
     maxCountKey: 'duplicateWarnMaxCount',
   },
   {
-    id: 'BAN',
-    label: 'Бан',
-    enabledKey: 'duplicateBanEnabled',
-    windowKey: 'duplicateBanWindowSec',
-    maxCountKey: 'duplicateBanMaxCount',
-  },
-  {
     id: 'KICK',
     label: 'Удаление участника',
     enabledKey: 'duplicateKickEnabled',
     windowKey: 'duplicateKickWindowSec',
     maxCountKey: 'duplicateKickMaxCount',
+  },
+  {
+    id: 'BAN',
+    label: 'Бан',
+    enabledKey: 'duplicateBanEnabled',
+    windowKey: 'duplicateBanWindowSec',
+    maxCountKey: 'duplicateBanMaxCount',
   },
 ];
 
@@ -707,11 +707,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
             </div>
 
             <div className="duplicate-stage-list">
-              <div className="duplicate-stage-list__head" aria-hidden>
-                <span>Ступень</span>
-                <span>Окно, ч</span>
-                <span>Количество дублей</span>
-              </div>
+              <p className="duplicate-stage-list__caption">Количество дублей</p>
 
               {DUPLICATE_STAGE_OPTIONS.map((stage) => {
                 const enabled = draft[stage.enabledKey];
@@ -725,40 +721,45 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     key={stage.id}
                     className={cn('duplicate-stage', !enabled && 'is-disabled')}
                   >
-                    <label className="duplicate-stage__toggle">
-                      <input
-                        type="checkbox"
-                        checked={enabled}
-                        onChange={(event) =>
-                          setFieldValue(
-                            stage.enabledKey,
-                            event.target.checked as ChatSettings[DuplicateEnabledKey],
-                          )
-                        }
-                      />
-                      <span className="toggle-switch" aria-hidden>
-                        <span className="toggle-switch__thumb" />
-                      </span>
-                      <span className="duplicate-stage__title">{stage.label}</span>
-                    </label>
-
-                    <div className="duplicate-stage__fields">
-                      <label className={cn('duplicate-stage__field', windowError && 'field--error')}>
+                    <div className="duplicate-stage__top">
+                      <label className="duplicate-stage__toggle">
                         <input
-                          type="number"
-                          min={1}
-                          max={168}
-                          step={1}
-                          value={secondsToHours(Number(windowSec))}
+                          type="checkbox"
+                          checked={enabled}
                           onChange={(event) =>
-                            handleDuplicateWindowHoursChange(stage.windowKey, event.target.value)
+                            setFieldValue(
+                              stage.enabledKey,
+                              event.target.checked as ChatSettings[DuplicateEnabledKey],
+                            )
                           }
-                          disabled={!enabled}
-                          aria-label={`Окно для ступени ${stage.label} в часах`}
                         />
-                        <span className="duplicate-stage__suffix" aria-hidden>
-                          время
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
                         </span>
+                        <span className="duplicate-stage__title">{stage.label}</span>
+                      </label>
+                    </div>
+
+                    <div className="duplicate-stage__controls">
+                      <label className={cn('duplicate-stage__field', windowError && 'field--error')}>
+                        <span className="duplicate-stage__field-label">Окно, ч</span>
+                        <div className="duplicate-stage__input-wrap">
+                          <input
+                            type="number"
+                            min={1}
+                            max={168}
+                            step={1}
+                            value={secondsToHours(Number(windowSec))}
+                            onChange={(event) =>
+                              handleDuplicateWindowHoursChange(stage.windowKey, event.target.value)
+                            }
+                            disabled={!enabled}
+                            aria-label={`Окно для ступени ${stage.label} в часах`}
+                          />
+                          <span className="duplicate-stage__suffix" aria-hidden>
+                            часы
+                          </span>
+                        </div>
                       </label>
 
                       <div className={cn('duplicate-stage__field', maxCountError && 'field--error')}>

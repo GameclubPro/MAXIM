@@ -585,12 +585,8 @@
   gap: 8px;
 }
 
-.duplicate-stage-list__head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 118px 146px;
-  align-items: center;
-  gap: 8px;
-  padding: 0 10px;
+.duplicate-stage-list__caption {
+  margin: 0 2px;
   color: var(--text-muted);
   font-size: 0.68rem;
   font-weight: 700;
@@ -602,15 +598,20 @@
   border-radius: 12px;
   border: 1px solid rgba(62, 96, 127, 0.16);
   background: rgba(255, 255, 255, 0.45);
-  padding: 8px 10px;
+  padding: 10px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 118px 146px;
-  align-items: center;
   gap: 8px;
 }
 
 .duplicate-stage.is-disabled {
   opacity: 0.78;
+}
+
+.duplicate-stage__top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
 }
 
 .duplicate-stage__toggle {
@@ -665,7 +666,7 @@
 }
 
 .duplicate-stage__title {
-  font-size: 0.8rem;
+  font-size: 0.82rem;
   font-weight: 700;
   color: var(--text-primary);
   line-height: 1.2;
@@ -673,8 +674,10 @@
   overflow-wrap: anywhere;
 }
 
-.duplicate-stage__fields {
-  display: contents;
+.duplicate-stage__controls {
+  display: grid;
+  grid-template-columns: 116px minmax(0, 1fr);
+  gap: 8px;
 }
 
 .duplicate-stage__field {
@@ -694,6 +697,10 @@
   font-weight: 700;
   padding: 6px 84px 6px 10px;
   background: rgba(255, 255, 255, 0.82);
+}
+
+.duplicate-stage__input-wrap {
+  position: relative;
 }
 
 .duplicate-stage__field-label {
@@ -764,18 +771,7 @@
   cursor: not-allowed;
 }
 
-@media (min-width: 620px) {
-  .duplicate-stage-list__head,
-  .duplicate-stage {
-    grid-template-columns: minmax(0, 1fr) 128px 156px;
-  }
-}
-
 @media (max-width: 520px) {
-  .duplicate-stage-list__head {
-    display: none;
-  }
-
   .duplicate-stage {
     grid-template-columns: minmax(0, 1fr);
     padding: 10px;
@@ -783,7 +779,7 @@
     align-items: stretch;
   }
 
-  .duplicate-stage__fields {
+  .duplicate-stage__controls {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
@@ -795,6 +791,12 @@
 
   .duplicate-stage__field-label {
     font-size: 0.64rem;
+  }
+}
+
+@media (max-width: 410px) {
+  .duplicate-stage__controls {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
