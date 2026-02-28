@@ -3,6 +3,7 @@
 type MaxWebAppBridge = {
   initData?: string;
   init_data?: string;
+  ready?: () => void;
 };
 
 declare global {

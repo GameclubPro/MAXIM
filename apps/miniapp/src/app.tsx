@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useEffect } from 'react';
 import { Navigate, Route, BrowserRouter as Router, Routes } from 'react-router-dom';
 import { Shell } from './components/shell';
 import { ApiClient } from './lib/api-client';
@@ -12,6 +13,11 @@ const initData = getInitData();
 const apiClient = new ApiClient(initData);
 
 export function App() {
+  useEffect(() => {
+    window.WebApp?.ready?.();
+    window.MAX?.WebApp?.ready?.();
+  }, []);
+
   if (!initData) {
     return (
       <div className="layout">

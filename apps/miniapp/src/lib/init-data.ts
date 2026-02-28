@@ -1,14 +1,36 @@
+function normalizeInitData(value: string): string {
+  let current = value.trim();
+
+  for (let i = 0; i < 2; i += 1) {
+    if (current.includes('hash=')) {
+      return current;
+    }
+
+    try {
+      const decoded = decodeURIComponent(current);
+      if (decoded === current) {
+        break;
+      }
+      current = decoded;
+    } catch {
+      break;
+    }
+  }
+
+  return current;
+}
+
 export function getInitData(): string {
   const queryParams = new URLSearchParams(window.location.search);
   const queryValue = queryParams.get('init_data') ?? queryParams.get('initData');
   if (queryValue) {
-    return queryValue;
+    return normalizeInitData(queryValue);
   }
 
   const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
   const hashValue = hashParams.get('init_data') ?? hashParams.get('initData');
   if (hashValue) {
-    return hashValue;
+    return normalizeInitData(hashValue);
   }
 
   const bridgeCandidates = [
@@ -20,7 +42,7 @@ export function getInitData(): string {
 
   const bridgeValue = bridgeCandidates.find((value) => Boolean(value && value.trim()));
   if (bridgeValue) {
-    return bridgeValue;
+    return normalizeInitData(bridgeValue);
   }
 
   return '';
