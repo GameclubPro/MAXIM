@@ -130,6 +130,27 @@ function getRouteChatTitle(state: unknown): string {
   return '';
 }
 
+function SectionChevron({ isOpen }: { isOpen: boolean }) {
+  return (
+    <span className={cn('settings-section__chevron', isOpen && 'is-open')} aria-hidden>
+      <svg
+        className="settings-section__chevron-icon"
+        viewBox="0 0 20 20"
+        fill="none"
+        focusable="false"
+      >
+        <path
+          d="M5.5 7.75L10 12.25L14.5 7.75"
+          stroke="currentColor"
+          strokeWidth="2.2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </span>
+  );
+}
+
 export function SettingsPage({ api }: { api: ApiClient }) {
   const { chatId } = useParams();
   const location = useLocation();
@@ -540,13 +561,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   <h3>Модерация ссылок</h3>
                   <small>{linkStagesEnabledCount}/4 ступени включено</small>
                 </span>
-                <span
-                  className={cn('settings-section__chevron', expandedSections.links && 'is-open')}
-                  aria-hidden
-                >
-                  <span className="settings-section__chevron-line settings-section__chevron-line--left" />
-                  <span className="settings-section__chevron-line settings-section__chevron-line--right" />
-                </span>
+                <SectionChevron isOpen={expandedSections.links} />
               </button>
             </div>
 
@@ -881,16 +896,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   <h3>Дубли сообщений</h3>
                   <small>{duplicateStagesEnabledCount}/3 ступени включено</small>
                 </span>
-                <span
-                  className={cn(
-                    'settings-section__chevron',
-                    expandedSections.duplicates && 'is-open',
-                  )}
-                  aria-hidden
-                >
-                  <span className="settings-section__chevron-line settings-section__chevron-line--left" />
-                  <span className="settings-section__chevron-line settings-section__chevron-line--right" />
-                </span>
+                <SectionChevron isOpen={expandedSections.duplicates} />
               </button>
             </div>
 
@@ -1207,13 +1213,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   <h3>Ограничения сообщений</h3>
                   <small>{limitsRulesEnabledCount} ограничений активно</small>
                 </span>
-                <span
-                  className={cn('settings-section__chevron', expandedSections.limits && 'is-open')}
-                  aria-hidden
-                >
-                  <span className="settings-section__chevron-line settings-section__chevron-line--left" />
-                  <span className="settings-section__chevron-line settings-section__chevron-line--right" />
-                </span>
+                <SectionChevron isOpen={expandedSections.limits} />
               </button>
             </div>
 

@@ -413,32 +413,29 @@
   border: 1px solid rgba(62, 96, 127, 0.22);
   background:
     radial-gradient(100% 130% at 30% 20%, rgba(255, 255, 255, 0.9), rgba(230, 242, 252, 0.86));
-  display: block;
-  position: relative;
-  transition: transform 0.2s ease;
+  color: rgba(25, 55, 80, 0.9);
+  display: grid;
+  place-items: center;
+  transition:
+    transform 0.2s ease,
+    border-color 0.2s ease,
+    background 0.2s ease;
+}
+
+.settings-section__toggle[aria-expanded='true'] .settings-section__chevron {
+  border-color: rgba(11, 132, 255, 0.34);
+  background:
+    radial-gradient(120% 130% at 30% 20%, rgba(255, 255, 255, 0.96), rgba(218, 237, 255, 0.9));
 }
 
 .settings-section__chevron.is-open {
   transform: rotate(180deg);
 }
 
-.settings-section__chevron-line {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  width: 9px;
-  height: 2px;
-  border-radius: 2px;
-  background: rgba(25, 55, 80, 0.88);
-  transform-origin: center center;
-}
-
-.settings-section__chevron-line--left {
-  transform: translate(-92%, -50%) rotate(40deg);
-}
-
-.settings-section__chevron-line--right {
-  transform: translate(-8%, -50%) rotate(-40deg);
+.settings-section__chevron-icon {
+  width: 16px;
+  height: 16px;
+  display: block;
 }
 
 .settings-section__collapse {
