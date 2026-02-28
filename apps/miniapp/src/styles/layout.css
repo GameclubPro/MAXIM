@@ -232,16 +232,6 @@
   gap: var(--space-3);
 }
 
-.settings-action-bar {
-  display: grid;
-  gap: var(--space-3);
-}
-
-.settings-action-bar__info {
-  display: grid;
-  gap: 6px;
-}
-
 .settings-grid {
   display: grid;
   gap: var(--space-3);
@@ -292,10 +282,5 @@
 
   .events-stats {
     grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-
-  .settings-action-bar {
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
   }
 }

@@ -67,7 +67,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [domainInput, setDomainInput] = useState('');
   const [domainInputError, setDomainInputError] = useState('');
-  const [lastSaveError, setLastSaveError] = useState<string>('');
   const [failedSnapshot, setFailedSnapshot] = useState<string>('');
 
   const routeChatTitle = getRouteChatTitle(location.state);
@@ -156,19 +155,19 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
   const saveMutation = useMutation({
     mutationFn: (payload: ChatSettings) => api.updateSettings(chatId ?? '', payload),
-    onMutate: () => {
-      setLastSaveError('');
-    },
     onSuccess: (saved) => {
       setDraft(saved);
       setFieldErrors({});
-      setLastSaveError('');
       setFailedSnapshot('');
       queryClient.setQueryData(['settings', chatId], saved);
     },
     onError: (error, payload) => {
-      setLastSaveError((error as Error).message);
       setFailedSnapshot(JSON.stringify(payload));
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось сохранить настройки',
+        description: (error as Error).message,
+      });
     },
   });
   const isSavingSettings = saveMutation.isPending;
@@ -250,7 +249,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     }
 
     setFailedSnapshot('');
-    setLastSaveError('');
   }, [draftSnapshot, failedSnapshot]);
 
   useEffect(() => {
@@ -324,21 +322,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const linkPolicyError = fieldErrors.linkPolicy;
   const allowlistDomains = domainsQuery.data ?? [];
   const isAllowlistMode = draft?.linkPolicy === 'ALLOWLIST_ONLY';
-  const hasSaveError = Boolean(lastSaveError && failedSnapshot === draftSnapshot);
-  const statusToneClass = isSavingSettings
-    ? 'chip--warning'
-    : hasSaveError
-      ? 'chip--danger'
-      : hasChanges
-        ? 'chip--warning'
-        : 'chip--success';
-  const statusLabel = isSavingSettings
-    ? 'Сохраняем...'
-    : hasSaveError
-      ? 'Не сохранено'
-      : hasChanges
-        ? 'Есть изменения'
-        : 'Сохранено';
 
   return (
     <div className="page-stack page-enter">
@@ -495,15 +478,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
             description="Повторите загрузку страницы."
           />
         </GlassCard>
-      ) : null}
-
-      {!settingsQuery.isLoading && !settingsQuery.error && draft ? (
-        <div className="settings-action-bar glass-card glass-card--sm">
-          <div className="settings-action-bar__info">
-            <span className={cn('chip', statusToneClass)}>{statusLabel}</span>
-            {hasSaveError ? <p className="settings-action-bar__error">{lastSaveError}</p> : null}
-          </div>
-        </div>
       ) : null}
     </div>
   );

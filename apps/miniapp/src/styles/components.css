@@ -178,11 +178,6 @@
   background: rgba(31, 169, 126, 0.16);
 }
 
-.chip--danger {
-  color: #a22f3f;
-  background: rgba(228, 83, 99, 0.2);
-}
-
 .shell-chip {
   border-radius: 999px;
   padding: 4px 10px;
@@ -463,13 +458,6 @@
 
 .allowlist-empty--error {
   color: var(--danger);
-}
-
-.settings-action-bar__error {
-  margin: 0;
-  font-size: 0.78rem;
-  color: var(--danger);
-  overflow-wrap: anywhere;
 }
 
 .segmented-control {
