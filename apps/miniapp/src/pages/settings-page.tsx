@@ -25,6 +25,7 @@ type DuplicateMaxCountKey =
   | 'duplicateWarnMaxCount'
   | 'duplicateKickMaxCount'
   | 'duplicateBanMaxCount';
+type BotHintKey = 'link' | 'duplicate';
 
 const DUPLICATE_STAGE_OPTIONS: Array<{
   id: 'WARN' | 'KICK' | 'BAN';
@@ -131,6 +132,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [domainInput, setDomainInput] = useState('');
   const [domainInputError, setDomainInputError] = useState('');
   const [failedSnapshot, setFailedSnapshot] = useState<string>('');
+  const [openHintKey, setOpenHintKey] = useState<BotHintKey | null>(null);
 
   const routeChatTitle = getRouteChatTitle(location.state);
 
@@ -381,6 +383,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     addDomainMutation.mutate(normalized);
   }
 
+  function toggleHint(key: BotHintKey) {
+    setOpenHintKey((current) => (current === key ? null : key));
+  }
+
   if (!chatId) {
     return (
       <GlassCard>
@@ -468,20 +474,45 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 {linkPolicyError ? <small className="field__hint">{linkPolicyError}</small> : null}
               </div>
 
-              <label className="settings-toggle-row">
-                <input
-                  type="checkbox"
-                  checked={draft.linkBotMessageEnabled}
-                  onChange={(event) => setFieldValue('linkBotMessageEnabled', event.target.checked)}
-                />
-                <span className="toggle-switch" aria-hidden>
-                  <span className="toggle-switch__thumb" />
-                </span>
-                <span className="settings-toggle-row__content">
-                  <span className="settings-toggle-row__title">Сообщение от бота</span>
-                  <small>После удаления ссылки бот отправит объяснение в чат.</small>
-                </span>
-              </label>
+              <div className="settings-native-toggle">
+                <div className="settings-native-toggle__row">
+                  <div className="settings-native-toggle__title-wrap">
+                    <span className="settings-native-toggle__title">Сообщение от бота</span>
+                    <button
+                      type="button"
+                      className={cn('settings-info-button', openHintKey === 'link' && 'is-open')}
+                      aria-label="Пояснение для тумблера сообщений о ссылках"
+                      aria-controls="link-bot-message-hint"
+                      aria-expanded={openHintKey === 'link'}
+                      onClick={() => toggleHint('link')}
+                    >
+                      <span aria-hidden>i</span>
+                    </button>
+                  </div>
+
+                  <label
+                    className="settings-native-switch"
+                    aria-label="Включить сообщение от бота для модерации ссылок"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={draft.linkBotMessageEnabled}
+                      onChange={(event) =>
+                        setFieldValue('linkBotMessageEnabled', event.target.checked)
+                      }
+                    />
+                    <span className="toggle-switch" aria-hidden>
+                      <span className="toggle-switch__thumb" />
+                    </span>
+                  </label>
+                </div>
+
+                {openHintKey === 'link' ? (
+                  <p id="link-bot-message-hint" className="settings-native-toggle__hint">
+                    После удаления ссылки бот отправляет короткое пояснение в чат.
+                  </p>
+                ) : null}
+              </div>
 
               {isAllowlistMode ? (
                 <div
@@ -571,22 +602,45 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               <h3>Дубли сообщений</h3>
             </div>
 
-            <label className="settings-toggle-row">
-              <input
-                type="checkbox"
-                checked={draft.duplicateBotMessageEnabled}
-                onChange={(event) =>
-                  setFieldValue('duplicateBotMessageEnabled', event.target.checked)
-                }
-              />
-              <span className="toggle-switch" aria-hidden>
-                <span className="toggle-switch__thumb" />
-              </span>
-              <span className="settings-toggle-row__content">
-                <span className="settings-toggle-row__title">Сообщение от бота</span>
-                <small>Бот отправляет пояснение при срабатывании правила дублей.</small>
-              </span>
-            </label>
+            <div className="settings-native-toggle">
+              <div className="settings-native-toggle__row">
+                <div className="settings-native-toggle__title-wrap">
+                  <span className="settings-native-toggle__title">Сообщение от бота</span>
+                  <button
+                    type="button"
+                    className={cn('settings-info-button', openHintKey === 'duplicate' && 'is-open')}
+                    aria-label="Пояснение для тумблера сообщений о дублях"
+                    aria-controls="duplicate-bot-message-hint"
+                    aria-expanded={openHintKey === 'duplicate'}
+                    onClick={() => toggleHint('duplicate')}
+                  >
+                    <span aria-hidden>i</span>
+                  </button>
+                </div>
+
+                <label
+                  className="settings-native-switch"
+                  aria-label="Включить сообщение от бота для дублей сообщений"
+                >
+                  <input
+                    type="checkbox"
+                    checked={draft.duplicateBotMessageEnabled}
+                    onChange={(event) =>
+                      setFieldValue('duplicateBotMessageEnabled', event.target.checked)
+                    }
+                  />
+                  <span className="toggle-switch" aria-hidden>
+                    <span className="toggle-switch__thumb" />
+                  </span>
+                </label>
+              </div>
+
+              {openHintKey === 'duplicate' ? (
+                <p id="duplicate-bot-message-hint" className="settings-native-toggle__hint">
+                  При срабатывании правила дублей бот публикует поясняющее сообщение.
+                </p>
+              ) : null}
+            </div>
 
             <div className="duplicate-stage-list">
               <div className="duplicate-stage-list__head" aria-hidden>

@@ -460,31 +460,83 @@
   color: var(--danger);
 }
 
-.settings-toggle-row {
+.settings-native-toggle {
+  border-radius: 14px;
+  border: 1px solid rgba(62, 96, 127, 0.18);
+  background:
+    linear-gradient(152deg, rgba(255, 255, 255, 0.78), rgba(238, 247, 255, 0.54)),
+    rgba(255, 255, 255, 0.64);
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.settings-native-toggle__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-native-toggle__title-wrap {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
-  cursor: pointer;
-  user-select: none;
+  gap: 8px;
   min-width: 0;
 }
 
-.settings-toggle-row__content {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-}
-
-.settings-toggle-row__title {
-  font-size: 0.8rem;
+.settings-native-toggle__title {
+  font-size: 0.84rem;
   font-weight: 700;
   color: var(--text-primary);
   line-height: 1.2;
 }
 
-.settings-toggle-row__content small {
-  font-size: 0.74rem;
-  color: var(--text-muted);
+.settings-info-button {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid rgba(62, 96, 127, 0.25);
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--text-secondary);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    color 0.2s ease,
+    transform 0.16s ease;
+}
+
+.settings-info-button span {
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.settings-info-button.is-open {
+  border-color: rgba(11, 132, 255, 0.44);
+  background: rgba(11, 132, 255, 0.14);
+  color: #086cc6;
+}
+
+.settings-native-toggle__hint {
+  margin: 0;
+  border-radius: 10px;
+  border: 1px solid rgba(11, 132, 255, 0.2);
+  background: rgba(11, 132, 255, 0.1);
+  color: rgba(18, 43, 63, 0.94);
+  font-size: 0.76rem;
+  line-height: 1.35;
+  padding: 8px 10px;
+}
+
+.settings-native-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
 }
 
 .duplicate-stage-list {
@@ -530,7 +582,7 @@
 }
 
 .duplicate-stage__toggle input,
-.settings-toggle-row input {
+.settings-native-switch input {
   position: absolute;
   opacity: 0;
   pointer-events: none;
@@ -561,13 +613,13 @@
 }
 
 .duplicate-stage__toggle input:checked + .toggle-switch,
-.settings-toggle-row input:checked + .toggle-switch {
+.settings-native-switch input:checked + .toggle-switch {
   border-color: rgba(11, 132, 255, 0.46);
   background: rgba(11, 132, 255, 0.3);
 }
 
 .duplicate-stage__toggle input:checked + .toggle-switch .toggle-switch__thumb,
-.settings-toggle-row input:checked + .toggle-switch .toggle-switch__thumb {
+.settings-native-switch input:checked + .toggle-switch .toggle-switch__thumb {
   transform: translateX(14px);
 }
 
