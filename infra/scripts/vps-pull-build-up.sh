@@ -44,6 +44,22 @@ wait_for_url() {
   return 1
 }
 
+wait_for_postgres() {
+  local attempts="${1:-120}"
+  local i
+
+  for ((i = 1; i <= attempts; i += 1)); do
+    if docker compose "${COMPOSE_FILES[@]}" exec -T postgres pg_isready -U maxim -d maxim >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+
+  echo "Postgres readiness timeout."
+  docker compose "${COMPOSE_FILES[@]}" logs --tail=120 postgres || true
+  return 1
+}
+
 run_migrations() {
   docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps api npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
 }
@@ -63,16 +79,14 @@ fi
 
 git pull --ff-only origin "$BRANCH"
 
+docker compose "${COMPOSE_FILES[@]}" up -d postgres redis
+wait_for_postgres 180
+
 docker compose "${COMPOSE_FILES[@]}" build api
 
 if ! run_migrations; then
-  echo "First migration attempt failed. Trying to start postgres/redis and retry once..."
-  if ! docker compose "${COMPOSE_FILES[@]}" up -d postgres redis; then
-    echo "Failed to start postgres/redis."
-    echo "Check occupied ports:"
-    echo "  ss -ltnp | grep -E ':5432|:6379'"
-    exit 1
-  fi
+  echo "First migration attempt failed. Retrying once in 5 seconds..."
+  sleep 5
   run_migrations
 fi
 
