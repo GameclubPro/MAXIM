@@ -4,6 +4,18 @@ import { useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import type { ApiClient } from '../lib/api-client';
 
+const profanityLevelLabels: Record<ChatSettings['profanityLevel'], string> = {
+  LOW: 'Низкий',
+  MEDIUM: 'Средний',
+  HIGH: 'Высокий',
+};
+
+const linkPolicyLabels: Record<ChatSettings['linkPolicy'], string> = {
+  ALLOWLIST_ONLY: 'Только из списка разрешенных доменов',
+  BLOCKLIST_ONLY: 'Блокировать только запрещенные домены',
+  ALERT_ONLY: 'Только предупреждать',
+};
+
 export function SettingsPage({ api }: { api: ApiClient }) {
   const { chatId } = useParams();
   const queryClient = useQueryClient();
@@ -66,14 +78,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               })
             }
           >
-            <option value="LOW">LOW</option>
-            <option value="MEDIUM">MEDIUM</option>
-            <option value="HIGH">HIGH</option>
+            <option value="LOW">{profanityLevelLabels.LOW}</option>
+            <option value="MEDIUM">{profanityLevelLabels.MEDIUM}</option>
+            <option value="HIGH">{profanityLevelLabels.HIGH}</option>
           </select>
         </label>
 
         <label>
-          Caps threshold (%)
+          Порог капса (%)
           <input
             type="number"
             value={settings.capsThreshold}
@@ -82,7 +94,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         </label>
 
         <label>
-          Flood max messages
+          Максимум сообщений во флуд-окне
           <input
             type="number"
             value={settings.floodMaxMessages}
@@ -91,7 +103,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         </label>
 
         <label>
-          Flood window (sec)
+          Окно флуда (сек.)
           <input
             type="number"
             value={settings.floodWindowSec}
@@ -100,7 +112,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         </label>
 
         <label>
-          Duplicate max count
+          Максимум повторов
           <input
             type="number"
             value={settings.duplicateMaxCount}
@@ -109,7 +121,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         </label>
 
         <label>
-          Duplicate window (sec)
+          Окно повторов (сек.)
           <input
             type="number"
             value={settings.duplicateWindowSec}
@@ -118,7 +130,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         </label>
 
         <label>
-          Link policy
+          Политика ссылок
           <select
             value={settings.linkPolicy}
             onChange={(event) =>
@@ -128,14 +140,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               })
             }
           >
-            <option value="ALLOWLIST_ONLY">ALLOWLIST_ONLY</option>
-            <option value="BLOCKLIST_ONLY">BLOCKLIST_ONLY</option>
-            <option value="ALERT_ONLY">ALERT_ONLY</option>
+            <option value="ALLOWLIST_ONLY">{linkPolicyLabels.ALLOWLIST_ONLY}</option>
+            <option value="BLOCKLIST_ONLY">{linkPolicyLabels.BLOCKLIST_ONLY}</option>
+            <option value="ALERT_ONLY">{linkPolicyLabels.ALERT_ONLY}</option>
           </select>
         </label>
 
         <label>
-          Warn threshold
+          Порог предупреждений
           <input
             type="number"
             value={settings.warnThreshold}
@@ -144,7 +156,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         </label>
 
         <label>
-          Repeat ban window (days)
+          Окно повтора для бана (дни)
           <input
             type="number"
             value={settings.repeatBanWindowDays}
@@ -153,7 +165,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         </label>
 
         <label>
-          Log retention (days)
+          Хранение логов (дни)
           <input
             type="number"
             value={settings.logRetentionDays}

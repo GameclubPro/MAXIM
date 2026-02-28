@@ -8,7 +8,7 @@ import {
   type ModerationEvent,
   type ChatSummary,
 } from '@maxim/contracts';
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -45,13 +45,28 @@ export class AdminService {
   async getSettings(chatId: string, user: AuthUser): Promise<ChatSettings> {
     await this.assertChatAdmin(chatId, user.userId);
 
-    const chat = await this.prisma.chat.findUnique({
+    const chat = await this.prisma.chat.upsert({
       where: { id: chatId },
+      create: {
+        id: chatId,
+        title: `Chat ${chatId}`,
+        settings: {
+          create: {},
+        },
+      },
+      update: {
+        settings: {
+          upsert: {
+            update: {},
+            create: {},
+          },
+        },
+      },
       include: { settings: true },
     });
 
-    if (!chat?.settings) {
-      throw new NotFoundException('Chat settings not found');
+    if (!chat.settings) {
+      throw new Error('Chat settings missing after upsert');
     }
 
     return chatSettingsSchema.parse(chat.settings);
