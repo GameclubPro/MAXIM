@@ -130,7 +130,7 @@ export function Shell() {
             <Link to="/" className="shell-brand">
               MAXIM
             </Link>
-            <span className="shell-chip">Arctic Frost</span>
+            <span className="shell-chip">Панель</span>
           </div>
           <div className="shell-topbar__content">
             <h2>{screen.title}</h2>

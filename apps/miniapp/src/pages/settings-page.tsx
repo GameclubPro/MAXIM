@@ -35,21 +35,21 @@ const DUPLICATE_STAGE_OPTIONS: Array<{
 }> = [
   {
     id: 'WARN',
-    label: 'Warn',
+    label: 'Предупреждение',
     enabledKey: 'duplicateWarnEnabled',
     windowKey: 'duplicateWarnWindowSec',
     maxCountKey: 'duplicateWarnMaxCount',
   },
   {
     id: 'KICK',
-    label: 'Kick',
+    label: 'Кик',
     enabledKey: 'duplicateKickEnabled',
     windowKey: 'duplicateKickWindowSec',
     maxCountKey: 'duplicateKickMaxCount',
   },
   {
     id: 'BAN',
-    label: 'Ban',
+    label: 'Бан',
     enabledKey: 'duplicateBanEnabled',
     windowKey: 'duplicateBanWindowSec',
     maxCountKey: 'duplicateBanMaxCount',
@@ -73,6 +73,29 @@ const LINK_POLICY_OPTIONS: Array<{
     description: 'Любая ссылка удаляется сразу.',
   },
 ];
+
+function formatApiError(error: unknown): string {
+  const rawMessage = error instanceof Error ? error.message : '';
+  const normalized = rawMessage.toLowerCase();
+
+  if (
+    normalized.includes('internal server error') ||
+    normalized.includes('statuscode":500') ||
+    normalized.includes('api request failed: 500')
+  ) {
+    return 'Ошибка сервера. Повторите позже.';
+  }
+
+  if (
+    normalized.includes('failed to fetch') ||
+    normalized.includes('networkerror') ||
+    normalized.includes('network error')
+  ) {
+    return 'Нет соединения с сервером.';
+  }
+
+  return rawMessage.trim() ? 'Не удалось выполнить запрос.' : 'Неизвестная ошибка.';
+}
 
 function normalizeDomain(value: string): string {
   return (
@@ -206,7 +229,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось сохранить настройки',
-        description: (error as Error).message,
+        description: formatApiError(error),
       });
     },
   });
@@ -225,7 +248,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось добавить домен',
-        description: (error as Error).message,
+        description: formatApiError(error),
       });
     },
   });
@@ -240,7 +263,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось удалить домен',
-        description: (error as Error).message,
+        description: formatApiError(error),
       });
     },
   });
@@ -394,7 +417,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
           <StatusState
             tone="danger"
             title="Ошибка загрузки настроек"
-            description={(settingsQuery.error as Error).message}
+            description={formatApiError(settingsQuery.error)}
             action={
               <button
                 type="button"
