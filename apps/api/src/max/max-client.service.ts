@@ -49,7 +49,7 @@ export class MaxClientService {
         url,
         ...config,
         headers: {
-          Authorization: `Bearer ${this.token}`,
+          Authorization: this.token,
           ...(config.headers as Record<string, string> | undefined),
         },
       }),

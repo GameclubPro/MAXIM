@@ -34,7 +34,7 @@ describe('WebhookController', () => {
       controller.receive(
         { botId: 'wrong', secretPath: 'bad' },
         {},
-        { headers: { 'x-max-secret': 'secret-header' }, ip: '127.0.0.1' } as never,
+        { headers: { 'x-max-bot-api-secret': 'secret-header' }, ip: '127.0.0.1' } as never,
       ),
     ).rejects.toThrow(ForbiddenException);
   });
@@ -51,7 +51,7 @@ describe('WebhookController', () => {
       controller.receive(
         { botId: 'bot-1', secretPath: 'secret-path' },
         {},
-        { headers: { 'x-max-secret': 'secret-header' }, ip: '127.0.0.1' } as never,
+        { headers: { 'x-max-bot-api-secret': 'secret-header' }, ip: '127.0.0.1' } as never,
       ),
     ).rejects.toThrow('Webhook rate limit exceeded');
   });

@@ -42,7 +42,9 @@ export class WebhookController {
       throw new ForbiddenException('Invalid webhook route signature');
     }
 
-    const providedHeaderSecret = String(request.headers['x-max-secret'] ?? '');
+    const providedHeaderSecret = String(
+      request.headers['x-max-bot-api-secret'] ?? request.headers['x-max-secret'] ?? '',
+    );
     if (providedHeaderSecret !== expectedHeaderSecret) {
       throw new ForbiddenException('Invalid webhook header secret');
     }
