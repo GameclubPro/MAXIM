@@ -32,13 +32,27 @@ export class MaxClientService {
     });
   }
 
+  async sendMessage(chatId: string, text: string) {
+    await this.request('post', '/messages', {
+      data: {
+        chat_id: chatId,
+        text,
+      },
+    });
+  }
+
   async kickMember(chatId: string, userId: string) {
-    await this.request('delete', `/chats/${chatId}/members/${userId}`);
+    await this.request('delete', `/chats/${chatId}/members`, {
+      params: {
+        user_id: userId,
+      },
+    });
   }
 
   async banMember(chatId: string, userId: string) {
-    await this.request('delete', `/chats/${chatId}/members/${userId}`, {
+    await this.request('delete', `/chats/${chatId}/members`, {
       params: {
+        user_id: userId,
         block: true,
       },
     });
@@ -57,7 +71,10 @@ export class MaxClientService {
   }
 
   async getChatAdminIds(chatId: string): Promise<string[]> {
-    const data = await this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/admins`);
+    const data = await this.request<Record<string, unknown>>(
+      'get',
+      `/chats/${chatId}/members/admins`,
+    );
     const members = Array.isArray(data.members) ? data.members : [];
 
     return members

@@ -16,6 +16,46 @@ type FieldErrors = Partial<Record<keyof ChatSettings, string>>;
 const DOMAIN_PATTERN = /^(?=.{3,253}$)(?!-)(?:[a-z0-9-]{1,63}\.)+[a-z]{2,63}$/i;
 const AUTO_SAVE_DELAY_MS = 650;
 
+type DuplicateEnabledKey = 'duplicateWarnEnabled' | 'duplicateKickEnabled' | 'duplicateBanEnabled';
+type DuplicateWindowKey =
+  | 'duplicateWarnWindowSec'
+  | 'duplicateKickWindowSec'
+  | 'duplicateBanWindowSec';
+type DuplicateMaxCountKey =
+  | 'duplicateWarnMaxCount'
+  | 'duplicateKickMaxCount'
+  | 'duplicateBanMaxCount';
+
+const DUPLICATE_STAGE_OPTIONS: Array<{
+  id: 'WARN' | 'KICK' | 'BAN';
+  label: string;
+  enabledKey: DuplicateEnabledKey;
+  windowKey: DuplicateWindowKey;
+  maxCountKey: DuplicateMaxCountKey;
+}> = [
+  {
+    id: 'WARN',
+    label: 'Warn',
+    enabledKey: 'duplicateWarnEnabled',
+    windowKey: 'duplicateWarnWindowSec',
+    maxCountKey: 'duplicateWarnMaxCount',
+  },
+  {
+    id: 'KICK',
+    label: 'Kick',
+    enabledKey: 'duplicateKickEnabled',
+    windowKey: 'duplicateKickWindowSec',
+    maxCountKey: 'duplicateKickMaxCount',
+  },
+  {
+    id: 'BAN',
+    label: 'Ban',
+    enabledKey: 'duplicateBanEnabled',
+    windowKey: 'duplicateBanWindowSec',
+    maxCountKey: 'duplicateBanMaxCount',
+  },
+];
+
 const LINK_POLICY_OPTIONS: Array<{
   value: ChatSettings['linkPolicy'];
   label: string;
@@ -243,6 +283,22 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     return null;
   }
 
+  function secondsToHours(value: number): number {
+    return Math.max(1, Math.round(value / 3600));
+  }
+
+  function handleDuplicateWindowHoursChange(key: DuplicateWindowKey, rawValue: string) {
+    const hours = Number.parseInt(rawValue, 10);
+    const safeHours = Number.isNaN(hours) ? 0 : Math.max(0, hours);
+    setFieldValue(key, (safeHours * 3600) as ChatSettings[DuplicateWindowKey]);
+  }
+
+  function handleDuplicateMaxCountChange(key: DuplicateMaxCountKey, rawValue: string) {
+    const maxCount = Number.parseInt(rawValue, 10);
+    const safeMaxCount = Number.isNaN(maxCount) ? 0 : Math.max(0, maxCount);
+    setFieldValue(key, safeMaxCount as ChatSettings[DuplicateMaxCountKey]);
+  }
+
   useEffect(() => {
     if (!failedSnapshot || failedSnapshot === draftSnapshot) {
       return;
@@ -353,7 +409,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       ) : null}
 
       {!settingsQuery.isLoading && !settingsQuery.error && draft ? (
-        <section className="settings-sections" aria-label="Настройки модерации ссылок">
+        <section className="settings-sections" aria-label="Настройки модерации">
           <GlassCard className="settings-section stagger-in">
             <div className="settings-section__head">
               <h3>Модерация ссылок</h3>
@@ -465,6 +521,86 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   ) : null}
                 </div>
               ) : null}
+            </div>
+          </GlassCard>
+
+          <GlassCard
+            className="settings-section stagger-in"
+            style={{ animationDelay: '45ms' }}
+            aria-label="Настройки дублей"
+          >
+            <div className="settings-section__head">
+              <h3>Дубли сообщений</h3>
+            </div>
+
+            <div className="duplicate-stage-list">
+              {DUPLICATE_STAGE_OPTIONS.map((stage) => {
+                const enabled = draft[stage.enabledKey];
+                const windowSec = draft[stage.windowKey];
+                const maxCount = draft[stage.maxCountKey];
+                const windowError = fieldErrors[stage.windowKey];
+                const maxCountError = fieldErrors[stage.maxCountKey];
+
+                return (
+                  <article
+                    key={stage.id}
+                    className={cn('duplicate-stage', !enabled && 'is-disabled')}
+                  >
+                    <label className="duplicate-stage__toggle">
+                      <input
+                        type="checkbox"
+                        checked={enabled}
+                        onChange={(event) =>
+                          setFieldValue(
+                            stage.enabledKey,
+                            event.target.checked as ChatSettings[DuplicateEnabledKey],
+                          )
+                        }
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                      <span className="duplicate-stage__title">{stage.label}</span>
+                    </label>
+
+                    <div className="duplicate-stage__fields">
+                      <label className={cn('field', windowError && 'field--error')}>
+                        <span className="field__label">Окно, часы</span>
+                        <input
+                          type="number"
+                          min={1}
+                          max={168}
+                          step={1}
+                          value={secondsToHours(Number(windowSec))}
+                          onChange={(event) =>
+                            handleDuplicateWindowHoursChange(stage.windowKey, event.target.value)
+                          }
+                          disabled={!enabled}
+                        />
+                        {windowError ? <small className="field__hint">{windowError}</small> : null}
+                      </label>
+
+                      <label className={cn('field', maxCountError && 'field--error')}>
+                        <span className="field__label">Лимит повторов</span>
+                        <input
+                          type="number"
+                          min={2}
+                          max={20}
+                          step={1}
+                          value={Number(maxCount)}
+                          onChange={(event) =>
+                            handleDuplicateMaxCountChange(stage.maxCountKey, event.target.value)
+                          }
+                          disabled={!enabled}
+                        />
+                        {maxCountError ? (
+                          <small className="field__hint">{maxCountError}</small>
+                        ) : null}
+                      </label>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           </GlassCard>
         </section>

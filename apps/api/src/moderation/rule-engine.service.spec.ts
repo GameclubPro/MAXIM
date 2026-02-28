@@ -11,22 +11,34 @@ class MockRedisCounterService {
   }
 }
 
-const settings: ChatSettings = {
-  id: '1',
-  chatId: 'chat-1',
-  profanityLevel: ProfanityLevel.MEDIUM,
-  capsThreshold: 70,
-  floodWindowSec: 10,
-  floodMaxMessages: 2,
-  duplicateWindowSec: 60,
-  duplicateMaxCount: 2,
-  linkPolicy: LinkPolicy.ALLOWLIST_ONLY,
-  warnThreshold: 3,
-  repeatBanWindowDays: 7,
-  logRetentionDays: 90,
-  createdAt: new Date(),
-  updatedAt: new Date(),
-};
+function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
+  return {
+    id: '1',
+    chatId: 'chat-1',
+    profanityLevel: ProfanityLevel.MEDIUM,
+    capsThreshold: 70,
+    floodWindowSec: 10,
+    floodMaxMessages: 2,
+    duplicateWindowSec: 60,
+    duplicateMaxCount: 2,
+    duplicateWarnEnabled: true,
+    duplicateKickEnabled: true,
+    duplicateBanEnabled: true,
+    duplicateWarnWindowSec: 12 * 60 * 60,
+    duplicateWarnMaxCount: 2,
+    duplicateKickWindowSec: 24 * 60 * 60,
+    duplicateKickMaxCount: 3,
+    duplicateBanWindowSec: 48 * 60 * 60,
+    duplicateBanMaxCount: 4,
+    linkPolicy: LinkPolicy.ALLOWLIST_ONLY,
+    warnThreshold: 3,
+    repeatBanWindowDays: 7,
+    logRetentionDays: 90,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
+  };
+}
 
 describe('RuleEngineService', () => {
   it('detects profanity and blocked links', async () => {
@@ -35,22 +47,22 @@ describe('RuleEngineService', () => {
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'ты сука иди на http://bad.com',
-      settings,
+      settings: buildSettings(),
       domainAllowlist: ['example.com'],
     });
 
-    expect(result.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
-    expect(result.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
   });
 
-  it('detects duplicates across repeated messages', async () => {
+  it('escalates duplicate action to WARN/KICK/BAN for 12h/24h/48h windows', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
 
     await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'same text',
-      settings,
+      settings: buildSettings(),
       domainAllowlist: [],
     });
 
@@ -58,11 +70,99 @@ describe('RuleEngineService', () => {
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'same text',
-      settings,
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+    const third = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'same text',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+    const fourth = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'same text',
+      settings: buildSettings(),
       domainAllowlist: [],
     });
 
-    expect(second.some((item) => item.ruleCode === 'DUPLICATE')).toBe(true);
+    expect(second.duplicateDecision?.action).toBe('WARN');
+    expect(second.duplicateDecision?.windowSec).toBe(12 * 60 * 60);
+    expect(third.duplicateDecision?.action).toBe('KICK');
+    expect(third.duplicateDecision?.windowSec).toBe(24 * 60 * 60);
+    expect(fourth.duplicateDecision?.action).toBe('BAN');
+    expect(fourth.duplicateDecision?.windowSec).toBe(48 * 60 * 60);
+  });
+
+  it('falls back to KICK when BAN stage is disabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const localSettings = buildSettings({
+      duplicateBanEnabled: false,
+    });
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'same text',
+      settings: localSettings,
+      domainAllowlist: [],
+    });
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'same text',
+      settings: localSettings,
+      domainAllowlist: [],
+    });
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'same text',
+      settings: localSettings,
+      domainAllowlist: [],
+    });
+    const fourth = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'same text',
+      settings: localSettings,
+      domainAllowlist: [],
+    });
+
+    expect(fourth.duplicateDecision?.action).toBe('KICK');
+  });
+
+  it('tracks duplicate counters per user, not across the whole chat', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: 'same text',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    const user1Second = await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: 'same text',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    const user2First = await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-2',
+      text: 'same text',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(user1Second.duplicateDecision?.action).toBe('WARN');
+    expect(user2First.duplicateDecision).toBeUndefined();
   });
 
   it('blocks any links when link policy is BLOCKLIST_ONLY', async () => {
@@ -72,13 +172,13 @@ describe('RuleEngineService', () => {
       userId: 'u-1',
       text: 'смотри https://example.com/news',
       settings: {
-        ...settings,
+        ...buildSettings(),
         linkPolicy: LinkPolicy.BLOCKLIST_ONLY,
       },
       domainAllowlist: ['example.com'],
     });
 
-    expect(result.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
   });
 
   it('does not block links when link policy is ALERT_ONLY', async () => {
@@ -88,12 +188,12 @@ describe('RuleEngineService', () => {
       userId: 'u-1',
       text: 'смотри https://bad.com',
       settings: {
-        ...settings,
+        ...buildSettings(),
         linkPolicy: LinkPolicy.ALERT_ONLY,
       },
       domainAllowlist: [],
     });
 
-    expect(result.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
   });
 });

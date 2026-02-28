@@ -6,18 +6,77 @@ export type SanctionAction = z.infer<typeof sanctionActionSchema>;
 export const profanityLevelSchema = z.enum(['LOW', 'MEDIUM', 'HIGH']);
 export const linkPolicySchema = z.enum(['ALLOWLIST_ONLY', 'BLOCKLIST_ONLY', 'ALERT_ONLY']);
 
-export const chatSettingsSchema = z.object({
-  profanityLevel: profanityLevelSchema.default('MEDIUM'),
-  capsThreshold: z.number().min(0).max(100).default(70),
-  floodWindowSec: z.number().int().min(1).max(120).default(10),
-  floodMaxMessages: z.number().int().min(1).max(50).default(5),
-  duplicateWindowSec: z.number().int().min(5).max(3600).default(60),
-  duplicateMaxCount: z.number().int().min(2).max(20).default(3),
-  linkPolicy: linkPolicySchema.default('ALLOWLIST_ONLY'),
-  warnThreshold: z.number().int().min(1).max(10).default(3),
-  repeatBanWindowDays: z.number().int().min(1).max(30).default(7),
-  logRetentionDays: z.number().int().min(7).max(365).default(90),
-});
+const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
+const duplicateMaxCountSchema = z.number().int().min(2).max(20);
+
+export const chatSettingsSchema = z
+  .object({
+    profanityLevel: profanityLevelSchema.default('MEDIUM'),
+    capsThreshold: z.number().min(0).max(100).default(70),
+    floodWindowSec: z.number().int().min(1).max(120).default(10),
+    floodMaxMessages: z.number().int().min(1).max(50).default(5),
+    duplicateWindowSec: z.number().int().min(5).max(3600).default(60),
+    duplicateMaxCount: z.number().int().min(2).max(20).default(3),
+    duplicateWarnEnabled: z.boolean().default(true),
+    duplicateKickEnabled: z.boolean().default(true),
+    duplicateBanEnabled: z.boolean().default(true),
+    duplicateWarnWindowSec: duplicateWindowSecSchema.default(43_200),
+    duplicateWarnMaxCount: duplicateMaxCountSchema.default(2),
+    duplicateKickWindowSec: duplicateWindowSecSchema.default(86_400),
+    duplicateKickMaxCount: duplicateMaxCountSchema.default(3),
+    duplicateBanWindowSec: duplicateWindowSecSchema.default(172_800),
+    duplicateBanMaxCount: duplicateMaxCountSchema.default(4),
+    linkPolicy: linkPolicySchema.default('ALLOWLIST_ONLY'),
+    warnThreshold: z.number().int().min(1).max(10).default(3),
+    repeatBanWindowDays: z.number().int().min(1).max(30).default(7),
+    logRetentionDays: z.number().int().min(7).max(365).default(90),
+  })
+  .superRefine((value, ctx) => {
+    const stages = [
+      {
+        enabled: value.duplicateWarnEnabled,
+        window: value.duplicateWarnWindowSec,
+        threshold: value.duplicateWarnMaxCount,
+        windowPath: ['duplicateWarnWindowSec'],
+        thresholdPath: ['duplicateWarnMaxCount'],
+      },
+      {
+        enabled: value.duplicateKickEnabled,
+        window: value.duplicateKickWindowSec,
+        threshold: value.duplicateKickMaxCount,
+        windowPath: ['duplicateKickWindowSec'],
+        thresholdPath: ['duplicateKickMaxCount'],
+      },
+      {
+        enabled: value.duplicateBanEnabled,
+        window: value.duplicateBanWindowSec,
+        threshold: value.duplicateBanMaxCount,
+        windowPath: ['duplicateBanWindowSec'],
+        thresholdPath: ['duplicateBanMaxCount'],
+      },
+    ].filter((stage) => stage.enabled);
+
+    for (let index = 1; index < stages.length; index += 1) {
+      const previous = stages[index - 1];
+      const current = stages[index];
+
+      if (current.window < previous.window) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: current.windowPath,
+          message: 'Окно должно быть не меньше предыдущей ступени.',
+        });
+      }
+
+      if (current.threshold < previous.threshold) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: current.thresholdPath,
+          message: 'Лимит должен быть не меньше предыдущей ступени.',
+        });
+      }
+    }
+  });
 export type ChatSettings = z.infer<typeof chatSettingsSchema>;
 
 export const moderationEventSchema = z.object({

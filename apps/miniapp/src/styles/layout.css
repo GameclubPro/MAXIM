@@ -60,6 +60,7 @@
   position: sticky;
   bottom: calc(var(--safe-bottom) + 8px);
   justify-self: center;
+  align-self: end;
   width: min(100%, 430px);
   padding: 6px;
   border-radius: var(--radius-md);
