@@ -64,4 +64,36 @@ describe('RuleEngineService', () => {
 
     expect(second.some((item) => item.ruleCode === 'DUPLICATE')).toBe(true);
   });
+
+  it('blocks any links when link policy is BLOCKLIST_ONLY', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'смотри https://example.com/news',
+      settings: {
+        ...settings,
+        linkPolicy: LinkPolicy.BLOCKLIST_ONLY,
+      },
+      domainAllowlist: ['example.com'],
+    });
+
+    expect(result.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
+  });
+
+  it('does not block links when link policy is ALERT_ONLY', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'смотри https://bad.com',
+      settings: {
+        ...settings,
+        linkPolicy: LinkPolicy.ALERT_ONLY,
+      },
+      domainAllowlist: [],
+    });
+
+    expect(result.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+  });
 });

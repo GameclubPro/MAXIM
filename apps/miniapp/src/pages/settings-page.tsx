@@ -4,16 +4,10 @@ import { useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import type { ApiClient } from '../lib/api-client';
 
-const profanityLevelLabels: Record<ChatSettings['profanityLevel'], string> = {
-  LOW: 'Низкий',
-  MEDIUM: 'Средний',
-  HIGH: 'Высокий',
-};
-
 const linkPolicyLabels: Record<ChatSettings['linkPolicy'], string> = {
-  ALLOWLIST_ONLY: 'Только из списка разрешенных доменов',
-  BLOCKLIST_ONLY: 'Блокировать только запрещенные домены',
-  ALERT_ONLY: 'Только предупреждать',
+  ALERT_ONLY: 'Не удалять',
+  ALLOWLIST_ONLY: 'Не удалять избранные',
+  BLOCKLIST_ONLY: 'Удалять',
 };
 
 export function SettingsPage({ api }: { api: ApiClient }) {
@@ -68,69 +62,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         }}
       >
         <label>
-          Уровень мат-фильтра
-          <select
-            value={settings.profanityLevel}
-            onChange={(event) =>
-              setDraft({
-                ...settings,
-                profanityLevel: event.target.value as ChatSettings['profanityLevel'],
-              })
-            }
-          >
-            <option value="LOW">{profanityLevelLabels.LOW}</option>
-            <option value="MEDIUM">{profanityLevelLabels.MEDIUM}</option>
-            <option value="HIGH">{profanityLevelLabels.HIGH}</option>
-          </select>
-        </label>
-
-        <label>
-          Порог капса (%)
-          <input
-            type="number"
-            value={settings.capsThreshold}
-            onChange={(event) => setDraft({ ...settings, capsThreshold: Number(event.target.value) })}
-          />
-        </label>
-
-        <label>
-          Максимум сообщений во флуд-окне
-          <input
-            type="number"
-            value={settings.floodMaxMessages}
-            onChange={(event) => setDraft({ ...settings, floodMaxMessages: Number(event.target.value) })}
-          />
-        </label>
-
-        <label>
-          Окно флуда (сек.)
-          <input
-            type="number"
-            value={settings.floodWindowSec}
-            onChange={(event) => setDraft({ ...settings, floodWindowSec: Number(event.target.value) })}
-          />
-        </label>
-
-        <label>
-          Максимум повторов
-          <input
-            type="number"
-            value={settings.duplicateMaxCount}
-            onChange={(event) => setDraft({ ...settings, duplicateMaxCount: Number(event.target.value) })}
-          />
-        </label>
-
-        <label>
-          Окно повторов (сек.)
-          <input
-            type="number"
-            value={settings.duplicateWindowSec}
-            onChange={(event) => setDraft({ ...settings, duplicateWindowSec: Number(event.target.value) })}
-          />
-        </label>
-
-        <label>
-          Политика ссылок
+          Удаление ссылок
           <select
             value={settings.linkPolicy}
             onChange={(event) =>
@@ -140,37 +72,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               })
             }
           >
+            <option value="ALERT_ONLY">{linkPolicyLabels.ALERT_ONLY}</option>
             <option value="ALLOWLIST_ONLY">{linkPolicyLabels.ALLOWLIST_ONLY}</option>
             <option value="BLOCKLIST_ONLY">{linkPolicyLabels.BLOCKLIST_ONLY}</option>
-            <option value="ALERT_ONLY">{linkPolicyLabels.ALERT_ONLY}</option>
           </select>
-        </label>
-
-        <label>
-          Порог предупреждений
-          <input
-            type="number"
-            value={settings.warnThreshold}
-            onChange={(event) => setDraft({ ...settings, warnThreshold: Number(event.target.value) })}
-          />
-        </label>
-
-        <label>
-          Окно повтора для бана (дни)
-          <input
-            type="number"
-            value={settings.repeatBanWindowDays}
-            onChange={(event) => setDraft({ ...settings, repeatBanWindowDays: Number(event.target.value) })}
-          />
-        </label>
-
-        <label>
-          Хранение логов (дни)
-          <input
-            type="number"
-            value={settings.logRetentionDays}
-            onChange={(event) => setDraft({ ...settings, logRetentionDays: Number(event.target.value) })}
-          />
         </label>
 
         <button type="submit" disabled={saveMutation.isPending}>

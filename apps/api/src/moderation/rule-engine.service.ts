@@ -93,7 +93,7 @@ export class RuleEngineService {
     }
 
     if (policy === LinkPolicy.BLOCKLIST_ONLY) {
-      return null;
+      return 'Links are not allowed by policy';
     }
 
     for (const match of matches) {
