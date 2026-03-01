@@ -157,22 +157,30 @@ export class ModerationService {
     );
 
     if (serviceAuthored || serviceMembersEvent) {
+      const excludedGreetingUserIds = new Set<string>();
+
       if (globalUserBlacklistEnabled) {
-        await this.handleServiceGloballyBlacklistedMembersEvent({
+        const kickedUserIds = await this.handleServiceGloballyBlacklistedMembersEvent({
           chatId,
           messageId,
           text,
           update,
         });
+        for (const userId of kickedUserIds) {
+          excludedGreetingUserIds.add(userId);
+        }
       }
 
       if (settings.removeBotsFromGroupEnabled) {
-        await this.handleServiceBotEvent({
+        const kickedUserIds = await this.handleServiceBotEvent({
           chatId,
           messageId,
           text,
           update,
         });
+        for (const userId of kickedUserIds) {
+          excludedGreetingUserIds.add(userId);
+        }
       }
 
       if (settings.greetingEnabled) {
@@ -185,6 +193,7 @@ export class ModerationService {
           greetingBotButtonEnabled: settings.greetingBotButtonEnabled,
           greetingBotButtonUrl: settings.greetingBotButtonUrl,
           greetingBotButtonText: settings.greetingBotButtonText,
+          excludedUserIds: excludedGreetingUserIds,
         });
       }
       return;
@@ -461,7 +470,7 @@ export class ModerationService {
               settings.photoMessageCooldownHours,
               effectiveMessageLength,
               settings.maxMessageLength,
-              settings.messageLimitsBotMessageText,
+              '',
             ),
             limitsMessageOptions,
           );
@@ -475,7 +484,7 @@ export class ModerationService {
               settings.photoMessageCooldownHours,
               effectiveMessageLength,
               settings.maxMessageLength,
-              settings.messageLimitsBotMessageText,
+              '',
             ),
           );
         }
@@ -1379,12 +1388,12 @@ export class ModerationService {
         ? photoCooldownHours
         : 1;
     const fallback = canDeleteMessage
-      ? `Сообщение пользователя ${userLabel} удалено: фото можно отправлять не чаще одного раза в ${hours}ч.`
-      : `Сообщение пользователя ${userLabel} нарушает правило: фото можно отправлять не чаще одного раза в ${hours}ч.`;
+      ? `Сообщение пользователя ${userLabel} удалено: фото можно отправлять не чаще одного раза в ${hours}ч, чтобы не перегружать ленту. Если нужно отправить несколько фото, используйте альбом или коллаж.`
+      : `Сообщение пользователя ${userLabel} нарушает правило: фото можно отправлять не чаще одного раза в ${hours}ч, чтобы не перегружать ленту. Если нужно отправить несколько фото, используйте альбом или коллаж.`;
     return this.renderBotMessageTemplate(templateText ?? '', fallback, {
       user: userLabel,
       message_status: messageStatus,
-      reason: `фото можно отправлять не чаще одного раза в ${hours}ч`,
+      reason: `фото можно отправлять не чаще одного раза в ${hours}ч, чтобы не перегружать ленту; используйте альбом или коллаж`,
       photo_cooldown_hours: String(hours),
     });
   }
@@ -2020,11 +2029,13 @@ export class ModerationService {
     messageId: string;
     text: string;
     update: MaxUpdate;
-  }) {
+  }): Promise<string[]> {
     const { chatId, messageId, text, update } = params;
     const botUserIds = this.extractBotUserIdsFromServiceEvent(update);
+    const kickedUserIds = new Set<string>();
 
     for (const userId of botUserIds) {
+      kickedUserIds.add(userId);
       try {
         await this.maxClient.kickMember(chatId, userId);
         await this.prisma.moderationEvent.create({
@@ -2056,6 +2067,8 @@ export class ModerationService {
         );
       }
     }
+
+    return [...kickedUserIds];
   }
 
   private async handleServiceGreetingEvent(params: {
@@ -2067,6 +2080,7 @@ export class ModerationService {
     greetingBotButtonEnabled: boolean;
     greetingBotButtonUrl: string;
     greetingBotButtonText: string;
+    excludedUserIds: ReadonlySet<string>;
   }) {
     const {
       chatId,
@@ -2077,6 +2091,7 @@ export class ModerationService {
       greetingBotButtonEnabled,
       greetingBotButtonUrl,
       greetingBotButtonText,
+      excludedUserIds,
     } = params;
 
     if (!greetingBotMessageEnabled) {
@@ -2095,6 +2110,9 @@ export class ModerationService {
     );
 
     for (const member of joinedMembers) {
+      if (excludedUserIds.has(member.userId)) {
+        continue;
+      }
       const greetingMessage = this.buildGreetingMessage(member.userLabel, greetingBotMessageText);
       try {
         if (greetingMessageOptions) {
@@ -2218,15 +2236,16 @@ export class ModerationService {
     messageId: string;
     text: string;
     update: MaxUpdate;
-  }) {
+  }): Promise<string[]> {
     const { chatId, messageId, text, update } = params;
     const serviceMemberUserIds = this.extractServiceMemberUserIds(update);
+    const kickedUserIds = new Set<string>();
     if (serviceMemberUserIds.length === 0) {
-      return;
+      return [];
     }
 
     if (!this.prisma.globalUserBlacklist?.findMany) {
-      return;
+      return [];
     }
 
     const rows = await this.prisma.globalUserBlacklist.findMany({
@@ -2240,10 +2259,11 @@ export class ModerationService {
       },
     });
     if (rows.length === 0) {
-      return;
+      return [];
     }
 
     for (const row of rows) {
+      kickedUserIds.add(row.userId);
       await this.kickAndLogGlobalBlacklistEvent({
         chatId,
         userId: row.userId,
@@ -2252,6 +2272,8 @@ export class ModerationService {
         reason: 'Member was added via service event and is globally blacklisted',
       });
     }
+
+    return [...kickedUserIds];
   }
 
   private async kickAndLogGlobalBlacklistEvent(params: {

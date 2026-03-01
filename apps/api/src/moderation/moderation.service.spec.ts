@@ -1064,7 +1064,12 @@ describe('ModerationService', () => {
         upsert: jest.fn().mockResolvedValue({
           id: 'chat-1',
           title: 'Chat 1',
-          settings: createSettings({ globalUserBlacklistEnabled: true }),
+          settings: createSettings({
+            globalUserBlacklistEnabled: true,
+            greetingEnabled: true,
+            greetingBotMessageEnabled: true,
+            greetingBotMessageText: 'Добро пожаловать, {user}! {greeting}.',
+          }),
           domains: [],
           admins: [],
         }),
@@ -1175,6 +1180,7 @@ describe('ModerationService', () => {
     expect(prisma.violation.create).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-black-2');
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         chatId: 'chat-1',

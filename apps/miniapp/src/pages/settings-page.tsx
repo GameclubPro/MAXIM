@@ -1779,6 +1779,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         onChange={(event) => {
                           const enabled = event.target.checked;
                           setFieldValue('greetingEnabled', enabled);
+                          if (enabled) {
+                            setFieldValue('greetingBotMessageEnabled', true);
+                          }
                           if (!enabled) {
                             setFieldValue('greetingBotButtonEnabled', false);
                             clearFieldError('greetingBotButtonUrl');
@@ -2041,7 +2044,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             <input
                               type="checkbox"
                               checked={draft[option.key]}
-                              onChange={(event) => setFieldValue(option.key, event.target.checked)}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue(option.key, enabled);
+                                if (enabled) {
+                                  setFieldValue('textFiltersBotMessageEnabled', true);
+                                }
+                              }}
                             />
                             <span className="toggle-switch" aria-hidden>
                               <span className="toggle-switch__thumb" />
@@ -2542,12 +2551,16 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             <input
                               type="checkbox"
                               checked={enabled}
-                              onChange={(event) =>
+                              onChange={(event) => {
+                                const stageEnabled = event.target.checked;
                                 setFieldValue(
                                   stage.enabledKey,
-                                  event.target.checked as ChatSettings[DuplicateEnabledKey],
-                                )
-                              }
+                                  stageEnabled as ChatSettings[DuplicateEnabledKey],
+                                );
+                                if (stageEnabled) {
+                                  setFieldValue('duplicateBotMessageEnabled', true);
+                                }
+                              }}
                             />
                             <span className="toggle-switch" aria-hidden>
                               <span className="toggle-switch__thumb" />
@@ -2883,9 +2896,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       <input
                         type="checkbox"
                         checked={draft.maxMessageLengthEnabled}
-                        onChange={(event) =>
-                          setFieldValue('maxMessageLengthEnabled', event.target.checked)
-                        }
+                        onChange={(event) => {
+                          const enabled = event.target.checked;
+                          setFieldValue('maxMessageLengthEnabled', enabled);
+                          if (enabled) {
+                            setFieldValue('messageLimitsBotMessageEnabled', true);
+                          }
+                        }}
                       />
                       <span className="toggle-switch" aria-hidden>
                         <span className="toggle-switch__thumb" />
@@ -2969,9 +2986,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       <input
                         type="checkbox"
                         checked={draft.photoMessageCooldownEnabled}
-                        onChange={(event) =>
-                          setFieldValue('photoMessageCooldownEnabled', event.target.checked)
-                        }
+                        onChange={(event) => {
+                          const enabled = event.target.checked;
+                          setFieldValue('photoMessageCooldownEnabled', enabled);
+                          if (enabled) {
+                            setFieldValue('messageLimitsBotMessageEnabled', true);
+                          }
+                        }}
                       />
                       <span className="toggle-switch" aria-hidden>
                         <span className="toggle-switch__thumb" />
@@ -3029,9 +3050,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       <input
                         type="checkbox"
                         checked={draft.videoMessagesEnabled}
-                        onChange={(event) =>
-                          setFieldValue('videoMessagesEnabled', event.target.checked)
-                        }
+                        onChange={(event) => {
+                          const enabled = event.target.checked;
+                          setFieldValue('videoMessagesEnabled', enabled);
+                          if (!enabled) {
+                            setFieldValue('messageLimitsBotMessageEnabled', true);
+                          }
+                        }}
                       />
                       <span className="toggle-switch" aria-hidden>
                         <span className="toggle-switch__thumb" />
@@ -3051,9 +3076,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       <input
                         type="checkbox"
                         checked={draft.fileMessagesEnabled}
-                        onChange={(event) =>
-                          setFieldValue('fileMessagesEnabled', event.target.checked)
-                        }
+                        onChange={(event) => {
+                          const enabled = event.target.checked;
+                          setFieldValue('fileMessagesEnabled', enabled);
+                          if (!enabled) {
+                            setFieldValue('messageLimitsBotMessageEnabled', true);
+                          }
+                        }}
                       />
                       <span className="toggle-switch" aria-hidden>
                         <span className="toggle-switch__thumb" />
@@ -3073,9 +3102,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       <input
                         type="checkbox"
                         checked={draft.voiceMessagesEnabled}
-                        onChange={(event) =>
-                          setFieldValue('voiceMessagesEnabled', event.target.checked)
-                        }
+                        onChange={(event) => {
+                          const enabled = event.target.checked;
+                          setFieldValue('voiceMessagesEnabled', enabled);
+                          if (!enabled) {
+                            setFieldValue('messageLimitsBotMessageEnabled', true);
+                          }
+                        }}
                       />
                       <span className="toggle-switch" aria-hidden>
                         <span className="toggle-switch__thumb" />
@@ -3097,12 +3130,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     <div className="settings-native-toggle__title-wrap">
                       <span className="settings-native-toggle__title">Сообщение от бота</span>
                       <div className="settings-native-toggle__title-actions">
-                        <EditToggleButton
-                          label="Редактировать текст сообщения ограничений"
-                          onClick={() => toggleBotMessageEditor('messageLimits')}
-                          disabled={!draft.messageLimitsBotMessageEnabled}
-                          isOpen={openBotEditorKey === 'messageLimits'}
-                        />
                         <button
                           type="button"
                           className={cn(
@@ -3149,20 +3176,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     >
                       Бот отправляет пояснение при удалении сообщения по правилам этого блока.
                     </p>
-                  ) : null}
-
-                  {draft.messageLimitsBotMessageEnabled && openBotEditorKey === 'messageLimits' ? (
-                    <BotMessageEditor
-                      editorKey="messageLimits"
-                      value={draft.messageLimitsBotMessageText}
-                      onChange={(nextValue) =>
-                        setFieldValue(
-                          'messageLimitsBotMessageText',
-                          nextValue as ChatSettings['messageLimitsBotMessageText'],
-                        )
-                      }
-                      onReset={() => setFieldValue('messageLimitsBotMessageText', '')}
-                    />
                   ) : null}
                 </div>
 
@@ -3330,9 +3343,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       <input
                         type="checkbox"
                         checked={draft.nightModeEnabled}
-                        onChange={(event) =>
-                          setFieldValue('nightModeEnabled', event.target.checked)
-                        }
+                        onChange={(event) => {
+                          const enabled = event.target.checked;
+                          setFieldValue('nightModeEnabled', enabled);
+                          if (enabled) {
+                            setFieldValue('nightModeBotMessageEnabled', true);
+                          }
+                        }}
                       />
                       <span className="toggle-switch" aria-hidden>
                         <span className="toggle-switch__thumb" />
