@@ -43,6 +43,7 @@ type DuplicateMaxCountKey =
   | 'duplicateKickMaxCount'
   | 'duplicateBanMaxCount';
 type HintKey =
+  | 'antiSpam'
   | 'linkBotMessage'
   | 'linkWarnMessage'
   | 'linkBotButton'
@@ -2915,7 +2916,22 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 <div className="settings-section__collapse-inner">
                   <div className="settings-native-toggle">
                     <div className="settings-native-toggle__row">
-                      <span className="settings-native-toggle__title">Анти-спам</span>
+                      <div className="settings-native-toggle__title-wrap">
+                        <span className="settings-native-toggle__title">Анти-спам</span>
+                        <button
+                          type="button"
+                          className={cn(
+                            'settings-info-button',
+                            openHintKey === 'antiSpam' && 'is-open',
+                          )}
+                          aria-label="Пояснение для анти-спама"
+                          aria-controls="anti-spam-hint"
+                          aria-expanded={openHintKey === 'antiSpam'}
+                          onClick={() => toggleHint('antiSpam')}
+                        >
+                          <span aria-hidden>i</span>
+                        </button>
+                      </div>
 
                       <label className="settings-native-switch" aria-label="Включить анти-спам">
                         <input
@@ -2931,10 +2947,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       </label>
                     </div>
 
-                    <p className="settings-native-toggle__hint">
-                      Базовые параметры: не более 5 сообщений за 10 секунд от одного пользователя.
-                      Изменение порогов через UI отключено.
-                    </p>
+                    {openHintKey === 'antiSpam' ? (
+                      <p id="anti-spam-hint" className="settings-native-toggle__hint">
+                        Базовые параметры: не более 5 сообщений за 10 секунд от одного
+                        пользователя. Изменение порогов через UI отключено.
+                      </p>
+                    ) : null}
                   </div>
 
                   <div
