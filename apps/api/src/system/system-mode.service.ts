@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { getAppRole, roleRunsHttp } from '../runtime/app-role';
 import { QueueMetricsService } from './queue-metrics.service';
 import { ActionHealthService, type ActionHealthSnapshot } from './action-health.service';
 
@@ -19,6 +20,7 @@ export type SystemModeSnapshot = {
 @Injectable()
 export class SystemModeService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(SystemModeService.name);
+  private readonly enabled: boolean;
   private readonly queueLagThresholdSec: number;
   private readonly stabilizeSec: number;
   private readonly actionErrorThreshold: number;
@@ -38,6 +40,7 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
     private readonly queueMetricsService: QueueMetricsService,
     private readonly actionHealthService: ActionHealthService,
   ) {
+    this.enabled = roleRunsHttp(getAppRole());
     this.queueLagThresholdSec = configService.get<number>('QUEUE_LAG_DEGRADE_SEC', 10);
     this.stabilizeSec = configService.get<number>('DEGRADE_STABILIZE_SEC', 300);
     this.actionErrorThreshold = 0.02;
@@ -45,6 +48,9 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleInit() {
+    if (!this.enabled) {
+      return;
+    }
     this.intervalId = setInterval(() => {
       void this.evaluateAutoMode();
     }, 5_000);
@@ -74,6 +80,9 @@ export class SystemModeService implements OnModuleInit, OnModuleDestroy {
   }
 
   async evaluateAutoMode() {
+    if (!this.enabled) {
+      return;
+    }
     if (this.manualMode) {
       return;
     }

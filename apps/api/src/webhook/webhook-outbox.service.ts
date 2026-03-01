@@ -72,6 +72,11 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     this.draining = true;
     try {
       await this.enqueueBatch();
+    } catch (error: unknown) {
+      this.logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        'Failed to enqueue webhook batch',
+      );
     } finally {
       this.draining = false;
     }
