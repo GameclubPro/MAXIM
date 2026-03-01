@@ -209,6 +209,51 @@ describe('RuleEngineService', () => {
     expect(violation?.metadata?.decisionBand).toBe('LOW');
   });
 
+  it('classifies intent + contact without price as non-LOW commercial violation', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продам кофемашину, пишите в лс',
+      settings: buildSettings({ commercialAdsFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    const violation = result.violations.find((item) => item.ruleCode === 'COMMERCIAL_AD');
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.decisionBand).not.toBe('LOW');
+  });
+
+  it('classifies intent + link without price as non-LOW commercial violation', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Запись на маникюр, подробности в канале https://t.me/beauty_room',
+      settings: buildSettings({ commercialAdsFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    const violation = result.violations.find((item) => item.ruleCode === 'COMMERCIAL_AD');
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.decisionBand).not.toBe('LOW');
+  });
+
+  it('classifies russian phone number as contact signal for commercial ad', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продам детскую коляску, звоните +7 (999) 123-45-67',
+      settings: buildSettings({ commercialAdsFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    const violation = result.violations.find((item) => item.ruleCode === 'COMMERCIAL_AD');
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.decisionBand).toBe('MEDIUM');
+  });
+
   it('does not detect COMMERCIAL_AD for non-sales request without contacts', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({

@@ -145,14 +145,22 @@ const ADS_INTENT_MARKERS = [
   'продам',
   'продаю',
   'продажа',
+  'продается',
+  'продаётся',
   'куплю',
+  'купите',
   'сдам',
   'сдаю',
   'аренда',
+  'запись',
+  'записывайтесь',
   'услуга',
   'услуги',
   'на заказ',
   'заказ',
+  'прайс',
+  'прайс-лист',
+  'прайс лист',
   'коммерция',
 ];
 const ADS_PROMO_MARKERS = [
@@ -200,6 +208,7 @@ const ADS_PRICE_PATTERN = /\b\d{2,}\s?(₽|руб(\.|лей)?|р\.|р|₸|\$|€
 const ADS_TRANSACTIONAL_PATTERN = /\b(цена|стоимость|оплата|предоплата|доставка|в наличии)\b/iu;
 const ADS_URGENCY_PATTERN = /\b(срочно|только сегодня|до конца дня|осталось\s+\d+)\b/iu;
 const ADS_QUANTITY_PATTERN = /\b(шт|штук|шт\.|пачк|упак|остатк|места)\b/iu;
+const ADS_PHONE_PATTERN = /\b(?:\+7|8)\s*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b/u;
 const MIXED_CHAR_MAP: Record<string, string> = {
   a: 'а',
   b: 'б',
@@ -721,7 +730,7 @@ export class RuleEngineService {
 
     const intentHits = ADS_INTENT_MARKERS.filter((marker) => hasMarker(marker));
     for (const marker of intentHits.slice(0, 3)) {
-      addPositive(`intent:${marker}`, 16);
+      addPositive(`intent:${marker}`, 18);
       hasIntent = true;
     }
 
@@ -743,12 +752,17 @@ export class RuleEngineService {
 
     const contactHits = ADS_CONTACT_MARKERS.filter((marker) => hasMarker(marker));
     for (const marker of contactHits.slice(0, 2)) {
-      addPositive(`contact:${marker}`, 15);
+      addPositive(`contact:${marker}`, 16);
+      hasContact = true;
+    }
+
+    if (ADS_PHONE_PATTERN.test(rawLoweredText) || ADS_PHONE_PATTERN.test(normalizedText)) {
+      addPositive('contact:phone', 18);
       hasContact = true;
     }
 
     if (ADS_LINK_PATTERN.test(rawLoweredText)) {
-      addPositive('deal-channel:link', 14);
+      addPositive('deal-channel:link', 18);
       hasDealChannel = true;
     }
 
@@ -781,7 +795,7 @@ export class RuleEngineService {
     }
 
     if (hasIntent && (hasPrice || hasContact || hasDealChannel)) {
-      addPositive('combo:intent+deal', 12);
+      addPositive('combo:intent+deal', 15);
     }
 
     if (hasContact && hasPrice) {
