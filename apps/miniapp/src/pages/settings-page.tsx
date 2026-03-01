@@ -1126,7 +1126,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       )}`
     : '23:00-08:00';
   const textFiltersHeaderSummary = draft
-    ? `${textFiltersEnabledCount}/2 фильтра · ${textFiltersStagesEnabledCount}/4 ступени · ${commercialSensitivityLabel.toLowerCase()}`
+    ? draft.commercialAdsFilterEnabled
+      ? `${textFiltersEnabledCount}/2 фильтра · ${textFiltersStagesEnabledCount}/4 ступени · ${commercialSensitivityLabel.toLowerCase()}`
+      : `${textFiltersEnabledCount}/2 фильтра · ${textFiltersStagesEnabledCount}/4 ступени`
     : `${textFiltersEnabledCount}/2 фильтра`;
   const extraEnabledCount = [
     draft?.removeBotsFromGroupEnabled,
@@ -2034,61 +2036,66 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   })}
                 </div>
 
-                <div
-                  className="settings-subsection-divider"
-                  role="separator"
-                  aria-label="Параметры коммерческого фильтра"
-                >
-                  <span>Коммерция</span>
-                </div>
+                {draft.commercialAdsFilterEnabled ? (
+                  <>
+                    <div
+                      className="settings-subsection-divider"
+                      role="separator"
+                      aria-label="Параметры коммерческого фильтра"
+                    >
+                      <span>Коммерция</span>
+                    </div>
 
-                <div className="settings-native-toggle commercial-settings-panel">
-                  <div className="commercial-sensitivity-slider">
-                    <div className="commercial-sensitivity-slider__head">
-                      <div className="settings-native-toggle__title-wrap">
-                        <span className="field__label">Чувствительность</span>
-                        <button
-                          type="button"
-                          className={cn(
-                            'settings-info-button',
-                            openHintKey === 'commercialSensitivity' && 'is-open',
-                          )}
-                          aria-label="Пояснение по чувствительности коммерческого фильтра"
-                          aria-controls="commercial-sensitivity-hint"
-                          aria-expanded={openHintKey === 'commercialSensitivity'}
-                          onClick={() => toggleHint('commercialSensitivity')}
-                        >
-                          <span aria-hidden>i</span>
-                        </button>
+                    <div className="settings-native-toggle commercial-settings-panel">
+                      <div className="commercial-sensitivity-slider">
+                        <div className="commercial-sensitivity-slider__head">
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="field__label">Чувствительность</span>
+                            <button
+                              type="button"
+                              className={cn(
+                                'settings-info-button',
+                                openHintKey === 'commercialSensitivity' && 'is-open',
+                              )}
+                              aria-label="Пояснение по чувствительности коммерческого фильтра"
+                              aria-controls="commercial-sensitivity-hint"
+                              aria-expanded={openHintKey === 'commercialSensitivity'}
+                              onClick={() => toggleHint('commercialSensitivity')}
+                            >
+                              <span aria-hidden>i</span>
+                            </button>
+                          </div>
+                          <span className="chip chip--warning">{commercialSensitivityLabel}</span>
+                        </div>
+
+                        <input
+                          type="range"
+                          min={COMMERCIAL_SENSITIVITY_MIN}
+                          max={COMMERCIAL_SENSITIVITY_MAX}
+                          step={1}
+                          value={commercialSensitivitySliderValue}
+                          onChange={(event) =>
+                            handleCommercialSensitivitySliderChange(Number(event.target.value))
+                          }
+                          aria-label="Ползунок чувствительности коммерческого фильтра"
+                        />
+
+                        <div className="commercial-sensitivity-slider__labels" aria-hidden>
+                          <span>Мягко</span>
+                          <span>Баланс</span>
+                          <span>Строго</span>
+                        </div>
                       </div>
-                      <span className="chip chip--warning">{commercialSensitivityLabel}</span>
+
+                      {openHintKey === 'commercialSensitivity' ? (
+                        <p id="commercial-sensitivity-hint" className="settings-native-toggle__hint">
+                          Ползунок меняет строгость фильтра и автоматически подбирает внутренние
+                          пороги.
+                        </p>
+                      ) : null}
                     </div>
-
-                    <input
-                      type="range"
-                      min={COMMERCIAL_SENSITIVITY_MIN}
-                      max={COMMERCIAL_SENSITIVITY_MAX}
-                      step={1}
-                      value={commercialSensitivitySliderValue}
-                      onChange={(event) =>
-                        handleCommercialSensitivitySliderChange(Number(event.target.value))
-                      }
-                      aria-label="Ползунок чувствительности коммерческого фильтра"
-                    />
-
-                    <div className="commercial-sensitivity-slider__labels" aria-hidden>
-                      <span>Мягко</span>
-                      <span>Баланс</span>
-                      <span>Строго</span>
-                    </div>
-                  </div>
-
-                  {openHintKey === 'commercialSensitivity' ? (
-                    <p id="commercial-sensitivity-hint" className="settings-native-toggle__hint">
-                      Ползунок меняет строгость фильтра и автоматически подбирает внутренние пороги.
-                    </p>
-                  ) : null}
-                </div>
+                  </>
+                ) : null}
 
                 <div
                   className="settings-subsection-divider"
