@@ -1498,9 +1498,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             <input
                               type="checkbox"
                               checked={draft.linkWarnEnabled}
-                              onChange={(event) =>
-                                setFieldValue('linkWarnEnabled', event.target.checked)
-                              }
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('linkWarnEnabled', enabled);
+                                if (enabled) {
+                                  setFieldValue('linkBotMessageEnabled', true);
+                                }
+                              }}
                             />
                             <span className="toggle-switch" aria-hidden>
                               <span className="toggle-switch__thumb" />
@@ -1540,9 +1544,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             <input
                               type="checkbox"
                               checked={draft.linkBanEnabled}
-                              onChange={(event) =>
-                                setFieldValue('linkBanEnabled', event.target.checked)
-                              }
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('linkBanEnabled', enabled);
+                                if (enabled) {
+                                  setFieldValue('linkWarnEnabled', true);
+                                  setFieldValue('linkBotMessageEnabled', true);
+                                }
+                              }}
                             />
                             <span className="toggle-switch" aria-hidden>
                               <span className="toggle-switch__thumb" />
@@ -1564,9 +1573,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             <input
                               type="checkbox"
                               checked={draft.linkKickEnabled}
-                              onChange={(event) =>
-                                setFieldValue('linkKickEnabled', event.target.checked)
-                              }
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('linkKickEnabled', enabled);
+                                if (enabled) {
+                                  setFieldValue('linkWarnEnabled', true);
+                                  setFieldValue('linkBotMessageEnabled', true);
+                                }
+                              }}
                             />
                             <span className="toggle-switch" aria-hidden>
                               <span className="toggle-switch__thumb" />
@@ -2189,9 +2203,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       <input
                         type="checkbox"
                         checked={draft.textFiltersWarnEnabled}
-                        onChange={(event) =>
-                          setFieldValue('textFiltersWarnEnabled', event.target.checked)
-                        }
+                        onChange={(event) => {
+                          const enabled = event.target.checked;
+                          setFieldValue('textFiltersWarnEnabled', enabled);
+                          if (enabled) {
+                            setFieldValue('textFiltersBotMessageEnabled', true);
+                          }
+                        }}
                       />
                       <span className="toggle-switch" aria-hidden>
                         <span className="toggle-switch__thumb" />
@@ -2231,9 +2249,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       <input
                         type="checkbox"
                         checked={draft.textFiltersBanEnabled}
-                        onChange={(event) =>
-                          setFieldValue('textFiltersBanEnabled', event.target.checked)
-                        }
+                        onChange={(event) => {
+                          const enabled = event.target.checked;
+                          setFieldValue('textFiltersBanEnabled', enabled);
+                          if (enabled) {
+                            setFieldValue('textFiltersWarnEnabled', true);
+                            setFieldValue('textFiltersBotMessageEnabled', true);
+                          }
+                        }}
                       />
                       <span className="toggle-switch" aria-hidden>
                         <span className="toggle-switch__thumb" />
@@ -2253,9 +2276,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       <input
                         type="checkbox"
                         checked={draft.textFiltersKickEnabled}
-                        onChange={(event) =>
-                          setFieldValue('textFiltersKickEnabled', event.target.checked)
-                        }
+                        onChange={(event) => {
+                          const enabled = event.target.checked;
+                          setFieldValue('textFiltersKickEnabled', enabled);
+                          if (enabled) {
+                            setFieldValue('textFiltersWarnEnabled', true);
+                            setFieldValue('textFiltersBotMessageEnabled', true);
+                          }
+                        }}
                       />
                       <span className="toggle-switch" aria-hidden>
                         <span className="toggle-switch__thumb" />
