@@ -1,5 +1,5 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Injectable, Logger, Optional } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { MaxUpdate } from '@maxim/contracts';
 import {
@@ -38,6 +38,7 @@ const DEFAULT_BOT_MESSAGES_DELETE_DELAY_MINUTES = 2;
 const BOT_MESSAGES_DELETE_DELAY_MIN_MINUTES = 1;
 const BOT_MESSAGES_DELETE_DELAY_MAX_MINUTES = 60;
 const DEFAULT_NIGHT_MODE_TIMEZONE = 'Europe/Moscow';
+const NIGHT_MODE_NOTICE_RULE_CODE = 'NIGHT_MODE_NOTICE';
 const LINK_ESCALATION_WINDOW_HOURS = 24;
 const TEXT_FILTER_ESCALATION_WINDOW_HOURS = 24;
 const MAX_FORWARD_SCAN_DEPTH = 8;
@@ -62,10 +63,12 @@ const MESSAGE_LIMITS_RULE_CODES = new Set([
 const TEXT_FILTER_RULE_CODES = new Set(['PROFANITY', 'COMMERCIAL_AD']);
 
 @Injectable()
-export class ModerationService {
+export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ModerationService.name);
   private globalUserBlacklistEnabledCache: { value: boolean; checkedAt: number } | null = null;
   private readonly ownBotUserId: string | null;
+  private nightModeAnnounceTimer: NodeJS.Timeout | null = null;
+  private nightModeAnnounceInFlight = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -77,6 +80,24 @@ export class ModerationService {
     @Optional() configService?: ConfigService,
   ) {
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
+  }
+
+  onModuleInit() {
+    if (!roleRunsModeration(getAppRole())) {
+      return;
+    }
+
+    this.nightModeAnnounceTimer = setInterval(() => {
+      void this.processNightModeAnnouncements();
+    }, 30_000);
+    void this.processNightModeAnnouncements();
+  }
+
+  onModuleDestroy() {
+    if (this.nightModeAnnounceTimer) {
+      clearInterval(this.nightModeAnnounceTimer);
+      this.nightModeAnnounceTimer = null;
+    }
   }
 
   async processWebhookEvent(webhookEventId: string) {
@@ -265,15 +286,9 @@ export class ModerationService {
         messageId,
         text,
         createdAt,
-        userLabel,
         nightModeStartTimeMinutes: settings.nightModeStartTimeMinutes,
         nightModeEndTimeMinutes: settings.nightModeEndTimeMinutes,
         nightModeTimezone: settings.nightModeTimezone,
-        nightModeBotMessageEnabled: settings.nightModeBotMessageEnabled,
-        nightModeBotMessageText: settings.nightModeBotMessageText,
-        nightModeBotButtonEnabled: settings.nightModeBotButtonEnabled,
-        nightModeBotButtonUrl: settings.nightModeBotButtonUrl,
-        nightModeBotButtonText: settings.nightModeBotButtonText,
       });
       return;
     }
@@ -2444,21 +2459,113 @@ export class ModerationService {
     }
   }
 
+  private async processNightModeAnnouncements() {
+    if (this.nightModeAnnounceInFlight || !roleRunsModeration(getAppRole())) {
+      return;
+    }
+
+    this.nightModeAnnounceInFlight = true;
+    try {
+      const nightModeChats = await this.prisma.chatSettings.findMany({
+        where: {
+          nightModeEnabled: true,
+          nightModeBotMessageEnabled: true,
+        },
+        select: {
+          chatId: true,
+          nightModeStartTimeMinutes: true,
+          nightModeEndTimeMinutes: true,
+          nightModeTimezone: true,
+          nightModeBotMessageText: true,
+          nightModeBotButtonEnabled: true,
+          nightModeBotButtonUrl: true,
+          nightModeBotButtonText: true,
+        },
+      });
+
+      for (const settings of nightModeChats) {
+        const startMinutes = this.normalizeDayMinutes(settings.nightModeStartTimeMinutes, 23 * 60);
+        const endMinutes = this.normalizeDayMinutes(settings.nightModeEndTimeMinutes, 8 * 60);
+        const timezone = this.normalizeNightModeTimezone(settings.nightModeTimezone);
+
+        if (!this.isNightModeStartMomentNow(startMinutes, timezone)) {
+          continue;
+        }
+
+        const nightSessionKey = this.buildNightModeSessionKey(startMinutes, endMinutes, timezone);
+        const noticeAlreadySent = await this.wasNightModeNoticeSent(settings.chatId, nightSessionKey);
+        if (noticeAlreadySent) {
+          continue;
+        }
+
+        const messageText = this.buildNightModeClosedNotice(
+          startMinutes,
+          endMinutes,
+          timezone,
+          settings.nightModeBotMessageText,
+        );
+        const nightModeMessageOptions = this.buildBotMessageOptions(
+          settings.nightModeBotButtonEnabled,
+          settings.nightModeBotButtonUrl,
+          settings.nightModeBotButtonText,
+        );
+
+        try {
+          if (nightModeMessageOptions) {
+            await this.maxClient.sendMessage(settings.chatId, messageText, nightModeMessageOptions);
+          } else {
+            await this.maxClient.sendMessage(settings.chatId, messageText);
+          }
+
+          await this.prisma.moderationEvent.create({
+            data: {
+              chatId: settings.chatId,
+              userId: 'system',
+              eventType: EventType.SYSTEM,
+              ruleCode: NIGHT_MODE_NOTICE_RULE_CODE,
+              action: SanctionAction.NONE,
+              score: 0,
+              operator: Operator.BOT,
+              metadata: {
+                reason: 'Night mode notice sent by schedule',
+                nightSessionKey,
+                nightModeTimezone: timezone,
+                nightModeStartTime: this.formatMinutesAsTime(startMinutes),
+                nightModeEndTime: this.formatMinutesAsTime(endMinutes),
+              },
+            },
+          });
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId: settings.chatId,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to send scheduled night mode notice',
+          );
+        }
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to process scheduled night mode notices',
+      );
+    } finally {
+      this.nightModeAnnounceInFlight = false;
+    }
+  }
+
   private async handleNightModeMessage(params: {
     chatId: string;
     userId: string;
     messageId: string;
     text: string;
     createdAt: string;
-    userLabel: string;
     nightModeStartTimeMinutes: number;
     nightModeEndTimeMinutes: number;
     nightModeTimezone: string;
-    nightModeBotMessageEnabled: boolean;
-    nightModeBotMessageText: string;
-    nightModeBotButtonEnabled: boolean;
-    nightModeBotButtonUrl: string;
-    nightModeBotButtonText: string;
   }) {
     const {
       chatId,
@@ -2466,27 +2573,19 @@ export class ModerationService {
       messageId,
       text,
       createdAt,
-      userLabel,
       nightModeStartTimeMinutes,
       nightModeEndTimeMinutes,
       nightModeTimezone,
-      nightModeBotMessageEnabled,
-      nightModeBotMessageText,
-      nightModeBotButtonEnabled,
-      nightModeBotButtonUrl,
-      nightModeBotButtonText,
     } = params;
     const startMinutes = this.normalizeDayMinutes(nightModeStartTimeMinutes, 23 * 60);
     const endMinutes = this.normalizeDayMinutes(nightModeEndTimeMinutes, 8 * 60);
     const timezone = this.normalizeNightModeTimezone(nightModeTimezone);
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
-    let wasDeleted = false;
 
     if (canDeleteMessage) {
       try {
         await this.maxClient.deleteMessage(chatId, messageId);
-        wasDeleted = true;
         await this.prisma.moderationEvent.create({
           data: {
             chatId,
@@ -2523,54 +2622,6 @@ export class ModerationService {
         `Сообщение от ${userId} попало в закрытие чата на ночь, но старше 24 часов и не может быть удалено`,
       );
     }
-
-    if (!nightModeBotMessageEnabled) {
-      return;
-    }
-
-    const nightModeMessageOptions = this.buildBotMessageOptions(
-      nightModeBotButtonEnabled,
-      nightModeBotButtonUrl,
-      nightModeBotButtonText,
-    );
-    try {
-      if (nightModeMessageOptions) {
-        await this.maxClient.sendMessage(
-          chatId,
-          this.buildNightModeExplanation(
-            userLabel,
-            startMinutes,
-            endMinutes,
-            timezone,
-            wasDeleted,
-            nightModeBotMessageText,
-          ),
-          nightModeMessageOptions,
-        );
-      } else {
-        await this.maxClient.sendMessage(
-          chatId,
-          this.buildNightModeExplanation(
-            userLabel,
-            startMinutes,
-            endMinutes,
-            timezone,
-            wasDeleted,
-            nightModeBotMessageText,
-          ),
-        );
-      }
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          userId,
-          messageId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to send night mode explanation message',
-      );
-    }
   }
 
   private isNightModeActiveNow(settings: {
@@ -2601,6 +2652,11 @@ export class ModerationService {
     }
 
     return currentMinutes >= startMinutes || currentMinutes < endMinutes;
+  }
+
+  private isNightModeStartMomentNow(startMinutes: number, timezone: string): boolean {
+    const currentMinutes = this.getCurrentMinutesInTimeZone(timezone);
+    return currentMinutes !== null && currentMinutes === startMinutes;
   }
 
   private isSenderChatAdmin(
@@ -2650,6 +2706,61 @@ export class ModerationService {
     }
   }
 
+  private buildNightModeSessionKey(
+    startMinutes: number,
+    endMinutes: number,
+    timezone: string,
+  ): string {
+    const currentMinutes = this.getCurrentMinutesInTimeZone(timezone);
+    const wrapsMidnight = startMinutes > endMinutes;
+    const inAfterMidnightSegment =
+      wrapsMidnight && currentMinutes !== null && currentMinutes < endMinutes;
+    const referenceTime = inAfterMidnightSegment
+      ? new Date(Date.now() - 24 * 60 * 60 * 1000)
+      : new Date();
+    const dateKey = this.formatDateKeyInTimeZone(referenceTime, timezone);
+    return `${timezone}|${startMinutes}-${endMinutes}|${dateKey}`;
+  }
+
+  private formatDateKeyInTimeZone(date: Date, timeZone: string): string {
+    try {
+      const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).formatToParts(date);
+      const year = parts.find((item) => item.type === 'year')?.value;
+      const month = parts.find((item) => item.type === 'month')?.value;
+      const day = parts.find((item) => item.type === 'day')?.value;
+      if (!year || !month || !day) {
+        return date.toISOString().slice(0, 10);
+      }
+
+      return `${year}-${month}-${day}`;
+    } catch {
+      return date.toISOString().slice(0, 10);
+    }
+  }
+
+  private async wasNightModeNoticeSent(chatId: string, nightSessionKey: string): Promise<boolean> {
+    const existingNotice = await this.prisma.moderationEvent.findFirst({
+      where: {
+        chatId,
+        ruleCode: NIGHT_MODE_NOTICE_RULE_CODE,
+        metadata: {
+          path: ['nightSessionKey'],
+          equals: nightSessionKey,
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    return Boolean(existingNotice);
+  }
+
   private normalizeDayMinutes(value: number, fallback: number): number {
     if (Number.isInteger(value) && value >= 0 && value <= 1_439) {
       return value;
@@ -2665,25 +2776,19 @@ export class ModerationService {
     return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
   }
 
-  private buildNightModeExplanation(
-    userLabel: string,
+  private buildNightModeClosedNotice(
     startMinutes: number,
     endMinutes: number,
     timezone: string,
-    wasDeleted: boolean,
     templateText: string,
   ): string {
     const windowLabel = `${this.formatMinutesAsTime(startMinutes)}-${this.formatMinutesAsTime(endMinutes)}`;
     const timezoneLabel = timezone === DEFAULT_NIGHT_MODE_TIMEZONE ? 'Москва' : timezone;
-    const nightStatus = wasDeleted
-      ? `Сообщение пользователя ${userLabel} удалено.`
-      : 'Новые сообщения временно не принимаются.';
-    const fallback = wasDeleted
-      ? `Чат сейчас закрыт на ночь (${windowLabel}, ${timezoneLabel}). Сообщение пользователя ${userLabel} удалено.`
-      : `Чат сейчас закрыт на ночь (${windowLabel}, ${timezoneLabel}). Новые сообщения временно не принимаются.`;
+    const nightStatus = 'Новые сообщения временно не принимаются.';
+    const fallback = `Чат сейчас закрыт на ночь (${windowLabel}, ${timezoneLabel}). Новые сообщения временно не принимаются.`;
 
     return this.renderBotMessageTemplate(templateText, fallback, {
-      user: userLabel,
+      user: '',
       night_window: windowLabel,
       night_timezone: timezoneLabel,
       night_status: nightStatus,

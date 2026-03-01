@@ -1260,7 +1260,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('deletes messages during night mode and sends chat closed notice', async () => {
+  it('deletes messages during night mode silently', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -1313,10 +1313,7 @@ describe('ModerationService', () => {
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
-      'chat-1',
-      expect.stringContaining('Чат сейчас закрыт на ночь'),
-    );
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
         chatId: 'chat-1',
@@ -1324,6 +1321,94 @@ describe('ModerationService', () => {
         messageId: 'msg-1',
         ruleCode: 'NIGHT_MODE_DELETE',
         action: SanctionAction.DELETE_MESSAGE,
+      }),
+    });
+  });
+
+  it('sends scheduled night closed notice once per active window', async () => {
+    let noticeCreated = false;
+    const nowParts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Europe/Moscow',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date());
+    const currentHour = Number(nowParts.find((item) => item.type === 'hour')?.value ?? '0');
+    const currentMinute = Number(nowParts.find((item) => item.type === 'minute')?.value ?? '0');
+    const startMinutes = currentHour * 60 + currentMinute;
+    const endMinutes = (startMinutes + 60) % (24 * 60);
+
+    const prisma = {
+      chatSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'chat-1',
+            nightModeStartTimeMinutes: startMinutes,
+            nightModeEndTimeMinutes: endMinutes,
+            nightModeTimezone: 'Europe/Moscow',
+            nightModeBotMessageText: '',
+            nightModeBotButtonEnabled: false,
+            nightModeBotButtonUrl: '',
+            nightModeBotButtonText: 'Открыть',
+          },
+        ]),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockImplementation((query: { where?: Record<string, unknown> }) => {
+          if (query.where?.ruleCode === 'NIGHT_MODE_NOTICE') {
+            return Promise.resolve(noticeCreated ? { id: 'evt-night-notice-1' } : null);
+          }
+
+          return Promise.resolve(null);
+        }),
+        create: jest.fn().mockImplementation((payload: { data: { ruleCode?: string } }) => {
+          if (payload.data.ruleCode === 'NIGHT_MODE_NOTICE') {
+            noticeCreated = true;
+          }
+          return Promise.resolve(payload);
+        }),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await (service as unknown as { processNightModeAnnouncements: () => Promise<void> })
+      .processNightModeAnnouncements();
+    await (service as unknown as { processNightModeAnnouncements: () => Promise<void> })
+      .processNightModeAnnouncements();
+
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      expect.stringContaining('Чат сейчас закрыт на ночь'),
+    );
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        ruleCode: 'NIGHT_MODE_NOTICE',
+        action: SanctionAction.NONE,
       }),
     });
   });
