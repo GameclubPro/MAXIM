@@ -544,6 +544,7 @@
   overflow: hidden;
   display: grid;
   padding-top: 10px;
+  gap: 10px;
 }
 
 .settings-policy {
@@ -869,6 +870,14 @@
   .night-window-grid {
     grid-template-columns: minmax(0, 1fr);
   }
+
+  .settings-native-toggle__row {
+    align-items: flex-start;
+  }
+
+  .settings-native-toggle__title-wrap {
+    align-items: flex-start;
+  }
 }
 
 .settings-native-toggle {
@@ -883,7 +892,6 @@
 }
 
 .settings-native-toggle--nested {
-  margin-top: -2px;
   border-style: dashed;
   background:
     linear-gradient(152deg, rgba(255, 255, 255, 0.7), rgba(238, 247, 255, 0.5)),
@@ -898,16 +906,18 @@
 }
 
 .settings-native-toggle__title-wrap {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .settings-native-toggle__title-actions {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex: 0 0 auto;
 }
 
 .settings-native-toggle__title {
@@ -1085,6 +1095,7 @@
   position: relative;
   display: inline-flex;
   align-items: center;
+  flex: 0 0 auto;
 }
 
 .settings-url-field {
