@@ -408,15 +408,19 @@ export class ModerationService {
         ? await this.countRecentLinkViolations(chatId, senderId)
         : null;
     const isTextFilterHit = this.isTextFilterViolation(topViolation.ruleCode);
-    const textFilterMessageOptions = isTextFilterHit
-      ? this.buildBotMessageOptions(
-          settings.textFiltersBotButtonEnabled,
-          settings.textFiltersBotButtonUrl,
-          settings.textFiltersBotButtonText,
-        )
+    const textFilterEscalationSettings = isTextFilterHit
+      ? this.resolveTextFilterEscalationSettings(topViolation.ruleCode, settings)
       : null;
+    const textFilterMessageOptions =
+      topViolation.ruleCode === 'COMMERCIAL_AD'
+        ? this.buildBotMessageOptions(
+            settings.textFiltersBotButtonEnabled,
+            settings.textFiltersBotButtonUrl,
+            settings.textFiltersBotButtonText,
+          )
+        : null;
     const textFilterViolationCount24h = isTextFilterHit
-      ? await this.countRecentTextFilterViolations(chatId, senderId)
+      ? await this.countRecentTextFilterViolations(chatId, senderId, topViolation.ruleCode)
       : null;
 
     if (
@@ -504,7 +508,7 @@ export class ModerationService {
 
     if (
       isTextFilterHit &&
-      settings.textFiltersBotMessageEnabled &&
+      textFilterEscalationSettings?.botMessageEnabled &&
       textFilterViolationCount24h === 1
     ) {
       try {
@@ -515,7 +519,7 @@ export class ModerationService {
               userLabel,
               topViolation.ruleCode,
               canDeleteMessage,
-              settings.textFiltersBotMessageText,
+              textFilterEscalationSettings.botMessageText,
             ),
             textFilterMessageOptions,
           );
@@ -526,7 +530,7 @@ export class ModerationService {
               userLabel,
               topViolation.ruleCode,
               canDeleteMessage,
-              settings.textFiltersBotMessageText,
+              textFilterEscalationSettings.botMessageText,
             ),
           );
         }
@@ -577,9 +581,9 @@ export class ModerationService {
       const textFilterAction = this.resolveTextFilterEscalationAction(
         textFilterViolationCount24h ?? 1,
         {
-          warnEnabled: settings.textFiltersWarnEnabled,
-          banEnabled: settings.textFiltersBanEnabled,
-          kickEnabled: settings.textFiltersKickEnabled,
+          warnEnabled: Boolean(textFilterEscalationSettings?.warnEnabled),
+          banEnabled: Boolean(textFilterEscalationSettings?.banEnabled),
+          kickEnabled: Boolean(textFilterEscalationSettings?.kickEnabled),
         },
       );
       action = textFilterAction;
@@ -591,7 +595,7 @@ export class ModerationService {
             this.buildTextFilterWarnExplanation(
               userLabel,
               topViolation.ruleCode,
-              settings.textFiltersWarnMessageText,
+              textFilterEscalationSettings?.warnMessageText ?? settings.textFiltersWarnMessageText,
             ),
           );
         } catch (error: unknown) {
@@ -1270,6 +1274,38 @@ export class ModerationService {
     return SanctionAction.NONE;
   }
 
+  private resolveTextFilterEscalationSettings(
+    ruleCode: string,
+    settings: ChatSettings,
+  ): {
+    botMessageEnabled: boolean;
+    botMessageText: string;
+    warnEnabled: boolean;
+    warnMessageText: string;
+    banEnabled: boolean;
+    kickEnabled: boolean;
+  } {
+    if (ruleCode === 'PROFANITY') {
+      return {
+        botMessageEnabled: settings.profanityBotMessageEnabled,
+        botMessageText: settings.textFiltersBotMessageText,
+        warnEnabled: settings.profanityWarnEnabled,
+        warnMessageText: settings.textFiltersWarnMessageText,
+        banEnabled: settings.profanityBanEnabled,
+        kickEnabled: settings.profanityKickEnabled,
+      };
+    }
+
+    return {
+      botMessageEnabled: settings.textFiltersBotMessageEnabled,
+      botMessageText: settings.textFiltersBotMessageText,
+      warnEnabled: settings.textFiltersWarnEnabled,
+      warnMessageText: settings.textFiltersWarnMessageText,
+      banEnabled: settings.textFiltersBanEnabled,
+      kickEnabled: settings.textFiltersKickEnabled,
+    };
+  }
+
   private isMessageLimitsViolation(ruleCode: string): boolean {
     return MESSAGE_LIMITS_RULE_CODES.has(ruleCode);
   }
@@ -1800,13 +1836,17 @@ export class ModerationService {
     return Number.isInteger(count) && count > 0 ? count : 1;
   }
 
-  private async countRecentTextFilterViolations(chatId: string, userId: string): Promise<number> {
+  private async countRecentTextFilterViolations(
+    chatId: string,
+    userId: string,
+    ruleCode: string,
+  ): Promise<number> {
     const violationModel = this.prisma.violation as unknown as {
       count?: (args: {
         where: {
           chatId: string;
           userId: string;
-          ruleCode: { in: string[] };
+          ruleCode: string | { in: string[] };
           createdAt: { gte: Date };
         };
       }) => Promise<number>;
@@ -1817,11 +1857,15 @@ export class ModerationService {
     }
 
     const since = new Date(Date.now() - TEXT_FILTER_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000);
+    const ruleCodeFilter =
+      ruleCode === 'PROFANITY' || ruleCode === 'COMMERCIAL_AD'
+        ? ruleCode
+        : { in: ['PROFANITY', 'COMMERCIAL_AD'] };
     const count = await violationModel.count({
       where: {
         chatId,
         userId,
-        ruleCode: { in: ['PROFANITY', 'COMMERCIAL_AD'] },
+        ruleCode: ruleCodeFilter,
         createdAt: { gte: since },
       },
     });
@@ -2151,7 +2195,9 @@ export class ModerationService {
     }
   }
 
-  private extractHumanServiceMembers(update: MaxUpdate): Array<{ userId: string; userLabel: string }> {
+  private extractHumanServiceMembers(
+    update: MaxUpdate,
+  ): Array<{ userId: string; userLabel: string }> {
     const memberRows = this.extractServiceMemberRows(update);
     const members = new Map<string, { userId: string; userLabel: string }>();
 
@@ -2780,7 +2826,9 @@ export class ModerationService {
     );
   }
 
-  private extractDirectMembershipEntity(raw: Record<string, unknown>): Record<string, unknown> | null {
+  private extractDirectMembershipEntity(
+    raw: Record<string, unknown>,
+  ): Record<string, unknown> | null {
     const updateType = this.readLowerString(raw.update_type) ?? this.readLowerString(raw.type);
     if (updateType !== 'user_added' && updateType !== 'bot_added') {
       return null;
@@ -2887,7 +2935,10 @@ export class ModerationService {
       : null;
   }
 
-  private async loadChatContext(chatId: string, chatTitle?: string): Promise<{
+  private async loadChatContext(
+    chatId: string,
+    chatTitle?: string,
+  ): Promise<{
     settings: ChatSettings;
     domainAllowlist: string[];
     adminUserIds: string[];
@@ -2954,6 +3005,7 @@ export class ModerationService {
       ...settings,
       linkBotMessageEnabled: false,
       textFiltersBotMessageEnabled: false,
+      profanityBotMessageEnabled: false,
       messageLimitsBotMessageEnabled: false,
       duplicateBotMessageEnabled: false,
       greetingBotMessageEnabled: false,

@@ -1129,12 +1129,22 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     draft?.russianProfanityFilterEnabled,
     draft?.commercialAdsFilterEnabled,
   ].filter(Boolean).length;
-  const textFiltersStagesEnabledCount = [
-    draft?.textFiltersBotMessageEnabled,
-    draft?.textFiltersWarnEnabled,
-    draft?.textFiltersBanEnabled,
-    draft?.textFiltersKickEnabled,
-  ].filter(Boolean).length;
+  const profanityStagesEnabledCount = draft?.russianProfanityFilterEnabled
+    ? [
+        draft?.profanityBotMessageEnabled,
+        draft?.profanityWarnEnabled,
+        draft?.profanityBanEnabled,
+        draft?.profanityKickEnabled,
+      ].filter(Boolean).length
+    : 0;
+  const textFiltersStagesEnabledCount = draft?.commercialAdsFilterEnabled
+    ? [
+        draft?.textFiltersBotMessageEnabled,
+        draft?.textFiltersWarnEnabled,
+        draft?.textFiltersBanEnabled,
+        draft?.textFiltersKickEnabled,
+      ].filter(Boolean).length
+    : 0;
   const commercialSensitivitySliderValue = draft
     ? inferCommercialSensitivitySliderValue(draft)
     : 50;
@@ -1159,8 +1169,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     : '23:00-08:00';
   const textFiltersHeaderSummary = draft
     ? draft.commercialAdsFilterEnabled
-      ? `${textFiltersEnabledCount}/2 фильтра · ${textFiltersStagesEnabledCount}/4 ступени · ${commercialSensitivityLabel.toLowerCase()}`
-      : `${textFiltersEnabledCount}/2 фильтра · ${textFiltersStagesEnabledCount}/4 ступени`
+      ? `${textFiltersEnabledCount}/2 фильтра · мат ${profanityStagesEnabledCount}/4 · коммерция ${textFiltersStagesEnabledCount}/4 · ${commercialSensitivityLabel.toLowerCase()}`
+      : `${textFiltersEnabledCount}/2 фильтра · мат ${profanityStagesEnabledCount}/4`
     : `${textFiltersEnabledCount}/2 фильтра`;
   const extraEnabledCount = [
     draft?.deleteBotMessagesEnabled,
@@ -2073,8 +2083,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                                 onChange={(event) => {
                                   const enabled = event.target.checked;
                                   setFieldValue(option.key, enabled);
-                                  if (enabled) {
+                                  if (enabled && option.key === 'commercialAdsFilterEnabled') {
                                     setFieldValue('textFiltersBotMessageEnabled', true);
+                                  }
+                                  if (enabled && option.key === 'russianProfanityFilterEnabled') {
+                                    setFieldValue('profanityBotMessageEnabled', true);
                                   }
                                 }}
                               />
@@ -2158,12 +2171,128 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     </>
                   ) : null}
 
+                  {draft.russianProfanityFilterEnabled ? (
+                    <>
+                      <div
+                        className="settings-subsection-divider"
+                        role="separator"
+                        aria-label="Действия бота для нецензурной лексики"
+                      >
+                        <span>Нецензурная лексика</span>
+                      </div>
+
+                      <div className="settings-native-toggle">
+                        <div className="settings-native-toggle__row">
+                          <span className="settings-native-toggle__title">1. Объяснение</span>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить объяснение для нецензурной лексики"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.profanityBotMessageEnabled}
+                              onChange={(event) =>
+                                setFieldValue('profanityBotMessageEnabled', event.target.checked)
+                              }
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+
+                      <div className="settings-native-toggle settings-native-toggle--nested">
+                        <div className="settings-native-toggle__row">
+                          <span className="settings-native-toggle__title">2. Предупреждение</span>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить предупреждение за нецензурную лексику"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.profanityWarnEnabled}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('profanityWarnEnabled', enabled);
+                                if (enabled) {
+                                  setFieldValue('profanityBotMessageEnabled', true);
+                                }
+                              }}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+
+                      <div className="settings-native-toggle settings-native-toggle--nested">
+                        <div className="settings-native-toggle__row">
+                          <span className="settings-native-toggle__title">3. Бан на 6ч</span>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить бан за нецензурную лексику"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.profanityBanEnabled}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('profanityBanEnabled', enabled);
+                                if (enabled) {
+                                  setFieldValue('profanityWarnEnabled', true);
+                                  setFieldValue('profanityBotMessageEnabled', true);
+                                }
+                              }}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+
+                      <div className="settings-native-toggle settings-native-toggle--nested">
+                        <div className="settings-native-toggle__row">
+                          <span className="settings-native-toggle__title">
+                            4. Удаление из группы
+                          </span>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить удаление из группы за нецензурную лексику"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.profanityKickEnabled}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('profanityKickEnabled', enabled);
+                                if (enabled) {
+                                  setFieldValue('profanityWarnEnabled', true);
+                                  setFieldValue('profanityBotMessageEnabled', true);
+                                }
+                              }}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+                    </>
+                  ) : null}
+
                   <div
                     className="settings-subsection-divider"
                     role="separator"
-                    aria-label="Действия бота для фильтрации текста"
+                    aria-label="Действия бота для коммерческих объявлений"
                   >
-                    <span>Действия бота</span>
+                    <span>Коммерческие объявления</span>
                   </div>
 
                   <div className="settings-native-toggle">
@@ -2172,7 +2301,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         <span className="settings-native-toggle__title">1. Объяснение</span>
                         <div className="settings-native-toggle__title-actions">
                           <EditToggleButton
-                            label="Редактировать текст сообщения фильтрации текста"
+                            label="Редактировать текст сообщения о коммерции"
                             onClick={() => toggleBotMessageEditor('textFilters')}
                             disabled={!draft.textFiltersBotMessageEnabled}
                             isOpen={openBotEditorKey === 'textFilters'}
@@ -2183,7 +2312,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                               'settings-info-button',
                               openHintKey === 'textFiltersBotMessage' && 'is-open',
                             )}
-                            aria-label="Пояснение для тумблера сообщений о фильтрации текста"
+                            aria-label="Пояснение для тумблера сообщений о коммерческих объявлениях"
                             aria-controls="text-filters-bot-message-hint"
                             aria-expanded={openHintKey === 'textFiltersBotMessage'}
                             onClick={() => toggleHint('textFiltersBotMessage')}
@@ -2195,7 +2324,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                       <label
                         className="settings-native-switch"
-                        aria-label="Включить сообщение от бота для фильтрации текста"
+                        aria-label="Включить сообщение от бота для коммерческих объявлений"
                       >
                         <input
                           type="checkbox"
@@ -2222,7 +2351,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         className="settings-native-toggle__hint"
                       >
                         Санкции усиливаются по ступеням, если пользователь повторно нарушает
-                        текстовый фильтр в течение 24 часов.
+                        коммерческий фильтр в течение 24 часов.
                       </p>
                     ) : null}
 
@@ -2247,7 +2376,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         <span className="settings-native-toggle__title">2. Предупреждение</span>
                         <div className="settings-native-toggle__title-actions">
                           <EditToggleButton
-                            label="Редактировать текст предупреждения текстового фильтра"
+                            label="Редактировать текст предупреждения о коммерции"
                             onClick={() => toggleWarnMessageEditor('textFiltersWarn')}
                             isOpen={openWarnEditorKey === 'textFiltersWarn'}
                           />
@@ -2257,7 +2386,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                               'settings-info-button',
                               openHintKey === 'textFiltersWarnMessage' && 'is-open',
                             )}
-                            aria-label="Пояснение для предупреждения текстового фильтра"
+                            aria-label="Пояснение для предупреждения о коммерческих объявлениях"
                             aria-controls="text-filters-warn-message-hint"
                             aria-expanded={openHintKey === 'textFiltersWarnMessage'}
                             onClick={() => toggleHint('textFiltersWarnMessage')}
@@ -2269,7 +2398,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                       <label
                         className="settings-native-switch"
-                        aria-label="Включить предупреждение за второе нарушение текстового фильтра"
+                        aria-label="Включить предупреждение за второе нарушение коммерческого фильтра"
                       >
                         <input
                           type="checkbox"
@@ -2293,7 +2422,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         id="text-filters-warn-message-hint"
                         className="settings-native-toggle__hint"
                       >
-                        Текст отправляется при 2-м нарушении текстового фильтра за 24 часа.
+                        Текст отправляется при 2-м нарушении коммерческого фильтра за 24 часа.
                       </p>
                     ) : null}
 
@@ -2318,7 +2447,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                       <label
                         className="settings-native-switch"
-                        aria-label="Включить бан на шесть часов за третье нарушение текстового фильтра"
+                        aria-label="Включить бан на шесть часов за третье нарушение коммерческого фильтра"
                       >
                         <input
                           type="checkbox"
@@ -2345,7 +2474,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                       <label
                         className="settings-native-switch"
-                        aria-label="Включить удаление из группы за четвертое нарушение текстового фильтра"
+                        aria-label="Включить удаление из группы за четвертое нарушение коммерческого фильтра"
                       >
                         <input
                           type="checkbox"
@@ -2383,7 +2512,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                               'settings-info-button',
                               openHintKey === 'textFiltersBotButton' && 'is-open',
                             )}
-                            aria-label="Пояснение для кнопки в сообщении фильтрации текста"
+                            aria-label="Пояснение для кнопки в сообщении о коммерции"
                             aria-controls="text-filters-bot-button-hint"
                             aria-expanded={openHintKey === 'textFiltersBotButton'}
                             onClick={() => toggleHint('textFiltersBotButton')}
@@ -2394,7 +2523,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                         <label
                           className="settings-native-switch"
-                          aria-label="Добавить кнопку в сообщение бота для фильтрации текста"
+                          aria-label="Добавить кнопку в сообщение бота о коммерческих объявлениях"
                         >
                           <input
                             type="checkbox"
@@ -2465,7 +2594,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           id="text-filters-bot-button-hint"
                           className="settings-native-toggle__hint"
                         >
-                          Добавляет кнопку в сообщение бота о фильтрации текста.
+                          Добавляет кнопку в сообщение бота о коммерческом нарушении.
                         </p>
                       ) : null}
                     </div>
@@ -2949,8 +3078,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                     {openHintKey === 'antiSpam' ? (
                       <p id="anti-spam-hint" className="settings-native-toggle__hint">
-                        Базовые параметры: не более 5 сообщений за 10 секунд от одного
-                        пользователя. Изменение порогов через UI отключено.
+                        Базовые параметры: не более 5 сообщений за 10 секунд от одного пользователя.
+                        Изменение порогов через UI отключено.
                       </p>
                     ) : null}
                   </div>
