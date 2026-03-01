@@ -102,7 +102,7 @@ export class ModerationService {
       return;
     }
 
-    if (this.isBotAuthoredMessage(update)) {
+    if (this.isServiceAuthoredMessage(update)) {
       return;
     }
 
@@ -141,6 +141,19 @@ export class ModerationService {
     const settings = chat.settings;
     if (!settings) {
       this.logger.warn({ chatId }, 'Chat settings missing after upsert');
+      return;
+    }
+
+    if (this.isBotAuthoredMessage(update)) {
+      if (settings.deleteBotsMessagesEnabled) {
+        await this.handleBotMessage({
+          chatId,
+          userId: senderId,
+          messageId,
+          text,
+          createdAt,
+        });
+      }
       return;
     }
 
@@ -1632,6 +1645,56 @@ export class ModerationService {
     }
   }
 
+  private async handleBotMessage(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    text: string;
+    createdAt: string;
+  }) {
+    const { chatId, userId, messageId, text, createdAt } = params;
+    const messageAgeMs = Date.now() - new Date(createdAt).getTime();
+    const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
+
+    if (!canDeleteMessage) {
+      await this.maxClient.notifyModerators(
+        chatId,
+        `Сообщение от бота ${userId} не удалено: старше 24 часов`,
+      );
+      return;
+    }
+
+    try {
+      await this.maxClient.deleteMessage(chatId, messageId);
+      await this.prisma.moderationEvent.create({
+        data: {
+          chatId,
+          userId,
+          messageId,
+          eventType: EventType.MESSAGE,
+          ruleCode: 'BOT_MESSAGE_DELETE',
+          action: SanctionAction.DELETE_MESSAGE,
+          maskedExcerpt: maskText(text),
+          score: 0.4,
+          operator: Operator.BOT,
+          metadata: {
+            reason: 'Message removed because bot messages are disabled in chat settings',
+          },
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to delete bot-authored message',
+      );
+    }
+  }
+
   private async handleNightModeMessage(params: {
     chatId: string;
     userId: string;
@@ -1854,6 +1917,33 @@ export class ModerationService {
     return `Чат сейчас закрыт на ночь (${windowLabel}, ${timezoneLabel}). Новые сообщения временно не принимаются.`;
   }
 
+  private isServiceAuthoredMessage(update: MaxUpdate): boolean {
+    const raw = this.asRecord(update.raw);
+    const message = this.asRecord(raw?.message);
+    const candidates = [
+      this.asRecord(message?.sender),
+      this.asRecord(message?.from),
+      this.asRecord(raw?.sender),
+      this.asRecord(raw?.from),
+    ].filter((item): item is Record<string, unknown> => item !== null);
+
+    for (const sender of candidates) {
+      const type = this.readLowerString(sender.type) ?? this.readLowerString(sender.kind);
+      if (type === 'service') {
+        return true;
+      }
+
+      if (
+        sender.is_service === true ||
+        sender.isService === true
+      ) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   private isBotAuthoredMessage(update: MaxUpdate): boolean {
     const raw = this.asRecord(update.raw);
     const message = this.asRecord(raw?.message);
@@ -1866,17 +1956,11 @@ export class ModerationService {
 
     for (const sender of candidates) {
       const type = this.readLowerString(sender.type) ?? this.readLowerString(sender.kind);
-      if (type === 'bot' || type === 'service') {
+      if (type === 'bot') {
         return true;
       }
 
-      if (
-        sender.is_bot === true ||
-        sender.isBot === true ||
-        sender.bot === true ||
-        sender.is_service === true ||
-        sender.isService === true
-      ) {
+      if (sender.is_bot === true || sender.isBot === true || sender.bot === true) {
         return true;
       }
     }

@@ -85,6 +85,7 @@ model ChatSettings {
   duplicateBanWindowSec  Int            @default(172800) @map("duplicate_ban_window_sec")
   duplicateBanMaxCount   Int            @default(4) @map("duplicate_ban_max_count")
   linkPolicy             LinkPolicy     @default(ALLOWLIST_ONLY) @map("link_policy")
+  deleteBotsMessagesEnabled Boolean     @default(false) @map("delete_bots_messages_enabled")
   maxMessageLengthEnabled Boolean       @default(false) @map("max_message_length_enabled")
   maxMessageLength       Int            @default(1500) @map("max_message_length")
   photoMessageCooldownEnabled Boolean   @default(false) @map("photo_message_cooldown_enabled")

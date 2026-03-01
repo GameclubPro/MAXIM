@@ -22,6 +22,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     duplicateBanWindowSec: 48 * 60 * 60,
     duplicateBanMaxCount: 4,
     linkPolicy: 'ALLOWLIST_ONLY',
+    deleteBotsMessagesEnabled: false,
     maxMessageLengthEnabled: false,
     maxMessageLength: 1500,
     photoMessageCooldownEnabled: false,
@@ -311,10 +312,16 @@ function createForwardedFileAttachmentUpdate(): MaxUpdate {
 }
 
 describe('ModerationService', () => {
-  it('ignores bot-authored messages from webhook payload', async () => {
+  it('ignores bot-authored messages when delete-bot toggle is disabled', async () => {
     const prisma = {
       chat: {
-        upsert: jest.fn(),
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ deleteBotsMessagesEnabled: false }),
+          domains: [],
+          admins: [],
+        }),
       },
       violation: {
         create: jest.fn(),
@@ -351,7 +358,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createBotAuthoredUpdate());
 
-    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(prisma.chat.upsert).toHaveBeenCalledTimes(1);
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(prisma.violation.create).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
@@ -359,6 +366,70 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
+  });
+
+  it('deletes bot-authored messages when delete-bot toggle is enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ deleteBotsMessagesEnabled: true }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createBotAuthoredUpdate());
+
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-bot-1');
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'bot-1',
+        messageId: 'msg-bot-1',
+        ruleCode: 'BOT_MESSAGE_DELETE',
+        action: SanctionAction.DELETE_MESSAGE,
+      }),
+    });
   });
 
   it('deletes messages silently while 6h active ban is in effect', async () => {

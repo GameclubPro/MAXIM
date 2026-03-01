@@ -37,7 +37,7 @@ type DuplicateMaxCountKey =
   | 'duplicateKickMaxCount'
   | 'duplicateBanMaxCount';
 type BotHintKey = 'link' | 'duplicate';
-type SettingsSectionKey = 'links' | 'textFilters' | 'duplicates' | 'limits' | 'night';
+type SettingsSectionKey = 'links' | 'textFilters' | 'duplicates' | 'limits' | 'night' | 'extra';
 
 const DUPLICATE_STAGE_OPTIONS: Array<{
   id: 'WARN' | 'KICK' | 'BAN';
@@ -280,6 +280,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     duplicates: false,
     limits: false,
     night: false,
+    extra: false,
   });
 
   const routeChatTitle = getRouteChatTitle(location.state);
@@ -774,6 +775,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const textFiltersHeaderSummary = draft
     ? `${textFiltersEnabledCount}/2 фильтра · ${textFiltersStagesEnabledCount}/4 ступени · ${commercialSensitivityLabel.toLowerCase()}`
     : `${textFiltersEnabledCount}/2 фильтра`;
+  const extraHeaderSummary = draft?.deleteBotsMessagesEnabled ? '1 опция включена' : 'Выключено';
   const chatsCount = chatsQuery.data?.length ?? 0;
   const canApplyToAllChats = chatsCount > 1;
   const applyAllHint = canApplyToAllChats
@@ -2483,6 +2485,61 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     ) : null}
                   </div>
                 ) : null}
+              </div>
+            </div>
+          </GlassCard>
+
+          <GlassCard
+            className="settings-section stagger-in"
+            style={{ animationDelay: '225ms' }}
+            aria-label="Дополнительные настройки"
+          >
+            <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+              <button
+                type="button"
+                className="settings-section__toggle"
+                aria-expanded={expandedSections.extra}
+                aria-controls="settings-extra-content"
+                onClick={() => toggleSection('extra')}
+              >
+                <span className="settings-section__toggle-main">
+                  <h3>Дополнительно</h3>
+                  <small>{extraHeaderSummary}</small>
+                </span>
+                <SectionChevron isOpen={expandedSections.extra} />
+              </button>
+            </div>
+
+            <div
+              id="settings-extra-content"
+              className={cn('settings-section__collapse', expandedSections.extra && 'is-open')}
+            >
+              <div className="settings-section__collapse-inner">
+                <div className="settings-native-toggle">
+                  <div className="settings-native-toggle__row">
+                    <span className="settings-native-toggle__title">Удалять сообщения ботов</span>
+
+                    <label
+                      className="settings-native-switch"
+                      aria-label="Включить удаление сообщений от ботов"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={draft.deleteBotsMessagesEnabled}
+                        onChange={(event) =>
+                          setFieldValue('deleteBotsMessagesEnabled', event.target.checked)
+                        }
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                    </label>
+                  </div>
+
+                  <p className="settings-native-toggle__hint">
+                    Если включено, сообщения аккаунтов с типом bot будут удаляться автоматически.
+                  </p>
+                </div>
               </div>
             </div>
           </GlassCard>
