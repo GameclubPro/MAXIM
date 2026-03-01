@@ -1252,7 +1252,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
             ) : null}
           </header>
 
-          <GlassCard className="settings-section stagger-in">
+          <GlassCard className="settings-sections-shell" padding="sm">
+            <GlassCard className="settings-section stagger-in">
             <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
               <button
                 type="button"
@@ -1725,13 +1726,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 </div>
               </div>
             </div>
-          </GlassCard>
+            </GlassCard>
 
-          <GlassCard
-            className="settings-section stagger-in"
-            style={{ animationDelay: '45ms' }}
-            aria-label="Приветствие новых участников"
-          >
+            <GlassCard
+              className="settings-section stagger-in"
+              style={{ animationDelay: '45ms' }}
+              aria-label="Приветствие новых участников"
+            >
             <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
               <button
                 type="button"
@@ -1981,13 +1982,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 ) : null}
               </div>
             </div>
-          </GlassCard>
+            </GlassCard>
 
-          <GlassCard
-            className="settings-section stagger-in"
-            style={{ animationDelay: '90ms' }}
-            aria-label="Фильтрация текста"
-          >
+            <GlassCard
+              className="settings-section stagger-in"
+              style={{ animationDelay: '90ms' }}
+              aria-label="Фильтрация текста"
+            >
             <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
               <button
                 type="button"
@@ -2434,13 +2435,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 ) : null}
               </div>
             </div>
-          </GlassCard>
+            </GlassCard>
 
-          <GlassCard
-            className="settings-section stagger-in"
-            style={{ animationDelay: '135ms' }}
-            aria-label="Настройки дублей"
-          >
+            <GlassCard
+              className="settings-section stagger-in"
+              style={{ animationDelay: '135ms' }}
+              aria-label="Настройки дублей"
+            >
             <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
               <button
                 type="button"
@@ -2837,13 +2838,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 ) : null}
               </div>
             </div>
-          </GlassCard>
+            </GlassCard>
 
-          <GlassCard
-            className="settings-section stagger-in"
-            style={{ animationDelay: '180ms' }}
-            aria-label="Ограничения сообщений"
-          >
+            <GlassCard
+              className="settings-section stagger-in"
+              style={{ animationDelay: '180ms' }}
+              aria-label="Ограничения сообщений"
+            >
             <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
               <button
                 type="button"
@@ -3285,13 +3286,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 ) : null}
               </div>
             </div>
-          </GlassCard>
+            </GlassCard>
 
-          <GlassCard
-            className="settings-section stagger-in"
-            style={{ animationDelay: '225ms' }}
-            aria-label="Закрытие чата на ночь"
-          >
+            <GlassCard
+              className="settings-section stagger-in"
+              style={{ animationDelay: '225ms' }}
+              aria-label="Закрытие чата на ночь"
+            >
             <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
               <button
                 type="button"
@@ -3611,13 +3612,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 ) : null}
               </div>
             </div>
-          </GlassCard>
+            </GlassCard>
 
-          <GlassCard
-            className="settings-section stagger-in"
-            style={{ animationDelay: '270ms' }}
-            aria-label="Дополнительные настройки"
-          >
+            <GlassCard
+              className="settings-section stagger-in"
+              style={{ animationDelay: '270ms' }}
+              aria-label="Дополнительные настройки"
+            >
             <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
               <button
                 type="button"
@@ -3913,6 +3914,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 ) : null}
               </div>
             </div>
+            </GlassCard>
           </GlassCard>
         </section>
       ) : null}
