@@ -29,6 +29,7 @@ type ApplySettingsToAllChatsResult = {
 const BROADCAST_IMAGE_MAX_BYTES = 1_000_000;
 const BROADCAST_MIN_DELAY_MS = 30_000;
 const BROADCAST_MAX_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
+const BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS = [1_500, 3_000, 6_000];
 
 @Injectable()
 export class AdminService {
@@ -367,16 +368,25 @@ export class AdminService {
 
     const sentChatIds: string[] = [];
     const failedChatIds: string[] = [];
+    let firstSendError: unknown = null;
+    const sendImmediately = delayMs === 0;
     for (const chatId of targetChatIds) {
       try {
-        await this.maxClient.sendMessage(
-          chatId,
-          messageText,
-          messageOptions,
-          delayMs > 0 ? { delayMs } : undefined,
-        );
+        if (sendImmediately && imagePayload) {
+          await this.sendBroadcastImageMessageWithRetry(chatId, messageText, messageOptions);
+        } else {
+          await this.maxClient.sendMessage(
+            chatId,
+            messageText,
+            messageOptions,
+            delayMs > 0 ? { delayMs } : { immediate: true },
+          );
+        }
         sentChatIds.push(chatId);
       } catch (error: unknown) {
+        if (!firstSendError) {
+          firstSendError = error;
+        }
         failedChatIds.push(chatId);
         this.logger.warn(
           {
@@ -389,6 +399,12 @@ export class AdminService {
           'Broadcast message failed for target chat',
         );
       }
+    }
+
+    if (sentChatIds.length === 0 && failedChatIds.length > 0) {
+      const fallbackMessage = 'Не удалось отправить рассылку.';
+      const maxApiMessage = this.extractMaxApiErrorMessage(firstSendError);
+      throw new BadRequestException(maxApiMessage || fallbackMessage);
     }
 
     await this.prisma.auditLog.create({
@@ -417,6 +433,68 @@ export class AdminService {
       sentChatIds,
       failedChatIds,
     };
+  }
+
+  private async sendBroadcastImageMessageWithRetry(
+    chatId: string,
+    text: string,
+    options: { button?: { text: string; url: string }; imagePayload?: Record<string, unknown> } | undefined,
+  ): Promise<void> {
+    let lastError: unknown = null;
+    const attempts = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length + 1;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        await this.maxClient.sendMessage(chatId, text, options, { immediate: true });
+        return;
+      } catch (error: unknown) {
+        lastError = error;
+        if (!this.isAttachmentNotReadyError(error) || attempt >= attempts) {
+          throw error;
+        }
+        const delayMs = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS[attempt - 1] ?? 1_500;
+        await this.sleep(delayMs);
+      }
+    }
+
+    if (lastError) {
+      throw lastError;
+    }
+  }
+
+  private isAttachmentNotReadyError(error: unknown): boolean {
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    if (status !== 400) {
+      return false;
+    }
+
+    const responseData = (error as { response?: { data?: unknown } })?.response?.data;
+    const normalized = JSON.stringify(responseData ?? '').toLowerCase();
+    return normalized.includes('attachment.not.ready') || normalized.includes('not ready');
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private extractMaxApiErrorMessage(error: unknown): string {
+    const responseData = (error as { response?: { data?: unknown } })?.response?.data;
+    if (!responseData || typeof responseData !== 'object') {
+      return '';
+    }
+
+    const row = responseData as Record<string, unknown>;
+    const message = row.message;
+    if (typeof message === 'string' && message.trim()) {
+      return message.trim();
+    }
+
+    const code = row.code;
+    if (typeof code === 'string' && code.trim()) {
+      return `Ошибка MAX API: ${code.trim()}`;
+    }
+
+    return '';
   }
 
   private decodeBroadcastImageBase64(value: string): Buffer {

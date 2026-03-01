@@ -46,6 +46,7 @@ export type MaxActionJob = {
 
 type MaxActionDispatchOptions = {
   delayMs?: number;
+  immediate?: boolean;
 };
 
 const MAX_ACTION_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
@@ -359,6 +360,16 @@ export class MaxClientService implements OnModuleDestroy {
       createdAt: new Date().toISOString(),
     };
     const delayMs = this.normalizeDelayMs(options?.delayMs);
+    const immediate = options?.immediate === true;
+
+    if (immediate && delayMs > 0) {
+      throw new Error('Immediate dispatch cannot be combined with delay');
+    }
+
+    if (immediate) {
+      await this.executeActionJob(job);
+      return;
+    }
 
     if (this.dispatchEnabled && this.actionQueue) {
       await this.actionQueue.add('execute-max-action', job, {
