@@ -249,8 +249,6 @@ export class RuleEngineService {
     text: string;
     settings: ChatSettings;
     domainAllowlist: string[];
-    commercialAllowlist?: string[];
-    commercialStoplist?: string[];
     effectiveLength?: number;
     hasPhotoAttachment?: boolean;
     hasVideoAttachment?: boolean;
@@ -263,8 +261,6 @@ export class RuleEngineService {
       text,
       settings,
       domainAllowlist,
-      commercialAllowlist,
-      commercialStoplist,
       effectiveLength,
       hasPhotoAttachment,
       hasVideoAttachment,
@@ -288,8 +284,6 @@ export class RuleEngineService {
         normalizedText: normalized,
         rawLoweredText: lowered,
         settings,
-        allowlist: commercialAllowlist ?? [],
-        stoplist: commercialStoplist ?? [],
       });
       if (commercial) {
         violations.push({
@@ -621,21 +615,15 @@ export class RuleEngineService {
     normalizedText: string;
     rawLoweredText: string;
     settings: ChatSettings;
-    allowlist: string[];
-    stoplist: string[];
   }): CommercialDetection | null {
-    const { normalizedText, rawLoweredText, settings, allowlist, stoplist } = params;
+    const { normalizedText, rawLoweredText, settings } = params;
 
     if (!normalizedText || normalizedText.length < 6) {
       return null;
     }
 
-    if (allowlist.some((phrase) => this.matchesPhrase(normalizedText, phrase))) {
-      return null;
-    }
-
     const appliedThresholds = this.resolveCommercialThresholds(settings);
-    const state = this.collectCommercialSignals(normalizedText, rawLoweredText, stoplist, settings);
+    const state = this.collectCommercialSignals(normalizedText, rawLoweredText, settings);
     if (state.matchedSignals.length === 0) {
       return null;
     }
@@ -699,7 +687,6 @@ export class RuleEngineService {
   private collectCommercialSignals(
     normalizedText: string,
     rawLoweredText: string,
-    stoplist: string[],
     settings: ChatSettings,
   ): CommercialSignalState {
     const strict = settings.commercialAdsSensitivity === CommercialAdsSensitivity.STRICT;
@@ -773,16 +760,6 @@ export class RuleEngineService {
       addPositive('booster:quantity', 8);
     }
 
-    for (const phrase of stoplist.slice(0, 10)) {
-      const normalizedPhrase = this.normalizeForDetection(phrase);
-      if (!normalizedPhrase || !normalizedText.includes(normalizedPhrase)) {
-        continue;
-      }
-
-      addPositive(`stoplist:${normalizedPhrase}`, 18);
-      hasIntent = true;
-    }
-
     for (const marker of ADS_NEGATIVE_MARKERS) {
       if (!hasMarker(marker)) {
         continue;
@@ -822,15 +799,6 @@ export class RuleEngineService {
       hasTransactional,
       hasStrongNegativeContext,
     };
-  }
-
-  private matchesPhrase(normalizedText: string, phrase: string): boolean {
-    const normalizedPhrase = this.normalizeForDetection(phrase);
-    if (!normalizedPhrase || normalizedPhrase.length < 2) {
-      return false;
-    }
-
-    return normalizedText.includes(normalizedPhrase);
   }
 
   private normalizeForDetection(value: string): string {

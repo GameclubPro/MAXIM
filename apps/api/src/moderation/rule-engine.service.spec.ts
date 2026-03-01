@@ -232,20 +232,6 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(true);
   });
 
-  it('respects commercial allowlist phrases', async () => {
-    const service = new RuleEngineService(new MockRedisCounterService() as never);
-    const result = await service.detect({
-      chatId: 'chat-1',
-      userId: 'u-1',
-      text: 'партнерская интеграция для сообщества, пишите в лс',
-      settings: buildSettings({ commercialAdsFilterEnabled: true }),
-      domainAllowlist: [],
-      commercialAllowlist: ['партнерская интеграция'],
-    });
-
-    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
-  });
-
   it('detects MESSAGE_TOO_LONG when effective length exceeds limit', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({

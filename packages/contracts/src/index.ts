@@ -349,12 +349,6 @@ export const addDomainRequestSchema = z.object({
     .regex(/^[a-zA-Z0-9.-]+$/),
 });
 
-export const commercialPhraseSchema = z.string().trim().min(2).max(120);
-
-export const addCommercialPhraseRequestSchema = z.object({
-  phrase: commercialPhraseSchema,
-});
-
 export const maxMessagePayloadSchema = z.object({
   messageId: z.string(),
   chatId: z.string(),

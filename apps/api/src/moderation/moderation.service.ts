@@ -131,16 +131,6 @@ export class ModerationService {
       include: {
         settings: true,
         domains: true,
-        commercialAllowlist: {
-          select: {
-            phrase: true,
-          },
-        },
-        commercialStoplist: {
-          select: {
-            phrase: true,
-          },
-        },
         admins: {
           select: {
             userId: true,
@@ -200,12 +190,6 @@ export class ModerationService {
       text,
       settings,
       domainAllowlist: (chat.domains ?? []).map((item: { domain: string }) => item.domain),
-      commercialAllowlist: (chat.commercialAllowlist ?? []).map(
-        (item: { phrase: string }) => item.phrase,
-      ),
-      commercialStoplist: (chat.commercialStoplist ?? []).map(
-        (item: { phrase: string }) => item.phrase,
-      ),
       effectiveLength: effectiveMessageLength,
       hasPhotoAttachment: mediaFlags.hasPhotoAttachment,
       hasVideoAttachment: mediaFlags.hasVideoAttachment,

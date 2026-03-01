@@ -59,8 +59,6 @@ model Chat {
   settings            ChatSettings?
   admins              ChatAdminAllowlist[]
   domains             DomainAllowlist[]
-  commercialAllowlist ChatCommercialAllowlist[]
-  commercialStoplist  ChatCommercialStoplist[]
   violations          Violation[]
   events              ModerationEvent[]
   auditLogs           AuditLog[]
@@ -161,30 +159,6 @@ model DomainAllowlist {
 
   @@id([chatId, domain])
   @@map("domain_allowlist")
-}
-
-model ChatCommercialAllowlist {
-  chatId    String   @map("chat_id")
-  phrase    String
-  createdAt DateTime @default(now()) @map("created_at")
-
-  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
-
-  @@id([chatId, phrase])
-  @@index([chatId])
-  @@map("chat_commercial_allowlist")
-}
-
-model ChatCommercialStoplist {
-  chatId    String   @map("chat_id")
-  phrase    String
-  createdAt DateTime @default(now()) @map("created_at")
-
-  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
-
-  @@id([chatId, phrase])
-  @@index([chatId])
-  @@map("chat_commercial_stoplist")
 }
 
 model BadwordDictionary {

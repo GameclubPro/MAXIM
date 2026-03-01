@@ -47,50 +47,6 @@ export class ApiClient {
     return response;
   }
 
-  async getCommercialAllowlist(chatId: string): Promise<string[]> {
-    const response = await this.request(`/chats/${chatId}/commercial-allowlist`);
-    if (!Array.isArray(response) || response.some((item) => typeof item !== 'string')) {
-      throw new Error('Invalid commercial allowlist response');
-    }
-
-    return response;
-  }
-
-  async addCommercialAllowlistPhrase(chatId: string, phrase: string): Promise<void> {
-    await this.request(`/chats/${chatId}/commercial-allowlist`, {
-      method: 'POST',
-      body: JSON.stringify({ phrase }),
-    });
-  }
-
-  async removeCommercialAllowlistPhrase(chatId: string, phrase: string): Promise<void> {
-    await this.request(`/chats/${chatId}/commercial-allowlist/${encodeURIComponent(phrase)}`, {
-      method: 'DELETE',
-    });
-  }
-
-  async getCommercialStoplist(chatId: string): Promise<string[]> {
-    const response = await this.request(`/chats/${chatId}/commercial-stoplist`);
-    if (!Array.isArray(response) || response.some((item) => typeof item !== 'string')) {
-      throw new Error('Invalid commercial stoplist response');
-    }
-
-    return response;
-  }
-
-  async addCommercialStoplistPhrase(chatId: string, phrase: string): Promise<void> {
-    await this.request(`/chats/${chatId}/commercial-stoplist`, {
-      method: 'POST',
-      body: JSON.stringify({ phrase }),
-    });
-  }
-
-  async removeCommercialStoplistPhrase(chatId: string, phrase: string): Promise<void> {
-    await this.request(`/chats/${chatId}/commercial-stoplist/${encodeURIComponent(phrase)}`, {
-      method: 'DELETE',
-    });
-  }
-
   async addDomain(chatId: string, domain: string): Promise<void> {
     await this.request(`/chats/${chatId}/domain-allowlist`, {
       method: 'POST',

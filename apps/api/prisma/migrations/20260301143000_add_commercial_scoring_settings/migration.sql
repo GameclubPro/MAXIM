@@ -13,29 +13,3 @@ ALTER TABLE "chat_settings"
   ADD COLUMN IF NOT EXISTS "commercial_ads_repeat_window_sec" INTEGER NOT NULL DEFAULT 86400,
   ADD COLUMN IF NOT EXISTS "commercial_ads_low_confidence_log_enabled" BOOLEAN NOT NULL DEFAULT true,
   ADD COLUMN IF NOT EXISTS "commercial_ads_warn_first_enabled" BOOLEAN NOT NULL DEFAULT true;
-
-CREATE TABLE IF NOT EXISTS "chat_commercial_allowlist" (
-  "chat_id" TEXT NOT NULL,
-  "phrase" TEXT NOT NULL,
-  "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-  CONSTRAINT "chat_commercial_allowlist_pkey" PRIMARY KEY ("chat_id", "phrase"),
-  CONSTRAINT "chat_commercial_allowlist_chat_id_fkey"
-    FOREIGN KEY ("chat_id") REFERENCES "chats"("id") ON DELETE CASCADE ON UPDATE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS "chat_commercial_stoplist" (
-  "chat_id" TEXT NOT NULL,
-  "phrase" TEXT NOT NULL,
-  "created_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-  CONSTRAINT "chat_commercial_stoplist_pkey" PRIMARY KEY ("chat_id", "phrase"),
-  CONSTRAINT "chat_commercial_stoplist_chat_id_fkey"
-    FOREIGN KEY ("chat_id") REFERENCES "chats"("id") ON DELETE CASCADE ON UPDATE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS "chat_commercial_allowlist_chat_id_idx"
-  ON "chat_commercial_allowlist"("chat_id");
-
-CREATE INDEX IF NOT EXISTS "chat_commercial_stoplist_chat_id_idx"
-  ON "chat_commercial_stoplist"("chat_id");
