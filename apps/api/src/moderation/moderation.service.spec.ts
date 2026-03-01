@@ -184,6 +184,41 @@ function createServiceUserJoinedUpdate(): MaxUpdate {
   };
 }
 
+function createServiceUserJoinedUpdateInDataEnvelope(): MaxUpdate {
+  return {
+    updateId: 'upd-service-user-join-envelope-1',
+    type: 'message_created',
+    message: {
+      messageId: 'msg-service-user-join-envelope-1',
+      chatId: 'chat-1',
+      senderId: 'service-1',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'message_created',
+      data: {
+        message: {
+          sender: {
+            id: 'service-1',
+            type: 'service',
+            is_service: true,
+          },
+          body: {
+            new_members: [
+              {
+                user_id: 'user-envelope-2',
+                type: 'user',
+                display_name: 'Новый участник из data',
+              },
+            ],
+          },
+        },
+      },
+    },
+  };
+}
+
 function createOldUpdate(): MaxUpdate {
   return {
     updateId: 'upd-old-1',
@@ -623,6 +658,72 @@ describe('ModerationService', () => {
         chatId: 'chat-1',
         userId: 'user-black-2',
         messageId: 'msg-service-user-join-1',
+        ruleCode: 'GREETING_MESSAGE',
+        action: SanctionAction.NONE,
+      }),
+    });
+  });
+
+  it('sends greeting message for service join event wrapped in data.message envelope', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            greetingEnabled: true,
+            greetingBotMessageEnabled: true,
+            greetingBotMessageText: 'Добро пожаловать, {user}! {greeting}.',
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createServiceUserJoinedUpdateInDataEnvelope());
+
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Добро пожаловать, "Новый участник из data"! добро пожаловать в чат.',
+    );
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'user-envelope-2',
+        messageId: 'msg-service-user-join-envelope-1',
         ruleCode: 'GREETING_MESSAGE',
         action: SanctionAction.NONE,
       }),

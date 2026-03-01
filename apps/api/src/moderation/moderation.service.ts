@@ -1408,6 +1408,12 @@ export class ModerationService {
       if (nestedMessage) {
         return nestedMessage;
       }
+
+      const nestedData = this.asRecord(envelope.data);
+      const nestedDataMessage = nestedData ? this.asRecord(nestedData.message) : null;
+      if (nestedDataMessage) {
+        return nestedDataMessage;
+      }
     }
 
     return null;
@@ -2520,16 +2526,7 @@ export class ModerationService {
   }
 
   private isServiceAuthoredMessage(update: MaxUpdate): boolean {
-    const raw = this.asRecord(update.raw);
-    const message = this.asRecord(raw?.message);
-    const candidates = [
-      this.asRecord(message?.sender),
-      this.asRecord(message?.from),
-      this.asRecord(raw?.sender),
-      this.asRecord(raw?.from),
-    ].filter((item): item is Record<string, unknown> => item !== null);
-
-    for (const sender of candidates) {
+    for (const sender of this.extractSenderEntities(update)) {
       const type = this.readLowerString(sender.type) ?? this.readLowerString(sender.kind);
       if (type === 'service') {
         return true;
@@ -2544,22 +2541,28 @@ export class ModerationService {
   }
 
   private isBotAuthoredMessage(update: MaxUpdate): boolean {
-    const raw = this.asRecord(update.raw);
-    const message = this.asRecord(raw?.message);
-    const candidates = [
-      this.asRecord(message?.sender),
-      this.asRecord(message?.from),
-      this.asRecord(raw?.sender),
-      this.asRecord(raw?.from),
-    ].filter((item): item is Record<string, unknown> => item !== null);
-
-    for (const sender of candidates) {
+    for (const sender of this.extractSenderEntities(update)) {
       if (this.isBotEntity(sender)) {
         return true;
       }
     }
 
     return false;
+  }
+
+  private extractSenderEntities(update: MaxUpdate): Array<Record<string, unknown>> {
+    const raw = this.asRecord(update.raw);
+    if (!raw) {
+      return [];
+    }
+
+    const messageNode = this.extractRawMessageNode(raw);
+    return [
+      this.asRecord(messageNode?.sender),
+      this.asRecord(messageNode?.from),
+      this.asRecord(raw.sender),
+      this.asRecord(raw.from),
+    ].filter((item): item is Record<string, unknown> => item !== null);
   }
 
   private extractBotUserIdsFromServiceEvent(update: MaxUpdate): string[] {

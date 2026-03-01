@@ -17,6 +17,7 @@
 - База: Postgres.
 - Очереди/кэш: Redis.
 - Docker compose services: `api`, `miniapp-static`, `postgres`, `redis`.
+- Docker compose scale-services (нагрузочный/разделённый контур): `api-ingress`, `api-enqueue`, `api-moderation`, `api-action`, `miniapp-static`, `postgres`, `redis`.
 - Порты (внутри VPS): `api -> 3001`, `miniapp-static -> 3000`.
 
 ## UI/UX стандарт (обязательно)
@@ -59,6 +60,24 @@
   - `infra/docker-compose.yml` (базовый, для VPS) **без** host-портов `postgres/redis`.
   - `infra/docker-compose.local.yml` добавляет host-порты `5432/6379` только для локальной разработки (если Docker установлен локально).
   - `infra/docker-compose.vps.yml` удалён и больше не используется.
+- Поддерживается scale-контур `infra/docker-compose.scale.yml` с ролями:
+  - `APP_ROLE=ingress` (`api-ingress`) — приём webhook и запись события;
+  - `APP_ROLE=enqueue` (`api-enqueue`) — outbox enqueue;
+  - `APP_ROLE=moderation` (`api-moderation`) — вычисление нарушений;
+  - `APP_ROLE=action` (`api-action`) — внешние MAX API действия.
+- Нагрузочные факты (март 2026, VPS 2 vCPU / 2 GB RAM):
+  - при `100 rps` 10 минут: HTTP `0% failed`, `~60001` запросов, обработка `p95 ~0.5s`, `p99 ~0.55s`;
+  - при `~250-270 rps`: появились `EOF/timeouts`, сильный backlog и деградация задержек (вплоть до сотен секунд).
+- На слабом VPS фиксировались ошибки Prisma в `api-enqueue` (`P1017`, pool timeout / DB connection closed); использовался workaround:
+  - `DATABASE_URL=...&connection_limit=2&pool_timeout=30`.
+- Добавлена миграция удаления неуправляемых через miniapp полей настроек:
+  - `apps/api/prisma/migrations/20260302012000_remove_unmanaged_chat_settings_fields/migration.sql`.
+- Из `chat_settings`/контракта удалены поля, которые не настраиваются в miniapp UI:
+  - `profanityLevel`, `capsThreshold`, `floodWindowSec`, `floodMaxMessages`, `duplicateWindowSec`, `duplicateMaxCount`,
+  - `commercialAdsRepeatWindowSec`, `commercialAdsLowConfidenceLogEnabled`, `commercialAdsWarnFirstEnabled`,
+  - `repeatBanWindowDays`, `logRetentionDays`.
+- Исправлено поведение банов за ссылки/текст-фильтры:
+  - теперь используется `banDurationHours` из настроек чата, а не захардкоженные `6h`.
 
 ## Nginx и роутинг miniapp (критично)
 - HTTP (`:80`) должен редиректить на HTTPS.
@@ -72,7 +91,10 @@
 ## Docker Compose на VPS (актуально)
 - VPS переведён на Docker CE + Compose v2 plugin (`docker compose`).
 - Не использовать `docker-compose` v1.
-- На VPS использовать только базовый файл: `infra/docker-compose.yml`.
+- Для обычного прод-режима использовать базовый файл: `infra/docker-compose.yml`.
+- Для разделённого/нагрузочного режима использовать `infra/docker-compose.scale.yml`.
+- Нельзя одновременно держать поднятыми оба контура (`docker-compose.yml` и `docker-compose.scale.yml`) из-за конфликта порта `3001`.
+- При переключении контура сначала делать `down --remove-orphans` у текущего контура.
 - В базовом compose на VPS не пробрасываются host-порты `postgres/redis`, чтобы не конфликтовать с уже занятыми `5432/6379` на хосте.
 - Историческая ошибка `KeyError: 'ContainerConfig'` относилась к v1; при v2 стандартный путь:
   - `docker compose ... build`
@@ -194,6 +216,13 @@
   - `git pull origin main`
   - `./infra/scripts/vps-pull-build-up.sh main`
 
+### Переключение scale -> base на VPS (если порт `3001` занят)
+- `cd /var/www/Chat_bot`
+- `docker compose -f infra/docker-compose.scale.yml down --remove-orphans`
+- `docker compose -f infra/docker-compose.yml up -d --build --force-recreate api miniapp-static`
+- `curl -i http://127.0.0.1:3001/api/health/live`
+- `curl -i https://maxim.play-team.ru/api/health/live`
+
 ## GitHub авторизация (локально)
 - Если при `git push` ошибка `ECONNREFUSED ... vscode-git-*.sock`/`Missing or invalid credentials`:
   - очистить переменные askpass:
@@ -248,6 +277,9 @@
 - `rg: command not found` на VPS: использовать `grep -En` или установить `ripgrep` (`apt install -y ripgrep`).
 - `502 Bad Gateway` сразу после recreate: часто кратковременно до старта `api`/`miniapp-static`; сначала проверять `curl http://127.0.0.1:3001/api/health/live`, потом домен.
 - `curl: (56) Recv failure: Connection reset by peer` на `127.0.0.1:3001`: обычно `api` падает/рестартит, смотреть `docker compose ... logs api` и обязательные ENV.
+- `Bind for 0.0.0.0:3001 failed: port is already allocated`: обычно одновременно запущены base и scale контуры; остановить один из них (`down --remove-orphans`) и поднять только нужный.
+- `api/health/ready = 503` с `queueLag.ok=false`: накопился старый backlog (`RECEIVED/QUEUED`), часто после нагрузочных прогонов; проверить `webhook_events` и очистить/закрыть stale-события по операционной процедуре.
+- `api-enqueue` с `P1017`/`connection pool timeout`: на слабом VPS уменьшить prisma pool (`connection_limit`) и проверить стабильность Postgres.
 
 ## Rollback
 ### Откат на предыдущий коммит
