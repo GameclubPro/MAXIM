@@ -32,6 +32,11 @@ export type SendBroadcastPayload = {
   buttonEnabled: boolean;
   buttonUrl: string;
   buttonText: string;
+  imageEnabled: boolean;
+  imageBase64: string;
+  imageMimeType: string;
+  imageFileName: string;
+  sendAt: string | null;
 };
 
 export class ApiClient {

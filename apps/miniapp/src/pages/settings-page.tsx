@@ -35,6 +35,8 @@ const BOT_MESSAGES_DELETE_DELAY_MIN = 1;
 const BOT_MESSAGES_DELETE_DELAY_MAX = 60;
 const DOMAIN_REMOVAL_MIN_FUTURE_MS = 30_000;
 const MAX_BROADCAST_TEXT_LENGTH = 1_000;
+const MAX_BROADCAST_SCHEDULE_DAYS = 14;
+const MAX_BROADCAST_IMAGE_SIZE_BYTES = 1_000_000;
 
 type DuplicateEnabledKey = 'duplicateWarnEnabled' | 'duplicateKickEnabled' | 'duplicateBanEnabled';
 type DuplicateWindowKey =
@@ -304,6 +306,48 @@ function isValidHttpUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      const payload = result.includes(',') ? result.split(',')[1] : '';
+      if (!payload) {
+        reject(new Error('Не удалось прочитать файл.'));
+        return;
+      }
+      resolve(payload);
+    };
+    reader.onerror = () => reject(new Error('Не удалось прочитать файл.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function buildBroadcastScheduleIso(days: number, time: string): string | null {
+  if (!Number.isInteger(days) || days < 0 || days > MAX_BROADCAST_SCHEDULE_DAYS) {
+    return null;
+  }
+
+  const [hoursRaw, minutesRaw] = time.split(':');
+  const hours = Number.parseInt(hoursRaw ?? '', 10);
+  const minutes = Number.parseInt(minutesRaw ?? '', 10);
+  if (
+    Number.isNaN(hours) ||
+    Number.isNaN(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return null;
+  }
+
+  const scheduledAt = new Date();
+  scheduledAt.setDate(scheduledAt.getDate() + days);
+  scheduledAt.setHours(hours, minutes, 0, 0);
+  return scheduledAt.toISOString();
 }
 
 function normalizeDayMinutes(value: number, fallback = 0): number {
@@ -640,9 +684,21 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [mailingButtonEnabled, setMailingButtonEnabled] = useState(false);
   const [mailingButtonUrl, setMailingButtonUrl] = useState('');
   const [mailingButtonText, setMailingButtonText] = useState('Открыть');
+  const [mailingImageEnabled, setMailingImageEnabled] = useState(false);
+  const [mailingImageBase64, setMailingImageBase64] = useState('');
+  const [mailingImageMimeType, setMailingImageMimeType] = useState('');
+  const [mailingImageFileName, setMailingImageFileName] = useState('');
+  const [mailingImagePreviewUrl, setMailingImagePreviewUrl] = useState('');
+  const [mailingScheduleEnabled, setMailingScheduleEnabled] = useState(false);
+  const [mailingScheduleDays, setMailingScheduleDays] = useState(0);
+  const [mailingScheduleTime, setMailingScheduleTime] = useState(() =>
+    toLocalTimeInputValue(new Date(Date.now() + 60 * 60 * 1000)),
+  );
   const [mailingTextError, setMailingTextError] = useState('');
   const [mailingButtonUrlError, setMailingButtonUrlError] = useState('');
   const [mailingButtonTextError, setMailingButtonTextError] = useState('');
+  const [mailingImageError, setMailingImageError] = useState('');
+  const [mailingScheduleError, setMailingScheduleError] = useState('');
   const [blacklistInput, setBlacklistInput] = useState('');
   const [blacklistInputError, setBlacklistInputError] = useState('');
   const [failedSnapshot, setFailedSnapshot] = useState<string>('');
@@ -677,10 +733,28 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     setMailingButtonEnabled(false);
     setMailingButtonUrl('');
     setMailingButtonText('Открыть');
+    setMailingImageEnabled(false);
+    setMailingImageBase64('');
+    setMailingImageMimeType('');
+    setMailingImageFileName('');
+    setMailingImagePreviewUrl('');
+    setMailingScheduleEnabled(false);
+    setMailingScheduleDays(0);
+    setMailingScheduleTime(toLocalTimeInputValue(new Date(Date.now() + 60 * 60 * 1000)));
     setMailingTextError('');
     setMailingButtonUrlError('');
     setMailingButtonTextError('');
+    setMailingImageError('');
+    setMailingScheduleError('');
   }, [chatId]);
+
+  useEffect(() => {
+    return () => {
+      if (mailingImagePreviewUrl.startsWith('blob:')) {
+        URL.revokeObjectURL(mailingImagePreviewUrl);
+      }
+    };
+  }, [mailingImagePreviewUrl]);
 
   const settingsQuery = useQuery({
     queryKey: ['settings', chatId],
@@ -917,14 +991,15 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const sendBroadcastMutation = useMutation({
     mutationFn: (payload: SendBroadcastPayload) => api.sendBroadcast(chatId ?? '', payload),
     onSuccess: (result, payload) => {
-      const description =
-        result.failedChats > 0
+      const description = result.sendAt
+        ? `Запланировано на ${formatRemovalDateTime(result.sendAt)}. Чатов: ${result.targetChats}.`
+        : result.failedChats > 0
           ? `Доставлено в ${result.sentChats} чат(ов), ошибок: ${result.failedChats}.`
           : payload.applyToAllChats
             ? `Отправлено в ${result.sentChats} чат(ов).`
             : 'Сообщение отправлено в текущий чат.';
       pushToast({
-        tone: result.failedChats > 0 ? 'info' : 'success',
+        tone: result.sendAt || result.failedChats > 0 ? 'info' : 'success',
         title: 'Рассылка выполнена',
         description,
       });
@@ -1184,16 +1259,30 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     const normalizedText = mailingText.trim();
     const normalizedButtonUrl = mailingButtonUrl.trim();
     const normalizedButtonText = mailingButtonText.trim();
+    const scheduleIso = mailingScheduleEnabled
+      ? buildBroadcastScheduleIso(mailingScheduleDays, mailingScheduleTime)
+      : null;
 
     let hasError = false;
-    if (!normalizedText) {
-      setMailingTextError('Введите текст рассылки.');
+    if (!normalizedText && !mailingImageEnabled) {
+      setMailingTextError('Введите текст или добавьте фото.');
       hasError = true;
     } else if (normalizedText.length > MAX_BROADCAST_TEXT_LENGTH) {
       setMailingTextError(`Максимум ${MAX_BROADCAST_TEXT_LENGTH} символов.`);
       hasError = true;
     } else {
       setMailingTextError('');
+    }
+
+    if (mailingImageEnabled) {
+      if (!mailingImageBase64 || !mailingImageMimeType.toLowerCase().startsWith('image/')) {
+        setMailingImageError('Добавьте фото для рассылки.');
+        hasError = true;
+      } else {
+        setMailingImageError('');
+      }
+    } else {
+      setMailingImageError('');
     }
 
     if (mailingButtonEnabled) {
@@ -1215,6 +1304,20 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       setMailingButtonTextError('');
     }
 
+    if (mailingScheduleEnabled) {
+      if (!scheduleIso) {
+        setMailingScheduleError('Проверьте день и время рассылки.');
+        hasError = true;
+      } else if (new Date(scheduleIso).getTime() <= Date.now() + 30_000) {
+        setMailingScheduleError('Выберите время минимум через 30 секунд.');
+        hasError = true;
+      } else {
+        setMailingScheduleError('');
+      }
+    } else {
+      setMailingScheduleError('');
+    }
+
     if (hasError) {
       return;
     }
@@ -1225,6 +1328,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       buttonEnabled: mailingButtonEnabled,
       buttonUrl: normalizedButtonUrl,
       buttonText: normalizedButtonText || 'Открыть',
+      imageEnabled: mailingImageEnabled,
+      imageBase64: mailingImageEnabled ? mailingImageBase64 : '',
+      imageMimeType: mailingImageEnabled ? mailingImageMimeType : '',
+      imageFileName: mailingImageEnabled ? mailingImageFileName : '',
+      sendAt: mailingScheduleEnabled ? scheduleIso : null,
     });
   }
 
@@ -1477,9 +1585,17 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     : 'Пока доступен только этот чат.';
   const mailingTargetLabel =
     mailingApplyToAllChats && canApplyToAllChats ? `Во все чаты (${chatsCount})` : 'Только текущий чат';
-  const mailingHeaderSummary = mailingText.trim()
-    ? `${mailingTargetLabel} · ${mailingText.trim().length}/${MAX_BROADCAST_TEXT_LENGTH}`
-    : `${mailingTargetLabel} · текст не задан`;
+  const mailingSchedulePreview = mailingScheduleEnabled
+    ? formatRemovalDateTime(buildBroadcastScheduleIso(mailingScheduleDays, mailingScheduleTime))
+    : '';
+  const mailingContentLabel = mailingText.trim()
+    ? `${mailingText.trim().length}/${MAX_BROADCAST_TEXT_LENGTH}`
+    : mailingImageEnabled && mailingImageBase64
+      ? 'фото'
+      : 'пусто';
+  const mailingHeaderSummary = `${mailingTargetLabel} · ${mailingContentLabel}${
+    mailingScheduleEnabled ? ' · по таймеру' : ''
+  }`;
 
   return (
     <div className="page-stack page-enter">
@@ -4419,6 +4535,106 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     )}
                   </label>
 
+                  <div className={cn('settings-native-toggle', mailingImageError && 'field--error')}>
+                    <div className="settings-native-toggle__row">
+                      <div className="settings-native-toggle__title-wrap">
+                        <span className="settings-native-toggle__title">Добавить фото</span>
+                      </div>
+
+                      <label className="settings-native-switch" aria-label="Добавить фото в рассылку">
+                        <input
+                          type="checkbox"
+                          checked={mailingImageEnabled}
+                          onChange={(event) => {
+                            const enabled = event.target.checked;
+                            setMailingImageEnabled(enabled);
+                            if (!enabled) {
+                              setMailingImageBase64('');
+                              setMailingImageMimeType('');
+                              setMailingImageFileName('');
+                              setMailingImagePreviewUrl('');
+                              setMailingImageError('');
+                            }
+                          }}
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
+
+                    {mailingImageEnabled ? (
+                      <div className="settings-button-fields">
+                        <label className={cn('field settings-url-field', mailingImageError && 'field--error')}>
+                          <span className="field__label">Файл изображения</span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            onChange={async (event) => {
+                              const file = event.target.files?.[0];
+                              if (!file) {
+                                setMailingImageBase64('');
+                                setMailingImageMimeType('');
+                                setMailingImageFileName('');
+                                setMailingImagePreviewUrl('');
+                                setMailingImageError('Выберите фото.');
+                                return;
+                              }
+
+                              if (!file.type.toLowerCase().startsWith('image/')) {
+                                setMailingImageBase64('');
+                                setMailingImageMimeType('');
+                                setMailingImageFileName('');
+                                setMailingImagePreviewUrl('');
+                                setMailingImageError('Нужен файл изображения.');
+                                return;
+                              }
+
+                              if (file.size > MAX_BROADCAST_IMAGE_SIZE_BYTES) {
+                                setMailingImageBase64('');
+                                setMailingImageMimeType('');
+                                setMailingImageFileName('');
+                                setMailingImagePreviewUrl('');
+                                setMailingImageError('Фото слишком большое. Максимум 1 MB.');
+                                return;
+                              }
+
+                              try {
+                                const imageBase64 = await fileToBase64(file);
+                                setMailingImageBase64(imageBase64);
+                                setMailingImageMimeType(file.type);
+                                setMailingImageFileName(file.name);
+                                setMailingImagePreviewUrl(URL.createObjectURL(file));
+                                setMailingImageError('');
+                              } catch {
+                                setMailingImageBase64('');
+                                setMailingImageMimeType('');
+                                setMailingImageFileName('');
+                                setMailingImagePreviewUrl('');
+                                setMailingImageError('Не удалось прочитать фото.');
+                              }
+                            }}
+                          />
+                          {mailingImageError ? (
+                            <small className="field__hint">{mailingImageError}</small>
+                          ) : mailingImageFileName ? (
+                            <small className="field__hint">{mailingImageFileName}</small>
+                          ) : (
+                            <small className="field__hint">PNG/JPG/WEBP, до 1 MB.</small>
+                          )}
+                        </label>
+
+                        {mailingImagePreviewUrl ? (
+                          <img
+                            src={mailingImagePreviewUrl}
+                            alt="Предпросмотр фото для рассылки"
+                            className="broadcast-image-preview"
+                          />
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+
                   <div className={cn('settings-native-toggle', mailingButtonUrlError && 'field--error')}>
                     <div className="settings-native-toggle__row">
                       <div className="settings-native-toggle__title-wrap">
@@ -4489,12 +4705,83 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     ) : null}
                   </div>
 
+                  <div className={cn('settings-native-toggle', mailingScheduleError && 'field--error')}>
+                    <div className="settings-native-toggle__row">
+                      <div className="settings-native-toggle__title-wrap">
+                        <span className="settings-native-toggle__title">Отправить по таймеру</span>
+                      </div>
+
+                      <label className="settings-native-switch" aria-label="Включить таймер рассылки">
+                        <input
+                          type="checkbox"
+                          checked={mailingScheduleEnabled}
+                          onChange={(event) => {
+                            setMailingScheduleEnabled(event.target.checked);
+                            setMailingScheduleError('');
+                          }}
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
+
+                    {mailingScheduleEnabled ? (
+                      <div className="settings-button-fields">
+                        <label className="field settings-text-field">
+                          <span className="field__label">Через сколько дней</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={MAX_BROADCAST_SCHEDULE_DAYS}
+                            value={mailingScheduleDays}
+                            onChange={(event) => {
+                              const nextValue = Number.parseInt(event.target.value, 10);
+                              const safeValue = Number.isNaN(nextValue)
+                                ? 0
+                                : Math.max(0, Math.min(MAX_BROADCAST_SCHEDULE_DAYS, nextValue));
+                              setMailingScheduleDays(safeValue);
+                              setMailingScheduleError('');
+                            }}
+                          />
+                        </label>
+
+                        <label className="field settings-text-field">
+                          <span className="field__label">Время</span>
+                          <input
+                            type="time"
+                            value={mailingScheduleTime}
+                            onChange={(event) => {
+                              setMailingScheduleTime(event.target.value);
+                              setMailingScheduleError('');
+                            }}
+                          />
+                        </label>
+                      </div>
+                    ) : null}
+
+                    {mailingScheduleError ? (
+                      <small className="field__hint">{mailingScheduleError}</small>
+                    ) : mailingScheduleEnabled ? (
+                      <small className="field__hint">
+                        {mailingSchedulePreview
+                          ? `Отправка: ${mailingSchedulePreview}`
+                          : 'Проверьте день и время отправки.'}
+                      </small>
+                    ) : (
+                      <small className="field__hint">Можно отложить максимум на 14 дней.</small>
+                    )}
+                  </div>
+
                   <div className="settings-page-header__confirm-actions">
                     <button
                       type="button"
                       className="button button--accent"
                       onClick={handleSendBroadcast}
-                      disabled={sendBroadcastMutation.isPending || mailingText.trim().length === 0}
+                      disabled={
+                        sendBroadcastMutation.isPending ||
+                        (mailingText.trim().length === 0 && mailingImageBase64.length === 0)
+                      }
                     >
                       {sendBroadcastMutation.isPending ? 'Отправляем...' : 'Отправить рассылку'}
                     </button>
@@ -4506,9 +4793,19 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         setMailingButtonEnabled(false);
                         setMailingButtonUrl('');
                         setMailingButtonText('Открыть');
+                        setMailingImageEnabled(false);
+                        setMailingImageBase64('');
+                        setMailingImageMimeType('');
+                        setMailingImageFileName('');
+                        setMailingImagePreviewUrl('');
+                        setMailingScheduleEnabled(false);
+                        setMailingScheduleDays(0);
+                        setMailingScheduleTime(toLocalTimeInputValue(new Date(Date.now() + 60 * 60 * 1000)));
                         setMailingTextError('');
                         setMailingButtonUrlError('');
                         setMailingButtonTextError('');
+                        setMailingImageError('');
+                        setMailingScheduleError('');
                       }}
                       disabled={sendBroadcastMutation.isPending}
                     >

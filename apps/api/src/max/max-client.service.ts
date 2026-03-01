@@ -21,6 +21,7 @@ export type MaxMessageButton = {
 
 export type MaxSendMessageOptions = {
   button?: MaxMessageButton;
+  imageToken?: string;
 };
 
 export type MaxActionType =
@@ -46,7 +47,7 @@ type MaxActionDispatchOptions = {
   delayMs?: number;
 };
 
-const MAX_ACTION_DELAY_MS = 24 * 60 * 60 * 1000;
+const MAX_ACTION_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
 
 @Injectable()
 export class MaxClientService implements OnModuleDestroy {
@@ -97,13 +98,47 @@ export class MaxClientService implements OnModuleDestroy {
     }, options);
   }
 
-  async sendMessage(chatId: string, text: string, options?: MaxSendMessageOptions) {
+  async sendMessage(
+    chatId: string,
+    text: string,
+    options?: MaxSendMessageOptions,
+    dispatchOptions?: MaxActionDispatchOptions,
+  ) {
     await this.dispatchAction({
       actionType: 'SEND_MESSAGE',
       chatId,
       text,
       options,
+    }, dispatchOptions);
+  }
+
+  async uploadImage(
+    data: Buffer,
+    fileName = 'broadcast-image.jpg',
+    mimeType = 'image/jpeg',
+  ): Promise<string> {
+    const uploadMeta = await this.request<Record<string, unknown>>('post', '/uploads', {
+      params: {
+        type: 'image',
+      },
     });
+    const uploadUrl = typeof uploadMeta.url === 'string' ? uploadMeta.url.trim() : '';
+    const uploadMetaToken = typeof uploadMeta.token === 'string' ? uploadMeta.token.trim() : '';
+    if (!uploadUrl) {
+      throw new Error('MAX upload URL is missing');
+    }
+
+    const form = new FormData();
+    form.append('data', new Blob([new Uint8Array(data)], { type: mimeType }), fileName);
+    const uploadResult = await this.requestAbsolute<Record<string, unknown>>('post', uploadUrl, {
+      data: form,
+    });
+    const uploadResultToken = typeof uploadResult.token === 'string' ? uploadResult.token.trim() : '';
+    const token = uploadResultToken || uploadMetaToken;
+    if (!token) {
+      throw new Error('MAX upload token is missing');
+    }
+    return token;
   }
 
   async kickMember(chatId: string, userId: string) {
@@ -155,7 +190,7 @@ export class MaxClientService implements OnModuleDestroy {
         if (typeof action.text !== 'string') {
           throw new Error('text is required for SEND_MESSAGE');
         }
-        const attachment = this.buildInlineKeyboardAttachment(action.options?.button);
+        const attachments = this.buildMessageAttachments(action.options);
         await this.executeMutation(action.chatId, async () => {
           await this.request('post', '/messages', {
             params: {
@@ -163,7 +198,7 @@ export class MaxClientService implements OnModuleDestroy {
             },
             data: {
               text: action.text,
-              ...(attachment ? { attachments: [attachment] } : {}),
+              ...(attachments.length > 0 ? { attachments } : {}),
             },
           });
         });
@@ -361,6 +396,33 @@ export class MaxClientService implements OnModuleDestroy {
     return Math.min(normalized, MAX_ACTION_DELAY_MS);
   }
 
+  private buildMessageAttachments(options?: MaxSendMessageOptions): Record<string, unknown>[] {
+    const attachments: Record<string, unknown>[] = [];
+    const imageAttachment = this.buildImageAttachment(options?.imageToken);
+    if (imageAttachment) {
+      attachments.push(imageAttachment);
+    }
+    const keyboardAttachment = this.buildInlineKeyboardAttachment(options?.button);
+    if (keyboardAttachment) {
+      attachments.push(keyboardAttachment);
+    }
+    return attachments;
+  }
+
+  private buildImageAttachment(imageToken?: string): Record<string, unknown> | null {
+    const token = imageToken?.trim();
+    if (!token) {
+      return null;
+    }
+
+    return {
+      type: 'image',
+      payload: {
+        token,
+      },
+    };
+  }
+
   private buildInlineKeyboardAttachment(button?: MaxMessageButton): Record<string, unknown> | null {
     if (!button) {
       return null;
@@ -457,6 +519,26 @@ export class MaxClientService implements OnModuleDestroy {
     config: Record<string, unknown> = {},
   ): Promise<T> {
     const url = `${this.baseUrl}${path}`;
+    const response = await firstValueFrom(
+      this.httpService.request<T>({
+        method,
+        url,
+        ...config,
+        headers: {
+          Authorization: this.token,
+          ...(config.headers as Record<string, string> | undefined),
+        },
+      }),
+    );
+
+    return response.data;
+  }
+
+  private async requestAbsolute<T = unknown>(
+    method: 'delete' | 'post' | 'get',
+    url: string,
+    config: Record<string, unknown> = {},
+  ): Promise<T> {
     const response = await firstValueFrom(
       this.httpService.request<T>({
         method,

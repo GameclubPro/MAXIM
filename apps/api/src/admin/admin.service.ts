@@ -26,6 +26,10 @@ type ApplySettingsToAllChatsResult = {
   appliedChatIds: string[];
 };
 
+const BROADCAST_IMAGE_MAX_BYTES = 1_000_000;
+const BROADCAST_MIN_DELAY_MS = 30_000;
+const BROADCAST_MAX_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
+
 @Injectable()
 export class AdminService {
   private readonly logger = new Logger(AdminService.name);
@@ -297,21 +301,68 @@ export class AdminService {
     const targetChatIds = parsed.data.applyToAllChats
       ? Array.from(new Set([sourceChatId, ...availableChats.map((chat) => chat.id)]))
       : [sourceChatId];
-    const messageText = parsed.data.text.trim();
-    const messageOptions = parsed.data.buttonEnabled
-      ? {
-          button: {
-            text: parsed.data.buttonText.trim(),
-            url: parsed.data.buttonUrl.trim(),
-          },
-        }
-      : undefined;
+    const messageText = parsed.data.text.trim() || (parsed.data.imageEnabled ? ' ' : '');
+
+    let delayMs = 0;
+    let sendAt: string | null = null;
+    if (parsed.data.sendAt) {
+      const scheduledAt = new Date(parsed.data.sendAt);
+      if (Number.isNaN(scheduledAt.getTime())) {
+        throw new BadRequestException('Некорректное время рассылки.');
+      }
+      const calculatedDelayMs = scheduledAt.getTime() - Date.now();
+      if (calculatedDelayMs < BROADCAST_MIN_DELAY_MS) {
+        throw new BadRequestException('Укажите время рассылки минимум через 30 секунд.');
+      }
+      if (calculatedDelayMs > BROADCAST_MAX_DELAY_MS) {
+        throw new BadRequestException('Максимальный таймер рассылки: 14 дней.');
+      }
+      delayMs = calculatedDelayMs;
+      sendAt = scheduledAt.toISOString();
+    }
+
+    let imageToken: string | undefined;
+    if (parsed.data.imageEnabled) {
+      const imageMimeType = parsed.data.imageMimeType.trim().toLowerCase();
+      if (!imageMimeType.startsWith('image/')) {
+        throw new BadRequestException('Поддерживаются только изображения.');
+      }
+      const imageBuffer = this.decodeBroadcastImageBase64(parsed.data.imageBase64);
+      if (imageBuffer.length > BROADCAST_IMAGE_MAX_BYTES) {
+        throw new BadRequestException('Фото слишком большое. Максимум 1 MB.');
+      }
+      imageToken = await this.maxClient.uploadImage(
+        imageBuffer,
+        this.resolveBroadcastImageFileName(parsed.data.imageFileName, imageMimeType),
+        imageMimeType,
+      );
+    }
+
+    const messageOptions =
+      parsed.data.buttonEnabled || imageToken
+        ? {
+            ...(parsed.data.buttonEnabled
+              ? {
+                  button: {
+                    text: parsed.data.buttonText.trim(),
+                    url: parsed.data.buttonUrl.trim(),
+                  },
+                }
+              : {}),
+            ...(imageToken ? { imageToken } : {}),
+          }
+        : undefined;
 
     const sentChatIds: string[] = [];
     const failedChatIds: string[] = [];
     for (const chatId of targetChatIds) {
       try {
-        await this.maxClient.sendMessage(chatId, messageText, messageOptions);
+        await this.maxClient.sendMessage(
+          chatId,
+          messageText,
+          messageOptions,
+          delayMs > 0 ? { delayMs } : undefined,
+        );
         sentChatIds.push(chatId);
       } catch (error: unknown) {
         failedChatIds.push(chatId);
@@ -320,6 +371,7 @@ export class AdminService {
             sourceChatId,
             targetChatId: chatId,
             actorUserId: user.userId,
+            sendAt,
             err: error instanceof Error ? error.message : String(error),
           },
           'Broadcast message failed for target chat',
@@ -337,6 +389,7 @@ export class AdminService {
           targetChats: targetChatIds.length,
           sentChats: sentChatIds.length,
           failedChats: failedChatIds.length,
+          sendAt,
           sentChatIds,
           failedChatIds,
         },
@@ -348,9 +401,49 @@ export class AdminService {
       targetChats: targetChatIds.length,
       sentChats: sentChatIds.length,
       failedChats: failedChatIds.length,
+      sendAt,
       sentChatIds,
       failedChatIds,
     };
+  }
+
+  private decodeBroadcastImageBase64(value: string): Buffer {
+    const normalized = value.trim().replace(/^data:[^;]+;base64,/, '');
+    if (!normalized) {
+      throw new BadRequestException('Добавьте фото для рассылки.');
+    }
+
+    let imageBuffer: Buffer;
+    try {
+      imageBuffer = Buffer.from(normalized, 'base64');
+    } catch {
+      throw new BadRequestException('Не удалось прочитать фото.');
+    }
+
+    if (imageBuffer.length === 0) {
+      throw new BadRequestException('Не удалось прочитать фото.');
+    }
+
+    return imageBuffer;
+  }
+
+  private resolveBroadcastImageFileName(fileName: string, mimeType: string): string {
+    const trimmed = fileName.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+
+    if (mimeType === 'image/png') {
+      return 'broadcast-image.png';
+    }
+    if (mimeType === 'image/webp') {
+      return 'broadcast-image.webp';
+    }
+    if (mimeType === 'image/gif') {
+      return 'broadcast-image.gif';
+    }
+
+    return 'broadcast-image.jpg';
   }
 
   async getEvents(chatId: string, user: AuthUser, query: unknown): Promise<ModerationEvent[]> {

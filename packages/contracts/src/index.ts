@@ -412,13 +412,26 @@ export const addGlobalUserBlacklistRequestSchema = z.object({
 
 export const sendBroadcastRequestSchema = z
   .object({
-    text: z.string().trim().min(1).max(1_000),
+    text: z.string().trim().max(1_000).default(''),
     applyToAllChats: z.boolean().default(false),
     buttonEnabled: z.boolean().default(false),
     buttonUrl: botButtonUrlSchema,
     buttonText: botButtonTextSchema,
+    imageEnabled: z.boolean().default(false),
+    imageBase64: z.string().trim().max(1_500_000).default(''),
+    imageMimeType: z.string().trim().max(128).default(''),
+    imageFileName: z.string().trim().max(128).default(''),
+    sendAt: z.string().datetime().nullable().default(null),
   })
   .superRefine((value, ctx) => {
+    if (value.text.length === 0 && !value.imageEnabled) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['text'],
+        message: 'Введите текст или добавьте фото.',
+      });
+    }
+
     if (value.buttonEnabled && !isValidBotButtonUrl(value.buttonUrl)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
@@ -434,6 +447,24 @@ export const sendBroadcastRequestSchema = z
         message: 'Введите название кнопки.',
       });
     }
+
+    if (value.imageEnabled) {
+      if (!value.imageBase64.trim()) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['imageBase64'],
+          message: 'Добавьте фото для рассылки.',
+        });
+      }
+
+      if (!value.imageMimeType.trim() || !value.imageMimeType.toLowerCase().startsWith('image/')) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['imageMimeType'],
+          message: 'Неверный формат фото.',
+        });
+      }
+    }
   });
 export type SendBroadcastRequest = z.infer<typeof sendBroadcastRequestSchema>;
 
@@ -444,6 +475,7 @@ export const sendBroadcastResultSchema = z.object({
   failedChats: z.number().int().min(0),
   sentChatIds: z.array(z.string()),
   failedChatIds: z.array(z.string()),
+  sendAt: z.string().datetime().nullable(),
 });
 export type SendBroadcastResult = z.infer<typeof sendBroadcastResultSchema>;
 
