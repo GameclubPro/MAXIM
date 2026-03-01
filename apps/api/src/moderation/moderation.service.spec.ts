@@ -6,12 +6,6 @@ function createSettings(overrides: Record<string, unknown> = {}) {
   return {
     id: 'settings-1',
     chatId: 'chat-1',
-    profanityLevel: 'MEDIUM',
-    capsThreshold: 70,
-    floodWindowSec: 10,
-    floodMaxMessages: 5,
-    duplicateWindowSec: 60,
-    duplicateMaxCount: 3,
     duplicateWarnEnabled: true,
     duplicateKickEnabled: true,
     duplicateBanEnabled: true,
@@ -47,9 +41,6 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     commercialAdsSensitivity: 'BALANCED',
     commercialAdsWarnThreshold: 45,
     commercialAdsDeleteThreshold: 65,
-    commercialAdsRepeatWindowSec: 24 * 60 * 60,
-    commercialAdsLowConfidenceLogEnabled: true,
-    commercialAdsWarnFirstEnabled: true,
     textFiltersBotMessageEnabled: false,
     textFiltersBotMessageText: '',
     textFiltersWarnEnabled: false,
@@ -84,8 +75,6 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     duplicateBotButtonText: 'Открыть',
     banDurationHours: 6,
     warnThreshold: 3,
-    repeatBanWindowDays: 7,
-    logRetentionDays: 90,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -1570,7 +1559,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('issues 6h BAN on third text-filter violation in 24h when ban stage is enabled', async () => {
+  it('uses configured ban duration for text-filter BAN escalation', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -1579,6 +1568,7 @@ describe('ModerationService', () => {
           settings: createSettings({
             textFiltersBotMessageEnabled: false,
             textFiltersBanEnabled: true,
+            banDurationHours: 12,
           }),
           domains: [],
         }),
@@ -1626,7 +1616,7 @@ describe('ModerationService', () => {
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Пользователю "Алексей" выдан временный бан на 6ч.',
+      'Пользователю "Алексей" выдан временный бан на 12ч.',
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
@@ -1634,7 +1624,7 @@ describe('ModerationService', () => {
         ruleCode: 'PROFANITY',
         action: SanctionAction.BAN,
         metadata: expect.objectContaining({
-          banDurationHours: 6,
+          banDurationHours: 12,
           textFilterViolationCount24h: 3,
           textFilterEscalationWindowHours: 24,
         }),
@@ -2297,7 +2287,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('issues 6h BAN on third link in 24h when link ban stage is enabled', async () => {
+  it('uses configured ban duration for link BAN escalation', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -2306,6 +2296,7 @@ describe('ModerationService', () => {
           settings: createSettings({
             linkBotMessageEnabled: false,
             linkBanEnabled: true,
+            banDurationHours: 12,
           }),
           domains: [],
         }),
@@ -2353,7 +2344,7 @@ describe('ModerationService', () => {
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Пользователю "Алексей" выдан временный бан на 6ч.',
+      'Пользователю "Алексей" выдан временный бан на 12ч.',
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
@@ -2361,7 +2352,7 @@ describe('ModerationService', () => {
         ruleCode: 'LINK_BLOCKED',
         action: SanctionAction.BAN,
         metadata: expect.objectContaining({
-          banDurationHours: 6,
+          banDurationHours: 12,
           linkViolationCount24h: 3,
           linkEscalationWindowHours: 24,
         }),

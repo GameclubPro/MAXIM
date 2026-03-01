@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import { SanctionAction } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
+const DEFAULT_REPEAT_BAN_WINDOW_DAYS = 7;
+
 @Injectable()
 export class SanctionService {
   constructor(private readonly prisma: PrismaService) {}
@@ -10,9 +12,8 @@ export class SanctionService {
     chatId: string;
     userId: string;
     warnThreshold: number;
-    repeatBanWindowDays: number;
   }): Promise<SanctionAction> {
-    const { chatId, userId, warnThreshold, repeatBanWindowDays } = params;
+    const { chatId, userId, warnThreshold } = params;
 
     const warningsCount = await this.prisma.violation.count({
       where: {
@@ -25,7 +26,7 @@ export class SanctionService {
       return SanctionAction.WARN;
     }
 
-    const since = new Date(Date.now() - repeatBanWindowDays * 24 * 60 * 60 * 1000);
+    const since = new Date(Date.now() - DEFAULT_REPEAT_BAN_WINDOW_DAYS * 24 * 60 * 60 * 1000);
     const recentKick = await this.prisma.moderationEvent.findFirst({
       where: {
         chatId,

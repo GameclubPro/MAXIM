@@ -3,7 +3,6 @@ import { z } from 'zod';
 export const sanctionActionSchema = z.enum(['NONE', 'WARN', 'DELETE_MESSAGE', 'KICK', 'BAN']);
 export type SanctionAction = z.infer<typeof sanctionActionSchema>;
 
-export const profanityLevelSchema = z.enum(['LOW', 'MEDIUM', 'HIGH']);
 export const linkPolicySchema = z.enum(['ALLOWLIST_ONLY', 'BLOCKLIST_ONLY', 'ALERT_ONLY']);
 export const commercialAdsSensitivitySchema = z.enum(['BALANCED', 'STRICT']);
 
@@ -48,12 +47,6 @@ function isValidIanaTimeZone(value: string): boolean {
 
 export const chatSettingsSchema = z
   .object({
-    profanityLevel: profanityLevelSchema.default('MEDIUM'),
-    capsThreshold: z.number().min(0).max(100).default(70),
-    floodWindowSec: z.number().int().min(1).max(120).default(10),
-    floodMaxMessages: z.number().int().min(1).max(50).default(5),
-    duplicateWindowSec: z.number().int().min(5).max(3600).default(60),
-    duplicateMaxCount: z.number().int().min(2).max(20).default(3),
     duplicateWarnEnabled: z.boolean().default(true),
     duplicateKickEnabled: z.boolean().default(true),
     duplicateBanEnabled: z.boolean().default(true),
@@ -89,9 +82,6 @@ export const chatSettingsSchema = z
     commercialAdsSensitivity: commercialAdsSensitivitySchema.default('BALANCED'),
     commercialAdsWarnThreshold: z.number().int().min(10).max(90).default(45),
     commercialAdsDeleteThreshold: z.number().int().min(20).max(100).default(65),
-    commercialAdsRepeatWindowSec: z.number().int().min(3_600).max(604_800).default(86_400),
-    commercialAdsLowConfidenceLogEnabled: z.boolean().default(true),
-    commercialAdsWarnFirstEnabled: z.boolean().default(true),
     textFiltersBotMessageEnabled: z.boolean().default(false),
     textFiltersBotMessageText: botMessageTextSchema,
     textFiltersWarnEnabled: z.boolean().default(false),
@@ -136,8 +126,6 @@ export const chatSettingsSchema = z
     duplicateBotButtonText: botButtonTextSchema,
     banDurationHours: z.number().int().min(1).max(36).default(6),
     warnThreshold: z.number().int().min(1).max(10).default(3),
-    repeatBanWindowDays: z.number().int().min(1).max(30).default(7),
-    logRetentionDays: z.number().int().min(7).max(365).default(90),
   })
   .superRefine((value, ctx) => {
     const warnEnabled = value.duplicateWarnEnabled;

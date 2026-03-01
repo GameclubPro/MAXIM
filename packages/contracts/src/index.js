@@ -1,7 +1,7 @@
 import { z } from 'zod';
 export const sanctionActionSchema = z.enum(['NONE', 'WARN', 'DELETE_MESSAGE', 'KICK', 'BAN']);
-export const profanityLevelSchema = z.enum(['LOW', 'MEDIUM', 'HIGH']);
 export const linkPolicySchema = z.enum(['ALLOWLIST_ONLY', 'BLOCKLIST_ONLY', 'ALERT_ONLY']);
+export const commercialAdsSensitivitySchema = z.enum(['BALANCED', 'STRICT']);
 const duplicateWindowSecSchema = z.number().int().min(3600).max(604800);
 const duplicateMaxCountSchema = z.number().int().min(2).max(20);
 const botButtonUrlSchema = z.string().trim().max(2048).default('');
@@ -12,7 +12,7 @@ function isValidBotButtonUrl(value) {
     return false;
   }
   try {
-    const parsed = new URL(normalized);
+    const parsed = new globalThis.URL(normalized);
     return parsed.protocol === 'https:' || parsed.protocol === 'http:';
   } catch {
     return false;
@@ -36,12 +36,6 @@ function isValidIanaTimeZone(value) {
 }
 export const chatSettingsSchema = z
   .object({
-    profanityLevel: profanityLevelSchema.default('MEDIUM'),
-    capsThreshold: z.number().min(0).max(100).default(70),
-    floodWindowSec: z.number().int().min(1).max(120).default(10),
-    floodMaxMessages: z.number().int().min(1).max(50).default(5),
-    duplicateWindowSec: z.number().int().min(5).max(3600).default(60),
-    duplicateMaxCount: z.number().int().min(2).max(20).default(3),
     duplicateWarnEnabled: z.boolean().default(true),
     duplicateKickEnabled: z.boolean().default(true),
     duplicateBanEnabled: z.boolean().default(true),
@@ -65,8 +59,13 @@ export const chatSettingsSchema = z
     messageLimitsBotButtonText: botButtonTextSchema,
     russianProfanityFilterEnabled: z.boolean().default(true),
     commercialAdsFilterEnabled: z.boolean().default(false),
+    commercialAdsSensitivity: commercialAdsSensitivitySchema.default('BALANCED'),
+    commercialAdsWarnThreshold: z.number().int().min(10).max(90).default(45),
+    commercialAdsDeleteThreshold: z.number().int().min(20).max(100).default(65),
     textFiltersBotMessageEnabled: z.boolean().default(false),
+    textFiltersBotMessageText: z.string().max(1000).default(''),
     textFiltersWarnEnabled: z.boolean().default(false),
+    textFiltersWarnMessageText: z.string().max(1000).default(''),
     textFiltersBanEnabled: z.boolean().default(false),
     textFiltersKickEnabled: z.boolean().default(false),
     textFiltersBotButtonEnabled: z.boolean().default(false),
@@ -77,11 +76,14 @@ export const chatSettingsSchema = z
     nightModeEndTimeMinutes: z.number().int().min(0).max(1439).default(8 * 60),
     nightModeTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
     nightModeBotMessageEnabled: z.boolean().default(true),
+    nightModeBotMessageText: z.string().max(1000).default(''),
     nightModeBotButtonEnabled: z.boolean().default(false),
     nightModeBotButtonUrl: botButtonUrlSchema,
     nightModeBotButtonText: botButtonTextSchema,
     linkBotMessageEnabled: z.boolean().default(true),
+    linkBotMessageText: z.string().max(1000).default(''),
     linkWarnEnabled: z.boolean().default(false),
+    linkWarnMessageText: z.string().max(1000).default(''),
     linkBanEnabled: z.boolean().default(false),
     linkKickEnabled: z.boolean().default(false),
     linkBotButtonEnabled: z.boolean().default(false),
@@ -93,8 +95,6 @@ export const chatSettingsSchema = z
     duplicateBotButtonText: botButtonTextSchema,
     banDurationHours: z.number().int().min(1).max(36).default(6),
     warnThreshold: z.number().int().min(1).max(10).default(3),
-    repeatBanWindowDays: z.number().int().min(1).max(30).default(7),
-    logRetentionDays: z.number().int().min(7).max(365).default(90),
   })
   .superRefine((value, ctx) => {
     const warnEnabled = value.duplicateWarnEnabled;

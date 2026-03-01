@@ -18,7 +18,6 @@ describe('SanctionService', () => {
         chatId: 'chat-1',
         userId: 'u-1',
         warnThreshold: 3,
-        repeatBanWindowDays: 7,
       }),
     ).resolves.toBe(SanctionAction.WARN);
   });
@@ -39,7 +38,6 @@ describe('SanctionService', () => {
         chatId: 'chat-1',
         userId: 'u-1',
         warnThreshold: 3,
-        repeatBanWindowDays: 7,
       }),
     ).resolves.toBe(SanctionAction.KICK);
   });
@@ -60,7 +58,6 @@ describe('SanctionService', () => {
         chatId: 'chat-1',
         userId: 'u-1',
         warnThreshold: 3,
-        repeatBanWindowDays: 7,
       }),
     ).resolves.toBe(SanctionAction.BAN);
   });

@@ -1,4 +1,4 @@
-import { LinkPolicy, ProfanityLevel, type ChatSettings } from '@prisma/client';
+import { LinkPolicy, type ChatSettings } from '@prisma/client';
 import { RuleEngineService } from './rule-engine.service';
 
 class MockRedisCounterService {
@@ -15,12 +15,6 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
   return {
     id: '1',
     chatId: 'chat-1',
-    profanityLevel: ProfanityLevel.MEDIUM,
-    capsThreshold: 70,
-    floodWindowSec: 10,
-    floodMaxMessages: 2,
-    duplicateWindowSec: 60,
-    duplicateMaxCount: 2,
     duplicateWarnEnabled: true,
     duplicateKickEnabled: true,
     duplicateBanEnabled: true,
@@ -56,9 +50,6 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     commercialAdsSensitivity: 'BALANCED',
     commercialAdsWarnThreshold: 45,
     commercialAdsDeleteThreshold: 65,
-    commercialAdsRepeatWindowSec: 24 * 60 * 60,
-    commercialAdsLowConfidenceLogEnabled: true,
-    commercialAdsWarnFirstEnabled: true,
     textFiltersBotMessageEnabled: false,
     textFiltersBotMessageText: '',
     textFiltersWarnEnabled: false,
@@ -93,8 +84,6 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     duplicateBotButtonText: 'Открыть',
     banDurationHours: 6,
     warnThreshold: 3,
-    repeatBanWindowDays: 7,
-    logRetentionDays: 90,
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -162,19 +151,6 @@ describe('RuleEngineService', () => {
       userId: 'u-1',
       text: 'подстрахуй меня, это педикюр и сукно',
       settings: buildSettings(),
-      domainAllowlist: [],
-    });
-
-    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
-  });
-
-  it('does not include insults-only case on LOW profanity level', async () => {
-    const service = new RuleEngineService(new MockRedisCounterService() as never);
-    const result = await service.detect({
-      chatId: 'chat-1',
-      userId: 'u-1',
-      text: 'ты мудак и урод',
-      settings: buildSettings({ profanityLevel: ProfanityLevel.LOW }),
       domainAllowlist: [],
     });
 

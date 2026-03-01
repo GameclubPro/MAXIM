@@ -35,9 +35,7 @@ const DEFAULT_BAN_DURATION_HOURS = 6;
 const DEFAULT_BOT_BUTTON_TEXT = 'Открыть';
 const DEFAULT_NIGHT_MODE_TIMEZONE = 'Europe/Moscow';
 const LINK_ESCALATION_WINDOW_HOURS = 24;
-const LINK_ESCALATION_BAN_HOURS = 6;
 const TEXT_FILTER_ESCALATION_WINDOW_HOURS = 24;
-const TEXT_FILTER_ESCALATION_BAN_HOURS = 6;
 const MAX_FORWARD_SCAN_DEPTH = 8;
 const GLOBAL_BLACKLIST_TOGGLE_CACHE_TTL_MS = 30_000;
 const NON_SANCTION_RULE_CODES = new Set([
@@ -511,7 +509,7 @@ export class ModerationService {
     }
 
     let action: SanctionAction = SanctionAction.NONE;
-    let actionBanDurationHours = settings.banDurationHours;
+    const actionBanDurationHours = settings.banDurationHours;
 
     if (topViolation.ruleCode === 'LINK_BLOCKED') {
       const linkAction = this.resolveLinkEscalationAction(linkViolationCount24h ?? 1, {
@@ -520,9 +518,6 @@ export class ModerationService {
         kickEnabled: settings.linkKickEnabled,
       });
       action = linkAction;
-      if (linkAction === SanctionAction.BAN) {
-        actionBanDurationHours = LINK_ESCALATION_BAN_HOURS;
-      }
 
       if (linkAction === SanctionAction.WARN) {
         try {
@@ -552,9 +547,6 @@ export class ModerationService {
         },
       );
       action = textFilterAction;
-      if (textFilterAction === SanctionAction.BAN) {
-        actionBanDurationHours = TEXT_FILTER_ESCALATION_BAN_HOURS;
-      }
 
       if (textFilterAction === SanctionAction.WARN) {
         try {
@@ -579,7 +571,6 @@ export class ModerationService {
         chatId,
         userId: senderId,
         warnThreshold: settings.warnThreshold,
-        repeatBanWindowDays: settings.repeatBanWindowDays,
       });
     }
 

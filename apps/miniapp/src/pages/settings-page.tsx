@@ -928,9 +928,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       setFieldValue('commercialAdsSensitivity', 'STRICT');
       setFieldValue('commercialAdsWarnThreshold', warnThreshold);
       setFieldValue('commercialAdsDeleteThreshold', deleteThreshold);
-      setFieldValue('commercialAdsRepeatWindowSec', 24 * 60 * 60);
-      setFieldValue('commercialAdsLowConfidenceLogEnabled', true);
-      setFieldValue('commercialAdsWarnFirstEnabled', true);
       return;
     }
 
@@ -940,9 +937,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     setFieldValue('commercialAdsSensitivity', 'BALANCED');
     setFieldValue('commercialAdsWarnThreshold', warnThreshold);
     setFieldValue('commercialAdsDeleteThreshold', deleteThreshold);
-    setFieldValue('commercialAdsRepeatWindowSec', 24 * 60 * 60);
-    setFieldValue('commercialAdsLowConfidenceLogEnabled', true);
-    setFieldValue('commercialAdsWarnFirstEnabled', true);
   }
 
   function toggleHint(key: HintKey) {

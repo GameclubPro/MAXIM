@@ -209,6 +209,11 @@ const ADS_TRANSACTIONAL_PATTERN = /\b(цена|стоимость|оплата|�
 const ADS_URGENCY_PATTERN = /\b(срочно|только сегодня|до конца дня|осталось\s+\d+)\b/iu;
 const ADS_QUANTITY_PATTERN = /\b(шт|штук|шт\.|пачк|упак|остатк|места)\b/iu;
 const ADS_PHONE_PATTERN = /\b(?:\+7|8)\s*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b/u;
+const DEFAULT_PROFANITY_LEVEL = ProfanityLevel.MEDIUM;
+const DEFAULT_CAPS_THRESHOLD = 70;
+const DEFAULT_FLOOD_WINDOW_SEC = 10;
+const DEFAULT_FLOOD_MAX_MESSAGES = 5;
+const DEFAULT_DUPLICATE_WINDOW_SEC = 60;
 const MIXED_CHAR_MAP: Record<string, string> = {
   a: 'а',
   b: 'б',
@@ -283,7 +288,7 @@ export class RuleEngineService {
 
     if (
       settings.russianProfanityFilterEnabled &&
-      this.hasProfanity(normalized, settings.profanityLevel)
+      this.hasProfanity(normalized, DEFAULT_PROFANITY_LEVEL)
     ) {
       violations.push({ ruleCode: 'PROFANITY', score: 0.95, reason: 'Detected profanity pattern' });
     }
@@ -360,16 +365,16 @@ export class RuleEngineService {
       }
     }
 
-    if (this.isCapsAbuse(text, settings.capsThreshold)) {
+    if (this.isCapsAbuse(text, DEFAULT_CAPS_THRESHOLD)) {
       violations.push({ ruleCode: 'CAPS_ABUSE', score: 0.7, reason: 'Excessive uppercase ratio' });
     }
 
-    const floodKey = `flood:${chatId}:${userId}:${Math.floor(Date.now() / (settings.floodWindowSec * 1000))}`;
+    const floodKey = `flood:${chatId}:${userId}:${Math.floor(Date.now() / (DEFAULT_FLOOD_WINDOW_SEC * 1000))}`;
     const floodCount = await this.redisCounter.incrementWithTtl(
       floodKey,
-      settings.floodWindowSec + 1,
+      DEFAULT_FLOOD_WINDOW_SEC + 1,
     );
-    if (floodCount > settings.floodMaxMessages) {
+    if (floodCount > DEFAULT_FLOOD_MAX_MESSAGES) {
       violations.push({ ruleCode: 'FLOOD', score: 0.85, reason: 'Message flood detected' });
     }
 
@@ -405,14 +410,14 @@ export class RuleEngineService {
     const hitKey = `dup:v3:${chatId}:${userId}:${hash}:hit`;
     const hitTotal = await this.redisCounter.incrementWithTtl(
       hitKey,
-      settings.duplicateWindowSec + 1,
+      DEFAULT_DUPLICATE_WINDOW_SEC + 1,
     );
     const hitCount = Math.max(0, hitTotal - 1);
     const hit =
       hitCount > 0
         ? {
             count: hitCount,
-            windowSec: settings.duplicateWindowSec,
+            windowSec: DEFAULT_DUPLICATE_WINDOW_SEC,
             hash,
           }
         : undefined;
@@ -823,7 +828,7 @@ export class RuleEngineService {
     let normalized = value.toLowerCase();
     normalized = this.normalizeMixedWriting(normalized);
     normalized = normalized.replace(/([a-zа-яё0-9])\1{2,}/giu, '$1$1');
-    normalized = normalized.replace(/[_*~`"'«»“”(){}\[\]|]+/g, ' ');
+    normalized = normalized.replace(/[_*~`"'«»“”(){}[[]\]|]+/g, ' ');
     normalized = normalized.replace(/[^\p{L}\p{N}\s:/?.,&%+-]/gu, ' ');
     normalized = normalized.replace(/\s+/g, ' ').trim();
     return normalized;
@@ -838,7 +843,7 @@ export class RuleEngineService {
     normalized = this.normalizeMixedWriting(normalized);
     normalized = normalized.replace(/ё/g, 'е');
     normalized = normalized.replace(/([a-zа-я0-9])\1{2,}/giu, '$1$1');
-    normalized = normalized.replace(/[_*~`"'«»“”(){}\[\]|]+/g, ' ');
+    normalized = normalized.replace(/[_*~`"'«»“”(){}[[]\]|]+/g, ' ');
     normalized = normalized.replace(/[^\p{L}\p{N}\s]+/gu, ' ');
     normalized = normalized.replace(/\s+/g, ' ').trim();
     return normalized;
