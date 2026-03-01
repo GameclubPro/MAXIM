@@ -11,6 +11,12 @@ import {
 
 const API_BASE = '/api/v1';
 
+export type ApplySettingsToAllChatsResult = {
+  sourceChatId: string;
+  updatedChats: number;
+  appliedChatIds: string[];
+};
+
 export class ApiClient {
   constructor(private readonly initData: string) {}
 
@@ -35,6 +41,31 @@ export class ApiClient {
       body: JSON.stringify(data),
     });
     return chatSettingsSchema.parse(response);
+  }
+
+  async applySettingsToAllChats(
+    chatId: string,
+    data: ChatSettings,
+  ): Promise<ApplySettingsToAllChatsResult> {
+    const response = await this.request(`/chats/${chatId}/settings/apply-to-all`, {
+      method: 'POST',
+      body: JSON.stringify(data),
+    });
+
+    if (
+      !response ||
+      typeof response !== 'object' ||
+      typeof (response as { sourceChatId?: unknown }).sourceChatId !== 'string' ||
+      typeof (response as { updatedChats?: unknown }).updatedChats !== 'number' ||
+      !Array.isArray((response as { appliedChatIds?: unknown }).appliedChatIds) ||
+      (response as { appliedChatIds: unknown[] }).appliedChatIds.some(
+        (item: unknown) => typeof item !== 'string',
+      )
+    ) {
+      throw new Error('Invalid apply settings response');
+    }
+
+    return response as ApplySettingsToAllChatsResult;
   }
 
   async getDomainAllowlist(chatId: string): Promise<string[]> {

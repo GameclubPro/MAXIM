@@ -13,6 +13,12 @@ import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { MaxClientService } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
 
+type ApplySettingsToAllChatsResult = {
+  sourceChatId: string;
+  updatedChats: number;
+  appliedChatIds: string[];
+};
+
 @Injectable()
 export class AdminService {
   private readonly logger = new Logger(AdminService.name);
@@ -162,6 +168,82 @@ export class AdminService {
     });
 
     return parsed.data;
+  }
+
+  async applySettingsToAllChats(
+    sourceChatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ApplySettingsToAllChatsResult> {
+    await this.assertChatAdmin(sourceChatId, user.userId);
+    const parsed = chatSettingsSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const availableChats = await this.listChats(user);
+    const appliedChatIds = Array.from(
+      new Set([sourceChatId, ...availableChats.map((chat) => chat.id)]),
+    );
+
+    for (const chatId of appliedChatIds) {
+      await this.prisma.chat.upsert({
+        where: { id: chatId },
+        create: {
+          id: chatId,
+          title: `Chat ${chatId}`,
+          settings: {
+            create: {
+              ...parsed.data,
+            },
+          },
+        },
+        update: {
+          settings: {
+            upsert: {
+              update: {
+                ...parsed.data,
+              },
+              create: {
+                ...parsed.data,
+              },
+            },
+          },
+        },
+      });
+
+      await this.prisma.chatAdminAllowlist.upsert({
+        where: {
+          chatId_userId: {
+            chatId,
+            userId: user.userId,
+          },
+        },
+        create: {
+          chatId,
+          userId: user.userId,
+        },
+        update: {},
+      });
+
+      await this.prisma.auditLog.create({
+        data: {
+          chatId,
+          actorUserId: user.userId,
+          action: 'APPLY_SETTINGS_TO_ALL_CHATS',
+          payload: {
+            sourceChatId,
+            targetChatId: chatId,
+          },
+        },
+      });
+    }
+
+    return {
+      sourceChatId,
+      updatedChats: appliedChatIds.length,
+      appliedChatIds,
+    };
   }
 
   async getEvents(chatId: string, user: AuthUser, query: unknown): Promise<ModerationEvent[]> {

@@ -272,6 +272,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [domainInput, setDomainInput] = useState('');
   const [domainInputError, setDomainInputError] = useState('');
   const [failedSnapshot, setFailedSnapshot] = useState<string>('');
+  const [showApplyAllConfirm, setShowApplyAllConfirm] = useState(false);
   const [openHintKey, setOpenHintKey] = useState<BotHintKey | null>(null);
   const [expandedSections, setExpandedSections] = useState<Record<SettingsSectionKey, boolean>>({
     links: true,
@@ -287,6 +288,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     if (chatId) {
       saveLastChatId(chatId);
     }
+  }, [chatId]);
+
+  useEffect(() => {
+    setShowApplyAllConfirm(false);
   }, [chatId]);
 
   const settingsQuery = useQuery({
@@ -384,6 +389,30 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   });
   const isSavingSettings = saveMutation.isPending;
   const mutateSettings = saveMutation.mutate;
+
+  const applyToAllMutation = useMutation({
+    mutationFn: (payload: ChatSettings) => api.applySettingsToAllChats(chatId ?? '', payload),
+    onSuccess: (result, payload) => {
+      setDraft(payload);
+      setFieldErrors({});
+      setFailedSnapshot('');
+      setShowApplyAllConfirm(false);
+      queryClient.setQueryData(['settings', chatId], payload);
+      pushToast({
+        tone: 'success',
+        title: 'Настройки применены ко всем чатам',
+        description: `Обновлено чатов: ${result.updatedChats}.`,
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось применить настройки ко всем чатам',
+        description: formatApiError(error),
+      });
+    },
+  });
+  const isApplyingSettingsToAll = applyToAllMutation.isPending;
 
   const addDomainMutation = useMutation({
     mutationFn: (domain: string) => api.addDomain(chatId ?? '', domain),
@@ -495,7 +524,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   }, [draftSnapshot, failedSnapshot]);
 
   useEffect(() => {
-    if (!chatId || !draft || !hasChanges || isSavingSettings) {
+    if (!chatId || !draft || !hasChanges || isSavingSettings || isApplyingSettingsToAll) {
       return;
     }
 
@@ -515,7 +544,16 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     return () => {
       window.clearTimeout(timeoutId);
     };
-  }, [chatId, draft, draftSnapshot, failedSnapshot, hasChanges, isSavingSettings, mutateSettings]);
+  }, [
+    chatId,
+    draft,
+    draftSnapshot,
+    failedSnapshot,
+    hasChanges,
+    isSavingSettings,
+    isApplyingSettingsToAll,
+    mutateSettings,
+  ]);
 
   function handleAddDomain() {
     if (!chatId) {
@@ -581,6 +619,34 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
   function toggleSection(section: SettingsSectionKey) {
     setExpandedSections((current) => ({ ...current, [section]: !current[section] }));
+  }
+
+  function handleApplySettingsToAllChats() {
+    if (!chatId || !draft) {
+      return;
+    }
+
+    const chatsCount = chatsQuery.data?.length ?? 0;
+    if (chatsCount <= 1) {
+      pushToast({
+        title: 'Нет других чатов для применения',
+        description: 'Откройте миниапп в другом чате, чтобы добавить его в список.',
+      });
+      setShowApplyAllConfirm(false);
+      return;
+    }
+
+    const parsed = validateDraft(draft);
+    if (!parsed) {
+      pushToast({
+        tone: 'danger',
+        title: 'Исправьте настройки перед применением',
+        description: 'В форме есть ошибки, их нужно исправить.',
+      });
+      return;
+    }
+
+    applyToAllMutation.mutate(parsed);
   }
 
   if (!chatId) {
@@ -708,6 +774,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const textFiltersHeaderSummary = draft
     ? `${textFiltersEnabledCount}/2 фильтра · ${textFiltersStagesEnabledCount}/4 ступени · ${commercialSensitivityLabel.toLowerCase()}`
     : `${textFiltersEnabledCount}/2 фильтра`;
+  const chatsCount = chatsQuery.data?.length ?? 0;
+  const canApplyToAllChats = chatsCount > 1;
+  const applyAllHint = canApplyToAllChats
+    ? `Применим в ${chatsCount} чатах, где у вас и у бота есть админ-права.`
+    : 'Пока доступен только этот чат.';
 
   return (
     <div className="page-stack page-enter">
@@ -741,8 +812,57 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       {!settingsQuery.isLoading && !settingsQuery.error && draft ? (
         <section className="settings-sections" aria-label="Настройки модерации">
           <header className="settings-page-header stagger-in">
-            <p className="settings-page-header__eyebrow">Чат</p>
-            <h2 className="settings-page-header__title">{chatTitle || chatId}</h2>
+            <div className="settings-page-header__top">
+              <div className="settings-page-header__identity">
+                <p className="settings-page-header__eyebrow">Чат</p>
+                <h2 className="settings-page-header__title">{chatTitle || chatId}</h2>
+              </div>
+              <button
+                type="button"
+                className="button button--ghost settings-page-header__apply-button"
+                onClick={() => setShowApplyAllConfirm((current) => !current)}
+                disabled={!canApplyToAllChats || isApplyingSettingsToAll}
+                aria-expanded={showApplyAllConfirm}
+                aria-controls="apply-settings-all-confirm"
+              >
+                {isApplyingSettingsToAll ? 'Применяем...' : 'Применить ко всем чатам'}
+              </button>
+            </div>
+            <p className="settings-page-header__hint">{applyAllHint}</p>
+
+            {showApplyAllConfirm ? (
+              <div
+                id="apply-settings-all-confirm"
+                className="settings-page-header__confirm"
+                role="group"
+                aria-label="Подтверждение применения настроек ко всем чатам"
+              >
+                <p className="settings-page-header__confirm-title">
+                  Применить текущие настройки ко всем чатам?
+                </p>
+                <p className="settings-page-header__confirm-description">
+                  Будет скопирована текущая конфигурация этого чата.
+                </p>
+                <div className="settings-page-header__confirm-actions">
+                  <button
+                    type="button"
+                    className="button button--ghost"
+                    onClick={() => setShowApplyAllConfirm(false)}
+                    disabled={isApplyingSettingsToAll}
+                  >
+                    Отмена
+                  </button>
+                  <button
+                    type="button"
+                    className="button button--accent"
+                    onClick={handleApplySettingsToAllChats}
+                    disabled={isApplyingSettingsToAll}
+                  >
+                    Применить сейчас
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </header>
 
           <GlassCard className="settings-section stagger-in">

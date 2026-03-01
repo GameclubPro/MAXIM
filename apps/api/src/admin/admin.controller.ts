@@ -32,6 +32,15 @@ export class AdminController {
     return this.adminService.updateSettings(chatId, user, body);
   }
 
+  @Post('chats/:chatId/settings/apply-to-all')
+  applySettingsToAllChats(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.applySettingsToAllChats(chatId, user, body);
+  }
+
   @Get('chats/:chatId/moderation-events')
   getEvents(
     @Param('chatId') chatId: string,
