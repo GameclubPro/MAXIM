@@ -382,7 +382,7 @@ export class RuleEngineService {
 
     const compactText = normalized.replace(/\s+/g, ' ').trim();
     const duplicateState =
-      compactText.length > 0
+      settings.antiDuplicateEnabled && compactText.length > 0
         ? await this.detectDuplicateState({
             chatId,
             userId,

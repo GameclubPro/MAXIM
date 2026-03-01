@@ -9,6 +9,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     duplicateWarnEnabled: true,
     duplicateKickEnabled: true,
     duplicateBanEnabled: true,
+    antiDuplicateEnabled: true,
     duplicateWarnWindowSec: 12 * 60 * 60,
     duplicateWarnMaxCount: 2,
     duplicateKickWindowSec: 24 * 60 * 60,

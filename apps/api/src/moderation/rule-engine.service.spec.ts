@@ -18,6 +18,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     duplicateWarnEnabled: true,
     duplicateKickEnabled: true,
     duplicateBanEnabled: true,
+    antiDuplicateEnabled: true,
     duplicateWarnWindowSec: 12 * 60 * 60,
     duplicateWarnMaxCount: 2,
     duplicateKickWindowSec: 24 * 60 * 60,
@@ -523,6 +524,30 @@ describe('RuleEngineService', () => {
     expect(user1Second.duplicateHit?.count).toBe(1);
     expect(user1Second.duplicateDecision).toBeUndefined();
     expect(user2First.duplicateDecision).toBeUndefined();
+  });
+
+  it('does not process duplicate moderation when anti-duplicate toggle is disabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({ antiDuplicateEnabled: false });
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: 'same text',
+      settings,
+      domainAllowlist: [],
+    });
+
+    const second = await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: 'same text',
+      settings,
+      domainAllowlist: [],
+    });
+
+    expect(second.duplicateHit).toBeUndefined();
+    expect(second.duplicateDecision).toBeUndefined();
   });
 
   it('blocks any links when link policy is BLOCKLIST_ONLY', async () => {

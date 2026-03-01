@@ -50,6 +50,7 @@ export const chatSettingsSchema = z
     duplicateWarnEnabled: z.boolean().default(true),
     duplicateKickEnabled: z.boolean().default(true),
     duplicateBanEnabled: z.boolean().default(true),
+    antiDuplicateEnabled: z.boolean().default(true),
     duplicateWarnWindowSec: duplicateWindowSecSchema.default(43_200),
     duplicateWarnMaxCount: duplicateMaxCountSchema.default(2),
     duplicateKickWindowSec: duplicateWindowSecSchema.default(86_400),
@@ -135,9 +136,9 @@ export const chatSettingsSchema = z
     warnThreshold: z.number().int().min(1).max(10).default(3),
   })
   .superRefine((value, ctx) => {
-    const warnEnabled = value.duplicateWarnEnabled;
-    const banEnabled = value.duplicateBanEnabled;
-    const kickEnabled = value.duplicateKickEnabled;
+    const warnEnabled = value.antiDuplicateEnabled && value.duplicateWarnEnabled;
+    const banEnabled = value.antiDuplicateEnabled && value.duplicateBanEnabled;
+    const kickEnabled = value.antiDuplicateEnabled && value.duplicateKickEnabled;
 
     if (warnEnabled && banEnabled) {
       if (value.duplicateBanWindowSec < value.duplicateWarnWindowSec) {

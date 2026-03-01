@@ -73,6 +73,7 @@ model ChatSettings {
   duplicateWarnEnabled   Boolean        @default(true) @map("duplicate_warn_enabled")
   duplicateKickEnabled   Boolean        @default(true) @map("duplicate_kick_enabled")
   duplicateBanEnabled    Boolean        @default(true) @map("duplicate_ban_enabled")
+  antiDuplicateEnabled   Boolean        @default(true) @map("anti_duplicate_enabled")
   duplicateWarnWindowSec Int            @default(43200) @map("duplicate_warn_window_sec")
   duplicateWarnMaxCount  Int            @default(2) @map("duplicate_warn_max_count")
   duplicateKickWindowSec Int            @default(86400) @map("duplicate_kick_window_sec")

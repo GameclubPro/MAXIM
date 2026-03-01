@@ -1305,6 +1305,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     draft?.duplicateBanEnabled,
     draft?.duplicateKickEnabled,
   ].filter(Boolean).length;
+  const duplicatesHeaderSummary = draft?.antiDuplicateEnabled
+    ? `${duplicateStagesEnabledCount}/3 ступени включено`
+    : 'Выключено';
   const profanityStagesEnabledCount = draft?.russianProfanityFilterEnabled
     ? [
         draft?.profanityBotMessageEnabled,
@@ -2974,7 +2977,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 >
                   <span className="settings-section__toggle-main">
                     <h3>Дубли сообщений</h3>
-                    <small>{duplicateStagesEnabledCount}/3 ступени включено</small>
+                    <small>{duplicatesHeaderSummary}</small>
                   </span>
                   <SectionChevron isOpen={expandedSections.duplicates} />
                 </button>
@@ -2988,7 +2991,25 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 )}
               >
                 <div className="settings-section__collapse-inner">
-                  {draft.duplicateBanEnabled ? (
+                  <div className="settings-native-toggle">
+                    <div className="settings-native-toggle__row">
+                      <span className="settings-native-toggle__title">Анти дубль</span>
+                      <label className="settings-native-switch" aria-label="Включить анти дубль">
+                        <input
+                          type="checkbox"
+                          checked={draft.antiDuplicateEnabled}
+                          onChange={(event) => {
+                            setFieldValue('antiDuplicateEnabled', event.target.checked);
+                          }}
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+
+                  {draft.antiDuplicateEnabled && draft.duplicateBanEnabled ? (
                     <div
                       className={cn(
                         'settings-native-toggle',
@@ -3057,8 +3078,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     </div>
                   ) : null}
 
-                  <div className="duplicate-stage-list">
-                    <p className="duplicate-stage-list__caption">Количество дублей</p>
+                  {draft.antiDuplicateEnabled ? (
+                    <div className="duplicate-stage-list">
+                      <p className="duplicate-stage-list__caption">Количество дублей</p>
 
                     {DUPLICATE_STAGE_OPTIONS.map((stage) => {
                       const enabled = draft[stage.enabledKey];
@@ -3185,19 +3207,23 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           ) : null}
                         </article>
                       );
-                    })}
-                  </div>
+                      })}
+                    </div>
+                  ) : null}
 
-                  <div
-                    className="settings-subsection-divider"
-                    role="separator"
-                    aria-label="Блок действий бота"
-                  >
-                    <span>Действия бота</span>
-                  </div>
+                  {draft.antiDuplicateEnabled ? (
+                    <div
+                      className="settings-subsection-divider"
+                      role="separator"
+                      aria-label="Блок действий бота"
+                    >
+                      <span>Действия бота</span>
+                    </div>
+                  ) : null}
 
-                  <div className="settings-native-toggle">
-                    <div className="settings-native-toggle__row">
+                  {draft.antiDuplicateEnabled ? (
+                    <div className="settings-native-toggle">
+                      <div className="settings-native-toggle__row">
                       <div className="settings-native-toggle__title-wrap">
                         <span className="settings-native-toggle__title">Сообщение от бота</span>
                         <div className="settings-native-toggle__title-actions">
@@ -3265,9 +3291,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         onReset={() => setFieldValue('duplicateBotMessageText', '')}
                       />
                     ) : null}
-                  </div>
+                    </div>
+                  ) : null}
 
-                  {draft.duplicateBotMessageEnabled ? (
+                  {draft.antiDuplicateEnabled && draft.duplicateBotMessageEnabled ? (
                     <div
                       className={cn(
                         'settings-native-toggle',
