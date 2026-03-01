@@ -102,9 +102,7 @@ export class ModerationService {
       return;
     }
 
-    if (this.isServiceAuthoredMessage(update)) {
-      return;
-    }
+    const serviceAuthored = this.isServiceAuthoredMessage(update);
 
     const { chatId, chatTitle, senderId, senderName, text, createdAt, messageId } = update.message;
     const fallbackTitle = `Chat ${chatId}`;
@@ -144,14 +142,25 @@ export class ModerationService {
       return;
     }
 
+    if (serviceAuthored) {
+      if (settings.removeBotsFromGroupEnabled) {
+        await this.handleServiceBotEvent({
+          chatId,
+          messageId,
+          text,
+          update,
+        });
+      }
+      return;
+    }
+
     if (this.isBotAuthoredMessage(update)) {
-      if (settings.deleteBotsMessagesEnabled) {
+      if (settings.removeBotsFromGroupEnabled) {
         await this.handleBotMessage({
           chatId,
           userId: senderId,
           messageId,
           text,
-          createdAt,
         });
       }
       return;
@@ -1650,35 +1659,38 @@ export class ModerationService {
     userId: string;
     messageId: string;
     text: string;
-    createdAt: string;
   }) {
-    const { chatId, userId, messageId, text, createdAt } = params;
-    const messageAgeMs = Date.now() - new Date(createdAt).getTime();
-    const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
-
-    if (!canDeleteMessage) {
-      await this.maxClient.notifyModerators(
-        chatId,
-        `Сообщение от бота ${userId} не удалено: старше 24 часов`,
-      );
-      return;
-    }
+    const { chatId, userId, messageId, text } = params;
 
     try {
       await this.maxClient.deleteMessage(chatId, messageId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to delete bot-authored message before kick',
+      );
+    }
+
+    try {
+      await this.maxClient.kickMember(chatId, userId);
       await this.prisma.moderationEvent.create({
         data: {
           chatId,
           userId,
           messageId,
-          eventType: EventType.MESSAGE,
-          ruleCode: 'BOT_MESSAGE_DELETE',
-          action: SanctionAction.DELETE_MESSAGE,
+          eventType: EventType.MEMBER_ACTION,
+          ruleCode: 'BOT_ACCOUNT_KICK',
+          action: SanctionAction.KICK,
           maskedExcerpt: maskText(text),
-          score: 0.4,
+          score: 0.7,
           operator: Operator.BOT,
           metadata: {
-            reason: 'Message removed because bot messages are disabled in chat settings',
+            reason: 'Bot account removed because bot accounts are disallowed by chat settings',
           },
         },
       });
@@ -1690,8 +1702,51 @@ export class ModerationService {
           messageId,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
-        'Failed to delete bot-authored message',
+        'Failed to kick bot-authored account',
       );
+    }
+  }
+
+  private async handleServiceBotEvent(params: {
+    chatId: string;
+    messageId: string;
+    text: string;
+    update: MaxUpdate;
+  }) {
+    const { chatId, messageId, text, update } = params;
+    const botUserIds = this.extractBotUserIdsFromServiceEvent(update);
+
+    for (const userId of botUserIds) {
+      try {
+        await this.maxClient.kickMember(chatId, userId);
+        await this.prisma.moderationEvent.create({
+          data: {
+            chatId,
+            userId,
+            messageId,
+            eventType: EventType.MEMBER_ACTION,
+            ruleCode: 'BOT_ACCOUNT_KICK',
+            action: SanctionAction.KICK,
+            maskedExcerpt: maskText(text),
+            score: 0.7,
+            operator: Operator.BOT,
+            metadata: {
+              reason:
+                'Bot account removed from service event because bot accounts are disallowed by chat settings',
+            },
+          },
+        });
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            userId,
+            messageId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to kick bot account detected in service message',
+        );
+      }
     }
   }
 
@@ -1955,17 +2010,85 @@ export class ModerationService {
     ].filter((item): item is Record<string, unknown> => item !== null);
 
     for (const sender of candidates) {
-      const type = this.readLowerString(sender.type) ?? this.readLowerString(sender.kind);
-      if (type === 'bot') {
-        return true;
-      }
-
-      if (sender.is_bot === true || sender.isBot === true || sender.bot === true) {
+      if (this.isBotEntity(sender)) {
         return true;
       }
     }
 
     return false;
+  }
+
+  private extractBotUserIdsFromServiceEvent(update: MaxUpdate): string[] {
+    const raw = this.asRecord(update.raw);
+    if (!raw) {
+      return [];
+    }
+
+    const botUserIds = new Set<string>();
+    this.collectBotUserIds(raw, botUserIds);
+    return [...botUserIds];
+  }
+
+  private collectBotUserIds(node: unknown, acc: Set<string>, depth = 0) {
+    if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined) {
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        this.collectBotUserIds(item, acc, depth + 1);
+      }
+      return;
+    }
+
+    if (typeof node !== 'object') {
+      return;
+    }
+
+    const row = node as Record<string, unknown>;
+    const botUserId = this.readBotUserId(row);
+    if (botUserId) {
+      acc.add(botUserId);
+    }
+
+    for (const value of Object.values(row)) {
+      if (value && (typeof value === 'object' || Array.isArray(value))) {
+        this.collectBotUserIds(value, acc, depth + 1);
+      }
+    }
+  }
+
+  private readBotUserId(node: Record<string, unknown>): string | null {
+    if (!this.isBotEntity(node)) {
+      return null;
+    }
+
+    const candidates = [
+      node.user_id,
+      node.userId,
+      node.member_id,
+      node.memberId,
+      node.actor_id,
+      node.actorId,
+      node.id,
+    ];
+
+    for (const value of candidates) {
+      if (typeof value === 'string' || typeof value === 'number') {
+        return String(value);
+      }
+    }
+
+    return null;
+  }
+
+  private isBotEntity(node: Record<string, unknown>): boolean {
+    const type = this.readLowerString(node.type) ?? this.readLowerString(node.kind);
+    if (type === 'bot') {
+      return true;
+    }
+
+    return node.is_bot === true || node.isBot === true || node.bot === true;
   }
 
   private asRecord(value: unknown): Record<string, unknown> | null {

@@ -22,7 +22,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     duplicateBanWindowSec: 48 * 60 * 60,
     duplicateBanMaxCount: 4,
     linkPolicy: 'ALLOWLIST_ONLY',
-    deleteBotsMessagesEnabled: false,
+    removeBotsFromGroupEnabled: false,
     maxMessageLengthEnabled: false,
     maxMessageLength: 1500,
     photoMessageCooldownEnabled: false,
@@ -111,6 +111,38 @@ function createBotAuthoredUpdate(): MaxUpdate {
           id: 'bot-1',
           type: 'bot',
           is_bot: true,
+        },
+      },
+    },
+  };
+}
+
+function createServiceBotJoinedUpdate(): MaxUpdate {
+  return {
+    updateId: 'upd-service-bot-join-1',
+    type: 'message_created',
+    message: {
+      messageId: 'msg-service-bot-join-1',
+      chatId: 'chat-1',
+      senderId: 'service-1',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      message: {
+        sender: {
+          id: 'service-1',
+          type: 'service',
+          is_service: true,
+        },
+        body: {
+          new_members: [
+            {
+              user_id: 'bot-joined-1',
+              type: 'bot',
+              is_bot: true,
+            },
+          ],
         },
       },
     },
@@ -318,7 +350,7 @@ describe('ModerationService', () => {
         upsert: jest.fn().mockResolvedValue({
           id: 'chat-1',
           title: 'Chat 1',
-          settings: createSettings({ deleteBotsMessagesEnabled: false }),
+          settings: createSettings({ removeBotsFromGroupEnabled: false }),
           domains: [],
           admins: [],
         }),
@@ -368,13 +400,13 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
   });
 
-  it('deletes bot-authored messages when delete-bot toggle is enabled', async () => {
+  it('removes bot-authored accounts from group when toggle is enabled', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
           id: 'chat-1',
           title: 'Chat 1',
-          settings: createSettings({ deleteBotsMessagesEnabled: true }),
+          settings: createSettings({ removeBotsFromGroupEnabled: true }),
           domains: [],
           admins: [],
         }),
@@ -418,7 +450,7 @@ describe('ModerationService', () => {
     expect(prisma.violation.create).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-bot-1');
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
-    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'bot-1');
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
@@ -426,8 +458,72 @@ describe('ModerationService', () => {
         chatId: 'chat-1',
         userId: 'bot-1',
         messageId: 'msg-bot-1',
-        ruleCode: 'BOT_MESSAGE_DELETE',
-        action: SanctionAction.DELETE_MESSAGE,
+        ruleCode: 'BOT_ACCOUNT_KICK',
+        action: SanctionAction.KICK,
+      }),
+    });
+  });
+
+  it('kicks bots immediately from service join events when toggle is enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ removeBotsFromGroupEnabled: true }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createServiceBotJoinedUpdate());
+
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'bot-joined-1');
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'bot-joined-1',
+        messageId: 'msg-service-bot-join-1',
+        ruleCode: 'BOT_ACCOUNT_KICK',
+        action: SanctionAction.KICK,
       }),
     });
   });

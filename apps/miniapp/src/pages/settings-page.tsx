@@ -775,7 +775,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const textFiltersHeaderSummary = draft
     ? `${textFiltersEnabledCount}/2 фильтра · ${textFiltersStagesEnabledCount}/4 ступени · ${commercialSensitivityLabel.toLowerCase()}`
     : `${textFiltersEnabledCount}/2 фильтра`;
-  const extraHeaderSummary = draft?.deleteBotsMessagesEnabled ? '1 опция включена' : 'Выключено';
+  const extraHeaderSummary = draft?.removeBotsFromGroupEnabled ? '1 опция включена' : 'Выключено';
   const chatsCount = chatsQuery.data?.length ?? 0;
   const canApplyToAllChats = chatsCount > 1;
   const applyAllHint = canApplyToAllChats
@@ -2517,17 +2517,17 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               <div className="settings-section__collapse-inner">
                 <div className="settings-native-toggle">
                   <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title">Удалять сообщения ботов</span>
+                    <span className="settings-native-toggle__title">Удалять ботов из группы</span>
 
                     <label
                       className="settings-native-switch"
-                      aria-label="Включить удаление сообщений от ботов"
+                      aria-label="Включить удаление ботов из группы"
                     >
                       <input
                         type="checkbox"
-                        checked={draft.deleteBotsMessagesEnabled}
+                        checked={draft.removeBotsFromGroupEnabled}
                         onChange={(event) =>
-                          setFieldValue('deleteBotsMessagesEnabled', event.target.checked)
+                          setFieldValue('removeBotsFromGroupEnabled', event.target.checked)
                         }
                       />
                       <span className="toggle-switch" aria-hidden>
@@ -2537,7 +2537,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   </div>
 
                   <p className="settings-native-toggle__hint">
-                    Если включено, сообщения аккаунтов с типом bot будут удаляться автоматически.
+                    Если включено, бот-аккаунты будут автоматически удаляться из группы.
                   </p>
                 </div>
               </div>
