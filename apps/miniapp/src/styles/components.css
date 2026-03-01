@@ -648,10 +648,13 @@
 
 .allowlist-drawer {
   animation: allowlist-drawer-in 0.24s cubic-bezier(0.22, 1, 0.36, 1);
+  position: sticky;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 8px);
+  z-index: 8;
 }
 
 .allowlist-drawer__inner {
-  overflow: hidden;
+  overflow: visible;
 }
 
 @keyframes allowlist-drawer-in {
@@ -669,13 +672,14 @@
 .allowlist-panel {
   display: grid;
   gap: 10px;
-  border-radius: 16px;
+  border-radius: 18px;
   border: 1px solid rgba(11, 132, 255, 0.18);
   background:
     linear-gradient(160deg, rgba(255, 255, 255, 0.88), rgba(225, 241, 255, 0.7)),
     rgba(255, 255, 255, 0.62);
   padding: 12px;
-  box-shadow: 0 14px 28px rgba(29, 73, 109, 0.1);
+  box-shadow: 0 16px 36px rgba(29, 73, 109, 0.16);
+  backdrop-filter: blur(10px);
 }
 
 .allowlist-panel__handle {
@@ -736,7 +740,7 @@
   padding: 0;
   display: grid;
   gap: 8px;
-  max-height: 214px;
+  max-height: 320px;
   overflow: auto;
   scrollbar-width: thin;
 }
@@ -795,14 +799,34 @@
 }
 
 .allowlist-item__remove {
-  border: 0;
-  border-radius: 8px;
-  padding: 6px 10px;
-  font-size: 0.76rem;
+  border: 1px solid rgba(228, 83, 99, 0.26);
+  border-radius: 10px;
+  padding: 6px 9px;
+  min-height: 32px;
+  font-size: 0.74rem;
   font-weight: 700;
   color: #a22f3f;
-  background: rgba(228, 83, 99, 0.14);
+  background:
+    linear-gradient(160deg, rgba(255, 255, 255, 0.92), rgba(251, 227, 231, 0.7)),
+    rgba(228, 83, 99, 0.16);
   cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition:
+    transform 0.16s ease,
+    border-color 0.2s ease,
+    background-color 0.2s ease;
+}
+
+.allowlist-item__remove svg {
+  width: 14px;
+  height: 14px;
+}
+
+.allowlist-item__remove:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(228, 83, 99, 0.38);
 }
 
 .allowlist-item__remove:disabled {
@@ -811,11 +835,13 @@
 }
 
 .allowlist-item__schedule {
-  width: 30px;
-  height: 30px;
-  border: 1px solid rgba(62, 96, 127, 0.24);
-  border-radius: 9px;
-  background: rgba(255, 255, 255, 0.78);
+  width: 32px;
+  height: 32px;
+  border: 1px solid rgba(11, 132, 255, 0.22);
+  border-radius: 10px;
+  background:
+    radial-gradient(120% 120% at 25% 20%, rgba(255, 255, 255, 0.96), rgba(222, 239, 255, 0.82)),
+    rgba(255, 255, 255, 0.78);
   color: var(--text-secondary);
   display: grid;
   place-items: center;
@@ -824,12 +850,17 @@
   transition:
     border-color 0.2s ease,
     background-color 0.2s ease,
-    color 0.2s ease;
+    color 0.2s ease,
+    transform 0.16s ease;
 }
 
 .allowlist-item__schedule svg {
-  width: 16px;
-  height: 16px;
+  width: 17px;
+  height: 17px;
+}
+
+.allowlist-item__schedule:hover:not(:disabled) {
+  transform: translateY(-1px);
 }
 
 .allowlist-item__schedule.is-open {
@@ -844,12 +875,13 @@
 }
 
 .allowlist-item__schedule-editor {
-  border-radius: 10px;
+  border-radius: 12px;
   border: 1px dashed rgba(62, 96, 127, 0.24);
   background: rgba(246, 251, 255, 0.76);
-  padding: 8px;
+  padding: 10px;
+  min-height: 170px;
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .allowlist-item__schedule-fields {
@@ -863,15 +895,28 @@
 }
 
 .allowlist-item__schedule-field input {
-  min-height: 40px;
-  height: 40px;
+  min-height: 44px;
+  height: 44px;
 }
 
 .allowlist-item__schedule-actions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+  position: sticky;
+  bottom: 0;
+  padding-top: 8px;
+  margin-top: auto;
+  background: linear-gradient(
+    180deg,
+    rgba(246, 251, 255, 0),
+    rgba(246, 251, 255, 0.86) 36%,
+    rgba(246, 251, 255, 0.96)
+  );
+}
+
+.allowlist-item__schedule-actions .button {
+  min-height: 42px;
 }
 
 .allowlist-empty {
@@ -969,8 +1014,7 @@
   }
 
   .allowlist-item__schedule-actions {
-    flex-direction: column;
-    align-items: stretch;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .allowlist-item__schedule-actions .button {

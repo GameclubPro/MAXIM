@@ -469,6 +469,20 @@ function CalendarIcon() {
   );
 }
 
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
+      <path
+        d="M7.25 3.75H12.75M4.75 6H15.25M8 8.5V13.25M12 8.5V13.25M6.5 6L6.96 14.26C7 15 7.61 15.58 8.35 15.58H11.65C12.39 15.58 13 15 13.04 14.26L13.5 6"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 type EditToggleButtonProps = {
   label: string;
   onClick: () => void;
@@ -1591,8 +1605,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                                                 className="allowlist-item__remove"
                                                 onClick={() => removeDomainMutation.mutate(entry.domain)}
                                                 disabled={isDomainMutationPending}
+                                                aria-label={`Удалить ${entry.domain} из разрешенных ссылок`}
+                                                title="Удалить ссылку"
                                               >
-                                                Удалить
+                                                <TrashIcon />
+                                                <span>Удалить</span>
                                               </button>
                                               <button
                                                 type="button"
