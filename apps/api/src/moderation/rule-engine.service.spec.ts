@@ -111,6 +111,58 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
   });
 
+  it('detects PROFANITY in obfuscated russian mat with separators', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'да ты х*у_й какой-то',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
+  });
+
+  it('detects PROFANITY in mixed latin/cyrillic abuse forms', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'ты p1dor и мр@зь',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
+  });
+
+  it('does not detect PROFANITY for safe exception words', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'подстрахуй меня, это педикюр и сукно',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
+  });
+
+  it('does not include insults-only case on LOW profanity level', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'ты мудак и урод',
+      settings: buildSettings({ profanityLevel: ProfanityLevel.LOW }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
+  });
+
   it('detects COMMERCIAL_AD when russian ad markers are present', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({

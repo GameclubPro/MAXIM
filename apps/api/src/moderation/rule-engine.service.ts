@@ -73,8 +73,45 @@ type CommercialSignalState = {
   hasStrongNegativeContext: boolean;
 };
 
-const PROFANITY_STRONG_STEMS = ['бляд', 'хуй', 'пизд', 'еба', 'ёба'];
-const PROFANITY_SOFT_STEMS = ['сука', 'нахер', 'хера'];
+const PROFANITY_STRONG_STEMS = [
+  'бляд',
+  'блят',
+  'блеад',
+  'хуй',
+  'хуе',
+  'хуй',
+  'хуя',
+  'пизд',
+  'пезд',
+  'еба',
+  'ебу',
+  'ебл',
+  'ёб',
+  'уеб',
+  'заеб',
+  'выеб',
+  'долбоеб',
+  'ебан',
+];
+const PROFANITY_INSULT_STEMS = [
+  'сука',
+  'сучк',
+  'пидор',
+  'пидар',
+  'педик',
+  'гандон',
+  'гондон',
+  'мраз',
+  'твар',
+  'мудак',
+  'урод',
+  'шлюх',
+  'чмо',
+  'говнюк',
+  'уебок',
+  'дебил',
+  'идиот',
+];
 const PROFANITY_EXCEPTIONS = [
   'бляха',
   'бляхер',
@@ -84,6 +121,25 @@ const PROFANITY_EXCEPTIONS = [
   'застрахуй',
   'страхуем',
   'страхуя',
+  'педикюр',
+  'сукно',
+  'сукон',
+  'скипидар',
+  'дебилитац',
+  'идиомат',
+];
+const PROFANITY_STRONG_PATTERNS = [
+  /б(?:[^\p{L}\p{N}]{0,3})л(?:[^\p{L}\p{N}]{0,3})[яе](?:[^\p{L}\p{N}]{0,3})[дт]/iu,
+  /х(?:[^\p{L}\p{N}]{0,3})у(?:[^\p{L}\p{N}]{0,3})[йиея]/iu,
+  /п(?:[^\p{L}\p{N}]{0,3})и(?:[^\p{L}\p{N}]{0,3})з(?:[^\p{L}\p{N}]{0,3})д/iu,
+  /[её](?:[^\p{L}\p{N}]{0,3})б(?:[^\p{L}\p{N}]{0,3})[аоуыиеё]/iu,
+  /д(?:[^\p{L}\p{N}]{0,3})о(?:[^\p{L}\p{N}]{0,3})л(?:[^\p{L}\p{N}]{0,3})б(?:[^\p{L}\p{N}]{0,3})о(?:[^\p{L}\p{N}]{0,3})[её](?:[^\p{L}\p{N}]{0,3})б/iu,
+  /у(?:[^\p{L}\p{N}]{0,3})[её](?:[^\p{L}\p{N}]{0,3})б(?:[^\p{L}\p{N}]{0,3})[аоуыиеё]/iu,
+];
+const PROFANITY_INSULT_PATTERNS = [
+  /с(?:[^\p{L}\p{N}]{0,3})у(?:[^\p{L}\p{N}]{0,3})к(?:[^\p{L}\p{N}]{0,3})[ао]/iu,
+  /п(?:[^\p{L}\p{N}]{0,3})и(?:[^\p{L}\p{N}]{0,3})д(?:[^\p{L}\p{N}]{0,3})[ао](?:[^\p{L}\p{N}]{0,3})р/iu,
+  /г(?:[^\p{L}\p{N}]{0,3})[ао](?:[^\p{L}\p{N}]{0,3})н(?:[^\p{L}\p{N}]{0,3})д(?:[^\p{L}\p{N}]{0,3})о(?:[^\p{L}\p{N}]{0,3})н/iu,
 ];
 const ADS_INTENT_MARKERS = [
   'продам',
@@ -457,22 +513,33 @@ export class RuleEngineService {
   }
 
   private hasProfanity(normalizedText: string, level: ProfanityLevel): boolean {
-    const tokens = this.extractTokens(normalizedText);
+    const profanityText = this.normalizeForProfanity(normalizedText);
+    const sanitizedProfanityText = this.stripProfanityExceptions(profanityText);
+    const tokens = this.extractProfanityTokens(profanityText);
     if (tokens.length === 0) {
       return false;
     }
 
-    const severeHit = tokens.some((token) => this.isProfanityToken(token, PROFANITY_STRONG_STEMS));
+    const severeTokenHit = tokens.some((token) =>
+      this.isProfanityToken(token, PROFANITY_STRONG_STEMS),
+    );
+    const severePatternHit = this.hasPatternHit(sanitizedProfanityText, PROFANITY_STRONG_PATTERNS);
+    const severeHit = severeTokenHit || severePatternHit;
     if (level === ProfanityLevel.LOW) {
       return severeHit;
     }
 
-    const softHit = tokens.some((token) => this.isProfanityToken(token, PROFANITY_SOFT_STEMS));
+    const insultTokenHit = tokens.some((token) =>
+      this.isProfanityToken(token, PROFANITY_INSULT_STEMS),
+    );
+    const insultPatternHit = this.hasPatternHit(sanitizedProfanityText, PROFANITY_INSULT_PATTERNS);
+    const insultHit = insultTokenHit || insultPatternHit;
     if (level === ProfanityLevel.MEDIUM) {
-      return severeHit || softHit;
+      return severeHit || insultHit;
     }
 
-    return severeHit || softHit;
+    const aggressiveContextHit = this.hasAggressiveContext(tokens);
+    return severeHit || insultHit || aggressiveContextHit;
   }
 
   private isProfanityToken(token: string, stems: string[]): boolean {
@@ -485,6 +552,38 @@ export class RuleEngineService {
     }
 
     return stems.some((stem) => token.includes(stem));
+  }
+
+  private hasPatternHit(text: string, patterns: RegExp[]): boolean {
+    if (!text) {
+      return false;
+    }
+
+    return patterns.some((pattern) => pattern.test(text));
+  }
+
+  private stripProfanityExceptions(text: string): string {
+    let sanitized = text;
+    for (const exception of PROFANITY_EXCEPTIONS) {
+      const pattern = new RegExp(this.escapeRegExp(exception), 'giu');
+      sanitized = sanitized.replace(pattern, ' ');
+    }
+
+    return sanitized;
+  }
+
+  private escapeRegExp(value: string): string {
+    return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  private hasAggressiveContext(tokens: string[]): boolean {
+    const hasAddressee = tokens.includes('ты') || tokens.includes('тебя') || tokens.includes('твой');
+    if (!hasAddressee) {
+      return false;
+    }
+
+    const aggressiveWords = ['туп', 'твар', 'мраз', 'сдох', 'заткнись', 'ненавиж'];
+    return tokens.some((token) => aggressiveWords.some((word) => token.includes(word)));
   }
 
   private hasBlockedLink(text: string, policy: LinkPolicy, allowlist: string[]): string | null {
@@ -748,6 +847,21 @@ export class RuleEngineService {
     return normalized;
   }
 
+  private normalizeForProfanity(value: string): string {
+    if (!value) {
+      return '';
+    }
+
+    let normalized = value.toLowerCase();
+    normalized = this.normalizeMixedWriting(normalized);
+    normalized = normalized.replace(/ё/g, 'е');
+    normalized = normalized.replace(/([a-zа-я0-9])\1{2,}/giu, '$1$1');
+    normalized = normalized.replace(/[_*~`"'«»“”(){}\[\]|]+/g, ' ');
+    normalized = normalized.replace(/[^\p{L}\p{N}\s]+/gu, ' ');
+    normalized = normalized.replace(/\s+/g, ' ').trim();
+    return normalized;
+  }
+
   private normalizeMixedWriting(value: string): string {
     let result = '';
     for (const char of value) {
@@ -759,6 +873,10 @@ export class RuleEngineService {
   private extractTokens(value: string): string[] {
     const normalized = this.normalizeForDetection(value);
     return normalized.match(/[a-zа-яё0-9]+/giu) ?? [];
+  }
+
+  private extractProfanityTokens(value: string): string[] {
+    return value.match(/[a-zа-яё0-9]+/giu) ?? [];
   }
 
   private isCapsAbuse(text: string, threshold: number): boolean {

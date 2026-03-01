@@ -23,15 +23,9 @@ const MESSAGE_LENGTH_MIN = 50;
 const MESSAGE_LENGTH_MAX = 1500;
 const PHOTO_COOLDOWN_MIN_HOURS = 1;
 const PHOTO_COOLDOWN_MAX_HOURS = 24;
-const COMMERCIAL_WARN_MIN = 10;
-const COMMERCIAL_WARN_MAX = 90;
-const COMMERCIAL_DELETE_MIN = 20;
-const COMMERCIAL_DELETE_MAX = 100;
-const COMMERCIAL_MIN_GAP = 5;
-const COMMERCIAL_REPEAT_MIN_HOURS = 1;
-const COMMERCIAL_REPEAT_MAX_HOURS = 168;
-const COMMERCIAL_PHRASE_MIN_LEN = 2;
-const COMMERCIAL_PHRASE_MAX_LEN = 120;
+const COMMERCIAL_SENSITIVITY_MIN = 0;
+const COMMERCIAL_SENSITIVITY_MAX = 100;
+const COMMERCIAL_BALANCED_MAX = 69;
 
 type DuplicateEnabledKey = 'duplicateWarnEnabled' | 'duplicateKickEnabled' | 'duplicateBanEnabled';
 type DuplicateWindowKey =
@@ -114,23 +108,6 @@ const TEXT_FILTER_OPTIONS: Array<{
   },
 ];
 
-const COMMERCIAL_SENSITIVITY_OPTIONS: Array<{
-  value: ChatSettings['commercialAdsSensitivity'];
-  label: string;
-  description: string;
-}> = [
-  {
-    value: 'BALANCED',
-    label: 'Баланс',
-    description: 'Меньше ложных срабатываний.',
-  },
-  {
-    value: 'STRICT',
-    label: 'Строго',
-    description: 'Больше покрытие, выше чувствительность.',
-  },
-];
-
 const RUSSIAN_TIMEZONE_OPTIONS = [
   { value: 'Europe/Kaliningrad', label: 'Калининград (UTC+2)' },
   { value: 'Europe/Moscow', label: 'Москва (UTC+3)' },
@@ -189,10 +166,6 @@ function normalizeDomain(value: string): string {
   }
 }
 
-function normalizeCommercialPhrase(value: string): string {
-  return value.trim().toLowerCase().replace(/\s+/g, ' ').slice(0, COMMERCIAL_PHRASE_MAX_LEN);
-}
-
 function normalizeDayMinutes(value: number, fallback = 0): number {
   if (!Number.isInteger(value) || value < 0 || value > 1_439) {
     return fallback;
@@ -225,6 +198,33 @@ function timeInputToMinutes(value: string, fallback: number): number {
   }
 
   return hours * 60 + minutes;
+}
+
+function clampCommercialSlider(value: number): number {
+  return Math.max(COMMERCIAL_SENSITIVITY_MIN, Math.min(COMMERCIAL_SENSITIVITY_MAX, value));
+}
+
+function getCommercialSensitivityLabel(value: number): string {
+  const safe = clampCommercialSlider(value);
+  if (safe < 25) {
+    return 'Мягко';
+  }
+  if (safe < 70) {
+    return 'Баланс';
+  }
+  return 'Строго';
+}
+
+function inferCommercialSensitivitySliderValue(settings: ChatSettings): number {
+  const warn = Math.max(10, Math.min(90, settings.commercialAdsWarnThreshold));
+
+  if (settings.commercialAdsSensitivity === 'STRICT') {
+    const strictProgress = Math.max(0, Math.min(1, (44 - warn) / 6));
+    return Math.round(70 + strictProgress * 30);
+  }
+
+  const balancedProgress = Math.max(0, Math.min(1, (58 - warn) / 13));
+  return Math.round(balancedProgress * COMMERCIAL_BALANCED_MAX);
 }
 
 function getRouteChatTitle(state: unknown): string {
@@ -271,10 +271,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [domainInput, setDomainInput] = useState('');
   const [domainInputError, setDomainInputError] = useState('');
-  const [commercialAllowPhraseInput, setCommercialAllowPhraseInput] = useState('');
-  const [commercialAllowPhraseError, setCommercialAllowPhraseError] = useState('');
-  const [commercialStopPhraseInput, setCommercialStopPhraseInput] = useState('');
-  const [commercialStopPhraseError, setCommercialStopPhraseError] = useState('');
   const [failedSnapshot, setFailedSnapshot] = useState<string>('');
   const [openHintKey, setOpenHintKey] = useState<BotHintKey | null>(null);
   const [expandedSections, setExpandedSections] = useState<Record<SettingsSectionKey, boolean>>({
@@ -311,27 +307,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const domainsQuery = useQuery({
     queryKey: ['domains', chatId],
     queryFn: () => api.getDomainAllowlist(chatId ?? ''),
-    enabled: Boolean(chatId),
-    refetchOnWindowFocus: false,
-  });
-
-  const commercialAllowlistQuery = useQuery({
-    queryKey: ['commercial-allowlist', chatId],
-    queryFn: () => api.getCommercialAllowlist(chatId ?? ''),
-    enabled: Boolean(chatId),
-    refetchOnWindowFocus: false,
-  });
-
-  const commercialStoplistQuery = useQuery({
-    queryKey: ['commercial-stoplist', chatId],
-    queryFn: () => api.getCommercialStoplist(chatId ?? ''),
-    enabled: Boolean(chatId),
-    refetchOnWindowFocus: false,
-  });
-
-  const eventsQuery = useQuery({
-    queryKey: ['events', chatId],
-    queryFn: () => api.getEvents(chatId ?? ''),
     enabled: Boolean(chatId),
     refetchOnWindowFocus: false,
   });
@@ -437,70 +412,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось удалить ссылку',
-        description: formatApiError(error),
-      });
-    },
-  });
-
-  const addCommercialAllowPhraseMutation = useMutation({
-    mutationFn: (phrase: string) => api.addCommercialAllowlistPhrase(chatId ?? '', phrase),
-    onSuccess: () => {
-      setCommercialAllowPhraseInput('');
-      setCommercialAllowPhraseError('');
-      void queryClient.invalidateQueries({ queryKey: ['commercial-allowlist', chatId] });
-      pushToast({ tone: 'success', title: 'Исключение добавлено' });
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось добавить исключение',
-        description: formatApiError(error),
-      });
-    },
-  });
-
-  const removeCommercialAllowPhraseMutation = useMutation({
-    mutationFn: (phrase: string) => api.removeCommercialAllowlistPhrase(chatId ?? '', phrase),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['commercial-allowlist', chatId] });
-      pushToast({ tone: 'success', title: 'Исключение удалено' });
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось удалить исключение',
-        description: formatApiError(error),
-      });
-    },
-  });
-
-  const addCommercialStopPhraseMutation = useMutation({
-    mutationFn: (phrase: string) => api.addCommercialStoplistPhrase(chatId ?? '', phrase),
-    onSuccess: () => {
-      setCommercialStopPhraseInput('');
-      setCommercialStopPhraseError('');
-      void queryClient.invalidateQueries({ queryKey: ['commercial-stoplist', chatId] });
-      pushToast({ tone: 'success', title: 'Усилитель добавлен' });
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось добавить усилитель',
-        description: formatApiError(error),
-      });
-    },
-  });
-
-  const removeCommercialStopPhraseMutation = useMutation({
-    mutationFn: (phrase: string) => api.removeCommercialStoplistPhrase(chatId ?? '', phrase),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['commercial-stoplist', chatId] });
-      pushToast({ tone: 'success', title: 'Усилитель удален' });
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось удалить усилитель',
         description: formatApiError(error),
       });
     },
@@ -634,87 +545,34 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     addDomainMutation.mutate(normalized);
   }
 
-  function handleCommercialWarnThresholdChange(rawValue: number) {
+  function handleCommercialSensitivitySliderChange(rawValue: number) {
     if (!draft) {
       return;
     }
 
-    const nextWarn = Math.max(COMMERCIAL_WARN_MIN, Math.min(COMMERCIAL_WARN_MAX, rawValue));
-    const minDelete = Math.max(COMMERCIAL_DELETE_MIN, nextWarn + COMMERCIAL_MIN_GAP);
-    const nextDelete = Math.max(minDelete, draft.commercialAdsDeleteThreshold);
-    setFieldValue('commercialAdsWarnThreshold', nextWarn);
-    if (nextDelete !== draft.commercialAdsDeleteThreshold) {
-      setFieldValue('commercialAdsDeleteThreshold', Math.min(nextDelete, COMMERCIAL_DELETE_MAX));
-    }
-  }
-
-  function handleCommercialDeleteThresholdChange(rawValue: number) {
-    if (!draft) {
+    const safeValue = clampCommercialSlider(rawValue);
+    if (safeValue >= 70) {
+      const strictProgress = (safeValue - 70) / 30;
+      const warnThreshold = Math.round(44 - strictProgress * 6);
+      const deleteThreshold = Math.max(warnThreshold + 8, Math.round(62 - strictProgress * 8));
+      setFieldValue('commercialAdsSensitivity', 'STRICT');
+      setFieldValue('commercialAdsWarnThreshold', warnThreshold);
+      setFieldValue('commercialAdsDeleteThreshold', deleteThreshold);
+      setFieldValue('commercialAdsRepeatWindowSec', 24 * 60 * 60);
+      setFieldValue('commercialAdsLowConfidenceLogEnabled', true);
+      setFieldValue('commercialAdsWarnFirstEnabled', true);
       return;
     }
 
-    const minDelete = Math.max(
-      COMMERCIAL_DELETE_MIN,
-      draft.commercialAdsWarnThreshold + COMMERCIAL_MIN_GAP,
-    );
-    const nextDelete = Math.max(minDelete, Math.min(COMMERCIAL_DELETE_MAX, rawValue));
-    setFieldValue('commercialAdsDeleteThreshold', nextDelete);
-  }
-
-  function handleCommercialRepeatWindowHoursChange(rawValue: string) {
-    const parsed = Number.parseInt(rawValue, 10);
-    const safeHours = Number.isNaN(parsed)
-      ? COMMERCIAL_REPEAT_MIN_HOURS
-      : Math.max(COMMERCIAL_REPEAT_MIN_HOURS, Math.min(COMMERCIAL_REPEAT_MAX_HOURS, parsed));
-    setFieldValue('commercialAdsRepeatWindowSec', safeHours * 3600);
-  }
-
-  function handleAddCommercialAllowPhrase() {
-    const normalized = normalizeCommercialPhrase(commercialAllowPhraseInput);
-    if (!normalized) {
-      setCommercialAllowPhraseError('Введите фразу исключения');
-      return;
-    }
-
-    if (normalized.length < COMMERCIAL_PHRASE_MIN_LEN) {
-      setCommercialAllowPhraseError('Минимум 2 символа');
-      return;
-    }
-
-    const exists = (commercialAllowlistQuery.data ?? []).includes(normalized);
-    if (exists) {
-      setCommercialAllowPhraseError('');
-      setCommercialAllowPhraseInput('');
-      pushToast({ title: 'Фраза уже есть в исключениях' });
-      return;
-    }
-
-    setCommercialAllowPhraseError('');
-    addCommercialAllowPhraseMutation.mutate(normalized);
-  }
-
-  function handleAddCommercialStopPhrase() {
-    const normalized = normalizeCommercialPhrase(commercialStopPhraseInput);
-    if (!normalized) {
-      setCommercialStopPhraseError('Введите усиливающую фразу');
-      return;
-    }
-
-    if (normalized.length < COMMERCIAL_PHRASE_MIN_LEN) {
-      setCommercialStopPhraseError('Минимум 2 символа');
-      return;
-    }
-
-    const exists = (commercialStoplistQuery.data ?? []).includes(normalized);
-    if (exists) {
-      setCommercialStopPhraseError('');
-      setCommercialStopPhraseInput('');
-      pushToast({ title: 'Фраза уже есть в усилителях' });
-      return;
-    }
-
-    setCommercialStopPhraseError('');
-    addCommercialStopPhraseMutation.mutate(normalized);
+    const balancedProgress = safeValue / COMMERCIAL_BALANCED_MAX;
+    const warnThreshold = Math.round(58 - balancedProgress * 13);
+    const deleteThreshold = Math.max(warnThreshold + 10, Math.round(78 - balancedProgress * 13));
+    setFieldValue('commercialAdsSensitivity', 'BALANCED');
+    setFieldValue('commercialAdsWarnThreshold', warnThreshold);
+    setFieldValue('commercialAdsDeleteThreshold', deleteThreshold);
+    setFieldValue('commercialAdsRepeatWindowSec', 24 * 60 * 60);
+    setFieldValue('commercialAdsLowConfidenceLogEnabled', true);
+    setFieldValue('commercialAdsWarnFirstEnabled', true);
   }
 
   function toggleHint(key: BotHintKey) {
@@ -744,8 +602,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
   const linkPolicyError = fieldErrors.linkPolicy;
   const allowlistDomains = domainsQuery.data ?? [];
-  const commercialAllowlistPhrases = commercialAllowlistQuery.data ?? [];
-  const commercialStoplistPhrases = commercialStoplistQuery.data ?? [];
   const isAllowlistMode = draft?.linkPolicy === 'ALLOWLIST_ONLY';
   const shouldShowLinkStages = draft?.linkPolicy !== 'ALERT_ONLY';
   const showLinkBotButtonErrors = Boolean(
@@ -824,30 +680,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     draft?.russianProfanityFilterEnabled,
     draft?.commercialAdsFilterEnabled,
   ].filter(Boolean).length;
-  const commercialRepeatWindowHours = draft
-    ? Math.max(COMMERCIAL_REPEAT_MIN_HOURS, Math.round(draft.commercialAdsRepeatWindowSec / 3600))
-    : 24;
-  const commercialSignalChips = (eventsQuery.data ?? [])
-    .filter((event) => event.ruleCode.startsWith('COMMERCIAL_AD'))
-    .slice(0, 8)
-    .flatMap((event) => {
-      const metadata = event.metadata;
-      if (!metadata || typeof metadata !== 'object') {
-        return [];
-      }
-
-      const matchedSignalsRaw = metadata.matchedSignals;
-      if (!Array.isArray(matchedSignalsRaw)) {
-        return [];
-      }
-
-      return matchedSignalsRaw
-        .filter((item): item is string => typeof item === 'string')
-        .map((item) => item.replace(/^[^:]+:/, '').trim())
-        .filter((item) => item.length > 0);
-    })
-    .filter((value, index, source) => source.indexOf(value) === index)
-    .slice(0, 6);
+  const commercialSensitivitySliderValue = draft
+    ? inferCommercialSensitivitySliderValue(draft)
+    : 50;
+  const commercialSensitivityLabel = getCommercialSensitivityLabel(commercialSensitivitySliderValue);
   const limitsRulesEnabledCount = [
     draft?.maxMessageLengthEnabled,
     draft?.photoMessageCooldownEnabled,
@@ -864,7 +700,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       )}`
     : '23:00-08:00';
   const textFiltersHeaderSummary = draft
-    ? `${textFiltersEnabledCount}/2 фильтра · ${draft.commercialAdsSensitivity === 'STRICT' ? 'строго' : 'баланс'}`
+    ? `${textFiltersEnabledCount}/2 фильтра · ${commercialSensitivityLabel.toLowerCase()}`
     : `${textFiltersEnabledCount}/2 фильтра`;
 
   return (
@@ -1346,315 +1182,34 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 </div>
 
                 <div className="settings-native-toggle commercial-settings-panel">
-                  <div className="commercial-sensitivity">
-                    <span className="field__label">Чувствительность</span>
-                    <div
-                      className="segmented-control"
-                      role="radiogroup"
-                      aria-label="Чувствительность коммерческого фильтра"
-                    >
-                      {COMMERCIAL_SENSITIVITY_OPTIONS.map((option) => {
-                        const isActive = draft.commercialAdsSensitivity === option.value;
-                        return (
-                          <button
-                            key={option.value}
-                            type="button"
-                            role="radio"
-                            aria-checked={isActive}
-                            className={cn('segmented-control__item', isActive && 'is-active')}
-                            onClick={() => setFieldValue('commercialAdsSensitivity', option.value)}
-                          >
-                            <span>{option.label}</span>
-                            <small>{option.description}</small>
-                          </button>
-                        );
-                      })}
+                  <div className="commercial-sensitivity-slider">
+                    <div className="commercial-sensitivity-slider__head">
+                      <span className="field__label">Чувствительность</span>
+                      <span className="chip chip--warning">{commercialSensitivityLabel}</span>
+                    </div>
+
+                    <input
+                      type="range"
+                      min={COMMERCIAL_SENSITIVITY_MIN}
+                      max={COMMERCIAL_SENSITIVITY_MAX}
+                      step={1}
+                      value={commercialSensitivitySliderValue}
+                      onChange={(event) =>
+                        handleCommercialSensitivitySliderChange(Number(event.target.value))
+                      }
+                      aria-label="Ползунок чувствительности коммерческого фильтра"
+                    />
+
+                    <div className="commercial-sensitivity-slider__labels" aria-hidden>
+                      <span>Мягко</span>
+                      <span>Баланс</span>
+                      <span>Строго</span>
                     </div>
                   </div>
 
-                  <div className="commercial-thresholds-grid">
-                    <label
-                      className={cn(
-                        'field commercial-threshold-field',
-                        fieldErrors.commercialAdsWarnThreshold && 'field--error',
-                      )}
-                    >
-                      <span className="field__label">Порог предупреждения</span>
-                      <div className="commercial-threshold-row">
-                        <input
-                          type="range"
-                          min={COMMERCIAL_WARN_MIN}
-                          max={Math.min(
-                            COMMERCIAL_WARN_MAX,
-                            draft.commercialAdsDeleteThreshold - COMMERCIAL_MIN_GAP,
-                          )}
-                          step={1}
-                          value={draft.commercialAdsWarnThreshold}
-                          onChange={(event) =>
-                            handleCommercialWarnThresholdChange(Number(event.target.value))
-                          }
-                        />
-                        <output>{draft.commercialAdsWarnThreshold}</output>
-                      </div>
-                      {fieldErrors.commercialAdsWarnThreshold ? (
-                        <small className="field__hint">
-                          {fieldErrors.commercialAdsWarnThreshold}
-                        </small>
-                      ) : null}
-                    </label>
-
-                    <label
-                      className={cn(
-                        'field commercial-threshold-field',
-                        fieldErrors.commercialAdsDeleteThreshold && 'field--error',
-                      )}
-                    >
-                      <span className="field__label">Порог удаления</span>
-                      <div className="commercial-threshold-row">
-                        <input
-                          type="range"
-                          min={Math.max(
-                            COMMERCIAL_DELETE_MIN,
-                            draft.commercialAdsWarnThreshold + COMMERCIAL_MIN_GAP,
-                          )}
-                          max={COMMERCIAL_DELETE_MAX}
-                          step={1}
-                          value={draft.commercialAdsDeleteThreshold}
-                          onChange={(event) =>
-                            handleCommercialDeleteThresholdChange(Number(event.target.value))
-                          }
-                        />
-                        <output>{draft.commercialAdsDeleteThreshold}</output>
-                      </div>
-                      {fieldErrors.commercialAdsDeleteThreshold ? (
-                        <small className="field__hint">
-                          {fieldErrors.commercialAdsDeleteThreshold}
-                        </small>
-                      ) : null}
-                    </label>
-                  </div>
-
-                  <label className="field commercial-repeat-window">
-                    <span className="field__label">Окно повторов (часы)</span>
-                    <div className="field__number-wrap">
-                      <input
-                        type="number"
-                        min={COMMERCIAL_REPEAT_MIN_HOURS}
-                        max={COMMERCIAL_REPEAT_MAX_HOURS}
-                        value={commercialRepeatWindowHours}
-                        onChange={(event) =>
-                          handleCommercialRepeatWindowHoursChange(event.target.value)
-                        }
-                      />
-                      <small>{commercialRepeatWindowHours}ч</small>
-                    </div>
-                  </label>
-
-                  <div className="commercial-flags-grid">
-                    <div className="settings-native-toggle settings-native-toggle--nested">
-                      <div className="settings-native-toggle__row">
-                        <span className="settings-native-toggle__title">
-                          Логировать низкую уверенность
-                        </span>
-                        <label
-                          className="settings-native-switch"
-                          aria-label="Логировать низкую уверенность коммерческого фильтра"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={draft.commercialAdsLowConfidenceLogEnabled}
-                            onChange={(event) =>
-                              setFieldValue(
-                                'commercialAdsLowConfidenceLogEnabled',
-                                event.target.checked,
-                              )
-                            }
-                          />
-                          <span className="toggle-switch" aria-hidden>
-                            <span className="toggle-switch__thumb" />
-                          </span>
-                        </label>
-                      </div>
-                    </div>
-
-                    <div className="settings-native-toggle settings-native-toggle--nested">
-                      <div className="settings-native-toggle__row">
-                        <span className="settings-native-toggle__title">
-                          Первый HIGH только предупреждать
-                        </span>
-                        <label
-                          className="settings-native-switch"
-                          aria-label="Первый high только предупреждать"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={draft.commercialAdsWarnFirstEnabled}
-                            onChange={(event) =>
-                              setFieldValue('commercialAdsWarnFirstEnabled', event.target.checked)
-                            }
-                          />
-                          <span className="toggle-switch" aria-hidden>
-                            <span className="toggle-switch__thumb" />
-                          </span>
-                        </label>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="commercial-lists-grid">
-                    <div
-                      className={cn(
-                        'field allowlist-panel commercial-phrase-panel',
-                        commercialAllowPhraseError && 'allowlist-panel--error',
-                      )}
-                    >
-                      <div className="allowlist-panel__head">
-                        <span className="field__label">Исключения</span>
-                        <span className="chip">{commercialAllowlistPhrases.length}</span>
-                      </div>
-                      <p className="allowlist-panel__subtitle">
-                        Фразы, которые не считаются коммерцией.
-                      </p>
-
-                      <div className="allowlist-add-row">
-                        <input
-                          type="text"
-                          value={commercialAllowPhraseInput}
-                          onChange={(event) => {
-                            setCommercialAllowPhraseInput(event.target.value);
-                            if (commercialAllowPhraseError) {
-                              setCommercialAllowPhraseError('');
-                            }
-                          }}
-                          placeholder="например, партнерская интеграция"
-                        />
-                        <button
-                          type="button"
-                          className="button button--accent allowlist-add-row__button"
-                          onClick={handleAddCommercialAllowPhrase}
-                          disabled={addCommercialAllowPhraseMutation.isPending}
-                        >
-                          Добавить
-                        </button>
-                      </div>
-
-                      {commercialAllowPhraseError ? (
-                        <small className="field__hint">{commercialAllowPhraseError}</small>
-                      ) : null}
-
-                      {commercialAllowlistQuery.isLoading ? (
-                        <SkeletonCard lines={3} />
-                      ) : commercialAllowlistQuery.error ? (
-                        <p className="allowlist-empty allowlist-empty--error">
-                          Не удалось загрузить исключения.
-                        </p>
-                      ) : commercialAllowlistPhrases.length > 0 ? (
-                        <ul className="allowlist-list">
-                          {commercialAllowlistPhrases.map((phrase) => (
-                            <li key={phrase} className="allowlist-item">
-                              <span className="allowlist-item__domain">{phrase}</span>
-                              <button
-                                type="button"
-                                className="allowlist-item__remove"
-                                onClick={() => removeCommercialAllowPhraseMutation.mutate(phrase)}
-                                disabled={removeCommercialAllowPhraseMutation.isPending}
-                              >
-                                Удалить
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="allowlist-empty">Список пуст.</p>
-                      )}
-                    </div>
-
-                    <div
-                      className={cn(
-                        'field allowlist-panel commercial-phrase-panel',
-                        commercialStopPhraseError && 'allowlist-panel--error',
-                      )}
-                    >
-                      <div className="allowlist-panel__head">
-                        <span className="field__label">Усилители</span>
-                        <span className="chip chip--warning">
-                          {commercialStoplistPhrases.length}
-                        </span>
-                      </div>
-                      <p className="allowlist-panel__subtitle">
-                        Фразы, повышающие уверенность коммерции.
-                      </p>
-
-                      <div className="allowlist-add-row">
-                        <input
-                          type="text"
-                          value={commercialStopPhraseInput}
-                          onChange={(event) => {
-                            setCommercialStopPhraseInput(event.target.value);
-                            if (commercialStopPhraseError) {
-                              setCommercialStopPhraseError('');
-                            }
-                          }}
-                          placeholder="например, срочно продам"
-                        />
-                        <button
-                          type="button"
-                          className="button button--accent allowlist-add-row__button"
-                          onClick={handleAddCommercialStopPhrase}
-                          disabled={addCommercialStopPhraseMutation.isPending}
-                        >
-                          Добавить
-                        </button>
-                      </div>
-
-                      {commercialStopPhraseError ? (
-                        <small className="field__hint">{commercialStopPhraseError}</small>
-                      ) : null}
-
-                      {commercialStoplistQuery.isLoading ? (
-                        <SkeletonCard lines={3} />
-                      ) : commercialStoplistQuery.error ? (
-                        <p className="allowlist-empty allowlist-empty--error">
-                          Не удалось загрузить усилители.
-                        </p>
-                      ) : commercialStoplistPhrases.length > 0 ? (
-                        <ul className="allowlist-list">
-                          {commercialStoplistPhrases.map((phrase) => (
-                            <li key={phrase} className="allowlist-item">
-                              <span className="allowlist-item__domain">{phrase}</span>
-                              <button
-                                type="button"
-                                className="allowlist-item__remove"
-                                onClick={() => removeCommercialStopPhraseMutation.mutate(phrase)}
-                                disabled={removeCommercialStopPhraseMutation.isPending}
-                              >
-                                Удалить
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      ) : (
-                        <p className="allowlist-empty">Список пуст.</p>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="commercial-signals">
-                    <span className="field__label">Последние причины срабатываний</span>
-                    {eventsQuery.isLoading ? (
-                      <p className="allowlist-empty">Загружаем причины...</p>
-                    ) : commercialSignalChips.length > 0 ? (
-                      <div className="commercial-signals__chips">
-                        {commercialSignalChips.map((chip) => (
-                          <span key={chip} className="chip chip--warning">
-                            {chip}
-                          </span>
-                        ))}
-                      </div>
-                    ) : (
-                      <p className="allowlist-empty">Пока нет данных по срабатываниям.</p>
-                    )}
-                  </div>
+                  <p className="settings-native-toggle__hint">
+                    Ползунок меняет строгость фильтра и автоматически подбирает внутренние пороги.
+                  </p>
                 </div>
 
                 <div
