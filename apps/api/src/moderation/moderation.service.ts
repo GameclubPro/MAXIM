@@ -9,7 +9,6 @@ import type {
   DuplicateAction,
   DuplicateDecision,
   DuplicateHit,
-  RuleViolation,
 } from './rule-engine.service';
 import { RuleEngineService } from './rule-engine.service';
 import { SanctionService } from './sanction.service';
@@ -221,6 +220,7 @@ export class ModerationService {
         nightModeEndTimeMinutes: settings.nightModeEndTimeMinutes,
         nightModeTimezone: settings.nightModeTimezone,
         nightModeBotMessageEnabled: settings.nightModeBotMessageEnabled,
+        nightModeBotMessageText: settings.nightModeBotMessageText,
         nightModeBotButtonEnabled: settings.nightModeBotButtonEnabled,
         nightModeBotButtonUrl: settings.nightModeBotButtonUrl,
         nightModeBotButtonText: settings.nightModeBotButtonText,
@@ -267,6 +267,7 @@ export class ModerationService {
         userLabel,
         banDurationHours: settings.banDurationHours,
         duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
+        duplicateBotMessageText: settings.duplicateBotMessageText,
         duplicateBotButtonEnabled: settings.duplicateBotButtonEnabled,
         duplicateBotButtonUrl: settings.duplicateBotButtonUrl,
         duplicateBotButtonText: settings.duplicateBotButtonText,
@@ -284,6 +285,7 @@ export class ModerationService {
         hit: detection.duplicateHit,
         userLabel,
         duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
+        duplicateBotMessageText: settings.duplicateBotMessageText,
         duplicateBotButtonEnabled: settings.duplicateBotButtonEnabled,
         duplicateBotButtonUrl: settings.duplicateBotButtonUrl,
         duplicateBotButtonText: settings.duplicateBotButtonText,
@@ -376,13 +378,13 @@ export class ModerationService {
         if (linkMessageOptions) {
           await this.maxClient.sendMessage(
             chatId,
-            this.buildLinkExplanation(userLabel, canDeleteMessage),
+            this.buildLinkExplanation(userLabel, canDeleteMessage, settings.linkBotMessageText),
             linkMessageOptions,
           );
         } else {
           await this.maxClient.sendMessage(
             chatId,
-            this.buildLinkExplanation(userLabel, canDeleteMessage),
+            this.buildLinkExplanation(userLabel, canDeleteMessage, settings.linkBotMessageText),
           );
         }
       } catch (error: unknown) {
@@ -418,6 +420,7 @@ export class ModerationService {
               settings.photoMessageCooldownHours,
               effectiveMessageLength,
               settings.maxMessageLength,
+              settings.messageLimitsBotMessageText,
             ),
             limitsMessageOptions,
           );
@@ -431,6 +434,7 @@ export class ModerationService {
               settings.photoMessageCooldownHours,
               effectiveMessageLength,
               settings.maxMessageLength,
+              settings.messageLimitsBotMessageText,
             ),
           );
         }
@@ -448,18 +452,32 @@ export class ModerationService {
       }
     }
 
-    if (isTextFilterHit && settings.textFiltersBotMessageEnabled && textFilterViolationCount24h === 1) {
+    if (
+      isTextFilterHit &&
+      settings.textFiltersBotMessageEnabled &&
+      textFilterViolationCount24h === 1
+    ) {
       try {
         if (textFilterMessageOptions) {
           await this.maxClient.sendMessage(
             chatId,
-            this.buildTextFilterExplanation(userLabel, topViolation.ruleCode, canDeleteMessage),
+            this.buildTextFilterExplanation(
+              userLabel,
+              topViolation.ruleCode,
+              canDeleteMessage,
+              settings.textFiltersBotMessageText,
+            ),
             textFilterMessageOptions,
           );
         } else {
           await this.maxClient.sendMessage(
             chatId,
-            this.buildTextFilterExplanation(userLabel, topViolation.ruleCode, canDeleteMessage),
+            this.buildTextFilterExplanation(
+              userLabel,
+              topViolation.ruleCode,
+              canDeleteMessage,
+              settings.textFiltersBotMessageText,
+            ),
           );
         }
       } catch (error: unknown) {
@@ -628,6 +646,7 @@ export class ModerationService {
     userLabel: string;
     banDurationHours: number;
     duplicateBotMessageEnabled: boolean;
+    duplicateBotMessageText: string;
     duplicateBotButtonEnabled: boolean;
     duplicateBotButtonUrl: string;
     duplicateBotButtonText: string;
@@ -642,6 +661,7 @@ export class ModerationService {
       userLabel,
       banDurationHours,
       duplicateBotMessageEnabled,
+      duplicateBotMessageText,
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
       duplicateBotButtonText,
@@ -700,13 +720,23 @@ export class ModerationService {
         if (duplicateMessageOptions) {
           await this.maxClient.sendMessage(
             chatId,
-            this.buildDuplicateExplanation(userLabel, decision, banDurationHours),
+            this.buildDuplicateExplanation(
+              userLabel,
+              decision,
+              banDurationHours,
+              duplicateBotMessageText,
+            ),
             duplicateMessageOptions,
           );
         } else {
           await this.maxClient.sendMessage(
             chatId,
-            this.buildDuplicateExplanation(userLabel, decision, banDurationHours),
+            this.buildDuplicateExplanation(
+              userLabel,
+              decision,
+              banDurationHours,
+              duplicateBotMessageText,
+            ),
           );
         }
       } catch (error: unknown) {
@@ -764,6 +794,7 @@ export class ModerationService {
     hit: DuplicateHit;
     userLabel: string;
     duplicateBotMessageEnabled: boolean;
+    duplicateBotMessageText: string;
     duplicateBotButtonEnabled: boolean;
     duplicateBotButtonUrl: string;
     duplicateBotButtonText: string;
@@ -777,6 +808,7 @@ export class ModerationService {
       hit,
       userLabel,
       duplicateBotMessageEnabled,
+      duplicateBotMessageText,
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
       duplicateBotButtonText,
@@ -834,13 +866,13 @@ export class ModerationService {
         if (duplicateMessageOptions) {
           await this.maxClient.sendMessage(
             chatId,
-            this.buildDuplicateHitExplanation(userLabel, canDeleteMessage),
+            this.buildDuplicateHitExplanation(userLabel, canDeleteMessage, duplicateBotMessageText),
             duplicateMessageOptions,
           );
         } else {
           await this.maxClient.sendMessage(
             chatId,
-            this.buildDuplicateHitExplanation(userLabel, canDeleteMessage),
+            this.buildDuplicateHitExplanation(userLabel, canDeleteMessage, duplicateBotMessageText),
           );
         }
       } catch (error: unknown) {
@@ -867,12 +899,21 @@ export class ModerationService {
     return SanctionAction.BAN;
   }
 
-  private buildLinkExplanation(userLabel: string, canDeleteMessage: boolean): string {
-    if (canDeleteMessage) {
-      return `Сообщение пользователя ${userLabel} удалено: в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.`;
-    }
+  private buildLinkExplanation(
+    userLabel: string,
+    canDeleteMessage: boolean,
+    templateText: string,
+  ): string {
+    const fallback = canDeleteMessage
+      ? `Сообщение пользователя ${userLabel} удалено: в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.`
+      : `Сообщение пользователя ${userLabel} нарушает правило: в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.`;
+    const messageStatus = canDeleteMessage ? 'удалено' : 'нарушает правило';
 
-    return `Сообщение пользователя ${userLabel} нарушает правило: в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.`;
+    return this.renderBotMessageTemplate(templateText, fallback, {
+      user: userLabel,
+      message_status: messageStatus,
+      reason: 'в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.',
+    });
   }
 
   private buildLinkWarnExplanation(userLabel: string): string {
@@ -895,24 +936,86 @@ export class ModerationService {
     userLabel: string,
     decision: DuplicateDecision,
     banDurationHours: number,
+    templateText: string,
   ): string {
+    const banDurationLabel = this.formatBanDurationLabel(banDurationHours);
+    const baseContext = 'удалено как дубль';
+
     if (decision.action === 'WARN') {
-      return `Сообщение пользователя ${userLabel} удалено как дубль. Пользователю вынесено предупреждение.`;
+      const fallback = `Сообщение пользователя ${userLabel} удалено как дубль. Пользователю вынесено предупреждение.`;
+      return this.renderBotMessageTemplate(templateText, fallback, {
+        user: userLabel,
+        message_status: 'удалено',
+        reason: 'в этом чате нельзя отправлять дубли сообщений',
+        duplicate_context: baseContext,
+        sanction: 'Пользователю вынесено предупреждение.',
+        ban_duration: banDurationLabel,
+      });
     }
 
     if (decision.action === 'KICK') {
-      return `Сообщение пользователя ${userLabel} удалено как дубль. Пользователь удален из чата.`;
+      const fallback = `Сообщение пользователя ${userLabel} удалено как дубль. Пользователь удален из чата.`;
+      return this.renderBotMessageTemplate(templateText, fallback, {
+        user: userLabel,
+        message_status: 'удалено',
+        reason: 'в этом чате нельзя отправлять дубли сообщений',
+        duplicate_context: baseContext,
+        sanction: 'Пользователь удален из чата.',
+        ban_duration: banDurationLabel,
+      });
     }
 
-    return `Сообщение пользователя ${userLabel} удалено как дубль. Пользователю выдан временный бан на ${this.formatBanDurationLabel(banDurationHours)}.`;
+    const fallback = `Сообщение пользователя ${userLabel} удалено как дубль. Пользователю выдан временный бан на ${banDurationLabel}.`;
+    return this.renderBotMessageTemplate(templateText, fallback, {
+      user: userLabel,
+      message_status: 'удалено',
+      reason: 'в этом чате нельзя отправлять дубли сообщений',
+      duplicate_context: baseContext,
+      sanction: `Пользователю выдан временный бан на ${banDurationLabel}.`,
+      ban_duration: banDurationLabel,
+    });
   }
 
-  private buildDuplicateHitExplanation(userLabel: string, canDeleteMessage: boolean): string {
-    if (canDeleteMessage) {
-      return `Сообщение пользователя ${userLabel} удалено: в этом чате нельзя отправлять дубли сообщений.`;
+  private buildDuplicateHitExplanation(
+    userLabel: string,
+    canDeleteMessage: boolean,
+    templateText: string,
+  ): string {
+    const fallback = canDeleteMessage
+      ? `Сообщение пользователя ${userLabel} удалено: в этом чате нельзя отправлять дубли сообщений.`
+      : `Сообщение пользователя ${userLabel} нарушает правило: в этом чате нельзя отправлять дубли сообщений.`;
+    const messageStatus = canDeleteMessage ? 'удалено' : 'нарушает правило';
+    const duplicateContext = canDeleteMessage
+      ? 'удалено: в этом чате нельзя отправлять дубли сообщений'
+      : 'нарушает правило: в этом чате нельзя отправлять дубли сообщений';
+
+    return this.renderBotMessageTemplate(templateText, fallback, {
+      user: userLabel,
+      message_status: messageStatus,
+      reason: 'в этом чате нельзя отправлять дубли сообщений',
+      duplicate_context: duplicateContext,
+      sanction: '',
+    });
+  }
+
+  private renderBotMessageTemplate(
+    templateText: string,
+    fallbackText: string,
+    replacements: Record<string, string>,
+  ): string {
+    const normalizedTemplate =
+      typeof templateText === 'string' && templateText.trim().length > 0 ? templateText.trim() : '';
+    if (!normalizedTemplate) {
+      return fallbackText;
     }
 
-    return `Сообщение пользователя ${userLabel} нарушает правило: в этом чате нельзя отправлять дубли сообщений.`;
+    let rendered = normalizedTemplate;
+    for (const [key, value] of Object.entries(replacements)) {
+      rendered = rendered.split(`{${key}}`).join(value);
+    }
+
+    const normalizedRendered = rendered.trim();
+    return normalizedRendered.length > 0 ? normalizedRendered : fallbackText;
   }
 
   private formatUserLabel(senderName?: string): string {
@@ -1095,16 +1198,29 @@ export class ModerationService {
     userLabel: string,
     ruleCode: string,
     canDeleteMessage: boolean,
+    templateText: string,
   ): string {
+    const messageStatus = canDeleteMessage ? 'удалено' : 'нарушает правило';
+
     if (ruleCode === 'PROFANITY') {
-      return canDeleteMessage
+      const fallback = canDeleteMessage
         ? `Сообщение пользователя ${userLabel} удалено: нецензурная лексика запрещена правилами чата.`
         : `Сообщение пользователя ${userLabel} нарушает правило: нецензурная лексика запрещена правилами чата.`;
+      return this.renderBotMessageTemplate(templateText, fallback, {
+        user: userLabel,
+        message_status: messageStatus,
+        reason: 'нецензурная лексика запрещена правилами чата',
+      });
     }
 
-    return canDeleteMessage
+    const fallback = canDeleteMessage
       ? `Сообщение пользователя ${userLabel} удалено: коммерческие объявления в этом чате запрещены.`
       : `Сообщение пользователя ${userLabel} нарушает правило: коммерческие объявления в этом чате запрещены.`;
+    return this.renderBotMessageTemplate(templateText, fallback, {
+      user: userLabel,
+      message_status: messageStatus,
+      reason: 'коммерческие объявления в этом чате запрещены',
+    });
   }
 
   private buildMessageLimitsExplanation(
@@ -1114,7 +1230,10 @@ export class ModerationService {
     photoCooldownHours: number,
     messageLength?: number,
     maxMessageLength?: number,
+    templateText?: string,
   ): string {
+    const messageStatus = canDeleteMessage ? 'удалено' : 'нарушает правило';
+
     if (ruleCode === 'MESSAGE_TOO_LONG') {
       const actualLength =
         typeof messageLength === 'number' && Number.isFinite(messageLength) && messageLength > 0
@@ -1130,37 +1249,69 @@ export class ModerationService {
         actualLength !== null && maxLength !== null
           ? ` длина сообщения ${actualLength} символов, лимит ${maxLength}.`
           : ' сообщение превышает допустимую длину.';
+      const reason =
+        actualLength !== null && maxLength !== null
+          ? `длина сообщения ${actualLength} символов, лимит ${maxLength}`
+          : 'сообщение превышает допустимую длину';
 
-      return canDeleteMessage
+      const fallback = canDeleteMessage
         ? `Сообщение пользователя ${userLabel} удалено:${lengthDetails}`
         : `Сообщение пользователя ${userLabel} нарушает правило:${lengthDetails}`;
+      return this.renderBotMessageTemplate(templateText ?? '', fallback, {
+        user: userLabel,
+        message_status: messageStatus,
+        reason,
+        actual_length: actualLength !== null ? String(actualLength) : '',
+        max_length: maxLength !== null ? String(maxLength) : '',
+      });
     }
 
     if (ruleCode === 'VIDEO_BLOCKED') {
-      return canDeleteMessage
+      const fallback = canDeleteMessage
         ? `Сообщение пользователя ${userLabel} удалено: отправка видео в этом чате отключена.`
         : `Сообщение пользователя ${userLabel} нарушает правило: отправка видео в этом чате отключена.`;
+      return this.renderBotMessageTemplate(templateText ?? '', fallback, {
+        user: userLabel,
+        message_status: messageStatus,
+        reason: 'отправка видео в этом чате отключена',
+      });
     }
 
     if (ruleCode === 'FILE_BLOCKED') {
-      return canDeleteMessage
+      const fallback = canDeleteMessage
         ? `Сообщение пользователя ${userLabel} удалено: отправка файлов в этом чате отключена.`
         : `Сообщение пользователя ${userLabel} нарушает правило: отправка файлов в этом чате отключена.`;
+      return this.renderBotMessageTemplate(templateText ?? '', fallback, {
+        user: userLabel,
+        message_status: messageStatus,
+        reason: 'отправка файлов в этом чате отключена',
+      });
     }
 
     if (ruleCode === 'VOICE_BLOCKED') {
-      return canDeleteMessage
+      const fallback = canDeleteMessage
         ? `Сообщение пользователя ${userLabel} удалено: голосовые сообщения в этом чате отключены.`
         : `Сообщение пользователя ${userLabel} нарушает правило: голосовые сообщения в этом чате отключены.`;
+      return this.renderBotMessageTemplate(templateText ?? '', fallback, {
+        user: userLabel,
+        message_status: messageStatus,
+        reason: 'голосовые сообщения в этом чате отключены',
+      });
     }
 
     const hours =
       Number.isInteger(photoCooldownHours) && photoCooldownHours >= 1 && photoCooldownHours <= 24
         ? photoCooldownHours
         : 1;
-    return canDeleteMessage
+    const fallback = canDeleteMessage
       ? `Сообщение пользователя ${userLabel} удалено: фото можно отправлять не чаще одного раза в ${hours}ч.`
       : `Сообщение пользователя ${userLabel} нарушает правило: фото можно отправлять не чаще одного раза в ${hours}ч.`;
+    return this.renderBotMessageTemplate(templateText ?? '', fallback, {
+      user: userLabel,
+      message_status: messageStatus,
+      reason: `фото можно отправлять не чаще одного раза в ${hours}ч`,
+      photo_cooldown_hours: String(hours),
+    });
   }
 
   private calculateEffectiveMessageLength(update: MaxUpdate): number {
@@ -1991,6 +2142,7 @@ export class ModerationService {
     nightModeEndTimeMinutes: number;
     nightModeTimezone: string;
     nightModeBotMessageEnabled: boolean;
+    nightModeBotMessageText: string;
     nightModeBotButtonEnabled: boolean;
     nightModeBotButtonUrl: string;
     nightModeBotButtonText: string;
@@ -2006,6 +2158,7 @@ export class ModerationService {
       nightModeEndTimeMinutes,
       nightModeTimezone,
       nightModeBotMessageEnabled,
+      nightModeBotMessageText,
       nightModeBotButtonEnabled,
       nightModeBotButtonUrl,
       nightModeBotButtonText,
@@ -2071,13 +2224,27 @@ export class ModerationService {
       if (nightModeMessageOptions) {
         await this.maxClient.sendMessage(
           chatId,
-          this.buildNightModeExplanation(userLabel, startMinutes, endMinutes, timezone, wasDeleted),
+          this.buildNightModeExplanation(
+            userLabel,
+            startMinutes,
+            endMinutes,
+            timezone,
+            wasDeleted,
+            nightModeBotMessageText,
+          ),
           nightModeMessageOptions,
         );
       } else {
         await this.maxClient.sendMessage(
           chatId,
-          this.buildNightModeExplanation(userLabel, startMinutes, endMinutes, timezone, wasDeleted),
+          this.buildNightModeExplanation(
+            userLabel,
+            startMinutes,
+            endMinutes,
+            timezone,
+            wasDeleted,
+            nightModeBotMessageText,
+          ),
         );
       }
     } catch (error: unknown) {
@@ -2191,15 +2358,23 @@ export class ModerationService {
     endMinutes: number,
     timezone: string,
     wasDeleted: boolean,
+    templateText: string,
   ): string {
     const windowLabel = `${this.formatMinutesAsTime(startMinutes)}-${this.formatMinutesAsTime(endMinutes)}`;
     const timezoneLabel = timezone === DEFAULT_NIGHT_MODE_TIMEZONE ? 'Москва' : timezone;
+    const nightStatus = wasDeleted
+      ? `Сообщение пользователя ${userLabel} удалено.`
+      : 'Новые сообщения временно не принимаются.';
+    const fallback = wasDeleted
+      ? `Чат сейчас закрыт на ночь (${windowLabel}, ${timezoneLabel}). Сообщение пользователя ${userLabel} удалено.`
+      : `Чат сейчас закрыт на ночь (${windowLabel}, ${timezoneLabel}). Новые сообщения временно не принимаются.`;
 
-    if (wasDeleted) {
-      return `Чат сейчас закрыт на ночь (${windowLabel}, ${timezoneLabel}). Сообщение пользователя ${userLabel} удалено.`;
-    }
-
-    return `Чат сейчас закрыт на ночь (${windowLabel}, ${timezoneLabel}). Новые сообщения временно не принимаются.`;
+    return this.renderBotMessageTemplate(templateText, fallback, {
+      user: userLabel,
+      night_window: windowLabel,
+      night_timezone: timezoneLabel,
+      night_status: nightStatus,
+    });
   }
 
   private isServiceAuthoredMessage(update: MaxUpdate): boolean {
@@ -2218,10 +2393,7 @@ export class ModerationService {
         return true;
       }
 
-      if (
-        sender.is_service === true ||
-        sender.isService === true
-      ) {
+      if (sender.is_service === true || sender.isService === true) {
         return true;
       }
     }
@@ -2292,11 +2464,7 @@ export class ModerationService {
     return rows;
   }
 
-  private collectServiceMemberRows(
-    node: unknown,
-    acc: Array<Record<string, unknown>>,
-    depth = 0,
-  ) {
+  private collectServiceMemberRows(node: unknown, acc: Array<Record<string, unknown>>, depth = 0) {
     if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined) {
       return;
     }
@@ -2343,11 +2511,7 @@ export class ModerationService {
     );
   }
 
-  private collectMemberEntities(
-    node: unknown,
-    acc: Array<Record<string, unknown>>,
-    depth = 0,
-  ) {
+  private collectMemberEntities(node: unknown, acc: Array<Record<string, unknown>>, depth = 0) {
     if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined) {
       return;
     }
@@ -2384,7 +2548,10 @@ export class ModerationService {
     }
 
     const idCandidate = node.id;
-    if ((typeof idCandidate === 'string' || typeof idCandidate === 'number') && this.looksLikeUserEntity(node)) {
+    if (
+      (typeof idCandidate === 'string' || typeof idCandidate === 'number') &&
+      this.looksLikeUserEntity(node)
+    ) {
       return String(idCandidate);
     }
 

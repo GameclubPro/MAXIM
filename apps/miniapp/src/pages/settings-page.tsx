@@ -40,7 +40,27 @@ type DuplicateMaxCountKey =
   | 'duplicateWarnMaxCount'
   | 'duplicateKickMaxCount'
   | 'duplicateBanMaxCount';
-type BotHintKey = 'link' | 'duplicate';
+type HintKey =
+  | 'linkBotMessage'
+  | 'linkBotButton'
+  | 'textFiltersProfanity'
+  | 'textFiltersCommercial'
+  | 'commercialSensitivity'
+  | 'textFiltersBotMessage'
+  | 'textFiltersBotButton'
+  | 'duplicateBotMessage'
+  | 'duplicateBotButton'
+  | 'banDuration'
+  | 'maxMessageLength'
+  | 'photoCooldown'
+  | 'messageLimitsBotMessage'
+  | 'messageLimitsBotButton'
+  | 'nightModeEnabled'
+  | 'nightBotMessage'
+  | 'nightBotButton'
+  | 'removeBotsFromGroup'
+  | 'globalBlacklist';
+type BotMessageEditorKey = 'link' | 'textFilters' | 'duplicate' | 'messageLimits' | 'night';
 type SettingsSectionKey = 'links' | 'textFilters' | 'duplicates' | 'limits' | 'night' | 'extra';
 
 const DUPLICATE_STAGE_OPTIONS: Array<{
@@ -125,6 +145,68 @@ const RUSSIAN_TIMEZONE_OPTIONS = [
   { value: 'Asia/Magadan', label: 'Магадан (UTC+11)' },
   { value: 'Asia/Kamchatka', label: 'Камчатка (UTC+12)' },
 ] as const;
+
+const DEFAULT_BOT_MESSAGE_TEMPLATES: Record<BotMessageEditorKey, string> = {
+  link: 'Сообщение пользователя {user} {message_status}: {reason}',
+  textFilters: 'Сообщение пользователя {user} {message_status}: {reason}',
+  duplicate: 'Сообщение пользователя {user} {duplicate_context}. {sanction}',
+  messageLimits: 'Сообщение пользователя {user} {message_status}: {reason}',
+  night: 'Чат сейчас закрыт на ночь ({night_window}, {night_timezone}). {night_status}',
+};
+
+const BOT_MESSAGE_TEMPLATE_HINTS: Record<BotMessageEditorKey, string> = {
+  link: 'Плейсхолдеры: {user}, {message_status}, {reason}.',
+  textFilters: 'Плейсхолдеры: {user}, {message_status}, {reason}.',
+  duplicate: 'Плейсхолдеры: {user}, {duplicate_context}, {sanction}, {ban_duration}.',
+  messageLimits:
+    'Плейсхолдеры: {user}, {message_status}, {reason}, {actual_length}, {max_length}, {photo_cooldown_hours}.',
+  night: 'Плейсхолдеры: {user}, {night_window}, {night_timezone}, {night_status}.',
+};
+
+const BOT_MESSAGE_PREVIEW_REPLACEMENTS: Record<BotMessageEditorKey, Record<string, string>> = {
+  link: {
+    user: '"Алексей"',
+    message_status: 'удалено',
+    reason: 'в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.',
+  },
+  textFilters: {
+    user: '"Алексей"',
+    message_status: 'удалено',
+    reason: 'нецензурная лексика запрещена правилами чата',
+  },
+  duplicate: {
+    user: '"Алексей"',
+    duplicate_context: 'удалено как дубль',
+    sanction: 'Пользователю вынесено предупреждение.',
+    ban_duration: '6 часов',
+  },
+  messageLimits: {
+    user: '"Алексей"',
+    message_status: 'удалено',
+    reason: 'длина сообщения 1860 символов, лимит 1500',
+    actual_length: '1860',
+    max_length: '1500',
+    photo_cooldown_hours: '2',
+  },
+  night: {
+    user: '"Алексей"',
+    night_window: '23:00-08:00',
+    night_timezone: 'Москва',
+    night_status: 'Сообщение пользователя "Алексей" удалено.',
+  },
+};
+
+function resolveBotMessageTemplate(customValue: string, fallbackTemplate: string): string {
+  return customValue.trim().length > 0 ? customValue : fallbackTemplate;
+}
+
+function renderBotMessageTemplate(template: string, replacements: Record<string, string>): string {
+  let rendered = template;
+  for (const [key, value] of Object.entries(replacements)) {
+    rendered = rendered.split(`{${key}}`).join(value);
+  }
+  return rendered.trim();
+}
 
 function formatApiError(error: unknown): string {
   const rawMessage = error instanceof Error ? error.message : '';
@@ -265,6 +347,56 @@ function SectionChevron({ isOpen }: { isOpen: boolean }) {
   );
 }
 
+type BotMessageEditorProps = {
+  editorKey: BotMessageEditorKey;
+  value: string;
+  onChange: (value: string) => void;
+  onReset: () => void;
+};
+
+function BotMessageEditor({ editorKey, value, onChange, onReset }: BotMessageEditorProps) {
+  const defaultTemplate = DEFAULT_BOT_MESSAGE_TEMPLATES[editorKey];
+  const templateHint = BOT_MESSAGE_TEMPLATE_HINTS[editorKey];
+  const previewReplacements = BOT_MESSAGE_PREVIEW_REPLACEMENTS[editorKey];
+  const isDefaultTemplate = value.trim().length === 0;
+  const editorValue = resolveBotMessageTemplate(value, defaultTemplate);
+  const previewText = renderBotMessageTemplate(editorValue, previewReplacements);
+
+  return (
+    <div className="bot-message-editor">
+      <label className="field bot-message-editor__field">
+        <span className="field__label">Текст сообщения</span>
+        <textarea
+          value={editorValue}
+          maxLength={1000}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={defaultTemplate}
+          rows={4}
+        />
+      </label>
+
+      <div className="bot-message-editor__meta">
+        <span className="chip">{isDefaultTemplate ? 'По умолчанию' : 'Кастомный'}</span>
+        <button
+          type="button"
+          className="button button--ghost bot-message-editor__reset"
+          onClick={onReset}
+          disabled={isDefaultTemplate}
+        >
+          Сбросить
+        </button>
+      </div>
+
+      <p className="field__hint bot-message-editor__hint">{templateHint}</p>
+
+      <div className="bot-message-editor__preview" aria-live="polite">
+        <span className="field__label">Предпросмотр</span>
+        <p>{previewText}</p>
+      </div>
+    </div>
+  );
+}
+
 export function SettingsPage({ api }: { api: ApiClient }) {
   const { chatId } = useParams();
   const location = useLocation();
@@ -279,7 +411,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [blacklistInputError, setBlacklistInputError] = useState('');
   const [failedSnapshot, setFailedSnapshot] = useState<string>('');
   const [showApplyAllConfirm, setShowApplyAllConfirm] = useState(false);
-  const [openHintKey, setOpenHintKey] = useState<BotHintKey | null>(null);
+  const [openHintKey, setOpenHintKey] = useState<HintKey | null>(null);
+  const [openBotEditorKey, setOpenBotEditorKey] = useState<BotMessageEditorKey | null>(null);
   const [expandedSections, setExpandedSections] = useState<Record<SettingsSectionKey, boolean>>({
     links: true,
     textFilters: false,
@@ -640,8 +773,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       return;
     }
 
-    const existing =
-      (globalBlacklistQuery.data ?? []).some((item) => item.userId === normalized);
+    const existing = (globalBlacklistQuery.data ?? []).some((item) => item.userId === normalized);
     if (existing) {
       setBlacklistInput('');
       setBlacklistInputError('');
@@ -683,8 +815,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     setFieldValue('commercialAdsWarnFirstEnabled', true);
   }
 
-  function toggleHint(key: BotHintKey) {
+  function toggleHint(key: HintKey) {
     setOpenHintKey((current) => (current === key ? null : key));
+  }
+
+  function toggleBotMessageEditor(key: BotMessageEditorKey) {
+    setOpenBotEditorKey((current) => (current === key ? null : key));
   }
 
   function toggleSection(section: SettingsSectionKey) {
@@ -826,7 +962,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const commercialSensitivitySliderValue = draft
     ? inferCommercialSensitivitySliderValue(draft)
     : 50;
-  const commercialSensitivityLabel = getCommercialSensitivityLabel(commercialSensitivitySliderValue);
+  const commercialSensitivityLabel = getCommercialSensitivityLabel(
+    commercialSensitivitySliderValue,
+  );
   const limitsRulesEnabledCount = [
     draft?.maxMessageLengthEnabled,
     draft?.photoMessageCooldownEnabled,
@@ -1113,19 +1251,29 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         <div className="settings-native-toggle__row">
                           <div className="settings-native-toggle__title-wrap">
                             <span className="settings-native-toggle__title">1. Объяснение</span>
-                            <button
-                              type="button"
-                              className={cn(
-                                'settings-info-button',
-                                openHintKey === 'link' && 'is-open',
-                              )}
-                              aria-label="Пояснение для тумблера сообщений о ссылках"
-                              aria-controls="link-bot-message-hint"
-                              aria-expanded={openHintKey === 'link'}
-                              onClick={() => toggleHint('link')}
-                            >
-                              <span aria-hidden>i</span>
-                            </button>
+                            <div className="settings-native-toggle__title-actions">
+                              <button
+                                type="button"
+                                className="button button--ghost settings-edit-button"
+                                onClick={() => toggleBotMessageEditor('link')}
+                                disabled={!draft.linkBotMessageEnabled}
+                              >
+                                Редактировать
+                              </button>
+                              <button
+                                type="button"
+                                className={cn(
+                                  'settings-info-button',
+                                  openHintKey === 'linkBotMessage' && 'is-open',
+                                )}
+                                aria-label="Пояснение для тумблера сообщений о ссылках"
+                                aria-controls="link-bot-message-hint"
+                                aria-expanded={openHintKey === 'linkBotMessage'}
+                                onClick={() => toggleHint('linkBotMessage')}
+                              >
+                                <span aria-hidden>i</span>
+                              </button>
+                            </div>
                           </div>
 
                           <label
@@ -1151,12 +1299,26 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           </label>
                         </div>
 
-                        {openHintKey === 'link' ? (
+                        {openHintKey === 'linkBotMessage' ? (
                           <p id="link-bot-message-hint" className="settings-native-toggle__hint">
                             Санкции усиливаются по ступеням, если пользователь повторно отправляет
                             ссылки в течение 24 часов: сначала объяснение, затем предупреждение,
                             потом бан на 6 часов и далее удаление из группы.
                           </p>
+                        ) : null}
+
+                        {draft.linkBotMessageEnabled && openBotEditorKey === 'link' ? (
+                          <BotMessageEditor
+                            editorKey="link"
+                            value={draft.linkBotMessageText}
+                            onChange={(nextValue) =>
+                              setFieldValue(
+                                'linkBotMessageText',
+                                nextValue as ChatSettings['linkBotMessageText'],
+                              )
+                            }
+                            onReset={() => setFieldValue('linkBotMessageText', '')}
+                          />
                         ) : null}
                       </div>
 
@@ -1237,7 +1399,22 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           )}
                         >
                           <div className="settings-native-toggle__row">
-                            <span className="settings-native-toggle__title">Добавить кнопку</span>
+                            <div className="settings-native-toggle__title-wrap">
+                              <span className="settings-native-toggle__title">Добавить кнопку</span>
+                              <button
+                                type="button"
+                                className={cn(
+                                  'settings-info-button',
+                                  openHintKey === 'linkBotButton' && 'is-open',
+                                )}
+                                aria-label="Пояснение для кнопки в сообщении о ссылках"
+                                aria-controls="link-bot-button-hint"
+                                aria-expanded={openHintKey === 'linkBotButton'}
+                                onClick={() => toggleHint('linkBotButton')}
+                              >
+                                <span aria-hidden>i</span>
+                              </button>
+                            </div>
 
                             <label
                               className="settings-native-switch"
@@ -1307,8 +1484,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             </div>
                           ) : null}
 
-                          {!hasLinkBotButtonError ? (
-                            <p className="settings-native-toggle__hint">
+                          {!hasLinkBotButtonError && openHintKey === 'linkBotButton' ? (
+                            <p id="link-bot-button-hint" className="settings-native-toggle__hint">
                               Добавляет кнопку в сообщение бота. Подходит для ссылки на чат, канал
                               или профиль.
                             </p>
@@ -1356,26 +1533,53 @@ export function SettingsPage({ api }: { api: ApiClient }) {
             >
               <div className="settings-section__collapse-inner">
                 <div className="text-filters-grid">
-                  {TEXT_FILTER_OPTIONS.map((option) => (
-                    <div key={option.key} className="settings-native-toggle text-filter-card">
-                      <div className="settings-native-toggle__row">
-                        <span className="settings-native-toggle__title">{option.title}</span>
+                  {TEXT_FILTER_OPTIONS.map((option) => {
+                    const hintKey: HintKey =
+                      option.key === 'russianProfanityFilterEnabled'
+                        ? 'textFiltersProfanity'
+                        : 'textFiltersCommercial';
+                    const hintId = `${option.key}-hint`;
 
-                        <label className="settings-native-switch" aria-label={option.title}>
-                          <input
-                            type="checkbox"
-                            checked={draft[option.key]}
-                            onChange={(event) => setFieldValue(option.key, event.target.checked)}
-                          />
-                          <span className="toggle-switch" aria-hidden>
-                            <span className="toggle-switch__thumb" />
-                          </span>
-                        </label>
+                    return (
+                      <div key={option.key} className="settings-native-toggle text-filter-card">
+                        <div className="settings-native-toggle__row">
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="settings-native-toggle__title">{option.title}</span>
+                            <button
+                              type="button"
+                              className={cn(
+                                'settings-info-button',
+                                openHintKey === hintKey && 'is-open',
+                              )}
+                              aria-label={`Пояснение для "${option.title}"`}
+                              aria-controls={hintId}
+                              aria-expanded={openHintKey === hintKey}
+                              onClick={() => toggleHint(hintKey)}
+                            >
+                              <span aria-hidden>i</span>
+                            </button>
+                          </div>
+
+                          <label className="settings-native-switch" aria-label={option.title}>
+                            <input
+                              type="checkbox"
+                              checked={draft[option.key]}
+                              onChange={(event) => setFieldValue(option.key, event.target.checked)}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+
+                        {openHintKey === hintKey ? (
+                          <p id={hintId} className="settings-native-toggle__hint">
+                            {option.description}
+                          </p>
+                        ) : null}
                       </div>
-
-                      <p className="settings-native-toggle__hint">{option.description}</p>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
                 <div
@@ -1389,7 +1593,22 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 <div className="settings-native-toggle commercial-settings-panel">
                   <div className="commercial-sensitivity-slider">
                     <div className="commercial-sensitivity-slider__head">
-                      <span className="field__label">Чувствительность</span>
+                      <div className="settings-native-toggle__title-wrap">
+                        <span className="field__label">Чувствительность</span>
+                        <button
+                          type="button"
+                          className={cn(
+                            'settings-info-button',
+                            openHintKey === 'commercialSensitivity' && 'is-open',
+                          )}
+                          aria-label="Пояснение по чувствительности коммерческого фильтра"
+                          aria-controls="commercial-sensitivity-hint"
+                          aria-expanded={openHintKey === 'commercialSensitivity'}
+                          onClick={() => toggleHint('commercialSensitivity')}
+                        >
+                          <span aria-hidden>i</span>
+                        </button>
+                      </div>
                       <span className="chip chip--warning">{commercialSensitivityLabel}</span>
                     </div>
 
@@ -1412,9 +1631,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     </div>
                   </div>
 
-                  <p className="settings-native-toggle__hint">
-                    Ползунок меняет строгость фильтра и автоматически подбирает внутренние пороги.
-                  </p>
+                  {openHintKey === 'commercialSensitivity' ? (
+                    <p id="commercial-sensitivity-hint" className="settings-native-toggle__hint">
+                      Ползунок меняет строгость фильтра и автоматически подбирает внутренние пороги.
+                    </p>
+                  ) : null}
                 </div>
 
                 <div
@@ -1427,7 +1648,32 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                 <div className="settings-native-toggle">
                   <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title">1. Объяснение</span>
+                    <div className="settings-native-toggle__title-wrap">
+                      <span className="settings-native-toggle__title">1. Объяснение</span>
+                      <div className="settings-native-toggle__title-actions">
+                        <button
+                          type="button"
+                          className="button button--ghost settings-edit-button"
+                          onClick={() => toggleBotMessageEditor('textFilters')}
+                          disabled={!draft.textFiltersBotMessageEnabled}
+                        >
+                          Редактировать
+                        </button>
+                        <button
+                          type="button"
+                          className={cn(
+                            'settings-info-button',
+                            openHintKey === 'textFiltersBotMessage' && 'is-open',
+                          )}
+                          aria-label="Пояснение для тумблера сообщений о фильтрации текста"
+                          aria-controls="text-filters-bot-message-hint"
+                          aria-expanded={openHintKey === 'textFiltersBotMessage'}
+                          onClick={() => toggleHint('textFiltersBotMessage')}
+                        >
+                          <span aria-hidden>i</span>
+                        </button>
+                      </div>
+                    </div>
 
                     <label
                       className="settings-native-switch"
@@ -1452,10 +1698,26 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     </label>
                   </div>
 
-                  <p className="settings-native-toggle__hint">
-                    Санкции усиливаются по ступеням, если пользователь повторно нарушает
-                    текстовый фильтр в течение 24 часов.
-                  </p>
+                  {openHintKey === 'textFiltersBotMessage' ? (
+                    <p id="text-filters-bot-message-hint" className="settings-native-toggle__hint">
+                      Санкции усиливаются по ступеням, если пользователь повторно нарушает текстовый
+                      фильтр в течение 24 часов.
+                    </p>
+                  ) : null}
+
+                  {draft.textFiltersBotMessageEnabled && openBotEditorKey === 'textFilters' ? (
+                    <BotMessageEditor
+                      editorKey="textFilters"
+                      value={draft.textFiltersBotMessageText}
+                      onChange={(nextValue) =>
+                        setFieldValue(
+                          'textFiltersBotMessageText',
+                          nextValue as ChatSettings['textFiltersBotMessageText'],
+                        )
+                      }
+                      onReset={() => setFieldValue('textFiltersBotMessageText', '')}
+                    />
+                  ) : null}
                 </div>
 
                 <div className="settings-native-toggle settings-native-toggle--nested">
@@ -1533,7 +1795,22 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     )}
                   >
                     <div className="settings-native-toggle__row">
-                      <span className="settings-native-toggle__title">Добавить кнопку</span>
+                      <div className="settings-native-toggle__title-wrap">
+                        <span className="settings-native-toggle__title">Добавить кнопку</span>
+                        <button
+                          type="button"
+                          className={cn(
+                            'settings-info-button',
+                            openHintKey === 'textFiltersBotButton' && 'is-open',
+                          )}
+                          aria-label="Пояснение для кнопки в сообщении фильтрации текста"
+                          aria-controls="text-filters-bot-button-hint"
+                          aria-expanded={openHintKey === 'textFiltersBotButton'}
+                          onClick={() => toggleHint('textFiltersBotButton')}
+                        >
+                          <span aria-hidden>i</span>
+                        </button>
+                      </div>
 
                       <label
                         className="settings-native-switch"
@@ -1603,8 +1880,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       </div>
                     ) : null}
 
-                    {!hasTextFiltersBotButtonError ? (
-                      <p className="settings-native-toggle__hint">
+                    {!hasTextFiltersBotButtonError && openHintKey === 'textFiltersBotButton' ? (
+                      <p id="text-filters-bot-button-hint" className="settings-native-toggle__hint">
                         Добавляет кнопку в сообщение бота о фильтрации текста.
                       </p>
                     ) : null}
@@ -1648,7 +1925,22 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     )}
                   >
                     <div className="settings-native-toggle__row">
-                      <span className="settings-native-toggle__title">Длительность бана</span>
+                      <div className="settings-native-toggle__title-wrap">
+                        <span className="settings-native-toggle__title">Длительность бана</span>
+                        <button
+                          type="button"
+                          className={cn(
+                            'settings-info-button',
+                            openHintKey === 'banDuration' && 'is-open',
+                          )}
+                          aria-label="Пояснение для длительности бана"
+                          aria-controls="ban-duration-hint"
+                          aria-expanded={openHintKey === 'banDuration'}
+                          onClick={() => toggleHint('banDuration')}
+                        >
+                          <span aria-hidden>i</span>
+                        </button>
+                      </div>
 
                       <div
                         className="ban-duration-stepper"
@@ -1681,10 +1973,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       </div>
                     </div>
 
-                    <p className="settings-native-toggle__hint">
-                      После выдачи бана сообщения пользователя удаляются автоматически в течение
-                      этого времени.
-                    </p>
+                    {openHintKey === 'banDuration' ? (
+                      <p id="ban-duration-hint" className="settings-native-toggle__hint">
+                        После выдачи бана сообщения пользователя удаляются автоматически в течение
+                        этого времени.
+                      </p>
+                    ) : null}
 
                     {fieldErrors.banDurationHours ? (
                       <small className="field__hint">{fieldErrors.banDurationHours}</small>
@@ -1823,19 +2117,29 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   <div className="settings-native-toggle__row">
                     <div className="settings-native-toggle__title-wrap">
                       <span className="settings-native-toggle__title">Сообщение от бота</span>
-                      <button
-                        type="button"
-                        className={cn(
-                          'settings-info-button',
-                          openHintKey === 'duplicate' && 'is-open',
-                        )}
-                        aria-label="Пояснение для тумблера сообщений о дублях"
-                        aria-controls="duplicate-bot-message-hint"
-                        aria-expanded={openHintKey === 'duplicate'}
-                        onClick={() => toggleHint('duplicate')}
-                      >
-                        <span aria-hidden>i</span>
-                      </button>
+                      <div className="settings-native-toggle__title-actions">
+                        <button
+                          type="button"
+                          className="button button--ghost settings-edit-button"
+                          onClick={() => toggleBotMessageEditor('duplicate')}
+                          disabled={!draft.duplicateBotMessageEnabled}
+                        >
+                          Редактировать
+                        </button>
+                        <button
+                          type="button"
+                          className={cn(
+                            'settings-info-button',
+                            openHintKey === 'duplicateBotMessage' && 'is-open',
+                          )}
+                          aria-label="Пояснение для тумблера сообщений о дублях"
+                          aria-controls="duplicate-bot-message-hint"
+                          aria-expanded={openHintKey === 'duplicateBotMessage'}
+                          onClick={() => toggleHint('duplicateBotMessage')}
+                        >
+                          <span aria-hidden>i</span>
+                        </button>
+                      </div>
                     </div>
 
                     <label
@@ -1861,10 +2165,24 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     </label>
                   </div>
 
-                  {openHintKey === 'duplicate' ? (
+                  {openHintKey === 'duplicateBotMessage' ? (
                     <p id="duplicate-bot-message-hint" className="settings-native-toggle__hint">
                       При срабатывании правила дублей бот публикует поясняющее сообщение.
                     </p>
+                  ) : null}
+
+                  {draft.duplicateBotMessageEnabled && openBotEditorKey === 'duplicate' ? (
+                    <BotMessageEditor
+                      editorKey="duplicate"
+                      value={draft.duplicateBotMessageText}
+                      onChange={(nextValue) =>
+                        setFieldValue(
+                          'duplicateBotMessageText',
+                          nextValue as ChatSettings['duplicateBotMessageText'],
+                        )
+                      }
+                      onReset={() => setFieldValue('duplicateBotMessageText', '')}
+                    />
                   ) : null}
                 </div>
 
@@ -1877,7 +2195,22 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     )}
                   >
                     <div className="settings-native-toggle__row">
-                      <span className="settings-native-toggle__title">Добавить кнопку</span>
+                      <div className="settings-native-toggle__title-wrap">
+                        <span className="settings-native-toggle__title">Добавить кнопку</span>
+                        <button
+                          type="button"
+                          className={cn(
+                            'settings-info-button',
+                            openHintKey === 'duplicateBotButton' && 'is-open',
+                          )}
+                          aria-label="Пояснение для кнопки в сообщении о дублях"
+                          aria-controls="duplicate-bot-button-hint"
+                          aria-expanded={openHintKey === 'duplicateBotButton'}
+                          onClick={() => toggleHint('duplicateBotButton')}
+                        >
+                          <span aria-hidden>i</span>
+                        </button>
+                      </div>
 
                       <label
                         className="settings-native-switch"
@@ -1947,8 +2280,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       </div>
                     ) : null}
 
-                    {!hasDuplicateBotButtonError ? (
-                      <p className="settings-native-toggle__hint">
+                    {!hasDuplicateBotButtonError && openHintKey === 'duplicateBotButton' ? (
+                      <p id="duplicate-bot-button-hint" className="settings-native-toggle__hint">
                         Добавляет кнопку в сообщение бота. Можно отправить пользователя в нужный
                         чат, канал или профиль.
                       </p>
@@ -1992,7 +2325,22 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   )}
                 >
                   <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title">Лимит длины сообщения</span>
+                    <div className="settings-native-toggle__title-wrap">
+                      <span className="settings-native-toggle__title">Лимит длины сообщения</span>
+                      <button
+                        type="button"
+                        className={cn(
+                          'settings-info-button',
+                          openHintKey === 'maxMessageLength' && 'is-open',
+                        )}
+                        aria-label="Пояснение для лимита длины сообщения"
+                        aria-controls="max-message-length-hint"
+                        aria-expanded={openHintKey === 'maxMessageLength'}
+                        onClick={() => toggleHint('maxMessageLength')}
+                      >
+                        <span aria-hidden>i</span>
+                      </button>
+                    </div>
 
                     <label
                       className="settings-native-switch"
@@ -2045,9 +2393,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     </>
                   ) : null}
 
-                  <p className="settings-native-toggle__hint">
-                    Учитывается длина обычного текста и пересланных сообщений.
-                  </p>
+                  {openHintKey === 'maxMessageLength' ? (
+                    <p id="max-message-length-hint" className="settings-native-toggle__hint">
+                      Учитывается длина обычного текста и пересланных сообщений.
+                    </p>
+                  ) : null}
 
                   {fieldErrors.maxMessageLength ? (
                     <small className="field__hint">{fieldErrors.maxMessageLength}</small>
@@ -2061,7 +2411,22 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   )}
                 >
                   <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title">Фото: не чаще 1 раза</span>
+                    <div className="settings-native-toggle__title-wrap">
+                      <span className="settings-native-toggle__title">Фото: не чаще 1 раза</span>
+                      <button
+                        type="button"
+                        className={cn(
+                          'settings-info-button',
+                          openHintKey === 'photoCooldown' && 'is-open',
+                        )}
+                        aria-label="Пояснение для ограничения частоты фото"
+                        aria-controls="photo-cooldown-hint"
+                        aria-expanded={openHintKey === 'photoCooldown'}
+                        onClick={() => toggleHint('photoCooldown')}
+                      >
+                        <span aria-hidden>i</span>
+                      </button>
+                    </div>
 
                     <label
                       className="settings-native-switch"
@@ -2114,12 +2479,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                   {fieldErrors.photoMessageCooldownHours ? (
                     <small className="field__hint">{fieldErrors.photoMessageCooldownHours}</small>
-                  ) : (
-                    <p className="settings-native-toggle__hint">
+                  ) : openHintKey === 'photoCooldown' ? (
+                    <p id="photo-cooldown-hint" className="settings-native-toggle__hint">
                       При включении пользователь может отправить только одно сообщение с
                       фотографиями за выбранный интервал.
                     </p>
-                  )}
+                  ) : null}
                 </div>
 
                 <div className="settings-native-toggle">
@@ -2195,7 +2560,32 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                 <div className="settings-native-toggle">
                   <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title">Сообщение от бота</span>
+                    <div className="settings-native-toggle__title-wrap">
+                      <span className="settings-native-toggle__title">Сообщение от бота</span>
+                      <div className="settings-native-toggle__title-actions">
+                        <button
+                          type="button"
+                          className="button button--ghost settings-edit-button"
+                          onClick={() => toggleBotMessageEditor('messageLimits')}
+                          disabled={!draft.messageLimitsBotMessageEnabled}
+                        >
+                          Редактировать
+                        </button>
+                        <button
+                          type="button"
+                          className={cn(
+                            'settings-info-button',
+                            openHintKey === 'messageLimitsBotMessage' && 'is-open',
+                          )}
+                          aria-label="Пояснение для тумблера сообщений в блоке ограничений"
+                          aria-controls="message-limits-bot-message-hint"
+                          aria-expanded={openHintKey === 'messageLimitsBotMessage'}
+                          onClick={() => toggleHint('messageLimitsBotMessage')}
+                        >
+                          <span aria-hidden>i</span>
+                        </button>
+                      </div>
+                    </div>
 
                     <label
                       className="settings-native-switch"
@@ -2220,9 +2610,28 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     </label>
                   </div>
 
-                  <p className="settings-native-toggle__hint">
-                    Бот отправляет пояснение при удалении сообщения по правилам этого блока.
-                  </p>
+                  {openHintKey === 'messageLimitsBotMessage' ? (
+                    <p
+                      id="message-limits-bot-message-hint"
+                      className="settings-native-toggle__hint"
+                    >
+                      Бот отправляет пояснение при удалении сообщения по правилам этого блока.
+                    </p>
+                  ) : null}
+
+                  {draft.messageLimitsBotMessageEnabled && openBotEditorKey === 'messageLimits' ? (
+                    <BotMessageEditor
+                      editorKey="messageLimits"
+                      value={draft.messageLimitsBotMessageText}
+                      onChange={(nextValue) =>
+                        setFieldValue(
+                          'messageLimitsBotMessageText',
+                          nextValue as ChatSettings['messageLimitsBotMessageText'],
+                        )
+                      }
+                      onReset={() => setFieldValue('messageLimitsBotMessageText', '')}
+                    />
+                  ) : null}
                 </div>
 
                 {draft.messageLimitsBotMessageEnabled ? (
@@ -2234,7 +2643,22 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     )}
                   >
                     <div className="settings-native-toggle__row">
-                      <span className="settings-native-toggle__title">Добавить кнопку</span>
+                      <div className="settings-native-toggle__title-wrap">
+                        <span className="settings-native-toggle__title">Добавить кнопку</span>
+                        <button
+                          type="button"
+                          className={cn(
+                            'settings-info-button',
+                            openHintKey === 'messageLimitsBotButton' && 'is-open',
+                          )}
+                          aria-label="Пояснение для кнопки в сообщении ограничений"
+                          aria-controls="message-limits-bot-button-hint"
+                          aria-expanded={openHintKey === 'messageLimitsBotButton'}
+                          onClick={() => toggleHint('messageLimitsBotButton')}
+                        >
+                          <span aria-hidden>i</span>
+                        </button>
+                      </div>
 
                       <label
                         className="settings-native-switch"
@@ -2304,8 +2728,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       </div>
                     ) : null}
 
-                    {!hasMessageLimitsBotButtonError ? (
-                      <p className="settings-native-toggle__hint">
+                    {!hasMessageLimitsBotButtonError && openHintKey === 'messageLimitsBotButton' ? (
+                      <p
+                        id="message-limits-bot-button-hint"
+                        className="settings-native-toggle__hint"
+                      >
                         Добавляет кнопку в сообщение бота с переходом на чат, канал или профиль.
                       </p>
                     ) : null}
@@ -2347,7 +2774,22 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               <div className="settings-section__collapse-inner">
                 <div className="settings-native-toggle">
                   <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title">Включить режим</span>
+                    <div className="settings-native-toggle__title-wrap">
+                      <span className="settings-native-toggle__title">Включить режим</span>
+                      <button
+                        type="button"
+                        className={cn(
+                          'settings-info-button',
+                          openHintKey === 'nightModeEnabled' && 'is-open',
+                        )}
+                        aria-label="Пояснение для ночного режима"
+                        aria-controls="night-mode-enabled-hint"
+                        aria-expanded={openHintKey === 'nightModeEnabled'}
+                        onClick={() => toggleHint('nightModeEnabled')}
+                      >
+                        <span aria-hidden>i</span>
+                      </button>
+                    </div>
 
                     <label
                       className="settings-native-switch"
@@ -2366,9 +2808,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     </label>
                   </div>
 
-                  <p className="settings-native-toggle__hint">
-                    Во время закрытия сообщения не-админов удаляются автоматически.
-                  </p>
+                  {openHintKey === 'nightModeEnabled' ? (
+                    <p id="night-mode-enabled-hint" className="settings-native-toggle__hint">
+                      Во время закрытия сообщения не-админов удаляются автоматически.
+                    </p>
+                  ) : null}
                 </div>
 
                 {draft.nightModeEnabled ? (
@@ -2446,7 +2890,32 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                 <div className="settings-native-toggle">
                   <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title">Сообщение от бота</span>
+                    <div className="settings-native-toggle__title-wrap">
+                      <span className="settings-native-toggle__title">Сообщение от бота</span>
+                      <div className="settings-native-toggle__title-actions">
+                        <button
+                          type="button"
+                          className="button button--ghost settings-edit-button"
+                          onClick={() => toggleBotMessageEditor('night')}
+                          disabled={!draft.nightModeBotMessageEnabled}
+                        >
+                          Редактировать
+                        </button>
+                        <button
+                          type="button"
+                          className={cn(
+                            'settings-info-button',
+                            openHintKey === 'nightBotMessage' && 'is-open',
+                          )}
+                          aria-label="Пояснение для тумблера сообщений ночного режима"
+                          aria-controls="night-bot-message-hint"
+                          aria-expanded={openHintKey === 'nightBotMessage'}
+                          onClick={() => toggleHint('nightBotMessage')}
+                        >
+                          <span aria-hidden>i</span>
+                        </button>
+                      </div>
+                    </div>
 
                     <label
                       className="settings-native-switch"
@@ -2471,9 +2940,25 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     </label>
                   </div>
 
-                  <p className="settings-native-toggle__hint">
-                    Бот пишет, что чат закрыт на ночь, и поясняет удаление сообщения.
-                  </p>
+                  {openHintKey === 'nightBotMessage' ? (
+                    <p id="night-bot-message-hint" className="settings-native-toggle__hint">
+                      Бот пишет, что чат закрыт на ночь, и поясняет удаление сообщения.
+                    </p>
+                  ) : null}
+
+                  {draft.nightModeBotMessageEnabled && openBotEditorKey === 'night' ? (
+                    <BotMessageEditor
+                      editorKey="night"
+                      value={draft.nightModeBotMessageText}
+                      onChange={(nextValue) =>
+                        setFieldValue(
+                          'nightModeBotMessageText',
+                          nextValue as ChatSettings['nightModeBotMessageText'],
+                        )
+                      }
+                      onReset={() => setFieldValue('nightModeBotMessageText', '')}
+                    />
+                  ) : null}
                 </div>
 
                 {draft.nightModeBotMessageEnabled ? (
@@ -2485,7 +2970,22 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     )}
                   >
                     <div className="settings-native-toggle__row">
-                      <span className="settings-native-toggle__title">Добавить кнопку</span>
+                      <div className="settings-native-toggle__title-wrap">
+                        <span className="settings-native-toggle__title">Добавить кнопку</span>
+                        <button
+                          type="button"
+                          className={cn(
+                            'settings-info-button',
+                            openHintKey === 'nightBotButton' && 'is-open',
+                          )}
+                          aria-label="Пояснение для кнопки в сообщении ночного режима"
+                          aria-controls="night-bot-button-hint"
+                          aria-expanded={openHintKey === 'nightBotButton'}
+                          onClick={() => toggleHint('nightBotButton')}
+                        >
+                          <span aria-hidden>i</span>
+                        </button>
+                      </div>
 
                       <label
                         className="settings-native-switch"
@@ -2555,8 +3055,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       </div>
                     ) : null}
 
-                    {!hasNightBotButtonError ? (
-                      <p className="settings-native-toggle__hint">
+                    {!hasNightBotButtonError && openHintKey === 'nightBotButton' ? (
+                      <p id="night-bot-button-hint" className="settings-native-toggle__hint">
                         Добавляет кнопку в сообщение о закрытии чата на ночь.
                       </p>
                     ) : null}
@@ -2594,7 +3094,22 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               <div className="settings-section__collapse-inner">
                 <div className="settings-native-toggle">
                   <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title">Удалять ботов из группы</span>
+                    <div className="settings-native-toggle__title-wrap">
+                      <span className="settings-native-toggle__title">Удалять ботов из группы</span>
+                      <button
+                        type="button"
+                        className={cn(
+                          'settings-info-button',
+                          openHintKey === 'removeBotsFromGroup' && 'is-open',
+                        )}
+                        aria-label="Пояснение для удаления ботов из группы"
+                        aria-controls="remove-bots-hint"
+                        aria-expanded={openHintKey === 'removeBotsFromGroup'}
+                        onClick={() => toggleHint('removeBotsFromGroup')}
+                      >
+                        <span aria-hidden>i</span>
+                      </button>
+                    </div>
 
                     <label
                       className="settings-native-switch"
@@ -2613,16 +3128,33 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     </label>
                   </div>
 
-                  <p className="settings-native-toggle__hint">
-                    Если включено, бот-аккаунты будут автоматически удаляться из группы.
-                  </p>
+                  {openHintKey === 'removeBotsFromGroup' ? (
+                    <p id="remove-bots-hint" className="settings-native-toggle__hint">
+                      Если включено, бот-аккаунты будут автоматически удаляться из группы.
+                    </p>
+                  ) : null}
                 </div>
 
                 <div className="settings-native-toggle">
                   <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title">
-                      Удалять пользователей из черного списка
-                    </span>
+                    <div className="settings-native-toggle__title-wrap">
+                      <span className="settings-native-toggle__title">
+                        Удалять пользователей из черного списка
+                      </span>
+                      <button
+                        type="button"
+                        className={cn(
+                          'settings-info-button',
+                          openHintKey === 'globalBlacklist' && 'is-open',
+                        )}
+                        aria-label="Пояснение для глобального черного списка"
+                        aria-controls="global-blacklist-hint"
+                        aria-expanded={openHintKey === 'globalBlacklist'}
+                        onClick={() => toggleHint('globalBlacklist')}
+                      >
+                        <span aria-hidden>i</span>
+                      </button>
+                    </div>
 
                     <label
                       className="settings-native-switch"
@@ -2641,98 +3173,102 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     </label>
                   </div>
 
-                  <p className="settings-native-toggle__hint">
-                    Если включить в любом чате, режим начнет действовать во всех чатах бота.
-                  </p>
-                </div>
-
-                <div
-                  className={cn(
-                    'field',
-                    'allowlist-panel',
-                    blacklistInputError && 'allowlist-panel--error',
-                  )}
-                >
-                  <div className="allowlist-panel__head">
-                    <span className="field__label">Черный список пользователей</span>
-                    <span className="chip">{globalBlacklistEntries.length}</span>
-                  </div>
-
-                  <p className="allowlist-panel__subtitle">
-                    Добавьте ID пользователя, которого нужно удалять автоматически.
-                  </p>
-
-                  <div className="allowlist-add-row">
-                    <input
-                      type="text"
-                      inputMode="text"
-                      value={blacklistInput}
-                      onChange={(event) => {
-                        setBlacklistInput(event.target.value);
-                        setBlacklistInputError('');
-                      }}
-                      onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
-                          event.preventDefault();
-                          handleAddGlobalBlacklistUser();
-                        }
-                      }}
-                      placeholder="user_id"
-                    />
-                    <button
-                      type="button"
-                      className="button button--accent allowlist-add-row__button"
-                      onClick={handleAddGlobalBlacklistUser}
-                      disabled={
-                        addGlobalBlacklistUserMutation.isPending ||
-                        removeGlobalBlacklistUserMutation.isPending
-                      }
-                    >
-                      {addGlobalBlacklistUserMutation.isPending ? 'Добавляем...' : 'Добавить'}
-                    </button>
-                  </div>
-
-                  {blacklistInputError ? (
-                    <small className="field__hint">{blacklistInputError}</small>
-                  ) : null}
-
-                  {globalBlacklistQuery.isLoading ? (
-                    <p className="allowlist-empty">Загрузка списка...</p>
-                  ) : null}
-
-                  {globalBlacklistQuery.error ? (
-                    <p className="allowlist-empty allowlist-empty--error">
-                      Ошибка: {formatApiError(globalBlacklistQuery.error)}
+                  {openHintKey === 'globalBlacklist' ? (
+                    <p id="global-blacklist-hint" className="settings-native-toggle__hint">
+                      Если включить в любом чате, режим начнет действовать во всех чатах бота.
                     </p>
                   ) : null}
-
-                  {!globalBlacklistQuery.isLoading && !globalBlacklistQuery.error ? (
-                    globalBlacklistEntries.length > 0 ? (
-                      <ul className="allowlist-list" aria-label="Черный список пользователей">
-                        {globalBlacklistEntries.map((entry) => (
-                          <li key={entry.userId} className="allowlist-item">
-                            <span className="allowlist-item__domain">{entry.userId}</span>
-                            <button
-                              type="button"
-                              className="allowlist-item__remove"
-                              onClick={() =>
-                                removeGlobalBlacklistUserMutation.mutate(entry.userId)
-                              }
-                              disabled={
-                                removeGlobalBlacklistUserMutation.isPending ||
-                                addGlobalBlacklistUserMutation.isPending
-                              }
-                            >
-                              Удалить
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="allowlist-empty">Список пуст</p>
-                    )
-                  ) : null}
                 </div>
+
+                {draft.globalUserBlacklistEnabled ? (
+                  <div
+                    className={cn(
+                      'field',
+                      'allowlist-panel',
+                      blacklistInputError && 'allowlist-panel--error',
+                    )}
+                  >
+                    <div className="allowlist-panel__head">
+                      <span className="field__label">Черный список пользователей</span>
+                      <span className="chip">{globalBlacklistEntries.length}</span>
+                    </div>
+
+                    <p className="allowlist-panel__subtitle">
+                      Добавьте ID пользователя, которого нужно удалять автоматически.
+                    </p>
+
+                    <div className="allowlist-add-row">
+                      <input
+                        type="text"
+                        inputMode="text"
+                        value={blacklistInput}
+                        onChange={(event) => {
+                          setBlacklistInput(event.target.value);
+                          setBlacklistInputError('');
+                        }}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            handleAddGlobalBlacklistUser();
+                          }
+                        }}
+                        placeholder="user_id"
+                      />
+                      <button
+                        type="button"
+                        className="button button--accent allowlist-add-row__button"
+                        onClick={handleAddGlobalBlacklistUser}
+                        disabled={
+                          addGlobalBlacklistUserMutation.isPending ||
+                          removeGlobalBlacklistUserMutation.isPending
+                        }
+                      >
+                        {addGlobalBlacklistUserMutation.isPending ? 'Добавляем...' : 'Добавить'}
+                      </button>
+                    </div>
+
+                    {blacklistInputError ? (
+                      <small className="field__hint">{blacklistInputError}</small>
+                    ) : null}
+
+                    {globalBlacklistQuery.isLoading ? (
+                      <p className="allowlist-empty">Загрузка списка...</p>
+                    ) : null}
+
+                    {globalBlacklistQuery.error ? (
+                      <p className="allowlist-empty allowlist-empty--error">
+                        Ошибка: {formatApiError(globalBlacklistQuery.error)}
+                      </p>
+                    ) : null}
+
+                    {!globalBlacklistQuery.isLoading && !globalBlacklistQuery.error ? (
+                      globalBlacklistEntries.length > 0 ? (
+                        <ul className="allowlist-list" aria-label="Черный список пользователей">
+                          {globalBlacklistEntries.map((entry) => (
+                            <li key={entry.userId} className="allowlist-item">
+                              <span className="allowlist-item__domain">{entry.userId}</span>
+                              <button
+                                type="button"
+                                className="allowlist-item__remove"
+                                onClick={() =>
+                                  removeGlobalBlacklistUserMutation.mutate(entry.userId)
+                                }
+                                disabled={
+                                  removeGlobalBlacklistUserMutation.isPending ||
+                                  addGlobalBlacklistUserMutation.isPending
+                                }
+                              >
+                                Удалить
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="allowlist-empty">Список пуст</p>
+                      )
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             </div>
           </GlassCard>

@@ -65,7 +65,8 @@
 }
 
 .field input,
-.field select {
+.field select,
+.field textarea {
   width: 100%;
   min-height: 42px;
   border-radius: var(--radius-sm);
@@ -77,7 +78,8 @@
 }
 
 .field input:focus,
-.field select:focus {
+.field select:focus,
+.field textarea:focus {
   border-color: rgba(62, 96, 127, 0.42);
   box-shadow: 0 0 0 3px rgba(62, 96, 127, 0.13);
 }
@@ -93,7 +95,8 @@
 }
 
 .field--error input,
-.field--error select {
+.field--error select,
+.field--error textarea {
   border-color: rgba(228, 83, 99, 0.45);
 }
 
@@ -901,6 +904,12 @@
   min-width: 0;
 }
 
+.settings-native-toggle__title-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .settings-native-toggle__title {
   font-size: 0.84rem;
   font-weight: 700;
@@ -912,6 +921,15 @@
   font-size: 0.76rem;
   font-weight: 600;
   color: var(--text-secondary);
+}
+
+.settings-edit-button {
+  min-height: 28px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 0.72rem;
+  border-radius: 9px;
+  white-space: nowrap;
 }
 
 .settings-subsection-divider {
@@ -984,6 +1002,57 @@
   font-size: 0.76rem;
   line-height: 1.35;
   padding: 8px 10px;
+}
+
+.bot-message-editor {
+  display: grid;
+  gap: 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(62, 96, 127, 0.16);
+  background: rgba(255, 255, 255, 0.62);
+  padding: 10px;
+}
+
+.bot-message-editor__field textarea {
+  min-height: 96px;
+  resize: vertical;
+  line-height: 1.35;
+}
+
+.bot-message-editor__meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.bot-message-editor__reset {
+  min-height: 30px;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 0.72rem;
+}
+
+.bot-message-editor__hint {
+  margin: 0;
+}
+
+.bot-message-editor__preview {
+  display: grid;
+  gap: 5px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(62, 96, 127, 0.16);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.bot-message-editor__preview p {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .settings-native-switch {

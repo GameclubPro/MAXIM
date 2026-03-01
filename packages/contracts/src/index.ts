@@ -11,6 +11,7 @@ const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
 const duplicateMaxCountSchema = z.number().int().min(2).max(20);
 const botButtonUrlSchema = z.string().trim().max(2_048).default('');
 const botButtonTextSchema = z.string().trim().max(32).default('Открыть');
+const botMessageTextSchema = z.string().max(1_000).default('');
 
 function isValidBotButtonUrl(value: string): boolean {
   const normalized = value.trim();
@@ -73,6 +74,7 @@ export const chatSettingsSchema = z
     fileMessagesEnabled: z.boolean().default(true),
     voiceMessagesEnabled: z.boolean().default(true),
     messageLimitsBotMessageEnabled: z.boolean().default(false),
+    messageLimitsBotMessageText: botMessageTextSchema,
     messageLimitsBotButtonEnabled: z.boolean().default(false),
     messageLimitsBotButtonUrl: botButtonUrlSchema,
     messageLimitsBotButtonText: botButtonTextSchema,
@@ -85,6 +87,7 @@ export const chatSettingsSchema = z
     commercialAdsLowConfidenceLogEnabled: z.boolean().default(true),
     commercialAdsWarnFirstEnabled: z.boolean().default(true),
     textFiltersBotMessageEnabled: z.boolean().default(false),
+    textFiltersBotMessageText: botMessageTextSchema,
     textFiltersWarnEnabled: z.boolean().default(false),
     textFiltersBanEnabled: z.boolean().default(false),
     textFiltersKickEnabled: z.boolean().default(false),
@@ -106,10 +109,12 @@ export const chatSettingsSchema = z
       .default(8 * 60),
     nightModeTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
     nightModeBotMessageEnabled: z.boolean().default(true),
+    nightModeBotMessageText: botMessageTextSchema,
     nightModeBotButtonEnabled: z.boolean().default(false),
     nightModeBotButtonUrl: botButtonUrlSchema,
     nightModeBotButtonText: botButtonTextSchema,
     linkBotMessageEnabled: z.boolean().default(true),
+    linkBotMessageText: botMessageTextSchema,
     linkWarnEnabled: z.boolean().default(false),
     linkBanEnabled: z.boolean().default(false),
     linkKickEnabled: z.boolean().default(false),
@@ -117,6 +122,7 @@ export const chatSettingsSchema = z
     linkBotButtonUrl: botButtonUrlSchema,
     linkBotButtonText: botButtonTextSchema,
     duplicateBotMessageEnabled: z.boolean().default(false),
+    duplicateBotMessageText: botMessageTextSchema,
     duplicateBotButtonEnabled: z.boolean().default(false),
     duplicateBotButtonUrl: botButtonUrlSchema,
     duplicateBotButtonText: botButtonTextSchema,
