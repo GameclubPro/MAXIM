@@ -21,13 +21,13 @@ export class WebhookParser {
     const membershipChatId = this.extractMembershipChatId(membershipPayload);
     const membershipSenderId = this.extractMembershipSenderId(membershipPayload);
     const membershipSenderName = this.extractMembershipSenderName(membershipPayload);
-    const resolvedMessageId = messageId || (this.isMembershipUpdateType(type) ? `${type}:${updateId}` : '');
+    const resolvedMessageId = messageId || (this.isSyntheticMessageUpdateType(type) ? `${type}:${updateId}` : '');
     const resolvedChatId = chatId || membershipChatId;
     const resolvedSenderId = senderId || membershipSenderId;
     const resolvedSenderName = senderName ?? membershipSenderName;
     const hasMessage =
       Boolean(message && resolvedMessageId && resolvedChatId) ||
-      Boolean(this.isMembershipUpdateType(type) && resolvedChatId);
+      Boolean(this.isSyntheticMessageUpdateType(type) && resolvedChatId);
 
     const normalized: MaxUpdate = {
       updateId,
@@ -60,16 +60,16 @@ export class WebhookParser {
     return String(value);
   }
 
-  private isMembershipUpdateType(type: string): boolean {
+  private isSyntheticMessageUpdateType(type: string): boolean {
     const normalized = type.trim().toLowerCase();
-    return normalized === 'user_added' || normalized === 'bot_added';
+    return normalized === 'user_added' || normalized === 'bot_added' || normalized === 'bot_started';
   }
 
   private extractMembershipPayload(
     payload: Record<string, unknown>,
     type: string,
   ): Record<string, unknown> | null {
-    if (!this.isMembershipUpdateType(type)) {
+    if (!this.isSyntheticMessageUpdateType(type)) {
       return null;
     }
 

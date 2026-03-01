@@ -41,6 +41,7 @@ const DEFAULT_NIGHT_MODE_TIMEZONE = 'Europe/Moscow';
 const NIGHT_MODE_NOTICE_RULE_CODE = 'NIGHT_MODE_NOTICE';
 const LINK_ESCALATION_WINDOW_HOURS = 24;
 const TEXT_FILTER_ESCALATION_WINDOW_HOURS = 24;
+const BOT_STARTED_INSTRUCTION_TEXT = 'Перед запуском mini app нажмите кнопку open_app в чате с ботом.';
 const MAX_FORWARD_SCAN_DEPTH = 8;
 const GLOBAL_BLACKLIST_TOGGLE_CACHE_TTL_MS = 30_000;
 const NON_SANCTION_RULE_CODES = new Set([
@@ -152,6 +153,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const serviceMembersEvent = this.extractServiceMemberUserIds(update).length > 0;
 
     const { chatId, chatTitle, senderId, senderName, text, createdAt, messageId } = update.message;
+    if (this.isBotStartedUpdate(update)) {
+      await this.handleBotStartedInstruction(update, chatId);
+      return;
+    }
+
     const userLabel = this.formatUserLabel(senderName);
     const mode = this.systemModeService?.getSnapshot() ?? {
       mode: 'normal',
@@ -2657,6 +2663,94 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private isNightModeStartMomentNow(startMinutes: number, timezone: string): boolean {
     const currentMinutes = this.getCurrentMinutesInTimeZone(timezone);
     return currentMinutes !== null && currentMinutes === startMinutes;
+  }
+
+  private isBotStartedUpdate(update: MaxUpdate): boolean {
+    return this.readLowerString(update.type) === 'bot_started';
+  }
+
+  private async handleBotStartedInstruction(update: MaxUpdate, chatId: string) {
+    if (!this.shouldSendBotStartedInstruction(update, chatId)) {
+      return;
+    }
+
+    try {
+      await this.maxClient.sendMessage(chatId, BOT_STARTED_INSTRUCTION_TEXT);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          updateId: update.updateId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to send bot_started instruction',
+      );
+    }
+  }
+
+  private shouldSendBotStartedInstruction(update: MaxUpdate, chatId: string): boolean {
+    const chatType = this.extractBotStartedChatType(update);
+    if (chatType === 'chat') {
+      return false;
+    }
+
+    const numericChatId = this.parseChatIdAsBigInt(chatId);
+    if (numericChatId === null) {
+      return false;
+    }
+
+    return numericChatId > 0n;
+  }
+
+  private extractBotStartedChatType(update: MaxUpdate): string | null {
+    const raw = this.asRecord(update.raw);
+    if (!raw) {
+      return null;
+    }
+
+    const data = this.asRecord(raw.data);
+    const event = this.asRecord(raw.event);
+    const candidates = [
+      raw,
+      this.asRecord(raw.bot_started),
+      data,
+      data ? this.asRecord(data.bot_started) : null,
+      event,
+      event ? this.asRecord(event.bot_started) : null,
+    ];
+
+    for (const candidate of candidates) {
+      if (!candidate) {
+        continue;
+      }
+
+      const chat = this.asRecord(candidate.chat);
+      const type = this.readLowerString(
+        candidate.chat_type ?? candidate.chatType ?? chat?.type ?? chat?.chat_type ?? chat?.chatType,
+      );
+      if (type) {
+        return type;
+      }
+    }
+
+    return null;
+  }
+
+  private parseChatIdAsBigInt(chatId: string): bigint | null {
+    if (typeof chatId !== 'string') {
+      return null;
+    }
+
+    const normalized = chatId.trim();
+    if (!/^-?\d+$/.test(normalized)) {
+      return null;
+    }
+
+    try {
+      return BigInt(normalized);
+    } catch {
+      return null;
+    }
   }
 
   private isSenderChatAdmin(

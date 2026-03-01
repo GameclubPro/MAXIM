@@ -280,6 +280,64 @@ function createUserAddedUpdate(): MaxUpdate {
   };
 }
 
+function createBotStartedPrivateUpdate(): MaxUpdate {
+  return {
+    updateId: 'upd-bot-started-private-1',
+    type: 'bot_started',
+    message: {
+      messageId: 'bot_started:upd-bot-started-private-1',
+      chatId: '152517912',
+      senderId: 'user-started-1',
+      senderName: 'Пользователь bot_started',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'bot_started',
+      chat_id: 152517912,
+      chat: {
+        id: 152517912,
+        type: 'dialog',
+      },
+      user: {
+        user_id: 'user-started-1',
+        type: 'user',
+        display_name: 'Пользователь bot_started',
+      },
+      timestamp: Date.now(),
+    },
+  };
+}
+
+function createBotStartedGroupUpdate(): MaxUpdate {
+  return {
+    updateId: 'upd-bot-started-group-1',
+    type: 'bot_started',
+    message: {
+      messageId: 'bot_started:upd-bot-started-group-1',
+      chatId: '-71527833503751',
+      senderId: 'user-started-group-1',
+      senderName: 'Пользователь bot_started group',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'bot_started',
+      chat_id: -71527833503751,
+      chat: {
+        id: -71527833503751,
+        type: 'chat',
+      },
+      user: {
+        user_id: 'user-started-group-1',
+        type: 'user',
+        display_name: 'Пользователь bot_started group',
+      },
+      timestamp: Date.now(),
+    },
+  };
+}
+
 function createOldUpdate(): MaxUpdate {
   return {
     updateId: 'upd-old-1',
@@ -1008,6 +1066,103 @@ describe('ModerationService', () => {
         action: SanctionAction.NONE,
       }),
     });
+  });
+
+  it('sends instruction for personal bot_started update and skips moderation flow', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createBotStartedPrivateUpdate());
+
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      '152517912',
+      'Перед запуском mini app нажмите кнопку open_app в чате с ботом.',
+    );
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('does not send instruction for group bot_started update and skips moderation flow', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createBotStartedGroupUpdate());
+
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
   it('does not send greeting message when greeting toggle is disabled', async () => {

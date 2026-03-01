@@ -316,4 +316,24 @@ describe('WebhookParser', () => {
     expect(parsed.message?.senderId).toBe('888');
     expect(parsed.message?.senderName).toBe('Иван Смирнов');
   });
+
+  it('builds normalized message for bot_started update without message payload', () => {
+    const parsed = parser.parse({
+      update_id: 'upd-bot-started-1',
+      update_type: 'bot_started',
+      chat_id: 152517912,
+      user: {
+        user_id: 100500,
+        first_name: 'MAX',
+        last_name: 'User',
+      },
+      timestamp: 1772249118580,
+    });
+
+    expect(parsed.type).toBe('bot_started');
+    expect(parsed.message?.messageId).toBe('bot_started:upd-bot-started-1');
+    expect(parsed.message?.chatId).toBe('152517912');
+    expect(parsed.message?.senderId).toBe('100500');
+    expect(parsed.message?.senderName).toBe('MAX User');
+  });
 });
