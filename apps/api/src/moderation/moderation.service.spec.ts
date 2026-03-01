@@ -1370,9 +1370,14 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.findFirst).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
   });
 
   it('handles duplicate escalation separately and does not call SanctionService', async () => {

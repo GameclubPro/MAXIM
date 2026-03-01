@@ -216,6 +216,14 @@ export class ModerationService {
       return;
     }
 
+    const senderIsChatAdmin = this.isSenderChatAdmin(
+      chat.adminUserIds.map((userId) => ({ userId })),
+      senderId,
+    );
+    if (senderIsChatAdmin) {
+      return;
+    }
+
     if (globalUserBlacklistEnabled) {
       const handled = await this.handleGloballyBlacklistedSenderMessage({
         chatId,
@@ -241,11 +249,7 @@ export class ModerationService {
       return;
     }
 
-    const senderIsChatAdmin = this.isSenderChatAdmin(
-      chat.adminUserIds.map((userId) => ({ userId })),
-      senderId,
-    );
-    if (this.isNightModeActiveNow(settings) && !senderIsChatAdmin) {
+    if (this.isNightModeActiveNow(settings)) {
       await this.handleNightModeMessage({
         chatId,
         userId: senderId,
