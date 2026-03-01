@@ -296,4 +296,24 @@ describe('WebhookParser', () => {
     expect(parsed.message?.chatId).toBe('-123456789');
     expect(parsed.message?.senderId).toBe('');
   });
+
+  it('builds normalized message for user_added update without message payload', () => {
+    const parsed = parser.parse({
+      update_id: 'upd-user-added-1',
+      update_type: 'user_added',
+      chat_id: -123456789,
+      user: {
+        user_id: 888,
+        first_name: 'Иван',
+        last_name: 'Смирнов',
+      },
+      timestamp: 1772249118580,
+    });
+
+    expect(parsed.type).toBe('user_added');
+    expect(parsed.message?.messageId).toBe('user_added:upd-user-added-1');
+    expect(parsed.message?.chatId).toBe('-123456789');
+    expect(parsed.message?.senderId).toBe('888');
+    expect(parsed.message?.senderName).toBe('Иван Смирнов');
+  });
 });

@@ -6,6 +6,9 @@ import { randomUUID } from 'node:crypto';
 export class WebhookParser {
   parse(payload: Record<string, unknown>): MaxUpdate {
     const type = this.extractUpdateType(payload);
+    const updateId = String(
+      payload.updateId ?? payload.update_id ?? payload.eventId ?? payload.event_id ?? randomUUID(),
+    );
     const message = this.extractMessageNode(payload, type);
     const messageId = this.extractMessageId(message, payload);
     const chatId = this.extractChatId(message, payload);
@@ -14,21 +17,29 @@ export class WebhookParser {
     const chatTitle = this.extractChatTitle(message);
     const messageText = this.extractMessageText(message);
     const createdAt = this.extractCreatedAt(message, payload);
-    const hasMessage = Boolean(message && messageId && chatId);
+    const membershipPayload = this.extractMembershipPayload(payload, type);
+    const membershipChatId = this.extractMembershipChatId(membershipPayload);
+    const membershipSenderId = this.extractMembershipSenderId(membershipPayload);
+    const membershipSenderName = this.extractMembershipSenderName(membershipPayload);
+    const resolvedMessageId = messageId || (this.isMembershipUpdateType(type) ? `${type}:${updateId}` : '');
+    const resolvedChatId = chatId || membershipChatId;
+    const resolvedSenderId = senderId || membershipSenderId;
+    const resolvedSenderName = senderName ?? membershipSenderName;
+    const hasMessage =
+      Boolean(message && resolvedMessageId && resolvedChatId) ||
+      Boolean(this.isMembershipUpdateType(type) && resolvedChatId);
 
     const normalized: MaxUpdate = {
-      updateId: String(
-        payload.updateId ?? payload.update_id ?? payload.eventId ?? payload.event_id ?? randomUUID(),
-      ),
+      updateId,
       type,
       message:
         hasMessage
           ? {
-              messageId,
-              chatId,
+              messageId: resolvedMessageId,
+              chatId: resolvedChatId,
               ...(chatTitle ? { chatTitle } : {}),
-              senderId,
-              ...(senderName ? { senderName } : {}),
+              senderId: resolvedSenderId,
+              ...(resolvedSenderName ? { senderName: resolvedSenderName } : {}),
               text: messageText,
               createdAt,
             }
@@ -47,6 +58,109 @@ export class WebhookParser {
   private extractUpdateType(payload: Record<string, unknown>): string {
     const value = payload.type ?? payload.update_type ?? payload.event_type ?? 'unknown';
     return String(value);
+  }
+
+  private isMembershipUpdateType(type: string): boolean {
+    const normalized = type.trim().toLowerCase();
+    return normalized === 'user_added' || normalized === 'bot_added';
+  }
+
+  private extractMembershipPayload(
+    payload: Record<string, unknown>,
+    type: string,
+  ): Record<string, unknown> | null {
+    if (!this.isMembershipUpdateType(type)) {
+      return null;
+    }
+
+    const data = this.asRecord(payload.data);
+    const event = this.asRecord(payload.event);
+    const candidates = [
+      payload,
+      this.asRecord(payload[type]),
+      data,
+      data ? this.asRecord(data[type]) : null,
+      event,
+      event ? this.asRecord(event[type]) : null,
+    ];
+
+    for (const candidate of candidates) {
+      if (!candidate) {
+        continue;
+      }
+
+      if (this.extractMembershipChatId(candidate) || this.extractMembershipSenderId(candidate)) {
+        return candidate;
+      }
+    }
+
+    return null;
+  }
+
+  private extractMembershipChatId(node: Record<string, unknown> | null): string {
+    if (!node) {
+      return '';
+    }
+
+    const chat = this.asRecord(node.chat);
+    const candidates = [node.chat_id, node.chatId, chat?.id, chat?.chat_id, chat?.chatId];
+
+    for (const value of candidates) {
+      if (typeof value === 'string' || typeof value === 'number') {
+        return String(value);
+      }
+    }
+
+    return '';
+  }
+
+  private extractMembershipSenderId(node: Record<string, unknown> | null): string {
+    if (!node) {
+      return '';
+    }
+
+    const user = this.asRecord(node.user);
+    const candidates = [node.user_id, node.userId, user?.id, user?.user_id, user?.userId];
+
+    for (const value of candidates) {
+      if (typeof value === 'string' || typeof value === 'number') {
+        return String(value);
+      }
+    }
+
+    return '';
+  }
+
+  private extractMembershipSenderName(node: Record<string, unknown> | null): string | undefined {
+    if (!node) {
+      return undefined;
+    }
+
+    const user = this.asRecord(node.user);
+    if (!user) {
+      return undefined;
+    }
+
+    const directCandidates = [
+      user.display_name,
+      user.displayName,
+      user.name,
+      user.full_name,
+      user.fullName,
+      user.nickname,
+    ];
+
+    for (const value of directCandidates) {
+      const text = this.readString(value);
+      if (text) {
+        return text;
+      }
+    }
+
+    const firstName = this.readString(user.first_name ?? user.firstName ?? user.given_name ?? user.givenName);
+    const lastName = this.readString(user.last_name ?? user.lastName ?? user.family_name ?? user.familyName);
+    const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
+    return fullName.length > 0 ? fullName : undefined;
   }
 
   private extractMessageNode(

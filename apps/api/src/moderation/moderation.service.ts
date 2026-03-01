@@ -2608,8 +2608,13 @@ export class ModerationService {
       return [];
     }
 
-    const messageNode = this.extractRawMessageNode(raw) ?? raw;
     const rows: Array<Record<string, unknown>> = [];
+    const directMembershipEntity = this.extractDirectMembershipEntity(raw);
+    if (directMembershipEntity) {
+      rows.push(directMembershipEntity);
+    }
+
+    const messageNode = this.extractRawMessageNode(raw) ?? raw;
     this.collectServiceMemberRows(messageNode, rows);
     return rows;
   }
@@ -2659,6 +2664,37 @@ export class ModerationService {
       key === 'new_users' ||
       key === 'new_user'
     );
+  }
+
+  private extractDirectMembershipEntity(raw: Record<string, unknown>): Record<string, unknown> | null {
+    const updateType = this.readLowerString(raw.update_type) ?? this.readLowerString(raw.type);
+    if (updateType !== 'user_added' && updateType !== 'bot_added') {
+      return null;
+    }
+
+    const data = this.asRecord(raw.data);
+    const event = this.asRecord(raw.event);
+    const candidates = [
+      raw,
+      this.asRecord(raw[updateType]),
+      data,
+      data ? this.asRecord(data[updateType]) : null,
+      event,
+      event ? this.asRecord(event[updateType]) : null,
+    ];
+
+    for (const candidate of candidates) {
+      if (!candidate) {
+        continue;
+      }
+
+      const userEntity = this.asRecord(candidate.user) ?? this.asRecord(candidate.member);
+      if (userEntity && this.readUserIdFromEntity(userEntity)) {
+        return userEntity;
+      }
+    }
+
+    return null;
   }
 
   private collectMemberEntities(node: unknown, acc: Array<Record<string, unknown>>, depth = 0) {
