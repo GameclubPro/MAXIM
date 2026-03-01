@@ -5,11 +5,7 @@ import { EventType, Operator, SanctionAction, WebhookStatus } from '@prisma/clie
 import type { Job } from 'bullmq';
 import { MaxClientService, type MaxSendMessageOptions } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
-import type {
-  DuplicateAction,
-  DuplicateDecision,
-  DuplicateHit,
-} from './rule-engine.service';
+import type { DuplicateAction, DuplicateDecision, DuplicateHit } from './rule-engine.service';
 import { RuleEngineService } from './rule-engine.service';
 import { SanctionService } from './sanction.service';
 import { maskText } from './text-mask.util';
@@ -510,7 +506,10 @@ export class ModerationService {
 
       if (linkAction === SanctionAction.WARN) {
         try {
-          await this.maxClient.sendMessage(chatId, this.buildLinkWarnExplanation(userLabel));
+          await this.maxClient.sendMessage(
+            chatId,
+            this.buildLinkWarnExplanation(userLabel, settings.linkWarnMessageText),
+          );
         } catch (error: unknown) {
           this.logger.warn(
             {
@@ -539,7 +538,10 @@ export class ModerationService {
 
       if (textFilterAction === SanctionAction.WARN) {
         try {
-          await this.maxClient.sendMessage(chatId, this.buildTextFilterWarnExplanation(userLabel));
+          await this.maxClient.sendMessage(
+            chatId,
+            this.buildTextFilterWarnExplanation(userLabel, settings.textFiltersWarnMessageText),
+          );
         } catch (error: unknown) {
           this.logger.warn(
             {
@@ -916,16 +918,26 @@ export class ModerationService {
     });
   }
 
-  private buildLinkWarnExplanation(userLabel: string): string {
-    return `Пользователю ${userLabel} вынесено предупреждение за ссылку. В этом чате нельзя отправлять ссылки.`;
+  private buildLinkWarnExplanation(userLabel: string, templateText: string): string {
+    const fallback = `Пользователю ${userLabel} вынесено предупреждение за ссылку. В этом чате нельзя отправлять ссылки.`;
+    return this.renderBotMessageTemplate(templateText, fallback, {
+      user: userLabel,
+      reason: 'в этом чате нельзя отправлять ссылки',
+      warning: 'вынесено предупреждение за ссылку',
+    });
   }
 
   private buildLinkKickExplanation(userLabel: string): string {
     return `Пользователь ${userLabel} удален из чата за повторные сообщения со ссылками.`;
   }
 
-  private buildTextFilterWarnExplanation(userLabel: string): string {
-    return `Пользователю ${userLabel} вынесено предупреждение за нарушение текстовых правил.`;
+  private buildTextFilterWarnExplanation(userLabel: string, templateText: string): string {
+    const fallback = `Пользователю ${userLabel} вынесено предупреждение за нарушение текстовых правил.`;
+    return this.renderBotMessageTemplate(templateText, fallback, {
+      user: userLabel,
+      reason: 'нарушение текстовых правил',
+      warning: 'вынесено предупреждение за нарушение текстовых правил',
+    });
   }
 
   private buildTextFilterKickExplanation(userLabel: string): string {

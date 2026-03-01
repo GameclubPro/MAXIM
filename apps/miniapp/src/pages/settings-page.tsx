@@ -42,11 +42,13 @@ type DuplicateMaxCountKey =
   | 'duplicateBanMaxCount';
 type HintKey =
   | 'linkBotMessage'
+  | 'linkWarnMessage'
   | 'linkBotButton'
   | 'textFiltersProfanity'
   | 'textFiltersCommercial'
   | 'commercialSensitivity'
   | 'textFiltersBotMessage'
+  | 'textFiltersWarnMessage'
   | 'textFiltersBotButton'
   | 'duplicateBotMessage'
   | 'duplicateBotButton'
@@ -61,6 +63,7 @@ type HintKey =
   | 'removeBotsFromGroup'
   | 'globalBlacklist';
 type BotMessageEditorKey = 'link' | 'textFilters' | 'duplicate' | 'messageLimits' | 'night';
+type WarnMessageEditorKey = 'linkWarn' | 'textFiltersWarn';
 type SettingsSectionKey = 'links' | 'textFilters' | 'duplicates' | 'limits' | 'night' | 'extra';
 
 const DUPLICATE_STAGE_OPTIONS: Array<{
@@ -154,6 +157,11 @@ const DEFAULT_BOT_MESSAGE_TEMPLATES: Record<BotMessageEditorKey, string> = {
   night: 'Чат сейчас закрыт на ночь ({night_window}, {night_timezone}). {night_status}',
 };
 
+const DEFAULT_WARN_MESSAGE_TEMPLATES: Record<WarnMessageEditorKey, string> = {
+  linkWarn: 'Пользователю {user} {warning}. {reason}.',
+  textFiltersWarn: 'Пользователю {user} {warning}.',
+};
+
 const BOT_MESSAGE_TEMPLATE_HINTS: Record<BotMessageEditorKey, string> = {
   link: 'Плейсхолдеры: {user}, {message_status}, {reason}.',
   textFilters: 'Плейсхолдеры: {user}, {message_status}, {reason}.',
@@ -161,6 +169,11 @@ const BOT_MESSAGE_TEMPLATE_HINTS: Record<BotMessageEditorKey, string> = {
   messageLimits:
     'Плейсхолдеры: {user}, {message_status}, {reason}, {actual_length}, {max_length}, {photo_cooldown_hours}.',
   night: 'Плейсхолдеры: {user}, {night_window}, {night_timezone}, {night_status}.',
+};
+
+const WARN_MESSAGE_TEMPLATE_HINTS: Record<WarnMessageEditorKey, string> = {
+  linkWarn: 'Плейсхолдеры: {user}, {warning}, {reason}.',
+  textFiltersWarn: 'Плейсхолдеры: {user}, {warning}, {reason}.',
 };
 
 const BOT_MESSAGE_PREVIEW_REPLACEMENTS: Record<BotMessageEditorKey, Record<string, string>> = {
@@ -193,6 +206,19 @@ const BOT_MESSAGE_PREVIEW_REPLACEMENTS: Record<BotMessageEditorKey, Record<strin
     night_window: '23:00-08:00',
     night_timezone: 'Москва',
     night_status: 'Сообщение пользователя "Алексей" удалено.',
+  },
+};
+
+const WARN_MESSAGE_PREVIEW_REPLACEMENTS: Record<WarnMessageEditorKey, Record<string, string>> = {
+  linkWarn: {
+    user: '"Алексей"',
+    warning: 'вынесено предупреждение за ссылку',
+    reason: 'в этом чате нельзя отправлять ссылки',
+  },
+  textFiltersWarn: {
+    user: '"Алексей"',
+    warning: 'вынесено предупреждение за нарушение текстовых правил',
+    reason: 'нарушение текстовых правил',
   },
 };
 
@@ -347,6 +373,42 @@ function SectionChevron({ isOpen }: { isOpen: boolean }) {
   );
 }
 
+function EditIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
+      <path
+        d="M13.78 4.47L15.53 6.22M5.5 14.5L7.9 13.98C8.2 13.91 8.48 13.76 8.69 13.55L14.96 7.28C15.37 6.87 15.37 6.2 14.96 5.79L14.21 5.04C13.8 4.63 13.13 4.63 12.72 5.04L6.45 11.31C6.24 11.52 6.09 11.8 6.02 12.1L5.5 14.5Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+type EditToggleButtonProps = {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  isOpen?: boolean;
+};
+
+function EditToggleButton({ label, onClick, disabled, isOpen }: EditToggleButtonProps) {
+  return (
+    <button
+      type="button"
+      className={cn('settings-edit-button', isOpen && 'is-open')}
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      disabled={disabled}
+    >
+      <EditIcon />
+    </button>
+  );
+}
+
 type BotMessageEditorProps = {
   editorKey: BotMessageEditorKey;
   value: string;
@@ -397,6 +459,56 @@ function BotMessageEditor({ editorKey, value, onChange, onReset }: BotMessageEdi
   );
 }
 
+type WarnMessageEditorProps = {
+  editorKey: WarnMessageEditorKey;
+  value: string;
+  onChange: (value: string) => void;
+  onReset: () => void;
+};
+
+function WarnMessageEditor({ editorKey, value, onChange, onReset }: WarnMessageEditorProps) {
+  const defaultTemplate = DEFAULT_WARN_MESSAGE_TEMPLATES[editorKey];
+  const templateHint = WARN_MESSAGE_TEMPLATE_HINTS[editorKey];
+  const previewReplacements = WARN_MESSAGE_PREVIEW_REPLACEMENTS[editorKey];
+  const isDefaultTemplate = value.trim().length === 0;
+  const editorValue = resolveBotMessageTemplate(value, defaultTemplate);
+  const previewText = renderBotMessageTemplate(editorValue, previewReplacements);
+
+  return (
+    <div className="bot-message-editor">
+      <label className="field bot-message-editor__field">
+        <span className="field__label">Текст предупреждения</span>
+        <textarea
+          value={editorValue}
+          maxLength={1000}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder={defaultTemplate}
+          rows={3}
+        />
+      </label>
+
+      <div className="bot-message-editor__meta">
+        <span className="chip">{isDefaultTemplate ? 'По умолчанию' : 'Кастомный'}</span>
+        <button
+          type="button"
+          className="button button--ghost bot-message-editor__reset"
+          onClick={onReset}
+          disabled={isDefaultTemplate}
+        >
+          Сбросить
+        </button>
+      </div>
+
+      <p className="field__hint bot-message-editor__hint">{templateHint}</p>
+
+      <div className="bot-message-editor__preview" aria-live="polite">
+        <span className="field__label">Предпросмотр</span>
+        <p>{previewText}</p>
+      </div>
+    </div>
+  );
+}
+
 export function SettingsPage({ api }: { api: ApiClient }) {
   const { chatId } = useParams();
   const location = useLocation();
@@ -413,6 +525,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [showApplyAllConfirm, setShowApplyAllConfirm] = useState(false);
   const [openHintKey, setOpenHintKey] = useState<HintKey | null>(null);
   const [openBotEditorKey, setOpenBotEditorKey] = useState<BotMessageEditorKey | null>(null);
+  const [openWarnEditorKey, setOpenWarnEditorKey] = useState<WarnMessageEditorKey | null>(null);
   const [expandedSections, setExpandedSections] = useState<Record<SettingsSectionKey, boolean>>({
     links: true,
     textFilters: false,
@@ -821,6 +934,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
   function toggleBotMessageEditor(key: BotMessageEditorKey) {
     setOpenBotEditorKey((current) => (current === key ? null : key));
+  }
+
+  function toggleWarnMessageEditor(key: WarnMessageEditorKey) {
+    setOpenWarnEditorKey((current) => (current === key ? null : key));
   }
 
   function toggleSection(section: SettingsSectionKey) {
@@ -1252,14 +1369,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           <div className="settings-native-toggle__title-wrap">
                             <span className="settings-native-toggle__title">1. Объяснение</span>
                             <div className="settings-native-toggle__title-actions">
-                              <button
-                                type="button"
-                                className="button button--ghost settings-edit-button"
+                              <EditToggleButton
+                                label="Редактировать текст сообщения о ссылках"
                                 onClick={() => toggleBotMessageEditor('link')}
                                 disabled={!draft.linkBotMessageEnabled}
-                              >
-                                Редактировать
-                              </button>
+                                isOpen={openBotEditorKey === 'link'}
+                              />
                               <button
                                 type="button"
                                 className={cn(
@@ -1324,7 +1439,29 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                       <div className="settings-native-toggle settings-native-toggle--nested">
                         <div className="settings-native-toggle__row">
-                          <span className="settings-native-toggle__title">2. Предупреждение</span>
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="settings-native-toggle__title">2. Предупреждение</span>
+                            <div className="settings-native-toggle__title-actions">
+                              <EditToggleButton
+                                label="Редактировать текст предупреждения за ссылки"
+                                onClick={() => toggleWarnMessageEditor('linkWarn')}
+                                isOpen={openWarnEditorKey === 'linkWarn'}
+                              />
+                              <button
+                                type="button"
+                                className={cn(
+                                  'settings-info-button',
+                                  openHintKey === 'linkWarnMessage' && 'is-open',
+                                )}
+                                aria-label="Пояснение для предупреждения за ссылки"
+                                aria-controls="link-warn-message-hint"
+                                aria-expanded={openHintKey === 'linkWarnMessage'}
+                                onClick={() => toggleHint('linkWarnMessage')}
+                              >
+                                <span aria-hidden>i</span>
+                              </button>
+                            </div>
+                          </div>
 
                           <label
                             className="settings-native-switch"
@@ -1342,6 +1479,26 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             </span>
                           </label>
                         </div>
+
+                        {openHintKey === 'linkWarnMessage' ? (
+                          <p id="link-warn-message-hint" className="settings-native-toggle__hint">
+                            Текст отправляется при 2-й ссылке за 24 часа, если ступень включена.
+                          </p>
+                        ) : null}
+
+                        {openWarnEditorKey === 'linkWarn' ? (
+                          <WarnMessageEditor
+                            editorKey="linkWarn"
+                            value={draft.linkWarnMessageText}
+                            onChange={(nextValue) =>
+                              setFieldValue(
+                                'linkWarnMessageText',
+                                nextValue as ChatSettings['linkWarnMessageText'],
+                              )
+                            }
+                            onReset={() => setFieldValue('linkWarnMessageText', '')}
+                          />
+                        ) : null}
                       </div>
 
                       <div className="settings-native-toggle settings-native-toggle--nested">
@@ -1651,14 +1808,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     <div className="settings-native-toggle__title-wrap">
                       <span className="settings-native-toggle__title">1. Объяснение</span>
                       <div className="settings-native-toggle__title-actions">
-                        <button
-                          type="button"
-                          className="button button--ghost settings-edit-button"
+                        <EditToggleButton
+                          label="Редактировать текст сообщения фильтрации текста"
                           onClick={() => toggleBotMessageEditor('textFilters')}
                           disabled={!draft.textFiltersBotMessageEnabled}
-                        >
-                          Редактировать
-                        </button>
+                          isOpen={openBotEditorKey === 'textFilters'}
+                        />
                         <button
                           type="button"
                           className={cn(
@@ -1722,7 +1877,29 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                 <div className="settings-native-toggle settings-native-toggle--nested">
                   <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title">2. Предупреждение</span>
+                    <div className="settings-native-toggle__title-wrap">
+                      <span className="settings-native-toggle__title">2. Предупреждение</span>
+                      <div className="settings-native-toggle__title-actions">
+                        <EditToggleButton
+                          label="Редактировать текст предупреждения текстового фильтра"
+                          onClick={() => toggleWarnMessageEditor('textFiltersWarn')}
+                          isOpen={openWarnEditorKey === 'textFiltersWarn'}
+                        />
+                        <button
+                          type="button"
+                          className={cn(
+                            'settings-info-button',
+                            openHintKey === 'textFiltersWarnMessage' && 'is-open',
+                          )}
+                          aria-label="Пояснение для предупреждения текстового фильтра"
+                          aria-controls="text-filters-warn-message-hint"
+                          aria-expanded={openHintKey === 'textFiltersWarnMessage'}
+                          onClick={() => toggleHint('textFiltersWarnMessage')}
+                        >
+                          <span aria-hidden>i</span>
+                        </button>
+                      </div>
+                    </div>
 
                     <label
                       className="settings-native-switch"
@@ -1740,6 +1917,26 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       </span>
                     </label>
                   </div>
+
+                  {openHintKey === 'textFiltersWarnMessage' ? (
+                    <p id="text-filters-warn-message-hint" className="settings-native-toggle__hint">
+                      Текст отправляется при 2-м нарушении текстового фильтра за 24 часа.
+                    </p>
+                  ) : null}
+
+                  {openWarnEditorKey === 'textFiltersWarn' ? (
+                    <WarnMessageEditor
+                      editorKey="textFiltersWarn"
+                      value={draft.textFiltersWarnMessageText}
+                      onChange={(nextValue) =>
+                        setFieldValue(
+                          'textFiltersWarnMessageText',
+                          nextValue as ChatSettings['textFiltersWarnMessageText'],
+                        )
+                      }
+                      onReset={() => setFieldValue('textFiltersWarnMessageText', '')}
+                    />
+                  ) : null}
                 </div>
 
                 <div className="settings-native-toggle settings-native-toggle--nested">
@@ -2118,14 +2315,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     <div className="settings-native-toggle__title-wrap">
                       <span className="settings-native-toggle__title">Сообщение от бота</span>
                       <div className="settings-native-toggle__title-actions">
-                        <button
-                          type="button"
-                          className="button button--ghost settings-edit-button"
+                        <EditToggleButton
+                          label="Редактировать текст сообщения о дублях"
                           onClick={() => toggleBotMessageEditor('duplicate')}
                           disabled={!draft.duplicateBotMessageEnabled}
-                        >
-                          Редактировать
-                        </button>
+                          isOpen={openBotEditorKey === 'duplicate'}
+                        />
                         <button
                           type="button"
                           className={cn(
@@ -2563,14 +2758,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     <div className="settings-native-toggle__title-wrap">
                       <span className="settings-native-toggle__title">Сообщение от бота</span>
                       <div className="settings-native-toggle__title-actions">
-                        <button
-                          type="button"
-                          className="button button--ghost settings-edit-button"
+                        <EditToggleButton
+                          label="Редактировать текст сообщения ограничений"
                           onClick={() => toggleBotMessageEditor('messageLimits')}
                           disabled={!draft.messageLimitsBotMessageEnabled}
-                        >
-                          Редактировать
-                        </button>
+                          isOpen={openBotEditorKey === 'messageLimits'}
+                        />
                         <button
                           type="button"
                           className={cn(
@@ -2893,14 +3086,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     <div className="settings-native-toggle__title-wrap">
                       <span className="settings-native-toggle__title">Сообщение от бота</span>
                       <div className="settings-native-toggle__title-actions">
-                        <button
-                          type="button"
-                          className="button button--ghost settings-edit-button"
+                        <EditToggleButton
+                          label="Редактировать текст сообщения ночного режима"
                           onClick={() => toggleBotMessageEditor('night')}
                           disabled={!draft.nightModeBotMessageEnabled}
-                        >
-                          Редактировать
-                        </button>
+                          isOpen={openBotEditorKey === 'night'}
+                        />
                         <button
                           type="button"
                           className={cn(
