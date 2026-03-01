@@ -44,6 +44,34 @@ type DuplicateStage = {
 const BASE_PROFANITY = ['бляд', 'хуй', 'пизд', 'еба'];
 const SOFT_PROFANITY = ['сука', 'нахер'];
 const EXCEPTIONS = ['бляха', 'страхуй'];
+const ADS_STRONG_TOKENS = [
+  'продам',
+  'куплю',
+  'сдам',
+  'аренда',
+  'услуг',
+  'реклам',
+  'промокод',
+  'доставк',
+  'акци',
+  'скидк',
+  'в наличии',
+  'заказ',
+];
+const ADS_CONTACT_TOKENS = [
+  'пишите в лс',
+  'пишите в лич',
+  'в лс',
+  'в личк',
+  'директ',
+  'звоните',
+  'whatsapp',
+  'ватсап',
+  'telegram',
+  'телеграм',
+  ' тг',
+];
+const ADS_PRICE_PATTERN = /\d{2,}\s?(₽|руб(\.|лей)?|р\.)/iu;
 
 @Injectable()
 export class RuleEngineService {
@@ -77,8 +105,19 @@ export class RuleEngineService {
     const normalized = text.toLowerCase();
     const measuredLength = typeof effectiveLength === 'number' ? effectiveLength : text.length;
 
-    if (this.hasProfanity(normalized, settings.profanityLevel)) {
+    if (
+      settings.russianProfanityFilterEnabled &&
+      this.hasProfanity(normalized, settings.profanityLevel)
+    ) {
       violations.push({ ruleCode: 'PROFANITY', score: 0.95, reason: 'Detected profanity pattern' });
+    }
+
+    if (settings.commercialAdsFilterEnabled && this.hasCommercialAd(normalized)) {
+      violations.push({
+        ruleCode: 'COMMERCIAL_AD',
+        score: 0.9,
+        reason: 'Detected Russian commercial ad pattern',
+      });
     }
 
     const linkViolation = this.hasBlockedLink(normalized, settings.linkPolicy, domainAllowlist);
@@ -329,6 +368,31 @@ export class RuleEngineService {
     }
 
     return null;
+  }
+
+  private hasCommercialAd(text: string): boolean {
+    if (!text || text.trim().length < 8) {
+      return false;
+    }
+
+    const normalized = text.toLowerCase();
+    const strongHits = ADS_STRONG_TOKENS.reduce(
+      (count, token) => count + (normalized.includes(token) ? 1 : 0),
+      0,
+    );
+    const hasContact = ADS_CONTACT_TOKENS.some((token) => normalized.includes(token));
+    const hasPrice = ADS_PRICE_PATTERN.test(normalized);
+    const hasLink = /(https?:\/\/|t\.me\/|max\.ru\/|vk\.com\/|wa\.me\/)/iu.test(normalized);
+
+    if (strongHits >= 2) {
+      return true;
+    }
+
+    if (strongHits >= 1 && (hasContact || hasPrice || hasLink)) {
+      return true;
+    }
+
+    return false;
   }
 
   private isCapsAbuse(text: string, threshold: number): boolean {

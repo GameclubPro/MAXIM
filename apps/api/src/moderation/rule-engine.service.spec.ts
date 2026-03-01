@@ -42,6 +42,12 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     messageLimitsBotButtonEnabled: false,
     messageLimitsBotButtonUrl: '',
     messageLimitsBotButtonText: 'Открыть',
+    russianProfanityFilterEnabled: true,
+    commercialAdsFilterEnabled: false,
+    textFiltersBotMessageEnabled: false,
+    textFiltersBotButtonEnabled: false,
+    textFiltersBotButtonUrl: '',
+    textFiltersBotButtonText: 'Открыть',
     nightModeEnabled: false,
     nightModeStartTimeMinutes: 23 * 60,
     nightModeEndTimeMinutes: 8 * 60,
@@ -84,6 +90,32 @@ describe('RuleEngineService', () => {
 
     expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
     expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
+  });
+
+  it('does not detect PROFANITY when russian profanity filter is disabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'ты сука',
+      settings: buildSettings({ russianProfanityFilterEnabled: false }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
+  });
+
+  it('detects COMMERCIAL_AD when russian ad markers are present', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продам курс, скидка 50%, пишите в лс, цена 3000 руб',
+      settings: buildSettings({ commercialAdsFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(true);
   });
 
   it('detects MESSAGE_TOO_LONG when effective length exceeds limit', async () => {

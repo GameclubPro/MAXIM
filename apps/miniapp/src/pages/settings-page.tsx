@@ -34,7 +34,7 @@ type DuplicateMaxCountKey =
   | 'duplicateKickMaxCount'
   | 'duplicateBanMaxCount';
 type BotHintKey = 'link' | 'duplicate';
-type SettingsSectionKey = 'links' | 'duplicates' | 'limits' | 'night';
+type SettingsSectionKey = 'links' | 'textFilters' | 'duplicates' | 'limits' | 'night';
 
 const DUPLICATE_STAGE_OPTIONS: Array<{
   id: 'WARN' | 'KICK' | 'BAN';
@@ -85,6 +85,23 @@ const LINK_POLICY_OPTIONS: Array<{
     value: 'BLOCKLIST_ONLY',
     label: 'Удалять все ссылки',
     description: 'Любая ссылка удаляется сразу.',
+  },
+];
+
+const TEXT_FILTER_OPTIONS: Array<{
+  key: 'russianProfanityFilterEnabled' | 'commercialAdsFilterEnabled';
+  title: string;
+  description: string;
+}> = [
+  {
+    key: 'russianProfanityFilterEnabled',
+    title: 'Нецензурная лексика (RU)',
+    description: 'Удаляет сообщения с матом и грубой лексикой на русском.',
+  },
+  {
+    key: 'commercialAdsFilterEnabled',
+    title: 'Коммерческие объявления (RU)',
+    description: 'Удаляет рекламные и торговые объявления в чате.',
   },
 ];
 
@@ -228,6 +245,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [openHintKey, setOpenHintKey] = useState<BotHintKey | null>(null);
   const [expandedSections, setExpandedSections] = useState<Record<SettingsSectionKey, boolean>>({
     links: true,
+    textFilters: false,
     duplicates: false,
     limits: false,
     night: false,
@@ -558,6 +576,18 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const hasMessageLimitsBotButtonError = Boolean(
     messageLimitsBotButtonUrlError || messageLimitsBotButtonTextError,
   );
+  const showTextFiltersBotButtonErrors = Boolean(
+    draft?.textFiltersBotMessageEnabled && draft?.textFiltersBotButtonEnabled,
+  );
+  const textFiltersBotButtonUrlError = showTextFiltersBotButtonErrors
+    ? fieldErrors.textFiltersBotButtonUrl
+    : undefined;
+  const textFiltersBotButtonTextError = showTextFiltersBotButtonErrors
+    ? fieldErrors.textFiltersBotButtonText
+    : undefined;
+  const hasTextFiltersBotButtonError = Boolean(
+    textFiltersBotButtonUrlError || textFiltersBotButtonTextError,
+  );
   const showNightBotButtonErrors = Boolean(
     draft?.nightModeBotMessageEnabled && draft?.nightModeBotButtonEnabled,
   );
@@ -585,6 +615,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     draft?.duplicateWarnEnabled,
     draft?.duplicateBanEnabled,
     draft?.duplicateKickEnabled,
+  ].filter(Boolean).length;
+  const textFiltersEnabledCount = [
+    draft?.russianProfanityFilterEnabled,
+    draft?.commercialAdsFilterEnabled,
   ].filter(Boolean).length;
   const limitsRulesEnabledCount = [
     draft?.maxMessageLengthEnabled,
@@ -1007,6 +1041,188 @@ export function SettingsPage({ api }: { api: ApiClient }) {
           <GlassCard
             className="settings-section stagger-in"
             style={{ animationDelay: '45ms' }}
+            aria-label="Фильтрация текста"
+          >
+            <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+              <button
+                type="button"
+                className="settings-section__toggle"
+                aria-expanded={expandedSections.textFilters}
+                aria-controls="settings-text-filters-content"
+                onClick={() => toggleSection('textFilters')}
+              >
+                <span className="settings-section__toggle-main">
+                  <h3>Фильтрация текста</h3>
+                  <small>{textFiltersEnabledCount}/2 фильтра включено</small>
+                </span>
+                <SectionChevron isOpen={expandedSections.textFilters} />
+              </button>
+            </div>
+
+            <div
+              id="settings-text-filters-content"
+              className={cn(
+                'settings-section__collapse',
+                expandedSections.textFilters && 'is-open',
+              )}
+            >
+              <div className="settings-section__collapse-inner">
+                <div className="text-filters-grid">
+                  {TEXT_FILTER_OPTIONS.map((option) => (
+                    <div key={option.key} className="settings-native-toggle text-filter-card">
+                      <div className="settings-native-toggle__row">
+                        <span className="settings-native-toggle__title">{option.title}</span>
+
+                        <label className="settings-native-switch" aria-label={option.title}>
+                          <input
+                            type="checkbox"
+                            checked={draft[option.key]}
+                            onChange={(event) => setFieldValue(option.key, event.target.checked)}
+                          />
+                          <span className="toggle-switch" aria-hidden>
+                            <span className="toggle-switch__thumb" />
+                          </span>
+                        </label>
+                      </div>
+
+                      <p className="settings-native-toggle__hint">{option.description}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div
+                  className="settings-subsection-divider"
+                  role="separator"
+                  aria-label="Сообщения бота для фильтрации текста"
+                >
+                  <span>Сообщения бота</span>
+                </div>
+
+                <div className="settings-native-toggle">
+                  <div className="settings-native-toggle__row">
+                    <span className="settings-native-toggle__title">Сообщение от бота</span>
+
+                    <label
+                      className="settings-native-switch"
+                      aria-label="Включить сообщение от бота для фильтрации текста"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={draft.textFiltersBotMessageEnabled}
+                        onChange={(event) => {
+                          const enabled = event.target.checked;
+                          setFieldValue('textFiltersBotMessageEnabled', enabled);
+                          if (!enabled) {
+                            setFieldValue('textFiltersBotButtonEnabled', false);
+                            clearFieldError('textFiltersBotButtonUrl');
+                            clearFieldError('textFiltersBotButtonText');
+                          }
+                        }}
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                    </label>
+                  </div>
+
+                  <p className="settings-native-toggle__hint">
+                    Бот поясняет удаление, если сообщение попало под текстовый фильтр.
+                  </p>
+                </div>
+
+                {draft.textFiltersBotMessageEnabled ? (
+                  <div
+                    className={cn(
+                      'settings-native-toggle',
+                      'settings-native-toggle--nested',
+                      hasTextFiltersBotButtonError && 'field--error',
+                    )}
+                  >
+                    <div className="settings-native-toggle__row">
+                      <span className="settings-native-toggle__title">Добавить кнопку</span>
+
+                      <label
+                        className="settings-native-switch"
+                        aria-label="Добавить кнопку в сообщение бота для фильтрации текста"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={draft.textFiltersBotButtonEnabled}
+                          onChange={(event) => {
+                            const enabled = event.target.checked;
+                            setFieldValue('textFiltersBotButtonEnabled', enabled);
+                            if (!enabled) {
+                              clearFieldError('textFiltersBotButtonUrl');
+                              clearFieldError('textFiltersBotButtonText');
+                            }
+                          }}
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
+
+                    {draft.textFiltersBotButtonEnabled ? (
+                      <div className="settings-button-fields">
+                        <label
+                          className={cn(
+                            'field settings-url-field',
+                            textFiltersBotButtonUrlError && 'field--error',
+                          )}
+                        >
+                          <span className="field__label">Ссылка кнопки</span>
+                          <input
+                            type="url"
+                            inputMode="url"
+                            value={draft.textFiltersBotButtonUrl}
+                            onChange={(event) =>
+                              setFieldValue('textFiltersBotButtonUrl', event.target.value)
+                            }
+                            placeholder="https://max.ru/channel/rules"
+                          />
+                          {textFiltersBotButtonUrlError ? (
+                            <small className="field__hint">{textFiltersBotButtonUrlError}</small>
+                          ) : null}
+                        </label>
+
+                        <label
+                          className={cn(
+                            'field settings-text-field',
+                            textFiltersBotButtonTextError && 'field--error',
+                          )}
+                        >
+                          <span className="field__label">Название кнопки</span>
+                          <input
+                            type="text"
+                            maxLength={32}
+                            value={draft.textFiltersBotButtonText}
+                            onChange={(event) =>
+                              setFieldValue('textFiltersBotButtonText', event.target.value)
+                            }
+                            placeholder="Правила чата"
+                          />
+                          {textFiltersBotButtonTextError ? (
+                            <small className="field__hint">{textFiltersBotButtonTextError}</small>
+                          ) : null}
+                        </label>
+                      </div>
+                    ) : null}
+
+                    {!hasTextFiltersBotButtonError ? (
+                      <p className="settings-native-toggle__hint">
+                        Добавляет кнопку в сообщение бота о фильтрации текста.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </GlassCard>
+
+          <GlassCard
+            className="settings-section stagger-in"
+            style={{ animationDelay: '90ms' }}
             aria-label="Настройки дублей"
           >
             <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
@@ -1323,7 +1539,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
           <GlassCard
             className="settings-section stagger-in"
-            style={{ animationDelay: '90ms' }}
+            style={{ animationDelay: '135ms' }}
             aria-label="Ограничения сообщений"
           >
             <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
@@ -1661,7 +1877,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
           <GlassCard
             className="settings-section stagger-in"
-            style={{ animationDelay: '135ms' }}
+            style={{ animationDelay: '180ms' }}
             aria-label="Закрытие чата на ночь"
           >
             <div className={cn('settings-section__head', 'settings-section__head--interactive')}>

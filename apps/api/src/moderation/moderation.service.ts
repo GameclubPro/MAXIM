@@ -29,6 +29,8 @@ const LINK_ESCALATION_BAN_HOURS = 6;
 const MAX_FORWARD_SCAN_DEPTH = 8;
 const NON_SANCTION_RULE_CODES = new Set([
   'LINK_BLOCKED',
+  'PROFANITY',
+  'COMMERCIAL_AD',
   'MESSAGE_TOO_LONG',
   'VIDEO_BLOCKED',
   'FILE_BLOCKED',
@@ -42,6 +44,7 @@ const MESSAGE_LIMITS_RULE_CODES = new Set([
   'VOICE_BLOCKED',
   'PHOTO_RATE_LIMIT',
 ]);
+const TEXT_FILTER_RULE_CODES = new Set(['PROFANITY', 'COMMERCIAL_AD']);
 
 @Injectable()
 export class ModerationService {
@@ -190,6 +193,8 @@ export class ModerationService {
     const hasBlockingDeleteViolation = violations.some(
       (item) =>
         item.ruleCode === 'LINK_BLOCKED' ||
+        item.ruleCode === 'PROFANITY' ||
+        item.ruleCode === 'COMMERCIAL_AD' ||
         item.ruleCode === 'MESSAGE_TOO_LONG' ||
         item.ruleCode === 'VIDEO_BLOCKED' ||
         item.ruleCode === 'FILE_BLOCKED' ||
@@ -237,6 +242,8 @@ export class ModerationService {
 
     const topViolation =
       violations.find((item) => item.ruleCode === 'LINK_BLOCKED') ??
+      violations.find((item) => item.ruleCode === 'COMMERCIAL_AD') ??
+      violations.find((item) => item.ruleCode === 'PROFANITY') ??
       violations.find((item) => item.ruleCode === 'MESSAGE_TOO_LONG') ??
       violations.find((item) => item.ruleCode === 'VIDEO_BLOCKED') ??
       violations.find((item) => item.ruleCode === 'FILE_BLOCKED') ??
@@ -367,6 +374,39 @@ export class ModerationService {
             error: error instanceof Error ? error.message : 'Unknown error',
           },
           'Failed to send message limits explanation message',
+        );
+      }
+    }
+
+    if (this.isTextFilterViolation(topViolation.ruleCode) && settings.textFiltersBotMessageEnabled) {
+      const textFilterMessageOptions = this.buildBotMessageOptions(
+        settings.textFiltersBotButtonEnabled,
+        settings.textFiltersBotButtonUrl,
+        settings.textFiltersBotButtonText,
+      );
+      try {
+        if (textFilterMessageOptions) {
+          await this.maxClient.sendMessage(
+            chatId,
+            this.buildTextFilterExplanation(userLabel, topViolation.ruleCode, canDeleteMessage),
+            textFilterMessageOptions,
+          );
+        } else {
+          await this.maxClient.sendMessage(
+            chatId,
+            this.buildTextFilterExplanation(userLabel, topViolation.ruleCode, canDeleteMessage),
+          );
+        }
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            userId: senderId,
+            messageId,
+            ruleCode: topViolation.ruleCode,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to send text filter explanation message',
         );
       }
     }
@@ -881,6 +921,26 @@ export class ModerationService {
 
   private isMessageLimitsViolation(ruleCode: string): boolean {
     return MESSAGE_LIMITS_RULE_CODES.has(ruleCode);
+  }
+
+  private isTextFilterViolation(ruleCode: string): boolean {
+    return TEXT_FILTER_RULE_CODES.has(ruleCode);
+  }
+
+  private buildTextFilterExplanation(
+    userLabel: string,
+    ruleCode: string,
+    canDeleteMessage: boolean,
+  ): string {
+    if (ruleCode === 'PROFANITY') {
+      return canDeleteMessage
+        ? `Сообщение пользователя ${userLabel} удалено: нецензурная лексика запрещена.`
+        : `Сообщение пользователя ${userLabel} нарушает правила: нецензурная лексика запрещена.`;
+    }
+
+    return canDeleteMessage
+      ? `Сообщение пользователя ${userLabel} удалено: коммерческие объявления в этом чате запрещены.`
+      : `Сообщение пользователя ${userLabel} нарушает правила: коммерческие объявления в этом чате запрещены.`;
   }
 
   private buildMessageLimitsExplanation(

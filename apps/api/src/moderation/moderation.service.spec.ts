@@ -33,6 +33,12 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     messageLimitsBotButtonEnabled: false,
     messageLimitsBotButtonUrl: '',
     messageLimitsBotButtonText: 'Открыть',
+    russianProfanityFilterEnabled: true,
+    commercialAdsFilterEnabled: false,
+    textFiltersBotMessageEnabled: false,
+    textFiltersBotButtonEnabled: false,
+    textFiltersBotButtonUrl: '',
+    textFiltersBotButtonText: 'Открыть',
     nightModeEnabled: false,
     nightModeStartTimeMinutes: 23 * 60,
     nightModeEndTimeMinutes: 8 * 60,
@@ -958,7 +964,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('keeps legacy sanction flow for non-link and non-duplicate violations', async () => {
+  it('does not call SanctionService for text filter violations', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -1006,7 +1012,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(prisma.violation.create).toHaveBeenCalledTimes(1);
-    expect(sanctionService.resolveAction).toHaveBeenCalledTimes(1);
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(2);
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
@@ -1018,7 +1024,7 @@ describe('ModerationService', () => {
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
         ruleCode: 'PROFANITY',
-        action: SanctionAction.WARN,
+        action: SanctionAction.NONE,
       }),
     });
   });
@@ -1079,6 +1085,79 @@ describe('ModerationService', () => {
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
         ruleCode: 'LINK_BLOCKED',
+        action: SanctionAction.NONE,
+      }),
+    });
+  });
+
+  it('sends text filter explanation with button for commercial ad violations', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            commercialAdsFilterEnabled: true,
+            textFiltersBotMessageEnabled: true,
+            textFiltersBotButtonEnabled: true,
+            textFiltersBotButtonUrl: 'https://max.ru/channel/rules',
+            textFiltersBotButtonText: 'Правила',
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'COMMERCIAL_AD', score: 0.9, reason: 'Detected ad' }],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Сообщение пользователя "Алексей" удалено: коммерческие объявления в этом чате запрещены.',
+      {
+        button: {
+          text: 'Правила',
+          url: 'https://max.ru/channel/rules',
+        },
+      },
+    );
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        ruleCode: 'COMMERCIAL_AD',
         action: SanctionAction.NONE,
       }),
     });

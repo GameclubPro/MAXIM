@@ -63,6 +63,12 @@ export const chatSettingsSchema = z
     messageLimitsBotButtonEnabled: z.boolean().default(false),
     messageLimitsBotButtonUrl: botButtonUrlSchema,
     messageLimitsBotButtonText: botButtonTextSchema,
+    russianProfanityFilterEnabled: z.boolean().default(true),
+    commercialAdsFilterEnabled: z.boolean().default(false),
+    textFiltersBotMessageEnabled: z.boolean().default(false),
+    textFiltersBotButtonEnabled: z.boolean().default(false),
+    textFiltersBotButtonUrl: botButtonUrlSchema,
+    textFiltersBotButtonText: botButtonTextSchema,
     nightModeEnabled: z.boolean().default(false),
     nightModeStartTimeMinutes: z.number().int().min(0).max(1439).default(23 * 60),
     nightModeEndTimeMinutes: z.number().int().min(0).max(1439).default(8 * 60),
@@ -186,6 +192,28 @@ export const chatSettingsSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['messageLimitsBotButtonText'],
+        message: 'Введите название кнопки.',
+      });
+    }
+    if (
+      value.textFiltersBotMessageEnabled &&
+      value.textFiltersBotButtonEnabled &&
+      !isValidBotButtonUrl(value.textFiltersBotButtonUrl)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['textFiltersBotButtonUrl'],
+        message: 'Укажите корректную ссылку для кнопки (http/https).',
+      });
+    }
+    if (
+      value.textFiltersBotMessageEnabled &&
+      value.textFiltersBotButtonEnabled &&
+      !isValidBotButtonText(value.textFiltersBotButtonText)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['textFiltersBotButtonText'],
         message: 'Введите название кнопки.',
       });
     }
