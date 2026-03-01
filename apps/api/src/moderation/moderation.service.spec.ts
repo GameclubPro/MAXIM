@@ -489,6 +489,9 @@ describe('ModerationService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
       },
+      globalUserBlacklist: {
+        upsert: jest.fn(),
+      },
     };
     const ruleEngine = {
       detect: jest.fn(),
@@ -544,6 +547,9 @@ describe('ModerationService', () => {
       webhookEvent: {
         findUnique: jest.fn(),
         update: jest.fn(),
+      },
+      globalUserBlacklist: {
+        upsert: jest.fn(),
       },
     };
     const ruleEngine = {
@@ -1919,6 +1925,9 @@ describe('ModerationService', () => {
   });
 
   it('kicks user on fourth text-filter violation in 24h when kick stage is enabled', async () => {
+    const globalUserBlacklist = {
+      upsert: jest.fn(),
+    };
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -1943,6 +1952,7 @@ describe('ModerationService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
       },
+      globalUserBlacklist,
     };
     const ruleEngine = {
       detect: jest.fn().mockResolvedValue({
@@ -1976,6 +1986,18 @@ describe('ModerationService', () => {
       'chat-1',
       'Пользователь "Алексей" удален из чата за повторные нарушения текстовых правил.',
     );
+    expect(globalUserBlacklist.upsert).toHaveBeenCalledWith({
+      where: { userId: 'user-1' },
+      create: {
+        userId: 'user-1',
+        sourceChatId: 'chat-1',
+        reason: 'KICK_SANCTION',
+      },
+      update: {
+        sourceChatId: 'chat-1',
+        reason: 'KICK_SANCTION',
+      },
+    });
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({

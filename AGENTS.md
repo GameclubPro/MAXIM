@@ -78,6 +78,12 @@
   - `repeatBanWindowDays`, `logRetentionDays`.
 - Исправлено поведение банов за ссылки/текст-фильтры:
   - теперь используется `banDurationHours` из настроек чата, а не захардкоженные `6h`.
+- Приветствие новых участников в чате исправлено и работает:
+  - причина №1: MAX может присылать вход участника отдельным событием `update_type=user_added`/`bot_added`, а не только `message_created`.
+  - причина №2: webhook-подписка бота была без `user_added`/`bot_added`, поэтому в `webhook_events` были только `message_created`.
+  - в API добавлена нормализация membership-событий (`user_added`/`bot_added`) в `normalized_payload.message`, даже если в payload нет `message` и/или `sender_id`.
+  - в модерации добавлен fallback: обработка вступлений идёт по факту участников (`new_members`/membership payload), даже без маркера `sender.type=service`.
+  - быстрый индикатор проблемы: `greetingEnabled=true`, но в `moderation_events` нет `GREETING_MESSAGE`, а в `webhook_events` за период видны только `message_created`.
 
 ## Nginx и роутинг miniapp (критично)
 - HTTP (`:80`) должен редиректить на HTTPS.
@@ -115,6 +121,7 @@
 
 ## Актуальность MAX (2026)
 - Для вопросов по MAX Bot API / Mini Apps / `init_data` / webhook / `open_app` агент должен сверяться с актуальными официальными источниками MAX, а не с памятью.
+- Для приветствий/модерации вступлений обязательно проверять webhook subscriptions (`GET /subscriptions`): в `update_types` должны быть минимум `message_created`, `user_added`, `bot_added` (обычно также `bot_started`).
 - Приоритет источников:
   1. `https://dev.max.ru/docs/`
   2. `https://dev.max.ru/docs-api/`
@@ -195,6 +202,18 @@
   - `cd /var/www/Chat_bot`
   - `docker compose -f infra/docker-compose.yml logs -f api`
   - если нужен фильтр и на VPS нет `rg`: `docker compose -f infra/docker-compose.yml logs -f api | grep --line-buffered -En "<PATTERN>"`
+
+### Проверка webhook subscriptions MAX (вступления/приветствия)
+- Локально:
+  - `cd /home/yourname/projects/MAXIM`
+  - `set -a; source .env; set +a`
+  - `curl -sS -H "Authorization: ${MAX_BOT_TOKEN}" "https://platform-api.max.ru/subscriptions"`
+  - `BASE_URL="${APP_BASE_URL%/}"; WEBHOOK_URL="${BASE_URL}/api/webhook/max/${MAX_BOT_ID}/${MAX_WEBHOOK_SECRET_PATH}"; curl -sS -X POST "https://platform-api.max.ru/subscriptions" -H "Authorization: ${MAX_BOT_TOKEN}" -H "Content-Type: application/json" -d "{\"url\":\"${WEBHOOK_URL}\",\"update_types\":[\"message_created\",\"user_added\",\"bot_added\",\"bot_started\"],\"secret\":\"${MAX_WEBHOOK_HEADER_SECRET}\"}"`
+- VPS:
+  - `cd /var/www/Chat_bot`
+  - `set -a; source .env; set +a`
+  - `curl -sS -H "Authorization: ${MAX_BOT_TOKEN}" "https://platform-api.max.ru/subscriptions"`
+  - `BASE_URL="${APP_BASE_URL%/}"; WEBHOOK_URL="${BASE_URL}/api/webhook/max/${MAX_BOT_ID}/${MAX_WEBHOOK_SECRET_PATH}"; curl -sS -X POST "https://platform-api.max.ru/subscriptions" -H "Authorization: ${MAX_BOT_TOKEN}" -H "Content-Type: application/json" -d "{\"url\":\"${WEBHOOK_URL}\",\"update_types\":[\"message_created\",\"user_added\",\"bot_added\",\"bot_started\"],\"secret\":\"${MAX_WEBHOOK_HEADER_SECRET}\"}"`
 
 ### Prisma миграции
 - Локально:
@@ -280,6 +299,7 @@
 - `Bind for 0.0.0.0:3001 failed: port is already allocated`: обычно одновременно запущены base и scale контуры; остановить один из них (`down --remove-orphans`) и поднять только нужный.
 - `api/health/ready = 503` с `queueLag.ok=false`: накопился старый backlog (`RECEIVED/QUEUED`), часто после нагрузочных прогонов; проверить `webhook_events` и очистить/закрыть stale-события по операционной процедуре.
 - `api-enqueue` с `P1017`/`connection pool timeout`: на слабом VPS уменьшить prisma pool (`connection_limit`) и проверить стабильность Postgres.
+- `greetingEnabled=true`, но приветствий нет: почти всегда в subscriptions отсутствуют `user_added`/`bot_added`; проверить `GET /subscriptions` и убедиться, что эти `update_types` реально подписаны.
 
 ## Rollback
 ### Откат на предыдущий коммит
