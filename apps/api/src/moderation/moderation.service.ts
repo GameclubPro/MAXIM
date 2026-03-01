@@ -821,26 +821,26 @@ export class ModerationService {
 
   private buildLinkExplanation(userLabel: string, canDeleteMessage: boolean): string {
     if (canDeleteMessage) {
-      return `Сообщение пользователя ${userLabel} удалено: ссылки в этом чате запрещены.`;
+      return `Сообщение пользователя ${userLabel} удалено: в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.`;
     }
 
-    return `Сообщение пользователя ${userLabel} нарушает правила: ссылки в этом чате запрещены.`;
+    return `Сообщение пользователя ${userLabel} нарушает правило: в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.`;
   }
 
   private buildLinkWarnExplanation(userLabel: string): string {
-    return `Пользователю ${userLabel} вынесено предупреждение: ссылки в этом чате запрещены.`;
+    return `Пользователю ${userLabel} вынесено предупреждение за ссылку. В этом чате нельзя отправлять ссылки.`;
   }
 
   private buildLinkKickExplanation(userLabel: string): string {
-    return `Пользователь ${userLabel} удален из чата за повторные ссылки.`;
+    return `Пользователь ${userLabel} удален из чата за повторные сообщения со ссылками.`;
   }
 
   private buildTextFilterWarnExplanation(userLabel: string): string {
-    return `Пользователю ${userLabel} вынесено предупреждение: сообщения нарушают правила текстовой модерации.`;
+    return `Пользователю ${userLabel} вынесено предупреждение за нарушение текстовых правил.`;
   }
 
   private buildTextFilterKickExplanation(userLabel: string): string {
-    return `Пользователь ${userLabel} удален из чата за повторные нарушения текстовой модерации.`;
+    return `Пользователь ${userLabel} удален из чата за повторные нарушения текстовых правил.`;
   }
 
   private buildDuplicateExplanation(
@@ -849,22 +849,22 @@ export class ModerationService {
     banDurationHours: number,
   ): string {
     if (decision.action === 'WARN') {
-      return `Сообщение пользователя ${userLabel} удалено за дубли сообщений. Пользователю вынесено предупреждение.`;
+      return `Сообщение пользователя ${userLabel} удалено как дубль. Пользователю вынесено предупреждение.`;
     }
 
     if (decision.action === 'KICK') {
-      return `Сообщение пользователя ${userLabel} удалено за дубли сообщений. Пользователь удален из чата.`;
+      return `Сообщение пользователя ${userLabel} удалено как дубль. Пользователь удален из чата.`;
     }
 
-    return `Сообщение пользователя ${userLabel} удалено за дубли сообщений. Пользователю выдан бан на ${this.formatBanDurationLabel(banDurationHours)}.`;
+    return `Сообщение пользователя ${userLabel} удалено как дубль. Пользователю выдан временный бан на ${this.formatBanDurationLabel(banDurationHours)}.`;
   }
 
   private buildDuplicateHitExplanation(userLabel: string, canDeleteMessage: boolean): string {
     if (canDeleteMessage) {
-      return `Сообщение пользователя ${userLabel} удалено: дубли сообщений в этом чате запрещены.`;
+      return `Сообщение пользователя ${userLabel} удалено: в этом чате нельзя отправлять дубли сообщений.`;
     }
 
-    return `Сообщение пользователя ${userLabel} нарушает правила: дубли сообщений в этом чате запрещены.`;
+    return `Сообщение пользователя ${userLabel} нарушает правило: в этом чате нельзя отправлять дубли сообщений.`;
   }
 
   private formatUserLabel(senderName?: string): string {
@@ -949,7 +949,7 @@ export class ModerationService {
   }
 
   private buildBanNotice(userLabel: string, banDurationHours: number): string {
-    return `Пользователю ${userLabel} выдан бан на ${this.formatBanDurationLabel(banDurationHours)}.`;
+    return `Пользователю ${userLabel} выдан временный бан на ${this.formatBanDurationLabel(banDurationHours)}.`;
   }
 
   private shouldResolveSanction(ruleCode: string): boolean {
@@ -1045,13 +1045,13 @@ export class ModerationService {
   ): string {
     if (ruleCode === 'PROFANITY') {
       return canDeleteMessage
-        ? `Сообщение пользователя ${userLabel} удалено: нецензурная лексика запрещена.`
-        : `Сообщение пользователя ${userLabel} нарушает правила: нецензурная лексика запрещена.`;
+        ? `Сообщение пользователя ${userLabel} удалено: нецензурная лексика запрещена правилами чата.`
+        : `Сообщение пользователя ${userLabel} нарушает правило: нецензурная лексика запрещена правилами чата.`;
     }
 
     return canDeleteMessage
       ? `Сообщение пользователя ${userLabel} удалено: коммерческие объявления в этом чате запрещены.`
-      : `Сообщение пользователя ${userLabel} нарушает правила: коммерческие объявления в этом чате запрещены.`;
+      : `Сообщение пользователя ${userLabel} нарушает правило: коммерческие объявления в этом чате запрещены.`;
   }
 
   private buildMessageLimitsExplanation(
@@ -1075,30 +1075,30 @@ export class ModerationService {
           : null;
       const lengthDetails =
         actualLength !== null && maxLength !== null
-          ? ` длина сообщения ${actualLength} символов, максимум ${maxLength}.`
-          : ' превышен лимит длины сообщения.';
+          ? ` длина сообщения ${actualLength} символов, лимит ${maxLength}.`
+          : ' сообщение превышает допустимую длину.';
 
       return canDeleteMessage
         ? `Сообщение пользователя ${userLabel} удалено:${lengthDetails}`
-        : `Сообщение пользователя ${userLabel} нарушает правила:${lengthDetails}`;
+        : `Сообщение пользователя ${userLabel} нарушает правило:${lengthDetails}`;
     }
 
     if (ruleCode === 'VIDEO_BLOCKED') {
       return canDeleteMessage
         ? `Сообщение пользователя ${userLabel} удалено: отправка видео в этом чате отключена.`
-        : `Сообщение пользователя ${userLabel} нарушает правила: отправка видео в этом чате отключена.`;
+        : `Сообщение пользователя ${userLabel} нарушает правило: отправка видео в этом чате отключена.`;
     }
 
     if (ruleCode === 'FILE_BLOCKED') {
       return canDeleteMessage
         ? `Сообщение пользователя ${userLabel} удалено: отправка файлов в этом чате отключена.`
-        : `Сообщение пользователя ${userLabel} нарушает правила: отправка файлов в этом чате отключена.`;
+        : `Сообщение пользователя ${userLabel} нарушает правило: отправка файлов в этом чате отключена.`;
     }
 
     if (ruleCode === 'VOICE_BLOCKED') {
       return canDeleteMessage
         ? `Сообщение пользователя ${userLabel} удалено: голосовые сообщения в этом чате отключены.`
-        : `Сообщение пользователя ${userLabel} нарушает правила: голосовые сообщения в этом чате отключены.`;
+        : `Сообщение пользователя ${userLabel} нарушает правило: голосовые сообщения в этом чате отключены.`;
     }
 
     const hours =
@@ -1106,8 +1106,8 @@ export class ModerationService {
         ? photoCooldownHours
         : 1;
     return canDeleteMessage
-      ? `Сообщение пользователя ${userLabel} удалено: сообщение с фотографиями можно отправлять не чаще 1 раза в ${hours}ч.`
-      : `Сообщение пользователя ${userLabel} нарушает правила: сообщение с фотографиями можно отправлять не чаще 1 раза в ${hours}ч.`;
+      ? `Сообщение пользователя ${userLabel} удалено: фото можно отправлять не чаще одного раза в ${hours}ч.`
+      : `Сообщение пользователя ${userLabel} нарушает правило: фото можно отправлять не чаще одного раза в ${hours}ч.`;
   }
 
   private calculateEffectiveMessageLength(update: MaxUpdate): number {
@@ -1848,10 +1848,10 @@ export class ModerationService {
     const timezoneLabel = timezone === DEFAULT_NIGHT_MODE_TIMEZONE ? 'Москва' : timezone;
 
     if (wasDeleted) {
-      return `Чат закрыт на ночь (${windowLabel}, ${timezoneLabel}). Сообщение пользователя ${userLabel} удалено.`;
+      return `Чат сейчас закрыт на ночь (${windowLabel}, ${timezoneLabel}). Сообщение пользователя ${userLabel} удалено.`;
     }
 
-    return `Чат закрыт на ночь (${windowLabel}, ${timezoneLabel}). Новые сообщения сейчас не принимаются.`;
+    return `Чат сейчас закрыт на ночь (${windowLabel}, ${timezoneLabel}). Новые сообщения временно не принимаются.`;
   }
 
   private isBotAuthoredMessage(update: MaxUpdate): boolean {
