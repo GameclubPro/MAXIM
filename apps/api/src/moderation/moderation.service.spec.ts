@@ -1313,7 +1313,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('sends text filter explanation with button for commercial ad violations', async () => {
+  it('deletes commercial ad and sends first-step explanation with button', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -1322,6 +1322,7 @@ describe('ModerationService', () => {
           settings: createSettings({
             commercialAdsFilterEnabled: true,
             textFiltersBotMessageEnabled: true,
+            textFiltersWarnEnabled: true,
             textFiltersBotButtonEnabled: true,
             textFiltersBotButtonUrl: 'https://max.ru/channel/rules',
             textFiltersBotButtonText: 'Правила',
@@ -1383,10 +1384,10 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Пользователь "Алексей" получил предупреждение: повторные коммерческие объявления будут удаляться ботом.',
+      'Сообщение пользователя "Алексей" удалено: коммерческие объявления в этом чате запрещены.',
       {
         button: {
           text: 'Правила',
@@ -1395,15 +1396,28 @@ describe('ModerationService', () => {
       },
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
-    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
       data: expect.objectContaining({
-        ruleCode: 'COMMERCIAL_AD_WARN',
-        action: SanctionAction.WARN,
+        ruleCode: 'COMMERCIAL_AD_DELETE',
+        action: SanctionAction.DELETE_MESSAGE,
+      }),
+    });
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        ruleCode: 'COMMERCIAL_AD',
+        action: SanctionAction.NONE,
       }),
     });
   });
 
-  it('logs only COMMERCIAL_AD_LOW without deletion', async () => {
+  it('deletes low confidence COMMERCIAL_AD as regular text-filter violation', async () => {
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -1411,7 +1425,6 @@ describe('ModerationService', () => {
           title: 'Chat 1',
           settings: createSettings({
             commercialAdsFilterEnabled: true,
-            commercialAdsLowConfidenceLogEnabled: true,
           }),
           domains: [],
         }),
@@ -1454,27 +1467,28 @@ describe('ModerationService', () => {
       prisma as never,
       ruleEngine as never,
       { resolveAction: jest.fn() } as never,
-      {
-        deleteMessage: jest.fn(),
-        sendMessage: jest.fn(),
-        kickMember: jest.fn(),
-        banMember: jest.fn(),
-        notifyModerators: jest.fn(),
-      } as never,
+      maxClient as never,
     );
 
     await service.handleUpdate(createUpdate());
 
-    expect(prisma.violation.create).not.toHaveBeenCalled();
-    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+    expect(prisma.violation.create).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
       data: expect.objectContaining({
-        ruleCode: 'COMMERCIAL_AD_LOW',
+        ruleCode: 'COMMERCIAL_AD_DELETE',
+        action: SanctionAction.DELETE_MESSAGE,
+      }),
+    });
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        ruleCode: 'COMMERCIAL_AD',
         action: SanctionAction.NONE,
       }),
     });
   });
 
-  it('deletes message on repeated COMMERCIAL_AD high confidence hit', async () => {
+  it('sends warning on second commercial violation when explanation and warning are enabled', async () => {
     const maxClient = {
       deleteMessage: jest.fn(),
       sendMessage: jest.fn(),
@@ -1490,16 +1504,17 @@ describe('ModerationService', () => {
           settings: createSettings({
             commercialAdsFilterEnabled: true,
             textFiltersBotMessageEnabled: true,
+            textFiltersWarnEnabled: true,
           }),
           domains: [],
         }),
       },
       violation: {
         create: jest.fn(),
+        count: jest.fn().mockResolvedValue(2),
       },
       moderationEvent: {
         findFirst: jest.fn().mockResolvedValue(null),
-        count: jest.fn().mockResolvedValue(1),
         create: jest.fn(),
       },
       webhookEvent: {
@@ -1539,10 +1554,18 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Пользователю "Алексей" вынесено предупреждение: сообщения нарушают правила текстовой модерации.',
+    );
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
-        ruleCode: 'COMMERCIAL_AD_DELETE',
-        action: SanctionAction.DELETE_MESSAGE,
+        ruleCode: 'COMMERCIAL_AD',
+        action: SanctionAction.WARN,
+        metadata: expect.objectContaining({
+          textFilterViolationCount24h: 2,
+          textFilterEscalationWindowHours: 24,
+        }),
       }),
     });
   });
