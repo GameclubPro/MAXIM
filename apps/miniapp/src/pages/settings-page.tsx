@@ -2287,317 +2287,326 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     </>
                   ) : null}
 
-                  <div
-                    className="settings-subsection-divider"
-                    role="separator"
-                    aria-label="Действия бота для коммерческих объявлений"
-                  >
-                    <span>Коммерческие объявления</span>
-                  </div>
-
-                  <div className="settings-native-toggle">
-                    <div className="settings-native-toggle__row">
-                      <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">1. Объяснение</span>
-                        <div className="settings-native-toggle__title-actions">
-                          <EditToggleButton
-                            label="Редактировать текст сообщения о коммерции"
-                            onClick={() => toggleBotMessageEditor('textFilters')}
-                            disabled={!draft.textFiltersBotMessageEnabled}
-                            isOpen={openBotEditorKey === 'textFilters'}
-                          />
-                          <button
-                            type="button"
-                            className={cn(
-                              'settings-info-button',
-                              openHintKey === 'textFiltersBotMessage' && 'is-open',
-                            )}
-                            aria-label="Пояснение для тумблера сообщений о коммерческих объявлениях"
-                            aria-controls="text-filters-bot-message-hint"
-                            aria-expanded={openHintKey === 'textFiltersBotMessage'}
-                            onClick={() => toggleHint('textFiltersBotMessage')}
-                          >
-                            <span aria-hidden>i</span>
-                          </button>
-                        </div>
+                  {draft.commercialAdsFilterEnabled ? (
+                    <>
+                      <div
+                        className="settings-subsection-divider"
+                        role="separator"
+                        aria-label="Действия бота для коммерческих объявлений"
+                      >
+                        <span>Коммерческие объявления</span>
                       </div>
 
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Включить сообщение от бота для коммерческих объявлений"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={draft.textFiltersBotMessageEnabled}
-                          onChange={(event) => {
-                            const enabled = event.target.checked;
-                            setFieldValue('textFiltersBotMessageEnabled', enabled);
-                            if (!enabled) {
-                              setFieldValue('textFiltersBotButtonEnabled', false);
-                              clearFieldError('textFiltersBotButtonUrl');
-                              clearFieldError('textFiltersBotButtonText');
-                            }
-                          }}
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
-                    </div>
-
-                    {openHintKey === 'textFiltersBotMessage' ? (
-                      <p
-                        id="text-filters-bot-message-hint"
-                        className="settings-native-toggle__hint"
-                      >
-                        Санкции усиливаются по ступеням, если пользователь повторно нарушает
-                        коммерческий фильтр в течение 24 часов.
-                      </p>
-                    ) : null}
-
-                    {draft.textFiltersBotMessageEnabled && openBotEditorKey === 'textFilters' ? (
-                      <BotMessageEditor
-                        editorKey="textFilters"
-                        value={draft.textFiltersBotMessageText}
-                        onChange={(nextValue) =>
-                          setFieldValue(
-                            'textFiltersBotMessageText',
-                            nextValue as ChatSettings['textFiltersBotMessageText'],
-                          )
-                        }
-                        onReset={() => setFieldValue('textFiltersBotMessageText', '')}
-                      />
-                    ) : null}
-                  </div>
-
-                  <div className="settings-native-toggle settings-native-toggle--nested">
-                    <div className="settings-native-toggle__row">
-                      <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">2. Предупреждение</span>
-                        <div className="settings-native-toggle__title-actions">
-                          <EditToggleButton
-                            label="Редактировать текст предупреждения о коммерции"
-                            onClick={() => toggleWarnMessageEditor('textFiltersWarn')}
-                            isOpen={openWarnEditorKey === 'textFiltersWarn'}
-                          />
-                          <button
-                            type="button"
-                            className={cn(
-                              'settings-info-button',
-                              openHintKey === 'textFiltersWarnMessage' && 'is-open',
-                            )}
-                            aria-label="Пояснение для предупреждения о коммерческих объявлениях"
-                            aria-controls="text-filters-warn-message-hint"
-                            aria-expanded={openHintKey === 'textFiltersWarnMessage'}
-                            onClick={() => toggleHint('textFiltersWarnMessage')}
-                          >
-                            <span aria-hidden>i</span>
-                          </button>
-                        </div>
-                      </div>
-
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Включить предупреждение за второе нарушение коммерческого фильтра"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={draft.textFiltersWarnEnabled}
-                          onChange={(event) => {
-                            const enabled = event.target.checked;
-                            setFieldValue('textFiltersWarnEnabled', enabled);
-                            if (enabled) {
-                              setFieldValue('textFiltersBotMessageEnabled', true);
-                            }
-                          }}
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
-                    </div>
-
-                    {openHintKey === 'textFiltersWarnMessage' ? (
-                      <p
-                        id="text-filters-warn-message-hint"
-                        className="settings-native-toggle__hint"
-                      >
-                        Текст отправляется при 2-м нарушении коммерческого фильтра за 24 часа.
-                      </p>
-                    ) : null}
-
-                    {openWarnEditorKey === 'textFiltersWarn' ? (
-                      <WarnMessageEditor
-                        editorKey="textFiltersWarn"
-                        value={draft.textFiltersWarnMessageText}
-                        onChange={(nextValue) =>
-                          setFieldValue(
-                            'textFiltersWarnMessageText',
-                            nextValue as ChatSettings['textFiltersWarnMessageText'],
-                          )
-                        }
-                        onReset={() => setFieldValue('textFiltersWarnMessageText', '')}
-                      />
-                    ) : null}
-                  </div>
-
-                  <div className="settings-native-toggle settings-native-toggle--nested">
-                    <div className="settings-native-toggle__row">
-                      <span className="settings-native-toggle__title">3. Бан на 6ч</span>
-
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Включить бан на шесть часов за третье нарушение коммерческого фильтра"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={draft.textFiltersBanEnabled}
-                          onChange={(event) => {
-                            const enabled = event.target.checked;
-                            setFieldValue('textFiltersBanEnabled', enabled);
-                            if (enabled) {
-                              setFieldValue('textFiltersWarnEnabled', true);
-                              setFieldValue('textFiltersBotMessageEnabled', true);
-                            }
-                          }}
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="settings-native-toggle settings-native-toggle--nested">
-                    <div className="settings-native-toggle__row">
-                      <span className="settings-native-toggle__title">4. Удаление из группы</span>
-
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Включить удаление из группы за четвертое нарушение коммерческого фильтра"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={draft.textFiltersKickEnabled}
-                          onChange={(event) => {
-                            const enabled = event.target.checked;
-                            setFieldValue('textFiltersKickEnabled', enabled);
-                            if (enabled) {
-                              setFieldValue('textFiltersWarnEnabled', true);
-                              setFieldValue('textFiltersBotMessageEnabled', true);
-                            }
-                          }}
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-
-                  {draft.textFiltersBotMessageEnabled ? (
-                    <div
-                      className={cn(
-                        'settings-native-toggle',
-                        'settings-native-toggle--nested',
-                        hasTextFiltersBotButtonError && 'field--error',
-                      )}
-                    >
-                      <div className="settings-native-toggle__row">
-                        <div className="settings-native-toggle__title-wrap">
-                          <span className="settings-native-toggle__title">Добавить кнопку</span>
-                          <button
-                            type="button"
-                            className={cn(
-                              'settings-info-button',
-                              openHintKey === 'textFiltersBotButton' && 'is-open',
-                            )}
-                            aria-label="Пояснение для кнопки в сообщении о коммерции"
-                            aria-controls="text-filters-bot-button-hint"
-                            aria-expanded={openHintKey === 'textFiltersBotButton'}
-                            onClick={() => toggleHint('textFiltersBotButton')}
-                          >
-                            <span aria-hidden>i</span>
-                          </button>
-                        </div>
-
-                        <label
-                          className="settings-native-switch"
-                          aria-label="Добавить кнопку в сообщение бота о коммерческих объявлениях"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={draft.textFiltersBotButtonEnabled}
-                            onChange={(event) => {
-                              const enabled = event.target.checked;
-                              setFieldValue('textFiltersBotButtonEnabled', enabled);
-                              if (!enabled) {
-                                clearFieldError('textFiltersBotButtonUrl');
-                                clearFieldError('textFiltersBotButtonText');
-                              }
-                            }}
-                          />
-                          <span className="toggle-switch" aria-hidden>
-                            <span className="toggle-switch__thumb" />
-                          </span>
-                        </label>
-                      </div>
-
-                      {draft.textFiltersBotButtonEnabled ? (
-                        <div className="settings-button-fields">
-                          <label
-                            className={cn(
-                              'field settings-url-field',
-                              textFiltersBotButtonUrlError && 'field--error',
-                            )}
-                          >
-                            <span className="field__label">Ссылка кнопки</span>
-                            <input
-                              type="url"
-                              inputMode="url"
-                              value={draft.textFiltersBotButtonUrl}
-                              onChange={(event) =>
-                                setFieldValue('textFiltersBotButtonUrl', event.target.value)
-                              }
-                              placeholder="https://max.ru/channel/rules"
-                            />
-                            {textFiltersBotButtonUrlError ? (
-                              <small className="field__hint">{textFiltersBotButtonUrlError}</small>
-                            ) : null}
-                          </label>
+                      <div className="settings-native-toggle">
+                        <div className="settings-native-toggle__row">
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="settings-native-toggle__title">1. Объяснение</span>
+                            <div className="settings-native-toggle__title-actions">
+                              <EditToggleButton
+                                label="Редактировать текст сообщения о коммерции"
+                                onClick={() => toggleBotMessageEditor('textFilters')}
+                                disabled={!draft.textFiltersBotMessageEnabled}
+                                isOpen={openBotEditorKey === 'textFilters'}
+                              />
+                              <button
+                                type="button"
+                                className={cn(
+                                  'settings-info-button',
+                                  openHintKey === 'textFiltersBotMessage' && 'is-open',
+                                )}
+                                aria-label="Пояснение для тумблера сообщений о коммерческих объявлениях"
+                                aria-controls="text-filters-bot-message-hint"
+                                aria-expanded={openHintKey === 'textFiltersBotMessage'}
+                                onClick={() => toggleHint('textFiltersBotMessage')}
+                              >
+                                <span aria-hidden>i</span>
+                              </button>
+                            </div>
+                          </div>
 
                           <label
-                            className={cn(
-                              'field settings-text-field',
-                              textFiltersBotButtonTextError && 'field--error',
-                            )}
+                            className="settings-native-switch"
+                            aria-label="Включить сообщение от бота для коммерческих объявлений"
                           >
-                            <span className="field__label">Название кнопки</span>
                             <input
-                              type="text"
-                              maxLength={32}
-                              value={draft.textFiltersBotButtonText}
-                              onChange={(event) =>
-                                setFieldValue('textFiltersBotButtonText', event.target.value)
-                              }
-                              placeholder="Правила чата"
+                              type="checkbox"
+                              checked={draft.textFiltersBotMessageEnabled}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('textFiltersBotMessageEnabled', enabled);
+                                if (!enabled) {
+                                  setFieldValue('textFiltersBotButtonEnabled', false);
+                                  clearFieldError('textFiltersBotButtonUrl');
+                                  clearFieldError('textFiltersBotButtonText');
+                                }
+                              }}
                             />
-                            {textFiltersBotButtonTextError ? (
-                              <small className="field__hint">{textFiltersBotButtonTextError}</small>
-                            ) : null}
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
                           </label>
                         </div>
-                      ) : null}
 
-                      {!hasTextFiltersBotButtonError && openHintKey === 'textFiltersBotButton' ? (
-                        <p
-                          id="text-filters-bot-button-hint"
-                          className="settings-native-toggle__hint"
+                        {openHintKey === 'textFiltersBotMessage' ? (
+                          <p
+                            id="text-filters-bot-message-hint"
+                            className="settings-native-toggle__hint"
+                          >
+                            Санкции усиливаются по ступеням, если пользователь повторно нарушает
+                            коммерческий фильтр в течение 24 часов.
+                          </p>
+                        ) : null}
+
+                        {draft.textFiltersBotMessageEnabled && openBotEditorKey === 'textFilters' ? (
+                          <BotMessageEditor
+                            editorKey="textFilters"
+                            value={draft.textFiltersBotMessageText}
+                            onChange={(nextValue) =>
+                              setFieldValue(
+                                'textFiltersBotMessageText',
+                                nextValue as ChatSettings['textFiltersBotMessageText'],
+                              )
+                            }
+                            onReset={() => setFieldValue('textFiltersBotMessageText', '')}
+                          />
+                        ) : null}
+                      </div>
+
+                      <div className="settings-native-toggle settings-native-toggle--nested">
+                        <div className="settings-native-toggle__row">
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="settings-native-toggle__title">2. Предупреждение</span>
+                            <div className="settings-native-toggle__title-actions">
+                              <EditToggleButton
+                                label="Редактировать текст предупреждения о коммерции"
+                                onClick={() => toggleWarnMessageEditor('textFiltersWarn')}
+                                isOpen={openWarnEditorKey === 'textFiltersWarn'}
+                              />
+                              <button
+                                type="button"
+                                className={cn(
+                                  'settings-info-button',
+                                  openHintKey === 'textFiltersWarnMessage' && 'is-open',
+                                )}
+                                aria-label="Пояснение для предупреждения о коммерческих объявлениях"
+                                aria-controls="text-filters-warn-message-hint"
+                                aria-expanded={openHintKey === 'textFiltersWarnMessage'}
+                                onClick={() => toggleHint('textFiltersWarnMessage')}
+                              >
+                                <span aria-hidden>i</span>
+                              </button>
+                            </div>
+                          </div>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить предупреждение за второе нарушение коммерческого фильтра"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.textFiltersWarnEnabled}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('textFiltersWarnEnabled', enabled);
+                                if (enabled) {
+                                  setFieldValue('textFiltersBotMessageEnabled', true);
+                                }
+                              }}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+
+                        {openHintKey === 'textFiltersWarnMessage' ? (
+                          <p
+                            id="text-filters-warn-message-hint"
+                            className="settings-native-toggle__hint"
+                          >
+                            Текст отправляется при 2-м нарушении коммерческого фильтра за 24 часа.
+                          </p>
+                        ) : null}
+
+                        {openWarnEditorKey === 'textFiltersWarn' ? (
+                          <WarnMessageEditor
+                            editorKey="textFiltersWarn"
+                            value={draft.textFiltersWarnMessageText}
+                            onChange={(nextValue) =>
+                              setFieldValue(
+                                'textFiltersWarnMessageText',
+                                nextValue as ChatSettings['textFiltersWarnMessageText'],
+                              )
+                            }
+                            onReset={() => setFieldValue('textFiltersWarnMessageText', '')}
+                          />
+                        ) : null}
+                      </div>
+
+                      <div className="settings-native-toggle settings-native-toggle--nested">
+                        <div className="settings-native-toggle__row">
+                          <span className="settings-native-toggle__title">3. Бан на 6ч</span>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить бан на шесть часов за третье нарушение коммерческого фильтра"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.textFiltersBanEnabled}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('textFiltersBanEnabled', enabled);
+                                if (enabled) {
+                                  setFieldValue('textFiltersWarnEnabled', true);
+                                  setFieldValue('textFiltersBotMessageEnabled', true);
+                                }
+                              }}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+
+                      <div className="settings-native-toggle settings-native-toggle--nested">
+                        <div className="settings-native-toggle__row">
+                          <span className="settings-native-toggle__title">4. Удаление из группы</span>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить удаление из группы за четвертое нарушение коммерческого фильтра"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.textFiltersKickEnabled}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('textFiltersKickEnabled', enabled);
+                                if (enabled) {
+                                  setFieldValue('textFiltersWarnEnabled', true);
+                                  setFieldValue('textFiltersBotMessageEnabled', true);
+                                }
+                              }}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+
+                      {draft.textFiltersBotMessageEnabled ? (
+                        <div
+                          className={cn(
+                            'settings-native-toggle',
+                            'settings-native-toggle--nested',
+                            hasTextFiltersBotButtonError && 'field--error',
+                          )}
                         >
-                          Добавляет кнопку в сообщение бота о коммерческом нарушении.
-                        </p>
+                          <div className="settings-native-toggle__row">
+                            <div className="settings-native-toggle__title-wrap">
+                              <span className="settings-native-toggle__title">Добавить кнопку</span>
+                              <button
+                                type="button"
+                                className={cn(
+                                  'settings-info-button',
+                                  openHintKey === 'textFiltersBotButton' && 'is-open',
+                                )}
+                                aria-label="Пояснение для кнопки в сообщении о коммерции"
+                                aria-controls="text-filters-bot-button-hint"
+                                aria-expanded={openHintKey === 'textFiltersBotButton'}
+                                onClick={() => toggleHint('textFiltersBotButton')}
+                              >
+                                <span aria-hidden>i</span>
+                              </button>
+                            </div>
+
+                            <label
+                              className="settings-native-switch"
+                              aria-label="Добавить кнопку в сообщение бота о коммерческих объявлениях"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={draft.textFiltersBotButtonEnabled}
+                                onChange={(event) => {
+                                  const enabled = event.target.checked;
+                                  setFieldValue('textFiltersBotButtonEnabled', enabled);
+                                  if (!enabled) {
+                                    clearFieldError('textFiltersBotButtonUrl');
+                                    clearFieldError('textFiltersBotButtonText');
+                                  }
+                                }}
+                              />
+                              <span className="toggle-switch" aria-hidden>
+                                <span className="toggle-switch__thumb" />
+                              </span>
+                            </label>
+                          </div>
+
+                          {draft.textFiltersBotButtonEnabled ? (
+                            <div className="settings-button-fields">
+                              <label
+                                className={cn(
+                                  'field settings-url-field',
+                                  textFiltersBotButtonUrlError && 'field--error',
+                                )}
+                              >
+                                <span className="field__label">Ссылка кнопки</span>
+                                <input
+                                  type="url"
+                                  inputMode="url"
+                                  value={draft.textFiltersBotButtonUrl}
+                                  onChange={(event) =>
+                                    setFieldValue('textFiltersBotButtonUrl', event.target.value)
+                                  }
+                                  placeholder="https://max.ru/channel/rules"
+                                />
+                                {textFiltersBotButtonUrlError ? (
+                                  <small className="field__hint">
+                                    {textFiltersBotButtonUrlError}
+                                  </small>
+                                ) : null}
+                              </label>
+
+                              <label
+                                className={cn(
+                                  'field settings-text-field',
+                                  textFiltersBotButtonTextError && 'field--error',
+                                )}
+                              >
+                                <span className="field__label">Название кнопки</span>
+                                <input
+                                  type="text"
+                                  maxLength={32}
+                                  value={draft.textFiltersBotButtonText}
+                                  onChange={(event) =>
+                                    setFieldValue('textFiltersBotButtonText', event.target.value)
+                                  }
+                                  placeholder="Правила чата"
+                                />
+                                {textFiltersBotButtonTextError ? (
+                                  <small className="field__hint">
+                                    {textFiltersBotButtonTextError}
+                                  </small>
+                                ) : null}
+                              </label>
+                            </div>
+                          ) : null}
+
+                          {!hasTextFiltersBotButtonError &&
+                          openHintKey === 'textFiltersBotButton' ? (
+                            <p
+                              id="text-filters-bot-button-hint"
+                              className="settings-native-toggle__hint"
+                            >
+                              Добавляет кнопку в сообщение бота о коммерческом нарушении.
+                            </p>
+                          ) : null}
+                        </div>
                       ) : null}
-                    </div>
+                    </>
                   ) : null}
                 </div>
               </div>
