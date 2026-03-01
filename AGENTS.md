@@ -84,6 +84,22 @@
   - в API добавлена нормализация membership-событий (`user_added`/`bot_added`) в `normalized_payload.message`, даже если в payload нет `message` и/или `sender_id`.
   - в модерации добавлен fallback: обработка вступлений идёт по факту участников (`new_members`/membership payload), даже без маркера `sender.type=service`.
   - быстрый индикатор проблемы: `greetingEnabled=true`, но в `moderation_events` нет `GREETING_MESSAGE`, а в `webhook_events` за период видны только `message_created`.
+- В miniapp добавлен блок `Рассылка`:
+  - текст + опциональная кнопка + опциональное фото + тумблер `применить во всех чатах`,
+  - таймер `через N дней и время` (максимум `14` дней).
+- API `POST /api/v1/chats/:chatId/broadcast` расширен:
+  - поддержка `imageEnabled/imageBase64/imageMimeType/imageFileName/sendAt`,
+  - лимит фото для рассылки: `1 MB`,
+  - `sendAt` поддерживается до `14` дней.
+- Для фото в рассылке используется поток MAX Upload:
+  - сначала `POST /uploads?type=image`,
+  - затем multipart upload на `upload.url`,
+  - в `attachments` сообщения передаётся payload upload-ответа.
+- Ложный успех рассылки исправлен:
+  - для рассылки без таймера отправка идёт синхронно (`immediate`), а не только постановкой в очередь,
+  - если отправка не удалась во все целевые чаты, API возвращает ошибку `400`.
+- Для фото добавлены ретраи при временной ошибке MAX `attachment.not.ready` (`1.5s`, `3s`, `6s`).
+- Увеличен default `JSON_BODY_LIMIT` в API до `6291456` (~6 MB), чтобы проходил JSON payload с base64 фото.
 
 ## Nginx и роутинг miniapp (критично)
 - HTTP (`:80`) должен редиректить на HTTPS.
@@ -300,6 +316,9 @@
 - `api/health/ready = 503` с `queueLag.ok=false`: накопился старый backlog (`RECEIVED/QUEUED`), часто после нагрузочных прогонов; проверить `webhook_events` и очистить/закрыть stale-события по операционной процедуре.
 - `api-enqueue` с `P1017`/`connection pool timeout`: на слабом VPS уменьшить prisma pool (`connection_limit`) и проверить стабильность Postgres.
 - `greetingEnabled=true`, но приветствий нет: почти всегда в subscriptions отсутствуют `user_added`/`bot_added`; проверить `GET /subscriptions` и убедиться, что эти `update_types` реально подписаны.
+- `POST /api/v1/chats/:chatId/broadcast` возвращает `201`, но сообщение не приходит: вероятно на VPS запущен старый `api` без синхронной отправки/ретраев; обновить контейнер `api` и повторить тест.
+- Рассылка с фото не доходит, а в логах MAX есть `attachment.not.ready`: кратковременная готовность upload-вложения; рабочее поведение — автоповтор с задержками.
+- Ошибка `413` при рассылке с фото: payload слишком большой; уменьшить фото (ориентир до `1 MB`) и/или проверить `JSON_BODY_LIMIT` в API/Nginx.
 
 ## Rollback
 ### Откат на предыдущий коммит

@@ -719,7 +719,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [openBotEditorKey, setOpenBotEditorKey] = useState<BotMessageEditorKey | null>(null);
   const [openWarnEditorKey, setOpenWarnEditorKey] = useState<WarnMessageEditorKey | null>(null);
   const [expandedSections, setExpandedSections] = useState<Record<SettingsSectionKey, boolean>>({
-    links: true,
+    links: false,
     greeting: false,
     profanityFilter: false,
     commercialFilter: false,
