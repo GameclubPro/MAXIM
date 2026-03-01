@@ -37,6 +37,9 @@ export type SendBroadcastPayload = {
   imageMimeType: string;
   imageFileName: string;
   sendAt: string | null;
+  cycleEnabled: boolean;
+  cycleEveryDays: number;
+  cycleCount: number;
 };
 
 export class ApiClient {

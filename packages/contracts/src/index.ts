@@ -422,6 +422,9 @@ export const sendBroadcastRequestSchema = z
     imageMimeType: z.string().trim().max(128).default(''),
     imageFileName: z.string().trim().max(128).default(''),
     sendAt: z.string().datetime().nullable().default(null),
+    cycleEnabled: z.boolean().default(false),
+    cycleEveryDays: z.number().int().min(1).max(14).default(1),
+    cycleCount: z.number().int().min(1).max(14).default(1),
   })
   .superRefine((value, ctx) => {
     if (value.text.length === 0 && !value.imageEnabled) {
@@ -465,6 +468,14 @@ export const sendBroadcastRequestSchema = z
         });
       }
     }
+
+    if (value.cycleEnabled && value.cycleCount < 2) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['cycleCount'],
+        message: 'Для цикла укажите минимум 2 отправки.',
+      });
+    }
   });
 export type SendBroadcastRequest = z.infer<typeof sendBroadcastRequestSchema>;
 
@@ -476,6 +487,9 @@ export const sendBroadcastResultSchema = z.object({
   sentChatIds: z.array(z.string()),
   failedChatIds: z.array(z.string()),
   sendAt: z.string().datetime().nullable(),
+  cycleEnabled: z.boolean(),
+  cycleEveryDays: z.number().int().min(1),
+  cycleCount: z.number().int().min(1),
 });
 export type SendBroadcastResult = z.infer<typeof sendBroadcastResultSchema>;
 

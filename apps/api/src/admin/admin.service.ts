@@ -29,6 +29,8 @@ type ApplySettingsToAllChatsResult = {
 const BROADCAST_IMAGE_MAX_BYTES = 1_000_000;
 const BROADCAST_MIN_DELAY_MS = 30_000;
 const BROADCAST_MAX_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
+const BROADCAST_CYCLE_MAX_COUNT = 14;
+const BROADCAST_DAY_MS = 24 * 60 * 60 * 1000;
 const BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS = [1_500, 3_000, 6_000];
 
 @Injectable()
@@ -322,6 +324,20 @@ export class AdminService {
       sendAt = scheduledAt.toISOString();
     }
 
+    const cycleEnabled = parsed.data.cycleEnabled;
+    const cycleEveryDays = cycleEnabled ? parsed.data.cycleEveryDays : 1;
+    const cycleCount = cycleEnabled ? parsed.data.cycleCount : 1;
+    if (cycleEnabled && cycleCount > BROADCAST_CYCLE_MAX_COUNT) {
+      throw new BadRequestException(`Максимум ${BROADCAST_CYCLE_MAX_COUNT} отправок в цикле.`);
+    }
+    const cycleEveryMs = cycleEveryDays * BROADCAST_DAY_MS;
+    const maxDelayWithCycles = delayMs + (cycleCount - 1) * cycleEveryMs;
+    if (maxDelayWithCycles > BROADCAST_MAX_DELAY_MS) {
+      throw new BadRequestException(
+        'Все циклы должны укладываться в 14 дней от текущего момента.',
+      );
+    }
+
     let imagePayload: Record<string, unknown> | undefined;
     if (parsed.data.imageEnabled) {
       const imageMimeType = parsed.data.imageMimeType.trim().toLowerCase();
@@ -369,36 +385,51 @@ export class AdminService {
     const sentChatIds: string[] = [];
     const failedChatIds: string[] = [];
     let firstSendError: unknown = null;
-    const sendImmediately = delayMs === 0;
     for (const chatId of targetChatIds) {
-      try {
-        if (sendImmediately && imagePayload) {
-          await this.sendBroadcastImageMessageWithRetry(chatId, messageText, messageOptions);
-        } else {
-          await this.maxClient.sendMessage(
-            chatId,
-            messageText,
-            messageOptions,
-            delayMs > 0 ? { delayMs } : { immediate: true },
+      let chatFailed = false;
+      for (let cycleIndex = 0; cycleIndex < cycleCount; cycleIndex += 1) {
+        const occurrenceDelayMs = delayMs + cycleIndex * cycleEveryMs;
+        const sendImmediately = occurrenceDelayMs === 0;
+        try {
+          if (sendImmediately && imagePayload) {
+            await this.sendBroadcastImageMessageWithRetry(chatId, messageText, messageOptions);
+          } else {
+            await this.maxClient.sendMessage(
+              chatId,
+              messageText,
+              messageOptions,
+              occurrenceDelayMs > 0 ? { delayMs: occurrenceDelayMs } : { immediate: true },
+            );
+          }
+        } catch (error: unknown) {
+          if (!firstSendError) {
+            firstSendError = error;
+          }
+          chatFailed = true;
+          this.logger.warn(
+            {
+              sourceChatId,
+              targetChatId: chatId,
+              actorUserId: user.userId,
+              sendAt,
+              cycleEnabled,
+              cycleEveryDays,
+              cycleCount,
+              cycleIndex: cycleIndex + 1,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Broadcast message failed for target chat',
           );
+          break;
         }
-        sentChatIds.push(chatId);
-      } catch (error: unknown) {
-        if (!firstSendError) {
-          firstSendError = error;
-        }
-        failedChatIds.push(chatId);
-        this.logger.warn(
-          {
-            sourceChatId,
-            targetChatId: chatId,
-            actorUserId: user.userId,
-            sendAt,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Broadcast message failed for target chat',
-        );
       }
+
+      if (chatFailed) {
+        failedChatIds.push(chatId);
+        continue;
+      }
+
+      sentChatIds.push(chatId);
     }
 
     if (sentChatIds.length === 0 && failedChatIds.length > 0) {
@@ -418,6 +449,9 @@ export class AdminService {
           sentChats: sentChatIds.length,
           failedChats: failedChatIds.length,
           sendAt,
+          cycleEnabled,
+          cycleEveryDays,
+          cycleCount,
           sentChatIds,
           failedChatIds,
         },
@@ -430,6 +464,9 @@ export class AdminService {
       sentChats: sentChatIds.length,
       failedChats: failedChatIds.length,
       sendAt,
+      cycleEnabled,
+      cycleEveryDays,
+      cycleCount,
       sentChatIds,
       failedChatIds,
     };

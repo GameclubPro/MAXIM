@@ -36,7 +36,9 @@ const BOT_MESSAGES_DELETE_DELAY_MAX = 60;
 const DOMAIN_REMOVAL_MIN_FUTURE_MS = 30_000;
 const MAX_BROADCAST_TEXT_LENGTH = 1_000;
 const MAX_BROADCAST_SCHEDULE_DAYS = 14;
+const MAX_BROADCAST_CYCLE_COUNT = 14;
 const MAX_BROADCAST_IMAGE_SIZE_BYTES = 1_000_000;
+const BROADCAST_DAY_MS = 24 * 60 * 60 * 1_000;
 
 type DuplicateEnabledKey = 'duplicateWarnEnabled' | 'duplicateKickEnabled' | 'duplicateBanEnabled';
 type DuplicateWindowKey =
@@ -706,11 +708,15 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [mailingScheduleTime, setMailingScheduleTime] = useState(() =>
     toLocalTimeInputValue(new Date(Date.now() + 60 * 60 * 1000)),
   );
+  const [mailingCycleEnabled, setMailingCycleEnabled] = useState(false);
+  const [mailingCycleEveryDays, setMailingCycleEveryDays] = useState(1);
+  const [mailingCycleCount, setMailingCycleCount] = useState(2);
   const [mailingTextError, setMailingTextError] = useState('');
   const [mailingButtonUrlError, setMailingButtonUrlError] = useState('');
   const [mailingButtonTextError, setMailingButtonTextError] = useState('');
   const [mailingImageError, setMailingImageError] = useState('');
   const [mailingScheduleError, setMailingScheduleError] = useState('');
+  const [mailingCycleError, setMailingCycleError] = useState('');
   const [blacklistInput, setBlacklistInput] = useState('');
   const [blacklistInputError, setBlacklistInputError] = useState('');
   const [failedSnapshot, setFailedSnapshot] = useState<string>('');
@@ -753,11 +759,15 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     setMailingScheduleEnabled(false);
     setMailingScheduleDays(0);
     setMailingScheduleTime(toLocalTimeInputValue(new Date(Date.now() + 60 * 60 * 1000)));
+    setMailingCycleEnabled(false);
+    setMailingCycleEveryDays(1);
+    setMailingCycleCount(2);
     setMailingTextError('');
     setMailingButtonUrlError('');
     setMailingButtonTextError('');
     setMailingImageError('');
     setMailingScheduleError('');
+    setMailingCycleError('');
   }, [chatId]);
 
   useEffect(() => {
@@ -1002,14 +1012,15 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
   const sendBroadcastMutation = useMutation({
     mutationFn: (payload: SendBroadcastPayload) => api.sendBroadcast(chatId ?? '', payload),
-    onSuccess: (result, payload) => {
+    onSuccess: (result) => {
+      const cycleSuffix = result.cycleEnabled
+        ? ` Цикл: ${result.cycleCount} отправок каждые ${result.cycleEveryDays} дн.`
+        : '';
       const description = result.sendAt
-        ? `Запланировано на ${formatRemovalDateTime(result.sendAt)}. Чатов: ${result.targetChats}.`
+        ? `Запланировано на ${formatRemovalDateTime(result.sendAt)}. Чатов: ${result.targetChats}.${cycleSuffix}`
         : result.failedChats > 0
-          ? `Доставлено в ${result.sentChats} чат(ов), ошибок: ${result.failedChats}.`
-          : payload.applyToAllChats
-            ? `Отправлено в ${result.sentChats} чат(ов).`
-            : 'Сообщение отправлено в текущий чат.';
+          ? `Доставлено в ${result.sentChats} чат(ов), ошибок: ${result.failedChats}.${cycleSuffix}`
+          : `Отправлено в ${result.sentChats} чат(ов).${cycleSuffix}`;
       pushToast({
         tone: result.sendAt || result.failedChats > 0 ? 'info' : 'success',
         title: 'Рассылка выполнена',
@@ -1274,6 +1285,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     const scheduleIso = mailingScheduleEnabled
       ? buildBroadcastScheduleIso(mailingScheduleDays, mailingScheduleTime)
       : null;
+    const cycleEveryDays = Math.max(
+      1,
+      Math.min(MAX_BROADCAST_SCHEDULE_DAYS, Number.isFinite(mailingCycleEveryDays) ? mailingCycleEveryDays : 1),
+    );
+    const cycleCount = Math.max(
+      2,
+      Math.min(MAX_BROADCAST_CYCLE_COUNT, Number.isFinite(mailingCycleCount) ? mailingCycleCount : 2),
+    );
 
     let hasError = false;
     if (!normalizedText && !mailingImageEnabled) {
@@ -1330,6 +1349,24 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       setMailingScheduleError('');
     }
 
+    if (mailingCycleEnabled) {
+      const firstDelayMs = scheduleIso ? new Date(scheduleIso).getTime() - Date.now() : 0;
+      if (firstDelayMs < 0) {
+        setMailingCycleError('Проверьте стартовое время цикла.');
+        hasError = true;
+      } else {
+        const totalDelayMs = firstDelayMs + (cycleCount - 1) * cycleEveryDays * BROADCAST_DAY_MS;
+        if (totalDelayMs > MAX_BROADCAST_SCHEDULE_DAYS * BROADCAST_DAY_MS) {
+          setMailingCycleError('Все циклы должны уместиться в 14 дней.');
+          hasError = true;
+        } else {
+          setMailingCycleError('');
+        }
+      }
+    } else {
+      setMailingCycleError('');
+    }
+
     if (hasError) {
       return;
     }
@@ -1345,6 +1382,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       imageMimeType: mailingImageEnabled ? mailingImageMimeType : '',
       imageFileName: mailingImageEnabled ? mailingImageFileName : '',
       sendAt: mailingScheduleEnabled ? scheduleIso : null,
+      cycleEnabled: mailingCycleEnabled,
+      cycleEveryDays: mailingCycleEnabled ? cycleEveryDays : 1,
+      cycleCount: mailingCycleEnabled ? cycleCount : 1,
     });
   }
 
@@ -1600,6 +1640,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const mailingSchedulePreview = mailingScheduleEnabled
     ? formatRemovalDateTime(buildBroadcastScheduleIso(mailingScheduleDays, mailingScheduleTime))
     : '';
+  const mailingCycleSummary = mailingCycleEnabled
+    ? `${mailingCycleCount} отправок / ${mailingCycleEveryDays} дн`
+    : '';
   const mailingContentLabel = mailingText.trim()
     ? `${mailingText.trim().length}/${MAX_BROADCAST_TEXT_LENGTH}`
     : mailingImageEnabled && mailingImageBase64
@@ -1607,7 +1650,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       : 'пусто';
   const mailingHeaderSummary = `${mailingTargetLabel} · ${mailingContentLabel}${
     mailingScheduleEnabled ? ' · по таймеру' : ''
-  }`;
+  }${mailingCycleEnabled ? ` · ${mailingCycleSummary}` : ''}`;
 
   return (
     <div className="page-stack page-enter">
@@ -4785,6 +4828,82 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     )}
                   </div>
 
+                  <div className={cn('settings-native-toggle', mailingCycleError && 'field--error')}>
+                    <div className="settings-native-toggle__row">
+                      <div className="settings-native-toggle__title-wrap">
+                        <span className="settings-native-toggle__title">Циклическая рассылка</span>
+                      </div>
+
+                      <label className="settings-native-switch" aria-label="Включить циклическую рассылку">
+                        <input
+                          type="checkbox"
+                          checked={mailingCycleEnabled}
+                          onChange={(event) => {
+                            setMailingCycleEnabled(event.target.checked);
+                            setMailingCycleError('');
+                          }}
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
+
+                    {mailingCycleEnabled ? (
+                      <div className="settings-button-fields">
+                        <label className="field settings-text-field">
+                          <span className="field__label">Интервал цикла (дней)</span>
+                          <input
+                            type="number"
+                            min={1}
+                            max={MAX_BROADCAST_SCHEDULE_DAYS}
+                            value={mailingCycleEveryDays}
+                            onChange={(event) => {
+                              const nextValue = Number.parseInt(event.target.value, 10);
+                              const safeValue = Number.isNaN(nextValue)
+                                ? 1
+                                : Math.max(1, Math.min(MAX_BROADCAST_SCHEDULE_DAYS, nextValue));
+                              setMailingCycleEveryDays(safeValue);
+                              setMailingCycleError('');
+                            }}
+                          />
+                        </label>
+
+                        <label className="field settings-text-field">
+                          <span className="field__label">Количество отправок</span>
+                          <input
+                            type="number"
+                            min={2}
+                            max={MAX_BROADCAST_CYCLE_COUNT}
+                            value={mailingCycleCount}
+                            onChange={(event) => {
+                              const nextValue = Number.parseInt(event.target.value, 10);
+                              const safeValue = Number.isNaN(nextValue)
+                                ? 2
+                                : Math.max(2, Math.min(MAX_BROADCAST_CYCLE_COUNT, nextValue));
+                              setMailingCycleCount(safeValue);
+                              setMailingCycleError('');
+                            }}
+                          />
+                        </label>
+                      </div>
+                    ) : null}
+
+                    {mailingCycleError ? (
+                      <small className="field__hint">{mailingCycleError}</small>
+                    ) : mailingCycleEnabled ? (
+                      <small className="field__hint">
+                        {mailingCycleSummary
+                          ? `Цикл: ${mailingCycleSummary}. Все отправки должны уместиться в 14 дней.`
+                          : 'Укажите параметры цикла.'}
+                      </small>
+                    ) : (
+                      <small className="field__hint">
+                        Повторит рассылку по интервалу. Удобно для напоминаний.
+                      </small>
+                    )}
+                  </div>
+
                   <div className="settings-page-header__confirm-actions">
                     <button
                       type="button"
@@ -4813,11 +4932,15 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         setMailingScheduleEnabled(false);
                         setMailingScheduleDays(0);
                         setMailingScheduleTime(toLocalTimeInputValue(new Date(Date.now() + 60 * 60 * 1000)));
+                        setMailingCycleEnabled(false);
+                        setMailingCycleEveryDays(1);
+                        setMailingCycleCount(2);
                         setMailingTextError('');
                         setMailingButtonUrlError('');
                         setMailingButtonTextError('');
                         setMailingImageError('');
                         setMailingScheduleError('');
+                        setMailingCycleError('');
                       }}
                       disabled={sendBroadcastMutation.isPending}
                     >
