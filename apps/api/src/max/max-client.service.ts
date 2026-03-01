@@ -22,7 +22,7 @@ export type MaxMessageButton = {
 
 export type MaxSendMessageOptions = {
   button?: MaxMessageButton;
-  imageToken?: string;
+  imagePayload?: Record<string, unknown>;
 };
 
 export type MaxActionType =
@@ -117,7 +117,7 @@ export class MaxClientService implements OnModuleDestroy {
     data: Buffer,
     fileName = 'broadcast-image.jpg',
     mimeType = 'image/jpeg',
-  ): Promise<string> {
+  ): Promise<Record<string, unknown>> {
     const uploadMeta = await this.request<Record<string, unknown>>('post', '/uploads', {
       params: {
         type: 'image',
@@ -139,14 +139,21 @@ export class MaxClientService implements OnModuleDestroy {
       headers: form.getHeaders(),
       maxBodyLength: Infinity,
       maxContentLength: Infinity,
-      auth: false,
     });
-    const uploadResultToken = typeof uploadResult.token === 'string' ? uploadResult.token.trim() : '';
-    const token = uploadResultToken || uploadMetaToken;
-    if (!token) {
-      throw new Error('MAX upload token is missing');
+
+    if (!uploadResult || typeof uploadResult !== 'object') {
+      throw new Error('MAX upload payload is missing');
     }
-    return token;
+
+    if (Object.keys(uploadResult).length > 0) {
+      return uploadResult;
+    }
+
+    if (uploadMetaToken) {
+      return { token: uploadMetaToken };
+    }
+
+    throw new Error('MAX upload payload is missing');
   }
 
   async kickMember(chatId: string, userId: string) {
@@ -406,7 +413,7 @@ export class MaxClientService implements OnModuleDestroy {
 
   private buildMessageAttachments(options?: MaxSendMessageOptions): Record<string, unknown>[] {
     const attachments: Record<string, unknown>[] = [];
-    const imageAttachment = this.buildImageAttachment(options?.imageToken);
+    const imageAttachment = this.buildImageAttachment(options?.imagePayload);
     if (imageAttachment) {
       attachments.push(imageAttachment);
     }
@@ -417,17 +424,14 @@ export class MaxClientService implements OnModuleDestroy {
     return attachments;
   }
 
-  private buildImageAttachment(imageToken?: string): Record<string, unknown> | null {
-    const token = imageToken?.trim();
-    if (!token) {
+  private buildImageAttachment(imagePayload?: Record<string, unknown>): Record<string, unknown> | null {
+    if (!imagePayload || typeof imagePayload !== 'object' || Object.keys(imagePayload).length === 0) {
       return null;
     }
 
     return {
       type: 'image',
-      payload: {
-        token,
-      },
+      payload: imagePayload,
     };
   }
 
@@ -547,15 +551,16 @@ export class MaxClientService implements OnModuleDestroy {
     url: string,
     config: Record<string, unknown> = {},
   ): Promise<T> {
-    const auth = config.auth !== false;
     const headers = config.headers as Record<string, string> | undefined;
-    const { auth: _auth, ...restConfig } = config;
     const response = await firstValueFrom(
       this.httpService.request<T>({
         method,
         url,
-        ...restConfig,
-        headers: auth ? { Authorization: this.token, ...(headers ?? {}) } : headers,
+        ...config,
+        headers: {
+          Authorization: this.token,
+          ...(headers ?? {}),
+        },
       }),
     );
 

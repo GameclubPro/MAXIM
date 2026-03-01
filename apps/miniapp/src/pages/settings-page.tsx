@@ -254,6 +254,18 @@ function formatApiError(error: unknown): string {
   const rawMessage = error instanceof Error ? error.message : '';
   const normalized = rawMessage.toLowerCase();
 
+  const statusMatch = rawMessage.match(/api request failed:\s*(\d+)/i);
+  const statusCode = statusMatch ? Number.parseInt(statusMatch[1], 10) : null;
+
+  if (statusCode === 413) {
+    return 'Файл слишком большой для сервера. Уменьшите фото.';
+  }
+
+  const payloadMessageMatch = rawMessage.match(/"message":"([^"]+)"/i);
+  if (payloadMessageMatch?.[1]) {
+    return payloadMessageMatch[1];
+  }
+
   if (
     normalized.includes('internal server error') ||
     normalized.includes('statuscode":500') ||

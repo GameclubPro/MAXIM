@@ -321,7 +321,7 @@ export class AdminService {
       sendAt = scheduledAt.toISOString();
     }
 
-    let imageToken: string | undefined;
+    let imagePayload: Record<string, unknown> | undefined;
     if (parsed.data.imageEnabled) {
       const imageMimeType = parsed.data.imageMimeType.trim().toLowerCase();
       if (!imageMimeType.startsWith('image/')) {
@@ -332,7 +332,7 @@ export class AdminService {
         throw new BadRequestException('Фото слишком большое. Максимум 1 MB.');
       }
       try {
-        imageToken = await this.maxClient.uploadImage(
+        imagePayload = await this.maxClient.uploadImage(
           imageBuffer,
           this.resolveBroadcastImageFileName(parsed.data.imageFileName, imageMimeType),
           imageMimeType,
@@ -351,7 +351,7 @@ export class AdminService {
     }
 
     const messageOptions =
-      parsed.data.buttonEnabled || imageToken
+      parsed.data.buttonEnabled || imagePayload
         ? {
             ...(parsed.data.buttonEnabled
               ? {
@@ -361,7 +361,7 @@ export class AdminService {
                   },
                 }
               : {}),
-            ...(imageToken ? { imageToken } : {}),
+            ...(imagePayload ? { imagePayload } : {}),
           }
         : undefined;
 
