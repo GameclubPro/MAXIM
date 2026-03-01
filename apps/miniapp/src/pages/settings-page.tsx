@@ -1651,6 +1651,15 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const mailingHeaderSummary = `${mailingTargetLabel} · ${mailingContentLabel}${
     mailingScheduleEnabled ? ' · по таймеру' : ''
   }${mailingCycleEnabled ? ` · ${mailingCycleSummary}` : ''}`;
+  const mailingHasText = mailingText.trim().length > 0;
+  const mailingHasImage = mailingImageEnabled && mailingImageBase64.length > 0;
+  const mailingHasButton = mailingButtonEnabled && mailingButtonUrl.trim().length > 0;
+  const mailingCanSend = mailingHasText || mailingImageBase64.length > 0;
+  const mailingSendDisabled = sendBroadcastMutation.isPending || !mailingCanSend;
+  const mailingPreviewText = mailingHasText
+    ? mailingText.trim().slice(0, 180)
+    : 'Добавьте текст сообщения или прикрепите фото.';
+  const mailingButtonLabel = mailingButtonText.trim() || 'Открыть';
 
   return (
     <div className="page-stack page-enter">
@@ -4537,11 +4546,55 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 id="settings-mailing-content"
                 className={cn('settings-section__collapse', expandedSections.mailing && 'is-open')}
               >
-                <div className="settings-section__collapse-inner">
-                  <div className="settings-native-toggle">
-                    <div className="settings-native-toggle__row">
-                      <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">Применить во всех чатах</span>
+                <div className="settings-section__collapse-inner settings-mailing">
+                  <div className="mailing-hero">
+                    <div className="mailing-hero__top">
+                      <div className="mailing-hero__title-wrap">
+                        <p className="mailing-hero__eyebrow">Конструктор рассылки</p>
+                        <h4 className="mailing-hero__title">
+                          Соберите сообщение и отправьте его одним действием
+                        </h4>
+                      </div>
+                      <span className={cn('mailing-chip', mailingApplyToAllChats && canApplyToAllChats && 'is-active')}>
+                        {mailingTargetLabel}
+                      </span>
+                    </div>
+
+                    <div className="mailing-hero__chips">
+                      <span className={cn('mailing-chip', mailingHasText && 'is-active')}>
+                        {mailingHasText ? 'Текст добавлен' : 'Без текста'}
+                      </span>
+                      <span className={cn('mailing-chip', mailingHasImage && 'is-active')}>
+                        {mailingHasImage ? 'Фото добавлено' : 'Без фото'}
+                      </span>
+                      <span className={cn('mailing-chip', mailingHasButton && 'is-active')}>
+                        {mailingHasButton ? `Кнопка: ${mailingButtonLabel}` : 'Без кнопки'}
+                      </span>
+                      <span className={cn('mailing-chip', mailingScheduleEnabled && 'is-active')}>
+                        {mailingScheduleEnabled ? 'По таймеру' : 'Сразу'}
+                      </span>
+                      <span className={cn('mailing-chip', mailingCycleEnabled && 'is-active')}>
+                        {mailingCycleEnabled ? `Цикл: ${mailingCycleSummary || 'настроен'}` : 'Без цикла'}
+                      </span>
+                    </div>
+
+                    <div className="mailing-hero__preview">
+                      <p>{mailingPreviewText}</p>
+                      {mailingHasButton ? (
+                        <span className="mailing-hero__preview-button">{mailingButtonLabel}</span>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className={cn('mailing-target-card', !canApplyToAllChats && 'is-single-chat')}>
+                    <div className="mailing-target-card__row">
+                      <div className="mailing-target-card__title-wrap">
+                        <span className="mailing-target-card__title">Применить во всех чатах</span>
+                        <small className="mailing-target-card__meta">
+                          {mailingApplyToAllChats && canApplyToAllChats
+                            ? `Выбрано чатов: ${chatsCount}`
+                            : 'Отправка в текущий чат'}
+                        </small>
                       </div>
 
                       <label
@@ -4560,14 +4613,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       </label>
                     </div>
 
-                    <p className="settings-native-toggle__hint">
+                    <p className="mailing-target-card__hint">
                       {canApplyToAllChats
                         ? `Отправим в ${chatsCount} чатах, где у вас и у бота есть админ-права.`
                         : 'Пока доступен только текущий чат.'}
                     </p>
                   </div>
 
-                  <label className={cn('field', mailingTextError && 'field--error')}>
+                  <label className={cn('field', 'mailing-message-field', mailingTextError && 'field--error')}>
                     <span className="field__label">Текст сообщения</span>
                     <textarea
                       value={mailingText}
@@ -4577,348 +4630,414 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           setMailingTextError('');
                         }
                       }}
-                      rows={4}
+                      rows={5}
                       maxLength={MAX_BROADCAST_TEXT_LENGTH}
-                      placeholder="Введите текст рассылки"
+                      placeholder="Например: Сегодня в 21:00 старт турнира. Подключайтесь!"
                     />
-                    {mailingTextError ? (
-                      <small className="field__hint">{mailingTextError}</small>
-                    ) : (
-                      <small className="field__hint">
+                    <div className="mailing-message-field__meta">
+                      {mailingTextError ? (
+                        <small className="field__hint">{mailingTextError}</small>
+                      ) : (
+                        <small className="field__hint">
+                          Можно отправить только фото, но текст обычно повышает вовлеченность.
+                        </small>
+                      )}
+                      <small
+                        className={cn(
+                          'mailing-message-field__counter',
+                          mailingText.length >= MAX_BROADCAST_TEXT_LENGTH && 'is-limit',
+                        )}
+                      >
                         {mailingText.length}/{MAX_BROADCAST_TEXT_LENGTH}
                       </small>
-                    )}
+                    </div>
                   </label>
 
-                  <div className={cn('settings-native-toggle', mailingImageError && 'field--error')}>
-                    <div className="settings-native-toggle__row">
-                      <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">Добавить фото</span>
-                      </div>
+                  <div className="mailing-options-grid">
+                    <div
+                      className={cn(
+                        'mailing-option-card',
+                        mailingImageEnabled && 'is-enabled',
+                        mailingImageError && 'field--error',
+                      )}
+                    >
+                      <div className="mailing-option-card__head">
+                        <div className="mailing-option-card__title-wrap">
+                          <span className="mailing-option-card__title">Фото</span>
+                          <small className="mailing-option-card__subtitle">
+                            {mailingImageEnabled
+                              ? 'Будет отправлено вместе с текстом.'
+                              : 'Опционально, до 1 MB.'}
+                          </small>
+                        </div>
 
-                      <label className="settings-native-switch" aria-label="Добавить фото в рассылку">
-                        <input
-                          type="checkbox"
-                          checked={mailingImageEnabled}
-                          onChange={(event) => {
-                            const enabled = event.target.checked;
-                            setMailingImageEnabled(enabled);
-                            if (!enabled) {
-                              setMailingImageBase64('');
-                              setMailingImageMimeType('');
-                              setMailingImageFileName('');
-                              setMailingImagePreviewUrl('');
-                              setMailingImageError('');
-                            }
-                          }}
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
-                    </div>
-
-                    {mailingImageEnabled ? (
-                      <div className="settings-button-fields">
-                        <label className={cn('field settings-url-field', mailingImageError && 'field--error')}>
-                          <span className="field__label">Файл изображения</span>
+                        <label className="settings-native-switch" aria-label="Добавить фото в рассылку">
                           <input
-                            type="file"
-                            accept="image/*"
-                            onChange={async (event) => {
-                              const file = event.target.files?.[0];
-                              if (!file) {
+                            type="checkbox"
+                            checked={mailingImageEnabled}
+                            onChange={(event) => {
+                              const enabled = event.target.checked;
+                              setMailingImageEnabled(enabled);
+                              if (!enabled) {
                                 setMailingImageBase64('');
                                 setMailingImageMimeType('');
                                 setMailingImageFileName('');
                                 setMailingImagePreviewUrl('');
-                                setMailingImageError('Выберите фото.');
-                                return;
-                              }
-
-                              if (!file.type.toLowerCase().startsWith('image/')) {
-                                setMailingImageBase64('');
-                                setMailingImageMimeType('');
-                                setMailingImageFileName('');
-                                setMailingImagePreviewUrl('');
-                                setMailingImageError('Нужен файл изображения.');
-                                return;
-                              }
-
-                              if (file.size > MAX_BROADCAST_IMAGE_SIZE_BYTES) {
-                                setMailingImageBase64('');
-                                setMailingImageMimeType('');
-                                setMailingImageFileName('');
-                                setMailingImagePreviewUrl('');
-                                setMailingImageError('Фото слишком большое. Максимум 1 MB.');
-                                return;
-                              }
-
-                              try {
-                                const imageBase64 = await fileToBase64(file);
-                                setMailingImageBase64(imageBase64);
-                                setMailingImageMimeType(file.type);
-                                setMailingImageFileName(file.name);
-                                setMailingImagePreviewUrl(URL.createObjectURL(file));
                                 setMailingImageError('');
-                              } catch {
-                                setMailingImageBase64('');
-                                setMailingImageMimeType('');
-                                setMailingImageFileName('');
-                                setMailingImagePreviewUrl('');
-                                setMailingImageError('Не удалось прочитать фото.');
                               }
                             }}
                           />
-                          {mailingImageError ? (
-                            <small className="field__hint">{mailingImageError}</small>
-                          ) : mailingImageFileName ? (
-                            <small className="field__hint">{mailingImageFileName}</small>
-                          ) : (
-                            <small className="field__hint">PNG/JPG/WEBP, до 1 MB.</small>
-                          )}
+                          <span className="toggle-switch" aria-hidden>
+                            <span className="toggle-switch__thumb" />
+                          </span>
                         </label>
-
-                        {mailingImagePreviewUrl ? (
-                          <img
-                            src={mailingImagePreviewUrl}
-                            alt="Предпросмотр фото для рассылки"
-                            className="broadcast-image-preview"
-                          />
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div className={cn('settings-native-toggle', mailingButtonUrlError && 'field--error')}>
-                    <div className="settings-native-toggle__row">
-                      <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">Добавить кнопку</span>
                       </div>
 
-                      <label className="settings-native-switch" aria-label="Добавить кнопку в рассылку">
-                        <input
-                          type="checkbox"
-                          checked={mailingButtonEnabled}
-                          onChange={(event) => {
-                            const enabled = event.target.checked;
-                            setMailingButtonEnabled(enabled);
-                            if (!enabled) {
-                              setMailingButtonUrlError('');
-                              setMailingButtonTextError('');
-                            }
-                          }}
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
+                      {mailingImageEnabled ? (
+                        <div className="mailing-option-card__body">
+                          <label className={cn('field', 'mailing-upload-field', mailingImageError && 'field--error')}>
+                            <span className="field__label">Файл изображения</span>
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={async (event) => {
+                                const file = event.target.files?.[0];
+                                if (!file) {
+                                  setMailingImageBase64('');
+                                  setMailingImageMimeType('');
+                                  setMailingImageFileName('');
+                                  setMailingImagePreviewUrl('');
+                                  setMailingImageError('Выберите фото.');
+                                  return;
+                                }
+
+                                if (!file.type.toLowerCase().startsWith('image/')) {
+                                  setMailingImageBase64('');
+                                  setMailingImageMimeType('');
+                                  setMailingImageFileName('');
+                                  setMailingImagePreviewUrl('');
+                                  setMailingImageError('Нужен файл изображения.');
+                                  return;
+                                }
+
+                                if (file.size > MAX_BROADCAST_IMAGE_SIZE_BYTES) {
+                                  setMailingImageBase64('');
+                                  setMailingImageMimeType('');
+                                  setMailingImageFileName('');
+                                  setMailingImagePreviewUrl('');
+                                  setMailingImageError('Фото слишком большое. Максимум 1 MB.');
+                                  return;
+                                }
+
+                                try {
+                                  const imageBase64 = await fileToBase64(file);
+                                  setMailingImageBase64(imageBase64);
+                                  setMailingImageMimeType(file.type);
+                                  setMailingImageFileName(file.name);
+                                  setMailingImagePreviewUrl(URL.createObjectURL(file));
+                                  setMailingImageError('');
+                                } catch {
+                                  setMailingImageBase64('');
+                                  setMailingImageMimeType('');
+                                  setMailingImageFileName('');
+                                  setMailingImagePreviewUrl('');
+                                  setMailingImageError('Не удалось прочитать фото.');
+                                }
+                              }}
+                            />
+                            {mailingImageError ? (
+                              <small className="field__hint">{mailingImageError}</small>
+                            ) : mailingImageFileName ? (
+                              <small className="field__hint">{mailingImageFileName}</small>
+                            ) : (
+                              <small className="field__hint">PNG/JPG/WEBP, до 1 MB.</small>
+                            )}
+                          </label>
+
+                          {mailingImagePreviewUrl ? (
+                            <div className="mailing-image-preview">
+                              <img
+                                src={mailingImagePreviewUrl}
+                                alt="Предпросмотр фото для рассылки"
+                                className="broadcast-image-preview"
+                              />
+                              <small>Предпросмотр</small>
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <p className="mailing-option-card__hint">
+                          Добавьте изображение, чтобы сообщение выделялось в ленте чата.
+                        </p>
+                      )}
                     </div>
 
-                    {mailingButtonEnabled ? (
-                      <div className="settings-button-fields">
-                        <label className={cn('field settings-url-field', mailingButtonUrlError && 'field--error')}>
-                          <span className="field__label">Ссылка кнопки</span>
-                          <input
-                            type="url"
-                            inputMode="url"
-                            value={mailingButtonUrl}
-                            onChange={(event) => {
-                              setMailingButtonUrl(event.target.value);
-                              if (mailingButtonUrlError) {
-                                setMailingButtonUrlError('');
-                              }
-                            }}
-                            placeholder="https://max.ru/channel/..."
-                          />
-                          {mailingButtonUrlError ? (
-                            <small className="field__hint">{mailingButtonUrlError}</small>
-                          ) : null}
-                        </label>
+                    <div
+                      className={cn(
+                        'mailing-option-card',
+                        mailingButtonEnabled && 'is-enabled',
+                        (mailingButtonUrlError || mailingButtonTextError) && 'field--error',
+                      )}
+                    >
+                      <div className="mailing-option-card__head">
+                        <div className="mailing-option-card__title-wrap">
+                          <span className="mailing-option-card__title">Кнопка действия</span>
+                          <small className="mailing-option-card__subtitle">
+                            {mailingButtonEnabled
+                              ? 'Укажите ссылку и подпись для кнопки.'
+                              : 'Опционально: перевод в канал, пост или форму.'}
+                          </small>
+                        </div>
 
-                        <label
-                          className={cn('field settings-text-field', mailingButtonTextError && 'field--error')}
-                        >
-                          <span className="field__label">Название кнопки</span>
+                        <label className="settings-native-switch" aria-label="Добавить кнопку в рассылку">
                           <input
-                            type="text"
-                            maxLength={32}
-                            value={mailingButtonText}
+                            type="checkbox"
+                            checked={mailingButtonEnabled}
                             onChange={(event) => {
-                              setMailingButtonText(event.target.value);
-                              if (mailingButtonTextError) {
+                              const enabled = event.target.checked;
+                              setMailingButtonEnabled(enabled);
+                              if (!enabled) {
+                                setMailingButtonUrlError('');
                                 setMailingButtonTextError('');
                               }
                             }}
-                            placeholder="Открыть"
                           />
-                          {mailingButtonTextError ? (
-                            <small className="field__hint">{mailingButtonTextError}</small>
-                          ) : null}
+                          <span className="toggle-switch" aria-hidden>
+                            <span className="toggle-switch__thumb" />
+                          </span>
                         </label>
                       </div>
-                    ) : null}
+
+                      {mailingButtonEnabled ? (
+                        <div className="mailing-option-card__body">
+                          <label className={cn('field settings-url-field', mailingButtonUrlError && 'field--error')}>
+                            <span className="field__label">Ссылка кнопки</span>
+                            <input
+                              type="url"
+                              inputMode="url"
+                              value={mailingButtonUrl}
+                              onChange={(event) => {
+                                setMailingButtonUrl(event.target.value);
+                                if (mailingButtonUrlError) {
+                                  setMailingButtonUrlError('');
+                                }
+                              }}
+                              placeholder="https://max.ru/channel/..."
+                            />
+                            {mailingButtonUrlError ? (
+                              <small className="field__hint">{mailingButtonUrlError}</small>
+                            ) : null}
+                          </label>
+
+                          <label
+                            className={cn('field settings-text-field', mailingButtonTextError && 'field--error')}
+                          >
+                            <span className="field__label">Название кнопки</span>
+                            <input
+                              type="text"
+                              maxLength={32}
+                              value={mailingButtonText}
+                              onChange={(event) => {
+                                setMailingButtonText(event.target.value);
+                                if (mailingButtonTextError) {
+                                  setMailingButtonTextError('');
+                                }
+                              }}
+                              placeholder="Открыть"
+                            />
+                            {mailingButtonTextError ? (
+                              <small className="field__hint">{mailingButtonTextError}</small>
+                            ) : (
+                              <small className="field__hint">До 32 символов.</small>
+                            )}
+                          </label>
+                        </div>
+                      ) : (
+                        <p className="mailing-option-card__hint">
+                          Кнопка усиливает конверсию: переход в нужный чат, пост или форму.
+                        </p>
+                      )}
+                    </div>
                   </div>
 
-                  <div className={cn('settings-native-toggle', mailingScheduleError && 'field--error')}>
-                    <div className="settings-native-toggle__row">
-                      <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">Отправить по таймеру</span>
-                      </div>
+                  <div className="mailing-options-grid mailing-options-grid--timing">
+                    <div
+                      className={cn(
+                        'mailing-option-card',
+                        mailingScheduleEnabled && 'is-enabled',
+                        mailingScheduleError && 'field--error',
+                      )}
+                    >
+                      <div className="mailing-option-card__head">
+                        <div className="mailing-option-card__title-wrap">
+                          <span className="mailing-option-card__title">Таймер отправки</span>
+                          <small className="mailing-option-card__subtitle">
+                            Отложенная отправка до 14 дней.
+                          </small>
+                        </div>
 
-                      <label className="settings-native-switch" aria-label="Включить таймер рассылки">
-                        <input
-                          type="checkbox"
-                          checked={mailingScheduleEnabled}
-                          onChange={(event) => {
-                            setMailingScheduleEnabled(event.target.checked);
-                            setMailingScheduleError('');
-                          }}
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
-                    </div>
-
-                    {mailingScheduleEnabled ? (
-                      <div className="settings-button-fields">
-                        <label className="field settings-text-field">
-                          <span className="field__label">Через сколько дней</span>
+                        <label className="settings-native-switch" aria-label="Включить таймер рассылки">
                           <input
-                            type="number"
-                            min={0}
-                            max={MAX_BROADCAST_SCHEDULE_DAYS}
-                            value={mailingScheduleDays}
+                            type="checkbox"
+                            checked={mailingScheduleEnabled}
                             onChange={(event) => {
-                              const nextValue = Number.parseInt(event.target.value, 10);
-                              const safeValue = Number.isNaN(nextValue)
-                                ? 0
-                                : Math.max(0, Math.min(MAX_BROADCAST_SCHEDULE_DAYS, nextValue));
-                              setMailingScheduleDays(safeValue);
+                              setMailingScheduleEnabled(event.target.checked);
                               setMailingScheduleError('');
                             }}
                           />
-                        </label>
-
-                        <label className="field settings-text-field">
-                          <span className="field__label">Время</span>
-                          <input
-                            type="time"
-                            value={mailingScheduleTime}
-                            onChange={(event) => {
-                              setMailingScheduleTime(event.target.value);
-                              setMailingScheduleError('');
-                            }}
-                          />
+                          <span className="toggle-switch" aria-hidden>
+                            <span className="toggle-switch__thumb" />
+                          </span>
                         </label>
                       </div>
-                    ) : null}
 
-                    {mailingScheduleError ? (
-                      <small className="field__hint">{mailingScheduleError}</small>
-                    ) : mailingScheduleEnabled ? (
-                      <small className="field__hint">
-                        {mailingSchedulePreview
-                          ? `Отправка: ${mailingSchedulePreview}`
-                          : 'Проверьте день и время отправки.'}
-                      </small>
-                    ) : (
-                      <small className="field__hint">Можно отложить максимум на 14 дней.</small>
-                    )}
-                  </div>
+                      {mailingScheduleEnabled ? (
+                        <div className="mailing-option-card__body mailing-inline-fields">
+                          <label className="field settings-text-field mailing-inline-field">
+                            <span className="field__label">Через сколько дней</span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={MAX_BROADCAST_SCHEDULE_DAYS}
+                              value={mailingScheduleDays}
+                              onChange={(event) => {
+                                const nextValue = Number.parseInt(event.target.value, 10);
+                                const safeValue = Number.isNaN(nextValue)
+                                  ? 0
+                                  : Math.max(0, Math.min(MAX_BROADCAST_SCHEDULE_DAYS, nextValue));
+                                setMailingScheduleDays(safeValue);
+                                setMailingScheduleError('');
+                              }}
+                            />
+                          </label>
 
-                  <div className={cn('settings-native-toggle', mailingCycleError && 'field--error')}>
-                    <div className="settings-native-toggle__row">
-                      <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">Циклическая рассылка</span>
-                      </div>
+                          <label className="field settings-text-field mailing-inline-field">
+                            <span className="field__label">Время</span>
+                            <input
+                              type="time"
+                              value={mailingScheduleTime}
+                              onChange={(event) => {
+                                setMailingScheduleTime(event.target.value);
+                                setMailingScheduleError('');
+                              }}
+                            />
+                          </label>
+                        </div>
+                      ) : null}
 
-                      <label className="settings-native-switch" aria-label="Включить циклическую рассылку">
-                        <input
-                          type="checkbox"
-                          checked={mailingCycleEnabled}
-                          onChange={(event) => {
-                            setMailingCycleEnabled(event.target.checked);
-                            setMailingCycleError('');
-                          }}
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
+                      {mailingScheduleError ? (
+                        <small className="field__hint">{mailingScheduleError}</small>
+                      ) : mailingScheduleEnabled ? (
+                        <small className="mailing-option-card__hint is-info">
+                          {mailingSchedulePreview
+                            ? `Отправка: ${mailingSchedulePreview}`
+                            : 'Проверьте день и время отправки.'}
+                        </small>
+                      ) : (
+                        <small className="mailing-option-card__hint">
+                          Если выключено, отправка произойдет сразу.
+                        </small>
+                      )}
                     </div>
 
-                    {mailingCycleEnabled ? (
-                      <div className="settings-button-fields">
-                        <label className="field settings-text-field">
-                          <span className="field__label">Интервал цикла (дней)</span>
-                          <input
-                            type="number"
-                            min={1}
-                            max={MAX_BROADCAST_SCHEDULE_DAYS}
-                            value={mailingCycleEveryDays}
-                            onChange={(event) => {
-                              const nextValue = Number.parseInt(event.target.value, 10);
-                              const safeValue = Number.isNaN(nextValue)
-                                ? 1
-                                : Math.max(1, Math.min(MAX_BROADCAST_SCHEDULE_DAYS, nextValue));
-                              setMailingCycleEveryDays(safeValue);
-                              setMailingCycleError('');
-                            }}
-                          />
-                        </label>
+                    <div
+                      className={cn(
+                        'mailing-option-card',
+                        mailingCycleEnabled && 'is-enabled',
+                        mailingCycleError && 'field--error',
+                      )}
+                    >
+                      <div className="mailing-option-card__head">
+                        <div className="mailing-option-card__title-wrap">
+                          <span className="mailing-option-card__title">Циклическая рассылка</span>
+                          <small className="mailing-option-card__subtitle">
+                            Повтор сообщений с заданным интервалом.
+                          </small>
+                        </div>
 
-                        <label className="field settings-text-field">
-                          <span className="field__label">Количество отправок</span>
+                        <label className="settings-native-switch" aria-label="Включить циклическую рассылку">
                           <input
-                            type="number"
-                            min={2}
-                            max={MAX_BROADCAST_CYCLE_COUNT}
-                            value={mailingCycleCount}
+                            type="checkbox"
+                            checked={mailingCycleEnabled}
                             onChange={(event) => {
-                              const nextValue = Number.parseInt(event.target.value, 10);
-                              const safeValue = Number.isNaN(nextValue)
-                                ? 2
-                                : Math.max(2, Math.min(MAX_BROADCAST_CYCLE_COUNT, nextValue));
-                              setMailingCycleCount(safeValue);
+                              setMailingCycleEnabled(event.target.checked);
                               setMailingCycleError('');
                             }}
                           />
+                          <span className="toggle-switch" aria-hidden>
+                            <span className="toggle-switch__thumb" />
+                          </span>
                         </label>
                       </div>
-                    ) : null}
 
-                    {mailingCycleError ? (
-                      <small className="field__hint">{mailingCycleError}</small>
-                    ) : mailingCycleEnabled ? (
-                      <small className="field__hint">
-                        {mailingCycleSummary
-                          ? `Цикл: ${mailingCycleSummary}. Все отправки должны уместиться в 14 дней.`
-                          : 'Укажите параметры цикла.'}
-                      </small>
-                    ) : (
-                      <small className="field__hint">
-                        Повторит рассылку по интервалу. Удобно для напоминаний.
-                      </small>
-                    )}
+                      {mailingCycleEnabled ? (
+                        <div className="mailing-option-card__body mailing-inline-fields">
+                          <label className="field settings-text-field mailing-inline-field">
+                            <span className="field__label">Интервал (дней)</span>
+                            <input
+                              type="number"
+                              min={1}
+                              max={MAX_BROADCAST_SCHEDULE_DAYS}
+                              value={mailingCycleEveryDays}
+                              onChange={(event) => {
+                                const nextValue = Number.parseInt(event.target.value, 10);
+                                const safeValue = Number.isNaN(nextValue)
+                                  ? 1
+                                  : Math.max(1, Math.min(MAX_BROADCAST_SCHEDULE_DAYS, nextValue));
+                                setMailingCycleEveryDays(safeValue);
+                                setMailingCycleError('');
+                              }}
+                            />
+                          </label>
+
+                          <label className="field settings-text-field mailing-inline-field">
+                            <span className="field__label">Количество отправок</span>
+                            <input
+                              type="number"
+                              min={2}
+                              max={MAX_BROADCAST_CYCLE_COUNT}
+                              value={mailingCycleCount}
+                              onChange={(event) => {
+                                const nextValue = Number.parseInt(event.target.value, 10);
+                                const safeValue = Number.isNaN(nextValue)
+                                  ? 2
+                                  : Math.max(2, Math.min(MAX_BROADCAST_CYCLE_COUNT, nextValue));
+                                setMailingCycleCount(safeValue);
+                                setMailingCycleError('');
+                              }}
+                            />
+                          </label>
+                        </div>
+                      ) : null}
+
+                      {mailingCycleError ? (
+                        <small className="field__hint">{mailingCycleError}</small>
+                      ) : mailingCycleEnabled ? (
+                        <small className="mailing-option-card__hint is-info">
+                          {mailingCycleSummary
+                            ? `Цикл: ${mailingCycleSummary}. Все отправки должны уместиться в 14 дней.`
+                            : 'Укажите параметры цикла.'}
+                        </small>
+                      ) : (
+                        <small className="mailing-option-card__hint">
+                          Удобно для напоминаний о турнирах, событиях и розыгрышах.
+                        </small>
+                      )}
+                    </div>
                   </div>
 
-                  <div className="settings-page-header__confirm-actions">
+                  <div className="mailing-action-bar">
                     <button
                       type="button"
-                      className="button button--accent"
+                      className="button button--accent mailing-action-bar__send"
                       onClick={handleSendBroadcast}
-                      disabled={
-                        sendBroadcastMutation.isPending ||
-                        (mailingText.trim().length === 0 && mailingImageBase64.length === 0)
-                      }
+                      disabled={mailingSendDisabled}
                     >
                       {sendBroadcastMutation.isPending ? 'Отправляем...' : 'Отправить рассылку'}
                     </button>
                     <button
                       type="button"
-                      className="button button--ghost"
+                      className="button button--ghost mailing-action-bar__clear"
                       onClick={() => {
                         setMailingText('');
                         setMailingButtonEnabled(false);
