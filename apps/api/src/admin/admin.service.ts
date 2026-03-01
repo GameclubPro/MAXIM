@@ -1,9 +1,11 @@
 import {
+  addGlobalUserBlacklistRequestSchema,
   addDomainRequestSchema,
   addAdminRequestSchema,
   dateRangeQuerySchema,
   type ChatSettings,
   chatSettingsSchema,
+  type GlobalUserBlacklistEntry,
   type Me,
   type ModerationEvent,
   type ChatSummary,
@@ -430,6 +432,85 @@ export class AdminService {
         action: 'REMOVE_DOMAIN',
         payload: {
           domain: normalized,
+        },
+      },
+    });
+
+    return { ok: true };
+  }
+
+  async getGlobalUserBlacklist(chatId: string, user: AuthUser): Promise<GlobalUserBlacklistEntry[]> {
+    await this.assertChatAdmin(chatId, user.userId);
+
+    const rows = await this.prisma.globalUserBlacklist.findMany({
+      orderBy: { createdAt: 'desc' },
+      select: {
+        userId: true,
+        createdAt: true,
+      },
+    });
+
+    return rows.map((row: { userId: string; createdAt: Date }) => ({
+      userId: row.userId,
+      createdAt: row.createdAt.toISOString(),
+    }));
+  }
+
+  async addGlobalUserBlacklistUser(chatId: string, user: AuthUser, body: unknown) {
+    await this.assertChatAdmin(chatId, user.userId);
+    const parsed = addGlobalUserBlacklistRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const normalizedUserId = parsed.data.userId.trim();
+
+    await this.prisma.globalUserBlacklist.upsert({
+      where: {
+        userId: normalizedUserId,
+      },
+      create: {
+        userId: normalizedUserId,
+        sourceChatId: chatId,
+        reason: 'MANUAL',
+      },
+      update: {
+        sourceChatId: chatId,
+        reason: 'MANUAL',
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: 'ADD_GLOBAL_USER_BLACKLIST',
+        payload: {
+          userId: normalizedUserId,
+        },
+      },
+    });
+
+    return { ok: true };
+  }
+
+  async removeGlobalUserBlacklistUser(chatId: string, user: AuthUser, targetUserId: string) {
+    await this.assertChatAdmin(chatId, user.userId);
+    const normalizedUserId = targetUserId.trim();
+
+    await this.prisma.globalUserBlacklist.deleteMany({
+      where: {
+        userId: normalizedUserId,
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: 'REMOVE_GLOBAL_USER_BLACKLIST',
+        payload: {
+          userId: normalizedUserId,
         },
       },
     });

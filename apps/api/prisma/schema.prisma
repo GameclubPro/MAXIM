@@ -86,6 +86,7 @@ model ChatSettings {
   duplicateBanMaxCount   Int            @default(4) @map("duplicate_ban_max_count")
   linkPolicy             LinkPolicy     @default(ALLOWLIST_ONLY) @map("link_policy")
   removeBotsFromGroupEnabled Boolean    @default(false) @map("remove_bots_from_group_enabled")
+  globalUserBlacklistEnabled Boolean    @default(false) @map("global_user_blacklist_enabled")
   maxMessageLengthEnabled Boolean       @default(false) @map("max_message_length_enabled")
   maxMessageLength       Int            @default(1500) @map("max_message_length")
   photoMessageCooldownEnabled Boolean   @default(false) @map("photo_message_cooldown_enabled")
@@ -163,6 +164,16 @@ model DomainAllowlist {
 
   @@id([chatId, domain])
   @@map("domain_allowlist")
+}
+
+model GlobalUserBlacklist {
+  userId      String   @id @map("user_id")
+  sourceChatId String? @map("source_chat_id")
+  reason      String?
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("global_user_blacklist")
 }
 
 model BadwordDictionary {

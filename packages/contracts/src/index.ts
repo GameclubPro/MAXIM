@@ -64,6 +64,7 @@ export const chatSettingsSchema = z
     duplicateBanMaxCount: duplicateMaxCountSchema.default(4),
     linkPolicy: linkPolicySchema.default('ALLOWLIST_ONLY'),
     removeBotsFromGroupEnabled: z.boolean().default(false),
+    globalUserBlacklistEnabled: z.boolean().default(false),
     maxMessageLengthEnabled: z.boolean().default(false),
     maxMessageLength: z.number().int().min(50).max(1500).default(1500),
     photoMessageCooldownEnabled: z.boolean().default(false),
@@ -351,6 +352,16 @@ export const addDomainRequestSchema = z.object({
     .trim()
     .min(3)
     .regex(/^[a-zA-Z0-9.-]+$/),
+});
+
+export const globalUserBlacklistEntrySchema = z.object({
+  userId: z.string().trim().min(1),
+  createdAt: z.string().datetime(),
+});
+export type GlobalUserBlacklistEntry = z.infer<typeof globalUserBlacklistEntrySchema>;
+
+export const addGlobalUserBlacklistRequestSchema = z.object({
+  userId: z.string().trim().min(1),
 });
 
 export const maxMessagePayloadSchema = z.object({

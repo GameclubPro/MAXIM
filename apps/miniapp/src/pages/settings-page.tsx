@@ -1,4 +1,8 @@
-import { chatSettingsSchema, type ChatSettings } from '@maxim/contracts';
+import {
+  chatSettingsSchema,
+  type ChatSettings,
+  type GlobalUserBlacklistEntry,
+} from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
@@ -271,6 +275,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [domainInput, setDomainInput] = useState('');
   const [domainInputError, setDomainInputError] = useState('');
+  const [blacklistInput, setBlacklistInput] = useState('');
+  const [blacklistInputError, setBlacklistInputError] = useState('');
   const [failedSnapshot, setFailedSnapshot] = useState<string>('');
   const [showApplyAllConfirm, setShowApplyAllConfirm] = useState(false);
   const [openHintKey, setOpenHintKey] = useState<BotHintKey | null>(null);
@@ -313,6 +319,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const domainsQuery = useQuery({
     queryKey: ['domains', chatId],
     queryFn: () => api.getDomainAllowlist(chatId ?? ''),
+    enabled: Boolean(chatId),
+    refetchOnWindowFocus: false,
+  });
+
+  const globalBlacklistQuery = useQuery({
+    queryKey: ['global-user-blacklist', chatId],
+    queryFn: () => api.getGlobalUserBlacklist(chatId ?? ''),
     enabled: Boolean(chatId),
     refetchOnWindowFocus: false,
   });
@@ -442,6 +455,38 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось удалить ссылку',
+        description: formatApiError(error),
+      });
+    },
+  });
+
+  const addGlobalBlacklistUserMutation = useMutation({
+    mutationFn: (userId: string) => api.addGlobalUserBlacklistUser(chatId ?? '', userId),
+    onSuccess: () => {
+      setBlacklistInput('');
+      setBlacklistInputError('');
+      void queryClient.invalidateQueries({ queryKey: ['global-user-blacklist', chatId] });
+      pushToast({ tone: 'success', title: 'Пользователь добавлен в черный список' });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось добавить пользователя',
+        description: formatApiError(error),
+      });
+    },
+  });
+
+  const removeGlobalBlacklistUserMutation = useMutation({
+    mutationFn: (userId: string) => api.removeGlobalUserBlacklistUser(chatId ?? '', userId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['global-user-blacklist', chatId] });
+      pushToast({ tone: 'success', title: 'Пользователь удален из черного списка' });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось удалить пользователя',
         description: formatApiError(error),
       });
     },
@@ -584,6 +629,30 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     addDomainMutation.mutate(normalized);
   }
 
+  function handleAddGlobalBlacklistUser() {
+    if (!chatId) {
+      return;
+    }
+
+    const normalized = blacklistInput.trim();
+    if (!normalized) {
+      setBlacklistInputError('Введите ID пользователя');
+      return;
+    }
+
+    const existing =
+      (globalBlacklistQuery.data ?? []).some((item) => item.userId === normalized);
+    if (existing) {
+      setBlacklistInput('');
+      setBlacklistInputError('');
+      pushToast({ title: 'Пользователь уже в черном списке' });
+      return;
+    }
+
+    setBlacklistInputError('');
+    addGlobalBlacklistUserMutation.mutate(normalized);
+  }
+
   function handleCommercialSensitivitySliderChange(rawValue: number) {
     if (!draft) {
       return;
@@ -669,6 +738,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
   const linkPolicyError = fieldErrors.linkPolicy;
   const allowlistDomains = domainsQuery.data ?? [];
+  const globalBlacklistEntries: GlobalUserBlacklistEntry[] = globalBlacklistQuery.data ?? [];
   const isAllowlistMode = draft?.linkPolicy === 'ALLOWLIST_ONLY';
   const shouldShowLinkStages = draft?.linkPolicy !== 'ALERT_ONLY';
   const showLinkBotButtonErrors = Boolean(
@@ -775,7 +845,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const textFiltersHeaderSummary = draft
     ? `${textFiltersEnabledCount}/2 фильтра · ${textFiltersStagesEnabledCount}/4 ступени · ${commercialSensitivityLabel.toLowerCase()}`
     : `${textFiltersEnabledCount}/2 фильтра`;
-  const extraHeaderSummary = draft?.removeBotsFromGroupEnabled ? '1 опция включена' : 'Выключено';
+  const extraEnabledCount = [
+    draft?.removeBotsFromGroupEnabled,
+    draft?.globalUserBlacklistEnabled,
+  ].filter(Boolean).length;
+  const extraHeaderSummary =
+    extraEnabledCount > 0
+      ? `${extraEnabledCount} опции · ${globalBlacklistEntries.length} в списке`
+      : `${globalBlacklistEntries.length} в списке`;
   const chatsCount = chatsQuery.data?.length ?? 0;
   const canApplyToAllChats = chatsCount > 1;
   const applyAllHint = canApplyToAllChats
@@ -2539,6 +2616,122 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   <p className="settings-native-toggle__hint">
                     Если включено, бот-аккаунты будут автоматически удаляться из группы.
                   </p>
+                </div>
+
+                <div className="settings-native-toggle">
+                  <div className="settings-native-toggle__row">
+                    <span className="settings-native-toggle__title">
+                      Удалять пользователей из черного списка
+                    </span>
+
+                    <label
+                      className="settings-native-switch"
+                      aria-label="Включить удаление пользователей из черного списка"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={draft.globalUserBlacklistEnabled}
+                        onChange={(event) =>
+                          setFieldValue('globalUserBlacklistEnabled', event.target.checked)
+                        }
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                    </label>
+                  </div>
+
+                  <p className="settings-native-toggle__hint">
+                    Если включить в любом чате, режим начнет действовать во всех чатах бота.
+                  </p>
+                </div>
+
+                <div
+                  className={cn(
+                    'field',
+                    'allowlist-panel',
+                    blacklistInputError && 'allowlist-panel--error',
+                  )}
+                >
+                  <div className="allowlist-panel__head">
+                    <span className="field__label">Черный список пользователей</span>
+                    <span className="chip">{globalBlacklistEntries.length}</span>
+                  </div>
+
+                  <p className="allowlist-panel__subtitle">
+                    Добавьте ID пользователя, которого нужно удалять автоматически.
+                  </p>
+
+                  <div className="allowlist-add-row">
+                    <input
+                      type="text"
+                      inputMode="text"
+                      value={blacklistInput}
+                      onChange={(event) => {
+                        setBlacklistInput(event.target.value);
+                        setBlacklistInputError('');
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          handleAddGlobalBlacklistUser();
+                        }
+                      }}
+                      placeholder="user_id"
+                    />
+                    <button
+                      type="button"
+                      className="button button--accent allowlist-add-row__button"
+                      onClick={handleAddGlobalBlacklistUser}
+                      disabled={
+                        addGlobalBlacklistUserMutation.isPending ||
+                        removeGlobalBlacklistUserMutation.isPending
+                      }
+                    >
+                      {addGlobalBlacklistUserMutation.isPending ? 'Добавляем...' : 'Добавить'}
+                    </button>
+                  </div>
+
+                  {blacklistInputError ? (
+                    <small className="field__hint">{blacklistInputError}</small>
+                  ) : null}
+
+                  {globalBlacklistQuery.isLoading ? (
+                    <p className="allowlist-empty">Загрузка списка...</p>
+                  ) : null}
+
+                  {globalBlacklistQuery.error ? (
+                    <p className="allowlist-empty allowlist-empty--error">
+                      Ошибка: {formatApiError(globalBlacklistQuery.error)}
+                    </p>
+                  ) : null}
+
+                  {!globalBlacklistQuery.isLoading && !globalBlacklistQuery.error ? (
+                    globalBlacklistEntries.length > 0 ? (
+                      <ul className="allowlist-list" aria-label="Черный список пользователей">
+                        {globalBlacklistEntries.map((entry) => (
+                          <li key={entry.userId} className="allowlist-item">
+                            <span className="allowlist-item__domain">{entry.userId}</span>
+                            <button
+                              type="button"
+                              className="allowlist-item__remove"
+                              onClick={() =>
+                                removeGlobalBlacklistUserMutation.mutate(entry.userId)
+                              }
+                              disabled={
+                                removeGlobalBlacklistUserMutation.isPending ||
+                                addGlobalBlacklistUserMutation.isPending
+                              }
+                            >
+                              Удалить
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="allowlist-empty">Список пуст</p>
+                    )
+                  ) : null}
                 </div>
               </div>
             </div>

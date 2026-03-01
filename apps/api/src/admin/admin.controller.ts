@@ -82,4 +82,27 @@ export class AdminController {
   ) {
     return this.adminService.removeDomain(chatId, user, domain);
   }
+
+  @Get('chats/:chatId/global-user-blacklist')
+  getGlobalUserBlacklist(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.adminService.getGlobalUserBlacklist(chatId, user);
+  }
+
+  @Post('chats/:chatId/global-user-blacklist')
+  addGlobalUserBlacklistUser(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.addGlobalUserBlacklistUser(chatId, user, body);
+  }
+
+  @Delete('chats/:chatId/global-user-blacklist/:userId')
+  removeGlobalUserBlacklistUser(
+    @Param('chatId') chatId: string,
+    @Param('userId') targetUserId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.adminService.removeGlobalUserBlacklistUser(chatId, user, targetUserId);
+  }
 }

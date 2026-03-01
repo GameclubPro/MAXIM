@@ -34,6 +34,7 @@ const LINK_ESCALATION_BAN_HOURS = 6;
 const TEXT_FILTER_ESCALATION_WINDOW_HOURS = 24;
 const TEXT_FILTER_ESCALATION_BAN_HOURS = 6;
 const MAX_FORWARD_SCAN_DEPTH = 8;
+const GLOBAL_BLACKLIST_TOGGLE_CACHE_TTL_MS = 30_000;
 const NON_SANCTION_RULE_CODES = new Set([
   'LINK_BLOCKED',
   'PROFANITY',
@@ -56,6 +57,7 @@ const TEXT_FILTER_RULE_CODES = new Set(['PROFANITY', 'COMMERCIAL_AD']);
 @Injectable()
 export class ModerationService {
   private readonly logger = new Logger(ModerationService.name);
+  private globalUserBlacklistEnabledCache: { value: boolean; checkedAt: number } | null = null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -141,8 +143,20 @@ export class ModerationService {
       this.logger.warn({ chatId }, 'Chat settings missing after upsert');
       return;
     }
+    const globalUserBlacklistEnabled = await this.isGlobalUserBlacklistEnabled(
+      settings.globalUserBlacklistEnabled,
+    );
 
     if (serviceAuthored) {
+      if (globalUserBlacklistEnabled) {
+        await this.handleServiceGloballyBlacklistedMembersEvent({
+          chatId,
+          messageId,
+          text,
+          update,
+        });
+      }
+
       if (settings.removeBotsFromGroupEnabled) {
         await this.handleServiceBotEvent({
           chatId,
@@ -164,6 +178,18 @@ export class ModerationService {
         });
       }
       return;
+    }
+
+    if (globalUserBlacklistEnabled) {
+      const handled = await this.handleGloballyBlacklistedSenderMessage({
+        chatId,
+        userId: senderId,
+        messageId,
+        text,
+      });
+      if (handled) {
+        return;
+      }
     }
 
     const activeBan = await this.getActiveBan(chatId, senderId, settings.banDurationHours);
@@ -907,6 +933,11 @@ export class ModerationService {
     const { chatId, userId, action, userLabel, messageId, banDurationHours, botMessageOptions } =
       params;
     if (action === SanctionAction.KICK) {
+      await this.upsertGlobalUserBlacklistEntry({
+        userId,
+        sourceChatId: chatId,
+        reason: 'KICK_SANCTION',
+      });
       try {
         await this.maxClient.kickMember(chatId, userId);
       } catch (error: unknown) {
@@ -1750,6 +1781,205 @@ export class ModerationService {
     }
   }
 
+  private async handleGloballyBlacklistedSenderMessage(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    text: string;
+  }): Promise<boolean> {
+    const { chatId, userId, messageId, text } = params;
+    const isBlacklisted = await this.isUserGloballyBlacklisted(userId);
+    if (!isBlacklisted) {
+      return false;
+    }
+
+    try {
+      await this.maxClient.deleteMessage(chatId, messageId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to delete message from globally blacklisted user',
+      );
+    }
+
+    await this.kickAndLogGlobalBlacklistEvent({
+      chatId,
+      userId,
+      messageId,
+      text,
+      reason: 'Sender is included in global user blacklist',
+    });
+    return true;
+  }
+
+  private async handleServiceGloballyBlacklistedMembersEvent(params: {
+    chatId: string;
+    messageId: string;
+    text: string;
+    update: MaxUpdate;
+  }) {
+    const { chatId, messageId, text, update } = params;
+    const serviceMemberUserIds = this.extractServiceMemberUserIds(update);
+    if (serviceMemberUserIds.length === 0) {
+      return;
+    }
+
+    if (!this.prisma.globalUserBlacklist?.findMany) {
+      return;
+    }
+
+    const rows = await this.prisma.globalUserBlacklist.findMany({
+      where: {
+        userId: {
+          in: serviceMemberUserIds,
+        },
+      },
+      select: {
+        userId: true,
+      },
+    });
+    if (rows.length === 0) {
+      return;
+    }
+
+    for (const row of rows) {
+      await this.kickAndLogGlobalBlacklistEvent({
+        chatId,
+        userId: row.userId,
+        messageId,
+        text,
+        reason: 'Member was added via service event and is globally blacklisted',
+      });
+    }
+  }
+
+  private async kickAndLogGlobalBlacklistEvent(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    text: string;
+    reason: string;
+  }) {
+    const { chatId, userId, messageId, text, reason } = params;
+    try {
+      await this.maxClient.kickMember(chatId, userId);
+      await this.prisma.moderationEvent.create({
+        data: {
+          chatId,
+          userId,
+          messageId,
+          eventType: EventType.MEMBER_ACTION,
+          ruleCode: 'GLOBAL_USER_BLACKLIST_KICK',
+          action: SanctionAction.KICK,
+          maskedExcerpt: maskText(text),
+          score: 0.95,
+          operator: Operator.BOT,
+          metadata: {
+            reason,
+          },
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to kick globally blacklisted user',
+      );
+    }
+  }
+
+  private async isGlobalUserBlacklistEnabled(chatSettingEnabled: boolean): Promise<boolean> {
+    if (chatSettingEnabled) {
+      this.globalUserBlacklistEnabledCache = {
+        value: true,
+        checkedAt: Date.now(),
+      };
+      return true;
+    }
+
+    const now = Date.now();
+    if (
+      this.globalUserBlacklistEnabledCache &&
+      now - this.globalUserBlacklistEnabledCache.checkedAt <= GLOBAL_BLACKLIST_TOGGLE_CACHE_TTL_MS
+    ) {
+      return this.globalUserBlacklistEnabledCache.value;
+    }
+
+    const enabledSomewhere = await this.prisma.chatSettings?.findFirst({
+      where: {
+        globalUserBlacklistEnabled: true,
+      },
+      select: {
+        chatId: true,
+      },
+    });
+    const value = Boolean(enabledSomewhere);
+    this.globalUserBlacklistEnabledCache = {
+      value,
+      checkedAt: now,
+    };
+    return value;
+  }
+
+  private async isUserGloballyBlacklisted(userId: string): Promise<boolean> {
+    const row = await this.prisma.globalUserBlacklist?.findUnique({
+      where: {
+        userId,
+      },
+      select: {
+        userId: true,
+      },
+    });
+    return Boolean(row);
+  }
+
+  private async upsertGlobalUserBlacklistEntry(params: {
+    userId: string;
+    sourceChatId: string;
+    reason: string;
+  }) {
+    const { userId, sourceChatId, reason } = params;
+    if (!this.prisma.globalUserBlacklist?.upsert) {
+      return;
+    }
+
+    try {
+      await this.prisma.globalUserBlacklist.upsert({
+        where: {
+          userId,
+        },
+        create: {
+          userId,
+          sourceChatId,
+          reason,
+        },
+        update: {
+          sourceChatId,
+          reason,
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          userId,
+          sourceChatId,
+          reason,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to upsert global user blacklist entry',
+      );
+    }
+  }
+
   private async handleNightModeMessage(params: {
     chatId: string;
     userId: string;
@@ -2019,24 +2249,61 @@ export class ModerationService {
   }
 
   private extractBotUserIdsFromServiceEvent(update: MaxUpdate): string[] {
+    const memberRows = this.extractServiceMemberRows(update);
+    const botUserIds = new Set<string>();
+
+    for (const row of memberRows) {
+      if (!this.isBotEntity(row)) {
+        continue;
+      }
+
+      const userId = this.readUserIdFromEntity(row);
+      if (userId) {
+        botUserIds.add(userId);
+      }
+    }
+
+    return [...botUserIds];
+  }
+
+  private extractServiceMemberUserIds(update: MaxUpdate): string[] {
+    const memberRows = this.extractServiceMemberRows(update);
+    const userIds = new Set<string>();
+
+    for (const row of memberRows) {
+      const userId = this.readUserIdFromEntity(row);
+      if (userId) {
+        userIds.add(userId);
+      }
+    }
+
+    return [...userIds];
+  }
+
+  private extractServiceMemberRows(update: MaxUpdate): Array<Record<string, unknown>> {
     const raw = this.asRecord(update.raw);
     if (!raw) {
       return [];
     }
 
-    const botUserIds = new Set<string>();
-    this.collectBotUserIds(raw, botUserIds);
-    return [...botUserIds];
+    const messageNode = this.extractRawMessageNode(raw) ?? raw;
+    const rows: Array<Record<string, unknown>> = [];
+    this.collectServiceMemberRows(messageNode, rows);
+    return rows;
   }
 
-  private collectBotUserIds(node: unknown, acc: Set<string>, depth = 0) {
+  private collectServiceMemberRows(
+    node: unknown,
+    acc: Array<Record<string, unknown>>,
+    depth = 0,
+  ) {
     if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined) {
       return;
     }
 
     if (Array.isArray(node)) {
       for (const item of node) {
-        this.collectBotUserIds(item, acc, depth + 1);
+        this.collectServiceMemberRows(item, acc, depth + 1);
       }
       return;
     }
@@ -2046,40 +2313,96 @@ export class ModerationService {
     }
 
     const row = node as Record<string, unknown>;
-    const botUserId = this.readBotUserId(row);
-    if (botUserId) {
-      acc.add(botUserId);
-    }
+    for (const [key, value] of Object.entries(row)) {
+      const keyLower = key.toLowerCase();
+      if (this.isServiceMembersCollectionKey(keyLower)) {
+        this.collectMemberEntities(value, acc, depth + 1);
+        continue;
+      }
 
-    for (const value of Object.values(row)) {
       if (value && (typeof value === 'object' || Array.isArray(value))) {
-        this.collectBotUserIds(value, acc, depth + 1);
+        this.collectServiceMemberRows(value, acc, depth + 1);
       }
     }
   }
 
-  private readBotUserId(node: Record<string, unknown>): string | null {
-    if (!this.isBotEntity(node)) {
-      return null;
+  private isServiceMembersCollectionKey(key: string): boolean {
+    return (
+      key === 'new_members' ||
+      key === 'new_member' ||
+      key === 'members_added' ||
+      key === 'member_added' ||
+      key === 'added_members' ||
+      key === 'added_member' ||
+      key === 'joined_members' ||
+      key === 'joined_member' ||
+      key === 'invited_members' ||
+      key === 'invited_member' ||
+      key === 'new_users' ||
+      key === 'new_user'
+    );
+  }
+
+  private collectMemberEntities(
+    node: unknown,
+    acc: Array<Record<string, unknown>>,
+    depth = 0,
+  ) {
+    if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined) {
+      return;
     }
 
-    const candidates = [
-      node.user_id,
-      node.userId,
-      node.member_id,
-      node.memberId,
-      node.actor_id,
-      node.actorId,
-      node.id,
-    ];
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        this.collectMemberEntities(item, acc, depth + 1);
+      }
+      return;
+    }
 
-    for (const value of candidates) {
+    if (typeof node !== 'object') {
+      return;
+    }
+
+    const row = node as Record<string, unknown>;
+    if (this.readUserIdFromEntity(row)) {
+      acc.push(row);
+    }
+
+    for (const value of Object.values(row)) {
+      if (value && (typeof value === 'object' || Array.isArray(value))) {
+        this.collectMemberEntities(value, acc, depth + 1);
+      }
+    }
+  }
+
+  private readUserIdFromEntity(node: Record<string, unknown>): string | null {
+    const explicitCandidates = [node.user_id, node.userId, node.member_id, node.memberId];
+    for (const value of explicitCandidates) {
       if (typeof value === 'string' || typeof value === 'number') {
         return String(value);
       }
     }
 
+    const idCandidate = node.id;
+    if ((typeof idCandidate === 'string' || typeof idCandidate === 'number') && this.looksLikeUserEntity(node)) {
+      return String(idCandidate);
+    }
+
     return null;
+  }
+
+  private looksLikeUserEntity(node: Record<string, unknown>): boolean {
+    return (
+      node.type !== undefined ||
+      node.kind !== undefined ||
+      node.username !== undefined ||
+      node.display_name !== undefined ||
+      node.displayName !== undefined ||
+      node.name !== undefined ||
+      node.is_bot !== undefined ||
+      node.isBot !== undefined ||
+      node.bot !== undefined
+    );
   }
 
   private isBotEntity(node: Record<string, unknown>): boolean {

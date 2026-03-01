@@ -1,10 +1,13 @@
 import {
+  addGlobalUserBlacklistRequestSchema,
   chatSettingsSchema,
   moderationEventSchema,
   chatSummarySchema,
+  globalUserBlacklistEntrySchema,
   meSchema,
   type ChatSettings,
   type ChatSummary,
+  type GlobalUserBlacklistEntry,
   type Me,
   type ModerationEvent,
 } from '@maxim/contracts';
@@ -94,6 +97,28 @@ export class ApiClient {
   async getEvents(chatId: string): Promise<ModerationEvent[]> {
     const response = await this.request(`/chats/${chatId}/moderation-events?limit=50&page=1`);
     return response.map((item: unknown) => moderationEventSchema.parse(item));
+  }
+
+  async getGlobalUserBlacklist(chatId: string): Promise<GlobalUserBlacklistEntry[]> {
+    const response = await this.request(`/chats/${chatId}/global-user-blacklist`);
+    if (!Array.isArray(response)) {
+      throw new Error('Invalid global user blacklist response');
+    }
+    return response.map((item: unknown) => globalUserBlacklistEntrySchema.parse(item));
+  }
+
+  async addGlobalUserBlacklistUser(chatId: string, userId: string): Promise<void> {
+    const payload = addGlobalUserBlacklistRequestSchema.parse({ userId });
+    await this.request(`/chats/${chatId}/global-user-blacklist`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async removeGlobalUserBlacklistUser(chatId: string, userId: string): Promise<void> {
+    await this.request(`/chats/${chatId}/global-user-blacklist/${encodeURIComponent(userId)}`, {
+      method: 'DELETE',
+    });
   }
 
   private async request(path: string, init: RequestInit = {}) {

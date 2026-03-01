@@ -23,6 +23,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     duplicateBanMaxCount: 4,
     linkPolicy: 'ALLOWLIST_ONLY',
     removeBotsFromGroupEnabled: false,
+    globalUserBlacklistEnabled: false,
     maxMessageLengthEnabled: false,
     maxMessageLength: 1500,
     photoMessageCooldownEnabled: false,
@@ -141,6 +142,37 @@ function createServiceBotJoinedUpdate(): MaxUpdate {
               user_id: 'bot-joined-1',
               type: 'bot',
               is_bot: true,
+            },
+          ],
+        },
+      },
+    },
+  };
+}
+
+function createServiceUserJoinedUpdate(): MaxUpdate {
+  return {
+    updateId: 'upd-service-user-join-1',
+    type: 'message_created',
+    message: {
+      messageId: 'msg-service-user-join-1',
+      chatId: 'chat-1',
+      senderId: 'service-1',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      message: {
+        sender: {
+          id: 'service-1',
+          type: 'service',
+          is_service: true,
+        },
+        body: {
+          new_members: [
+            {
+              user_id: 'user-black-2',
+              type: 'user',
             },
           ],
         },
@@ -523,6 +555,134 @@ describe('ModerationService', () => {
         userId: 'bot-joined-1',
         messageId: 'msg-service-bot-join-1',
         ruleCode: 'BOT_ACCOUNT_KICK',
+        action: SanctionAction.KICK,
+      }),
+    });
+  });
+
+  it('kicks and deletes message from globally blacklisted sender when toggle is enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ globalUserBlacklistEnabled: true }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      globalUserBlacklist: {
+        findUnique: jest.fn().mockResolvedValue({ userId: 'user-1' }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-1');
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'msg-1',
+        ruleCode: 'GLOBAL_USER_BLACKLIST_KICK',
+        action: SanctionAction.KICK,
+      }),
+    });
+  });
+
+  it('kicks globally blacklisted user on service join event when toggle is enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ globalUserBlacklistEnabled: true }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      globalUserBlacklist: {
+        findMany: jest.fn().mockResolvedValue([{ userId: 'user-black-2' }]),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createServiceUserJoinedUpdate());
+
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-black-2');
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'user-black-2',
+        messageId: 'msg-service-user-join-1',
+        ruleCode: 'GLOBAL_USER_BLACKLIST_KICK',
         action: SanctionAction.KICK,
       }),
     });
