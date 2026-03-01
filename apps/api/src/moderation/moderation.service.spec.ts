@@ -22,6 +22,12 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     duplicateBanWindowSec: 48 * 60 * 60,
     duplicateBanMaxCount: 4,
     linkPolicy: 'ALLOWLIST_ONLY',
+    greetingEnabled: false,
+    greetingBotMessageEnabled: true,
+    greetingBotMessageText: '',
+    greetingBotButtonEnabled: false,
+    greetingBotButtonUrl: '',
+    greetingBotButtonText: 'Открыть',
     removeBotsFromGroupEnabled: false,
     globalUserBlacklistEnabled: false,
     maxMessageLengthEnabled: false,
@@ -180,6 +186,7 @@ function createServiceUserJoinedUpdate(): MaxUpdate {
             {
               user_id: 'user-black-2',
               type: 'user',
+              display_name: 'Новый участник',
             },
           ],
         },
@@ -565,6 +572,126 @@ describe('ModerationService', () => {
         action: SanctionAction.KICK,
       }),
     });
+  });
+
+  it('sends greeting message for joined human members when greeting is enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            greetingEnabled: true,
+            greetingBotMessageEnabled: true,
+            greetingBotMessageText: 'Добро пожаловать, {user}! {greeting}.',
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createServiceUserJoinedUpdate());
+
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Добро пожаловать, "Новый участник"! добро пожаловать в чат.',
+    );
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'user-black-2',
+        messageId: 'msg-service-user-join-1',
+        ruleCode: 'GREETING_MESSAGE',
+        action: SanctionAction.NONE,
+      }),
+    });
+  });
+
+  it('does not send greeting message when greeting toggle is disabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            greetingEnabled: false,
+            greetingBotMessageEnabled: true,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createServiceUserJoinedUpdate());
+
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
   it('kicks and deletes message from globally blacklisted sender when toggle is enabled', async () => {

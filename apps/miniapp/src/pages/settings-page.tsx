@@ -44,6 +44,9 @@ type HintKey =
   | 'linkBotMessage'
   | 'linkWarnMessage'
   | 'linkBotButton'
+  | 'greetingEnabled'
+  | 'greetingBotMessage'
+  | 'greetingBotButton'
   | 'textFiltersProfanity'
   | 'textFiltersCommercial'
   | 'commercialSensitivity'
@@ -62,9 +65,16 @@ type HintKey =
   | 'nightBotButton'
   | 'removeBotsFromGroup'
   | 'globalBlacklist';
-type BotMessageEditorKey = 'link' | 'textFilters' | 'duplicate' | 'messageLimits' | 'night';
+type BotMessageEditorKey = 'link' | 'greeting' | 'textFilters' | 'duplicate' | 'messageLimits' | 'night';
 type WarnMessageEditorKey = 'linkWarn' | 'textFiltersWarn';
-type SettingsSectionKey = 'links' | 'textFilters' | 'duplicates' | 'limits' | 'night' | 'extra';
+type SettingsSectionKey =
+  | 'links'
+  | 'greeting'
+  | 'textFilters'
+  | 'duplicates'
+  | 'limits'
+  | 'night'
+  | 'extra';
 
 const DUPLICATE_STAGE_OPTIONS: Array<{
   id: 'WARN' | 'KICK' | 'BAN';
@@ -151,6 +161,7 @@ const RUSSIAN_TIMEZONE_OPTIONS = [
 
 const DEFAULT_BOT_MESSAGE_TEMPLATES: Record<BotMessageEditorKey, string> = {
   link: 'Сообщение пользователя {user} {message_status}: {reason}',
+  greeting: 'Приветствуем {user} в чате!',
   textFilters: 'Сообщение пользователя {user} {message_status}: {reason}',
   duplicate: 'Сообщение пользователя {user} {duplicate_context}. {sanction}',
   messageLimits: 'Сообщение пользователя {user} {message_status}: {reason}',
@@ -164,6 +175,7 @@ const DEFAULT_WARN_MESSAGE_TEMPLATES: Record<WarnMessageEditorKey, string> = {
 
 const BOT_MESSAGE_TEMPLATE_HINTS: Record<BotMessageEditorKey, string> = {
   link: 'Плейсхолдеры: {user}, {message_status}, {reason}.',
+  greeting: 'Плейсхолдеры: {user}, {greeting}.',
   textFilters: 'Плейсхолдеры: {user}, {message_status}, {reason}.',
   duplicate: 'Плейсхолдеры: {user}, {duplicate_context}, {sanction}, {ban_duration}.',
   messageLimits:
@@ -181,6 +193,10 @@ const BOT_MESSAGE_PREVIEW_REPLACEMENTS: Record<BotMessageEditorKey, Record<strin
     user: '"Алексей"',
     message_status: 'удалено',
     reason: 'в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.',
+  },
+  greeting: {
+    user: '"Алексей"',
+    greeting: 'добро пожаловать в чат',
   },
   textFilters: {
     user: '"Алексей"',
@@ -528,6 +544,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [openWarnEditorKey, setOpenWarnEditorKey] = useState<WarnMessageEditorKey | null>(null);
   const [expandedSections, setExpandedSections] = useState<Record<SettingsSectionKey, boolean>>({
     links: true,
+    greeting: false,
     textFilters: false,
     duplicates: false,
     limits: false,
@@ -1002,6 +1019,16 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     ? fieldErrors.linkBotButtonText
     : undefined;
   const hasLinkBotButtonError = Boolean(linkBotButtonUrlError || linkBotButtonTextError);
+  const showGreetingBotButtonErrors = Boolean(
+    draft?.greetingEnabled && draft?.greetingBotMessageEnabled && draft?.greetingBotButtonEnabled,
+  );
+  const greetingBotButtonUrlError = showGreetingBotButtonErrors
+    ? fieldErrors.greetingBotButtonUrl
+    : undefined;
+  const greetingBotButtonTextError = showGreetingBotButtonErrors
+    ? fieldErrors.greetingBotButtonText
+    : undefined;
+  const hasGreetingBotButtonError = Boolean(greetingBotButtonUrlError || greetingBotButtonTextError);
   const showDuplicateBotButtonErrors = Boolean(
     draft?.duplicateBotMessageEnabled && draft?.duplicateBotButtonEnabled,
   );
@@ -1061,6 +1088,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       : draft?.linkPolicy === 'ALLOWLIST_ONLY'
         ? `Разрешено: ${allowlistDomains.length}`
         : `${linkStagesEnabledCount}/4 ступени включено`;
+  const greetingHeaderSummary = draft?.greetingEnabled
+    ? draft?.greetingBotMessageEnabled
+      ? draft?.greetingBotButtonEnabled
+        ? 'Сообщение + кнопка'
+        : 'Только сообщение'
+      : 'Сообщение выключено'
+    : 'Выключено';
   const duplicateStagesEnabledCount = [
     draft?.duplicateWarnEnabled,
     draft?.duplicateBanEnabled,
@@ -1663,6 +1697,259 @@ export function SettingsPage({ api }: { api: ApiClient }) {
           <GlassCard
             className="settings-section stagger-in"
             style={{ animationDelay: '45ms' }}
+            aria-label="Приветствие новых участников"
+          >
+            <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+              <button
+                type="button"
+                className="settings-section__toggle"
+                aria-expanded={expandedSections.greeting}
+                aria-controls="settings-greeting-content"
+                onClick={() => toggleSection('greeting')}
+              >
+                <span className="settings-section__toggle-main">
+                  <h3>Приветствие</h3>
+                  <small>{greetingHeaderSummary}</small>
+                </span>
+                <SectionChevron isOpen={expandedSections.greeting} />
+              </button>
+            </div>
+
+            <div
+              id="settings-greeting-content"
+              className={cn('settings-section__collapse', expandedSections.greeting && 'is-open')}
+            >
+              <div className="settings-section__collapse-inner">
+                <div className="settings-native-toggle">
+                  <div className="settings-native-toggle__row">
+                    <div className="settings-native-toggle__title-wrap">
+                      <span className="settings-native-toggle__title">Включить приветствие</span>
+                      <button
+                        type="button"
+                        className={cn('settings-info-button', openHintKey === 'greetingEnabled' && 'is-open')}
+                        aria-label="Пояснение для приветствия новых участников"
+                        aria-controls="greeting-enabled-hint"
+                        aria-expanded={openHintKey === 'greetingEnabled'}
+                        onClick={() => toggleHint('greetingEnabled')}
+                      >
+                        <span aria-hidden>i</span>
+                      </button>
+                    </div>
+
+                    <label
+                      className="settings-native-switch"
+                      aria-label="Включить приветствие новых участников"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={draft.greetingEnabled}
+                        onChange={(event) => {
+                          const enabled = event.target.checked;
+                          setFieldValue('greetingEnabled', enabled);
+                          if (!enabled) {
+                            setFieldValue('greetingBotButtonEnabled', false);
+                            clearFieldError('greetingBotButtonUrl');
+                            clearFieldError('greetingBotButtonText');
+                          }
+                        }}
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                    </label>
+                  </div>
+
+                  {openHintKey === 'greetingEnabled' ? (
+                    <p id="greeting-enabled-hint" className="settings-native-toggle__hint">
+                      Бот отправит приветствие, когда в чат добавляют нового участника.
+                    </p>
+                  ) : null}
+                </div>
+
+                {draft.greetingEnabled ? (
+                  <>
+                    <div className="settings-native-toggle settings-native-toggle--nested">
+                      <div className="settings-native-toggle__row">
+                        <div className="settings-native-toggle__title-wrap">
+                          <span className="settings-native-toggle__title">Сообщение от бота</span>
+                          <div className="settings-native-toggle__title-actions">
+                            <EditToggleButton
+                              label="Редактировать текст приветствия"
+                              onClick={() => toggleBotMessageEditor('greeting')}
+                              disabled={!draft.greetingBotMessageEnabled}
+                              isOpen={openBotEditorKey === 'greeting'}
+                            />
+                            <button
+                              type="button"
+                              className={cn(
+                                'settings-info-button',
+                                openHintKey === 'greetingBotMessage' && 'is-open',
+                              )}
+                              aria-label="Пояснение для сообщения приветствия"
+                              aria-controls="greeting-bot-message-hint"
+                              aria-expanded={openHintKey === 'greetingBotMessage'}
+                              onClick={() => toggleHint('greetingBotMessage')}
+                            >
+                              <span aria-hidden>i</span>
+                            </button>
+                          </div>
+                        </div>
+
+                        <label
+                          className="settings-native-switch"
+                          aria-label="Включить сообщение от бота для приветствия"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={draft.greetingBotMessageEnabled}
+                            onChange={(event) => {
+                              const enabled = event.target.checked;
+                              setFieldValue('greetingBotMessageEnabled', enabled);
+                              if (!enabled) {
+                                setFieldValue('greetingBotButtonEnabled', false);
+                                clearFieldError('greetingBotButtonUrl');
+                                clearFieldError('greetingBotButtonText');
+                              }
+                            }}
+                          />
+                          <span className="toggle-switch" aria-hidden>
+                            <span className="toggle-switch__thumb" />
+                          </span>
+                        </label>
+                      </div>
+
+                      {openHintKey === 'greetingBotMessage' ? (
+                        <p id="greeting-bot-message-hint" className="settings-native-toggle__hint">
+                          Текст приветствия отправляется только для обычных пользователей, боты
+                          исключаются.
+                        </p>
+                      ) : null}
+
+                      {draft.greetingBotMessageEnabled && openBotEditorKey === 'greeting' ? (
+                        <BotMessageEditor
+                          editorKey="greeting"
+                          value={draft.greetingBotMessageText}
+                          onChange={(nextValue) =>
+                            setFieldValue(
+                              'greetingBotMessageText',
+                              nextValue as ChatSettings['greetingBotMessageText'],
+                            )
+                          }
+                          onReset={() => setFieldValue('greetingBotMessageText', '')}
+                        />
+                      ) : null}
+                    </div>
+
+                    {draft.greetingBotMessageEnabled ? (
+                      <div
+                        className={cn(
+                          'settings-native-toggle',
+                          'settings-native-toggle--nested',
+                          hasGreetingBotButtonError && 'field--error',
+                        )}
+                      >
+                        <div className="settings-native-toggle__row">
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="settings-native-toggle__title">Добавить кнопку</span>
+                            <button
+                              type="button"
+                              className={cn(
+                                'settings-info-button',
+                                openHintKey === 'greetingBotButton' && 'is-open',
+                              )}
+                              aria-label="Пояснение для кнопки в приветствии"
+                              aria-controls="greeting-bot-button-hint"
+                              aria-expanded={openHintKey === 'greetingBotButton'}
+                              onClick={() => toggleHint('greetingBotButton')}
+                            >
+                              <span aria-hidden>i</span>
+                            </button>
+                          </div>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Добавить кнопку в приветственное сообщение"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.greetingBotButtonEnabled}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('greetingBotButtonEnabled', enabled);
+                                if (!enabled) {
+                                  clearFieldError('greetingBotButtonUrl');
+                                  clearFieldError('greetingBotButtonText');
+                                }
+                              }}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+
+                        {draft.greetingBotButtonEnabled ? (
+                          <div className="settings-button-fields">
+                            <label
+                              className={cn(
+                                'field settings-url-field',
+                                greetingBotButtonUrlError && 'field--error',
+                              )}
+                            >
+                              <span className="field__label">Ссылка кнопки</span>
+                              <input
+                                type="url"
+                                inputMode="url"
+                                value={draft.greetingBotButtonUrl}
+                                onChange={(event) =>
+                                  setFieldValue('greetingBotButtonUrl', event.target.value)
+                                }
+                                placeholder="https://max.ru/channel/rules"
+                              />
+                              {greetingBotButtonUrlError ? (
+                                <small className="field__hint">{greetingBotButtonUrlError}</small>
+                              ) : null}
+                            </label>
+
+                            <label
+                              className={cn(
+                                'field settings-text-field',
+                                greetingBotButtonTextError && 'field--error',
+                              )}
+                            >
+                              <span className="field__label">Название кнопки</span>
+                              <input
+                                type="text"
+                                maxLength={32}
+                                value={draft.greetingBotButtonText}
+                                onChange={(event) =>
+                                  setFieldValue('greetingBotButtonText', event.target.value)
+                                }
+                                placeholder="Открыть"
+                              />
+                              {greetingBotButtonTextError ? (
+                                <small className="field__hint">{greetingBotButtonTextError}</small>
+                              ) : null}
+                            </label>
+                          </div>
+                        ) : null}
+
+                        {!hasGreetingBotButtonError && openHintKey === 'greetingBotButton' ? (
+                          <p id="greeting-bot-button-hint" className="settings-native-toggle__hint">
+                            Добавляет кнопку в приветствие, например на правила чата.
+                          </p>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
+              </div>
+            </div>
+          </GlassCard>
+
+          <GlassCard
+            className="settings-section stagger-in"
+            style={{ animationDelay: '90ms' }}
             aria-label="Фильтрация текста"
           >
             <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
@@ -2090,7 +2377,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
           <GlassCard
             className="settings-section stagger-in"
-            style={{ animationDelay: '90ms' }}
+            style={{ animationDelay: '135ms' }}
             aria-label="Настройки дублей"
           >
             <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
@@ -2489,7 +2776,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
           <GlassCard
             className="settings-section stagger-in"
-            style={{ animationDelay: '135ms' }}
+            style={{ animationDelay: '180ms' }}
             aria-label="Ограничения сообщений"
           >
             <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
@@ -2937,7 +3224,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
           <GlassCard
             className="settings-section stagger-in"
-            style={{ animationDelay: '180ms' }}
+            style={{ animationDelay: '225ms' }}
             aria-label="Закрытие чата на ночь"
           >
             <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
@@ -3259,7 +3546,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
           <GlassCard
             className="settings-section stagger-in"
-            style={{ animationDelay: '225ms' }}
+            style={{ animationDelay: '270ms' }}
             aria-label="Дополнительные настройки"
           >
             <div className={cn('settings-section__head', 'settings-section__head--interactive')}>

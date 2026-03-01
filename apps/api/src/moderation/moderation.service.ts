@@ -160,6 +160,19 @@ export class ModerationService {
           update,
         });
       }
+
+      if (settings.greetingEnabled) {
+        await this.handleServiceGreetingEvent({
+          chatId,
+          messageId,
+          update,
+          greetingBotMessageEnabled: settings.greetingBotMessageEnabled,
+          greetingBotMessageText: settings.greetingBotMessageText,
+          greetingBotButtonEnabled: settings.greetingBotButtonEnabled,
+          greetingBotButtonUrl: settings.greetingBotButtonUrl,
+          greetingBotButtonText: settings.greetingBotButtonText,
+        });
+      }
       return;
     }
 
@@ -1942,6 +1955,125 @@ export class ModerationService {
         );
       }
     }
+  }
+
+  private async handleServiceGreetingEvent(params: {
+    chatId: string;
+    messageId: string;
+    update: MaxUpdate;
+    greetingBotMessageEnabled: boolean;
+    greetingBotMessageText: string;
+    greetingBotButtonEnabled: boolean;
+    greetingBotButtonUrl: string;
+    greetingBotButtonText: string;
+  }) {
+    const {
+      chatId,
+      messageId,
+      update,
+      greetingBotMessageEnabled,
+      greetingBotMessageText,
+      greetingBotButtonEnabled,
+      greetingBotButtonUrl,
+      greetingBotButtonText,
+    } = params;
+
+    if (!greetingBotMessageEnabled) {
+      return;
+    }
+
+    const joinedMembers = this.extractHumanServiceMembers(update);
+    if (joinedMembers.length === 0) {
+      return;
+    }
+
+    const greetingMessageOptions = this.buildBotMessageOptions(
+      greetingBotButtonEnabled,
+      greetingBotButtonUrl,
+      greetingBotButtonText,
+    );
+
+    for (const member of joinedMembers) {
+      const greetingMessage = this.buildGreetingMessage(member.userLabel, greetingBotMessageText);
+      try {
+        if (greetingMessageOptions) {
+          await this.maxClient.sendMessage(chatId, greetingMessage, greetingMessageOptions);
+        } else {
+          await this.maxClient.sendMessage(chatId, greetingMessage);
+        }
+
+        await this.prisma.moderationEvent.create({
+          data: {
+            chatId,
+            userId: member.userId,
+            messageId,
+            eventType: EventType.SYSTEM,
+            ruleCode: 'GREETING_MESSAGE',
+            action: SanctionAction.NONE,
+            maskedExcerpt: null,
+            score: 0.2,
+            operator: Operator.BOT,
+            metadata: {
+              reason: 'Greeting message sent for joined member',
+            },
+          },
+        });
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            userId: member.userId,
+            messageId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to send greeting message',
+        );
+      }
+    }
+  }
+
+  private extractHumanServiceMembers(update: MaxUpdate): Array<{ userId: string; userLabel: string }> {
+    const memberRows = this.extractServiceMemberRows(update);
+    const members = new Map<string, { userId: string; userLabel: string }>();
+
+    for (const row of memberRows) {
+      const userId = this.readUserIdFromEntity(row);
+      if (!userId || this.isBotEntity(row) || members.has(userId)) {
+        continue;
+      }
+
+      const userLabel = this.formatUserLabel(this.readDisplayNameFromEntity(row) ?? undefined);
+      members.set(userId, { userId, userLabel });
+    }
+
+    return [...members.values()];
+  }
+
+  private readDisplayNameFromEntity(node: Record<string, unknown>): string | null {
+    const candidates = [
+      node.display_name,
+      node.displayName,
+      node.name,
+      node.username,
+      node.first_name,
+      node.firstName,
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim().length > 0) {
+        return candidate.trim();
+      }
+    }
+
+    return null;
+  }
+
+  private buildGreetingMessage(userLabel: string, templateText: string): string {
+    const fallback = `Приветствуем ${userLabel} в чате!`;
+    return this.renderBotMessageTemplate(templateText, fallback, {
+      user: userLabel,
+      greeting: 'добро пожаловать в чат',
+    });
   }
 
   private async handleGloballyBlacklistedSenderMessage(params: {

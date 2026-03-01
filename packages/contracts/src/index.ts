@@ -64,6 +64,12 @@ export const chatSettingsSchema = z
     duplicateBanWindowSec: duplicateWindowSecSchema.default(172_800),
     duplicateBanMaxCount: duplicateMaxCountSchema.default(4),
     linkPolicy: linkPolicySchema.default('ALLOWLIST_ONLY'),
+    greetingEnabled: z.boolean().default(false),
+    greetingBotMessageEnabled: z.boolean().default(true),
+    greetingBotMessageText: botMessageTextSchema,
+    greetingBotButtonEnabled: z.boolean().default(false),
+    greetingBotButtonUrl: botButtonUrlSchema,
+    greetingBotButtonText: botButtonTextSchema,
     removeBotsFromGroupEnabled: z.boolean().default(false),
     globalUserBlacklistEnabled: z.boolean().default(false),
     maxMessageLengthEnabled: z.boolean().default(false),
@@ -194,6 +200,32 @@ export const chatSettingsSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['linkBotButtonText'],
+        message: 'Введите название кнопки.',
+      });
+    }
+
+    if (
+      value.greetingEnabled &&
+      value.greetingBotMessageEnabled &&
+      value.greetingBotButtonEnabled &&
+      !isValidBotButtonUrl(value.greetingBotButtonUrl)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['greetingBotButtonUrl'],
+        message: 'Укажите корректную ссылку для кнопки (http/https).',
+      });
+    }
+
+    if (
+      value.greetingEnabled &&
+      value.greetingBotMessageEnabled &&
+      value.greetingBotButtonEnabled &&
+      !isValidBotButtonText(value.greetingBotButtonText)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['greetingBotButtonText'],
         message: 'Введите название кнопки.',
       });
     }
