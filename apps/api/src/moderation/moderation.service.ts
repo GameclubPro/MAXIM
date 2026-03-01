@@ -1,11 +1,17 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Injectable, Logger } from '@nestjs/common';
 import type { MaxUpdate } from '@maxim/contracts';
-import { EventType, Operator, SanctionAction, WebhookStatus } from '@prisma/client';
+import { EventType, Operator, Prisma, SanctionAction, WebhookStatus } from '@prisma/client';
 import type { Job } from 'bullmq';
 import { MaxClientService, type MaxSendMessageOptions } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
-import type { DuplicateAction, DuplicateDecision, DuplicateHit } from './rule-engine.service';
+import type {
+  CommercialDecisionBand,
+  DuplicateAction,
+  DuplicateDecision,
+  DuplicateHit,
+  RuleViolation,
+} from './rule-engine.service';
 import { RuleEngineService } from './rule-engine.service';
 import { SanctionService } from './sanction.service';
 import { maskText } from './text-mask.util';
@@ -26,6 +32,7 @@ const DEFAULT_BOT_BUTTON_TEXT = 'Открыть';
 const DEFAULT_NIGHT_MODE_TIMEZONE = 'Europe/Moscow';
 const LINK_ESCALATION_WINDOW_HOURS = 24;
 const LINK_ESCALATION_BAN_HOURS = 6;
+const COMMERCIAL_REPEAT_WINDOW_FALLBACK_SEC = 24 * 60 * 60;
 const MAX_FORWARD_SCAN_DEPTH = 8;
 const NON_SANCTION_RULE_CODES = new Set([
   'LINK_BLOCKED',
@@ -45,6 +52,7 @@ const MESSAGE_LIMITS_RULE_CODES = new Set([
   'PHOTO_RATE_LIMIT',
 ]);
 const TEXT_FILTER_RULE_CODES = new Set(['PROFANITY', 'COMMERCIAL_AD']);
+const COMMERCIAL_HIGH_RULE_CODES = new Set(['COMMERCIAL_AD_WARN', 'COMMERCIAL_AD_DELETE']);
 
 @Injectable()
 export class ModerationService {
@@ -123,6 +131,16 @@ export class ModerationService {
       include: {
         settings: true,
         domains: true,
+        commercialAllowlist: {
+          select: {
+            phrase: true,
+          },
+        },
+        commercialStoplist: {
+          select: {
+            phrase: true,
+          },
+        },
         admins: {
           select: {
             userId: true,
@@ -181,7 +199,13 @@ export class ModerationService {
       userId: senderId,
       text,
       settings,
-      domainAllowlist: chat.domains.map((item: { domain: string }) => item.domain),
+      domainAllowlist: (chat.domains ?? []).map((item: { domain: string }) => item.domain),
+      commercialAllowlist: (chat.commercialAllowlist ?? []).map(
+        (item: { phrase: string }) => item.phrase,
+      ),
+      commercialStoplist: (chat.commercialStoplist ?? []).map(
+        (item: { phrase: string }) => item.phrase,
+      ),
       effectiveLength: effectiveMessageLength,
       hasPhotoAttachment: mediaFlags.hasPhotoAttachment,
       hasVideoAttachment: mediaFlags.hasVideoAttachment,
@@ -250,6 +274,29 @@ export class ModerationService {
       violations.find((item) => item.ruleCode === 'VOICE_BLOCKED') ??
       violations.find((item) => item.ruleCode === 'PHOTO_RATE_LIMIT') ??
       violations[0];
+
+    if (topViolation.ruleCode === 'COMMERCIAL_AD') {
+      await this.handleCommercialAdViolation({
+        chatId,
+        userId: senderId,
+        messageId,
+        text,
+        createdAt,
+        userLabel,
+        violation: topViolation,
+        settings: {
+          repeatWindowSec: settings.commercialAdsRepeatWindowSec,
+          lowConfidenceLogEnabled: settings.commercialAdsLowConfidenceLogEnabled,
+          warnFirstEnabled: settings.commercialAdsWarnFirstEnabled,
+          textFiltersBotMessageEnabled: settings.textFiltersBotMessageEnabled,
+          textFiltersBotButtonEnabled: settings.textFiltersBotButtonEnabled,
+          textFiltersBotButtonUrl: settings.textFiltersBotButtonUrl,
+          textFiltersBotButtonText: settings.textFiltersBotButtonText,
+        },
+      });
+      return;
+    }
+
     await this.prisma.violation.create({
       data: {
         chatId,
@@ -331,7 +378,10 @@ export class ModerationService {
       }
     }
 
-    if (this.isMessageLimitsViolation(topViolation.ruleCode) && settings.messageLimitsBotMessageEnabled) {
+    if (
+      this.isMessageLimitsViolation(topViolation.ruleCode) &&
+      settings.messageLimitsBotMessageEnabled
+    ) {
       const limitsMessageOptions = this.buildBotMessageOptions(
         settings.messageLimitsBotButtonEnabled,
         settings.messageLimitsBotButtonUrl,
@@ -378,7 +428,10 @@ export class ModerationService {
       }
     }
 
-    if (this.isTextFilterViolation(topViolation.ruleCode) && settings.textFiltersBotMessageEnabled) {
+    if (
+      this.isTextFilterViolation(topViolation.ruleCode) &&
+      settings.textFiltersBotMessageEnabled
+    ) {
       const textFilterMessageOptions = this.buildBotMessageOptions(
         settings.textFiltersBotButtonEnabled,
         settings.textFiltersBotButtonUrl,
@@ -502,6 +555,350 @@ export class ModerationService {
     });
   }
 
+  private async handleCommercialAdViolation(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    text: string;
+    createdAt: string;
+    userLabel: string;
+    violation: RuleViolation;
+    settings: {
+      repeatWindowSec: number;
+      lowConfidenceLogEnabled: boolean;
+      warnFirstEnabled: boolean;
+      textFiltersBotMessageEnabled: boolean;
+      textFiltersBotButtonEnabled: boolean;
+      textFiltersBotButtonUrl: string;
+      textFiltersBotButtonText: string;
+    };
+  }) {
+    const { chatId, userId, messageId, text, createdAt, userLabel, violation, settings } = params;
+    const commercial = this.readCommercialMetadata(violation.metadata);
+    const messageAgeMs = Date.now() - new Date(createdAt).getTime();
+    const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
+    const repeatWindowSec = this.normalizeCommercialRepeatWindow(settings.repeatWindowSec);
+    const textFilterMessageOptions = this.buildBotMessageOptions(
+      settings.textFiltersBotButtonEnabled,
+      settings.textFiltersBotButtonUrl,
+      settings.textFiltersBotButtonText,
+    );
+
+    if (commercial.decisionBand === 'LOW') {
+      if (!settings.lowConfidenceLogEnabled) {
+        return;
+      }
+
+      await this.prisma.moderationEvent.create({
+        data: {
+          chatId,
+          userId,
+          messageId,
+          eventType: EventType.MESSAGE,
+          ruleCode: 'COMMERCIAL_AD_LOW',
+          action: SanctionAction.NONE,
+          maskedExcerpt: maskText(text),
+          score: violation.score,
+          operator: Operator.BOT,
+          metadata: {
+            reason: violation.reason,
+            ...commercial,
+            repeatWindowSec,
+          } as Prisma.InputJsonValue,
+        },
+      });
+      return;
+    }
+
+    await this.prisma.violation.create({
+      data: {
+        chatId,
+        userId,
+        ruleCode: violation.ruleCode,
+        score: violation.score,
+      },
+    });
+
+    if (commercial.decisionBand === 'MEDIUM') {
+      await this.prisma.moderationEvent.create({
+        data: {
+          chatId,
+          userId,
+          messageId,
+          eventType: EventType.MESSAGE,
+          ruleCode: 'COMMERCIAL_AD_MEDIUM',
+          action: SanctionAction.WARN,
+          maskedExcerpt: maskText(text),
+          score: violation.score,
+          operator: Operator.BOT,
+          metadata: {
+            reason: violation.reason,
+            ...commercial,
+            repeatWindowSec,
+          } as Prisma.InputJsonValue,
+        },
+      });
+
+      await this.sendCommercialExplanationIfNeeded({
+        chatId,
+        userId,
+        messageId,
+        ruleCode: 'COMMERCIAL_AD',
+        enabled: settings.textFiltersBotMessageEnabled,
+        options: textFilterMessageOptions,
+        text: this.buildCommercialExplanation(userLabel, 'MEDIUM', false),
+      });
+      return;
+    }
+
+    const previousHighCount = await this.countRecentCommercialHighEvents(
+      chatId,
+      userId,
+      repeatWindowSec,
+    );
+    const isFirstHigh = previousHighCount === 0;
+    const shouldWarnFirst = settings.warnFirstEnabled;
+
+    if (shouldWarnFirst && isFirstHigh) {
+      await this.prisma.moderationEvent.create({
+        data: {
+          chatId,
+          userId,
+          messageId,
+          eventType: EventType.MESSAGE,
+          ruleCode: 'COMMERCIAL_AD_WARN',
+          action: SanctionAction.WARN,
+          maskedExcerpt: maskText(text),
+          score: violation.score,
+          operator: Operator.BOT,
+          metadata: {
+            reason: violation.reason,
+            ...commercial,
+            repeatWindowSec,
+            highHitsInWindow: 1,
+          } as Prisma.InputJsonValue,
+        },
+      });
+
+      await this.sendCommercialExplanationIfNeeded({
+        chatId,
+        userId,
+        messageId,
+        ruleCode: 'COMMERCIAL_AD',
+        enabled: settings.textFiltersBotMessageEnabled,
+        options: textFilterMessageOptions,
+        text: this.buildCommercialExplanation(userLabel, 'HIGH_WARN', false),
+      });
+      return;
+    }
+
+    let wasDeleted = false;
+    if (canDeleteMessage) {
+      try {
+        await this.maxClient.deleteMessage(chatId, messageId);
+        wasDeleted = true;
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            userId,
+            messageId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to delete commercial ad message',
+        );
+      }
+    } else {
+      await this.maxClient.notifyModerators(
+        chatId,
+        `Нарушение COMMERCIAL_AD от ${userId}, но сообщение старше 24 часов и не может быть удалено`,
+      );
+    }
+
+    await this.prisma.moderationEvent.create({
+      data: {
+        chatId,
+        userId,
+        messageId,
+        eventType: EventType.MESSAGE,
+        ruleCode: wasDeleted ? 'COMMERCIAL_AD_DELETE' : 'COMMERCIAL_AD_WARN',
+        action: wasDeleted ? SanctionAction.DELETE_MESSAGE : SanctionAction.WARN,
+        maskedExcerpt: maskText(text),
+        score: violation.score,
+        operator: Operator.BOT,
+        metadata: {
+          reason: violation.reason,
+          ...commercial,
+          repeatWindowSec,
+          highHitsInWindow: previousHighCount + 1,
+          deleteAttempted: true,
+          messageDeleted: wasDeleted,
+        } as Prisma.InputJsonValue,
+      },
+    });
+
+    await this.sendCommercialExplanationIfNeeded({
+      chatId,
+      userId,
+      messageId,
+      ruleCode: 'COMMERCIAL_AD',
+      enabled: settings.textFiltersBotMessageEnabled,
+      options: textFilterMessageOptions,
+      text: this.buildCommercialExplanation(
+        userLabel,
+        wasDeleted ? 'HIGH_DELETE' : 'HIGH_WARN',
+        wasDeleted,
+      ),
+    });
+  }
+
+  private readCommercialMetadata(raw: unknown): {
+    confidenceScore: number;
+    decisionBand: CommercialDecisionBand;
+    matchedSignals: string[];
+    negativeSignals: string[];
+    appliedThresholds: Record<string, unknown>;
+  } {
+    const fallback = {
+      confidenceScore: 0,
+      decisionBand: 'LOW' as CommercialDecisionBand,
+      matchedSignals: [] as string[],
+      negativeSignals: [] as string[],
+      appliedThresholds: {},
+    };
+
+    if (!raw || typeof raw !== 'object') {
+      return fallback;
+    }
+
+    const row = raw as Record<string, unknown>;
+    const confidenceRaw = Number(row.confidenceScore);
+    const decisionBandRaw = row.decisionBand;
+    const matchedSignalsRaw = row.matchedSignals;
+    const negativeSignalsRaw = row.negativeSignals;
+    const appliedThresholdsRaw = row.appliedThresholds;
+
+    const confidenceScore =
+      Number.isFinite(confidenceRaw) && confidenceRaw >= 0 ? Math.min(100, confidenceRaw) : 0;
+    const decisionBand: CommercialDecisionBand =
+      decisionBandRaw === 'HIGH' || decisionBandRaw === 'MEDIUM' || decisionBandRaw === 'LOW'
+        ? decisionBandRaw
+        : 'LOW';
+    const matchedSignals = Array.isArray(matchedSignalsRaw)
+      ? matchedSignalsRaw.filter((value): value is string => typeof value === 'string')
+      : [];
+    const negativeSignals = Array.isArray(negativeSignalsRaw)
+      ? negativeSignalsRaw.filter((value): value is string => typeof value === 'string')
+      : [];
+    const appliedThresholds =
+      appliedThresholdsRaw && typeof appliedThresholdsRaw === 'object'
+        ? (appliedThresholdsRaw as Record<string, unknown>)
+        : {};
+
+    return {
+      confidenceScore,
+      decisionBand,
+      matchedSignals,
+      negativeSignals,
+      appliedThresholds,
+    };
+  }
+
+  private async sendCommercialExplanationIfNeeded(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    ruleCode: string;
+    enabled: boolean;
+    options: MaxSendMessageOptions | null;
+    text: string;
+  }) {
+    const { chatId, userId, messageId, ruleCode, enabled, options, text } = params;
+    if (!enabled) {
+      return;
+    }
+
+    try {
+      if (options) {
+        await this.maxClient.sendMessage(chatId, text, options);
+      } else {
+        await this.maxClient.sendMessage(chatId, text);
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          messageId,
+          ruleCode,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to send text filter explanation message',
+      );
+    }
+  }
+
+  private buildCommercialExplanation(
+    userLabel: string,
+    mode: 'MEDIUM' | 'HIGH_WARN' | 'HIGH_DELETE',
+    canDeleteMessage: boolean,
+  ): string {
+    if (mode === 'MEDIUM') {
+      return `Сообщение пользователя ${userLabel} похоже на коммерческое объявление. Вынесено предупреждение без удаления.`;
+    }
+
+    if (mode === 'HIGH_WARN') {
+      return `Пользователь ${userLabel} получил предупреждение: повторные коммерческие объявления будут удаляться ботом.`;
+    }
+
+    if (canDeleteMessage) {
+      return `Сообщение пользователя ${userLabel} удалено: коммерческие объявления в этом чате запрещены.`;
+    }
+
+    return `Сообщение пользователя ${userLabel} нарушает правила: коммерческие объявления в этом чате запрещены.`;
+  }
+
+  private normalizeCommercialRepeatWindow(value: number): number {
+    if (!Number.isInteger(value) || value < 60) {
+      return COMMERCIAL_REPEAT_WINDOW_FALLBACK_SEC;
+    }
+
+    return Math.max(60, value);
+  }
+
+  private async countRecentCommercialHighEvents(
+    chatId: string,
+    userId: string,
+    windowSec: number,
+  ): Promise<number> {
+    const moderationEventModel = this.prisma.moderationEvent as unknown as {
+      count?: (args: {
+        where: {
+          chatId: string;
+          userId: string;
+          ruleCode: { in: string[] };
+          createdAt: { gte: Date };
+        };
+      }) => Promise<number>;
+    };
+
+    if (typeof moderationEventModel.count !== 'function') {
+      return 0;
+    }
+
+    const since = new Date(Date.now() - windowSec * 1000);
+    const count = await moderationEventModel.count({
+      where: {
+        chatId,
+        userId,
+        ruleCode: { in: [...COMMERCIAL_HIGH_RULE_CODES] },
+        createdAt: { gte: since },
+      },
+    });
+
+    return Number.isInteger(count) && count > 0 ? count : 0;
+  }
+
   private async handleDuplicateDecision(params: {
     chatId: string;
     userId: string;
@@ -529,8 +926,7 @@ export class ModerationService {
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
       duplicateBotButtonText,
-    } =
-      params;
+    } = params;
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
 
@@ -885,9 +1281,7 @@ export class ModerationService {
     linkViolationCount24h: number,
     settings: { warnEnabled: boolean; banEnabled: boolean; kickEnabled: boolean },
   ): SanctionAction {
-    const count = Number.isInteger(linkViolationCount24h)
-      ? Math.max(1, linkViolationCount24h)
-      : 1;
+    const count = Number.isInteger(linkViolationCount24h) ? Math.max(1, linkViolationCount24h) : 1;
 
     if (count >= 4) {
       if (settings.kickEnabled) {
@@ -1132,7 +1526,11 @@ export class ModerationService {
     const row = node as Record<string, unknown>;
     for (const [key, value] of Object.entries(row)) {
       if (
-        (key === 'text' || key === 'caption' || key === 'plain' || key === 'message_text' || key === 'messageText') &&
+        (key === 'text' ||
+          key === 'caption' ||
+          key === 'plain' ||
+          key === 'message_text' ||
+          key === 'messageText') &&
         typeof value === 'string'
       ) {
         const normalized = value.trim();
@@ -1142,7 +1540,10 @@ export class ModerationService {
         continue;
       }
 
-      if (value && (typeof value === 'object' || Array.isArray(value) || typeof value === 'string')) {
+      if (
+        value &&
+        (typeof value === 'object' || Array.isArray(value) || typeof value === 'string')
+      ) {
         this.collectTextSnippets(value, acc, depth + 1);
       }
     }
@@ -1375,9 +1776,7 @@ export class ModerationService {
       return 1;
     }
 
-    const since = new Date(
-      Date.now() - LINK_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000,
-    );
+    const since = new Date(Date.now() - LINK_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000);
     const count = await violationModel.count({
       where: {
         chatId,

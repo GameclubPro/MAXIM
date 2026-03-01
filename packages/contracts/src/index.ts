@@ -5,6 +5,7 @@ export type SanctionAction = z.infer<typeof sanctionActionSchema>;
 
 export const profanityLevelSchema = z.enum(['LOW', 'MEDIUM', 'HIGH']);
 export const linkPolicySchema = z.enum(['ALLOWLIST_ONLY', 'BLOCKLIST_ONLY', 'ALERT_ONLY']);
+export const commercialAdsSensitivitySchema = z.enum(['BALANCED', 'STRICT']);
 
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
 const duplicateMaxCountSchema = z.number().int().min(2).max(20);
@@ -75,13 +76,29 @@ export const chatSettingsSchema = z
     messageLimitsBotButtonText: botButtonTextSchema,
     russianProfanityFilterEnabled: z.boolean().default(true),
     commercialAdsFilterEnabled: z.boolean().default(false),
+    commercialAdsSensitivity: commercialAdsSensitivitySchema.default('BALANCED'),
+    commercialAdsWarnThreshold: z.number().int().min(10).max(90).default(45),
+    commercialAdsDeleteThreshold: z.number().int().min(20).max(100).default(65),
+    commercialAdsRepeatWindowSec: z.number().int().min(3_600).max(604_800).default(86_400),
+    commercialAdsLowConfidenceLogEnabled: z.boolean().default(true),
+    commercialAdsWarnFirstEnabled: z.boolean().default(true),
     textFiltersBotMessageEnabled: z.boolean().default(false),
     textFiltersBotButtonEnabled: z.boolean().default(false),
     textFiltersBotButtonUrl: botButtonUrlSchema,
     textFiltersBotButtonText: botButtonTextSchema,
     nightModeEnabled: z.boolean().default(false),
-    nightModeStartTimeMinutes: z.number().int().min(0).max(1_439).default(23 * 60),
-    nightModeEndTimeMinutes: z.number().int().min(0).max(1_439).default(8 * 60),
+    nightModeStartTimeMinutes: z
+      .number()
+      .int()
+      .min(0)
+      .max(1_439)
+      .default(23 * 60),
+    nightModeEndTimeMinutes: z
+      .number()
+      .int()
+      .min(0)
+      .max(1_439)
+      .default(8 * 60),
     nightModeTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
     nightModeBotMessageEnabled: z.boolean().default(true),
     nightModeBotButtonEnabled: z.boolean().default(false),
@@ -248,6 +265,14 @@ export const chatSettingsSchema = z
       });
     }
 
+    if (value.commercialAdsDeleteThreshold <= value.commercialAdsWarnThreshold) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['commercialAdsDeleteThreshold'],
+        message: 'Порог удаления должен быть выше порога предупреждения.',
+      });
+    }
+
     if (
       value.nightModeBotMessageEnabled &&
       value.nightModeBotButtonEnabled &&
@@ -283,6 +308,7 @@ export const moderationEventSchema = z.object({
   action: sanctionActionSchema,
   maskedExcerpt: z.string().nullable(),
   score: z.number(),
+  metadata: z.record(z.unknown()).nullable().optional(),
   createdAt: z.string().datetime(),
   operator: z.enum(['BOT', 'ADMIN']),
 });
@@ -321,6 +347,12 @@ export const addDomainRequestSchema = z.object({
     .trim()
     .min(3)
     .regex(/^[a-zA-Z0-9.-]+$/),
+});
+
+export const commercialPhraseSchema = z.string().trim().min(2).max(120);
+
+export const addCommercialPhraseRequestSchema = z.object({
+  phrase: commercialPhraseSchema,
 });
 
 export const maxMessagePayloadSchema = z.object({

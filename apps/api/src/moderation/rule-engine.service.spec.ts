@@ -44,6 +44,12 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     messageLimitsBotButtonText: 'Открыть',
     russianProfanityFilterEnabled: true,
     commercialAdsFilterEnabled: false,
+    commercialAdsSensitivity: 'BALANCED',
+    commercialAdsWarnThreshold: 45,
+    commercialAdsDeleteThreshold: 65,
+    commercialAdsRepeatWindowSec: 24 * 60 * 60,
+    commercialAdsLowConfidenceLogEnabled: true,
+    commercialAdsWarnFirstEnabled: true,
     textFiltersBotMessageEnabled: false,
     textFiltersBotButtonEnabled: false,
     textFiltersBotButtonUrl: '',
@@ -116,6 +122,76 @@ describe('RuleEngineService', () => {
     });
 
     expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(true);
+  });
+
+  it('classifies COMMERCIAL_AD as HIGH with price and contact combo', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продам курс, цена 3000 руб, звоните и пишите в лс https://t.me/example',
+      settings: buildSettings({ commercialAdsFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    const violation = result.violations.find((item) => item.ruleCode === 'COMMERCIAL_AD');
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.decisionBand).toBe('HIGH');
+  });
+
+  it('classifies weak commercial context as LOW', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Скидка? кто подскажет, где посмотреть',
+      settings: buildSettings({ commercialAdsFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    const violation = result.violations.find((item) => item.ruleCode === 'COMMERCIAL_AD');
+    expect(violation).toBeDefined();
+    expect(violation?.metadata?.decisionBand).toBe('LOW');
+  });
+
+  it('does not detect COMMERCIAL_AD for non-sales request without contacts', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Ищу мастера, кто подскажет по ремонту?',
+      settings: buildSettings({ commercialAdsFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
+  });
+
+  it('detects COMMERCIAL_AD with mixed latin/cyrillic obfuscation', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Pr0dam услуги, пишите в тeлeграм, цена 5000 руб',
+      settings: buildSettings({ commercialAdsFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(true);
+  });
+
+  it('respects commercial allowlist phrases', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'партнерская интеграция для сообщества, пишите в лс',
+      settings: buildSettings({ commercialAdsFilterEnabled: true }),
+      domainAllowlist: [],
+      commercialAllowlist: ['партнерская интеграция'],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(false);
   });
 
   it('detects MESSAGE_TOO_LONG when effective length exceeds limit', async () => {

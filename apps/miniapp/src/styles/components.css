@@ -411,8 +411,11 @@
   height: 28px;
   border-radius: 999px;
   border: 1px solid rgba(62, 96, 127, 0.22);
-  background:
-    radial-gradient(100% 130% at 30% 20%, rgba(255, 255, 255, 0.9), rgba(230, 242, 252, 0.86));
+  background: radial-gradient(
+    100% 130% at 30% 20%,
+    rgba(255, 255, 255, 0.9),
+    rgba(230, 242, 252, 0.86)
+  );
   color: rgba(25, 55, 80, 0.9);
   display: grid;
   place-items: center;
@@ -424,8 +427,11 @@
 
 .settings-section__toggle[aria-expanded='true'] .settings-section__chevron {
   border-color: rgba(11, 132, 255, 0.34);
-  background:
-    radial-gradient(120% 130% at 30% 20%, rgba(255, 255, 255, 0.96), rgba(218, 237, 255, 0.9));
+  background: radial-gradient(
+    120% 130% at 30% 20%,
+    rgba(255, 255, 255, 0.96),
+    rgba(218, 237, 255, 0.9)
+  );
 }
 
 .settings-section__chevron.is-open {
@@ -716,6 +722,78 @@
   border-style: solid;
 }
 
+.commercial-settings-panel {
+  display: grid;
+  gap: 10px;
+}
+
+.commercial-sensitivity {
+  display: grid;
+  gap: 8px;
+}
+
+.commercial-thresholds-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.commercial-threshold-field {
+  border-radius: 12px;
+  border: 1px solid rgba(62, 96, 127, 0.16);
+  background: rgba(255, 255, 255, 0.62);
+  padding: 10px;
+}
+
+.commercial-threshold-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.commercial-threshold-row input[type='range'] {
+  width: 100%;
+  accent-color: #0b84ff;
+}
+
+.commercial-threshold-row output {
+  min-width: 36px;
+  text-align: right;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.commercial-repeat-window input {
+  min-height: 42px;
+  height: 42px;
+}
+
+.commercial-flags-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.commercial-lists-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.commercial-phrase-panel {
+  padding: 12px;
+}
+
+.commercial-signals {
+  display: grid;
+  gap: 8px;
+}
+
+.commercial-signals__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .night-window-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -746,6 +824,12 @@
 @media (max-width: 520px) {
   .night-window-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (min-width: 680px) {
+  .commercial-lists-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 

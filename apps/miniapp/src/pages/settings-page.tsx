@@ -23,6 +23,15 @@ const MESSAGE_LENGTH_MIN = 50;
 const MESSAGE_LENGTH_MAX = 1500;
 const PHOTO_COOLDOWN_MIN_HOURS = 1;
 const PHOTO_COOLDOWN_MAX_HOURS = 24;
+const COMMERCIAL_WARN_MIN = 10;
+const COMMERCIAL_WARN_MAX = 90;
+const COMMERCIAL_DELETE_MIN = 20;
+const COMMERCIAL_DELETE_MAX = 100;
+const COMMERCIAL_MIN_GAP = 5;
+const COMMERCIAL_REPEAT_MIN_HOURS = 1;
+const COMMERCIAL_REPEAT_MAX_HOURS = 168;
+const COMMERCIAL_PHRASE_MIN_LEN = 2;
+const COMMERCIAL_PHRASE_MAX_LEN = 120;
 
 type DuplicateEnabledKey = 'duplicateWarnEnabled' | 'duplicateKickEnabled' | 'duplicateBanEnabled';
 type DuplicateWindowKey =
@@ -105,6 +114,23 @@ const TEXT_FILTER_OPTIONS: Array<{
   },
 ];
 
+const COMMERCIAL_SENSITIVITY_OPTIONS: Array<{
+  value: ChatSettings['commercialAdsSensitivity'];
+  label: string;
+  description: string;
+}> = [
+  {
+    value: 'BALANCED',
+    label: 'Баланс',
+    description: 'Меньше ложных срабатываний.',
+  },
+  {
+    value: 'STRICT',
+    label: 'Строго',
+    description: 'Больше покрытие, выше чувствительность.',
+  },
+];
+
 const RUSSIAN_TIMEZONE_OPTIONS = [
   { value: 'Europe/Kaliningrad', label: 'Калининград (UTC+2)' },
   { value: 'Europe/Moscow', label: 'Москва (UTC+3)' },
@@ -161,6 +187,10 @@ function normalizeDomain(value: string): string {
       .replace(/^www\./, '')
       .replace(/\.$/, '');
   }
+}
+
+function normalizeCommercialPhrase(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, ' ').slice(0, COMMERCIAL_PHRASE_MAX_LEN);
 }
 
 function normalizeDayMinutes(value: number, fallback = 0): number {
@@ -241,6 +271,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [domainInput, setDomainInput] = useState('');
   const [domainInputError, setDomainInputError] = useState('');
+  const [commercialAllowPhraseInput, setCommercialAllowPhraseInput] = useState('');
+  const [commercialAllowPhraseError, setCommercialAllowPhraseError] = useState('');
+  const [commercialStopPhraseInput, setCommercialStopPhraseInput] = useState('');
+  const [commercialStopPhraseError, setCommercialStopPhraseError] = useState('');
   const [failedSnapshot, setFailedSnapshot] = useState<string>('');
   const [openHintKey, setOpenHintKey] = useState<BotHintKey | null>(null);
   const [expandedSections, setExpandedSections] = useState<Record<SettingsSectionKey, boolean>>({
@@ -277,6 +311,27 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const domainsQuery = useQuery({
     queryKey: ['domains', chatId],
     queryFn: () => api.getDomainAllowlist(chatId ?? ''),
+    enabled: Boolean(chatId),
+    refetchOnWindowFocus: false,
+  });
+
+  const commercialAllowlistQuery = useQuery({
+    queryKey: ['commercial-allowlist', chatId],
+    queryFn: () => api.getCommercialAllowlist(chatId ?? ''),
+    enabled: Boolean(chatId),
+    refetchOnWindowFocus: false,
+  });
+
+  const commercialStoplistQuery = useQuery({
+    queryKey: ['commercial-stoplist', chatId],
+    queryFn: () => api.getCommercialStoplist(chatId ?? ''),
+    enabled: Boolean(chatId),
+    refetchOnWindowFocus: false,
+  });
+
+  const eventsQuery = useQuery({
+    queryKey: ['events', chatId],
+    queryFn: () => api.getEvents(chatId ?? ''),
     enabled: Boolean(chatId),
     refetchOnWindowFocus: false,
   });
@@ -387,6 +442,70 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     },
   });
 
+  const addCommercialAllowPhraseMutation = useMutation({
+    mutationFn: (phrase: string) => api.addCommercialAllowlistPhrase(chatId ?? '', phrase),
+    onSuccess: () => {
+      setCommercialAllowPhraseInput('');
+      setCommercialAllowPhraseError('');
+      void queryClient.invalidateQueries({ queryKey: ['commercial-allowlist', chatId] });
+      pushToast({ tone: 'success', title: 'Исключение добавлено' });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось добавить исключение',
+        description: formatApiError(error),
+      });
+    },
+  });
+
+  const removeCommercialAllowPhraseMutation = useMutation({
+    mutationFn: (phrase: string) => api.removeCommercialAllowlistPhrase(chatId ?? '', phrase),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['commercial-allowlist', chatId] });
+      pushToast({ tone: 'success', title: 'Исключение удалено' });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось удалить исключение',
+        description: formatApiError(error),
+      });
+    },
+  });
+
+  const addCommercialStopPhraseMutation = useMutation({
+    mutationFn: (phrase: string) => api.addCommercialStoplistPhrase(chatId ?? '', phrase),
+    onSuccess: () => {
+      setCommercialStopPhraseInput('');
+      setCommercialStopPhraseError('');
+      void queryClient.invalidateQueries({ queryKey: ['commercial-stoplist', chatId] });
+      pushToast({ tone: 'success', title: 'Усилитель добавлен' });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось добавить усилитель',
+        description: formatApiError(error),
+      });
+    },
+  });
+
+  const removeCommercialStopPhraseMutation = useMutation({
+    mutationFn: (phrase: string) => api.removeCommercialStoplistPhrase(chatId ?? '', phrase),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['commercial-stoplist', chatId] });
+      pushToast({ tone: 'success', title: 'Усилитель удален' });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось удалить усилитель',
+        description: formatApiError(error),
+      });
+    },
+  });
+
   function clearFieldError(key: keyof ChatSettings) {
     setFieldErrors((current) => {
       if (!current[key]) {
@@ -448,11 +567,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     setFieldValue('banDurationHours', next as ChatSettings['banDurationHours']);
   }
 
-  function adjustDuplicateMaxCount(
-    key: DuplicateMaxCountKey,
-    currentValue: number,
-    delta: number,
-  ) {
+  function adjustDuplicateMaxCount(key: DuplicateMaxCountKey, currentValue: number, delta: number) {
     const next = Math.min(
       DUPLICATE_COUNT_MAX,
       Math.max(DUPLICATE_COUNT_MIN, Number(currentValue) + delta),
@@ -519,6 +634,89 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     addDomainMutation.mutate(normalized);
   }
 
+  function handleCommercialWarnThresholdChange(rawValue: number) {
+    if (!draft) {
+      return;
+    }
+
+    const nextWarn = Math.max(COMMERCIAL_WARN_MIN, Math.min(COMMERCIAL_WARN_MAX, rawValue));
+    const minDelete = Math.max(COMMERCIAL_DELETE_MIN, nextWarn + COMMERCIAL_MIN_GAP);
+    const nextDelete = Math.max(minDelete, draft.commercialAdsDeleteThreshold);
+    setFieldValue('commercialAdsWarnThreshold', nextWarn);
+    if (nextDelete !== draft.commercialAdsDeleteThreshold) {
+      setFieldValue('commercialAdsDeleteThreshold', Math.min(nextDelete, COMMERCIAL_DELETE_MAX));
+    }
+  }
+
+  function handleCommercialDeleteThresholdChange(rawValue: number) {
+    if (!draft) {
+      return;
+    }
+
+    const minDelete = Math.max(
+      COMMERCIAL_DELETE_MIN,
+      draft.commercialAdsWarnThreshold + COMMERCIAL_MIN_GAP,
+    );
+    const nextDelete = Math.max(minDelete, Math.min(COMMERCIAL_DELETE_MAX, rawValue));
+    setFieldValue('commercialAdsDeleteThreshold', nextDelete);
+  }
+
+  function handleCommercialRepeatWindowHoursChange(rawValue: string) {
+    const parsed = Number.parseInt(rawValue, 10);
+    const safeHours = Number.isNaN(parsed)
+      ? COMMERCIAL_REPEAT_MIN_HOURS
+      : Math.max(COMMERCIAL_REPEAT_MIN_HOURS, Math.min(COMMERCIAL_REPEAT_MAX_HOURS, parsed));
+    setFieldValue('commercialAdsRepeatWindowSec', safeHours * 3600);
+  }
+
+  function handleAddCommercialAllowPhrase() {
+    const normalized = normalizeCommercialPhrase(commercialAllowPhraseInput);
+    if (!normalized) {
+      setCommercialAllowPhraseError('Введите фразу исключения');
+      return;
+    }
+
+    if (normalized.length < COMMERCIAL_PHRASE_MIN_LEN) {
+      setCommercialAllowPhraseError('Минимум 2 символа');
+      return;
+    }
+
+    const exists = (commercialAllowlistQuery.data ?? []).includes(normalized);
+    if (exists) {
+      setCommercialAllowPhraseError('');
+      setCommercialAllowPhraseInput('');
+      pushToast({ title: 'Фраза уже есть в исключениях' });
+      return;
+    }
+
+    setCommercialAllowPhraseError('');
+    addCommercialAllowPhraseMutation.mutate(normalized);
+  }
+
+  function handleAddCommercialStopPhrase() {
+    const normalized = normalizeCommercialPhrase(commercialStopPhraseInput);
+    if (!normalized) {
+      setCommercialStopPhraseError('Введите усиливающую фразу');
+      return;
+    }
+
+    if (normalized.length < COMMERCIAL_PHRASE_MIN_LEN) {
+      setCommercialStopPhraseError('Минимум 2 символа');
+      return;
+    }
+
+    const exists = (commercialStoplistQuery.data ?? []).includes(normalized);
+    if (exists) {
+      setCommercialStopPhraseError('');
+      setCommercialStopPhraseInput('');
+      pushToast({ title: 'Фраза уже есть в усилителях' });
+      return;
+    }
+
+    setCommercialStopPhraseError('');
+    addCommercialStopPhraseMutation.mutate(normalized);
+  }
+
   function toggleHint(key: BotHintKey) {
     setOpenHintKey((current) => (current === key ? null : key));
   }
@@ -546,11 +744,17 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
   const linkPolicyError = fieldErrors.linkPolicy;
   const allowlistDomains = domainsQuery.data ?? [];
+  const commercialAllowlistPhrases = commercialAllowlistQuery.data ?? [];
+  const commercialStoplistPhrases = commercialStoplistQuery.data ?? [];
   const isAllowlistMode = draft?.linkPolicy === 'ALLOWLIST_ONLY';
   const shouldShowLinkStages = draft?.linkPolicy !== 'ALERT_ONLY';
-  const showLinkBotButtonErrors = Boolean(draft?.linkBotMessageEnabled && draft?.linkBotButtonEnabled);
+  const showLinkBotButtonErrors = Boolean(
+    draft?.linkBotMessageEnabled && draft?.linkBotButtonEnabled,
+  );
   const linkBotButtonUrlError = showLinkBotButtonErrors ? fieldErrors.linkBotButtonUrl : undefined;
-  const linkBotButtonTextError = showLinkBotButtonErrors ? fieldErrors.linkBotButtonText : undefined;
+  const linkBotButtonTextError = showLinkBotButtonErrors
+    ? fieldErrors.linkBotButtonText
+    : undefined;
   const hasLinkBotButtonError = Boolean(linkBotButtonUrlError || linkBotButtonTextError);
   const showDuplicateBotButtonErrors = Boolean(
     draft?.duplicateBotMessageEnabled && draft?.duplicateBotButtonEnabled,
@@ -620,6 +824,30 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     draft?.russianProfanityFilterEnabled,
     draft?.commercialAdsFilterEnabled,
   ].filter(Boolean).length;
+  const commercialRepeatWindowHours = draft
+    ? Math.max(COMMERCIAL_REPEAT_MIN_HOURS, Math.round(draft.commercialAdsRepeatWindowSec / 3600))
+    : 24;
+  const commercialSignalChips = (eventsQuery.data ?? [])
+    .filter((event) => event.ruleCode.startsWith('COMMERCIAL_AD'))
+    .slice(0, 8)
+    .flatMap((event) => {
+      const metadata = event.metadata;
+      if (!metadata || typeof metadata !== 'object') {
+        return [];
+      }
+
+      const matchedSignalsRaw = metadata.matchedSignals;
+      if (!Array.isArray(matchedSignalsRaw)) {
+        return [];
+      }
+
+      return matchedSignalsRaw
+        .filter((item): item is string => typeof item === 'string')
+        .map((item) => item.replace(/^[^:]+:/, '').trim())
+        .filter((item) => item.length > 0);
+    })
+    .filter((value, index, source) => source.indexOf(value) === index)
+    .slice(0, 6);
   const limitsRulesEnabledCount = [
     draft?.maxMessageLengthEnabled,
     draft?.photoMessageCooldownEnabled,
@@ -635,6 +863,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         draft.nightModeEndTimeMinutes,
       )}`
     : '23:00-08:00';
+  const textFiltersHeaderSummary = draft
+    ? `${textFiltersEnabledCount}/2 фильтра · ${draft.commercialAdsSensitivity === 'STRICT' ? 'строго' : 'баланс'}`
+    : `${textFiltersEnabledCount}/2 фильтра`;
 
   return (
     <div className="page-stack page-enter">
@@ -695,344 +926,360 @@ export function SettingsPage({ api }: { api: ApiClient }) {
             >
               <div className="settings-section__collapse-inner">
                 <div className="settings-grid settings-grid--single">
-              <div className={cn('settings-policy', linkPolicyError && 'field--error')}>
-                <span className="field__label">Режим</span>
-                <div
-                  className={cn('policy-grid', linkPolicyError && 'policy-grid--error')}
-                  role="radiogroup"
-                  aria-label="Режим модерации ссылок"
-                >
-                  {LINK_POLICY_OPTIONS.map((option) => {
-                    const isActive = draft.linkPolicy === option.value;
-
-                    return (
-                      <button
-                        key={option.value}
-                        type="button"
-                        role="radio"
-                        aria-checked={isActive}
-                        className={cn(
-                          'policy-card',
-                          option.value === 'ALERT_ONLY' && 'policy-card--alert',
-                          option.value === 'ALLOWLIST_ONLY' && 'policy-card--allowlist',
-                          option.value === 'BLOCKLIST_ONLY' && 'policy-card--blocklist',
-                          isActive && 'is-active',
-                        )}
-                        onClick={() => setFieldValue('linkPolicy', option.value)}
-                      >
-                        <span className="policy-card__title-row">
-                          <span className="policy-card__marker" aria-hidden />
-                          <span>{option.label}</span>
-                        </span>
-                        <small>{option.description}</small>
-                      </button>
-                    );
-                  })}
-                </div>
-                {linkPolicyError ? <small className="field__hint">{linkPolicyError}</small> : null}
-              </div>
-
-              {isAllowlistMode ? (
-                <div className="allowlist-drawer">
-                  <div className="allowlist-drawer__inner">
+                  <div className={cn('settings-policy', linkPolicyError && 'field--error')}>
+                    <span className="field__label">Режим</span>
                     <div
-                      className={cn(
-                        'field',
-                        'allowlist-panel',
-                        domainInputError && 'allowlist-panel--error',
-                      )}
+                      className={cn('policy-grid', linkPolicyError && 'policy-grid--error')}
+                      role="radiogroup"
+                      aria-label="Режим модерации ссылок"
                     >
-                      <div className="allowlist-panel__handle" aria-hidden />
+                      {LINK_POLICY_OPTIONS.map((option) => {
+                        const isActive = draft.linkPolicy === option.value;
 
-                      <div className="allowlist-panel__head">
-                        <span className="field__label">Разрешенные ссылки</span>
-                        <span className="chip">{allowlistDomains.length}</span>
-                      </div>
-
-                      <p className="allowlist-panel__subtitle">
-                        Можно вставить полный URL, сохраним домен автоматически.
-                      </p>
-
-                      <div className="allowlist-add-row">
-                        <input
-                          type="text"
-                          inputMode="url"
-                          value={domainInput}
-                          onChange={(event) => {
-                            setDomainInput(event.target.value);
-                            setDomainInputError('');
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter') {
-                              event.preventDefault();
-                              handleAddDomain();
-                            }
-                          }}
-                          placeholder="https://example.com/path"
-                        />
-                        <button
-                          type="button"
-                          className="button button--accent allowlist-add-row__button"
-                          onClick={handleAddDomain}
-                          disabled={addDomainMutation.isPending || removeDomainMutation.isPending}
-                        >
-                          {addDomainMutation.isPending ? 'Добавляем...' : 'Добавить'}
-                        </button>
-                      </div>
-
-                      {domainInputError ? (
-                        <small className="field__hint">{domainInputError}</small>
-                      ) : null}
-
-                      {domainsQuery.isLoading ? (
-                        <p className="allowlist-empty">Загрузка списка...</p>
-                      ) : null}
-
-                      {domainsQuery.error ? (
-                        <p className="allowlist-empty allowlist-empty--error">
-                          Ошибка: {formatApiError(domainsQuery.error)}
-                        </p>
-                      ) : null}
-
-                      {!domainsQuery.isLoading && !domainsQuery.error ? (
-                        allowlistDomains.length > 0 ? (
-                          <ul className="allowlist-list" aria-label="Разрешенные ссылки">
-                            {allowlistDomains.map((domain) => (
-                              <li key={domain} className="allowlist-item">
-                                <span className="allowlist-item__domain">{domain}</span>
-                                <button
-                                  type="button"
-                                  className="allowlist-item__remove"
-                                  onClick={() => removeDomainMutation.mutate(domain)}
-                                  disabled={
-                                    removeDomainMutation.isPending || addDomainMutation.isPending
-                                  }
-                                >
-                                  Удалить
-                                </button>
-                              </li>
-                            ))}
-                          </ul>
-                        ) : (
-                          <p className="allowlist-empty">Список пуст</p>
-                        )
-                      ) : null}
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            role="radio"
+                            aria-checked={isActive}
+                            className={cn(
+                              'policy-card',
+                              option.value === 'ALERT_ONLY' && 'policy-card--alert',
+                              option.value === 'ALLOWLIST_ONLY' && 'policy-card--allowlist',
+                              option.value === 'BLOCKLIST_ONLY' && 'policy-card--blocklist',
+                              isActive && 'is-active',
+                            )}
+                            onClick={() => setFieldValue('linkPolicy', option.value)}
+                          >
+                            <span className="policy-card__title-row">
+                              <span className="policy-card__marker" aria-hidden />
+                              <span>{option.label}</span>
+                            </span>
+                            <small>{option.description}</small>
+                          </button>
+                        );
+                      })}
                     </div>
-                  </div>
-                </div>
-              ) : null}
-
-              {shouldShowLinkStages ? (
-                <>
-                  <div
-                    className="settings-subsection-divider"
-                    role="separator"
-                    aria-label="Блок сообщений бота"
-                  >
-                    <span>Сообщения бота</span>
-                  </div>
-
-                  <div className="settings-native-toggle">
-                    <div className="settings-native-toggle__row">
-                      <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">1. Объяснение</span>
-                        <button
-                          type="button"
-                          className={cn('settings-info-button', openHintKey === 'link' && 'is-open')}
-                          aria-label="Пояснение для тумблера сообщений о ссылках"
-                          aria-controls="link-bot-message-hint"
-                          aria-expanded={openHintKey === 'link'}
-                          onClick={() => toggleHint('link')}
-                        >
-                          <span aria-hidden>i</span>
-                        </button>
-                      </div>
-
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Включить объяснение для модерации ссылок"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={draft.linkBotMessageEnabled}
-                          onChange={(event) => {
-                            const enabled = event.target.checked;
-                            setFieldValue('linkBotMessageEnabled', enabled);
-                            if (!enabled) {
-                              setFieldValue('linkBotButtonEnabled', false);
-                              clearFieldError('linkBotButtonUrl');
-                              clearFieldError('linkBotButtonText');
-                            }
-                          }}
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
-                    </div>
-
-                    {openHintKey === 'link' ? (
-                      <p id="link-bot-message-hint" className="settings-native-toggle__hint">
-                        Санкции усиливаются по ступеням, если пользователь повторно отправляет
-                        ссылки в течение 24 часов: сначала объяснение, затем предупреждение, потом
-                        бан на 6 часов и далее удаление из группы.
-                      </p>
+                    {linkPolicyError ? (
+                      <small className="field__hint">{linkPolicyError}</small>
                     ) : null}
                   </div>
 
-                  <div className="settings-native-toggle settings-native-toggle--nested">
-                    <div className="settings-native-toggle__row">
-                      <span className="settings-native-toggle__title">2. Предупреждение</span>
-
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Включить предупреждение за вторую ссылку в 24 часа"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={draft.linkWarnEnabled}
-                          onChange={(event) => setFieldValue('linkWarnEnabled', event.target.checked)}
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="settings-native-toggle settings-native-toggle--nested">
-                    <div className="settings-native-toggle__row">
-                      <span className="settings-native-toggle__title">3. Бан на 6ч</span>
-
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Включить бан на шесть часов за третью ссылку в 24 часа"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={draft.linkBanEnabled}
-                          onChange={(event) => setFieldValue('linkBanEnabled', event.target.checked)}
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="settings-native-toggle settings-native-toggle--nested">
-                    <div className="settings-native-toggle__row">
-                      <span className="settings-native-toggle__title">4. Удаление из группы</span>
-
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Включить удаление из группы за четвертую ссылку в 24 часа"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={draft.linkKickEnabled}
-                          onChange={(event) => setFieldValue('linkKickEnabled', event.target.checked)}
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-
-                  {draft.linkBotMessageEnabled ? (
-                    <div
-                      className={cn(
-                        'settings-native-toggle',
-                        'settings-native-toggle--nested',
-                        hasLinkBotButtonError && 'field--error',
-                      )}
-                    >
-                      <div className="settings-native-toggle__row">
-                        <span className="settings-native-toggle__title">Добавить кнопку</span>
-
-                        <label
-                          className="settings-native-switch"
-                          aria-label="Добавить кнопку в сообщение бота для модерации ссылок"
+                  {isAllowlistMode ? (
+                    <div className="allowlist-drawer">
+                      <div className="allowlist-drawer__inner">
+                        <div
+                          className={cn(
+                            'field',
+                            'allowlist-panel',
+                            domainInputError && 'allowlist-panel--error',
+                          )}
                         >
-                          <input
-                            type="checkbox"
-                            checked={draft.linkBotButtonEnabled}
-                            onChange={(event) => {
-                              const enabled = event.target.checked;
-                              setFieldValue('linkBotButtonEnabled', enabled);
-                              if (!enabled) {
-                                clearFieldError('linkBotButtonUrl');
-                                clearFieldError('linkBotButtonText');
-                              }
-                            }}
-                          />
-                          <span className="toggle-switch" aria-hidden>
-                            <span className="toggle-switch__thumb" />
-                          </span>
-                        </label>
-                      </div>
+                          <div className="allowlist-panel__handle" aria-hidden />
 
-                      {draft.linkBotButtonEnabled ? (
-                        <div className="settings-button-fields">
-                          <label
-                            className={cn(
-                              'field settings-url-field',
-                              linkBotButtonUrlError && 'field--error',
-                            )}
-                          >
-                            <span className="field__label">Ссылка кнопки</span>
-                            <input
-                              type="url"
-                              inputMode="url"
-                              value={draft.linkBotButtonUrl}
-                              onChange={(event) =>
-                                setFieldValue('linkBotButtonUrl', event.target.value)
-                              }
-                              placeholder="https://max.ru/channel/..."
-                            />
-                            {linkBotButtonUrlError ? (
-                              <small className="field__hint">{linkBotButtonUrlError}</small>
-                            ) : null}
-                          </label>
+                          <div className="allowlist-panel__head">
+                            <span className="field__label">Разрешенные ссылки</span>
+                            <span className="chip">{allowlistDomains.length}</span>
+                          </div>
 
-                          <label
-                            className={cn(
-                              'field settings-text-field',
-                              linkBotButtonTextError && 'field--error',
-                            )}
-                          >
-                            <span className="field__label">Название кнопки</span>
+                          <p className="allowlist-panel__subtitle">
+                            Можно вставить полный URL, сохраним домен автоматически.
+                          </p>
+
+                          <div className="allowlist-add-row">
                             <input
                               type="text"
-                              maxLength={32}
-                              value={draft.linkBotButtonText}
-                              onChange={(event) =>
-                                setFieldValue('linkBotButtonText', event.target.value)
-                              }
-                              placeholder="Открыть"
+                              inputMode="url"
+                              value={domainInput}
+                              onChange={(event) => {
+                                setDomainInput(event.target.value);
+                                setDomainInputError('');
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault();
+                                  handleAddDomain();
+                                }
+                              }}
+                              placeholder="https://example.com/path"
                             />
-                            {linkBotButtonTextError ? (
-                              <small className="field__hint">{linkBotButtonTextError}</small>
-                            ) : null}
-                          </label>
-                        </div>
-                      ) : null}
+                            <button
+                              type="button"
+                              className="button button--accent allowlist-add-row__button"
+                              onClick={handleAddDomain}
+                              disabled={
+                                addDomainMutation.isPending || removeDomainMutation.isPending
+                              }
+                            >
+                              {addDomainMutation.isPending ? 'Добавляем...' : 'Добавить'}
+                            </button>
+                          </div>
 
-                      {!hasLinkBotButtonError ? (
-                        <p className="settings-native-toggle__hint">
-                          Добавляет кнопку в сообщение бота. Подходит для ссылки на чат, канал или
-                          профиль.
-                        </p>
-                      ) : null}
+                          {domainInputError ? (
+                            <small className="field__hint">{domainInputError}</small>
+                          ) : null}
+
+                          {domainsQuery.isLoading ? (
+                            <p className="allowlist-empty">Загрузка списка...</p>
+                          ) : null}
+
+                          {domainsQuery.error ? (
+                            <p className="allowlist-empty allowlist-empty--error">
+                              Ошибка: {formatApiError(domainsQuery.error)}
+                            </p>
+                          ) : null}
+
+                          {!domainsQuery.isLoading && !domainsQuery.error ? (
+                            allowlistDomains.length > 0 ? (
+                              <ul className="allowlist-list" aria-label="Разрешенные ссылки">
+                                {allowlistDomains.map((domain) => (
+                                  <li key={domain} className="allowlist-item">
+                                    <span className="allowlist-item__domain">{domain}</span>
+                                    <button
+                                      type="button"
+                                      className="allowlist-item__remove"
+                                      onClick={() => removeDomainMutation.mutate(domain)}
+                                      disabled={
+                                        removeDomainMutation.isPending ||
+                                        addDomainMutation.isPending
+                                      }
+                                    >
+                                      Удалить
+                                    </button>
+                                  </li>
+                                ))}
+                              </ul>
+                            ) : (
+                              <p className="allowlist-empty">Список пуст</p>
+                            )
+                          ) : null}
+                        </div>
+                      </div>
                     </div>
                   ) : null}
-                </>
-              ) : (
-                <div className="policy-mode-hint" role="note">
-                  Режим без удаления включен: тумблеры санкций скрыты.
-                </div>
-              )}
+
+                  {shouldShowLinkStages ? (
+                    <>
+                      <div
+                        className="settings-subsection-divider"
+                        role="separator"
+                        aria-label="Блок сообщений бота"
+                      >
+                        <span>Сообщения бота</span>
+                      </div>
+
+                      <div className="settings-native-toggle">
+                        <div className="settings-native-toggle__row">
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="settings-native-toggle__title">1. Объяснение</span>
+                            <button
+                              type="button"
+                              className={cn(
+                                'settings-info-button',
+                                openHintKey === 'link' && 'is-open',
+                              )}
+                              aria-label="Пояснение для тумблера сообщений о ссылках"
+                              aria-controls="link-bot-message-hint"
+                              aria-expanded={openHintKey === 'link'}
+                              onClick={() => toggleHint('link')}
+                            >
+                              <span aria-hidden>i</span>
+                            </button>
+                          </div>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить объяснение для модерации ссылок"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.linkBotMessageEnabled}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('linkBotMessageEnabled', enabled);
+                                if (!enabled) {
+                                  setFieldValue('linkBotButtonEnabled', false);
+                                  clearFieldError('linkBotButtonUrl');
+                                  clearFieldError('linkBotButtonText');
+                                }
+                              }}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+
+                        {openHintKey === 'link' ? (
+                          <p id="link-bot-message-hint" className="settings-native-toggle__hint">
+                            Санкции усиливаются по ступеням, если пользователь повторно отправляет
+                            ссылки в течение 24 часов: сначала объяснение, затем предупреждение,
+                            потом бан на 6 часов и далее удаление из группы.
+                          </p>
+                        ) : null}
+                      </div>
+
+                      <div className="settings-native-toggle settings-native-toggle--nested">
+                        <div className="settings-native-toggle__row">
+                          <span className="settings-native-toggle__title">2. Предупреждение</span>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить предупреждение за вторую ссылку в 24 часа"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.linkWarnEnabled}
+                              onChange={(event) =>
+                                setFieldValue('linkWarnEnabled', event.target.checked)
+                              }
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+
+                      <div className="settings-native-toggle settings-native-toggle--nested">
+                        <div className="settings-native-toggle__row">
+                          <span className="settings-native-toggle__title">3. Бан на 6ч</span>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить бан на шесть часов за третью ссылку в 24 часа"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.linkBanEnabled}
+                              onChange={(event) =>
+                                setFieldValue('linkBanEnabled', event.target.checked)
+                              }
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+
+                      <div className="settings-native-toggle settings-native-toggle--nested">
+                        <div className="settings-native-toggle__row">
+                          <span className="settings-native-toggle__title">
+                            4. Удаление из группы
+                          </span>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить удаление из группы за четвертую ссылку в 24 часа"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.linkKickEnabled}
+                              onChange={(event) =>
+                                setFieldValue('linkKickEnabled', event.target.checked)
+                              }
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+
+                      {draft.linkBotMessageEnabled ? (
+                        <div
+                          className={cn(
+                            'settings-native-toggle',
+                            'settings-native-toggle--nested',
+                            hasLinkBotButtonError && 'field--error',
+                          )}
+                        >
+                          <div className="settings-native-toggle__row">
+                            <span className="settings-native-toggle__title">Добавить кнопку</span>
+
+                            <label
+                              className="settings-native-switch"
+                              aria-label="Добавить кнопку в сообщение бота для модерации ссылок"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={draft.linkBotButtonEnabled}
+                                onChange={(event) => {
+                                  const enabled = event.target.checked;
+                                  setFieldValue('linkBotButtonEnabled', enabled);
+                                  if (!enabled) {
+                                    clearFieldError('linkBotButtonUrl');
+                                    clearFieldError('linkBotButtonText');
+                                  }
+                                }}
+                              />
+                              <span className="toggle-switch" aria-hidden>
+                                <span className="toggle-switch__thumb" />
+                              </span>
+                            </label>
+                          </div>
+
+                          {draft.linkBotButtonEnabled ? (
+                            <div className="settings-button-fields">
+                              <label
+                                className={cn(
+                                  'field settings-url-field',
+                                  linkBotButtonUrlError && 'field--error',
+                                )}
+                              >
+                                <span className="field__label">Ссылка кнопки</span>
+                                <input
+                                  type="url"
+                                  inputMode="url"
+                                  value={draft.linkBotButtonUrl}
+                                  onChange={(event) =>
+                                    setFieldValue('linkBotButtonUrl', event.target.value)
+                                  }
+                                  placeholder="https://max.ru/channel/..."
+                                />
+                                {linkBotButtonUrlError ? (
+                                  <small className="field__hint">{linkBotButtonUrlError}</small>
+                                ) : null}
+                              </label>
+
+                              <label
+                                className={cn(
+                                  'field settings-text-field',
+                                  linkBotButtonTextError && 'field--error',
+                                )}
+                              >
+                                <span className="field__label">Название кнопки</span>
+                                <input
+                                  type="text"
+                                  maxLength={32}
+                                  value={draft.linkBotButtonText}
+                                  onChange={(event) =>
+                                    setFieldValue('linkBotButtonText', event.target.value)
+                                  }
+                                  placeholder="Открыть"
+                                />
+                                {linkBotButtonTextError ? (
+                                  <small className="field__hint">{linkBotButtonTextError}</small>
+                                ) : null}
+                              </label>
+                            </div>
+                          ) : null}
+
+                          {!hasLinkBotButtonError ? (
+                            <p className="settings-native-toggle__hint">
+                              Добавляет кнопку в сообщение бота. Подходит для ссылки на чат, канал
+                              или профиль.
+                            </p>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </>
+                  ) : (
+                    <div className="policy-mode-hint" role="note">
+                      Режим без удаления включен: тумблеры санкций скрыты.
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -1053,7 +1300,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               >
                 <span className="settings-section__toggle-main">
                   <h3>Фильтрация текста</h3>
-                  <small>{textFiltersEnabledCount}/2 фильтра включено</small>
+                  <small>{textFiltersHeaderSummary}</small>
                 </span>
                 <SectionChevron isOpen={expandedSections.textFilters} />
               </button>
@@ -1088,6 +1335,326 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       <p className="settings-native-toggle__hint">{option.description}</p>
                     </div>
                   ))}
+                </div>
+
+                <div
+                  className="settings-subsection-divider"
+                  role="separator"
+                  aria-label="Параметры коммерческого фильтра"
+                >
+                  <span>Коммерция</span>
+                </div>
+
+                <div className="settings-native-toggle commercial-settings-panel">
+                  <div className="commercial-sensitivity">
+                    <span className="field__label">Чувствительность</span>
+                    <div
+                      className="segmented-control"
+                      role="radiogroup"
+                      aria-label="Чувствительность коммерческого фильтра"
+                    >
+                      {COMMERCIAL_SENSITIVITY_OPTIONS.map((option) => {
+                        const isActive = draft.commercialAdsSensitivity === option.value;
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            role="radio"
+                            aria-checked={isActive}
+                            className={cn('segmented-control__item', isActive && 'is-active')}
+                            onClick={() => setFieldValue('commercialAdsSensitivity', option.value)}
+                          >
+                            <span>{option.label}</span>
+                            <small>{option.description}</small>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className="commercial-thresholds-grid">
+                    <label
+                      className={cn(
+                        'field commercial-threshold-field',
+                        fieldErrors.commercialAdsWarnThreshold && 'field--error',
+                      )}
+                    >
+                      <span className="field__label">Порог предупреждения</span>
+                      <div className="commercial-threshold-row">
+                        <input
+                          type="range"
+                          min={COMMERCIAL_WARN_MIN}
+                          max={Math.min(
+                            COMMERCIAL_WARN_MAX,
+                            draft.commercialAdsDeleteThreshold - COMMERCIAL_MIN_GAP,
+                          )}
+                          step={1}
+                          value={draft.commercialAdsWarnThreshold}
+                          onChange={(event) =>
+                            handleCommercialWarnThresholdChange(Number(event.target.value))
+                          }
+                        />
+                        <output>{draft.commercialAdsWarnThreshold}</output>
+                      </div>
+                      {fieldErrors.commercialAdsWarnThreshold ? (
+                        <small className="field__hint">
+                          {fieldErrors.commercialAdsWarnThreshold}
+                        </small>
+                      ) : null}
+                    </label>
+
+                    <label
+                      className={cn(
+                        'field commercial-threshold-field',
+                        fieldErrors.commercialAdsDeleteThreshold && 'field--error',
+                      )}
+                    >
+                      <span className="field__label">Порог удаления</span>
+                      <div className="commercial-threshold-row">
+                        <input
+                          type="range"
+                          min={Math.max(
+                            COMMERCIAL_DELETE_MIN,
+                            draft.commercialAdsWarnThreshold + COMMERCIAL_MIN_GAP,
+                          )}
+                          max={COMMERCIAL_DELETE_MAX}
+                          step={1}
+                          value={draft.commercialAdsDeleteThreshold}
+                          onChange={(event) =>
+                            handleCommercialDeleteThresholdChange(Number(event.target.value))
+                          }
+                        />
+                        <output>{draft.commercialAdsDeleteThreshold}</output>
+                      </div>
+                      {fieldErrors.commercialAdsDeleteThreshold ? (
+                        <small className="field__hint">
+                          {fieldErrors.commercialAdsDeleteThreshold}
+                        </small>
+                      ) : null}
+                    </label>
+                  </div>
+
+                  <label className="field commercial-repeat-window">
+                    <span className="field__label">Окно повторов (часы)</span>
+                    <div className="field__number-wrap">
+                      <input
+                        type="number"
+                        min={COMMERCIAL_REPEAT_MIN_HOURS}
+                        max={COMMERCIAL_REPEAT_MAX_HOURS}
+                        value={commercialRepeatWindowHours}
+                        onChange={(event) =>
+                          handleCommercialRepeatWindowHoursChange(event.target.value)
+                        }
+                      />
+                      <small>{commercialRepeatWindowHours}ч</small>
+                    </div>
+                  </label>
+
+                  <div className="commercial-flags-grid">
+                    <div className="settings-native-toggle settings-native-toggle--nested">
+                      <div className="settings-native-toggle__row">
+                        <span className="settings-native-toggle__title">
+                          Логировать низкую уверенность
+                        </span>
+                        <label
+                          className="settings-native-switch"
+                          aria-label="Логировать низкую уверенность коммерческого фильтра"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={draft.commercialAdsLowConfidenceLogEnabled}
+                            onChange={(event) =>
+                              setFieldValue(
+                                'commercialAdsLowConfidenceLogEnabled',
+                                event.target.checked,
+                              )
+                            }
+                          />
+                          <span className="toggle-switch" aria-hidden>
+                            <span className="toggle-switch__thumb" />
+                          </span>
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="settings-native-toggle settings-native-toggle--nested">
+                      <div className="settings-native-toggle__row">
+                        <span className="settings-native-toggle__title">
+                          Первый HIGH только предупреждать
+                        </span>
+                        <label
+                          className="settings-native-switch"
+                          aria-label="Первый high только предупреждать"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={draft.commercialAdsWarnFirstEnabled}
+                            onChange={(event) =>
+                              setFieldValue('commercialAdsWarnFirstEnabled', event.target.checked)
+                            }
+                          />
+                          <span className="toggle-switch" aria-hidden>
+                            <span className="toggle-switch__thumb" />
+                          </span>
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="commercial-lists-grid">
+                    <div
+                      className={cn(
+                        'field allowlist-panel commercial-phrase-panel',
+                        commercialAllowPhraseError && 'allowlist-panel--error',
+                      )}
+                    >
+                      <div className="allowlist-panel__head">
+                        <span className="field__label">Исключения</span>
+                        <span className="chip">{commercialAllowlistPhrases.length}</span>
+                      </div>
+                      <p className="allowlist-panel__subtitle">
+                        Фразы, которые не считаются коммерцией.
+                      </p>
+
+                      <div className="allowlist-add-row">
+                        <input
+                          type="text"
+                          value={commercialAllowPhraseInput}
+                          onChange={(event) => {
+                            setCommercialAllowPhraseInput(event.target.value);
+                            if (commercialAllowPhraseError) {
+                              setCommercialAllowPhraseError('');
+                            }
+                          }}
+                          placeholder="например, партнерская интеграция"
+                        />
+                        <button
+                          type="button"
+                          className="button button--accent allowlist-add-row__button"
+                          onClick={handleAddCommercialAllowPhrase}
+                          disabled={addCommercialAllowPhraseMutation.isPending}
+                        >
+                          Добавить
+                        </button>
+                      </div>
+
+                      {commercialAllowPhraseError ? (
+                        <small className="field__hint">{commercialAllowPhraseError}</small>
+                      ) : null}
+
+                      {commercialAllowlistQuery.isLoading ? (
+                        <SkeletonCard lines={3} />
+                      ) : commercialAllowlistQuery.error ? (
+                        <p className="allowlist-empty allowlist-empty--error">
+                          Не удалось загрузить исключения.
+                        </p>
+                      ) : commercialAllowlistPhrases.length > 0 ? (
+                        <ul className="allowlist-list">
+                          {commercialAllowlistPhrases.map((phrase) => (
+                            <li key={phrase} className="allowlist-item">
+                              <span className="allowlist-item__domain">{phrase}</span>
+                              <button
+                                type="button"
+                                className="allowlist-item__remove"
+                                onClick={() => removeCommercialAllowPhraseMutation.mutate(phrase)}
+                                disabled={removeCommercialAllowPhraseMutation.isPending}
+                              >
+                                Удалить
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="allowlist-empty">Список пуст.</p>
+                      )}
+                    </div>
+
+                    <div
+                      className={cn(
+                        'field allowlist-panel commercial-phrase-panel',
+                        commercialStopPhraseError && 'allowlist-panel--error',
+                      )}
+                    >
+                      <div className="allowlist-panel__head">
+                        <span className="field__label">Усилители</span>
+                        <span className="chip chip--warning">
+                          {commercialStoplistPhrases.length}
+                        </span>
+                      </div>
+                      <p className="allowlist-panel__subtitle">
+                        Фразы, повышающие уверенность коммерции.
+                      </p>
+
+                      <div className="allowlist-add-row">
+                        <input
+                          type="text"
+                          value={commercialStopPhraseInput}
+                          onChange={(event) => {
+                            setCommercialStopPhraseInput(event.target.value);
+                            if (commercialStopPhraseError) {
+                              setCommercialStopPhraseError('');
+                            }
+                          }}
+                          placeholder="например, срочно продам"
+                        />
+                        <button
+                          type="button"
+                          className="button button--accent allowlist-add-row__button"
+                          onClick={handleAddCommercialStopPhrase}
+                          disabled={addCommercialStopPhraseMutation.isPending}
+                        >
+                          Добавить
+                        </button>
+                      </div>
+
+                      {commercialStopPhraseError ? (
+                        <small className="field__hint">{commercialStopPhraseError}</small>
+                      ) : null}
+
+                      {commercialStoplistQuery.isLoading ? (
+                        <SkeletonCard lines={3} />
+                      ) : commercialStoplistQuery.error ? (
+                        <p className="allowlist-empty allowlist-empty--error">
+                          Не удалось загрузить усилители.
+                        </p>
+                      ) : commercialStoplistPhrases.length > 0 ? (
+                        <ul className="allowlist-list">
+                          {commercialStoplistPhrases.map((phrase) => (
+                            <li key={phrase} className="allowlist-item">
+                              <span className="allowlist-item__domain">{phrase}</span>
+                              <button
+                                type="button"
+                                className="allowlist-item__remove"
+                                onClick={() => removeCommercialStopPhraseMutation.mutate(phrase)}
+                                disabled={removeCommercialStopPhraseMutation.isPending}
+                              >
+                                Удалить
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="allowlist-empty">Список пуст.</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="commercial-signals">
+                    <span className="field__label">Последние причины срабатываний</span>
+                    {eventsQuery.isLoading ? (
+                      <p className="allowlist-empty">Загружаем причины...</p>
+                    ) : commercialSignalChips.length > 0 ? (
+                      <div className="commercial-signals__chips">
+                        {commercialSignalChips.map((chip) => (
+                          <span key={chip} className="chip chip--warning">
+                            {chip}
+                          </span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="allowlist-empty">Пока нет данных по срабатываниям.</p>
+                    )}
+                  </div>
                 </div>
 
                 <div
@@ -1247,292 +1814,320 @@ export function SettingsPage({ api }: { api: ApiClient }) {
             >
               <div className="settings-section__collapse-inner">
                 {draft.duplicateBanEnabled ? (
-              <div className={cn('settings-native-toggle', fieldErrors.banDurationHours && 'field--error')}>
-                <div className="settings-native-toggle__row">
-                  <span className="settings-native-toggle__title">Длительность бана</span>
+                  <div
+                    className={cn(
+                      'settings-native-toggle',
+                      fieldErrors.banDurationHours && 'field--error',
+                    )}
+                  >
+                    <div className="settings-native-toggle__row">
+                      <span className="settings-native-toggle__title">Длительность бана</span>
 
-                  <div className="ban-duration-stepper" role="group" aria-label="Длительность бана в часах">
-                    <button
-                      type="button"
-                      className="ban-duration-stepper__button"
-                      onClick={() => adjustBanDuration(-1)}
-                      disabled={draft.banDurationHours <= BAN_DURATION_MIN_HOURS}
-                      aria-label="Уменьшить длительность бана"
-                    >
-                      -
-                    </button>
+                      <div
+                        className="ban-duration-stepper"
+                        role="group"
+                        aria-label="Длительность бана в часах"
+                      >
+                        <button
+                          type="button"
+                          className="ban-duration-stepper__button"
+                          onClick={() => adjustBanDuration(-1)}
+                          disabled={draft.banDurationHours <= BAN_DURATION_MIN_HOURS}
+                          aria-label="Уменьшить длительность бана"
+                        >
+                          -
+                        </button>
 
-                    <output className="ban-duration-stepper__value" aria-live="polite">
-                      {draft.banDurationHours}ч
-                    </output>
+                        <output className="ban-duration-stepper__value" aria-live="polite">
+                          {draft.banDurationHours}ч
+                        </output>
 
-                    <button
-                      type="button"
-                      className="ban-duration-stepper__button"
-                      onClick={() => adjustBanDuration(1)}
-                      disabled={draft.banDurationHours >= BAN_DURATION_MAX_HOURS}
-                      aria-label="Увеличить длительность бана"
-                    >
-                      +
-                    </button>
+                        <button
+                          type="button"
+                          className="ban-duration-stepper__button"
+                          onClick={() => adjustBanDuration(1)}
+                          disabled={draft.banDurationHours >= BAN_DURATION_MAX_HOURS}
+                          aria-label="Увеличить длительность бана"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+
+                    <p className="settings-native-toggle__hint">
+                      После выдачи бана сообщения пользователя удаляются автоматически в течение
+                      этого времени.
+                    </p>
+
+                    {fieldErrors.banDurationHours ? (
+                      <small className="field__hint">{fieldErrors.banDurationHours}</small>
+                    ) : null}
                   </div>
+                ) : null}
+
+                <div className="duplicate-stage-list">
+                  <p className="duplicate-stage-list__caption">Количество дублей</p>
+
+                  {DUPLICATE_STAGE_OPTIONS.map((stage) => {
+                    const enabled = draft[stage.enabledKey];
+                    const windowSec = draft[stage.windowKey];
+                    const maxCount = draft[stage.maxCountKey];
+                    const windowError = fieldErrors[stage.windowKey];
+                    const maxCountError = fieldErrors[stage.maxCountKey];
+
+                    return (
+                      <article
+                        key={stage.id}
+                        className={cn('duplicate-stage', !enabled && 'is-disabled')}
+                      >
+                        <div className="duplicate-stage__top">
+                          <label className="duplicate-stage__toggle">
+                            <input
+                              type="checkbox"
+                              checked={enabled}
+                              onChange={(event) =>
+                                setFieldValue(
+                                  stage.enabledKey,
+                                  event.target.checked as ChatSettings[DuplicateEnabledKey],
+                                )
+                              }
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                            <span className="duplicate-stage__title">{stage.label}</span>
+                          </label>
+                        </div>
+
+                        <div className="duplicate-stage__controls">
+                          <label
+                            className={cn('duplicate-stage__field', windowError && 'field--error')}
+                          >
+                            <span className="duplicate-stage__field-label">Окно, ч</span>
+                            <div className="duplicate-stage__input-wrap">
+                              <input
+                                type="number"
+                                min={1}
+                                max={168}
+                                step={1}
+                                value={secondsToHours(Number(windowSec))}
+                                onChange={(event) =>
+                                  handleDuplicateWindowHoursChange(
+                                    stage.windowKey,
+                                    event.target.value,
+                                  )
+                                }
+                                disabled={!enabled}
+                                aria-label={`Окно для ступени ${stage.label} в часах`}
+                              />
+                              <span className="duplicate-stage__suffix" aria-hidden>
+                                часы
+                              </span>
+                            </div>
+                          </label>
+
+                          <div
+                            className={cn(
+                              'duplicate-stage__field',
+                              maxCountError && 'field--error',
+                            )}
+                          >
+                            <span className="duplicate-stage__field-label">Количество дублей</span>
+                            <div
+                              className="duplicate-count-stepper"
+                              role="group"
+                              aria-label={`Количество дублей для ступени ${stage.label}`}
+                            >
+                              <button
+                                type="button"
+                                className="duplicate-count-stepper__button"
+                                onClick={() =>
+                                  adjustDuplicateMaxCount(stage.maxCountKey, Number(maxCount), -1)
+                                }
+                                disabled={!enabled || Number(maxCount) <= DUPLICATE_COUNT_MIN}
+                                aria-label={`Уменьшить количество дублей для ${stage.label}`}
+                              >
+                                -
+                              </button>
+
+                              <output className="duplicate-count-stepper__value" aria-live="polite">
+                                {Number(maxCount)}
+                              </output>
+
+                              <button
+                                type="button"
+                                className="duplicate-count-stepper__button"
+                                onClick={() =>
+                                  adjustDuplicateMaxCount(stage.maxCountKey, Number(maxCount), 1)
+                                }
+                                disabled={!enabled || Number(maxCount) >= DUPLICATE_COUNT_MAX}
+                                aria-label={`Увеличить количество дублей для ${stage.label}`}
+                              >
+                                +
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        {windowError || maxCountError ? (
+                          <div className="duplicate-stage__errors">
+                            {windowError ? (
+                              <small className="field__hint">{windowError}</small>
+                            ) : null}
+                            {maxCountError ? (
+                              <small className="field__hint">{maxCountError}</small>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </article>
+                    );
+                  })}
                 </div>
 
-                <p className="settings-native-toggle__hint">
-                  После выдачи бана сообщения пользователя удаляются автоматически в течение этого
-                  времени.
-                </p>
+                <div
+                  className="settings-subsection-divider"
+                  role="separator"
+                  aria-label="Блок сообщений бота"
+                >
+                  <span>Сообщения бота</span>
+                </div>
 
-                {fieldErrors.banDurationHours ? (
-                  <small className="field__hint">{fieldErrors.banDurationHours}</small>
-                ) : null}
-              </div>
-            ) : null}
+                <div className="settings-native-toggle">
+                  <div className="settings-native-toggle__row">
+                    <div className="settings-native-toggle__title-wrap">
+                      <span className="settings-native-toggle__title">Сообщение от бота</span>
+                      <button
+                        type="button"
+                        className={cn(
+                          'settings-info-button',
+                          openHintKey === 'duplicate' && 'is-open',
+                        )}
+                        aria-label="Пояснение для тумблера сообщений о дублях"
+                        aria-controls="duplicate-bot-message-hint"
+                        aria-expanded={openHintKey === 'duplicate'}
+                        onClick={() => toggleHint('duplicate')}
+                      >
+                        <span aria-hidden>i</span>
+                      </button>
+                    </div>
 
-            <div className="duplicate-stage-list">
-              <p className="duplicate-stage-list__caption">Количество дублей</p>
+                    <label
+                      className="settings-native-switch"
+                      aria-label="Включить сообщение от бота для дублей сообщений"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={draft.duplicateBotMessageEnabled}
+                        onChange={(event) => {
+                          const enabled = event.target.checked;
+                          setFieldValue('duplicateBotMessageEnabled', enabled);
+                          if (!enabled) {
+                            setFieldValue('duplicateBotButtonEnabled', false);
+                            clearFieldError('duplicateBotButtonUrl');
+                            clearFieldError('duplicateBotButtonText');
+                          }
+                        }}
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                    </label>
+                  </div>
 
-              {DUPLICATE_STAGE_OPTIONS.map((stage) => {
-                const enabled = draft[stage.enabledKey];
-                const windowSec = draft[stage.windowKey];
-                const maxCount = draft[stage.maxCountKey];
-                const windowError = fieldErrors[stage.windowKey];
-                const maxCountError = fieldErrors[stage.maxCountKey];
+                  {openHintKey === 'duplicate' ? (
+                    <p id="duplicate-bot-message-hint" className="settings-native-toggle__hint">
+                      При срабатывании правила дублей бот публикует поясняющее сообщение.
+                    </p>
+                  ) : null}
+                </div>
 
-                return (
-                  <article
-                    key={stage.id}
-                    className={cn('duplicate-stage', !enabled && 'is-disabled')}
+                {draft.duplicateBotMessageEnabled ? (
+                  <div
+                    className={cn(
+                      'settings-native-toggle',
+                      'settings-native-toggle--nested',
+                      hasDuplicateBotButtonError && 'field--error',
+                    )}
                   >
-                    <div className="duplicate-stage__top">
-                      <label className="duplicate-stage__toggle">
+                    <div className="settings-native-toggle__row">
+                      <span className="settings-native-toggle__title">Добавить кнопку</span>
+
+                      <label
+                        className="settings-native-switch"
+                        aria-label="Добавить кнопку в сообщение бота для дублей сообщений"
+                      >
                         <input
                           type="checkbox"
-                          checked={enabled}
-                          onChange={(event) =>
-                            setFieldValue(
-                              stage.enabledKey,
-                              event.target.checked as ChatSettings[DuplicateEnabledKey],
-                            )
-                          }
+                          checked={draft.duplicateBotButtonEnabled}
+                          onChange={(event) => {
+                            const enabled = event.target.checked;
+                            setFieldValue('duplicateBotButtonEnabled', enabled);
+                            if (!enabled) {
+                              clearFieldError('duplicateBotButtonUrl');
+                              clearFieldError('duplicateBotButtonText');
+                            }
+                          }}
                         />
                         <span className="toggle-switch" aria-hidden>
                           <span className="toggle-switch__thumb" />
                         </span>
-                        <span className="duplicate-stage__title">{stage.label}</span>
                       </label>
                     </div>
 
-                    <div className="duplicate-stage__controls">
-                      <label className={cn('duplicate-stage__field', windowError && 'field--error')}>
-                        <span className="duplicate-stage__field-label">Окно, ч</span>
-                        <div className="duplicate-stage__input-wrap">
-                          <input
-                            type="number"
-                            min={1}
-                            max={168}
-                            step={1}
-                            value={secondsToHours(Number(windowSec))}
-                            onChange={(event) =>
-                              handleDuplicateWindowHoursChange(stage.windowKey, event.target.value)
-                            }
-                            disabled={!enabled}
-                            aria-label={`Окно для ступени ${stage.label} в часах`}
-                          />
-                          <span className="duplicate-stage__suffix" aria-hidden>
-                            часы
-                          </span>
-                        </div>
-                      </label>
-
-                      <div className={cn('duplicate-stage__field', maxCountError && 'field--error')}>
-                        <span className="duplicate-stage__field-label">Количество дублей</span>
-                        <div
-                          className="duplicate-count-stepper"
-                          role="group"
-                          aria-label={`Количество дублей для ступени ${stage.label}`}
+                    {draft.duplicateBotButtonEnabled ? (
+                      <div className="settings-button-fields">
+                        <label
+                          className={cn(
+                            'field settings-url-field',
+                            duplicateBotButtonUrlError && 'field--error',
+                          )}
                         >
-                          <button
-                            type="button"
-                            className="duplicate-count-stepper__button"
-                            onClick={() =>
-                              adjustDuplicateMaxCount(stage.maxCountKey, Number(maxCount), -1)
+                          <span className="field__label">Ссылка кнопки</span>
+                          <input
+                            type="url"
+                            inputMode="url"
+                            value={draft.duplicateBotButtonUrl}
+                            onChange={(event) =>
+                              setFieldValue('duplicateBotButtonUrl', event.target.value)
                             }
-                            disabled={!enabled || Number(maxCount) <= DUPLICATE_COUNT_MIN}
-                            aria-label={`Уменьшить количество дублей для ${stage.label}`}
-                          >
-                            -
-                          </button>
+                            placeholder="https://max.ru/profile/..."
+                          />
+                          {duplicateBotButtonUrlError ? (
+                            <small className="field__hint">{duplicateBotButtonUrlError}</small>
+                          ) : null}
+                        </label>
 
-                          <output className="duplicate-count-stepper__value" aria-live="polite">
-                            {Number(maxCount)}
-                          </output>
-
-                          <button
-                            type="button"
-                            className="duplicate-count-stepper__button"
-                            onClick={() =>
-                              adjustDuplicateMaxCount(stage.maxCountKey, Number(maxCount), 1)
+                        <label
+                          className={cn(
+                            'field settings-text-field',
+                            duplicateBotButtonTextError && 'field--error',
+                          )}
+                        >
+                          <span className="field__label">Название кнопки</span>
+                          <input
+                            type="text"
+                            maxLength={32}
+                            value={draft.duplicateBotButtonText}
+                            onChange={(event) =>
+                              setFieldValue('duplicateBotButtonText', event.target.value)
                             }
-                            disabled={!enabled || Number(maxCount) >= DUPLICATE_COUNT_MAX}
-                            aria-label={`Увеличить количество дублей для ${stage.label}`}
-                          >
-                            +
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-
-                    {windowError || maxCountError ? (
-                      <div className="duplicate-stage__errors">
-                        {windowError ? <small className="field__hint">{windowError}</small> : null}
-                        {maxCountError ? (
-                          <small className="field__hint">{maxCountError}</small>
-                        ) : null}
+                            placeholder="Открыть"
+                          />
+                          {duplicateBotButtonTextError ? (
+                            <small className="field__hint">{duplicateBotButtonTextError}</small>
+                          ) : null}
+                        </label>
                       </div>
                     ) : null}
-                  </article>
-                );
-              })}
-            </div>
 
-            <div className="settings-subsection-divider" role="separator" aria-label="Блок сообщений бота">
-              <span>Сообщения бота</span>
-            </div>
-
-            <div className="settings-native-toggle">
-              <div className="settings-native-toggle__row">
-                <div className="settings-native-toggle__title-wrap">
-                  <span className="settings-native-toggle__title">Сообщение от бота</span>
-                  <button
-                    type="button"
-                    className={cn('settings-info-button', openHintKey === 'duplicate' && 'is-open')}
-                    aria-label="Пояснение для тумблера сообщений о дублях"
-                    aria-controls="duplicate-bot-message-hint"
-                    aria-expanded={openHintKey === 'duplicate'}
-                    onClick={() => toggleHint('duplicate')}
-                  >
-                    <span aria-hidden>i</span>
-                  </button>
-                </div>
-
-                <label
-                  className="settings-native-switch"
-                  aria-label="Включить сообщение от бота для дублей сообщений"
-                >
-                  <input
-                    type="checkbox"
-                    checked={draft.duplicateBotMessageEnabled}
-                    onChange={(event) => {
-                      const enabled = event.target.checked;
-                      setFieldValue('duplicateBotMessageEnabled', enabled);
-                      if (!enabled) {
-                        setFieldValue('duplicateBotButtonEnabled', false);
-                        clearFieldError('duplicateBotButtonUrl');
-                        clearFieldError('duplicateBotButtonText');
-                      }
-                    }}
-                  />
-                  <span className="toggle-switch" aria-hidden>
-                    <span className="toggle-switch__thumb" />
-                  </span>
-                </label>
-              </div>
-
-              {openHintKey === 'duplicate' ? (
-                <p id="duplicate-bot-message-hint" className="settings-native-toggle__hint">
-                  При срабатывании правила дублей бот публикует поясняющее сообщение.
-                </p>
-              ) : null}
-            </div>
-
-            {draft.duplicateBotMessageEnabled ? (
-              <div
-                className={cn(
-                  'settings-native-toggle',
-                  'settings-native-toggle--nested',
-                  hasDuplicateBotButtonError && 'field--error',
-                )}
-              >
-                <div className="settings-native-toggle__row">
-                  <span className="settings-native-toggle__title">Добавить кнопку</span>
-
-                  <label
-                    className="settings-native-switch"
-                    aria-label="Добавить кнопку в сообщение бота для дублей сообщений"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={draft.duplicateBotButtonEnabled}
-                      onChange={(event) => {
-                        const enabled = event.target.checked;
-                        setFieldValue('duplicateBotButtonEnabled', enabled);
-                        if (!enabled) {
-                          clearFieldError('duplicateBotButtonUrl');
-                          clearFieldError('duplicateBotButtonText');
-                        }
-                      }}
-                    />
-                    <span className="toggle-switch" aria-hidden>
-                      <span className="toggle-switch__thumb" />
-                    </span>
-                  </label>
-                </div>
-
-                {draft.duplicateBotButtonEnabled ? (
-                  <div className="settings-button-fields">
-                    <label
-                      className={cn(
-                        'field settings-url-field',
-                        duplicateBotButtonUrlError && 'field--error',
-                      )}
-                    >
-                      <span className="field__label">Ссылка кнопки</span>
-                      <input
-                        type="url"
-                        inputMode="url"
-                        value={draft.duplicateBotButtonUrl}
-                        onChange={(event) =>
-                          setFieldValue('duplicateBotButtonUrl', event.target.value)
-                        }
-                        placeholder="https://max.ru/profile/..."
-                      />
-                      {duplicateBotButtonUrlError ? (
-                        <small className="field__hint">{duplicateBotButtonUrlError}</small>
-                      ) : null}
-                    </label>
-
-                    <label
-                      className={cn(
-                        'field settings-text-field',
-                        duplicateBotButtonTextError && 'field--error',
-                      )}
-                    >
-                      <span className="field__label">Название кнопки</span>
-                      <input
-                        type="text"
-                        maxLength={32}
-                        value={draft.duplicateBotButtonText}
-                        onChange={(event) =>
-                          setFieldValue('duplicateBotButtonText', event.target.value)
-                        }
-                        placeholder="Открыть"
-                      />
-                      {duplicateBotButtonTextError ? (
-                        <small className="field__hint">{duplicateBotButtonTextError}</small>
-                      ) : null}
-                    </label>
+                    {!hasDuplicateBotButtonError ? (
+                      <p className="settings-native-toggle__hint">
+                        Добавляет кнопку в сообщение бота. Можно отправить пользователя в нужный
+                        чат, канал или профиль.
+                      </p>
+                    ) : null}
                   </div>
                 ) : null}
-
-                {!hasDuplicateBotButtonError ? (
-                  <p className="settings-native-toggle__hint">
-                    Добавляет кнопку в сообщение бота. Можно отправить пользователя в нужный чат,
-                    канал или профиль.
-                  </p>
-                ) : null}
-              </div>
-            ) : null}
               </div>
             </div>
           </GlassCard>
@@ -1563,316 +2158,334 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               className={cn('settings-section__collapse', expandedSections.limits && 'is-open')}
             >
               <div className="settings-section__collapse-inner">
-                <div className={cn('settings-native-toggle', fieldErrors.maxMessageLength && 'field--error')}>
-              <div className="settings-native-toggle__row">
-                <span className="settings-native-toggle__title">Лимит длины сообщения</span>
-
-                <label
-                  className="settings-native-switch"
-                  aria-label="Включить ограничение длины сообщения"
+                <div
+                  className={cn(
+                    'settings-native-toggle',
+                    fieldErrors.maxMessageLength && 'field--error',
+                  )}
                 >
-                  <input
-                    type="checkbox"
-                    checked={draft.maxMessageLengthEnabled}
-                    onChange={(event) =>
-                      setFieldValue('maxMessageLengthEnabled', event.target.checked)
-                    }
-                  />
-                  <span className="toggle-switch" aria-hidden>
-                    <span className="toggle-switch__thumb" />
-                  </span>
-                </label>
-              </div>
-
-              {draft.maxMessageLengthEnabled ? (
-                <>
                   <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title settings-native-toggle__title--sub">
-                      Максимум
-                    </span>
-                    <output className="settings-length-limit__value" aria-live="polite">
-                      {draft.maxMessageLength} симв.
-                    </output>
-                  </div>
+                    <span className="settings-native-toggle__title">Лимит длины сообщения</span>
 
-                  <input
-                    className="settings-length-limit__slider"
-                    type="range"
-                    min={MESSAGE_LENGTH_MIN}
-                    max={MESSAGE_LENGTH_MAX}
-                    step={1}
-                    value={draft.maxMessageLength}
-                    onChange={(event) =>
-                      setFieldValue(
-                        'maxMessageLength',
-                        Number(event.target.value) as ChatSettings['maxMessageLength'],
-                      )
-                    }
-                    aria-label="Лимит длины сообщения"
-                  />
-
-                  <div className="settings-length-limit__labels" aria-hidden>
-                    <span>{MESSAGE_LENGTH_MIN}</span>
-                    <span>{MESSAGE_LENGTH_MAX}</span>
-                  </div>
-                </>
-              ) : null}
-
-              <p className="settings-native-toggle__hint">
-                Учитывается длина обычного текста и пересланных сообщений.
-              </p>
-
-              {fieldErrors.maxMessageLength ? (
-                <small className="field__hint">{fieldErrors.maxMessageLength}</small>
-              ) : null}
-            </div>
-
-            <div
-              className={cn(
-                'settings-native-toggle',
-                fieldErrors.photoMessageCooldownHours && 'field--error',
-              )}
-            >
-              <div className="settings-native-toggle__row">
-                <span className="settings-native-toggle__title">Фото: не чаще 1 раза</span>
-
-                <label
-                  className="settings-native-switch"
-                  aria-label="Ограничить отправку фото по времени"
-                >
-                  <input
-                    type="checkbox"
-                    checked={draft.photoMessageCooldownEnabled}
-                    onChange={(event) =>
-                      setFieldValue('photoMessageCooldownEnabled', event.target.checked)
-                    }
-                  />
-                  <span className="toggle-switch" aria-hidden>
-                    <span className="toggle-switch__thumb" />
-                  </span>
-                </label>
-              </div>
-
-              {draft.photoMessageCooldownEnabled ? (
-                <>
-                  <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title settings-native-toggle__title--sub">
-                      Интервал
-                    </span>
-                    <output className="settings-length-limit__value" aria-live="polite">
-                      {draft.photoMessageCooldownHours}ч
-                    </output>
-                  </div>
-                  <input
-                    className="settings-length-limit__slider"
-                    type="range"
-                    min={PHOTO_COOLDOWN_MIN_HOURS}
-                    max={PHOTO_COOLDOWN_MAX_HOURS}
-                    step={1}
-                    value={draft.photoMessageCooldownHours}
-                    onChange={(event) =>
-                      setFieldValue(
-                        'photoMessageCooldownHours',
-                        Number(event.target.value) as ChatSettings['photoMessageCooldownHours'],
-                      )
-                    }
-                    aria-label="Интервал отправки фото в часах"
-                  />
-                  <div className="settings-length-limit__labels" aria-hidden>
-                    <span>{PHOTO_COOLDOWN_MIN_HOURS}ч</span>
-                    <span>{PHOTO_COOLDOWN_MAX_HOURS}ч</span>
-                  </div>
-                </>
-              ) : null}
-
-              {fieldErrors.photoMessageCooldownHours ? (
-                <small className="field__hint">{fieldErrors.photoMessageCooldownHours}</small>
-              ) : (
-                <p className="settings-native-toggle__hint">
-                  При включении пользователь может отправить только одно сообщение с фотографиями
-                  за выбранный интервал.
-                </p>
-              )}
-            </div>
-
-            <div className="settings-native-toggle">
-              <div className="settings-native-toggle__row">
-                <span className="settings-native-toggle__title">Разрешить видео</span>
-
-                <label className="settings-native-switch" aria-label="Разрешить отправку видео">
-                  <input
-                    type="checkbox"
-                    checked={draft.videoMessagesEnabled}
-                    onChange={(event) => setFieldValue('videoMessagesEnabled', event.target.checked)}
-                  />
-                  <span className="toggle-switch" aria-hidden>
-                    <span className="toggle-switch__thumb" />
-                  </span>
-                </label>
-              </div>
-            </div>
-
-            <div className="settings-native-toggle">
-              <div className="settings-native-toggle__row">
-                <span className="settings-native-toggle__title">Разрешить файлы</span>
-
-                <label className="settings-native-switch" aria-label="Разрешить отправку файлов">
-                  <input
-                    type="checkbox"
-                    checked={draft.fileMessagesEnabled}
-                    onChange={(event) => setFieldValue('fileMessagesEnabled', event.target.checked)}
-                  />
-                  <span className="toggle-switch" aria-hidden>
-                    <span className="toggle-switch__thumb" />
-                  </span>
-                </label>
-              </div>
-            </div>
-
-            <div className="settings-native-toggle">
-              <div className="settings-native-toggle__row">
-                <span className="settings-native-toggle__title">Разрешить голосовые</span>
-
-                <label className="settings-native-switch" aria-label="Разрешить отправку голосовых">
-                  <input
-                    type="checkbox"
-                    checked={draft.voiceMessagesEnabled}
-                    onChange={(event) =>
-                      setFieldValue('voiceMessagesEnabled', event.target.checked)
-                    }
-                  />
-                  <span className="toggle-switch" aria-hidden>
-                    <span className="toggle-switch__thumb" />
-                  </span>
-                </label>
-              </div>
-            </div>
-
-            <div className="settings-subsection-divider" role="separator" aria-label="Блок сообщений бота">
-              <span>Сообщения бота</span>
-            </div>
-
-            <div className="settings-native-toggle">
-              <div className="settings-native-toggle__row">
-                <span className="settings-native-toggle__title">Сообщение от бота</span>
-
-                <label
-                  className="settings-native-switch"
-                  aria-label="Включить сообщение от бота для ограничений сообщений"
-                >
-                  <input
-                    type="checkbox"
-                    checked={draft.messageLimitsBotMessageEnabled}
-                    onChange={(event) => {
-                      const enabled = event.target.checked;
-                      setFieldValue('messageLimitsBotMessageEnabled', enabled);
-                      if (!enabled) {
-                        setFieldValue('messageLimitsBotButtonEnabled', false);
-                        clearFieldError('messageLimitsBotButtonUrl');
-                        clearFieldError('messageLimitsBotButtonText');
-                      }
-                    }}
-                  />
-                  <span className="toggle-switch" aria-hidden>
-                    <span className="toggle-switch__thumb" />
-                  </span>
-                </label>
-              </div>
-
-              <p className="settings-native-toggle__hint">
-                Бот отправляет пояснение при удалении сообщения по правилам этого блока.
-              </p>
-            </div>
-
-            {draft.messageLimitsBotMessageEnabled ? (
-              <div
-                className={cn(
-                  'settings-native-toggle',
-                  'settings-native-toggle--nested',
-                  hasMessageLimitsBotButtonError && 'field--error',
-                )}
-              >
-                <div className="settings-native-toggle__row">
-                  <span className="settings-native-toggle__title">Добавить кнопку</span>
-
-                  <label
-                    className="settings-native-switch"
-                    aria-label="Добавить кнопку в сообщение бота для ограничений сообщений"
-                  >
-                    <input
-                      type="checkbox"
-                      checked={draft.messageLimitsBotButtonEnabled}
-                      onChange={(event) => {
-                        const enabled = event.target.checked;
-                        setFieldValue('messageLimitsBotButtonEnabled', enabled);
-                        if (!enabled) {
-                          clearFieldError('messageLimitsBotButtonUrl');
-                          clearFieldError('messageLimitsBotButtonText');
+                    <label
+                      className="settings-native-switch"
+                      aria-label="Включить ограничение длины сообщения"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={draft.maxMessageLengthEnabled}
+                        onChange={(event) =>
+                          setFieldValue('maxMessageLengthEnabled', event.target.checked)
                         }
-                      }}
-                    />
-                    <span className="toggle-switch" aria-hidden>
-                      <span className="toggle-switch__thumb" />
-                    </span>
-                  </label>
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                    </label>
+                  </div>
+
+                  {draft.maxMessageLengthEnabled ? (
+                    <>
+                      <div className="settings-native-toggle__row">
+                        <span className="settings-native-toggle__title settings-native-toggle__title--sub">
+                          Максимум
+                        </span>
+                        <output className="settings-length-limit__value" aria-live="polite">
+                          {draft.maxMessageLength} симв.
+                        </output>
+                      </div>
+
+                      <input
+                        className="settings-length-limit__slider"
+                        type="range"
+                        min={MESSAGE_LENGTH_MIN}
+                        max={MESSAGE_LENGTH_MAX}
+                        step={1}
+                        value={draft.maxMessageLength}
+                        onChange={(event) =>
+                          setFieldValue(
+                            'maxMessageLength',
+                            Number(event.target.value) as ChatSettings['maxMessageLength'],
+                          )
+                        }
+                        aria-label="Лимит длины сообщения"
+                      />
+
+                      <div className="settings-length-limit__labels" aria-hidden>
+                        <span>{MESSAGE_LENGTH_MIN}</span>
+                        <span>{MESSAGE_LENGTH_MAX}</span>
+                      </div>
+                    </>
+                  ) : null}
+
+                  <p className="settings-native-toggle__hint">
+                    Учитывается длина обычного текста и пересланных сообщений.
+                  </p>
+
+                  {fieldErrors.maxMessageLength ? (
+                    <small className="field__hint">{fieldErrors.maxMessageLength}</small>
+                  ) : null}
                 </div>
 
-                {draft.messageLimitsBotButtonEnabled ? (
-                  <div className="settings-button-fields">
-                    <label
-                      className={cn(
-                        'field settings-url-field',
-                        messageLimitsBotButtonUrlError && 'field--error',
-                      )}
-                    >
-                      <span className="field__label">Ссылка кнопки</span>
-                      <input
-                        type="url"
-                        inputMode="url"
-                        value={draft.messageLimitsBotButtonUrl}
-                        onChange={(event) =>
-                          setFieldValue('messageLimitsBotButtonUrl', event.target.value)
-                        }
-                        placeholder="https://max.ru/channel/..."
-                      />
-                      {messageLimitsBotButtonUrlError ? (
-                        <small className="field__hint">{messageLimitsBotButtonUrlError}</small>
-                      ) : null}
-                    </label>
+                <div
+                  className={cn(
+                    'settings-native-toggle',
+                    fieldErrors.photoMessageCooldownHours && 'field--error',
+                  )}
+                >
+                  <div className="settings-native-toggle__row">
+                    <span className="settings-native-toggle__title">Фото: не чаще 1 раза</span>
 
                     <label
-                      className={cn(
-                        'field settings-text-field',
-                        messageLimitsBotButtonTextError && 'field--error',
-                      )}
+                      className="settings-native-switch"
+                      aria-label="Ограничить отправку фото по времени"
                     >
-                      <span className="field__label">Название кнопки</span>
                       <input
-                        type="text"
-                        maxLength={32}
-                        value={draft.messageLimitsBotButtonText}
+                        type="checkbox"
+                        checked={draft.photoMessageCooldownEnabled}
                         onChange={(event) =>
-                          setFieldValue('messageLimitsBotButtonText', event.target.value)
+                          setFieldValue('photoMessageCooldownEnabled', event.target.checked)
                         }
-                        placeholder="Открыть"
                       />
-                      {messageLimitsBotButtonTextError ? (
-                        <small className="field__hint">{messageLimitsBotButtonTextError}</small>
-                      ) : null}
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
                     </label>
                   </div>
-                ) : null}
 
-                {!hasMessageLimitsBotButtonError ? (
+                  {draft.photoMessageCooldownEnabled ? (
+                    <>
+                      <div className="settings-native-toggle__row">
+                        <span className="settings-native-toggle__title settings-native-toggle__title--sub">
+                          Интервал
+                        </span>
+                        <output className="settings-length-limit__value" aria-live="polite">
+                          {draft.photoMessageCooldownHours}ч
+                        </output>
+                      </div>
+                      <input
+                        className="settings-length-limit__slider"
+                        type="range"
+                        min={PHOTO_COOLDOWN_MIN_HOURS}
+                        max={PHOTO_COOLDOWN_MAX_HOURS}
+                        step={1}
+                        value={draft.photoMessageCooldownHours}
+                        onChange={(event) =>
+                          setFieldValue(
+                            'photoMessageCooldownHours',
+                            Number(event.target.value) as ChatSettings['photoMessageCooldownHours'],
+                          )
+                        }
+                        aria-label="Интервал отправки фото в часах"
+                      />
+                      <div className="settings-length-limit__labels" aria-hidden>
+                        <span>{PHOTO_COOLDOWN_MIN_HOURS}ч</span>
+                        <span>{PHOTO_COOLDOWN_MAX_HOURS}ч</span>
+                      </div>
+                    </>
+                  ) : null}
+
+                  {fieldErrors.photoMessageCooldownHours ? (
+                    <small className="field__hint">{fieldErrors.photoMessageCooldownHours}</small>
+                  ) : (
+                    <p className="settings-native-toggle__hint">
+                      При включении пользователь может отправить только одно сообщение с
+                      фотографиями за выбранный интервал.
+                    </p>
+                  )}
+                </div>
+
+                <div className="settings-native-toggle">
+                  <div className="settings-native-toggle__row">
+                    <span className="settings-native-toggle__title">Разрешить видео</span>
+
+                    <label className="settings-native-switch" aria-label="Разрешить отправку видео">
+                      <input
+                        type="checkbox"
+                        checked={draft.videoMessagesEnabled}
+                        onChange={(event) =>
+                          setFieldValue('videoMessagesEnabled', event.target.checked)
+                        }
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="settings-native-toggle">
+                  <div className="settings-native-toggle__row">
+                    <span className="settings-native-toggle__title">Разрешить файлы</span>
+
+                    <label
+                      className="settings-native-switch"
+                      aria-label="Разрешить отправку файлов"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={draft.fileMessagesEnabled}
+                        onChange={(event) =>
+                          setFieldValue('fileMessagesEnabled', event.target.checked)
+                        }
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="settings-native-toggle">
+                  <div className="settings-native-toggle__row">
+                    <span className="settings-native-toggle__title">Разрешить голосовые</span>
+
+                    <label
+                      className="settings-native-switch"
+                      aria-label="Разрешить отправку голосовых"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={draft.voiceMessagesEnabled}
+                        onChange={(event) =>
+                          setFieldValue('voiceMessagesEnabled', event.target.checked)
+                        }
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                <div
+                  className="settings-subsection-divider"
+                  role="separator"
+                  aria-label="Блок сообщений бота"
+                >
+                  <span>Сообщения бота</span>
+                </div>
+
+                <div className="settings-native-toggle">
+                  <div className="settings-native-toggle__row">
+                    <span className="settings-native-toggle__title">Сообщение от бота</span>
+
+                    <label
+                      className="settings-native-switch"
+                      aria-label="Включить сообщение от бота для ограничений сообщений"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={draft.messageLimitsBotMessageEnabled}
+                        onChange={(event) => {
+                          const enabled = event.target.checked;
+                          setFieldValue('messageLimitsBotMessageEnabled', enabled);
+                          if (!enabled) {
+                            setFieldValue('messageLimitsBotButtonEnabled', false);
+                            clearFieldError('messageLimitsBotButtonUrl');
+                            clearFieldError('messageLimitsBotButtonText');
+                          }
+                        }}
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                    </label>
+                  </div>
+
                   <p className="settings-native-toggle__hint">
-                    Добавляет кнопку в сообщение бота с переходом на чат, канал или профиль.
+                    Бот отправляет пояснение при удалении сообщения по правилам этого блока.
                   </p>
+                </div>
+
+                {draft.messageLimitsBotMessageEnabled ? (
+                  <div
+                    className={cn(
+                      'settings-native-toggle',
+                      'settings-native-toggle--nested',
+                      hasMessageLimitsBotButtonError && 'field--error',
+                    )}
+                  >
+                    <div className="settings-native-toggle__row">
+                      <span className="settings-native-toggle__title">Добавить кнопку</span>
+
+                      <label
+                        className="settings-native-switch"
+                        aria-label="Добавить кнопку в сообщение бота для ограничений сообщений"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={draft.messageLimitsBotButtonEnabled}
+                          onChange={(event) => {
+                            const enabled = event.target.checked;
+                            setFieldValue('messageLimitsBotButtonEnabled', enabled);
+                            if (!enabled) {
+                              clearFieldError('messageLimitsBotButtonUrl');
+                              clearFieldError('messageLimitsBotButtonText');
+                            }
+                          }}
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
+
+                    {draft.messageLimitsBotButtonEnabled ? (
+                      <div className="settings-button-fields">
+                        <label
+                          className={cn(
+                            'field settings-url-field',
+                            messageLimitsBotButtonUrlError && 'field--error',
+                          )}
+                        >
+                          <span className="field__label">Ссылка кнопки</span>
+                          <input
+                            type="url"
+                            inputMode="url"
+                            value={draft.messageLimitsBotButtonUrl}
+                            onChange={(event) =>
+                              setFieldValue('messageLimitsBotButtonUrl', event.target.value)
+                            }
+                            placeholder="https://max.ru/channel/..."
+                          />
+                          {messageLimitsBotButtonUrlError ? (
+                            <small className="field__hint">{messageLimitsBotButtonUrlError}</small>
+                          ) : null}
+                        </label>
+
+                        <label
+                          className={cn(
+                            'field settings-text-field',
+                            messageLimitsBotButtonTextError && 'field--error',
+                          )}
+                        >
+                          <span className="field__label">Название кнопки</span>
+                          <input
+                            type="text"
+                            maxLength={32}
+                            value={draft.messageLimitsBotButtonText}
+                            onChange={(event) =>
+                              setFieldValue('messageLimitsBotButtonText', event.target.value)
+                            }
+                            placeholder="Открыть"
+                          />
+                          {messageLimitsBotButtonTextError ? (
+                            <small className="field__hint">{messageLimitsBotButtonTextError}</small>
+                          ) : null}
+                        </label>
+                      </div>
+                    ) : null}
+
+                    {!hasMessageLimitsBotButtonError ? (
+                      <p className="settings-native-toggle__hint">
+                        Добавляет кнопку в сообщение бота с переходом на чат, канал или профиль.
+                      </p>
+                    ) : null}
+                  </div>
                 ) : null}
-              </div>
-            ) : null}
               </div>
             </div>
-
           </GlassCard>
 
           <GlassCard
@@ -1916,7 +2529,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       <input
                         type="checkbox"
                         checked={draft.nightModeEnabled}
-                        onChange={(event) => setFieldValue('nightModeEnabled', event.target.checked)}
+                        onChange={(event) =>
+                          setFieldValue('nightModeEnabled', event.target.checked)
+                        }
                       />
                       <span className="toggle-switch" aria-hidden>
                         <span className="toggle-switch__thumb" />
@@ -1930,7 +2545,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 </div>
 
                 {draft.nightModeEnabled ? (
-                  <div className={cn('settings-native-toggle', nightTimezoneError && 'field--error')}>
+                  <div
+                    className={cn('settings-native-toggle', nightTimezoneError && 'field--error')}
+                  >
                     <div className="night-window-grid">
                       <label className="field night-window-grid__field">
                         <span className="field__label">Закрывать с</span>
@@ -2068,7 +2685,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     {draft.nightModeBotButtonEnabled ? (
                       <div className="settings-button-fields">
                         <label
-                          className={cn('field settings-url-field', nightBotButtonUrlError && 'field--error')}
+                          className={cn(
+                            'field settings-url-field',
+                            nightBotButtonUrlError && 'field--error',
+                          )}
                         >
                           <span className="field__label">Ссылка кнопки</span>
                           <input

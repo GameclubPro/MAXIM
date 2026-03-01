@@ -1,6 +1,7 @@
 import {
   addDomainRequestSchema,
   addAdminRequestSchema,
+  addCommercialPhraseRequestSchema,
   dateRangeQuerySchema,
   type ChatSettings,
   chatSettingsSchema,
@@ -35,7 +36,10 @@ export class AdminService {
       const remoteChats = await this.maxClient.listBotChats();
       const resolvedChats = await Promise.all(
         remoteChats.map(async (remoteChat) => {
-          const hasAdminAccess = await this.hasUserAndBotAdminAccess(remoteChat.chatId, user.userId);
+          const hasAdminAccess = await this.hasUserAndBotAdminAccess(
+            remoteChat.chatId,
+            user.userId,
+          );
           if (!hasAdminAccess) {
             return null;
           }
@@ -188,18 +192,7 @@ export class AdminService {
       take: parsed.data.limit,
     });
 
-    return rows.map((row: {
-      id: string;
-      chatId: string;
-      userId: string;
-      eventType: 'MESSAGE' | 'MEMBER_ACTION' | 'SYSTEM';
-      ruleCode: string;
-      action: 'NONE' | 'WARN' | 'DELETE_MESSAGE' | 'KICK' | 'BAN';
-      maskedExcerpt: string | null;
-      score: number;
-      createdAt: Date;
-      operator: 'BOT' | 'ADMIN';
-    }) => ({
+    return rows.map((row) => ({
       id: row.id,
       chatId: row.chatId,
       userId: row.userId,
@@ -208,6 +201,10 @@ export class AdminService {
       action: row.action,
       maskedExcerpt: row.maskedExcerpt,
       score: row.score,
+      metadata:
+        row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
+          ? (row.metadata as Record<string, unknown>)
+          : null,
       createdAt: row.createdAt.toISOString(),
       operator: row.operator,
     }));
@@ -359,6 +356,158 @@ export class AdminService {
     return { ok: true };
   }
 
+  async getCommercialAllowlist(chatId: string, user: AuthUser): Promise<string[]> {
+    await this.assertChatAdmin(chatId, user.userId);
+
+    const rows = await this.prisma.chatCommercialAllowlist.findMany({
+      where: { chatId },
+      orderBy: { phrase: 'asc' },
+      select: { phrase: true },
+    });
+
+    return rows.map((row: { phrase: string }) => row.phrase);
+  }
+
+  async addCommercialAllowlist(chatId: string, user: AuthUser, body: unknown) {
+    await this.assertChatAdmin(chatId, user.userId);
+    const parsed = addCommercialPhraseRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const normalized = this.normalizeCommercialPhrase(parsed.data.phrase);
+
+    await this.prisma.chatCommercialAllowlist.upsert({
+      where: {
+        chatId_phrase: {
+          chatId,
+          phrase: normalized,
+        },
+      },
+      create: {
+        chatId,
+        phrase: normalized,
+      },
+      update: {},
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: 'ADD_COMMERCIAL_ALLOWLIST',
+        payload: {
+          phrase: normalized,
+        },
+      },
+    });
+
+    return { ok: true };
+  }
+
+  async removeCommercialAllowlist(chatId: string, user: AuthUser, phrase: string) {
+    await this.assertChatAdmin(chatId, user.userId);
+    const normalized = this.normalizeCommercialPhrase(phrase);
+
+    await this.prisma.chatCommercialAllowlist.delete({
+      where: {
+        chatId_phrase: {
+          chatId,
+          phrase: normalized,
+        },
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: 'REMOVE_COMMERCIAL_ALLOWLIST',
+        payload: {
+          phrase: normalized,
+        },
+      },
+    });
+
+    return { ok: true };
+  }
+
+  async getCommercialStoplist(chatId: string, user: AuthUser): Promise<string[]> {
+    await this.assertChatAdmin(chatId, user.userId);
+
+    const rows = await this.prisma.chatCommercialStoplist.findMany({
+      where: { chatId },
+      orderBy: { phrase: 'asc' },
+      select: { phrase: true },
+    });
+
+    return rows.map((row: { phrase: string }) => row.phrase);
+  }
+
+  async addCommercialStoplist(chatId: string, user: AuthUser, body: unknown) {
+    await this.assertChatAdmin(chatId, user.userId);
+    const parsed = addCommercialPhraseRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const normalized = this.normalizeCommercialPhrase(parsed.data.phrase);
+
+    await this.prisma.chatCommercialStoplist.upsert({
+      where: {
+        chatId_phrase: {
+          chatId,
+          phrase: normalized,
+        },
+      },
+      create: {
+        chatId,
+        phrase: normalized,
+      },
+      update: {},
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: 'ADD_COMMERCIAL_STOPLIST',
+        payload: {
+          phrase: normalized,
+        },
+      },
+    });
+
+    return { ok: true };
+  }
+
+  async removeCommercialStoplist(chatId: string, user: AuthUser, phrase: string) {
+    await this.assertChatAdmin(chatId, user.userId);
+    const normalized = this.normalizeCommercialPhrase(phrase);
+
+    await this.prisma.chatCommercialStoplist.delete({
+      where: {
+        chatId_phrase: {
+          chatId,
+          phrase: normalized,
+        },
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: 'REMOVE_COMMERCIAL_STOPLIST',
+        payload: {
+          phrase: normalized,
+        },
+      },
+    });
+
+    return { ok: true };
+  }
+
   async assertChatAdmin(chatId: string, userId: string) {
     const hasAdminAccess = await this.hasUserAndBotAdminAccess(chatId, userId);
     if (!hasAdminAccess) {
@@ -476,7 +625,11 @@ export class AdminService {
       return null;
     }
 
-    const persistedChat = await this.upsertUserChatAccess(user.chatId, user.userId, user.chatTitle ?? null);
+    const persistedChat = await this.upsertUserChatAccess(
+      user.chatId,
+      user.userId,
+      user.chatTitle ?? null,
+    );
 
     const chat: ChatSummary = {
       id: user.chatId,
@@ -489,5 +642,14 @@ export class AdminService {
     }
 
     return chat;
+  }
+
+  private normalizeCommercialPhrase(value: string): string {
+    const normalized = value.toLowerCase().trim().replace(/\s+/g, ' ').slice(0, 120);
+    if (normalized.length < 2) {
+      throw new BadRequestException('Фраза слишком короткая');
+    }
+
+    return normalized;
   }
 }

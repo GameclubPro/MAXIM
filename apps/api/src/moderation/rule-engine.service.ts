@@ -1,12 +1,20 @@
 import { Injectable } from '@nestjs/common';
-import { LinkPolicy, ProfanityLevel, type ChatSettings } from '@prisma/client';
+import {
+  CommercialAdsSensitivity,
+  LinkPolicy,
+  ProfanityLevel,
+  type ChatSettings,
+} from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { RedisCounterService } from './redis-counter.service';
+
+export type CommercialDecisionBand = 'LOW' | 'MEDIUM' | 'HIGH';
 
 export type RuleViolation = {
   ruleCode: string;
   score: number;
   reason: string;
+  metadata?: Record<string, unknown>;
 };
 
 export type DuplicateAction = 'WARN' | 'KICK' | 'BAN';
@@ -41,37 +49,139 @@ type DuplicateStage = {
   threshold: number;
 };
 
-const BASE_PROFANITY = ['бляд', 'хуй', 'пизд', 'еба'];
-const SOFT_PROFANITY = ['сука', 'нахер'];
-const EXCEPTIONS = ['бляха', 'страхуй'];
-const ADS_STRONG_TOKENS = [
+type CommercialDetection = {
+  confidenceScore: number;
+  decisionBand: CommercialDecisionBand;
+  matchedSignals: string[];
+  negativeSignals: string[];
+  appliedThresholds: {
+    warnThreshold: number;
+    deleteThreshold: number;
+    sensitivity: 'BALANCED' | 'STRICT';
+  };
+};
+
+type CommercialSignalState = {
+  score: number;
+  matchedSignals: string[];
+  negativeSignals: string[];
+  hasIntent: boolean;
+  hasPrice: boolean;
+  hasContact: boolean;
+  hasDealChannel: boolean;
+  hasTransactional: boolean;
+  hasStrongNegativeContext: boolean;
+};
+
+const PROFANITY_STRONG_STEMS = ['бляд', 'хуй', 'пизд', 'еба', 'ёба'];
+const PROFANITY_SOFT_STEMS = ['сука', 'нахер', 'хера'];
+const PROFANITY_EXCEPTIONS = [
+  'бляха',
+  'бляхер',
+  'бляхой',
+  'страхуй',
+  'подстрахуй',
+  'застрахуй',
+  'страхуем',
+  'страхуя',
+];
+const ADS_INTENT_MARKERS = [
   'продам',
+  'продаю',
+  'продажа',
   'куплю',
   'сдам',
+  'сдаю',
   'аренда',
-  'услуг',
-  'реклам',
-  'промокод',
-  'доставк',
-  'акци',
-  'скидк',
-  'в наличии',
+  'услуга',
+  'услуги',
+  'на заказ',
   'заказ',
+  'коммерция',
 ];
-const ADS_CONTACT_TOKENS = [
+const ADS_PROMO_MARKERS = [
+  'промокод',
+  'скидк',
+  'акци',
+  'распродаж',
+  'доставк',
+  'в наличии',
+  'опт',
+  'розниц',
+  'остатк',
+];
+const ADS_CONTACT_MARKERS = [
   'пишите в лс',
   'пишите в лич',
   'в лс',
   'в личк',
+  'в директ',
   'директ',
   'звоните',
-  'whatsapp',
+  'пишите',
   'ватсап',
+  'whatsapp',
+  'вацап',
   'telegram',
   'телеграм',
+  'телега',
+  'в тг',
   ' тг',
 ];
-const ADS_PRICE_PATTERN = /\d{2,}\s?(₽|руб(\.|лей)?|р\.)/iu;
+const ADS_NEGATIVE_MARKERS = [
+  'не продаю',
+  'не продается',
+  'не реклама',
+  'без рекламы',
+  'без коммерции',
+  'кто подскажет',
+  'ищу совет',
+  'посоветуйте',
+];
+const ADS_QUESTION_CONTEXT_MARKERS = ['кто подскажет', 'посоветуйте', 'как лучше', 'что выбрать'];
+const ADS_LINK_PATTERN = /(https?:\/\/|t\.me\/|max\.ru\/|vk\.com\/|wa\.me\/|taplink|avito|youla)/iu;
+const ADS_PRICE_PATTERN = /\b\d{2,}\s?(₽|руб(\.|лей)?|р\.|р|₸|\$|€)\b/iu;
+const ADS_TRANSACTIONAL_PATTERN = /\b(цена|стоимость|оплата|предоплата|доставка|в наличии)\b/iu;
+const ADS_URGENCY_PATTERN = /\b(срочно|только сегодня|до конца дня|осталось\s+\d+)\b/iu;
+const ADS_QUANTITY_PATTERN = /\b(шт|штук|шт\.|пачк|упак|остатк|места)\b/iu;
+const MIXED_CHAR_MAP: Record<string, string> = {
+  a: 'а',
+  b: 'б',
+  c: 'с',
+  d: 'д',
+  e: 'е',
+  f: 'ф',
+  g: 'г',
+  h: 'х',
+  i: 'и',
+  j: 'й',
+  k: 'к',
+  l: 'л',
+  m: 'м',
+  n: 'н',
+  o: 'о',
+  p: 'п',
+  q: 'к',
+  r: 'р',
+  s: 'с',
+  t: 'т',
+  u: 'у',
+  v: 'в',
+  w: 'в',
+  x: 'х',
+  y: 'у',
+  z: 'з',
+  '0': 'о',
+  '1': 'и',
+  '3': 'з',
+  '4': 'а',
+  '6': 'б',
+  '7': 'т',
+  '8': 'в',
+  '9': 'д',
+  '@': 'а',
+  $: 'с',
+};
 
 @Injectable()
 export class RuleEngineService {
@@ -83,6 +193,8 @@ export class RuleEngineService {
     text: string;
     settings: ChatSettings;
     domainAllowlist: string[];
+    commercialAllowlist?: string[];
+    commercialStoplist?: string[];
     effectiveLength?: number;
     hasPhotoAttachment?: boolean;
     hasVideoAttachment?: boolean;
@@ -95,6 +207,8 @@ export class RuleEngineService {
       text,
       settings,
       domainAllowlist,
+      commercialAllowlist,
+      commercialStoplist,
       effectiveLength,
       hasPhotoAttachment,
       hasVideoAttachment,
@@ -102,7 +216,8 @@ export class RuleEngineService {
       hasVoiceAttachment,
     } = params;
     const violations: RuleViolation[] = [];
-    const normalized = text.toLowerCase();
+    const normalized = this.normalizeForDetection(text);
+    const lowered = text.toLowerCase();
     const measuredLength = typeof effectiveLength === 'number' ? effectiveLength : text.length;
 
     if (
@@ -112,15 +227,31 @@ export class RuleEngineService {
       violations.push({ ruleCode: 'PROFANITY', score: 0.95, reason: 'Detected profanity pattern' });
     }
 
-    if (settings.commercialAdsFilterEnabled && this.hasCommercialAd(normalized)) {
-      violations.push({
-        ruleCode: 'COMMERCIAL_AD',
-        score: 0.9,
-        reason: 'Detected Russian commercial ad pattern',
+    if (settings.commercialAdsFilterEnabled) {
+      const commercial = this.detectCommercialAd({
+        normalizedText: normalized,
+        rawLoweredText: lowered,
+        settings,
+        allowlist: commercialAllowlist ?? [],
+        stoplist: commercialStoplist ?? [],
       });
+      if (commercial) {
+        violations.push({
+          ruleCode: 'COMMERCIAL_AD',
+          score: commercial.confidenceScore / 100,
+          reason: 'Detected Russian commercial ad pattern',
+          metadata: {
+            confidenceScore: commercial.confidenceScore,
+            decisionBand: commercial.decisionBand,
+            matchedSignals: commercial.matchedSignals,
+            negativeSignals: commercial.negativeSignals,
+            appliedThresholds: commercial.appliedThresholds,
+          },
+        });
+      }
     }
 
-    const linkViolation = this.hasBlockedLink(normalized, settings.linkPolicy, domainAllowlist);
+    const linkViolation = this.hasBlockedLink(lowered, settings.linkPolicy, domainAllowlist);
     if (linkViolation) {
       violations.push({ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: linkViolation });
     }
@@ -213,7 +344,10 @@ export class RuleEngineService {
     const { chatId, userId, compactText, settings } = params;
     const hash = createHash('sha256').update(compactText).digest('hex').slice(0, 20);
     const hitKey = `dup:v3:${chatId}:${userId}:${hash}:hit`;
-    const hitTotal = await this.redisCounter.incrementWithTtl(hitKey, settings.duplicateWindowSec + 1);
+    const hitTotal = await this.redisCounter.incrementWithTtl(
+      hitKey,
+      settings.duplicateWindowSec + 1,
+    );
     const hitCount = Math.max(0, hitTotal - 1);
     const hit =
       hitCount > 0
@@ -322,21 +456,35 @@ export class RuleEngineService {
     return null;
   }
 
-  private hasProfanity(text: string, level: ProfanityLevel): boolean {
-    if (EXCEPTIONS.some((allowed) => text.includes(allowed))) {
+  private hasProfanity(normalizedText: string, level: ProfanityLevel): boolean {
+    const tokens = this.extractTokens(normalizedText);
+    if (tokens.length === 0) {
       return false;
     }
 
-    const severeHit = BASE_PROFANITY.some((word) => text.includes(word));
+    const severeHit = tokens.some((token) => this.isProfanityToken(token, PROFANITY_STRONG_STEMS));
     if (level === ProfanityLevel.LOW) {
       return severeHit;
     }
 
+    const softHit = tokens.some((token) => this.isProfanityToken(token, PROFANITY_SOFT_STEMS));
     if (level === ProfanityLevel.MEDIUM) {
-      return severeHit || SOFT_PROFANITY.some((word) => text.includes(word));
+      return severeHit || softHit;
     }
 
-    return severeHit || SOFT_PROFANITY.some((word) => text.includes(word));
+    return severeHit || softHit;
+  }
+
+  private isProfanityToken(token: string, stems: string[]): boolean {
+    if (!token) {
+      return false;
+    }
+
+    if (PROFANITY_EXCEPTIONS.some((exception) => token.startsWith(exception))) {
+      return false;
+    }
+
+    return stems.some((stem) => token.includes(stem));
   }
 
   private hasBlockedLink(text: string, policy: LinkPolicy, allowlist: string[]): string | null {
@@ -370,29 +518,247 @@ export class RuleEngineService {
     return null;
   }
 
-  private hasCommercialAd(text: string): boolean {
-    if (!text || text.trim().length < 8) {
+  private detectCommercialAd(params: {
+    normalizedText: string;
+    rawLoweredText: string;
+    settings: ChatSettings;
+    allowlist: string[];
+    stoplist: string[];
+  }): CommercialDetection | null {
+    const { normalizedText, rawLoweredText, settings, allowlist, stoplist } = params;
+
+    if (!normalizedText || normalizedText.length < 6) {
+      return null;
+    }
+
+    if (allowlist.some((phrase) => this.matchesPhrase(normalizedText, phrase))) {
+      return null;
+    }
+
+    const appliedThresholds = this.resolveCommercialThresholds(settings);
+    const state = this.collectCommercialSignals(normalizedText, rawLoweredText, stoplist, settings);
+    if (state.matchedSignals.length === 0) {
+      return null;
+    }
+
+    let confidenceScore = Math.round(Math.max(0, Math.min(100, state.score)));
+    if (state.hasStrongNegativeContext && !state.hasPrice && !state.hasContact) {
+      confidenceScore = Math.min(confidenceScore, appliedThresholds.warnThreshold - 1);
+    }
+
+    if (confidenceScore >= appliedThresholds.deleteThreshold) {
+      const hasStrongCommercialCombo =
+        state.hasIntent && (state.hasTransactional || state.hasContact || state.hasDealChannel);
+      if (!hasStrongCommercialCombo) {
+        confidenceScore = Math.max(
+          appliedThresholds.warnThreshold,
+          appliedThresholds.deleteThreshold - 1,
+        );
+      }
+    }
+
+    const decisionBand: CommercialDecisionBand =
+      confidenceScore >= appliedThresholds.deleteThreshold
+        ? 'HIGH'
+        : confidenceScore >= appliedThresholds.warnThreshold
+          ? 'MEDIUM'
+          : 'LOW';
+
+    return {
+      confidenceScore,
+      decisionBand,
+      matchedSignals: state.matchedSignals,
+      negativeSignals: state.negativeSignals,
+      appliedThresholds,
+    };
+  }
+
+  private resolveCommercialThresholds(settings: ChatSettings): {
+    warnThreshold: number;
+    deleteThreshold: number;
+    sensitivity: 'BALANCED' | 'STRICT';
+  } {
+    const strict = settings.commercialAdsSensitivity === CommercialAdsSensitivity.STRICT;
+    const warnBase = Number.isFinite(settings.commercialAdsWarnThreshold)
+      ? settings.commercialAdsWarnThreshold
+      : 45;
+    const deleteBase = Number.isFinite(settings.commercialAdsDeleteThreshold)
+      ? settings.commercialAdsDeleteThreshold
+      : 65;
+    const warnThreshold = strict ? Math.max(10, warnBase - 3) : warnBase;
+    const deleteThreshold = strict
+      ? Math.max(warnThreshold + 5, deleteBase - 4)
+      : Math.max(warnThreshold + 5, deleteBase);
+
+    return {
+      warnThreshold,
+      deleteThreshold,
+      sensitivity: strict ? 'STRICT' : 'BALANCED',
+    };
+  }
+
+  private collectCommercialSignals(
+    normalizedText: string,
+    rawLoweredText: string,
+    stoplist: string[],
+    settings: ChatSettings,
+  ): CommercialSignalState {
+    const strict = settings.commercialAdsSensitivity === CommercialAdsSensitivity.STRICT;
+    const positiveFactor = strict ? 1.15 : 1;
+    const negativeFactor = strict ? 0.85 : 1;
+
+    let score = 0;
+    const matchedSignals: string[] = [];
+    const negativeSignals: string[] = [];
+
+    const addPositive = (label: string, value: number) => {
+      score += value * positiveFactor;
+      matchedSignals.push(label);
+    };
+    const addNegative = (label: string, value: number, strong = false) => {
+      score -= value * negativeFactor;
+      negativeSignals.push(label);
+      if (strong) {
+        hasStrongNegativeContext = true;
+      }
+    };
+
+    let hasIntent = false;
+    let hasPrice = false;
+    let hasContact = false;
+    let hasDealChannel = false;
+    let hasTransactional = false;
+    let hasStrongNegativeContext = false;
+
+    const hasMarker = (marker: string): boolean =>
+      normalizedText.includes(marker) || rawLoweredText.includes(marker);
+
+    const intentHits = ADS_INTENT_MARKERS.filter((marker) => hasMarker(marker));
+    for (const marker of intentHits.slice(0, 3)) {
+      addPositive(`intent:${marker}`, 16);
+      hasIntent = true;
+    }
+
+    const promoHits = ADS_PROMO_MARKERS.filter((marker) => hasMarker(marker));
+    for (const marker of promoHits.slice(0, 3)) {
+      addPositive(`promo:${marker}`, 8);
+    }
+
+    if (ADS_PRICE_PATTERN.test(rawLoweredText) || ADS_PRICE_PATTERN.test(normalizedText)) {
+      addPositive('transaction:price', 24);
+      hasPrice = true;
+      hasTransactional = true;
+    }
+
+    if (ADS_TRANSACTIONAL_PATTERN.test(normalizedText)) {
+      addPositive('transaction:keywords', 10);
+      hasTransactional = true;
+    }
+
+    const contactHits = ADS_CONTACT_MARKERS.filter((marker) => hasMarker(marker));
+    for (const marker of contactHits.slice(0, 2)) {
+      addPositive(`contact:${marker}`, 15);
+      hasContact = true;
+    }
+
+    if (ADS_LINK_PATTERN.test(rawLoweredText)) {
+      addPositive('deal-channel:link', 14);
+      hasDealChannel = true;
+    }
+
+    if (ADS_URGENCY_PATTERN.test(normalizedText)) {
+      addPositive('booster:urgency', 9);
+    }
+
+    if (ADS_QUANTITY_PATTERN.test(normalizedText)) {
+      addPositive('booster:quantity', 8);
+    }
+
+    for (const phrase of stoplist.slice(0, 10)) {
+      const normalizedPhrase = this.normalizeForDetection(phrase);
+      if (!normalizedPhrase || !normalizedText.includes(normalizedPhrase)) {
+        continue;
+      }
+
+      addPositive(`stoplist:${normalizedPhrase}`, 18);
+      hasIntent = true;
+    }
+
+    for (const marker of ADS_NEGATIVE_MARKERS) {
+      if (!hasMarker(marker)) {
+        continue;
+      }
+
+      addNegative(`negative:${marker}`, 24, true);
+    }
+
+    for (const marker of ADS_QUESTION_CONTEXT_MARKERS) {
+      if (!hasMarker(marker)) {
+        continue;
+      }
+
+      addNegative(`context:${marker}`, 18, true);
+    }
+
+    if (rawLoweredText.includes('?') && !hasPrice && !hasContact) {
+      addNegative('context:question', 10);
+    }
+
+    if (hasIntent && (hasPrice || hasContact || hasDealChannel)) {
+      addPositive('combo:intent+deal', 12);
+    }
+
+    if (hasContact && hasPrice) {
+      addPositive('combo:contact+price', 8);
+    }
+
+    return {
+      score,
+      matchedSignals: [...new Set(matchedSignals)],
+      negativeSignals: [...new Set(negativeSignals)],
+      hasIntent,
+      hasPrice,
+      hasContact,
+      hasDealChannel,
+      hasTransactional,
+      hasStrongNegativeContext,
+    };
+  }
+
+  private matchesPhrase(normalizedText: string, phrase: string): boolean {
+    const normalizedPhrase = this.normalizeForDetection(phrase);
+    if (!normalizedPhrase || normalizedPhrase.length < 2) {
       return false;
     }
 
-    const normalized = text.toLowerCase();
-    const strongHits = ADS_STRONG_TOKENS.reduce(
-      (count, token) => count + (normalized.includes(token) ? 1 : 0),
-      0,
-    );
-    const hasContact = ADS_CONTACT_TOKENS.some((token) => normalized.includes(token));
-    const hasPrice = ADS_PRICE_PATTERN.test(normalized);
-    const hasLink = /(https?:\/\/|t\.me\/|max\.ru\/|vk\.com\/|wa\.me\/)/iu.test(normalized);
+    return normalizedText.includes(normalizedPhrase);
+  }
 
-    if (strongHits >= 2) {
-      return true;
+  private normalizeForDetection(value: string): string {
+    if (!value) {
+      return '';
     }
 
-    if (strongHits >= 1 && (hasContact || hasPrice || hasLink)) {
-      return true;
-    }
+    let normalized = value.toLowerCase();
+    normalized = this.normalizeMixedWriting(normalized);
+    normalized = normalized.replace(/([a-zа-яё0-9])\1{2,}/giu, '$1$1');
+    normalized = normalized.replace(/[_*~`"'«»“”(){}\[\]|]+/g, ' ');
+    normalized = normalized.replace(/[^\p{L}\p{N}\s:/?.,&%+-]/gu, ' ');
+    normalized = normalized.replace(/\s+/g, ' ').trim();
+    return normalized;
+  }
 
-    return false;
+  private normalizeMixedWriting(value: string): string {
+    let result = '';
+    for (const char of value) {
+      result += MIXED_CHAR_MAP[char] ?? char;
+    }
+    return result;
+  }
+
+  private extractTokens(value: string): string[] {
+    const normalized = this.normalizeForDetection(value);
+    return normalized.match(/[a-zа-яё0-9]+/giu) ?? [];
   }
 
   private isCapsAbuse(text: string, threshold: number): boolean {

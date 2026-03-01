@@ -35,6 +35,12 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     messageLimitsBotButtonText: 'Открыть',
     russianProfanityFilterEnabled: true,
     commercialAdsFilterEnabled: false,
+    commercialAdsSensitivity: 'BALANCED',
+    commercialAdsWarnThreshold: 45,
+    commercialAdsDeleteThreshold: 65,
+    commercialAdsRepeatWindowSec: 24 * 60 * 60,
+    commercialAdsLowConfidenceLogEnabled: true,
+    commercialAdsWarnFirstEnabled: true,
     textFiltersBotMessageEnabled: false,
     textFiltersBotButtonEnabled: false,
     textFiltersBotButtonUrl: '',
@@ -1120,7 +1126,24 @@ describe('ModerationService', () => {
     };
     const ruleEngine = {
       detect: jest.fn().mockResolvedValue({
-        violations: [{ ruleCode: 'COMMERCIAL_AD', score: 0.9, reason: 'Detected ad' }],
+        violations: [
+          {
+            ruleCode: 'COMMERCIAL_AD',
+            score: 0.9,
+            reason: 'Detected ad',
+            metadata: {
+              confidenceScore: 88,
+              decisionBand: 'HIGH',
+              matchedSignals: ['intent:продам', 'contact:пишите в лс'],
+              negativeSignals: [],
+              appliedThresholds: {
+                warnThreshold: 45,
+                deleteThreshold: 65,
+                sensitivity: 'BALANCED',
+              },
+            },
+          },
+        ],
       }),
     };
     const sanctionService = {
@@ -1143,10 +1166,10 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Сообщение пользователя "Алексей" удалено: коммерческие объявления в этом чате запрещены.',
+      'Пользователь "Алексей" получил предупреждение: повторные коммерческие объявления будут удаляться ботом.',
       {
         button: {
           text: 'Правила',
@@ -1155,10 +1178,154 @@ describe('ModerationService', () => {
       },
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
-    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
-        ruleCode: 'COMMERCIAL_AD',
+        ruleCode: 'COMMERCIAL_AD_WARN',
+        action: SanctionAction.WARN,
+      }),
+    });
+  });
+
+  it('logs only COMMERCIAL_AD_LOW without deletion', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            commercialAdsFilterEnabled: true,
+            commercialAdsLowConfidenceLogEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [
+          {
+            ruleCode: 'COMMERCIAL_AD',
+            score: 0.34,
+            reason: 'Low confidence ad',
+            metadata: {
+              confidenceScore: 34,
+              decisionBand: 'LOW',
+              matchedSignals: ['promo:скидк'],
+              negativeSignals: ['context:question'],
+              appliedThresholds: {
+                warnThreshold: 45,
+                deleteThreshold: 65,
+                sensitivity: 'BALANCED',
+              },
+            },
+          },
+        ],
+      }),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      {
+        deleteMessage: jest.fn(),
+        sendMessage: jest.fn(),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+      } as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        ruleCode: 'COMMERCIAL_AD_LOW',
         action: SanctionAction.NONE,
+      }),
+    });
+  });
+
+  it('deletes message on repeated COMMERCIAL_AD high confidence hit', async () => {
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            commercialAdsFilterEnabled: true,
+            textFiltersBotMessageEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(1),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [
+          {
+            ruleCode: 'COMMERCIAL_AD',
+            score: 0.92,
+            reason: 'High confidence ad',
+            metadata: {
+              confidenceScore: 92,
+              decisionBand: 'HIGH',
+              matchedSignals: ['intent:продам', 'contact:пишите в лс', 'transaction:price'],
+              negativeSignals: [],
+              appliedThresholds: {
+                warnThreshold: 45,
+                deleteThreshold: 65,
+                sensitivity: 'BALANCED',
+              },
+            },
+          },
+        ],
+      }),
+    };
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        ruleCode: 'COMMERCIAL_AD_DELETE',
+        action: SanctionAction.DELETE_MESSAGE,
       }),
     });
   });
@@ -1666,22 +1833,26 @@ describe('ModerationService', () => {
       },
     };
     const ruleEngine = {
-      detect: jest.fn().mockImplementation(async (params: { effectiveLength?: number; settings: { maxMessageLength: number } }) => {
-        const length = params.effectiveLength ?? 0;
-        if (length > params.settings.maxMessageLength) {
-          return {
-            violations: [
-              {
-                ruleCode: 'MESSAGE_TOO_LONG',
-                score: 0.82,
-                reason: 'Message too long',
-              },
-            ],
-          };
-        }
+      detect: jest
+        .fn()
+        .mockImplementation(
+          async (params: { effectiveLength?: number; settings: { maxMessageLength: number } }) => {
+            const length = params.effectiveLength ?? 0;
+            if (length > params.settings.maxMessageLength) {
+              return {
+                violations: [
+                  {
+                    ruleCode: 'MESSAGE_TOO_LONG',
+                    score: 0.82,
+                    reason: 'Message too long',
+                  },
+                ],
+              };
+            }
 
-        return { violations: [] };
-      }),
+            return { violations: [] };
+          },
+        ),
     };
     const sanctionService = {
       resolveAction: jest.fn().mockResolvedValue(SanctionAction.WARN),
@@ -1754,25 +1925,26 @@ describe('ModerationService', () => {
       },
     };
     const ruleEngine = {
-      detect: jest.fn().mockImplementation(async (params: {
-        effectiveLength?: number;
-        settings: { maxMessageLength: number };
-      }) => {
-        const length = params.effectiveLength ?? 0;
-        if (length > params.settings.maxMessageLength) {
-          return {
-            violations: [
-              {
-                ruleCode: 'MESSAGE_TOO_LONG',
-                score: 0.82,
-                reason: 'Message too long',
-              },
-            ],
-          };
-        }
+      detect: jest
+        .fn()
+        .mockImplementation(
+          async (params: { effectiveLength?: number; settings: { maxMessageLength: number } }) => {
+            const length = params.effectiveLength ?? 0;
+            if (length > params.settings.maxMessageLength) {
+              return {
+                violations: [
+                  {
+                    ruleCode: 'MESSAGE_TOO_LONG',
+                    score: 0.82,
+                    reason: 'Message too long',
+                  },
+                ],
+              };
+            }
 
-        return { violations: [] };
-      }),
+            return { violations: [] };
+          },
+        ),
     };
     const sanctionService = {
       resolveAction: jest.fn(),

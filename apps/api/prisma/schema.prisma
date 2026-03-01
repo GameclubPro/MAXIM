@@ -19,6 +19,11 @@ enum LinkPolicy {
   ALERT_ONLY
 }
 
+enum CommercialAdsSensitivity {
+  BALANCED
+  STRICT
+}
+
 enum EventType {
   MESSAGE
   MEMBER_ACTION
@@ -51,12 +56,14 @@ model Chat {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  settings   ChatSettings?
-  admins     ChatAdminAllowlist[]
-  domains    DomainAllowlist[]
-  violations Violation[]
-  events     ModerationEvent[]
-  auditLogs  AuditLog[]
+  settings            ChatSettings?
+  admins              ChatAdminAllowlist[]
+  domains             DomainAllowlist[]
+  commercialAllowlist ChatCommercialAllowlist[]
+  commercialStoplist  ChatCommercialStoplist[]
+  violations          Violation[]
+  events              ModerationEvent[]
+  auditLogs           AuditLog[]
 
   @@map("chats")
 }
@@ -93,6 +100,12 @@ model ChatSettings {
   messageLimitsBotButtonText String     @default("Открыть") @map("message_limits_bot_button_text")
   russianProfanityFilterEnabled Boolean @default(true) @map("russian_profanity_filter_enabled")
   commercialAdsFilterEnabled Boolean    @default(false) @map("commercial_ads_filter_enabled")
+  commercialAdsSensitivity CommercialAdsSensitivity @default(BALANCED) @map("commercial_ads_sensitivity")
+  commercialAdsWarnThreshold Int        @default(45) @map("commercial_ads_warn_threshold")
+  commercialAdsDeleteThreshold Int      @default(65) @map("commercial_ads_delete_threshold")
+  commercialAdsRepeatWindowSec Int      @default(86400) @map("commercial_ads_repeat_window_sec")
+  commercialAdsLowConfidenceLogEnabled Boolean @default(true) @map("commercial_ads_low_confidence_log_enabled")
+  commercialAdsWarnFirstEnabled Boolean @default(true) @map("commercial_ads_warn_first_enabled")
   textFiltersBotMessageEnabled Boolean  @default(false) @map("text_filters_bot_message_enabled")
   textFiltersBotButtonEnabled Boolean   @default(false) @map("text_filters_bot_button_enabled")
   textFiltersBotButtonUrl String        @default("") @map("text_filters_bot_button_url")
@@ -148,6 +161,30 @@ model DomainAllowlist {
 
   @@id([chatId, domain])
   @@map("domain_allowlist")
+}
+
+model ChatCommercialAllowlist {
+  chatId    String   @map("chat_id")
+  phrase    String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@id([chatId, phrase])
+  @@index([chatId])
+  @@map("chat_commercial_allowlist")
+}
+
+model ChatCommercialStoplist {
+  chatId    String   @map("chat_id")
+  phrase    String
+  createdAt DateTime @default(now()) @map("created_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@id([chatId, phrase])
+  @@index([chatId])
+  @@map("chat_commercial_stoplist")
 }
 
 model BadwordDictionary {
