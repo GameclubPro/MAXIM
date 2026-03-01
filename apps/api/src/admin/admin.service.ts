@@ -9,7 +9,9 @@ import {
   type GlobalUserBlacklistEntry,
   type Me,
   type ModerationEvent,
+  type SendBroadcastResult,
   type ChatSummary,
+  sendBroadcastRequestSchema,
   scheduleDomainRemovalRequestSchema,
 } from '@maxim/contracts';
 import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
@@ -277,6 +279,77 @@ export class AdminService {
       sourceChatId,
       updatedChats: appliedChatIds.length,
       appliedChatIds,
+    };
+  }
+
+  async sendBroadcast(
+    sourceChatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<SendBroadcastResult> {
+    await this.assertChatAdmin(sourceChatId, user.userId);
+    const parsed = sendBroadcastRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const availableChats = parsed.data.applyToAllChats ? await this.listChats(user) : [];
+    const targetChatIds = parsed.data.applyToAllChats
+      ? Array.from(new Set([sourceChatId, ...availableChats.map((chat) => chat.id)]))
+      : [sourceChatId];
+    const messageText = parsed.data.text.trim();
+    const messageOptions = parsed.data.buttonEnabled
+      ? {
+          button: {
+            text: parsed.data.buttonText.trim(),
+            url: parsed.data.buttonUrl.trim(),
+          },
+        }
+      : undefined;
+
+    const sentChatIds: string[] = [];
+    const failedChatIds: string[] = [];
+    for (const chatId of targetChatIds) {
+      try {
+        await this.maxClient.sendMessage(chatId, messageText, messageOptions);
+        sentChatIds.push(chatId);
+      } catch (error: unknown) {
+        failedChatIds.push(chatId);
+        this.logger.warn(
+          {
+            sourceChatId,
+            targetChatId: chatId,
+            actorUserId: user.userId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Broadcast message failed for target chat',
+        );
+      }
+    }
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId: sourceChatId,
+        actorUserId: user.userId,
+        action: 'SEND_BROADCAST',
+        payload: {
+          applyToAllChats: parsed.data.applyToAllChats,
+          targetChats: targetChatIds.length,
+          sentChats: sentChatIds.length,
+          failedChats: failedChatIds.length,
+          sentChatIds,
+          failedChatIds,
+        },
+      },
+    });
+
+    return {
+      sourceChatId,
+      targetChats: targetChatIds.length,
+      sentChats: sentChatIds.length,
+      failedChats: failedChatIds.length,
+      sentChatIds,
+      failedChatIds,
     };
   }
 

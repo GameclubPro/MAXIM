@@ -410,6 +410,43 @@ export const addGlobalUserBlacklistRequestSchema = z.object({
   userId: z.string().trim().min(1),
 });
 
+export const sendBroadcastRequestSchema = z
+  .object({
+    text: z.string().trim().min(1).max(1_000),
+    applyToAllChats: z.boolean().default(false),
+    buttonEnabled: z.boolean().default(false),
+    buttonUrl: botButtonUrlSchema,
+    buttonText: botButtonTextSchema,
+  })
+  .superRefine((value, ctx) => {
+    if (value.buttonEnabled && !isValidBotButtonUrl(value.buttonUrl)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['buttonUrl'],
+        message: 'Укажите корректную ссылку для кнопки (http/https).',
+      });
+    }
+
+    if (value.buttonEnabled && !isValidBotButtonText(value.buttonText)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['buttonText'],
+        message: 'Введите название кнопки.',
+      });
+    }
+  });
+export type SendBroadcastRequest = z.infer<typeof sendBroadcastRequestSchema>;
+
+export const sendBroadcastResultSchema = z.object({
+  sourceChatId: z.string(),
+  targetChats: z.number().int().min(1),
+  sentChats: z.number().int().min(0),
+  failedChats: z.number().int().min(0),
+  sentChatIds: z.array(z.string()),
+  failedChatIds: z.array(z.string()),
+});
+export type SendBroadcastResult = z.infer<typeof sendBroadcastResultSchema>;
+
 export const maxMessagePayloadSchema = z.object({
   messageId: z.string(),
   chatId: z.string(),

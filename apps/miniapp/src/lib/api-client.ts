@@ -3,6 +3,8 @@ import {
   chatSettingsSchema,
   domainAllowlistEntrySchema,
   scheduleDomainRemovalRequestSchema,
+  sendBroadcastRequestSchema,
+  sendBroadcastResultSchema,
   moderationEventSchema,
   chatSummarySchema,
   globalUserBlacklistEntrySchema,
@@ -13,6 +15,7 @@ import {
   type GlobalUserBlacklistEntry,
   type Me,
   type ModerationEvent,
+  type SendBroadcastResult,
 } from '@maxim/contracts';
 
 const API_BASE = '/api/v1';
@@ -21,6 +24,14 @@ export type ApplySettingsToAllChatsResult = {
   sourceChatId: string;
   updatedChats: number;
   appliedChatIds: string[];
+};
+
+export type SendBroadcastPayload = {
+  text: string;
+  applyToAllChats: boolean;
+  buttonEnabled: boolean;
+  buttonUrl: string;
+  buttonText: string;
 };
 
 export class ApiClient {
@@ -72,6 +83,15 @@ export class ApiClient {
     }
 
     return response as ApplySettingsToAllChatsResult;
+  }
+
+  async sendBroadcast(chatId: string, payload: SendBroadcastPayload): Promise<SendBroadcastResult> {
+    const requestBody = sendBroadcastRequestSchema.parse(payload);
+    const response = await this.request(`/chats/${chatId}/broadcast`, {
+      method: 'POST',
+      body: JSON.stringify(requestBody),
+    });
+    return sendBroadcastResultSchema.parse(response);
   }
 
   async getDomainAllowlist(chatId: string): Promise<string[]> {

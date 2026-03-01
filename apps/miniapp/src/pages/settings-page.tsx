@@ -12,7 +12,7 @@ import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import { cn } from '../lib/cn';
-import type { ApiClient } from '../lib/api-client';
+import type { ApiClient, SendBroadcastPayload } from '../lib/api-client';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { saveLastChatId } from '../lib/last-chat';
 
@@ -34,6 +34,7 @@ const COMMERCIAL_BALANCED_MAX = 69;
 const BOT_MESSAGES_DELETE_DELAY_MIN = 1;
 const BOT_MESSAGES_DELETE_DELAY_MAX = 60;
 const DOMAIN_REMOVAL_MIN_FUTURE_MS = 30_000;
+const MAX_BROADCAST_TEXT_LENGTH = 1_000;
 
 type DuplicateEnabledKey = 'duplicateWarnEnabled' | 'duplicateKickEnabled' | 'duplicateBanEnabled';
 type DuplicateWindowKey =
@@ -87,6 +88,7 @@ type SettingsSectionKey =
   | 'duplicates'
   | 'limits'
   | 'night'
+  | 'mailing'
   | 'extra';
 
 const DUPLICATE_STAGE_OPTIONS: Array<{
@@ -287,6 +289,20 @@ function normalizeDomain(value: string): string {
       .replace(/:\d+$/, '')
       .replace(/^www\./, '')
       .replace(/\.$/, '');
+  }
+}
+
+function isValidHttpUrl(value: string): boolean {
+  const normalized = value.trim();
+  if (!normalized) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(normalized);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
   }
 }
 
@@ -619,6 +635,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [scheduleDate, setScheduleDate] = useState('');
   const [scheduleTime, setScheduleTime] = useState('');
   const [scheduleError, setScheduleError] = useState('');
+  const [mailingText, setMailingText] = useState('');
+  const [mailingApplyToAllChats, setMailingApplyToAllChats] = useState(false);
+  const [mailingButtonEnabled, setMailingButtonEnabled] = useState(false);
+  const [mailingButtonUrl, setMailingButtonUrl] = useState('');
+  const [mailingButtonText, setMailingButtonText] = useState('Открыть');
+  const [mailingTextError, setMailingTextError] = useState('');
+  const [mailingButtonUrlError, setMailingButtonUrlError] = useState('');
+  const [mailingButtonTextError, setMailingButtonTextError] = useState('');
   const [blacklistInput, setBlacklistInput] = useState('');
   const [blacklistInputError, setBlacklistInputError] = useState('');
   const [failedSnapshot, setFailedSnapshot] = useState<string>('');
@@ -634,6 +658,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     duplicates: false,
     limits: false,
     night: false,
+    mailing: false,
     extra: false,
   });
 
@@ -647,6 +672,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
   useEffect(() => {
     setShowApplyAllConfirm(false);
+    setMailingApplyToAllChats(false);
+    setMailingText('');
+    setMailingButtonEnabled(false);
+    setMailingButtonUrl('');
+    setMailingButtonText('Открыть');
+    setMailingTextError('');
+    setMailingButtonUrlError('');
+    setMailingButtonTextError('');
   }, [chatId]);
 
   const settingsQuery = useQuery({
@@ -876,6 +909,30 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось удалить пользователя',
+        description: formatApiError(error),
+      });
+    },
+  });
+
+  const sendBroadcastMutation = useMutation({
+    mutationFn: (payload: SendBroadcastPayload) => api.sendBroadcast(chatId ?? '', payload),
+    onSuccess: (result, payload) => {
+      const description =
+        result.failedChats > 0
+          ? `Доставлено в ${result.sentChats} чат(ов), ошибок: ${result.failedChats}.`
+          : payload.applyToAllChats
+            ? `Отправлено в ${result.sentChats} чат(ов).`
+            : 'Сообщение отправлено в текущий чат.';
+      pushToast({
+        tone: result.failedChats > 0 ? 'info' : 'success',
+        title: 'Рассылка выполнена',
+        description,
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось отправить рассылку',
         description: formatApiError(error),
       });
     },
@@ -1117,6 +1174,58 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
     setBlacklistInputError('');
     addGlobalBlacklistUserMutation.mutate(normalized);
+  }
+
+  function handleSendBroadcast() {
+    if (!chatId) {
+      return;
+    }
+
+    const normalizedText = mailingText.trim();
+    const normalizedButtonUrl = mailingButtonUrl.trim();
+    const normalizedButtonText = mailingButtonText.trim();
+
+    let hasError = false;
+    if (!normalizedText) {
+      setMailingTextError('Введите текст рассылки.');
+      hasError = true;
+    } else if (normalizedText.length > MAX_BROADCAST_TEXT_LENGTH) {
+      setMailingTextError(`Максимум ${MAX_BROADCAST_TEXT_LENGTH} символов.`);
+      hasError = true;
+    } else {
+      setMailingTextError('');
+    }
+
+    if (mailingButtonEnabled) {
+      if (!isValidHttpUrl(normalizedButtonUrl)) {
+        setMailingButtonUrlError('Укажите корректную ссылку (http/https).');
+        hasError = true;
+      } else {
+        setMailingButtonUrlError('');
+      }
+
+      if (!normalizedButtonText || normalizedButtonText.length > 32) {
+        setMailingButtonTextError('Введите название кнопки до 32 символов.');
+        hasError = true;
+      } else {
+        setMailingButtonTextError('');
+      }
+    } else {
+      setMailingButtonUrlError('');
+      setMailingButtonTextError('');
+    }
+
+    if (hasError) {
+      return;
+    }
+
+    sendBroadcastMutation.mutate({
+      text: normalizedText,
+      applyToAllChats: mailingApplyToAllChats && canApplyToAllChats,
+      buttonEnabled: mailingButtonEnabled,
+      buttonUrl: normalizedButtonUrl,
+      buttonText: normalizedButtonText || 'Открыть',
+    });
   }
 
   function handleCommercialSensitivitySliderChange(rawValue: number) {
@@ -1366,6 +1475,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const applyAllHint = canApplyToAllChats
     ? `Применим в ${chatsCount} чатах, где у вас и у бота есть админ-права.`
     : 'Пока доступен только этот чат.';
+  const mailingTargetLabel =
+    mailingApplyToAllChats && canApplyToAllChats ? `Во все чаты (${chatsCount})` : 'Только текущий чат';
+  const mailingHeaderSummary = mailingText.trim()
+    ? `${mailingTargetLabel} · ${mailingText.trim().length}/${MAX_BROADCAST_TEXT_LENGTH}`
+    : `${mailingTargetLabel} · текст не задан`;
 
   return (
     <div className="page-stack page-enter">
@@ -4230,6 +4344,184 @@ export function SettingsPage({ api }: { api: ApiClient }) {
             <GlassCard
               className="settings-section stagger-in"
               style={{ animationDelay: '315ms' }}
+              aria-label="Рассылка"
+            >
+              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+                <button
+                  type="button"
+                  className="settings-section__toggle"
+                  aria-expanded={expandedSections.mailing}
+                  aria-controls="settings-mailing-content"
+                  onClick={() => toggleSection('mailing')}
+                >
+                  <span className="settings-section__toggle-main">
+                    <h3>Рассылка</h3>
+                    <small>{mailingHeaderSummary}</small>
+                  </span>
+                  <SectionChevron isOpen={expandedSections.mailing} />
+                </button>
+              </div>
+
+              <div
+                id="settings-mailing-content"
+                className={cn('settings-section__collapse', expandedSections.mailing && 'is-open')}
+              >
+                <div className="settings-section__collapse-inner">
+                  <div className="settings-native-toggle">
+                    <div className="settings-native-toggle__row">
+                      <div className="settings-native-toggle__title-wrap">
+                        <span className="settings-native-toggle__title">Применить во всех чатах</span>
+                      </div>
+
+                      <label
+                        className="settings-native-switch"
+                        aria-label="Применить рассылку во всех чатах"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={mailingApplyToAllChats && canApplyToAllChats}
+                          onChange={(event) => setMailingApplyToAllChats(event.target.checked)}
+                          disabled={!canApplyToAllChats || sendBroadcastMutation.isPending}
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
+
+                    <p className="settings-native-toggle__hint">
+                      {canApplyToAllChats
+                        ? `Отправим в ${chatsCount} чатах, где у вас и у бота есть админ-права.`
+                        : 'Пока доступен только текущий чат.'}
+                    </p>
+                  </div>
+
+                  <label className={cn('field', mailingTextError && 'field--error')}>
+                    <span className="field__label">Текст сообщения</span>
+                    <textarea
+                      value={mailingText}
+                      onChange={(event) => {
+                        setMailingText(event.target.value);
+                        if (mailingTextError) {
+                          setMailingTextError('');
+                        }
+                      }}
+                      rows={4}
+                      maxLength={MAX_BROADCAST_TEXT_LENGTH}
+                      placeholder="Введите текст рассылки"
+                    />
+                    {mailingTextError ? (
+                      <small className="field__hint">{mailingTextError}</small>
+                    ) : (
+                      <small className="field__hint">
+                        {mailingText.length}/{MAX_BROADCAST_TEXT_LENGTH}
+                      </small>
+                    )}
+                  </label>
+
+                  <div className={cn('settings-native-toggle', mailingButtonUrlError && 'field--error')}>
+                    <div className="settings-native-toggle__row">
+                      <div className="settings-native-toggle__title-wrap">
+                        <span className="settings-native-toggle__title">Добавить кнопку</span>
+                      </div>
+
+                      <label className="settings-native-switch" aria-label="Добавить кнопку в рассылку">
+                        <input
+                          type="checkbox"
+                          checked={mailingButtonEnabled}
+                          onChange={(event) => {
+                            const enabled = event.target.checked;
+                            setMailingButtonEnabled(enabled);
+                            if (!enabled) {
+                              setMailingButtonUrlError('');
+                              setMailingButtonTextError('');
+                            }
+                          }}
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
+
+                    {mailingButtonEnabled ? (
+                      <div className="settings-button-fields">
+                        <label className={cn('field settings-url-field', mailingButtonUrlError && 'field--error')}>
+                          <span className="field__label">Ссылка кнопки</span>
+                          <input
+                            type="url"
+                            inputMode="url"
+                            value={mailingButtonUrl}
+                            onChange={(event) => {
+                              setMailingButtonUrl(event.target.value);
+                              if (mailingButtonUrlError) {
+                                setMailingButtonUrlError('');
+                              }
+                            }}
+                            placeholder="https://max.ru/channel/..."
+                          />
+                          {mailingButtonUrlError ? (
+                            <small className="field__hint">{mailingButtonUrlError}</small>
+                          ) : null}
+                        </label>
+
+                        <label
+                          className={cn('field settings-text-field', mailingButtonTextError && 'field--error')}
+                        >
+                          <span className="field__label">Название кнопки</span>
+                          <input
+                            type="text"
+                            maxLength={32}
+                            value={mailingButtonText}
+                            onChange={(event) => {
+                              setMailingButtonText(event.target.value);
+                              if (mailingButtonTextError) {
+                                setMailingButtonTextError('');
+                              }
+                            }}
+                            placeholder="Открыть"
+                          />
+                          {mailingButtonTextError ? (
+                            <small className="field__hint">{mailingButtonTextError}</small>
+                          ) : null}
+                        </label>
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="settings-page-header__confirm-actions">
+                    <button
+                      type="button"
+                      className="button button--accent"
+                      onClick={handleSendBroadcast}
+                      disabled={sendBroadcastMutation.isPending || mailingText.trim().length === 0}
+                    >
+                      {sendBroadcastMutation.isPending ? 'Отправляем...' : 'Отправить рассылку'}
+                    </button>
+                    <button
+                      type="button"
+                      className="button button--ghost"
+                      onClick={() => {
+                        setMailingText('');
+                        setMailingButtonEnabled(false);
+                        setMailingButtonUrl('');
+                        setMailingButtonText('Открыть');
+                        setMailingTextError('');
+                        setMailingButtonUrlError('');
+                        setMailingButtonTextError('');
+                      }}
+                      disabled={sendBroadcastMutation.isPending}
+                    >
+                      Очистить
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </GlassCard>
+
+            <GlassCard
+              className="settings-section stagger-in"
+              style={{ animationDelay: '360ms' }}
               aria-label="Дополнительные настройки"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>

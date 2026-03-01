@@ -41,6 +41,15 @@ export class AdminController {
     return this.adminService.applySettingsToAllChats(chatId, user, body);
   }
 
+  @Post('chats/:chatId/broadcast')
+  sendBroadcast(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.sendBroadcast(chatId, user, body);
+  }
+
   @Get('chats/:chatId/moderation-events')
   getEvents(
     @Param('chatId') chatId: string,
