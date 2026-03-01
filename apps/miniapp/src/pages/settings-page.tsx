@@ -34,7 +34,7 @@ type DuplicateMaxCountKey =
   | 'duplicateKickMaxCount'
   | 'duplicateBanMaxCount';
 type BotHintKey = 'link' | 'duplicate';
-type SettingsSectionKey = 'links' | 'duplicates' | 'limits';
+type SettingsSectionKey = 'links' | 'duplicates' | 'limits' | 'night';
 
 const DUPLICATE_STAGE_OPTIONS: Array<{
   id: 'WARN' | 'KICK' | 'BAN';
@@ -88,6 +88,20 @@ const LINK_POLICY_OPTIONS: Array<{
   },
 ];
 
+const RUSSIAN_TIMEZONE_OPTIONS = [
+  { value: 'Europe/Kaliningrad', label: 'Калининград (UTC+2)' },
+  { value: 'Europe/Moscow', label: 'Москва (UTC+3)' },
+  { value: 'Europe/Samara', label: 'Самара (UTC+4)' },
+  { value: 'Asia/Yekaterinburg', label: 'Екатеринбург (UTC+5)' },
+  { value: 'Asia/Omsk', label: 'Омск (UTC+6)' },
+  { value: 'Asia/Krasnoyarsk', label: 'Красноярск (UTC+7)' },
+  { value: 'Asia/Irkutsk', label: 'Иркутск (UTC+8)' },
+  { value: 'Asia/Yakutsk', label: 'Якутск (UTC+9)' },
+  { value: 'Asia/Vladivostok', label: 'Владивосток (UTC+10)' },
+  { value: 'Asia/Magadan', label: 'Магадан (UTC+11)' },
+  { value: 'Asia/Kamchatka', label: 'Камчатка (UTC+12)' },
+] as const;
+
 function formatApiError(error: unknown): string {
   const rawMessage = error instanceof Error ? error.message : '';
   const normalized = rawMessage.toLowerCase();
@@ -130,6 +144,40 @@ function normalizeDomain(value: string): string {
       .replace(/^www\./, '')
       .replace(/\.$/, '');
   }
+}
+
+function normalizeDayMinutes(value: number, fallback = 0): number {
+  if (!Number.isInteger(value) || value < 0 || value > 1_439) {
+    return fallback;
+  }
+
+  return value;
+}
+
+function minutesToTimeInput(value: number): string {
+  const safe = normalizeDayMinutes(value);
+  const hours = Math.floor(safe / 60);
+  const minutes = safe % 60;
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+}
+
+function timeInputToMinutes(value: string, fallback: number): number {
+  const [hoursRaw, minutesRaw] = value.split(':');
+  const hours = Number.parseInt(hoursRaw ?? '', 10);
+  const minutes = Number.parseInt(minutesRaw ?? '', 10);
+
+  if (
+    Number.isNaN(hours) ||
+    Number.isNaN(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return fallback;
+  }
+
+  return hours * 60 + minutes;
 }
 
 function getRouteChatTitle(state: unknown): string {
@@ -182,6 +230,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     links: true,
     duplicates: false,
     limits: false,
+    night: false,
   });
 
   const routeChatTitle = getRouteChatTitle(location.state);
@@ -509,6 +558,17 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const hasMessageLimitsBotButtonError = Boolean(
     messageLimitsBotButtonUrlError || messageLimitsBotButtonTextError,
   );
+  const showNightBotButtonErrors = Boolean(
+    draft?.nightModeBotMessageEnabled && draft?.nightModeBotButtonEnabled,
+  );
+  const nightBotButtonUrlError = showNightBotButtonErrors
+    ? fieldErrors.nightModeBotButtonUrl
+    : undefined;
+  const nightBotButtonTextError = showNightBotButtonErrors
+    ? fieldErrors.nightModeBotButtonText
+    : undefined;
+  const hasNightBotButtonError = Boolean(nightBotButtonUrlError || nightBotButtonTextError);
+  const nightTimezoneError = fieldErrors.nightModeTimezone;
   const linkStagesEnabledCount = [
     draft?.linkBotMessageEnabled,
     draft?.linkWarnEnabled,
@@ -533,6 +593,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     draft ? !draft.fileMessagesEnabled : false,
     draft ? !draft.voiceMessagesEnabled : false,
   ].filter(Boolean).length;
+  const nightTimezoneLabel =
+    RUSSIAN_TIMEZONE_OPTIONS.find((option) => option.value === draft?.nightModeTimezone)?.label ??
+    'Москва (UTC+3)';
+  const nightWindowLabel = draft
+    ? `${minutesToTimeInput(draft.nightModeStartTimeMinutes)}-${minutesToTimeInput(
+        draft.nightModeEndTimeMinutes,
+      )}`
+    : '23:00-08:00';
 
   return (
     <div className="page-stack page-enter">
@@ -1589,6 +1657,250 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               </div>
             </div>
 
+          </GlassCard>
+
+          <GlassCard
+            className="settings-section stagger-in"
+            style={{ animationDelay: '135ms' }}
+            aria-label="Закрытие чата на ночь"
+          >
+            <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+              <button
+                type="button"
+                className="settings-section__toggle"
+                aria-expanded={expandedSections.night}
+                aria-controls="settings-night-content"
+                onClick={() => toggleSection('night')}
+              >
+                <span className="settings-section__toggle-main">
+                  <h3>Закрытие чата на ночь</h3>
+                  <small>
+                    {draft.nightModeEnabled
+                      ? `${nightWindowLabel} • ${nightTimezoneLabel}`
+                      : 'Выключено'}
+                  </small>
+                </span>
+                <SectionChevron isOpen={expandedSections.night} />
+              </button>
+            </div>
+
+            <div
+              id="settings-night-content"
+              className={cn('settings-section__collapse', expandedSections.night && 'is-open')}
+            >
+              <div className="settings-section__collapse-inner">
+                <div className="settings-native-toggle">
+                  <div className="settings-native-toggle__row">
+                    <span className="settings-native-toggle__title">Включить режим</span>
+
+                    <label
+                      className="settings-native-switch"
+                      aria-label="Включить закрытие чата на ночь"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={draft.nightModeEnabled}
+                        onChange={(event) => setFieldValue('nightModeEnabled', event.target.checked)}
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                    </label>
+                  </div>
+
+                  <p className="settings-native-toggle__hint">
+                    Во время закрытия сообщения не-админов удаляются автоматически.
+                  </p>
+                </div>
+
+                {draft.nightModeEnabled ? (
+                  <div className={cn('settings-native-toggle', nightTimezoneError && 'field--error')}>
+                    <div className="night-window-grid">
+                      <label className="field night-window-grid__field">
+                        <span className="field__label">Закрывать с</span>
+                        <input
+                          type="time"
+                          step={60}
+                          value={minutesToTimeInput(draft.nightModeStartTimeMinutes)}
+                          onChange={(event) =>
+                            setFieldValue(
+                              'nightModeStartTimeMinutes',
+                              timeInputToMinutes(
+                                event.target.value,
+                                normalizeDayMinutes(draft.nightModeStartTimeMinutes, 23 * 60),
+                              ),
+                            )
+                          }
+                        />
+                      </label>
+
+                      <label className="field night-window-grid__field">
+                        <span className="field__label">Открывать в</span>
+                        <input
+                          type="time"
+                          step={60}
+                          value={minutesToTimeInput(draft.nightModeEndTimeMinutes)}
+                          onChange={(event) =>
+                            setFieldValue(
+                              'nightModeEndTimeMinutes',
+                              timeInputToMinutes(
+                                event.target.value,
+                                normalizeDayMinutes(draft.nightModeEndTimeMinutes, 8 * 60),
+                              ),
+                            )
+                          }
+                        />
+                      </label>
+                    </div>
+
+                    <label className={cn('field', nightTimezoneError && 'field--error')}>
+                      <span className="field__label">Часовой пояс России</span>
+                      <select
+                        value={draft.nightModeTimezone}
+                        onChange={(event) => setFieldValue('nightModeTimezone', event.target.value)}
+                      >
+                        {RUSSIAN_TIMEZONE_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                      {nightTimezoneError ? (
+                        <small className="field__hint">{nightTimezoneError}</small>
+                      ) : (
+                        <small className="field__hint">
+                          По умолчанию используется Москва (UTC+3).
+                        </small>
+                      )}
+                    </label>
+                  </div>
+                ) : null}
+
+                <div
+                  className="settings-subsection-divider"
+                  role="separator"
+                  aria-label="Блок сообщений бота для ночного режима"
+                >
+                  <span>Сообщения бота</span>
+                </div>
+
+                <div className="settings-native-toggle">
+                  <div className="settings-native-toggle__row">
+                    <span className="settings-native-toggle__title">Сообщение от бота</span>
+
+                    <label
+                      className="settings-native-switch"
+                      aria-label="Включить сообщение от бота для ночного режима"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={draft.nightModeBotMessageEnabled}
+                        onChange={(event) => {
+                          const enabled = event.target.checked;
+                          setFieldValue('nightModeBotMessageEnabled', enabled);
+                          if (!enabled) {
+                            setFieldValue('nightModeBotButtonEnabled', false);
+                            clearFieldError('nightModeBotButtonUrl');
+                            clearFieldError('nightModeBotButtonText');
+                          }
+                        }}
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                    </label>
+                  </div>
+
+                  <p className="settings-native-toggle__hint">
+                    Бот пишет, что чат закрыт на ночь, и поясняет удаление сообщения.
+                  </p>
+                </div>
+
+                {draft.nightModeBotMessageEnabled ? (
+                  <div
+                    className={cn(
+                      'settings-native-toggle',
+                      'settings-native-toggle--nested',
+                      hasNightBotButtonError && 'field--error',
+                    )}
+                  >
+                    <div className="settings-native-toggle__row">
+                      <span className="settings-native-toggle__title">Добавить кнопку</span>
+
+                      <label
+                        className="settings-native-switch"
+                        aria-label="Добавить кнопку в сообщение бота для ночного режима"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={draft.nightModeBotButtonEnabled}
+                          onChange={(event) => {
+                            const enabled = event.target.checked;
+                            setFieldValue('nightModeBotButtonEnabled', enabled);
+                            if (!enabled) {
+                              clearFieldError('nightModeBotButtonUrl');
+                              clearFieldError('nightModeBotButtonText');
+                            }
+                          }}
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
+
+                    {draft.nightModeBotButtonEnabled ? (
+                      <div className="settings-button-fields">
+                        <label
+                          className={cn('field settings-url-field', nightBotButtonUrlError && 'field--error')}
+                        >
+                          <span className="field__label">Ссылка кнопки</span>
+                          <input
+                            type="url"
+                            inputMode="url"
+                            value={draft.nightModeBotButtonUrl}
+                            onChange={(event) =>
+                              setFieldValue('nightModeBotButtonUrl', event.target.value)
+                            }
+                            placeholder="https://max.ru/channel/..."
+                          />
+                          {nightBotButtonUrlError ? (
+                            <small className="field__hint">{nightBotButtonUrlError}</small>
+                          ) : null}
+                        </label>
+
+                        <label
+                          className={cn(
+                            'field settings-text-field',
+                            nightBotButtonTextError && 'field--error',
+                          )}
+                        >
+                          <span className="field__label">Название кнопки</span>
+                          <input
+                            type="text"
+                            maxLength={32}
+                            value={draft.nightModeBotButtonText}
+                            onChange={(event) =>
+                              setFieldValue('nightModeBotButtonText', event.target.value)
+                            }
+                            placeholder="Правила чата"
+                          />
+                          {nightBotButtonTextError ? (
+                            <small className="field__hint">{nightBotButtonTextError}</small>
+                          ) : null}
+                        </label>
+                      </div>
+                    ) : null}
+
+                    {!hasNightBotButtonError ? (
+                      <p className="settings-native-toggle__hint">
+                        Добавляет кнопку в сообщение о закрытии чата на ночь.
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            </div>
           </GlassCard>
         </section>
       ) : null}

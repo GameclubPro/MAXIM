@@ -23,6 +23,7 @@ type ActiveBan = {
 
 const DEFAULT_BAN_DURATION_HOURS = 6;
 const DEFAULT_BOT_BUTTON_TEXT = 'Открыть';
+const DEFAULT_NIGHT_MODE_TIMEZONE = 'Europe/Moscow';
 const LINK_ESCALATION_WINDOW_HOURS = 24;
 const LINK_ESCALATION_BAN_HOURS = 6;
 const MAX_FORWARD_SCAN_DEPTH = 8;
@@ -119,6 +120,11 @@ export class ModerationService {
       include: {
         settings: true,
         domains: true,
+        admins: {
+          select: {
+            userId: true,
+          },
+        },
       },
     });
 
@@ -137,6 +143,29 @@ export class ModerationService {
         text,
         createdAt,
         ban: activeBan,
+      });
+      return;
+    }
+
+    const senderIsChatAdmin = this.isSenderChatAdmin(
+      chat.admins as Array<{ userId: string }> | undefined,
+      senderId,
+    );
+    if (this.isNightModeActiveNow(settings) && !senderIsChatAdmin) {
+      await this.handleNightModeMessage({
+        chatId,
+        userId: senderId,
+        messageId,
+        text,
+        createdAt,
+        userLabel,
+        nightModeStartTimeMinutes: settings.nightModeStartTimeMinutes,
+        nightModeEndTimeMinutes: settings.nightModeEndTimeMinutes,
+        nightModeTimezone: settings.nightModeTimezone,
+        nightModeBotMessageEnabled: settings.nightModeBotMessageEnabled,
+        nightModeBotButtonEnabled: settings.nightModeBotButtonEnabled,
+        nightModeBotButtonUrl: settings.nightModeBotButtonUrl,
+        nightModeBotButtonText: settings.nightModeBotButtonText,
       });
       return;
     }
@@ -1396,6 +1425,228 @@ export class ModerationService {
         'Failed to delete message during active ban',
       );
     }
+  }
+
+  private async handleNightModeMessage(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    text: string;
+    createdAt: string;
+    userLabel: string;
+    nightModeStartTimeMinutes: number;
+    nightModeEndTimeMinutes: number;
+    nightModeTimezone: string;
+    nightModeBotMessageEnabled: boolean;
+    nightModeBotButtonEnabled: boolean;
+    nightModeBotButtonUrl: string;
+    nightModeBotButtonText: string;
+  }) {
+    const {
+      chatId,
+      userId,
+      messageId,
+      text,
+      createdAt,
+      userLabel,
+      nightModeStartTimeMinutes,
+      nightModeEndTimeMinutes,
+      nightModeTimezone,
+      nightModeBotMessageEnabled,
+      nightModeBotButtonEnabled,
+      nightModeBotButtonUrl,
+      nightModeBotButtonText,
+    } = params;
+    const startMinutes = this.normalizeDayMinutes(nightModeStartTimeMinutes, 23 * 60);
+    const endMinutes = this.normalizeDayMinutes(nightModeEndTimeMinutes, 8 * 60);
+    const timezone = this.normalizeNightModeTimezone(nightModeTimezone);
+    const messageAgeMs = Date.now() - new Date(createdAt).getTime();
+    const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
+    let wasDeleted = false;
+
+    if (canDeleteMessage) {
+      try {
+        await this.maxClient.deleteMessage(chatId, messageId);
+        wasDeleted = true;
+        await this.prisma.moderationEvent.create({
+          data: {
+            chatId,
+            userId,
+            messageId,
+            eventType: EventType.MESSAGE,
+            ruleCode: 'NIGHT_MODE_DELETE',
+            action: SanctionAction.DELETE_MESSAGE,
+            maskedExcerpt: maskText(text),
+            score: 0.6,
+            operator: Operator.BOT,
+            metadata: {
+              reason: 'Message removed while chat is closed for the night',
+              nightModeTimezone: timezone,
+              nightModeStartTime: this.formatMinutesAsTime(startMinutes),
+              nightModeEndTime: this.formatMinutesAsTime(endMinutes),
+            },
+          },
+        });
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            userId,
+            messageId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to delete message during night mode',
+        );
+      }
+    } else {
+      await this.maxClient.notifyModerators(
+        chatId,
+        `Сообщение от ${userId} попало в закрытие чата на ночь, но старше 24 часов и не может быть удалено`,
+      );
+    }
+
+    if (!nightModeBotMessageEnabled) {
+      return;
+    }
+
+    const nightModeMessageOptions = this.buildBotMessageOptions(
+      nightModeBotButtonEnabled,
+      nightModeBotButtonUrl,
+      nightModeBotButtonText,
+    );
+    try {
+      if (nightModeMessageOptions) {
+        await this.maxClient.sendMessage(
+          chatId,
+          this.buildNightModeExplanation(userLabel, startMinutes, endMinutes, timezone, wasDeleted),
+          nightModeMessageOptions,
+        );
+      } else {
+        await this.maxClient.sendMessage(
+          chatId,
+          this.buildNightModeExplanation(userLabel, startMinutes, endMinutes, timezone, wasDeleted),
+        );
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to send night mode explanation message',
+      );
+    }
+  }
+
+  private isNightModeActiveNow(settings: {
+    nightModeEnabled: boolean;
+    nightModeStartTimeMinutes: number;
+    nightModeEndTimeMinutes: number;
+    nightModeTimezone: string;
+  }): boolean {
+    if (!settings.nightModeEnabled) {
+      return false;
+    }
+
+    const startMinutes = this.normalizeDayMinutes(settings.nightModeStartTimeMinutes, 23 * 60);
+    const endMinutes = this.normalizeDayMinutes(settings.nightModeEndTimeMinutes, 8 * 60);
+    const timezone = this.normalizeNightModeTimezone(settings.nightModeTimezone);
+    const currentMinutes = this.getCurrentMinutesInTimeZone(timezone);
+
+    if (currentMinutes === null) {
+      return false;
+    }
+
+    if (startMinutes === endMinutes) {
+      return true;
+    }
+
+    if (startMinutes < endMinutes) {
+      return currentMinutes >= startMinutes && currentMinutes < endMinutes;
+    }
+
+    return currentMinutes >= startMinutes || currentMinutes < endMinutes;
+  }
+
+  private isSenderChatAdmin(
+    admins: Array<{ userId: string }> | undefined,
+    userId: string,
+  ): boolean {
+    if (!Array.isArray(admins) || admins.length === 0) {
+      return false;
+    }
+
+    return admins.some((item) => String(item.userId) === String(userId));
+  }
+
+  private normalizeNightModeTimezone(value: string): string {
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    if (!normalized) {
+      return DEFAULT_NIGHT_MODE_TIMEZONE;
+    }
+
+    try {
+      Intl.DateTimeFormat('ru-RU', { timeZone: normalized }).format(new Date());
+      return normalized;
+    } catch {
+      return DEFAULT_NIGHT_MODE_TIMEZONE;
+    }
+  }
+
+  private getCurrentMinutesInTimeZone(timeZone: string): number | null {
+    try {
+      const parts = new Intl.DateTimeFormat('en-GB', {
+        timeZone,
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23',
+      }).formatToParts(new Date());
+
+      const hour = Number(parts.find((item) => item.type === 'hour')?.value ?? '');
+      const minute = Number(parts.find((item) => item.type === 'minute')?.value ?? '');
+
+      if (!Number.isInteger(hour) || !Number.isInteger(minute)) {
+        return null;
+      }
+
+      return hour * 60 + minute;
+    } catch {
+      return null;
+    }
+  }
+
+  private normalizeDayMinutes(value: number, fallback: number): number {
+    if (Number.isInteger(value) && value >= 0 && value <= 1_439) {
+      return value;
+    }
+
+    return fallback;
+  }
+
+  private formatMinutesAsTime(value: number): string {
+    const normalized = this.normalizeDayMinutes(value, 0);
+    const hours = Math.floor(normalized / 60);
+    const minutes = normalized % 60;
+    return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+  }
+
+  private buildNightModeExplanation(
+    userLabel: string,
+    startMinutes: number,
+    endMinutes: number,
+    timezone: string,
+    wasDeleted: boolean,
+  ): string {
+    const windowLabel = `${this.formatMinutesAsTime(startMinutes)}-${this.formatMinutesAsTime(endMinutes)}`;
+    const timezoneLabel = timezone === DEFAULT_NIGHT_MODE_TIMEZONE ? 'Москва' : timezone;
+
+    if (wasDeleted) {
+      return `Чат закрыт на ночь (${windowLabel}, ${timezoneLabel}). Сообщение пользователя ${userLabel} удалено.`;
+    }
+
+    return `Чат закрыт на ночь (${windowLabel}, ${timezoneLabel}). Новые сообщения сейчас не принимаются.`;
   }
 
   private isBotAuthoredMessage(update: MaxUpdate): boolean {

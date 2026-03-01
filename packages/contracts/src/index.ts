@@ -30,6 +30,20 @@ function isValidBotButtonText(value: string): boolean {
   return normalized.length > 0 && normalized.length <= 32;
 }
 
+function isValidIanaTimeZone(value: string): boolean {
+  const normalized = value.trim();
+  if (!normalized) {
+    return false;
+  }
+
+  try {
+    Intl.DateTimeFormat('ru-RU', { timeZone: normalized }).format(new Date());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export const chatSettingsSchema = z
   .object({
     profanityLevel: profanityLevelSchema.default('MEDIUM'),
@@ -59,6 +73,14 @@ export const chatSettingsSchema = z
     messageLimitsBotButtonEnabled: z.boolean().default(false),
     messageLimitsBotButtonUrl: botButtonUrlSchema,
     messageLimitsBotButtonText: botButtonTextSchema,
+    nightModeEnabled: z.boolean().default(false),
+    nightModeStartTimeMinutes: z.number().int().min(0).max(1_439).default(23 * 60),
+    nightModeEndTimeMinutes: z.number().int().min(0).max(1_439).default(8 * 60),
+    nightModeTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
+    nightModeBotMessageEnabled: z.boolean().default(true),
+    nightModeBotButtonEnabled: z.boolean().default(false),
+    nightModeBotButtonUrl: botButtonUrlSchema,
+    nightModeBotButtonText: botButtonTextSchema,
     linkBotMessageEnabled: z.boolean().default(true),
     linkWarnEnabled: z.boolean().default(false),
     linkBanEnabled: z.boolean().default(false),
@@ -184,6 +206,38 @@ export const chatSettingsSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['messageLimitsBotButtonText'],
+        message: 'Введите название кнопки.',
+      });
+    }
+
+    if (!isValidIanaTimeZone(value.nightModeTimezone)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['nightModeTimezone'],
+        message: 'Укажите корректный часовой пояс.',
+      });
+    }
+
+    if (
+      value.nightModeBotMessageEnabled &&
+      value.nightModeBotButtonEnabled &&
+      !isValidBotButtonUrl(value.nightModeBotButtonUrl)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['nightModeBotButtonUrl'],
+        message: 'Укажите корректную ссылку для кнопки (http/https).',
+      });
+    }
+
+    if (
+      value.nightModeBotMessageEnabled &&
+      value.nightModeBotButtonEnabled &&
+      !isValidBotButtonText(value.nightModeBotButtonText)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['nightModeBotButtonText'],
         message: 'Введите название кнопки.',
       });
     }
