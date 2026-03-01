@@ -35,6 +35,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     deleteBotMessagesDelayMinutes: 2,
     removeBotsFromGroupEnabled: false,
     globalUserBlacklistEnabled: false,
+    antiSpamEnabled: true,
     maxMessageLengthEnabled: false,
     maxMessageLength: 1500,
     photoMessageCooldownEnabled: false,
@@ -356,6 +357,48 @@ describe('RuleEngineService', () => {
 
     expect(first.violations.some((item) => item.ruleCode === 'PHOTO_RATE_LIMIT')).toBe(false);
     expect(second.violations.some((item) => item.ruleCode === 'PHOTO_RATE_LIMIT')).toBe(true);
+  });
+
+  it('respects anti-spam toggle for flood detection', async () => {
+    const enabledService = new RuleEngineService(new MockRedisCounterService() as never);
+    const disabledService = new RuleEngineService(new MockRedisCounterService() as never);
+
+    let enabledResult = await enabledService.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings: buildSettings({ antiSpamEnabled: true }),
+      domainAllowlist: [],
+    });
+    for (let index = 0; index < 5; index += 1) {
+      enabledResult = await enabledService.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text: '',
+        settings: buildSettings({ antiSpamEnabled: true }),
+        domainAllowlist: [],
+      });
+    }
+
+    let disabledResult = await disabledService.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings: buildSettings({ antiSpamEnabled: false }),
+      domainAllowlist: [],
+    });
+    for (let index = 0; index < 5; index += 1) {
+      disabledResult = await disabledService.detect({
+        chatId: 'chat-1',
+        userId: 'u-1',
+        text: '',
+        settings: buildSettings({ antiSpamEnabled: false }),
+        domainAllowlist: [],
+      });
+    }
+
+    expect(enabledResult.violations.some((item) => item.ruleCode === 'FLOOD')).toBe(true);
+    expect(disabledResult.violations.some((item) => item.ruleCode === 'FLOOD')).toBe(false);
   });
 
   it('escalates duplicate action to WARN/KICK/BAN for 12h/24h/48h windows', async () => {

@@ -369,13 +369,15 @@ export class RuleEngineService {
       violations.push({ ruleCode: 'CAPS_ABUSE', score: 0.7, reason: 'Excessive uppercase ratio' });
     }
 
-    const floodKey = `flood:${chatId}:${userId}:${Math.floor(Date.now() / (DEFAULT_FLOOD_WINDOW_SEC * 1000))}`;
-    const floodCount = await this.redisCounter.incrementWithTtl(
-      floodKey,
-      DEFAULT_FLOOD_WINDOW_SEC + 1,
-    );
-    if (floodCount > DEFAULT_FLOOD_MAX_MESSAGES) {
-      violations.push({ ruleCode: 'FLOOD', score: 0.85, reason: 'Message flood detected' });
+    if (settings.antiSpamEnabled) {
+      const floodKey = `flood:${chatId}:${userId}:${Math.floor(Date.now() / (DEFAULT_FLOOD_WINDOW_SEC * 1000))}`;
+      const floodCount = await this.redisCounter.incrementWithTtl(
+        floodKey,
+        DEFAULT_FLOOD_WINDOW_SEC + 1,
+      );
+      if (floodCount > DEFAULT_FLOOD_MAX_MESSAGES) {
+        violations.push({ ruleCode: 'FLOOD', score: 0.85, reason: 'Message flood detected' });
+      }
     }
 
     const compactText = normalized.replace(/\s+/g, ' ').trim();
@@ -585,7 +587,8 @@ export class RuleEngineService {
   }
 
   private hasAggressiveContext(tokens: string[]): boolean {
-    const hasAddressee = tokens.includes('ты') || tokens.includes('тебя') || tokens.includes('твой');
+    const hasAddressee =
+      tokens.includes('ты') || tokens.includes('тебя') || tokens.includes('твой');
     if (!hasAddressee) {
       return false;
     }

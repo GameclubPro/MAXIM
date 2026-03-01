@@ -46,6 +46,7 @@ export const chatSettingsSchema = z
     duplicateBanWindowSec: duplicateWindowSecSchema.default(172800),
     duplicateBanMaxCount: duplicateMaxCountSchema.default(4),
     linkPolicy: linkPolicySchema.default('ALLOWLIST_ONLY'),
+    antiSpamEnabled: z.boolean().default(true),
     maxMessageLengthEnabled: z.boolean().default(false),
     maxMessageLength: z.number().int().min(50).max(1500).default(1500),
     photoMessageCooldownEnabled: z.boolean().default(false),
@@ -72,8 +73,18 @@ export const chatSettingsSchema = z
     textFiltersBotButtonUrl: botButtonUrlSchema,
     textFiltersBotButtonText: botButtonTextSchema,
     nightModeEnabled: z.boolean().default(false),
-    nightModeStartTimeMinutes: z.number().int().min(0).max(1439).default(23 * 60),
-    nightModeEndTimeMinutes: z.number().int().min(0).max(1439).default(8 * 60),
+    nightModeStartTimeMinutes: z
+      .number()
+      .int()
+      .min(0)
+      .max(1439)
+      .default(23 * 60),
+    nightModeEndTimeMinutes: z
+      .number()
+      .int()
+      .min(0)
+      .max(1439)
+      .default(8 * 60),
     nightModeTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
     nightModeBotMessageEnabled: z.boolean().default(true),
     nightModeBotMessageText: z.string().max(1000).default(''),

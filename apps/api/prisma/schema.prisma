@@ -90,6 +90,7 @@ model ChatSettings {
   deleteBotMessagesDelayMinutes Int     @default(2) @map("delete_bot_messages_delay_minutes")
   removeBotsFromGroupEnabled Boolean    @default(false) @map("remove_bots_from_group_enabled")
   globalUserBlacklistEnabled Boolean    @default(false) @map("global_user_blacklist_enabled")
+  antiSpamEnabled         Boolean        @default(true) @map("anti_spam_enabled")
   maxMessageLengthEnabled Boolean       @default(false) @map("max_message_length_enabled")
   maxMessageLength       Int            @default(1500) @map("max_message_length")
   photoMessageCooldownEnabled Boolean   @default(false) @map("photo_message_cooldown_enabled")

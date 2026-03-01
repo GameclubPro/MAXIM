@@ -26,6 +26,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     deleteBotMessagesDelayMinutes: 2,
     removeBotsFromGroupEnabled: false,
     globalUserBlacklistEnabled: false,
+    antiSpamEnabled: true,
     maxMessageLengthEnabled: false,
     maxMessageLength: 1500,
     photoMessageCooldownEnabled: false,
