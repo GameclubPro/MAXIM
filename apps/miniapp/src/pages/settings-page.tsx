@@ -2049,62 +2049,109 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               >
                 <div className="settings-section__collapse-inner">
                   <div className="text-filters-grid">
-                    {TEXT_FILTER_OPTIONS.map((option) => {
-                      const hintKey: HintKey =
-                        option.key === 'russianProfanityFilterEnabled'
-                          ? 'textFiltersProfanity'
-                          : 'textFiltersCommercial';
-                      const hintId = `${option.key}-hint`;
-
-                      return (
-                        <div key={option.key} className="settings-native-toggle text-filter-card">
-                          <div className="settings-native-toggle__row">
-                            <div className="settings-native-toggle__title-wrap">
-                              <span className="settings-native-toggle__title">{option.title}</span>
-                              <button
-                                type="button"
-                                className={cn(
-                                  'settings-info-button',
-                                  openHintKey === hintKey && 'is-open',
-                                )}
-                                aria-label={`Пояснение для "${option.title}"`}
-                                aria-controls={hintId}
-                                aria-expanded={openHintKey === hintKey}
-                                onClick={() => toggleHint(hintKey)}
-                              >
-                                <span aria-hidden>i</span>
-                              </button>
-                            </div>
-
-                            <label className="settings-native-switch" aria-label={option.title}>
-                              <input
-                                type="checkbox"
-                                checked={draft[option.key]}
-                                onChange={(event) => {
-                                  const enabled = event.target.checked;
-                                  setFieldValue(option.key, enabled);
-                                  if (enabled && option.key === 'commercialAdsFilterEnabled') {
-                                    setFieldValue('textFiltersBotMessageEnabled', true);
-                                  }
-                                  if (enabled && option.key === 'russianProfanityFilterEnabled') {
-                                    setFieldValue('profanityBotMessageEnabled', true);
-                                  }
-                                }}
-                              />
-                              <span className="toggle-switch" aria-hidden>
-                                <span className="toggle-switch__thumb" />
-                              </span>
-                            </label>
-                          </div>
-
-                          {openHintKey === hintKey ? (
-                            <p id={hintId} className="settings-native-toggle__hint">
-                              {option.description}
-                            </p>
-                          ) : null}
+                    <div className="settings-native-toggle text-filter-card">
+                      <div className="settings-native-toggle__row">
+                        <div className="settings-native-toggle__title-wrap">
+                          <span className="settings-native-toggle__title">
+                            Нецензурная лексика (RU)
+                          </span>
+                          <button
+                            type="button"
+                            className={cn(
+                              'settings-info-button',
+                              openHintKey === 'textFiltersProfanity' && 'is-open',
+                            )}
+                            aria-label='Пояснение для "Нецензурная лексика (RU)"'
+                            aria-controls="russian-profanity-filter-enabled-hint"
+                            aria-expanded={openHintKey === 'textFiltersProfanity'}
+                            onClick={() => toggleHint('textFiltersProfanity')}
+                          >
+                            <span aria-hidden>i</span>
+                          </button>
                         </div>
-                      );
-                    })}
+
+                        <label
+                          className="settings-native-switch"
+                          aria-label="Нецензурная лексика (RU)"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={draft.russianProfanityFilterEnabled}
+                            onChange={(event) => {
+                              const enabled = event.target.checked;
+                              setFieldValue('russianProfanityFilterEnabled', enabled);
+                              if (enabled) {
+                                setFieldValue('profanityBotMessageEnabled', true);
+                              }
+                            }}
+                          />
+                          <span className="toggle-switch" aria-hidden>
+                            <span className="toggle-switch__thumb" />
+                          </span>
+                        </label>
+                      </div>
+
+                      {openHintKey === 'textFiltersProfanity' ? (
+                        <p
+                          id="russian-profanity-filter-enabled-hint"
+                          className="settings-native-toggle__hint"
+                        >
+                          Удаляет сообщения с матом и грубой лексикой на русском.
+                        </p>
+                      ) : null}
+                    </div>
+
+                    <div className="settings-native-toggle text-filter-card">
+                      <div className="settings-native-toggle__row">
+                        <div className="settings-native-toggle__title-wrap">
+                          <span className="settings-native-toggle__title">
+                            Коммерческие объявления (RU)
+                          </span>
+                          <button
+                            type="button"
+                            className={cn(
+                              'settings-info-button',
+                              openHintKey === 'textFiltersCommercial' && 'is-open',
+                            )}
+                            aria-label='Пояснение для "Коммерческие объявления (RU)"'
+                            aria-controls="commercial-ads-filter-enabled-hint"
+                            aria-expanded={openHintKey === 'textFiltersCommercial'}
+                            onClick={() => toggleHint('textFiltersCommercial')}
+                          >
+                            <span aria-hidden>i</span>
+                          </button>
+                        </div>
+
+                        <label
+                          className="settings-native-switch"
+                          aria-label="Коммерческие объявления (RU)"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={draft.commercialAdsFilterEnabled}
+                            onChange={(event) => {
+                              const enabled = event.target.checked;
+                              setFieldValue('commercialAdsFilterEnabled', enabled);
+                              if (enabled) {
+                                setFieldValue('textFiltersBotMessageEnabled', true);
+                              }
+                            }}
+                          />
+                          <span className="toggle-switch" aria-hidden>
+                            <span className="toggle-switch__thumb" />
+                          </span>
+                        </label>
+                      </div>
+
+                      {openHintKey === 'textFiltersCommercial' ? (
+                        <p
+                          id="commercial-ads-filter-enabled-hint"
+                          className="settings-native-toggle__hint"
+                        >
+                          Удаляет рекламные и торговые объявления в чате.
+                        </p>
+                      ) : null}
+                    </div>
                   </div>
 
                   {draft.commercialAdsFilterEnabled ? (
@@ -2178,7 +2225,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         role="separator"
                         aria-label="Действия бота для нецензурной лексики"
                       >
-                        <span>Нецензурная лексика</span>
+                        <span>Действия бота · Нецензурная лексика</span>
                       </div>
 
                       <div className="settings-native-toggle">
@@ -2294,7 +2341,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         role="separator"
                         aria-label="Действия бота для коммерческих объявлений"
                       >
-                        <span>Коммерческие объявления</span>
+                        <span>Действия бота · Коммерческие объявления</span>
                       </div>
 
                       <div className="settings-native-toggle">
@@ -2357,7 +2404,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           </p>
                         ) : null}
 
-                        {draft.textFiltersBotMessageEnabled && openBotEditorKey === 'textFilters' ? (
+                        {draft.textFiltersBotMessageEnabled &&
+                        openBotEditorKey === 'textFilters' ? (
                           <BotMessageEditor
                             editorKey="textFilters"
                             value={draft.textFiltersBotMessageText}
@@ -2472,7 +2520,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                       <div className="settings-native-toggle settings-native-toggle--nested">
                         <div className="settings-native-toggle__row">
-                          <span className="settings-native-toggle__title">4. Удаление из группы</span>
+                          <span className="settings-native-toggle__title">
+                            4. Удаление из группы
+                          </span>
 
                           <label
                             className="settings-native-switch"
