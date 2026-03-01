@@ -557,7 +557,11 @@ export class ModerationService {
         try {
           await this.maxClient.sendMessage(
             chatId,
-            this.buildTextFilterWarnExplanation(userLabel, settings.textFiltersWarnMessageText),
+            this.buildTextFilterWarnExplanation(
+              userLabel,
+              topViolation.ruleCode,
+              settings.textFiltersWarnMessageText,
+            ),
           );
         } catch (error: unknown) {
           this.logger.warn(
@@ -607,7 +611,10 @@ export class ModerationService {
 
       if (isTextFilterHit && action === SanctionAction.KICK) {
         try {
-          await this.maxClient.sendMessage(chatId, this.buildTextFilterKickExplanation(userLabel));
+          await this.maxClient.sendMessage(
+            chatId,
+            this.buildTextFilterKickExplanation(userLabel, topViolation.ruleCode),
+          );
         } catch (error: unknown) {
           this.logger.warn(
             {
@@ -947,16 +954,34 @@ export class ModerationService {
     return `Пользователь ${userLabel} удален из чата за повторные сообщения со ссылками.`;
   }
 
-  private buildTextFilterWarnExplanation(userLabel: string, templateText: string): string {
-    const fallback = `Пользователю ${userLabel} вынесено предупреждение за нарушение текстовых правил.`;
+  private buildTextFilterWarnExplanation(
+    userLabel: string,
+    ruleCode: string,
+    templateText: string,
+  ): string {
+    const reason =
+      ruleCode === 'COMMERCIAL_AD'
+        ? 'коммерческую рекламу'
+        : ruleCode === 'PROFANITY'
+          ? 'нецензурную лексику'
+          : 'нарушение текстовых правил';
+    const fallback = `Пользователю ${userLabel} вынесено предупреждение за ${reason}.`;
     return this.renderBotMessageTemplate(templateText, fallback, {
       user: userLabel,
-      reason: 'нарушение текстовых правил',
-      warning: 'вынесено предупреждение за нарушение текстовых правил',
+      reason,
+      warning: `вынесено предупреждение за ${reason}`,
     });
   }
 
-  private buildTextFilterKickExplanation(userLabel: string): string {
+  private buildTextFilterKickExplanation(userLabel: string, ruleCode: string): string {
+    if (ruleCode === 'COMMERCIAL_AD') {
+      return `Пользователь ${userLabel} удален из чата за повторную коммерческую рекламу.`;
+    }
+
+    if (ruleCode === 'PROFANITY') {
+      return `Пользователь ${userLabel} удален из чата за повторную нецензурную лексику.`;
+    }
+
     return `Пользователь ${userLabel} удален из чата за повторные нарушения текстовых правил.`;
   }
 

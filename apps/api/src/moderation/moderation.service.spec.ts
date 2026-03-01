@@ -1834,7 +1834,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Пользователю "Алексей" вынесено предупреждение за нарушение текстовых правил.',
+      'Пользователю "Алексей" вынесено предупреждение за нецензурную лексику.',
     );
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -1984,7 +1984,7 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Пользователь "Алексей" удален из чата за повторные нарушения текстовых правил.',
+      'Пользователь "Алексей" удален из чата за повторную нецензурную лексику.',
     );
     expect(globalUserBlacklist.upsert).toHaveBeenCalledWith({
       where: { userId: 'user-1' },
@@ -2315,7 +2315,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Пользователю "Алексей" вынесено предупреждение за нарушение текстовых правил.',
+      'Пользователю "Алексей" вынесено предупреждение за коммерческую рекламу.',
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
