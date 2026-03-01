@@ -1651,15 +1651,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const mailingHeaderSummary = `${mailingTargetLabel} · ${mailingContentLabel}${
     mailingScheduleEnabled ? ' · по таймеру' : ''
   }${mailingCycleEnabled ? ` · ${mailingCycleSummary}` : ''}`;
-  const mailingHasText = mailingText.trim().length > 0;
-  const mailingHasImage = mailingImageEnabled && mailingImageBase64.length > 0;
-  const mailingHasButton = mailingButtonEnabled && mailingButtonUrl.trim().length > 0;
-  const mailingCanSend = mailingHasText || mailingImageBase64.length > 0;
+  const mailingCanSend = mailingText.trim().length > 0 || mailingImageBase64.length > 0;
   const mailingSendDisabled = sendBroadcastMutation.isPending || !mailingCanSend;
-  const mailingPreviewText = mailingHasText
-    ? mailingText.trim().slice(0, 180)
-    : 'Добавьте текст сообщения или прикрепите фото.';
-  const mailingButtonLabel = mailingButtonText.trim() || 'Открыть';
 
   return (
     <div className="page-stack page-enter">
@@ -4547,45 +4540,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 className={cn('settings-section__collapse', expandedSections.mailing && 'is-open')}
               >
                 <div className="settings-section__collapse-inner settings-mailing">
-                  <div className="mailing-hero">
-                    <div className="mailing-hero__top">
-                      <div className="mailing-hero__title-wrap">
-                        <p className="mailing-hero__eyebrow">Конструктор рассылки</p>
-                        <h4 className="mailing-hero__title">
-                          Соберите сообщение и отправьте его одним действием
-                        </h4>
-                      </div>
-                      <span className={cn('mailing-chip', mailingApplyToAllChats && canApplyToAllChats && 'is-active')}>
-                        {mailingTargetLabel}
-                      </span>
-                    </div>
-
-                    <div className="mailing-hero__chips">
-                      <span className={cn('mailing-chip', mailingHasText && 'is-active')}>
-                        {mailingHasText ? 'Текст добавлен' : 'Без текста'}
-                      </span>
-                      <span className={cn('mailing-chip', mailingHasImage && 'is-active')}>
-                        {mailingHasImage ? 'Фото добавлено' : 'Без фото'}
-                      </span>
-                      <span className={cn('mailing-chip', mailingHasButton && 'is-active')}>
-                        {mailingHasButton ? `Кнопка: ${mailingButtonLabel}` : 'Без кнопки'}
-                      </span>
-                      <span className={cn('mailing-chip', mailingScheduleEnabled && 'is-active')}>
-                        {mailingScheduleEnabled ? 'По таймеру' : 'Сразу'}
-                      </span>
-                      <span className={cn('mailing-chip', mailingCycleEnabled && 'is-active')}>
-                        {mailingCycleEnabled ? `Цикл: ${mailingCycleSummary || 'настроен'}` : 'Без цикла'}
-                      </span>
-                    </div>
-
-                    <div className="mailing-hero__preview">
-                      <p>{mailingPreviewText}</p>
-                      {mailingHasButton ? (
-                        <span className="mailing-hero__preview-button">{mailingButtonLabel}</span>
-                      ) : null}
-                    </div>
-                  </div>
-
                   <div className={cn('mailing-target-card', !canApplyToAllChats && 'is-single-chat')}>
                     <div className="mailing-target-card__row">
                       <div className="mailing-target-card__title-wrap">

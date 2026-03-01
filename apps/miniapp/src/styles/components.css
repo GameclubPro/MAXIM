@@ -1278,108 +1278,6 @@
   gap: 12px;
 }
 
-.mailing-hero {
-  border-radius: 16px;
-  border: 1px solid rgba(11, 132, 255, 0.26);
-  background:
-    radial-gradient(120% 180% at 0% 0%, rgba(11, 132, 255, 0.24), transparent 56%),
-    linear-gradient(160deg, rgba(255, 255, 255, 0.94), rgba(229, 242, 255, 0.78)),
-    rgba(255, 255, 255, 0.78);
-  box-shadow: 0 14px 28px rgba(25, 69, 103, 0.12);
-  padding: 12px;
-  display: grid;
-  gap: 10px;
-}
-
-.mailing-hero__top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.mailing-hero__title-wrap {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.mailing-hero__eyebrow {
-  margin: 0;
-  font-size: 0.68rem;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: #0d67bf;
-}
-
-.mailing-hero__title {
-  margin: 0;
-  font-size: 0.95rem;
-  line-height: 1.3;
-  color: var(--text-primary);
-}
-
-.mailing-hero__chips {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.mailing-chip {
-  display: inline-flex;
-  align-items: center;
-  min-height: 26px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(62, 96, 127, 0.2);
-  background: rgba(255, 255, 255, 0.78);
-  color: var(--text-secondary);
-  font-size: 0.72rem;
-  font-weight: 700;
-  line-height: 1;
-}
-
-.mailing-chip.is-active {
-  border-color: rgba(11, 132, 255, 0.4);
-  background: rgba(11, 132, 255, 0.15);
-  color: #085fae;
-}
-
-.mailing-hero__preview {
-  border-radius: 12px;
-  border: 1px solid rgba(62, 96, 127, 0.16);
-  background: rgba(255, 255, 255, 0.8);
-  padding: 10px;
-  display: grid;
-  gap: 8px;
-}
-
-.mailing-hero__preview p {
-  margin: 0;
-  font-size: 0.8rem;
-  line-height: 1.38;
-  color: var(--text-primary);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.mailing-hero__preview-button {
-  justify-self: start;
-  min-height: 30px;
-  padding: 0 11px;
-  border-radius: 999px;
-  border: 1px solid rgba(11, 132, 255, 0.3);
-  background: rgba(11, 132, 255, 0.14);
-  color: #0a66bb;
-  font-size: 0.75rem;
-  font-weight: 700;
-  display: inline-flex;
-  align-items: center;
-}
-
 .mailing-target-card {
   border-radius: 14px;
   border: 1px solid rgba(62, 96, 127, 0.16);
@@ -1595,9 +1493,6 @@
 }
 
 .mailing-action-bar {
-  position: sticky;
-  bottom: calc(var(--safe-bottom) + 8px);
-  z-index: 4;
   border-radius: 16px;
   border: 1px solid rgba(11, 132, 255, 0.22);
   background:
@@ -1606,7 +1501,7 @@
   padding: 10px;
   display: grid;
   gap: 8px;
-  backdrop-filter: blur(10px);
+  margin-top: 2px;
 }
 
 .mailing-action-bar .button {
