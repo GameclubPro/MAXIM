@@ -80,7 +80,8 @@ type WarnMessageEditorKey = 'linkWarn' | 'textFiltersWarn';
 type SettingsSectionKey =
   | 'links'
   | 'greeting'
-  | 'textFilters'
+  | 'profanityFilter'
+  | 'commercialFilter'
   | 'duplicates'
   | 'limits'
   | 'night'
@@ -135,23 +136,6 @@ const LINK_POLICY_OPTIONS: Array<{
     value: 'BLOCKLIST_ONLY',
     label: 'Удалять все ссылки',
     description: 'Любая ссылка удаляется сразу.',
-  },
-];
-
-const TEXT_FILTER_OPTIONS: Array<{
-  key: 'russianProfanityFilterEnabled' | 'commercialAdsFilterEnabled';
-  title: string;
-  description: string;
-}> = [
-  {
-    key: 'russianProfanityFilterEnabled',
-    title: 'Нецензурная лексика (RU)',
-    description: 'Удаляет сообщения с матом и грубой лексикой на русском.',
-  },
-  {
-    key: 'commercialAdsFilterEnabled',
-    title: 'Коммерческие объявления (RU)',
-    description: 'Удаляет рекламные и торговые объявления в чате.',
   },
 ];
 
@@ -555,7 +539,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [expandedSections, setExpandedSections] = useState<Record<SettingsSectionKey, boolean>>({
     links: true,
     greeting: false,
-    textFilters: false,
+    profanityFilter: false,
+    commercialFilter: false,
     duplicates: false,
     limits: false,
     night: false,
@@ -1125,10 +1110,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     draft?.duplicateBanEnabled,
     draft?.duplicateKickEnabled,
   ].filter(Boolean).length;
-  const textFiltersEnabledCount = [
-    draft?.russianProfanityFilterEnabled,
-    draft?.commercialAdsFilterEnabled,
-  ].filter(Boolean).length;
   const profanityStagesEnabledCount = draft?.russianProfanityFilterEnabled
     ? [
         draft?.profanityBotMessageEnabled,
@@ -1167,11 +1148,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         draft.nightModeEndTimeMinutes,
       )}`
     : '23:00-08:00';
-  const textFiltersHeaderSummary = draft
-    ? draft.commercialAdsFilterEnabled
-      ? `${textFiltersEnabledCount}/2 фильтра · мат ${profanityStagesEnabledCount}/4 · коммерция ${textFiltersStagesEnabledCount}/4 · ${commercialSensitivityLabel.toLowerCase()}`
-      : `${textFiltersEnabledCount}/2 фильтра · мат ${profanityStagesEnabledCount}/4`
-    : `${textFiltersEnabledCount}/2 фильтра`;
+  const profanityFilterHeaderSummary = draft?.russianProfanityFilterEnabled
+    ? `${profanityStagesEnabledCount}/4 ступени включено`
+    : 'Выключено';
+  const commercialFilterHeaderSummary = draft?.commercialAdsFilterEnabled
+    ? `${textFiltersStagesEnabledCount}/4 ступени · ${commercialSensitivityLabel.toLowerCase()}`
+    : 'Выключено';
   const extraEnabledCount = [
     draft?.deleteBotMessagesEnabled,
     draft?.removeBotsFromGroupEnabled,
@@ -2022,201 +2004,75 @@ export function SettingsPage({ api }: { api: ApiClient }) {
             <GlassCard
               className="settings-section stagger-in"
               style={{ animationDelay: '90ms' }}
-              aria-label="Фильтрация текста"
+              aria-label="Фильтр нецензурной лексики"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <button
                   type="button"
                   className="settings-section__toggle"
-                  aria-expanded={expandedSections.textFilters}
-                  aria-controls="settings-text-filters-content"
-                  onClick={() => toggleSection('textFilters')}
+                  aria-expanded={expandedSections.profanityFilter}
+                  aria-controls="settings-profanity-filter-content"
+                  onClick={() => toggleSection('profanityFilter')}
                 >
                   <span className="settings-section__toggle-main">
-                    <h3>Фильтрация текста</h3>
-                    <small>{textFiltersHeaderSummary}</small>
+                    <h3>Фильтр нецензурной лексики</h3>
+                    <small>{profanityFilterHeaderSummary}</small>
                   </span>
-                  <SectionChevron isOpen={expandedSections.textFilters} />
+                  <SectionChevron isOpen={expandedSections.profanityFilter} />
                 </button>
               </div>
 
               <div
-                id="settings-text-filters-content"
+                id="settings-profanity-filter-content"
                 className={cn(
                   'settings-section__collapse',
-                  expandedSections.textFilters && 'is-open',
+                  expandedSections.profanityFilter && 'is-open',
                 )}
               >
                 <div className="settings-section__collapse-inner">
-                  <div className="text-filters-grid">
-                    <div className="settings-native-toggle text-filter-card">
-                      <div className="settings-native-toggle__row">
-                        <div className="settings-native-toggle__title-wrap">
-                          <span className="settings-native-toggle__title">
-                            Нецензурная лексика (RU)
-                          </span>
-                          <button
-                            type="button"
-                            className={cn(
-                              'settings-info-button',
-                              openHintKey === 'textFiltersProfanity' && 'is-open',
-                            )}
-                            aria-label='Пояснение для "Нецензурная лексика (RU)"'
-                            aria-controls="russian-profanity-filter-enabled-hint"
-                            aria-expanded={openHintKey === 'textFiltersProfanity'}
-                            onClick={() => toggleHint('textFiltersProfanity')}
-                          >
-                            <span aria-hidden>i</span>
-                          </button>
-                        </div>
-
-                        <label
-                          className="settings-native-switch"
-                          aria-label="Нецензурная лексика (RU)"
+                  <div className="settings-native-toggle text-filter-card">
+                    <div className="settings-native-toggle__row">
+                      <div className="settings-native-toggle__title-wrap">
+                        <span className="settings-native-toggle__title">Нецензурная лексика (RU)</span>
+                        <button
+                          type="button"
+                          className={cn(
+                            'settings-info-button',
+                            openHintKey === 'textFiltersProfanity' && 'is-open',
+                          )}
+                          aria-label='Пояснение для "Нецензурная лексика (RU)"'
+                          aria-controls="russian-profanity-filter-enabled-hint"
+                          aria-expanded={openHintKey === 'textFiltersProfanity'}
+                          onClick={() => toggleHint('textFiltersProfanity')}
                         >
-                          <input
-                            type="checkbox"
-                            checked={draft.russianProfanityFilterEnabled}
-                            onChange={(event) => {
-                              const enabled = event.target.checked;
-                              setFieldValue('russianProfanityFilterEnabled', enabled);
-                              if (enabled) {
-                                setFieldValue('profanityBotMessageEnabled', true);
-                              }
-                            }}
-                          />
-                          <span className="toggle-switch" aria-hidden>
-                            <span className="toggle-switch__thumb" />
-                          </span>
-                        </label>
+                          <span aria-hidden>i</span>
+                        </button>
                       </div>
 
-                      {openHintKey === 'textFiltersProfanity' ? (
-                        <p
-                          id="russian-profanity-filter-enabled-hint"
-                          className="settings-native-toggle__hint"
-                        >
-                          Удаляет сообщения с матом и грубой лексикой на русском.
-                        </p>
-                      ) : null}
-                    </div>
-
-                    <div className="settings-native-toggle text-filter-card">
-                      <div className="settings-native-toggle__row">
-                        <div className="settings-native-toggle__title-wrap">
-                          <span className="settings-native-toggle__title">
-                            Коммерческие объявления (RU)
-                          </span>
-                          <button
-                            type="button"
-                            className={cn(
-                              'settings-info-button',
-                              openHintKey === 'textFiltersCommercial' && 'is-open',
-                            )}
-                            aria-label='Пояснение для "Коммерческие объявления (RU)"'
-                            aria-controls="commercial-ads-filter-enabled-hint"
-                            aria-expanded={openHintKey === 'textFiltersCommercial'}
-                            onClick={() => toggleHint('textFiltersCommercial')}
-                          >
-                            <span aria-hidden>i</span>
-                          </button>
-                        </div>
-
-                        <label
-                          className="settings-native-switch"
-                          aria-label="Коммерческие объявления (RU)"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={draft.commercialAdsFilterEnabled}
-                            onChange={(event) => {
-                              const enabled = event.target.checked;
-                              setFieldValue('commercialAdsFilterEnabled', enabled);
-                              if (enabled) {
-                                setFieldValue('textFiltersBotMessageEnabled', true);
-                              }
-                            }}
-                          />
-                          <span className="toggle-switch" aria-hidden>
-                            <span className="toggle-switch__thumb" />
-                          </span>
-                        </label>
-                      </div>
-
-                      {openHintKey === 'textFiltersCommercial' ? (
-                        <p
-                          id="commercial-ads-filter-enabled-hint"
-                          className="settings-native-toggle__hint"
-                        >
-                          Удаляет рекламные и торговые объявления в чате.
-                        </p>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  {draft.commercialAdsFilterEnabled ? (
-                    <>
-                      <div
-                        className="settings-subsection-divider"
-                        role="separator"
-                        aria-label="Параметры коммерческого фильтра"
-                      >
-                        <span>Коммерция</span>
-                      </div>
-
-                      <div className="settings-native-toggle commercial-settings-panel">
-                        <div className="commercial-sensitivity-slider">
-                          <div className="commercial-sensitivity-slider__head">
-                            <div className="settings-native-toggle__title-wrap">
-                              <span className="field__label">Чувствительность</span>
-                              <button
-                                type="button"
-                                className={cn(
-                                  'settings-info-button',
-                                  openHintKey === 'commercialSensitivity' && 'is-open',
-                                )}
-                                aria-label="Пояснение по чувствительности коммерческого фильтра"
-                                aria-controls="commercial-sensitivity-hint"
-                                aria-expanded={openHintKey === 'commercialSensitivity'}
-                                onClick={() => toggleHint('commercialSensitivity')}
-                              >
-                                <span aria-hidden>i</span>
-                              </button>
-                            </div>
-                            <span className="chip chip--warning">{commercialSensitivityLabel}</span>
-                          </div>
-
-                          <input
-                            type="range"
-                            min={COMMERCIAL_SENSITIVITY_MIN}
-                            max={COMMERCIAL_SENSITIVITY_MAX}
-                            step={1}
-                            value={commercialSensitivitySliderValue}
-                            onChange={(event) =>
-                              handleCommercialSensitivitySliderChange(Number(event.target.value))
+                      <label className="settings-native-switch" aria-label="Нецензурная лексика (RU)">
+                        <input
+                          type="checkbox"
+                          checked={draft.russianProfanityFilterEnabled}
+                          onChange={(event) => {
+                            const enabled = event.target.checked;
+                            setFieldValue('russianProfanityFilterEnabled', enabled);
+                            if (enabled) {
+                              setFieldValue('profanityBotMessageEnabled', true);
                             }
-                            aria-label="Ползунок чувствительности коммерческого фильтра"
-                          />
+                          }}
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
 
-                          <div className="commercial-sensitivity-slider__labels" aria-hidden>
-                            <span>Мягко</span>
-                            <span>Баланс</span>
-                            <span>Строго</span>
-                          </div>
-                        </div>
-
-                        {openHintKey === 'commercialSensitivity' ? (
-                          <p
-                            id="commercial-sensitivity-hint"
-                            className="settings-native-toggle__hint"
-                          >
-                            Ползунок меняет строгость фильтра и автоматически подбирает внутренние
-                            пороги.
-                          </p>
-                        ) : null}
-                      </div>
-                    </>
-                  ) : null}
+                    {openHintKey === 'textFiltersProfanity' ? (
+                      <p id="russian-profanity-filter-enabled-hint" className="settings-native-toggle__hint">
+                        Удаляет сообщения с матом и грубой лексикой на русском.
+                      </p>
+                    ) : null}
+                  </div>
 
                   {draft.russianProfanityFilterEnabled ? (
                     <>
@@ -2333,9 +2189,151 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       </div>
                     </>
                   ) : null}
+                </div>
+              </div>
+            </GlassCard>
+
+            <GlassCard
+              className="settings-section stagger-in"
+              style={{ animationDelay: '135ms' }}
+              aria-label="Фильтр комерции"
+            >
+              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+                <button
+                  type="button"
+                  className="settings-section__toggle"
+                  aria-expanded={expandedSections.commercialFilter}
+                  aria-controls="settings-commercial-filter-content"
+                  onClick={() => toggleSection('commercialFilter')}
+                >
+                  <span className="settings-section__toggle-main">
+                    <h3>Фильтр комерции</h3>
+                    <small>{commercialFilterHeaderSummary}</small>
+                  </span>
+                  <SectionChevron isOpen={expandedSections.commercialFilter} />
+                </button>
+              </div>
+
+              <div
+                id="settings-commercial-filter-content"
+                className={cn(
+                  'settings-section__collapse',
+                  expandedSections.commercialFilter && 'is-open',
+                )}
+              >
+                <div className="settings-section__collapse-inner">
+                  <div className="settings-native-toggle text-filter-card">
+                    <div className="settings-native-toggle__row">
+                      <div className="settings-native-toggle__title-wrap">
+                        <span className="settings-native-toggle__title">Коммерческие объявления (RU)</span>
+                        <button
+                          type="button"
+                          className={cn(
+                            'settings-info-button',
+                            openHintKey === 'textFiltersCommercial' && 'is-open',
+                          )}
+                          aria-label='Пояснение для "Коммерческие объявления (RU)"'
+                          aria-controls="commercial-ads-filter-enabled-hint"
+                          aria-expanded={openHintKey === 'textFiltersCommercial'}
+                          onClick={() => toggleHint('textFiltersCommercial')}
+                        >
+                          <span aria-hidden>i</span>
+                        </button>
+                      </div>
+
+                      <label
+                        className="settings-native-switch"
+                        aria-label="Коммерческие объявления (RU)"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={draft.commercialAdsFilterEnabled}
+                          onChange={(event) => {
+                            const enabled = event.target.checked;
+                            setFieldValue('commercialAdsFilterEnabled', enabled);
+                            if (enabled) {
+                              setFieldValue('textFiltersBotMessageEnabled', true);
+                            }
+                          }}
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
+
+                    {openHintKey === 'textFiltersCommercial' ? (
+                      <p
+                        id="commercial-ads-filter-enabled-hint"
+                        className="settings-native-toggle__hint"
+                      >
+                        Удаляет рекламные и торговые объявления в чате.
+                      </p>
+                    ) : null}
+                  </div>
 
                   {draft.commercialAdsFilterEnabled ? (
                     <>
+                      <div
+                        className="settings-subsection-divider"
+                        role="separator"
+                        aria-label="Параметры коммерческого фильтра"
+                      >
+                        <span>Коммерция</span>
+                      </div>
+
+                      <div className="settings-native-toggle commercial-settings-panel">
+                        <div className="commercial-sensitivity-slider">
+                          <div className="commercial-sensitivity-slider__head">
+                            <div className="settings-native-toggle__title-wrap">
+                              <span className="field__label">Чувствительность</span>
+                              <button
+                                type="button"
+                                className={cn(
+                                  'settings-info-button',
+                                  openHintKey === 'commercialSensitivity' && 'is-open',
+                                )}
+                                aria-label="Пояснение по чувствительности коммерческого фильтра"
+                                aria-controls="commercial-sensitivity-hint"
+                                aria-expanded={openHintKey === 'commercialSensitivity'}
+                                onClick={() => toggleHint('commercialSensitivity')}
+                              >
+                                <span aria-hidden>i</span>
+                              </button>
+                            </div>
+                            <span className="chip chip--warning">{commercialSensitivityLabel}</span>
+                          </div>
+
+                          <input
+                            type="range"
+                            min={COMMERCIAL_SENSITIVITY_MIN}
+                            max={COMMERCIAL_SENSITIVITY_MAX}
+                            step={1}
+                            value={commercialSensitivitySliderValue}
+                            onChange={(event) =>
+                              handleCommercialSensitivitySliderChange(Number(event.target.value))
+                            }
+                            aria-label="Ползунок чувствительности коммерческого фильтра"
+                          />
+
+                          <div className="commercial-sensitivity-slider__labels" aria-hidden>
+                            <span>Мягко</span>
+                            <span>Баланс</span>
+                            <span>Строго</span>
+                          </div>
+                        </div>
+
+                        {openHintKey === 'commercialSensitivity' ? (
+                          <p
+                            id="commercial-sensitivity-hint"
+                            className="settings-native-toggle__hint"
+                          >
+                            Ползунок меняет строгость фильтра и автоматически подбирает внутренние
+                            пороги.
+                          </p>
+                        ) : null}
+                      </div>
+
                       <div
                         className="settings-subsection-divider"
                         role="separator"
@@ -2664,7 +2662,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
             <GlassCard
               className="settings-section stagger-in"
-              style={{ animationDelay: '135ms' }}
+              style={{ animationDelay: '180ms' }}
               aria-label="Настройки дублей"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
@@ -3078,7 +3076,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
             <GlassCard
               className="settings-section stagger-in"
-              style={{ animationDelay: '180ms' }}
+              style={{ animationDelay: '225ms' }}
               aria-label="Ограничения сообщений"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
@@ -3577,7 +3575,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
             <GlassCard
               className="settings-section stagger-in"
-              style={{ animationDelay: '225ms' }}
+              style={{ animationDelay: '270ms' }}
               aria-label="Закрытие чата на ночь"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
@@ -3905,7 +3903,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
             <GlassCard
               className="settings-section stagger-in"
-              style={{ animationDelay: '270ms' }}
+              style={{ animationDelay: '315ms' }}
               aria-label="Дополнительные настройки"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
