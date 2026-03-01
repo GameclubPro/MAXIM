@@ -331,11 +331,23 @@ export class AdminService {
       if (imageBuffer.length > BROADCAST_IMAGE_MAX_BYTES) {
         throw new BadRequestException('Фото слишком большое. Максимум 1 MB.');
       }
-      imageToken = await this.maxClient.uploadImage(
-        imageBuffer,
-        this.resolveBroadcastImageFileName(parsed.data.imageFileName, imageMimeType),
-        imageMimeType,
-      );
+      try {
+        imageToken = await this.maxClient.uploadImage(
+          imageBuffer,
+          this.resolveBroadcastImageFileName(parsed.data.imageFileName, imageMimeType),
+          imageMimeType,
+        );
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            sourceChatId,
+            actorUserId: user.userId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Broadcast image upload failed',
+        );
+        throw new BadRequestException('Не удалось загрузить фото. Попробуйте другое изображение.');
+      }
     }
 
     const messageOptions =

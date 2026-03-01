@@ -3,6 +3,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Queue } from 'bullmq';
+import FormData from 'form-data';
 import { randomUUID } from 'node:crypto';
 import { firstValueFrom } from 'rxjs';
 import Redis from 'ioredis';
@@ -129,9 +130,16 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     const form = new FormData();
-    form.append('data', new Blob([new Uint8Array(data)], { type: mimeType }), fileName);
+    form.append('data', data, {
+      filename: fileName,
+      contentType: mimeType,
+    });
     const uploadResult = await this.requestAbsolute<Record<string, unknown>>('post', uploadUrl, {
       data: form,
+      headers: form.getHeaders(),
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+      auth: false,
     });
     const uploadResultToken = typeof uploadResult.token === 'string' ? uploadResult.token.trim() : '';
     const token = uploadResultToken || uploadMetaToken;
@@ -539,15 +547,15 @@ export class MaxClientService implements OnModuleDestroy {
     url: string,
     config: Record<string, unknown> = {},
   ): Promise<T> {
+    const auth = config.auth !== false;
+    const headers = config.headers as Record<string, string> | undefined;
+    const { auth: _auth, ...restConfig } = config;
     const response = await firstValueFrom(
       this.httpService.request<T>({
         method,
         url,
-        ...config,
-        headers: {
-          Authorization: this.token,
-          ...(config.headers as Record<string, string> | undefined),
-        },
+        ...restConfig,
+        headers: auth ? { Authorization: this.token, ...(headers ?? {}) } : headers,
       }),
     );
 
