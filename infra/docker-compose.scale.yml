@@ -1,0 +1,81 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: maxim
+      POSTGRES_PASSWORD: maxim
+      POSTGRES_DB: maxim
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+
+  api-ingress:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      APP_ROLE: ingress
+    depends_on:
+      - postgres
+      - redis
+    ports:
+      - '3001:3001'
+
+  api-enqueue:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      APP_ROLE: enqueue
+    depends_on:
+      - postgres
+      - redis
+
+  api-moderation:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      APP_ROLE: moderation
+      MODERATION_CONCURRENCY: 24
+    depends_on:
+      - postgres
+      - redis
+
+  api-action:
+    build:
+      context: ..
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      APP_ROLE: action
+      ACTION_CONCURRENCY: 24
+    depends_on:
+      - postgres
+      - redis
+
+  miniapp-static:
+    build:
+      context: ..
+      dockerfile: apps/miniapp/Dockerfile
+    restart: unless-stopped
+    ports:
+      - '3000:3000'
+
+volumes:
+  postgres_data:

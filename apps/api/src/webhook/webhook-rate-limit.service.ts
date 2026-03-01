@@ -5,19 +5,33 @@ import Redis from 'ioredis';
 @Injectable()
 export class WebhookRateLimitService {
   private readonly redis: Redis;
-  private readonly limit: number;
+  private readonly globalLimit: number;
+  private readonly burstLimit: number;
 
   constructor(private readonly configService: ConfigService) {
     this.redis = new Redis(this.configService.getOrThrow<string>('REDIS_URL'));
-    this.limit = this.configService.get<number>('WEBHOOK_RPS_LIMIT', 30);
+    this.globalLimit = this.configService.get<number>('WEBHOOK_GLOBAL_RPS_LIMIT', 300);
+    this.burstLimit = this.configService.get<number>('WEBHOOK_BURST_LIMIT', 450);
   }
 
-  async isAllowed(sourceIp: string): Promise<boolean> {
-    const key = `webhook:rps:${sourceIp}:${Math.floor(Date.now() / 1000)}`;
-    const count = await this.redis.incr(key);
-    if (count === 1) {
-      await this.redis.expire(key, 2);
+  async isAllowed(_sourceIp: string): Promise<boolean> {
+    const nowSec = Math.floor(Date.now() / 1000);
+    const secKey = `webhook:rps:global:${nowSec}`;
+    const avgWindowKey = `webhook:rps:avg:${Math.floor(nowSec / 20)}`;
+
+    const secCount = await this.redis.incr(secKey);
+    if (secCount === 1) {
+      await this.redis.expire(secKey, 2);
     }
-    return count <= this.limit;
+    if (secCount > this.burstLimit) {
+      return false;
+    }
+
+    const avgWindowCount = await this.redis.incr(avgWindowKey);
+    if (avgWindowCount === 1) {
+      await this.redis.expire(avgWindowKey, 21);
+    }
+
+    return avgWindowCount <= this.globalLimit * 20;
   }
 }

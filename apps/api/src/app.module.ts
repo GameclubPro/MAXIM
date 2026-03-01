@@ -1,4 +1,3 @@
-import { HttpModule } from '@nestjs/axios';
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
@@ -9,6 +8,7 @@ import { HealthModule } from './health/health.module';
 import { MaxModule } from './max/max.module';
 import { ModerationModule } from './moderation/moderation.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { SystemModule } from './system/system.module';
 import { WebhookModule } from './webhook/webhook.module';
 
 @Module({
@@ -33,10 +33,6 @@ import { WebhookModule } from './webhook/webhook.module';
         redact: ['req.headers.authorization', 'req.headers.x-max-secret'],
       },
     }),
-    HttpModule.register({
-      timeout: 5_000,
-      maxRedirects: 0,
-    }),
     BullModule.forRootAsync({
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
@@ -50,6 +46,7 @@ import { WebhookModule } from './webhook/webhook.module';
     ModerationModule,
     WebhookModule,
     AdminModule,
+    SystemModule,
     HealthModule,
   ],
 })

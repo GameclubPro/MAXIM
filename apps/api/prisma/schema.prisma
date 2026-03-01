@@ -45,6 +45,7 @@ enum Operator {
 
 enum WebhookStatus {
   RECEIVED
+  QUEUED
   PROCESSED
   DUPLICATE
   FAILED
@@ -212,6 +213,7 @@ model Violation {
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
   @@index([chatId, userId, createdAt])
+  @@index([chatId, userId, ruleCode, createdAt])
   @@map("violations")
 }
 
@@ -233,6 +235,7 @@ model ModerationEvent {
 
   @@index([chatId, createdAt])
   @@index([chatId, userId, createdAt])
+  @@index([chatId, userId, action, createdAt(sort: Desc)])
   @@map("moderation_events")
 }
 
@@ -244,10 +247,14 @@ model WebhookEvent {
   rawPayload        Json          @map("raw_payload")
   normalizedPayload Json          @map("normalized_payload")
   errorMessage      String?       @map("error_message")
+  queuedAt          DateTime?     @map("queued_at")
+  enqueueAttempts   Int           @default(0) @map("enqueue_attempts")
+  nextEnqueueAt     DateTime?     @map("next_enqueue_at")
   createdAt         DateTime      @default(now()) @map("created_at")
   processedAt       DateTime?     @map("processed_at")
 
   @@index([status, createdAt])
+  @@index([status, nextEnqueueAt, createdAt])
   @@map("webhook_events")
 }
 

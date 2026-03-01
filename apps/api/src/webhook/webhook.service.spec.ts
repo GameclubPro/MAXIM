@@ -2,7 +2,7 @@ import { WebhookStatus } from '@prisma/client';
 import { WebhookService } from './webhook.service';
 
 describe('WebhookService', () => {
-  it('enqueues new webhook event', async () => {
+  it('stores new webhook event in RECEIVED state', async () => {
     const prisma = {
       webhookEvent: {
         create: jest.fn().mockResolvedValue({ id: 'evt-1' }),
@@ -10,11 +10,11 @@ describe('WebhookService', () => {
       },
     };
 
-    const queue = {
-      add: jest.fn().mockResolvedValue(undefined),
+    const config = {
+      get: jest.fn().mockReturnValue(1),
     };
 
-    const service = new WebhookService(prisma as never, queue as never);
+    const service = new WebhookService(prisma as never, config as never);
     const result = await service.ingest(
       {
         updateId: 'u-1',
@@ -24,7 +24,7 @@ describe('WebhookService', () => {
     );
 
     expect(result).toEqual({ accepted: true, duplicate: false });
-    expect(queue.add).toHaveBeenCalledTimes(1);
+    expect(prisma.webhookEvent.create).toHaveBeenCalledTimes(1);
   });
 
   it('marks duplicate events', async () => {
@@ -35,11 +35,11 @@ describe('WebhookService', () => {
       },
     };
 
-    const queue = {
-      add: jest.fn(),
+    const config = {
+      get: jest.fn().mockReturnValue(1),
     };
 
-    const service = new WebhookService(prisma as never, queue as never);
+    const service = new WebhookService(prisma as never, config as never);
     const result = await service.ingest(
       {
         updateId: 'u-1',

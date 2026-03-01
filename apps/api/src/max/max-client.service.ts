@@ -1,7 +1,12 @@
 import { HttpService } from '@nestjs/axios';
-import { Injectable, Logger } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Injectable, Logger, OnModuleDestroy, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type { Queue } from 'bullmq';
+import { randomUUID } from 'node:crypto';
 import { firstValueFrom } from 'rxjs';
+import Redis from 'ioredis';
+import { ActionHealthService } from '../system/action-health.service';
 
 export type MaxBotChat = {
   chatId: string;
@@ -18,57 +23,174 @@ export type MaxSendMessageOptions = {
   button?: MaxMessageButton;
 };
 
+export type MaxActionType =
+  | 'DELETE_MESSAGE'
+  | 'SEND_MESSAGE'
+  | 'KICK_MEMBER'
+  | 'BAN_MEMBER'
+  | 'NOTIFY_MODERATORS';
+
+export type MaxActionJob = {
+  actionType: MaxActionType;
+  chatId: string;
+  messageId?: string;
+  userId?: string;
+  text?: string;
+  options?: MaxSendMessageOptions;
+  attempt: number;
+  idempotencyKey: string;
+  createdAt: string;
+};
+
 @Injectable()
-export class MaxClientService {
+export class MaxClientService implements OnModuleDestroy {
   private readonly logger = new Logger(MaxClientService.name);
   private readonly baseUrl: string;
   private readonly token: string;
+  private readonly dispatchEnabled: boolean;
+  private readonly globalRpsLimit: number;
+  private readonly chatRpsLimit: number;
+  private readonly circuitFailureThreshold: number;
+  private readonly circuitWindowSec: number;
+  private readonly circuitOpenSec: number;
+  private readonly limiterRedis: Redis;
+  private readonly criticalFailuresMs: number[] = [];
+  private circuitOpenUntilMs = 0;
 
   constructor(
     private readonly httpService: HttpService,
     configService: ConfigService,
+    private readonly actionHealthService: ActionHealthService,
+    @Optional() @InjectQueue('moderation-actions') private readonly actionQueue?: Queue<MaxActionJob>,
   ) {
     this.baseUrl = configService.getOrThrow<string>('MAX_API_BASE_URL');
     this.token = configService.getOrThrow<string>('MAX_BOT_TOKEN');
+    this.dispatchEnabled = configService.get<boolean>('MAX_ACTION_DISPATCH_ENABLED', true);
+    this.globalRpsLimit = configService.get<number>('MAX_API_GLOBAL_RPS', 120);
+    this.chatRpsLimit = configService.get<number>('MAX_API_CHAT_RPS', 10);
+    this.circuitFailureThreshold = configService.get<number>('MAX_API_CIRCUIT_FAILURE_THRESHOLD', 30);
+    this.circuitWindowSec = configService.get<number>('MAX_API_CIRCUIT_WINDOW_SEC', 30);
+    this.circuitOpenSec = configService.get<number>('MAX_API_CIRCUIT_OPEN_SEC', 20);
+    this.limiterRedis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
+  }
+
+  async onModuleDestroy() {
+    await this.limiterRedis.quit();
   }
 
   async deleteMessage(chatId: string, messageId: string) {
-    await this.request('delete', '/messages', {
-      params: {
-        message_id: messageId,
-        chat_id: chatId,
-      },
+    await this.dispatchAction({
+      actionType: 'DELETE_MESSAGE',
+      chatId,
+      messageId,
     });
   }
 
   async sendMessage(chatId: string, text: string, options?: MaxSendMessageOptions) {
-    const attachment = this.buildInlineKeyboardAttachment(options?.button);
-    await this.request('post', '/messages', {
-      params: {
-        chat_id: chatId,
-      },
-      data: {
-        text,
-        ...(attachment ? { attachments: [attachment] } : {}),
-      },
+    await this.dispatchAction({
+      actionType: 'SEND_MESSAGE',
+      chatId,
+      text,
+      options,
     });
   }
 
   async kickMember(chatId: string, userId: string) {
-    await this.request('delete', `/chats/${chatId}/members`, {
-      params: {
-        user_id: userId,
-      },
+    await this.dispatchAction({
+      actionType: 'KICK_MEMBER',
+      chatId,
+      userId,
     });
   }
 
   async banMember(chatId: string, userId: string) {
-    await this.request('delete', `/chats/${chatId}/members`, {
-      params: {
-        user_id: userId,
-        block: true,
-      },
+    await this.dispatchAction({
+      actionType: 'BAN_MEMBER',
+      chatId,
+      userId,
     });
+  }
+
+  async notifyModerators(chatId: string, text: string) {
+    await this.dispatchAction({
+      actionType: 'NOTIFY_MODERATORS',
+      chatId,
+      text,
+    });
+  }
+
+  async executeActionJob(job: MaxActionJob): Promise<void> {
+    const action = {
+      ...job,
+      attempt: Number.isInteger(job.attempt) && job.attempt > 0 ? job.attempt : 1,
+    };
+
+    switch (action.actionType) {
+      case 'DELETE_MESSAGE':
+        if (!action.messageId) {
+          throw new Error('messageId is required for DELETE_MESSAGE');
+        }
+        await this.executeMutation(action.chatId, async () => {
+          await this.request('delete', '/messages', {
+            params: {
+              message_id: action.messageId,
+              chat_id: action.chatId,
+            },
+          });
+        });
+        return;
+
+      case 'SEND_MESSAGE': {
+        if (typeof action.text !== 'string') {
+          throw new Error('text is required for SEND_MESSAGE');
+        }
+        const attachment = this.buildInlineKeyboardAttachment(action.options?.button);
+        await this.executeMutation(action.chatId, async () => {
+          await this.request('post', '/messages', {
+            params: {
+              chat_id: action.chatId,
+            },
+            data: {
+              text: action.text,
+              ...(attachment ? { attachments: [attachment] } : {}),
+            },
+          });
+        });
+        return;
+      }
+
+      case 'KICK_MEMBER':
+        if (!action.userId) {
+          throw new Error('userId is required for KICK_MEMBER');
+        }
+        await this.executeMutation(action.chatId, async () => {
+          await this.request('delete', `/chats/${action.chatId}/members`, {
+            params: {
+              user_id: action.userId,
+            },
+          });
+        });
+        return;
+
+      case 'BAN_MEMBER':
+        if (!action.userId) {
+          throw new Error('userId is required for BAN_MEMBER');
+        }
+        await this.executeMutation(action.chatId, async () => {
+          await this.request('delete', `/chats/${action.chatId}/members`, {
+            params: {
+              user_id: action.userId,
+              block: true,
+            },
+          });
+        });
+        return;
+
+      case 'NOTIFY_MODERATORS':
+        this.logger.warn({ chatId: action.chatId, text: action.text ?? '' }, 'Moderator alert');
+        this.actionHealthService.recordSuccess();
+        return;
+    }
   }
 
   async getChatTitle(chatId: string): Promise<string | null> {
@@ -165,8 +287,29 @@ export class MaxClientService {
     return results;
   }
 
-  async notifyModerators(chatId: string, text: string) {
-    this.logger.warn({ chatId, text }, 'Moderator alert');
+  private async dispatchAction(payload: Omit<MaxActionJob, 'attempt' | 'idempotencyKey' | 'createdAt'>) {
+    const job: MaxActionJob = {
+      ...payload,
+      attempt: 1,
+      idempotencyKey: randomUUID(),
+      createdAt: new Date().toISOString(),
+    };
+
+    if (this.dispatchEnabled && this.actionQueue) {
+      await this.actionQueue.add('execute-max-action', job, {
+        jobId: job.idempotencyKey,
+        attempts: 5,
+        removeOnComplete: true,
+        removeOnFail: false,
+        backoff: {
+          type: 'exponential',
+          delay: 1_000,
+        },
+      });
+      return;
+    }
+
+    await this.executeActionJob(job);
   }
 
   private buildInlineKeyboardAttachment(button?: MaxMessageButton): Record<string, unknown> | null {
@@ -188,6 +331,75 @@ export class MaxClientService {
         ],
       },
     };
+  }
+
+  private async executeMutation(chatId: string, operation: () => Promise<void>) {
+    await this.ensureCircuitClosed();
+    await this.enforceRateLimit(chatId);
+
+    try {
+      await operation();
+      this.actionHealthService.recordSuccess();
+    } catch (error: unknown) {
+      const status = this.extractStatusCode(error);
+      const isCritical = status === 429 || (typeof status === 'number' && status >= 500);
+      this.actionHealthService.recordFailure(isCritical);
+      if (isCritical) {
+        this.registerCriticalFailure();
+      }
+      throw error;
+    }
+  }
+
+  private async enforceRateLimit(chatId: string) {
+    const nowSec = Math.floor(Date.now() / 1_000);
+    const globalKey = `maxapi:rps:global:${nowSec}`;
+    const globalCount = await this.limiterRedis.incr(globalKey);
+    if (globalCount === 1) {
+      await this.limiterRedis.expire(globalKey, 2);
+    }
+    if (globalCount > this.globalRpsLimit) {
+      throw new Error('MAX API global rate limit exceeded');
+    }
+
+    const chatKey = `maxapi:rps:chat:${chatId}:${nowSec}`;
+    const chatCount = await this.limiterRedis.incr(chatKey);
+    if (chatCount === 1) {
+      await this.limiterRedis.expire(chatKey, 2);
+    }
+    if (chatCount > this.chatRpsLimit) {
+      throw new Error(`MAX API per-chat rate limit exceeded for chat ${chatId}`);
+    }
+  }
+
+  private async ensureCircuitClosed() {
+    const now = Date.now();
+    if (now < this.circuitOpenUntilMs) {
+      throw new Error('MAX API circuit breaker is open');
+    }
+
+    const windowStart = now - this.circuitWindowSec * 1_000;
+    while (this.criticalFailuresMs.length > 0 && this.criticalFailuresMs[0] < windowStart) {
+      this.criticalFailuresMs.shift();
+    }
+
+    if (this.criticalFailuresMs.length >= this.circuitFailureThreshold) {
+      this.circuitOpenUntilMs = now + this.circuitOpenSec * 1_000;
+      throw new Error('MAX API circuit breaker opened due to critical failures');
+    }
+  }
+
+  private registerCriticalFailure(now = Date.now()) {
+    this.criticalFailuresMs.push(now);
+    const windowStart = now - this.circuitWindowSec * 1_000;
+    while (this.criticalFailuresMs.length > 0 && this.criticalFailuresMs[0] < windowStart) {
+      this.criticalFailuresMs.shift();
+    }
+  }
+
+  private extractStatusCode(error: unknown): number | null {
+    const maybeStatus = (error as { response?: { status?: number } })?.response?.status;
+    return typeof maybeStatus === 'number' ? maybeStatus : null;
   }
 
   private async request<T = unknown>(

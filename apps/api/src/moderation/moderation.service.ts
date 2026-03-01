@@ -1,10 +1,20 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import type { MaxUpdate } from '@maxim/contracts';
-import { EventType, Operator, SanctionAction, WebhookStatus } from '@prisma/client';
+import {
+  EventType,
+  Operator,
+  Prisma,
+  SanctionAction,
+  WebhookStatus,
+  type ChatSettings,
+} from '@prisma/client';
 import type { Job } from 'bullmq';
 import { MaxClientService, type MaxSendMessageOptions } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { getAppRole, roleRunsModeration } from '../runtime/app-role';
+import { SystemModeService } from '../system/system-mode.service';
+import { ChatContextCacheService } from './chat-context-cache.service';
 import type { DuplicateAction, DuplicateDecision, DuplicateHit } from './rule-engine.service';
 import { RuleEngineService } from './rule-engine.service';
 import { SanctionService } from './sanction.service';
@@ -59,6 +69,8 @@ export class ModerationService {
     private readonly ruleEngine: RuleEngineService,
     private readonly sanctionService: SanctionService,
     private readonly maxClient: MaxClientService,
+    @Optional() private readonly chatContextCache?: ChatContextCacheService,
+    @Optional() private readonly systemModeService?: SystemModeService,
   ) {}
 
   async processWebhookEvent(webhookEventId: string) {
@@ -80,14 +92,24 @@ export class ModerationService {
           status: WebhookStatus.PROCESSED,
           processedAt: new Date(),
           errorMessage: null,
+          nextEnqueueAt: null,
         },
       });
     } catch (error: unknown) {
+      const recoveredRawPayload =
+        update.raw && typeof update.raw === 'object' && !Array.isArray(update.raw)
+          ? (update.raw as Record<string, unknown>)
+          : null;
+
       await this.prisma.webhookEvent.update({
         where: { id: webhookEvent.id },
         data: {
           status: WebhookStatus.FAILED,
           errorMessage: error instanceof Error ? error.message : 'Unknown error',
+          nextEnqueueAt: new Date(Date.now() + 15_000),
+          ...(recoveredRawPayload
+            ? { rawPayload: recoveredRawPayload as Prisma.InputJsonValue }
+            : {}),
         },
       });
       throw error;
@@ -102,42 +124,27 @@ export class ModerationService {
     const serviceAuthored = this.isServiceAuthoredMessage(update);
 
     const { chatId, chatTitle, senderId, senderName, text, createdAt, messageId } = update.message;
-    const fallbackTitle = `Chat ${chatId}`;
-    const resolvedTitle = chatTitle?.trim() || fallbackTitle;
     const userLabel = this.formatUserLabel(senderName);
-
-    const chat = await this.prisma.chat.upsert({
-      where: { id: chatId },
-      create: {
-        id: chatId,
-        title: resolvedTitle,
-        settings: {
-          create: {},
-        },
+    const mode = this.systemModeService?.getSnapshot() ?? {
+      mode: 'normal',
+      source: 'auto',
+      reason: 'fallback',
+      updatedAt: new Date().toISOString(),
+      manualMode: null,
+      queueLagSec: 0,
+      action: {
+        windowSec: 60,
+        total: 0,
+        success: 0,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
       },
-      update: {
-        ...(chatTitle?.trim()
-          ? {
-              title: chatTitle.trim(),
-            }
-          : {}),
-      },
-      include: {
-        settings: true,
-        domains: true,
-        admins: {
-          select: {
-            userId: true,
-          },
-        },
-      },
-    });
-
-    const settings = chat.settings;
-    if (!settings) {
-      this.logger.warn({ chatId }, 'Chat settings missing after upsert');
-      return;
-    }
+    };
+    const degradeMode = mode.mode === 'degrade';
+    const chat = await this.loadChatContext(chatId, chatTitle);
+    const settings = this.applyDegradeSettings(chat.settings, degradeMode);
     const globalUserBlacklistEnabled = await this.isGlobalUserBlacklistEnabled(
       settings.globalUserBlacklistEnabled,
     );
@@ -214,7 +221,7 @@ export class ModerationService {
     }
 
     const senderIsChatAdmin = this.isSenderChatAdmin(
-      chat.admins as Array<{ userId: string }> | undefined,
+      chat.adminUserIds.map((userId) => ({ userId })),
       senderId,
     );
     if (this.isNightModeActiveNow(settings) && !senderIsChatAdmin) {
@@ -245,7 +252,7 @@ export class ModerationService {
       userId: senderId,
       text,
       settings,
-      domainAllowlist: (chat.domains ?? []).map((item: { domain: string }) => item.domain),
+      domainAllowlist: chat.domainAllowlist,
       effectiveLength: effectiveMessageLength,
       hasPhotoAttachment: mediaFlags.hasPhotoAttachment,
       hasVideoAttachment: mediaFlags.hasVideoAttachment,
@@ -2731,6 +2738,82 @@ export class ModerationService {
       : null;
   }
 
+  private async loadChatContext(chatId: string, chatTitle?: string): Promise<{
+    settings: ChatSettings;
+    domainAllowlist: string[];
+    adminUserIds: string[];
+  }> {
+    if (this.chatContextCache) {
+      const cached = await this.chatContextCache.getChatContext(chatId, chatTitle);
+      return {
+        settings: cached.settings,
+        domainAllowlist: cached.domainAllowlist,
+        adminUserIds: cached.adminUserIds,
+      };
+    }
+
+    const fallbackTitle = `Chat ${chatId}`;
+    const resolvedTitle = chatTitle?.trim() || fallbackTitle;
+    const chat = await this.prisma.chat.upsert({
+      where: { id: chatId },
+      create: {
+        id: chatId,
+        title: resolvedTitle,
+        settings: {
+          create: {},
+        },
+      },
+      update: {
+        ...(chatTitle?.trim()
+          ? {
+              title: chatTitle.trim(),
+            }
+          : {}),
+      },
+      include: {
+        settings: true,
+        domains: {
+          select: {
+            domain: true,
+          },
+        },
+        admins: {
+          select: {
+            userId: true,
+          },
+        },
+      },
+    });
+
+    if (!chat.settings) {
+      throw new Error(`Chat settings missing for chat ${chatId}`);
+    }
+
+    return {
+      settings: chat.settings,
+      domainAllowlist: (chat.domains ?? []).map((item) => item.domain),
+      adminUserIds: (chat.admins ?? []).map((item) => item.userId),
+    };
+  }
+
+  private applyDegradeSettings(settings: ChatSettings, degradeMode: boolean): ChatSettings {
+    if (!degradeMode) {
+      return settings;
+    }
+
+    return {
+      ...settings,
+      linkBotMessageEnabled: false,
+      textFiltersBotMessageEnabled: false,
+      messageLimitsBotMessageEnabled: false,
+      duplicateBotMessageEnabled: false,
+      greetingBotMessageEnabled: false,
+      nightModeBotMessageEnabled: false,
+      commercialAdsFilterEnabled: false,
+      russianProfanityFilterEnabled: false,
+    };
+  }
+
   private readLowerString(value: unknown): string | null {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim().toLowerCase() : null;
   }
@@ -2758,7 +2841,7 @@ export class ModerationService {
 }
 
 @Processor('moderation', {
-  concurrency: 10,
+  concurrency: Number(process.env.MODERATION_CONCURRENCY ?? 24),
 })
 export class ModerationProcessor extends WorkerHost {
   constructor(private readonly moderationService: ModerationService) {
@@ -2766,6 +2849,9 @@ export class ModerationProcessor extends WorkerHost {
   }
 
   async process(job: Job<ProcessWebhookJob>) {
+    if (!roleRunsModeration(getAppRole())) {
+      return;
+    }
     await this.moderationService.processWebhookEvent(job.data.webhookEventId);
   }
 }

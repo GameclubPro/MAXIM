@@ -16,5 +16,15 @@ Production-ready monorepo for MAX chat moderation bot and admin mini-app.
 4. Run API: `npm run dev --workspace @maxim/api`.
 5. Run mini-app: `npm run dev --workspace @maxim/miniapp`.
 
+## Role-based API runtime
+- Single process (default): `APP_ROLE=all`.
+- Split roles:
+  - ingress: `npm run dev:ingress --workspace @maxim/api`
+  - enqueue: `npm run dev:enqueue --workspace @maxim/api`
+  - moderation: `npm run dev:moderation --workspace @maxim/api`
+  - action: `npm run dev:action --workspace @maxim/api`
+
+For Docker-based split runtime use `infra/docker-compose.scale.yml`.
+
 ## Security note
 Never commit real bot tokens or production secrets.

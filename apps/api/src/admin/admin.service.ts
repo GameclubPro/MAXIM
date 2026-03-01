@@ -13,6 +13,7 @@ import {
 import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { MaxClientService } from '../max/max-client.service';
+import { ChatContextCacheService } from '../moderation/chat-context-cache.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 type ApplySettingsToAllChatsResult = {
@@ -28,6 +29,7 @@ export class AdminService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly maxClient: MaxClientService,
+    private readonly chatContextCache: ChatContextCacheService,
   ) {}
 
   getMe(user: AuthUser): Me {
@@ -148,6 +150,7 @@ export class AdminService {
         ...fallback,
       },
     });
+    await this.chatContextCache.invalidate(chatId);
 
     return fallback;
   }
@@ -192,6 +195,7 @@ export class AdminService {
         payload: parsed.data,
       },
     });
+    await this.chatContextCache.invalidate(chatId);
 
     return parsed.data;
   }
@@ -263,6 +267,8 @@ export class AdminService {
           },
         },
       });
+
+      await this.chatContextCache.invalidate(chatId);
     }
 
     return {
@@ -357,6 +363,7 @@ export class AdminService {
         },
       },
     });
+    await this.chatContextCache.invalidate(chatId);
 
     return { ok: true };
   }
@@ -383,6 +390,7 @@ export class AdminService {
         },
       },
     });
+    await this.chatContextCache.invalidate(chatId);
 
     return { ok: true };
   }
@@ -432,6 +440,7 @@ export class AdminService {
         },
       },
     });
+    await this.chatContextCache.invalidate(chatId);
 
     return { ok: true };
   }
@@ -459,6 +468,7 @@ export class AdminService {
         },
       },
     });
+    await this.chatContextCache.invalidate(chatId);
 
     return { ok: true };
   }

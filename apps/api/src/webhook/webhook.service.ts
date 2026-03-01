@@ -1,43 +1,33 @@
-import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { WebhookStatus } from '@prisma/client';
-import type { Queue } from 'bullmq';
 import type { MaxUpdate } from '@maxim/contracts';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
+  private readonly rawPayloadSampleRate: number;
 
   constructor(
     private readonly prisma: PrismaService,
-    @InjectQueue('moderation') private readonly queue: Queue,
-  ) {}
+    configService: ConfigService,
+  ) {
+    this.rawPayloadSampleRate = configService.get<number>('RAW_PAYLOAD_SAMPLE_RATE', 0.01);
+  }
 
   async ingest(update: MaxUpdate, sourceIp: string | null) {
     try {
-      const event = await this.prisma.webhookEvent.create({
+      const shouldKeepRawPayload = Math.random() <= this.rawPayloadSampleRate;
+      await this.prisma.webhookEvent.create({
         data: {
           dedupKey: update.updateId,
           sourceIp: sourceIp ?? undefined,
-          rawPayload: update.raw ?? {},
+          rawPayload: shouldKeepRawPayload ? (update.raw ?? {}) : {},
           normalizedPayload: update,
+          status: WebhookStatus.RECEIVED,
         },
       });
-
-      await this.queue.add(
-        'process-webhook-event',
-        { webhookEventId: event.id },
-        {
-          attempts: 5,
-          removeOnComplete: true,
-          removeOnFail: false,
-          backoff: {
-            type: 'exponential',
-            delay: 1_000,
-          },
-        },
-      );
 
       return { accepted: true, duplicate: false };
     } catch (error: unknown) {

@@ -2,16 +2,23 @@ import { NestFactory } from '@nestjs/core';
 import { FastifyAdapter, type NestFastifyApplication } from '@nestjs/platform-fastify';
 import { Logger } from 'nestjs-pino';
 import { AppModule } from './app.module';
+import { getAppRole, roleRunsHttp } from './runtime/app-role';
 
 async function bootstrap() {
   const bodyLimit = Number(process.env.JSON_BODY_LIMIT ?? 1_048_576);
   const port = Number(process.env.PORT ?? 3001);
+  const role = getAppRole();
+  const httpEnabled = roleRunsHttp(role);
 
-  const app = await NestFactory.create<NestFastifyApplication>(
-    AppModule,
-    new FastifyAdapter({ bodyLimit }),
-    { bufferLogs: true },
-  );
+  if (!httpEnabled) {
+    const context = await NestFactory.createApplicationContext(AppModule, { bufferLogs: true });
+    context.useLogger(context.get(Logger));
+    return;
+  }
+
+  const app = await NestFactory.create<NestFastifyApplication>(AppModule, new FastifyAdapter({ bodyLimit }), {
+    bufferLogs: true,
+  });
 
   app.useLogger(app.get(Logger));
   app.setGlobalPrefix('api');
