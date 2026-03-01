@@ -1,5 +1,6 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Injectable, Logger, Optional } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import type { MaxUpdate } from '@maxim/contracts';
 import {
   EventType,
@@ -33,6 +34,9 @@ type ActiveBan = {
 
 const DEFAULT_BAN_DURATION_HOURS = 6;
 const DEFAULT_BOT_BUTTON_TEXT = 'Открыть';
+const DEFAULT_BOT_MESSAGES_DELETE_DELAY_MINUTES = 2;
+const BOT_MESSAGES_DELETE_DELAY_MIN_MINUTES = 1;
+const BOT_MESSAGES_DELETE_DELAY_MAX_MINUTES = 60;
 const DEFAULT_NIGHT_MODE_TIMEZONE = 'Europe/Moscow';
 const LINK_ESCALATION_WINDOW_HOURS = 24;
 const TEXT_FILTER_ESCALATION_WINDOW_HOURS = 24;
@@ -61,6 +65,7 @@ const TEXT_FILTER_RULE_CODES = new Set(['PROFANITY', 'COMMERCIAL_AD']);
 export class ModerationService {
   private readonly logger = new Logger(ModerationService.name);
   private globalUserBlacklistEnabledCache: { value: boolean; checkedAt: number } | null = null;
+  private readonly ownBotUserId: string | null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -69,7 +74,10 @@ export class ModerationService {
     private readonly maxClient: MaxClientService,
     @Optional() private readonly chatContextCache?: ChatContextCacheService,
     @Optional() private readonly systemModeService?: SystemModeService,
-  ) {}
+    @Optional() configService?: ConfigService,
+  ) {
+    this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
+  }
 
   async processWebhookEvent(webhookEventId: string) {
     const webhookEvent = await this.prisma.webhookEvent.findUnique({
@@ -187,12 +195,22 @@ export class ModerationService {
     }
 
     if (this.isBotAuthoredMessage(update)) {
-      if (settings.removeBotsFromGroupEnabled) {
+      const senderIsOwnBot = this.isOwnBotSender(senderId);
+
+      if (settings.removeBotsFromGroupEnabled && !senderIsOwnBot) {
         await this.handleBotMessage({
           chatId,
           userId: senderId,
           messageId,
           text,
+        });
+      } else if (settings.deleteBotMessagesEnabled && senderIsOwnBot) {
+        await this.handleBotMessageAutoDelete({
+          chatId,
+          userId: senderId,
+          messageId,
+          text,
+          delayMinutes: settings.deleteBotMessagesDelayMinutes,
         });
       }
       return;
@@ -1948,6 +1966,51 @@ export class ModerationService {
     }
   }
 
+  private async handleBotMessageAutoDelete(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    text: string;
+    delayMinutes: number;
+  }) {
+    const { chatId, userId, messageId, text, delayMinutes } = params;
+    const safeDelayMinutes = this.normalizeDeleteBotMessagesDelayMinutes(delayMinutes);
+
+    try {
+      await this.maxClient.deleteMessage(chatId, messageId, {
+        delayMs: safeDelayMinutes * 60 * 1000,
+      });
+      await this.prisma.moderationEvent.create({
+        data: {
+          chatId,
+          userId,
+          messageId,
+          eventType: EventType.MESSAGE,
+          ruleCode: 'BOT_MESSAGE_AUTO_DELETE',
+          action: SanctionAction.DELETE_MESSAGE,
+          maskedExcerpt: maskText(text),
+          score: 0.5,
+          operator: Operator.BOT,
+          metadata: {
+            reason: 'Bot-authored message scheduled for delayed auto-delete',
+            delayMinutes: safeDelayMinutes,
+          },
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          messageId,
+          delayMinutes: safeDelayMinutes,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to schedule bot-authored message auto-delete',
+      );
+    }
+  }
+
   private async handleServiceBotEvent(params: {
     chatId: string;
     messageId: string;
@@ -2876,6 +2939,29 @@ export class ModerationService {
 
   private readLowerString(value: unknown): string | null {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim().toLowerCase() : null;
+  }
+
+  private normalizeOwnBotUserId(value: string | undefined): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const normalized = value.trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private isOwnBotSender(userId: string): boolean {
+    return this.ownBotUserId !== null && userId === this.ownBotUserId;
+  }
+
+  private normalizeDeleteBotMessagesDelayMinutes(value: number): number {
+    if (!Number.isInteger(value)) {
+      return DEFAULT_BOT_MESSAGES_DELETE_DELAY_MINUTES;
+    }
+
+    return Math.min(
+      BOT_MESSAGES_DELETE_DELAY_MAX_MINUTES,
+      Math.max(BOT_MESSAGES_DELETE_DELAY_MIN_MINUTES, value),
+    );
   }
 
   private readBanDurationHoursFromMetadata(metadata: unknown, fallback: number): number {

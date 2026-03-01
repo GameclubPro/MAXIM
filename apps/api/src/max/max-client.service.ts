@@ -42,6 +42,12 @@ export type MaxActionJob = {
   createdAt: string;
 };
 
+type MaxActionDispatchOptions = {
+  delayMs?: number;
+};
+
+const MAX_ACTION_DELAY_MS = 24 * 60 * 60 * 1000;
+
 @Injectable()
 export class MaxClientService implements OnModuleDestroy {
   private readonly logger = new Logger(MaxClientService.name);
@@ -55,6 +61,7 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly circuitOpenSec: number;
   private readonly limiterRedis: Redis;
   private readonly criticalFailuresMs: number[] = [];
+  private readonly pendingTimeouts = new Set<NodeJS.Timeout>();
   private circuitOpenUntilMs = 0;
 
   constructor(
@@ -75,15 +82,19 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async onModuleDestroy() {
+    for (const timeout of this.pendingTimeouts) {
+      clearTimeout(timeout);
+    }
+    this.pendingTimeouts.clear();
     await this.limiterRedis.quit();
   }
 
-  async deleteMessage(chatId: string, messageId: string) {
+  async deleteMessage(chatId: string, messageId: string, options?: MaxActionDispatchOptions) {
     await this.dispatchAction({
       actionType: 'DELETE_MESSAGE',
       chatId,
       messageId,
-    });
+    }, options);
   }
 
   async sendMessage(chatId: string, text: string, options?: MaxSendMessageOptions) {
@@ -287,13 +298,17 @@ export class MaxClientService implements OnModuleDestroy {
     return results;
   }
 
-  private async dispatchAction(payload: Omit<MaxActionJob, 'attempt' | 'idempotencyKey' | 'createdAt'>) {
+  private async dispatchAction(
+    payload: Omit<MaxActionJob, 'attempt' | 'idempotencyKey' | 'createdAt'>,
+    options?: MaxActionDispatchOptions,
+  ) {
     const job: MaxActionJob = {
       ...payload,
       attempt: 1,
       idempotencyKey: randomUUID(),
       createdAt: new Date().toISOString(),
     };
+    const delayMs = this.normalizeDelayMs(options?.delayMs);
 
     if (this.dispatchEnabled && this.actionQueue) {
       await this.actionQueue.add('execute-max-action', job, {
@@ -301,6 +316,7 @@ export class MaxClientService implements OnModuleDestroy {
         attempts: 5,
         removeOnComplete: true,
         removeOnFail: false,
+        ...(delayMs > 0 ? { delay: delayMs } : {}),
         backoff: {
           type: 'exponential',
           delay: 1_000,
@@ -309,7 +325,40 @@ export class MaxClientService implements OnModuleDestroy {
       return;
     }
 
+    if (delayMs > 0) {
+      const timeout = setTimeout(() => {
+        this.pendingTimeouts.delete(timeout);
+        void this.executeActionJob(job).catch((error: unknown) => {
+          this.logger.warn(
+            {
+              actionType: job.actionType,
+              chatId: job.chatId,
+              messageId: job.messageId,
+              userId: job.userId,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed delayed max action',
+          );
+        });
+      }, delayMs);
+      this.pendingTimeouts.add(timeout);
+      return;
+    }
+
     await this.executeActionJob(job);
+  }
+
+  private normalizeDelayMs(value: number | undefined): number {
+    if (typeof value !== 'number' || !Number.isFinite(value)) {
+      return 0;
+    }
+
+    const normalized = Math.trunc(value);
+    if (normalized <= 0) {
+      return 0;
+    }
+
+    return Math.min(normalized, MAX_ACTION_DELAY_MS);
   }
 
   private buildInlineKeyboardAttachment(button?: MaxMessageButton): Record<string, unknown> | null {

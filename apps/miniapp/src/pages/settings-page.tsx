@@ -30,6 +30,8 @@ const PHOTO_COOLDOWN_MAX_HOURS = 24;
 const COMMERCIAL_SENSITIVITY_MIN = 0;
 const COMMERCIAL_SENSITIVITY_MAX = 100;
 const COMMERCIAL_BALANCED_MAX = 69;
+const BOT_MESSAGES_DELETE_DELAY_MIN = 1;
+const BOT_MESSAGES_DELETE_DELAY_MAX = 60;
 
 type DuplicateEnabledKey = 'duplicateWarnEnabled' | 'duplicateKickEnabled' | 'duplicateBanEnabled';
 type DuplicateWindowKey =
@@ -63,6 +65,7 @@ type HintKey =
   | 'nightModeEnabled'
   | 'nightBotMessage'
   | 'nightBotButton'
+  | 'deleteBotMessages'
   | 'removeBotsFromGroup'
   | 'globalBlacklist';
 type BotMessageEditorKey = 'link' | 'greeting' | 'textFilters' | 'duplicate' | 'messageLimits' | 'night';
@@ -816,6 +819,25 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     setFieldValue('banDurationHours', next as ChatSettings['banDurationHours']);
   }
 
+  function adjustDeleteBotMessagesDelay(deltaMinutes: number) {
+    if (!draft) {
+      return;
+    }
+
+    const next = Math.min(
+      BOT_MESSAGES_DELETE_DELAY_MAX,
+      Math.max(
+        BOT_MESSAGES_DELETE_DELAY_MIN,
+        Number(draft.deleteBotMessagesDelayMinutes) + deltaMinutes,
+      ),
+    );
+
+    setFieldValue(
+      'deleteBotMessagesDelayMinutes',
+      next as ChatSettings['deleteBotMessagesDelayMinutes'],
+    );
+  }
+
   function adjustDuplicateMaxCount(key: DuplicateMaxCountKey, currentValue: number, delta: number) {
     const next = Math.min(
       DUPLICATE_COUNT_MAX,
@@ -1131,6 +1153,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       : `${textFiltersEnabledCount}/2 фильтра · ${textFiltersStagesEnabledCount}/4 ступени`
     : `${textFiltersEnabledCount}/2 фильтра`;
   const extraEnabledCount = [
+    draft?.deleteBotMessagesEnabled,
     draft?.removeBotsFromGroupEnabled,
     draft?.globalUserBlacklistEnabled,
   ].filter(Boolean).length;
@@ -1389,9 +1412,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       <div
                         className="settings-subsection-divider"
                         role="separator"
-                        aria-label="Блок сообщений бота"
+                        aria-label="Блок действий бота"
                       >
-                        <span>Сообщения бота</span>
+                        <span>Действия бота</span>
                       </div>
 
                       <div className="settings-native-toggle">
@@ -2100,9 +2123,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 <div
                   className="settings-subsection-divider"
                   role="separator"
-                  aria-label="Сообщения бота для фильтрации текста"
+                  aria-label="Действия бота для фильтрации текста"
                 >
-                  <span>Сообщения бота</span>
+                  <span>Действия бота</span>
                 </div>
 
                 <div className="settings-native-toggle">
@@ -2621,9 +2644,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 <div
                   className="settings-subsection-divider"
                   role="separator"
-                  aria-label="Блок сообщений бота"
+                  aria-label="Блок действий бота"
                 >
-                  <span>Сообщения бота</span>
+                  <span>Действия бота</span>
                 </div>
 
                 <div className="settings-native-toggle">
@@ -3064,9 +3087,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 <div
                   className="settings-subsection-divider"
                   role="separator"
-                  aria-label="Блок сообщений бота"
+                  aria-label="Блок действий бота"
                 >
-                  <span>Сообщения бота</span>
+                  <span>Действия бота</span>
                 </div>
 
                 <div className="settings-native-toggle">
@@ -3392,9 +3415,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 <div
                   className="settings-subsection-divider"
                   role="separator"
-                  aria-label="Блок сообщений бота для ночного режима"
+                  aria-label="Блок действий бота для ночного режима"
                 >
-                  <span>Сообщения бота</span>
+                  <span>Действия бота</span>
                 </div>
 
                 <div className="settings-native-toggle">
@@ -3599,6 +3622,101 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               className={cn('settings-section__collapse', expandedSections.extra && 'is-open')}
             >
               <div className="settings-section__collapse-inner">
+                <div className="settings-native-toggle">
+                  <div className="settings-native-toggle__row">
+                    <div className="settings-native-toggle__title-wrap">
+                      <span className="settings-native-toggle__title">Удалять свои сообщения</span>
+                      <button
+                        type="button"
+                        className={cn(
+                          'settings-info-button',
+                          openHintKey === 'deleteBotMessages' && 'is-open',
+                        )}
+                        aria-label="Пояснение для удаления своих сообщений ботом"
+                        aria-controls="delete-bot-messages-hint"
+                        aria-expanded={openHintKey === 'deleteBotMessages'}
+                        onClick={() => toggleHint('deleteBotMessages')}
+                      >
+                        <span aria-hidden>i</span>
+                      </button>
+                    </div>
+
+                    <label
+                      className="settings-native-switch"
+                      aria-label="Включить удаление собственных сообщений бота"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={draft.deleteBotMessagesEnabled}
+                        onChange={(event) =>
+                          setFieldValue('deleteBotMessagesEnabled', event.target.checked)
+                        }
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                    </label>
+                  </div>
+
+                  {openHintKey === 'deleteBotMessages' ? (
+                    <p id="delete-bot-messages-hint" className="settings-native-toggle__hint">
+                      Бот будет автоматически удалять собственные сообщения через выбранное время.
+                    </p>
+                  ) : null}
+                </div>
+
+                {draft.deleteBotMessagesEnabled ? (
+                  <div
+                    className={cn(
+                      'settings-native-toggle',
+                      'settings-native-toggle--nested',
+                      fieldErrors.deleteBotMessagesDelayMinutes && 'field--error',
+                    )}
+                  >
+                    <div className="settings-native-toggle__row">
+                      <span className="settings-native-toggle__title">Через сколько удалять</span>
+
+                      <div
+                        className="ban-duration-stepper"
+                        role="group"
+                        aria-label="Задержка удаления сообщений бота в минутах"
+                      >
+                        <button
+                          type="button"
+                          className="ban-duration-stepper__button"
+                          onClick={() => adjustDeleteBotMessagesDelay(-1)}
+                          disabled={
+                            draft.deleteBotMessagesDelayMinutes <= BOT_MESSAGES_DELETE_DELAY_MIN
+                          }
+                          aria-label="Уменьшить задержку удаления сообщений бота"
+                        >
+                          -
+                        </button>
+
+                        <output className="ban-duration-stepper__value" aria-live="polite">
+                          {draft.deleteBotMessagesDelayMinutes} мин
+                        </output>
+
+                        <button
+                          type="button"
+                          className="ban-duration-stepper__button"
+                          onClick={() => adjustDeleteBotMessagesDelay(1)}
+                          disabled={
+                            draft.deleteBotMessagesDelayMinutes >= BOT_MESSAGES_DELETE_DELAY_MAX
+                          }
+                          aria-label="Увеличить задержку удаления сообщений бота"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+
+                    {fieldErrors.deleteBotMessagesDelayMinutes ? (
+                      <small className="field__hint">{fieldErrors.deleteBotMessagesDelayMinutes}</small>
+                    ) : null}
+                  </div>
+                ) : null}
+
                 <div className="settings-native-toggle">
                   <div className="settings-native-toggle__row">
                     <div className="settings-native-toggle__title-wrap">

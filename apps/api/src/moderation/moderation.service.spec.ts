@@ -22,6 +22,8 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     greetingBotButtonEnabled: false,
     greetingBotButtonUrl: '',
     greetingBotButtonText: 'Открыть',
+    deleteBotMessagesEnabled: true,
+    deleteBotMessagesDelayMinutes: 2,
     removeBotsFromGroupEnabled: false,
     globalUserBlacklistEnabled: false,
     maxMessageLengthEnabled: false,
@@ -473,7 +475,10 @@ describe('ModerationService', () => {
         upsert: jest.fn().mockResolvedValue({
           id: 'chat-1',
           title: 'Chat 1',
-          settings: createSettings({ removeBotsFromGroupEnabled: false }),
+          settings: createSettings({
+            removeBotsFromGroupEnabled: false,
+            deleteBotMessagesEnabled: false,
+          }),
           domains: [],
           admins: [],
         }),
@@ -524,6 +529,84 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
+  });
+
+  it('schedules auto-delete for bot-authored messages when toggle is enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            removeBotsFromGroupEnabled: false,
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 2,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalUserBlacklist: {
+        upsert: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn().mockReturnValue('bot-1'),
+      } as never,
+    );
+
+    await service.handleUpdate(createBotAuthoredUpdate());
+
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-bot-1', {
+      delayMs: 2 * 60 * 1000,
+    });
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'bot-1',
+        messageId: 'msg-bot-1',
+        ruleCode: 'BOT_MESSAGE_AUTO_DELETE',
+        action: SanctionAction.DELETE_MESSAGE,
+      }),
+    });
   });
 
   it('removes bot-authored accounts from group when toggle is enabled', async () => {

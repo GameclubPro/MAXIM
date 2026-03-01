@@ -63,6 +63,8 @@ export const chatSettingsSchema = z
     greetingBotButtonEnabled: z.boolean().default(false),
     greetingBotButtonUrl: botButtonUrlSchema,
     greetingBotButtonText: botButtonTextSchema,
+    deleteBotMessagesEnabled: z.boolean().default(true),
+    deleteBotMessagesDelayMinutes: z.number().int().min(1).max(60).default(2),
     removeBotsFromGroupEnabled: z.boolean().default(false),
     globalUserBlacklistEnabled: z.boolean().default(false),
     maxMessageLengthEnabled: z.boolean().default(false),
