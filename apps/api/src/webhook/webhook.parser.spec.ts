@@ -271,4 +271,29 @@ describe('WebhookParser', () => {
     expect(parsed.message?.senderId).toBe('195714583');
     expect(parsed.message?.text).toContain('https://web.telegram.org/');
   });
+
+  it('keeps service join message when sender id is missing', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message: {
+        body: {
+          mid: 'mid-service-join-1',
+          new_members: [
+            {
+              user_id: 777,
+              display_name: 'Новый участник',
+            },
+          ],
+        },
+        recipient: {
+          chat_id: -123456789,
+        },
+        timestamp: 1772249118580,
+      },
+    });
+
+    expect(parsed.message?.messageId).toBe('mid-service-join-1');
+    expect(parsed.message?.chatId).toBe('-123456789');
+    expect(parsed.message?.senderId).toBe('');
+  });
 });

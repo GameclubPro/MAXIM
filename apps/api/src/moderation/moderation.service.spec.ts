@@ -219,6 +219,34 @@ function createServiceUserJoinedUpdateInDataEnvelope(): MaxUpdate {
   };
 }
 
+function createServiceUserJoinedUpdateWithoutServiceSender(): MaxUpdate {
+  return {
+    updateId: 'upd-service-user-join-no-sender-1',
+    type: 'message_created',
+    message: {
+      messageId: 'msg-service-user-join-no-sender-1',
+      chatId: 'chat-1',
+      senderId: '',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'message_created',
+      message: {
+        body: {
+          new_members: [
+            {
+              user_id: 'user-no-sender-2',
+              type: 'user',
+              display_name: 'Новый участник без sender',
+            },
+          ],
+        },
+      },
+    },
+  };
+}
+
 function createOldUpdate(): MaxUpdate {
   return {
     updateId: 'upd-old-1',
@@ -724,6 +752,72 @@ describe('ModerationService', () => {
         chatId: 'chat-1',
         userId: 'user-envelope-2',
         messageId: 'msg-service-user-join-envelope-1',
+        ruleCode: 'GREETING_MESSAGE',
+        action: SanctionAction.NONE,
+      }),
+    });
+  });
+
+  it('sends greeting message when service sender marker is absent but new_members exists', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            greetingEnabled: true,
+            greetingBotMessageEnabled: true,
+            greetingBotMessageText: 'Добро пожаловать, {user}! {greeting}.',
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createServiceUserJoinedUpdateWithoutServiceSender());
+
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Добро пожаловать, "Новый участник без sender"! добро пожаловать в чат.',
+    );
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'user-no-sender-2',
+        messageId: 'msg-service-user-join-no-sender-1',
         ruleCode: 'GREETING_MESSAGE',
         action: SanctionAction.NONE,
       }),

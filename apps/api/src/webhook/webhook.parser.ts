@@ -14,7 +14,7 @@ export class WebhookParser {
     const chatTitle = this.extractChatTitle(message);
     const messageText = this.extractMessageText(message);
     const createdAt = this.extractCreatedAt(message, payload);
-    const hasMessage = Boolean(message && messageId && chatId && senderId);
+    const hasMessage = Boolean(message && messageId && chatId);
 
     const normalized: MaxUpdate = {
       updateId: String(

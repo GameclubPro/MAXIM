@@ -120,6 +120,7 @@ export class ModerationService {
     }
 
     const serviceAuthored = this.isServiceAuthoredMessage(update);
+    const serviceMembersEvent = this.extractServiceMemberUserIds(update).length > 0;
 
     const { chatId, chatTitle, senderId, senderName, text, createdAt, messageId } = update.message;
     const userLabel = this.formatUserLabel(senderName);
@@ -147,7 +148,7 @@ export class ModerationService {
       settings.globalUserBlacklistEnabled,
     );
 
-    if (serviceAuthored) {
+    if (serviceAuthored || serviceMembersEvent) {
       if (globalUserBlacklistEnabled) {
         await this.handleServiceGloballyBlacklistedMembersEvent({
           chatId,
@@ -178,6 +179,10 @@ export class ModerationService {
           greetingBotButtonText: settings.greetingBotButtonText,
         });
       }
+      return;
+    }
+
+    if (!senderId) {
       return;
     }
 
