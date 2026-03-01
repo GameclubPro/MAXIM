@@ -125,7 +125,31 @@ export class AdminService {
       throw new Error('Chat settings missing after upsert');
     }
 
-    return chatSettingsSchema.parse(chat.settings);
+    const parsed = chatSettingsSchema.safeParse(chat.settings);
+    if (parsed.success) {
+      return parsed.data;
+    }
+
+    this.logger.warn(
+      {
+        chatId,
+        issues: parsed.error.issues.map((issue) => ({
+          path: issue.path.join('.'),
+          message: issue.message,
+        })),
+      },
+      'Invalid chat settings found in DB, applying defaults',
+    );
+
+    const fallback = chatSettingsSchema.parse({});
+    await this.prisma.chatSettings.update({
+      where: { chatId },
+      data: {
+        ...fallback,
+      },
+    });
+
+    return fallback;
   }
 
   async updateSettings(chatId: string, user: AuthUser, body: unknown): Promise<ChatSettings> {
