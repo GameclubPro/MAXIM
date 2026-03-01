@@ -680,6 +680,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     draft?.russianProfanityFilterEnabled,
     draft?.commercialAdsFilterEnabled,
   ].filter(Boolean).length;
+  const textFiltersStagesEnabledCount = [
+    draft?.textFiltersBotMessageEnabled,
+    draft?.textFiltersWarnEnabled,
+    draft?.textFiltersBanEnabled,
+    draft?.textFiltersKickEnabled,
+  ].filter(Boolean).length;
   const commercialSensitivitySliderValue = draft
     ? inferCommercialSensitivitySliderValue(draft)
     : 50;
@@ -700,7 +706,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       )}`
     : '23:00-08:00';
   const textFiltersHeaderSummary = draft
-    ? `${textFiltersEnabledCount}/2 фильтра · ${commercialSensitivityLabel.toLowerCase()}`
+    ? `${textFiltersEnabledCount}/2 фильтра · ${textFiltersStagesEnabledCount}/4 ступени · ${commercialSensitivityLabel.toLowerCase()}`
     : `${textFiltersEnabledCount}/2 фильтра`;
 
   return (
@@ -1222,7 +1228,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                 <div className="settings-native-toggle">
                   <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title">Сообщение от бота</span>
+                    <span className="settings-native-toggle__title">1. Объяснение</span>
 
                     <label
                       className="settings-native-switch"
@@ -1248,8 +1254,75 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   </div>
 
                   <p className="settings-native-toggle__hint">
-                    Бот поясняет удаление, если сообщение попало под текстовый фильтр.
+                    Санкции усиливаются по ступеням, если пользователь повторно нарушает
+                    текстовый фильтр в течение 24 часов.
                   </p>
+                </div>
+
+                <div className="settings-native-toggle settings-native-toggle--nested">
+                  <div className="settings-native-toggle__row">
+                    <span className="settings-native-toggle__title">2. Предупреждение</span>
+
+                    <label
+                      className="settings-native-switch"
+                      aria-label="Включить предупреждение за второе нарушение текстового фильтра"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={draft.textFiltersWarnEnabled}
+                        onChange={(event) =>
+                          setFieldValue('textFiltersWarnEnabled', event.target.checked)
+                        }
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="settings-native-toggle settings-native-toggle--nested">
+                  <div className="settings-native-toggle__row">
+                    <span className="settings-native-toggle__title">3. Бан на 6ч</span>
+
+                    <label
+                      className="settings-native-switch"
+                      aria-label="Включить бан на шесть часов за третье нарушение текстового фильтра"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={draft.textFiltersBanEnabled}
+                        onChange={(event) =>
+                          setFieldValue('textFiltersBanEnabled', event.target.checked)
+                        }
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                    </label>
+                  </div>
+                </div>
+
+                <div className="settings-native-toggle settings-native-toggle--nested">
+                  <div className="settings-native-toggle__row">
+                    <span className="settings-native-toggle__title">4. Удаление из группы</span>
+
+                    <label
+                      className="settings-native-switch"
+                      aria-label="Включить удаление из группы за четвертое нарушение текстового фильтра"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={draft.textFiltersKickEnabled}
+                        onChange={(event) =>
+                          setFieldValue('textFiltersKickEnabled', event.target.checked)
+                        }
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                    </label>
+                  </div>
                 </div>
 
                 {draft.textFiltersBotMessageEnabled ? (

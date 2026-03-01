@@ -42,6 +42,9 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     commercialAdsLowConfidenceLogEnabled: true,
     commercialAdsWarnFirstEnabled: true,
     textFiltersBotMessageEnabled: false,
+    textFiltersWarnEnabled: false,
+    textFiltersBanEnabled: false,
+    textFiltersKickEnabled: false,
     textFiltersBotButtonEnabled: false,
     textFiltersBotButtonUrl: '',
     textFiltersBotButtonText: 'Открыть',
@@ -1031,6 +1034,220 @@ describe('ModerationService', () => {
       data: expect.objectContaining({
         ruleCode: 'PROFANITY',
         action: SanctionAction.NONE,
+      }),
+    });
+  });
+
+  it('issues WARN on second text-filter violation in 24h when warning stage is enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            textFiltersBotMessageEnabled: false,
+            textFiltersWarnEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+        count: jest.fn().mockResolvedValue(2),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'PROFANITY', score: 0.95, reason: 'Profanity detected' }],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Пользователю "Алексей" вынесено предупреждение: сообщения нарушают правила текстовой модерации.',
+    );
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        ruleCode: 'PROFANITY',
+        action: SanctionAction.WARN,
+        metadata: expect.objectContaining({
+          textFilterViolationCount24h: 2,
+          textFilterEscalationWindowHours: 24,
+        }),
+      }),
+    });
+  });
+
+  it('issues 6h BAN on third text-filter violation in 24h when ban stage is enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            textFiltersBotMessageEnabled: false,
+            textFiltersBanEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+        count: jest.fn().mockResolvedValue(3),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'PROFANITY', score: 0.95, reason: 'Profanity detected' }],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Пользователю "Алексей" выдан бан на 6ч.',
+    );
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        ruleCode: 'PROFANITY',
+        action: SanctionAction.BAN,
+        metadata: expect.objectContaining({
+          banDurationHours: 6,
+          textFilterViolationCount24h: 3,
+          textFilterEscalationWindowHours: 24,
+        }),
+      }),
+    });
+  });
+
+  it('kicks user on fourth text-filter violation in 24h when kick stage is enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            textFiltersBotMessageEnabled: false,
+            textFiltersKickEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+        count: jest.fn().mockResolvedValue(4),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'PROFANITY', score: 0.95, reason: 'Profanity detected' }],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-1');
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Пользователь "Алексей" удален из чата за повторные нарушения текстовой модерации.',
+    );
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        ruleCode: 'PROFANITY',
+        action: SanctionAction.KICK,
+        metadata: expect.objectContaining({
+          textFilterViolationCount24h: 4,
+          textFilterEscalationWindowHours: 24,
+        }),
       }),
     });
   });

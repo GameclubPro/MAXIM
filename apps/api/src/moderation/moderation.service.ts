@@ -32,6 +32,8 @@ const DEFAULT_BOT_BUTTON_TEXT = 'Открыть';
 const DEFAULT_NIGHT_MODE_TIMEZONE = 'Europe/Moscow';
 const LINK_ESCALATION_WINDOW_HOURS = 24;
 const LINK_ESCALATION_BAN_HOURS = 6;
+const TEXT_FILTER_ESCALATION_WINDOW_HOURS = 24;
+const TEXT_FILTER_ESCALATION_BAN_HOURS = 6;
 const COMMERCIAL_REPEAT_WINDOW_FALLBACK_SEC = 24 * 60 * 60;
 const MAX_FORWARD_SCAN_DEPTH = 8;
 const NON_SANCTION_RULE_CODES = new Set([
@@ -330,6 +332,17 @@ export class ModerationService {
       topViolation.ruleCode === 'LINK_BLOCKED'
         ? await this.countRecentLinkViolations(chatId, senderId)
         : null;
+    const isTextFilterHit = this.isTextFilterViolation(topViolation.ruleCode);
+    const textFilterMessageOptions = isTextFilterHit
+      ? this.buildBotMessageOptions(
+          settings.textFiltersBotButtonEnabled,
+          settings.textFiltersBotButtonUrl,
+          settings.textFiltersBotButtonText,
+        )
+      : null;
+    const textFilterViolationCount24h = isTextFilterHit
+      ? await this.countRecentTextFilterViolations(chatId, senderId)
+      : null;
 
     if (
       topViolation.ruleCode === 'LINK_BLOCKED' &&
@@ -412,15 +425,7 @@ export class ModerationService {
       }
     }
 
-    if (
-      this.isTextFilterViolation(topViolation.ruleCode) &&
-      settings.textFiltersBotMessageEnabled
-    ) {
-      const textFilterMessageOptions = this.buildBotMessageOptions(
-        settings.textFiltersBotButtonEnabled,
-        settings.textFiltersBotButtonUrl,
-        settings.textFiltersBotButtonText,
-      );
+    if (isTextFilterHit && settings.textFiltersBotMessageEnabled && textFilterViolationCount24h === 1) {
       try {
         if (textFilterMessageOptions) {
           await this.maxClient.sendMessage(
@@ -477,6 +482,35 @@ export class ModerationService {
           );
         }
       }
+    } else if (isTextFilterHit) {
+      const textFilterAction = this.resolveTextFilterEscalationAction(
+        textFilterViolationCount24h ?? 1,
+        {
+          warnEnabled: settings.textFiltersWarnEnabled,
+          banEnabled: settings.textFiltersBanEnabled,
+          kickEnabled: settings.textFiltersKickEnabled,
+        },
+      );
+      action = textFilterAction;
+      if (textFilterAction === SanctionAction.BAN) {
+        actionBanDurationHours = TEXT_FILTER_ESCALATION_BAN_HOURS;
+      }
+
+      if (textFilterAction === SanctionAction.WARN) {
+        try {
+          await this.maxClient.sendMessage(chatId, this.buildTextFilterWarnExplanation(userLabel));
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              userId: senderId,
+              messageId,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to send text filter warning message',
+          );
+        }
+      }
     } else if (this.shouldResolveSanction(topViolation.ruleCode)) {
       action = await this.sanctionService.resolveAction({
         chatId,
@@ -511,6 +545,22 @@ export class ModerationService {
           );
         }
       }
+
+      if (isTextFilterHit && action === SanctionAction.KICK) {
+        try {
+          await this.maxClient.sendMessage(chatId, this.buildTextFilterKickExplanation(userLabel));
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              userId: senderId,
+              messageId,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to send text filter kick message',
+          );
+        }
+      }
     }
 
     await this.prisma.moderationEvent.create({
@@ -532,6 +582,12 @@ export class ModerationService {
             ? {
                 linkViolationCount24h,
                 linkEscalationWindowHours: LINK_ESCALATION_WINDOW_HOURS,
+              }
+            : {}),
+          ...(isTextFilterHit && textFilterViolationCount24h !== null
+            ? {
+                textFilterViolationCount24h,
+                textFilterEscalationWindowHours: TEXT_FILTER_ESCALATION_WINDOW_HOURS,
               }
             : {}),
         },
@@ -1148,6 +1204,14 @@ export class ModerationService {
     return `Пользователь ${userLabel} удален из чата за повторные ссылки.`;
   }
 
+  private buildTextFilterWarnExplanation(userLabel: string): string {
+    return `Пользователю ${userLabel} вынесено предупреждение: сообщения нарушают правила текстовой модерации.`;
+  }
+
+  private buildTextFilterKickExplanation(userLabel: string): string {
+    return `Пользователь ${userLabel} удален из чата за повторные нарушения текстовой модерации.`;
+  }
+
   private buildDuplicateExplanation(
     userLabel: string,
     decision: DuplicateDecision,
@@ -1266,6 +1330,44 @@ export class ModerationService {
     settings: { warnEnabled: boolean; banEnabled: boolean; kickEnabled: boolean },
   ): SanctionAction {
     const count = Number.isInteger(linkViolationCount24h) ? Math.max(1, linkViolationCount24h) : 1;
+
+    if (count >= 4) {
+      if (settings.kickEnabled) {
+        return SanctionAction.KICK;
+      }
+      if (settings.banEnabled) {
+        return SanctionAction.BAN;
+      }
+      if (settings.warnEnabled) {
+        return SanctionAction.WARN;
+      }
+      return SanctionAction.NONE;
+    }
+
+    if (count === 3) {
+      if (settings.banEnabled) {
+        return SanctionAction.BAN;
+      }
+      if (settings.warnEnabled) {
+        return SanctionAction.WARN;
+      }
+      return SanctionAction.NONE;
+    }
+
+    if (count === 2 && settings.warnEnabled) {
+      return SanctionAction.WARN;
+    }
+
+    return SanctionAction.NONE;
+  }
+
+  private resolveTextFilterEscalationAction(
+    textFilterViolationCount24h: number,
+    settings: { warnEnabled: boolean; banEnabled: boolean; kickEnabled: boolean },
+  ): SanctionAction {
+    const count = Number.isInteger(textFilterViolationCount24h)
+      ? Math.max(1, textFilterViolationCount24h)
+      : 1;
 
     if (count >= 4) {
       if (settings.kickEnabled) {
@@ -1766,6 +1868,35 @@ export class ModerationService {
         chatId,
         userId,
         ruleCode: 'LINK_BLOCKED',
+        createdAt: { gte: since },
+      },
+    });
+
+    return Number.isInteger(count) && count > 0 ? count : 1;
+  }
+
+  private async countRecentTextFilterViolations(chatId: string, userId: string): Promise<number> {
+    const violationModel = this.prisma.violation as unknown as {
+      count?: (args: {
+        where: {
+          chatId: string;
+          userId: string;
+          ruleCode: { in: string[] };
+          createdAt: { gte: Date };
+        };
+      }) => Promise<number>;
+    };
+
+    if (typeof violationModel.count !== 'function') {
+      return 1;
+    }
+
+    const since = new Date(Date.now() - TEXT_FILTER_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000);
+    const count = await violationModel.count({
+      where: {
+        chatId,
+        userId,
+        ruleCode: { in: ['PROFANITY', 'COMMERCIAL_AD'] },
         createdAt: { gte: since },
       },
     });
