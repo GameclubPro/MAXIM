@@ -74,6 +74,11 @@ export class AdminController {
     return this.adminService.getDomainAllowlist(chatId, user);
   }
 
+  @Get('chats/:chatId/domain-allowlist/details')
+  getDomainAllowlistDetails(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.adminService.getDomainAllowlistDetails(chatId, user);
+  }
+
   @Delete('chats/:chatId/domain-allowlist/:domain')
   removeDomain(
     @Param('chatId') chatId: string,
@@ -81,6 +86,16 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.adminService.removeDomain(chatId, user, domain);
+  }
+
+  @Put('chats/:chatId/domain-allowlist/:domain/removal-schedule')
+  scheduleDomainRemoval(
+    @Param('chatId') chatId: string,
+    @Param('domain') domain: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.scheduleDomainRemoval(chatId, user, domain, body);
   }
 
   @Get('chats/:chatId/global-user-blacklist')

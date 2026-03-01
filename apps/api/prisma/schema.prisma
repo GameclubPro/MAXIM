@@ -169,10 +169,12 @@ model DomainAllowlist {
   chatId    String   @map("chat_id")
   domain    String
   createdAt DateTime @default(now()) @map("created_at")
+  removeAfterAt DateTime? @map("remove_after_at")
 
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
   @@id([chatId, domain])
+  @@index([chatId, removeAfterAt], map: "domain_allowlist_chat_id_remove_after_at_idx")
   @@map("domain_allowlist")
 }
 

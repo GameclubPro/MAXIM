@@ -389,6 +389,16 @@ export const addDomainRequestSchema = z.object({
     .regex(/^[a-zA-Z0-9.-]+$/),
 });
 
+export const domainAllowlistEntrySchema = z.object({
+  domain: z.string().trim().min(3),
+  removeAfterAt: z.string().datetime().nullable(),
+});
+export type DomainAllowlistEntry = z.infer<typeof domainAllowlistEntrySchema>;
+
+export const scheduleDomainRemovalRequestSchema = z.object({
+  removeAfterAt: z.string().datetime().nullable(),
+});
+
 export const globalUserBlacklistEntrySchema = z.object({
   userId: z.string().trim().min(1),
   createdAt: z.string().datetime(),

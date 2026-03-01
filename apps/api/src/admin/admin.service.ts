@@ -5,10 +5,12 @@ import {
   dateRangeQuerySchema,
   type ChatSettings,
   chatSettingsSchema,
+  type DomainAllowlistEntry,
   type GlobalUserBlacklistEntry,
   type Me,
   type ModerationEvent,
   type ChatSummary,
+  scheduleDomainRemovalRequestSchema,
 } from '@maxim/contracts';
 import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
@@ -399,12 +401,30 @@ export class AdminService {
     await this.assertChatAdmin(chatId, user.userId);
 
     const rows = await this.prisma.domainAllowlist.findMany({
-      where: { chatId },
+      where: this.activeDomainWhere(chatId),
       orderBy: { domain: 'asc' },
       select: { domain: true },
     });
 
     return rows.map((row: { domain: string }) => row.domain);
+  }
+
+  async getDomainAllowlistDetails(chatId: string, user: AuthUser): Promise<DomainAllowlistEntry[]> {
+    await this.assertChatAdmin(chatId, user.userId);
+
+    const rows = await this.prisma.domainAllowlist.findMany({
+      where: this.activeDomainWhere(chatId),
+      orderBy: [{ removeAfterAt: 'asc' }, { domain: 'asc' }],
+      select: {
+        domain: true,
+        removeAfterAt: true,
+      },
+    });
+
+    return rows.map((row: { domain: string; removeAfterAt: Date | null }) => ({
+      domain: row.domain,
+      removeAfterAt: row.removeAfterAt ? row.removeAfterAt.toISOString() : null,
+    }));
   }
 
   async addDomain(chatId: string, user: AuthUser, body: unknown) {
@@ -427,7 +447,9 @@ export class AdminService {
         chatId,
         domain: normalized,
       },
-      update: {},
+      update: {
+        removeAfterAt: null,
+      },
     });
 
     await this.prisma.auditLog.create({
@@ -465,6 +487,57 @@ export class AdminService {
         action: 'REMOVE_DOMAIN',
         payload: {
           domain: normalized,
+        },
+      },
+    });
+    await this.chatContextCache.invalidate(chatId);
+
+    return { ok: true };
+  }
+
+  async scheduleDomainRemoval(chatId: string, user: AuthUser, domain: string, body: unknown) {
+    await this.assertChatAdmin(chatId, user.userId);
+    const normalizedDomain = domain.toLowerCase();
+    const parsed = scheduleDomainRemovalRequestSchema.safeParse(body);
+
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    let removeAfterAt: Date | null = null;
+    if (parsed.data.removeAfterAt) {
+      const scheduledAt = new Date(parsed.data.removeAfterAt);
+      if (Number.isNaN(scheduledAt.getTime())) {
+        throw new BadRequestException('Invalid removal datetime');
+      }
+
+      if (scheduledAt.getTime() <= Date.now()) {
+        throw new BadRequestException('Removal datetime must be in the future');
+      }
+
+      removeAfterAt = scheduledAt;
+    }
+
+    await this.prisma.domainAllowlist.update({
+      where: {
+        chatId_domain: {
+          chatId,
+          domain: normalizedDomain,
+        },
+      },
+      data: {
+        removeAfterAt,
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: removeAfterAt ? 'SCHEDULE_DOMAIN_REMOVE' : 'CLEAR_DOMAIN_REMOVE_SCHEDULE',
+        payload: {
+          domain: normalizedDomain,
+          removeAfterAt: removeAfterAt ? removeAfterAt.toISOString() : null,
         },
       },
     });
@@ -559,6 +632,14 @@ export class AdminService {
     }
 
     await this.upsertUserChatAccess(chatId, userId, null);
+  }
+
+  private activeDomainWhere(chatId: string) {
+    const now = new Date();
+    return {
+      chatId,
+      OR: [{ removeAfterAt: null }, { removeAfterAt: { gt: now } }],
+    };
   }
 
   private isFallbackTitle(chatId: string, title: string): boolean {

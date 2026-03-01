@@ -1,12 +1,15 @@
 import {
   addGlobalUserBlacklistRequestSchema,
   chatSettingsSchema,
+  domainAllowlistEntrySchema,
+  scheduleDomainRemovalRequestSchema,
   moderationEventSchema,
   chatSummarySchema,
   globalUserBlacklistEntrySchema,
   meSchema,
   type ChatSettings,
   type ChatSummary,
+  type DomainAllowlistEntry,
   type GlobalUserBlacklistEntry,
   type Me,
   type ModerationEvent,
@@ -81,6 +84,14 @@ export class ApiClient {
     return response;
   }
 
+  async getDomainAllowlistDetails(chatId: string): Promise<DomainAllowlistEntry[]> {
+    const response = await this.request(`/chats/${chatId}/domain-allowlist/details`);
+    if (!Array.isArray(response)) {
+      throw new Error('Invalid domain allowlist details response');
+    }
+    return response.map((item: unknown) => domainAllowlistEntrySchema.parse(item));
+  }
+
   async addDomain(chatId: string, domain: string): Promise<void> {
     await this.request(`/chats/${chatId}/domain-allowlist`, {
       method: 'POST',
@@ -92,6 +103,21 @@ export class ApiClient {
     await this.request(`/chats/${chatId}/domain-allowlist/${encodeURIComponent(domain)}`, {
       method: 'DELETE',
     });
+  }
+
+  async scheduleDomainRemoval(
+    chatId: string,
+    domain: string,
+    removeAfterAt: string | null,
+  ): Promise<void> {
+    const payload = scheduleDomainRemovalRequestSchema.parse({ removeAfterAt });
+    await this.request(
+      `/chats/${chatId}/domain-allowlist/${encodeURIComponent(domain)}/removal-schedule`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      },
+    );
   }
 
   async getEvents(chatId: string): Promise<ModerationEvent[]> {

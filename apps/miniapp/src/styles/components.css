@@ -752,11 +752,46 @@
   padding: 8px 10px;
 }
 
+.allowlist-item--domain {
+  display: block;
+  padding: 10px;
+}
+
+.allowlist-item__stack {
+  display: grid;
+  gap: 8px;
+}
+
+.allowlist-item__top-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.allowlist-item__title-wrap {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
 .allowlist-item__domain {
   overflow-wrap: anywhere;
   font-size: 0.83rem;
   font-weight: 600;
   color: var(--text-primary);
+}
+
+.allowlist-item__meta {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.25;
+}
+
+.allowlist-item__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .allowlist-item__remove {
@@ -773,6 +808,70 @@
 .allowlist-item__remove:disabled {
   opacity: 0.6;
   cursor: not-allowed;
+}
+
+.allowlist-item__schedule {
+  width: 30px;
+  height: 30px;
+  border: 1px solid rgba(62, 96, 127, 0.24);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.78);
+  color: var(--text-secondary);
+  display: grid;
+  place-items: center;
+  padding: 0;
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.allowlist-item__schedule svg {
+  width: 16px;
+  height: 16px;
+}
+
+.allowlist-item__schedule.is-open {
+  border-color: rgba(11, 132, 255, 0.44);
+  background: rgba(11, 132, 255, 0.14);
+  color: #086cc6;
+}
+
+.allowlist-item__schedule:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.allowlist-item__schedule-editor {
+  border-radius: 10px;
+  border: 1px dashed rgba(62, 96, 127, 0.24);
+  background: rgba(246, 251, 255, 0.76);
+  padding: 8px;
+  display: grid;
+  gap: 8px;
+}
+
+.allowlist-item__schedule-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.allowlist-item__schedule-field {
+  min-width: 0;
+}
+
+.allowlist-item__schedule-field input {
+  min-height: 40px;
+  height: 40px;
+}
+
+.allowlist-item__schedule-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .allowlist-empty {
@@ -862,6 +961,19 @@
   }
 
   .allowlist-add-row__button {
+    width: 100%;
+  }
+
+  .allowlist-item__schedule-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .allowlist-item__schedule-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .allowlist-item__schedule-actions .button {
     width: 100%;
   }
 }

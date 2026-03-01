@@ -87,6 +87,9 @@ export class ChatContextCacheService implements OnModuleDestroy {
       include: {
         settings: true,
         domains: {
+          where: {
+            OR: [{ removeAfterAt: null }, { removeAfterAt: { gt: new Date() } }],
+          },
           select: {
             domain: true,
           },

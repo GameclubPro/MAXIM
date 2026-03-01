@@ -1,6 +1,7 @@
 import {
   chatSettingsSchema,
   type ChatSettings,
+  type DomainAllowlistEntry,
   type GlobalUserBlacklistEntry,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -32,6 +33,7 @@ const COMMERCIAL_SENSITIVITY_MAX = 100;
 const COMMERCIAL_BALANCED_MAX = 69;
 const BOT_MESSAGES_DELETE_DELAY_MIN = 1;
 const BOT_MESSAGES_DELETE_DELAY_MAX = 60;
+const DOMAIN_REMOVAL_MIN_FUTURE_MS = 30_000;
 
 type DuplicateEnabledKey = 'duplicateWarnEnabled' | 'duplicateKickEnabled' | 'duplicateBanEnabled';
 type DuplicateWindowKey =
@@ -322,6 +324,62 @@ function timeInputToMinutes(value: string, fallback: number): number {
   return hours * 60 + minutes;
 }
 
+function toLocalDateInputValue(value: Date): string {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function toLocalTimeInputValue(value: Date): string {
+  const hours = String(value.getHours()).padStart(2, '0');
+  const minutes = String(value.getMinutes()).padStart(2, '0');
+  return `${hours}:${minutes}`;
+}
+
+function parseIsoToLocalDateTime(value: string | null): { date: string; time: string } {
+  if (!value) {
+    const oneHourLater = new Date(Date.now() + 60 * 60 * 1000);
+    return {
+      date: toLocalDateInputValue(oneHourLater),
+      time: toLocalTimeInputValue(oneHourLater),
+    };
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    const fallback = new Date(Date.now() + 60 * 60 * 1000);
+    return {
+      date: toLocalDateInputValue(fallback),
+      time: toLocalTimeInputValue(fallback),
+    };
+  }
+
+  return {
+    date: toLocalDateInputValue(parsed),
+    time: toLocalTimeInputValue(parsed),
+  };
+}
+
+function formatRemovalDateTime(value: string | null): string {
+  if (!value) {
+    return '';
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return '';
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(parsed);
+}
+
 function clampCommercialSlider(value: number): number {
   return Math.max(COMMERCIAL_SENSITIVITY_MIN, Math.min(COMMERCIAL_SENSITIVITY_MAX, value));
 }
@@ -390,6 +448,20 @@ function EditIcon() {
         d="M13.78 4.47L15.53 6.22M5.5 14.5L7.9 13.98C8.2 13.91 8.48 13.76 8.69 13.55L14.96 7.28C15.37 6.87 15.37 6.2 14.96 5.79L14.21 5.04C13.8 4.63 13.13 4.63 12.72 5.04L6.45 11.31C6.24 11.52 6.09 11.8 6.02 12.1L5.5 14.5Z"
         stroke="currentColor"
         strokeWidth="1.6"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function CalendarIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
+      <path
+        d="M6 3.75V5.25M14 3.75V5.25M3.75 7.25H16.25M5.75 10H8M10 10H12.25M5.75 13H8M10 13H12.25M6 5H14C15.38 5 16.5 6.12 16.5 7.5V14.5C16.5 15.88 15.38 17 14 17H6C4.62 17 3.5 15.88 3.5 14.5V7.5C3.5 6.12 4.62 5 6 5Z"
+        stroke="currentColor"
+        strokeWidth="1.5"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
@@ -529,6 +601,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [domainInput, setDomainInput] = useState('');
   const [domainInputError, setDomainInputError] = useState('');
+  const [scheduleDomain, setScheduleDomain] = useState<string | null>(null);
+  const [scheduleDate, setScheduleDate] = useState('');
+  const [scheduleTime, setScheduleTime] = useState('');
+  const [scheduleError, setScheduleError] = useState('');
   const [blacklistInput, setBlacklistInput] = useState('');
   const [blacklistInputError, setBlacklistInputError] = useState('');
   const [failedSnapshot, setFailedSnapshot] = useState<string>('');
@@ -576,7 +652,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
   const domainsQuery = useQuery({
     queryKey: ['domains', chatId],
-    queryFn: () => api.getDomainAllowlist(chatId ?? ''),
+    queryFn: () => api.getDomainAllowlistDetails(chatId ?? ''),
     enabled: Boolean(chatId),
     refetchOnWindowFocus: false,
   });
@@ -632,6 +708,18 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     setDraft(settingsQuery.data);
     setFieldErrors({});
   }, [settingsQuery.data]);
+
+  useEffect(() => {
+    if (!scheduleDomain) {
+      return;
+    }
+
+    const exists = (domainsQuery.data ?? []).some((item) => item.domain === scheduleDomain);
+    if (!exists) {
+      setScheduleDomain(null);
+      setScheduleError('');
+    }
+  }, [domainsQuery.data, scheduleDomain]);
 
   const draftSnapshot = useMemo(() => (draft ? JSON.stringify(draft) : ''), [draft]);
 
@@ -706,6 +794,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const removeDomainMutation = useMutation({
     mutationFn: (domain: string) => api.removeDomain(chatId ?? '', domain),
     onSuccess: () => {
+      setScheduleDomain(null);
+      setScheduleError('');
       void queryClient.invalidateQueries({ queryKey: ['domains', chatId] });
       pushToast({ tone: 'success', title: 'Ссылка удалена из разрешенных' });
     },
@@ -713,6 +803,33 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось удалить ссылку',
+        description: formatApiError(error),
+      });
+    },
+  });
+
+  const scheduleDomainRemovalMutation = useMutation({
+    mutationFn: (payload: { domain: string; removeAfterAt: string | null }) =>
+      api.scheduleDomainRemoval(chatId ?? '', payload.domain, payload.removeAfterAt),
+    onSuccess: (_, payload) => {
+      setScheduleError('');
+      setScheduleDomain(null);
+      void queryClient.invalidateQueries({ queryKey: ['domains', chatId] });
+      if (payload.removeAfterAt) {
+        pushToast({
+          tone: 'success',
+          title: 'Удаление ссылки запланировано',
+          description: `Ссылка будет удалена ${formatRemovalDateTime(payload.removeAfterAt)}.`,
+        });
+        return;
+      }
+
+      pushToast({ tone: 'success', title: 'Отложенное удаление отменено' });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось обновить расписание удаления',
         description: formatApiError(error),
       });
     },
@@ -894,7 +1011,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       return;
     }
 
-    const alreadyExists = (domainsQuery.data ?? []).includes(normalized);
+    const alreadyExists = (domainsQuery.data ?? []).some((item) => item.domain === normalized);
     if (alreadyExists) {
       setDomainInputError('');
       setDomainInput('');
@@ -904,6 +1021,65 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
     setDomainInputError('');
     addDomainMutation.mutate(normalized);
+  }
+
+  function toggleDomainScheduleEditor(entry: DomainAllowlistEntry) {
+    if (scheduleDomain === entry.domain) {
+      setScheduleDomain(null);
+      setScheduleError('');
+      return;
+    }
+
+    const initial = parseIsoToLocalDateTime(entry.removeAfterAt);
+    setScheduleDate(initial.date);
+    setScheduleTime(initial.time);
+    setScheduleError('');
+    setScheduleDomain(entry.domain);
+  }
+
+  function submitDomainSchedule(domain: string) {
+    if (!chatId) {
+      return;
+    }
+
+    if (!scheduleDate) {
+      setScheduleError('Сначала выберите день удаления.');
+      return;
+    }
+
+    if (!scheduleTime) {
+      setScheduleError('Сначала выберите время удаления.');
+      return;
+    }
+
+    const scheduledAt = new Date(`${scheduleDate}T${scheduleTime}:00`);
+    if (Number.isNaN(scheduledAt.getTime())) {
+      setScheduleError('Не удалось распознать дату и время.');
+      return;
+    }
+
+    if (scheduledAt.getTime() <= Date.now() + DOMAIN_REMOVAL_MIN_FUTURE_MS) {
+      setScheduleError('Укажите время в будущем.');
+      return;
+    }
+
+    setScheduleError('');
+    scheduleDomainRemovalMutation.mutate({
+      domain,
+      removeAfterAt: scheduledAt.toISOString(),
+    });
+  }
+
+  function clearDomainSchedule(domain: string) {
+    if (!chatId) {
+      return;
+    }
+
+    setScheduleError('');
+    scheduleDomainRemovalMutation.mutate({
+      domain,
+      removeAfterAt: null,
+    });
   }
 
   function handleAddGlobalBlacklistUser() {
@@ -1015,7 +1191,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   }
 
   const linkPolicyError = fieldErrors.linkPolicy;
-  const allowlistDomains = domainsQuery.data ?? [];
+  const allowlistEntries: DomainAllowlistEntry[] = domainsQuery.data ?? [];
+  const allowlistDomains = allowlistEntries.map((entry) => entry.domain);
+  const isDomainMutationPending =
+    addDomainMutation.isPending ||
+    removeDomainMutation.isPending ||
+    scheduleDomainRemovalMutation.isPending;
   const globalBlacklistEntries: GlobalUserBlacklistEntry[] = globalBlacklistQuery.data ?? [];
   const isAllowlistMode = draft?.linkPolicy === 'ALLOWLIST_ONLY';
   const shouldShowLinkStages = draft?.linkPolicy !== 'ALERT_ONLY';
@@ -1359,9 +1540,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                                 type="button"
                                 className="button button--accent allowlist-add-row__button"
                                 onClick={handleAddDomain}
-                                disabled={
-                                  addDomainMutation.isPending || removeDomainMutation.isPending
-                                }
+                                disabled={isDomainMutationPending}
                               >
                                 {addDomainMutation.isPending ? 'Добавляем...' : 'Добавить'}
                               </button>
@@ -1382,24 +1561,127 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             ) : null}
 
                             {!domainsQuery.isLoading && !domainsQuery.error ? (
-                              allowlistDomains.length > 0 ? (
+                              allowlistEntries.length > 0 ? (
                                 <ul className="allowlist-list" aria-label="Разрешенные ссылки">
-                                  {allowlistDomains.map((domain) => (
-                                    <li key={domain} className="allowlist-item">
-                                      <span className="allowlist-item__domain">{domain}</span>
-                                      <button
-                                        type="button"
-                                        className="allowlist-item__remove"
-                                        onClick={() => removeDomainMutation.mutate(domain)}
-                                        disabled={
-                                          removeDomainMutation.isPending ||
-                                          addDomainMutation.isPending
-                                        }
+                                  {allowlistEntries.map((entry) => {
+                                    const isScheduleOpen = scheduleDomain === entry.domain;
+                                    const scheduledAtLabel = formatRemovalDateTime(entry.removeAfterAt);
+
+                                    return (
+                                      <li
+                                        key={entry.domain}
+                                        className={cn('allowlist-item', 'allowlist-item--domain')}
                                       >
-                                        Удалить
-                                      </button>
-                                    </li>
-                                  ))}
+                                        <div className="allowlist-item__stack">
+                                          <div className="allowlist-item__top-row">
+                                            <div className="allowlist-item__title-wrap">
+                                              <span className="allowlist-item__domain">
+                                                {entry.domain}
+                                              </span>
+                                              {scheduledAtLabel ? (
+                                                <small className="allowlist-item__meta">
+                                                  Удаление: {scheduledAtLabel}
+                                                </small>
+                                              ) : null}
+                                            </div>
+
+                                            <div className="allowlist-item__actions">
+                                              <button
+                                                type="button"
+                                                className="allowlist-item__remove"
+                                                onClick={() => removeDomainMutation.mutate(entry.domain)}
+                                                disabled={isDomainMutationPending}
+                                              >
+                                                Удалить
+                                              </button>
+                                              <button
+                                                type="button"
+                                                className={cn(
+                                                  'allowlist-item__schedule',
+                                                  isScheduleOpen && 'is-open',
+                                                )}
+                                                aria-label={`Запланировать удаление ${entry.domain}`}
+                                                title="Запланировать удаление"
+                                                onClick={() => toggleDomainScheduleEditor(entry)}
+                                                disabled={isDomainMutationPending}
+                                              >
+                                                <CalendarIcon />
+                                              </button>
+                                            </div>
+                                          </div>
+
+                                          {isScheduleOpen ? (
+                                            <div
+                                              className="allowlist-item__schedule-editor"
+                                              role="group"
+                                              aria-label={`План удаления ${entry.domain}`}
+                                            >
+                                              <div className="allowlist-item__schedule-fields">
+                                                <label
+                                                  className="field allowlist-item__schedule-field"
+                                                  htmlFor={`domain-schedule-date-${entry.domain}`}
+                                                >
+                                                  <span className="field__label">День удаления</span>
+                                                  <input
+                                                    id={`domain-schedule-date-${entry.domain}`}
+                                                    type="date"
+                                                    value={scheduleDate}
+                                                    min={toLocalDateInputValue(new Date())}
+                                                    onChange={(event) => {
+                                                      setScheduleDate(event.target.value);
+                                                      setScheduleError('');
+                                                    }}
+                                                  />
+                                                </label>
+                                                <label
+                                                  className="field allowlist-item__schedule-field"
+                                                  htmlFor={`domain-schedule-time-${entry.domain}`}
+                                                >
+                                                  <span className="field__label">Время удаления</span>
+                                                  <input
+                                                    id={`domain-schedule-time-${entry.domain}`}
+                                                    type="time"
+                                                    value={scheduleTime}
+                                                    onChange={(event) => {
+                                                      setScheduleTime(event.target.value);
+                                                      setScheduleError('');
+                                                    }}
+                                                  />
+                                                </label>
+                                              </div>
+
+                                              {scheduleError ? (
+                                                <small className="field__hint">{scheduleError}</small>
+                                              ) : null}
+
+                                              <div className="allowlist-item__schedule-actions">
+                                                <button
+                                                  type="button"
+                                                  className="button button--accent"
+                                                  onClick={() => submitDomainSchedule(entry.domain)}
+                                                  disabled={isDomainMutationPending}
+                                                >
+                                                  {scheduleDomainRemovalMutation.isPending
+                                                    ? 'Сохраняем...'
+                                                    : 'Сохранить'}
+                                                </button>
+                                                {entry.removeAfterAt ? (
+                                                  <button
+                                                    type="button"
+                                                    className="button button--ghost"
+                                                    onClick={() => clearDomainSchedule(entry.domain)}
+                                                    disabled={isDomainMutationPending}
+                                                  >
+                                                    Убрать таймер
+                                                  </button>
+                                                ) : null}
+                                              </div>
+                                            </div>
+                                          ) : null}
+                                        </div>
+                                      </li>
+                                    );
+                                  })}
                                 </ul>
                               ) : (
                                 <p className="allowlist-empty">Список пуст</p>
