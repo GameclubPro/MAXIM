@@ -389,6 +389,7 @@ export const logsDashboardViolationSchema = z.object({
   action: sanctionActionSchema,
   ruleCode: z.string(),
   userId: z.string(),
+  userDisplayName: z.string().nullable(),
   createdAt: z.string().datetime(),
   maskedExcerpt: z.string().nullable(),
   metadata: z.record(z.unknown()).nullable().optional(),

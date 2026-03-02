@@ -46,7 +46,12 @@ describe('AdminService.getLogsDashboard', () => {
 
   it('returns membership and violations summary for selected chat', async () => {
     const prisma = createPrismaMock();
-    prisma.$queryRaw.mockResolvedValue([{ joined_users: '5', left_users: '2' }]);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ joined_users: '5', left_users: '2' }])
+      .mockResolvedValueOnce([
+        { user_id: 'user-1', sender_name: 'Алексей' },
+        { user_id: 'user-2', sender_name: 'Мария' },
+      ]);
     prisma.moderationEvent.count
       .mockResolvedValueOnce(3)
       .mockResolvedValueOnce(4)
@@ -103,11 +108,13 @@ describe('AdminService.getLogsDashboard', () => {
       total: 10,
     });
     expect(result.violations).toHaveLength(2);
+    expect(result.violations[0]?.userDisplayName).toBe('Алексей');
+    expect(result.violations[1]?.userDisplayName).toBe('Мария');
 
-    const sqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
-    expect(sqlText).toContain("user_added");
-    expect(sqlText).toContain("user_removed");
-    expect(sqlText).not.toContain("bot_added");
+    const membershipSqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
+    expect(membershipSqlText).toContain("user_added");
+    expect(membershipSqlText).toContain("user_removed");
+    expect(membershipSqlText).not.toContain("bot_added");
 
     expect(prisma.moderationEvent.count).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ chatId: 'chat-1' }) }),

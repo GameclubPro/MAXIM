@@ -21,7 +21,7 @@ import {
   sendBroadcastRequestSchema,
   scheduleDomainRemovalRequestSchema,
 } from '@maxim/contracts';
-import { EventType, Operator, SanctionAction } from '@prisma/client';
+import { EventType, Operator, Prisma, SanctionAction } from '@prisma/client';
 import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { MaxClientService } from '../max/max-client.service';
@@ -656,6 +656,10 @@ export class AdminService {
         take: LOGS_DASHBOARD_VIOLATIONS_LIMIT,
       }),
     ]);
+    const userDisplayNames = await this.resolveUserDisplayNames(
+      chatId,
+      violationRows.map((row) => row.userId),
+    );
 
     const membershipSource = membershipRows[0] ?? { joined_users: 0, left_users: 0 };
     const response: LogsDashboardResponse = {
@@ -684,6 +688,7 @@ export class AdminService {
         action: row.action,
         ruleCode: row.ruleCode,
         userId: row.userId,
+        userDisplayName: userDisplayNames.get(row.userId) ?? null,
         createdAt: row.createdAt.toISOString(),
         maskedExcerpt: row.maskedExcerpt,
         metadata:
@@ -1268,6 +1273,42 @@ export class AdminService {
     }
 
     return 0;
+  }
+
+  private async resolveUserDisplayNames(chatId: string, userIds: string[]): Promise<Map<string, string>> {
+    const normalizedUserIds = [...new Set(userIds.map((item) => item.trim()).filter(Boolean))];
+    if (normalizedUserIds.length === 0) {
+      return new Map();
+    }
+
+    const rows = await this.prisma.$queryRaw<Array<{ user_id: string | null; sender_name: string | null }>>`
+      SELECT DISTINCT ON (sender_id)
+        sender_id AS user_id,
+        sender_name
+      FROM (
+        SELECT
+          normalized_payload->'message'->>'senderId' AS sender_id,
+          NULLIF(BTRIM(normalized_payload->'message'->>'senderName'), '') AS sender_name,
+          created_at
+        FROM webhook_events
+        WHERE normalized_payload->'message'->>'chatId' = ${chatId}
+          AND normalized_payload->'message'->>'senderId' IN (${Prisma.join(normalizedUserIds)})
+      ) AS sender_rows
+      WHERE sender_id IS NOT NULL AND sender_name IS NOT NULL
+      ORDER BY sender_id, created_at DESC
+    `;
+
+    const byUserId = new Map<string, string>();
+    for (const row of rows) {
+      const userId = typeof row.user_id === 'string' ? row.user_id.trim() : '';
+      const senderName = typeof row.sender_name === 'string' ? row.sender_name.trim() : '';
+      if (!userId || !senderName || byUserId.has(userId)) {
+        continue;
+      }
+      byUserId.set(userId, senderName);
+    }
+
+    return byUserId;
   }
 
   private activeDomainWhere(chatId: string) {

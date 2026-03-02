@@ -1913,6 +1913,12 @@
   text-overflow: ellipsis;
 }
 
+.logs-violation-item__offender {
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
 .logs-violation-item__reason {
   margin: 0;
   color: var(--text-secondary);
@@ -1920,57 +1926,49 @@
   line-height: 1.45;
 }
 
+.logs-violation-item__moderation {
+  border-radius: 12px;
+  border: 1px solid rgba(62, 96, 127, 0.18);
+  background: rgba(255, 255, 255, 0.62);
+  padding: 0 10px;
+}
+
+.logs-violation-item__moderation summary {
+  cursor: pointer;
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
 .logs-violation-item__actions {
   display: grid;
-  gap: 10px;
-  border-radius: 14px;
-  border: 1px solid rgba(62, 96, 127, 0.2);
-  background:
-    linear-gradient(150deg, rgba(255, 255, 255, 0.86), rgba(243, 250, 255, 0.74)),
-    rgba(255, 255, 255, 0.7);
-  padding: 10px;
-}
-
-.logs-violation-item__actions-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   gap: 8px;
+  padding: 0 0 10px;
 }
 
-.logs-violation-item__actions-head span {
-  font-size: 0.72rem;
-  color: var(--text-muted);
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.logs-violation-item__actions-head code {
+.logs-violation-item__actions-caption {
   margin: 0;
-  padding: 4px 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(62, 96, 127, 0.18);
-  background: rgba(255, 255, 255, 0.84);
-  color: #1a3f5c;
+  color: var(--text-muted);
   font-size: 0.74rem;
   font-weight: 700;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
 .logs-violation-item__actions-row {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
 }
 
 .logs-violation-item__action-pill {
-  min-height: 44px;
-  border-radius: 12px;
+  min-height: 38px;
+  border-radius: 10px;
   border: 1px solid rgba(62, 96, 127, 0.2);
   background: rgba(255, 255, 255, 0.7);
   color: var(--text-secondary);
-  font-size: 0.82rem;
+  font-size: 0.78rem;
   font-weight: 700;
   cursor: pointer;
   transition:
@@ -1996,19 +1994,13 @@
 
 .logs-violation-item__ban-config {
   display: grid;
-  gap: 8px;
-}
-
-.logs-violation-item__ban-config > span {
-  font-size: 0.76rem;
-  color: var(--text-secondary);
-  font-weight: 700;
+  gap: 6px;
 }
 
 .logs-violation-item__ban-config-controls {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
 }
 
@@ -2019,25 +2011,26 @@
 }
 
 .logs-violation-item__hours-input input {
-  width: 84px;
-  min-height: 40px;
-  border-radius: 10px;
+  width: 74px;
+  min-height: 36px;
+  border-radius: 8px;
   border: 1px solid rgba(62, 96, 127, 0.22);
   background: rgba(255, 255, 255, 0.86);
-  padding: 8px 10px;
+  padding: 6px 8px;
   text-align: center;
   font-weight: 700;
 }
 
 .logs-violation-item__hours-input small {
-  font-size: 0.68rem;
+  font-size: 0.64rem;
   color: var(--text-muted);
   font-weight: 700;
 }
 
 .logs-violation-item__apply-button {
   width: 100%;
-  min-height: 44px;
+  min-height: 40px;
+  font-size: 0.82rem;
 }
 
 .logs-violation-item__action-status {
