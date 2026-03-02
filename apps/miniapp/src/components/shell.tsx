@@ -192,7 +192,7 @@ export function Shell() {
         <header className="shell-topbar glass-card glass-card--sm">
           <div className="shell-topbar__brand-row">
             <Link to="/" className="shell-brand">
-              MAXIM
+              Майор Максимов
             </Link>
             <span className="shell-chip">Панель</span>
           </div>

@@ -110,24 +110,9 @@ export function ChatsPage({ api }: { api: ApiClient }) {
             <div className="chats-onboarding__hero-text">
               <h1>Нет доступных чатов</h1>
               <p>
-                Чтобы увидеть чат в MAXIM, добавьте бота в чат и выдайте ему права администратора.
+                Чтобы увидеть чат в «Майор Максимов», добавьте бота в чат и выдайте ему права
+                администратора.
               </p>
-            </div>
-            <div className="chats-onboarding__sources">
-              <a
-                href="https://help.max.ru/help/chats/add-members-chat"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                MAX Help: как добавить участника в чат
-              </a>
-              <a
-                href="https://help.max.ru/help/chats/assign-administrator-rights"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                MAX Help: как назначить администратора
-              </a>
             </div>
           </GlassCard>
 
@@ -175,21 +160,6 @@ export function ChatsPage({ api }: { api: ApiClient }) {
               />
               <figcaption>Экран прав администратора для бота.</figcaption>
             </figure>
-          </GlassCard>
-
-          <GlassCard className="onboarding-tip stagger-in" style={{ animationDelay: '120ms' }}>
-            <h3>Если бот не находится или не добавляется</h3>
-            <p>
-              Проверьте в настройках бота, что разрешено добавление в групповые чаты:{' '}
-              <a
-                href="https://dev.max.ru/docs/help/bots/settings"
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                dev.max.ru/docs/help/bots/settings
-              </a>
-              .
-            </p>
           </GlassCard>
 
           <button

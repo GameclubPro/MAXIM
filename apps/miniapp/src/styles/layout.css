@@ -378,7 +378,6 @@
   }
 
   .chats-onboarding__hero,
-  .onboarding-tip,
   .onboarding-refresh {
     grid-column: 1 / -1;
   }
