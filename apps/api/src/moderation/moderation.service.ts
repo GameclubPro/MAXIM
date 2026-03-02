@@ -49,6 +49,8 @@ const LINK_ESCALATION_WINDOW_HOURS = 24;
 const TEXT_FILTER_ESCALATION_WINDOW_HOURS = 24;
 const MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS = 12;
 const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
+const CHAT_ADMIN_CACHE_TTL_SEC = Math.ceil(CHAT_ADMIN_CACHE_TTL_MS / 1_000);
+const CHAT_ADMIN_SHARED_CACHE_KEY_PREFIX = 'chat-admins:v1';
 const BOT_STARTED_INSTRUCTION_OPTIONS: MaxSendMessageOptions = {
   button: {
     text: 'Поддержка',
@@ -3517,6 +3519,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return cached.adminUserIds;
     }
 
+    const cachedFromSharedStore = await this.readChatAdminsFromSharedCache(chatId, now);
+    if (cachedFromSharedStore) {
+      return cachedFromSharedStore;
+    }
+
     const getChatAdminIds = (this.maxClient as Partial<MaxClientService>).getChatAdminIds;
     if (typeof getChatAdminIds !== 'function') {
       return null;
@@ -3540,6 +3547,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         expiresAt: now + CHAT_ADMIN_CACHE_TTL_MS,
         adminUserIds: normalizedAdminUserIds,
       });
+      await this.writeChatAdminsToSharedCache(chatId, normalizedAdminUserIds);
 
       return normalizedAdminUserIds;
     } catch (error: unknown) {
@@ -3552,6 +3560,100 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         'Failed to resolve chat admins for moderation bypass',
       );
       return null;
+    }
+  }
+
+  private buildChatAdminSharedCacheKey(chatId: string): string {
+    return `${CHAT_ADMIN_SHARED_CACHE_KEY_PREFIX}:${chatId}`;
+  }
+
+  private async readChatAdminsFromSharedCache(
+    chatId: string,
+    nowMs: number,
+  ): Promise<Set<string> | null> {
+    const getString = (this.redisCounter as Partial<RedisCounterService> | undefined)?.getString;
+    if (typeof getString !== 'function') {
+      return null;
+    }
+
+    const key = this.buildChatAdminSharedCacheKey(chatId);
+    let rawValue: string | null = null;
+    try {
+      rawValue = await getString.call(this.redisCounter, key);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to read chat admins from shared cache',
+      );
+      return null;
+    }
+
+    if (typeof rawValue !== 'string' || rawValue.trim().length === 0) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(rawValue) as unknown;
+      if (!Array.isArray(parsed)) {
+        return null;
+      }
+
+      const adminUserIds = new Set<string>();
+      for (const value of parsed) {
+        if (typeof value !== 'string') {
+          continue;
+        }
+
+        const normalizedValue = value.trim().toLowerCase();
+        if (!normalizedValue) {
+          continue;
+        }
+        adminUserIds.add(normalizedValue);
+      }
+
+      this.chatAdminCache.set(chatId, {
+        expiresAt: nowMs + CHAT_ADMIN_CACHE_TTL_MS,
+        adminUserIds,
+      });
+
+      return adminUserIds;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to parse chat admins from shared cache',
+      );
+      return null;
+    }
+  }
+
+  private async writeChatAdminsToSharedCache(chatId: string, adminUserIds: Set<string>): Promise<void> {
+    const setStringWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
+      ?.setStringWithTtl;
+    if (typeof setStringWithTtl !== 'function') {
+      return;
+    }
+
+    try {
+      await setStringWithTtl.call(
+        this.redisCounter,
+        this.buildChatAdminSharedCacheKey(chatId),
+        JSON.stringify([...adminUserIds]),
+        CHAT_ADMIN_CACHE_TTL_SEC,
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to write chat admins to shared cache',
+      );
     }
   }
 

@@ -2223,6 +2223,69 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).toHaveBeenCalled();
   });
 
+  it('uses shared cache for remote chat admins to avoid MAX API call', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Blocked link' }],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const redisCounter = {
+      getString: jest.fn().mockResolvedValue(JSON.stringify(['user-1', 'iduser-1'])),
+      setStringWithTtl: jest.fn(),
+      addToSetWithTtl: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(redisCounter.getString).toHaveBeenCalledWith('chat-admins:v1:chat-1');
+    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+  });
+
   it('handles duplicate escalation separately and does not call SanctionService', async () => {
     const prisma = {
       chat: {

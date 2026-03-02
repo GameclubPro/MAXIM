@@ -35,4 +35,16 @@ export class RedisCounterService {
       size,
     };
   }
+
+  async getString(key: string): Promise<string | null> {
+    return this.redis.get(key);
+  }
+
+  async setStringWithTtl(key: string, value: string, ttlSeconds: number): Promise<void> {
+    if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
+      return;
+    }
+
+    await this.redis.set(key, value, 'EX', Math.trunc(ttlSeconds));
+  }
 }
