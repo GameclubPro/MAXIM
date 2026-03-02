@@ -12,7 +12,11 @@ import {
 } from '@prisma/client';
 import type { Job } from 'bullmq';
 import { createHash } from 'node:crypto';
-import { MaxClientService, type MaxSendMessageOptions } from '../max/max-client.service';
+import {
+  MaxClientService,
+  type MaxActionDispatchOptions,
+  type MaxSendMessageOptions,
+} from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
 import { SystemModeService } from '../system/system-mode.service';
@@ -291,6 +295,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           greetingBotButtonEnabled: settings.greetingBotButtonEnabled,
           greetingBotButtonUrl: settings.greetingBotButtonUrl,
           greetingBotButtonText: settings.greetingBotButtonText,
+          deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
+          deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
           excludedUserIds: excludedGreetingUserIds,
         });
       }
@@ -381,6 +387,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         text,
         createdAt,
         update,
+        deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
         mediaFlags,
       });
       if (handled) {
@@ -428,6 +436,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         duplicateBotButtonEnabled: settings.duplicateBotButtonEnabled,
         duplicateBotButtonUrl: settings.duplicateBotButtonUrl,
         duplicateBotButtonText: settings.duplicateBotButtonText,
+        deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
       });
       return;
     }
@@ -446,6 +456,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         duplicateBotButtonEnabled: settings.duplicateBotButtonEnabled,
         duplicateBotButtonUrl: settings.duplicateBotButtonUrl,
         duplicateBotButtonText: settings.duplicateBotButtonText,
+        deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
       });
       return;
     }
@@ -540,21 +552,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const messageLimitsViolationCount12h = isMessageLimitsHit
       ? await this.countRecentMessageLimitsViolations(chatId, senderId, topViolation.ruleCode)
       : null;
+    const sendChatBotMessage = async (textValue: string, messageOptions?: MaxSendMessageOptions) =>
+      this.sendBotMessageWithOptionalAutoDelete({
+        chatId,
+        text: textValue,
+        messageOptions,
+        deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
+      });
 
     if (topViolation.ruleCode === 'LINK_BLOCKED' && settings.linkBotMessageEnabled) {
       try {
-        if (linkMessageOptions) {
-          await this.maxClient.sendMessage(
-            chatId,
-            this.buildLinkExplanation(userLabel, canDeleteMessage, settings.linkBotMessageText),
-            linkMessageOptions,
-          );
-        } else {
-          await this.maxClient.sendMessage(
-            chatId,
-            this.buildLinkExplanation(userLabel, canDeleteMessage, settings.linkBotMessageText),
-          );
-        }
+        await sendChatBotMessage(
+          this.buildLinkExplanation(userLabel, canDeleteMessage, settings.linkBotMessageText),
+          linkMessageOptions ?? undefined,
+        );
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -570,34 +582,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (isMessageLimitsHit && settings.messageLimitsBotMessageEnabled) {
       try {
-        if (limitsMessageOptions) {
-          await this.maxClient.sendMessage(
-            chatId,
-            this.buildMessageLimitsExplanation(
-              userLabel,
-              topViolation.ruleCode,
-              canDeleteMessage,
-              settings.photoMessageCooldownHours,
-              effectiveMessageLength,
-              settings.maxMessageLength,
-              '',
-            ),
-            limitsMessageOptions,
-          );
-        } else {
-          await this.maxClient.sendMessage(
-            chatId,
-            this.buildMessageLimitsExplanation(
-              userLabel,
-              topViolation.ruleCode,
-              canDeleteMessage,
-              settings.photoMessageCooldownHours,
-              effectiveMessageLength,
-              settings.maxMessageLength,
-              '',
-            ),
-          );
-        }
+        await sendChatBotMessage(
+          this.buildMessageLimitsExplanation(
+            userLabel,
+            topViolation.ruleCode,
+            canDeleteMessage,
+            settings.photoMessageCooldownHours,
+            effectiveMessageLength,
+            settings.maxMessageLength,
+            '',
+          ),
+          limitsMessageOptions ?? undefined,
+        );
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -614,28 +610,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (isTextFilterHit && textFilterEscalationSettings?.botMessageEnabled) {
       try {
-        if (textFilterMessageOptions) {
-          await this.maxClient.sendMessage(
-            chatId,
-            this.buildTextFilterExplanation(
-              userLabel,
-              topViolation.ruleCode,
-              canDeleteMessage,
-              textFilterEscalationSettings.botMessageText,
-            ),
-            textFilterMessageOptions,
-          );
-        } else {
-          await this.maxClient.sendMessage(
-            chatId,
-            this.buildTextFilterExplanation(
-              userLabel,
-              topViolation.ruleCode,
-              canDeleteMessage,
-              textFilterEscalationSettings.botMessageText,
-            ),
-          );
-        }
+        await sendChatBotMessage(
+          this.buildTextFilterExplanation(
+            userLabel,
+            topViolation.ruleCode,
+            canDeleteMessage,
+            textFilterEscalationSettings.botMessageText,
+          ),
+          textFilterMessageOptions ?? undefined,
+        );
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -663,18 +646,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       if (linkAction === SanctionAction.WARN) {
         try {
-          if (linkMessageOptions) {
-            await this.maxClient.sendMessage(
-              chatId,
-              this.buildLinkWarnExplanation(userLabel, settings.linkWarnMessageText),
-              linkMessageOptions,
-            );
-          } else {
-            await this.maxClient.sendMessage(
-              chatId,
-              this.buildLinkWarnExplanation(userLabel, settings.linkWarnMessageText),
-            );
-          }
+          await sendChatBotMessage(
+            this.buildLinkWarnExplanation(userLabel, settings.linkWarnMessageText),
+            linkMessageOptions ?? undefined,
+          );
         } catch (error: unknown) {
           this.logger.warn(
             {
@@ -700,8 +675,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       if (textFilterAction === SanctionAction.WARN) {
         try {
-          await this.maxClient.sendMessage(
-            chatId,
+          await sendChatBotMessage(
             this.buildTextFilterWarnExplanation(
               userLabel,
               topViolation.ruleCode,
@@ -732,18 +706,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       if (action === SanctionAction.WARN) {
         try {
-          if (limitsMessageOptions) {
-            await this.maxClient.sendMessage(
-              chatId,
-              this.buildMessageLimitsWarnExplanation(userLabel, topViolation.ruleCode),
-              limitsMessageOptions,
-            );
-          } else {
-            await this.maxClient.sendMessage(
-              chatId,
-              this.buildMessageLimitsWarnExplanation(userLabel, topViolation.ruleCode),
-            );
-          }
+          await sendChatBotMessage(
+            this.buildMessageLimitsWarnExplanation(userLabel, topViolation.ruleCode),
+            limitsMessageOptions ?? undefined,
+          );
         } catch (error: unknown) {
           this.logger.warn(
             {
@@ -772,6 +738,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         userLabel,
         messageId,
         banDurationHours: actionBanDurationHours,
+        deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
         botMessageOptions:
           topViolation.ruleCode === 'LINK_BLOCKED'
             ? (linkMessageOptions ?? undefined)
@@ -790,15 +758,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       if (topViolation.ruleCode === 'LINK_BLOCKED' && action === SanctionAction.KICK) {
         try {
-          if (linkMessageOptions) {
-            await this.maxClient.sendMessage(
-              chatId,
-              this.buildLinkKickExplanation(userLabel),
-              linkMessageOptions,
-            );
-          } else {
-            await this.maxClient.sendMessage(chatId, this.buildLinkKickExplanation(userLabel));
-          }
+          await sendChatBotMessage(
+            this.buildLinkKickExplanation(userLabel),
+            linkMessageOptions ?? undefined,
+          );
         } catch (error: unknown) {
           this.logger.warn(
             {
@@ -814,8 +777,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       if (isTextFilterHit && action === SanctionAction.KICK) {
         try {
-          await this.maxClient.sendMessage(
-            chatId,
+          await sendChatBotMessage(
             this.buildTextFilterKickExplanation(userLabel, topViolation.ruleCode),
           );
         } catch (error: unknown) {
@@ -833,18 +795,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       if (isMessageLimitsHit && action === SanctionAction.KICK) {
         try {
-          if (limitsMessageOptions) {
-            await this.maxClient.sendMessage(
-              chatId,
-              this.buildMessageLimitsKickExplanation(userLabel, topViolation.ruleCode),
-              limitsMessageOptions,
-            );
-          } else {
-            await this.maxClient.sendMessage(
-              chatId,
-              this.buildMessageLimitsKickExplanation(userLabel, topViolation.ruleCode),
-            );
-          }
+          await sendChatBotMessage(
+            this.buildMessageLimitsKickExplanation(userLabel, topViolation.ruleCode),
+            limitsMessageOptions ?? undefined,
+          );
         } catch (error: unknown) {
           this.logger.warn(
             {
@@ -912,6 +866,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     duplicateBotButtonEnabled: boolean;
     duplicateBotButtonUrl: string;
     duplicateBotButtonText: string;
+    deleteBotMessagesEnabled: boolean;
+    deleteBotMessagesDelayMinutes: number;
   }) {
     const {
       chatId,
@@ -927,6 +883,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
       duplicateBotButtonText,
+      deleteBotMessagesEnabled,
+      deleteBotMessagesDelayMinutes,
     } = params;
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
@@ -979,28 +937,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (duplicateBotMessageEnabled && decision.action !== 'BAN') {
       try {
-        if (duplicateMessageOptions) {
-          await this.maxClient.sendMessage(
-            chatId,
-            this.buildDuplicateExplanation(
-              userLabel,
-              decision,
-              banDurationHours,
-              duplicateBotMessageText,
-            ),
-            duplicateMessageOptions,
-          );
-        } else {
-          await this.maxClient.sendMessage(
-            chatId,
-            this.buildDuplicateExplanation(
-              userLabel,
-              decision,
-              banDurationHours,
-              duplicateBotMessageText,
-            ),
-          );
-        }
+        await this.sendBotMessageWithOptionalAutoDelete({
+          chatId,
+          text: this.buildDuplicateExplanation(
+            userLabel,
+            decision,
+            banDurationHours,
+            duplicateBotMessageText,
+          ),
+          messageOptions: duplicateMessageOptions ?? undefined,
+          deleteBotMessagesEnabled,
+          deleteBotMessagesDelayMinutes,
+        });
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -1022,6 +970,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       userLabel,
       messageId,
       banDurationHours,
+      deleteBotMessagesEnabled,
+      deleteBotMessagesDelayMinutes,
       botMessageOptions: duplicateMessageOptions ?? undefined,
     });
 
@@ -1060,6 +1010,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     duplicateBotButtonEnabled: boolean;
     duplicateBotButtonUrl: string;
     duplicateBotButtonText: string;
+    deleteBotMessagesEnabled: boolean;
+    deleteBotMessagesDelayMinutes: number;
   }) {
     const {
       chatId,
@@ -1074,6 +1026,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
       duplicateBotButtonText,
+      deleteBotMessagesEnabled,
+      deleteBotMessagesDelayMinutes,
     } = params;
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
@@ -1125,18 +1079,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (duplicateBotMessageEnabled) {
       try {
-        if (duplicateMessageOptions) {
-          await this.maxClient.sendMessage(
-            chatId,
-            this.buildDuplicateHitExplanation(userLabel, canDeleteMessage, duplicateBotMessageText),
-            duplicateMessageOptions,
-          );
-        } else {
-          await this.maxClient.sendMessage(
-            chatId,
-            this.buildDuplicateHitExplanation(userLabel, canDeleteMessage, duplicateBotMessageText),
-          );
-        }
+        await this.sendBotMessageWithOptionalAutoDelete({
+          chatId,
+          text: this.buildDuplicateHitExplanation(
+            userLabel,
+            canDeleteMessage,
+            duplicateBotMessageText,
+          ),
+          messageOptions: duplicateMessageOptions ?? undefined,
+          deleteBotMessagesEnabled,
+          deleteBotMessagesDelayMinutes,
+        });
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -1321,6 +1274,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userLabel: string;
     messageId: string;
     banDurationHours: number;
+    deleteBotMessagesEnabled: boolean;
+    deleteBotMessagesDelayMinutes: number;
     botMessageOptions?: MaxSendMessageOptions;
     banNoticeText?: string;
   }) {
@@ -1331,6 +1286,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       userLabel,
       messageId,
       banDurationHours,
+      deleteBotMessagesEnabled,
+      deleteBotMessagesDelayMinutes,
       botMessageOptions,
       banNoticeText,
     } = params;
@@ -1367,6 +1324,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       messageId,
       userLabel,
       banDurationHours,
+      deleteBotMessagesEnabled,
+      deleteBotMessagesDelayMinutes,
       botMessageOptions,
       banNoticeText,
     });
@@ -1378,18 +1337,31 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageId: string;
     userLabel: string;
     banDurationHours: number;
+    deleteBotMessagesEnabled: boolean;
+    deleteBotMessagesDelayMinutes: number;
     botMessageOptions?: MaxSendMessageOptions;
     banNoticeText?: string;
   }) {
-    const { chatId, userId, messageId, userLabel, banDurationHours, botMessageOptions, banNoticeText } =
-      params;
+    const {
+      chatId,
+      userId,
+      messageId,
+      userLabel,
+      banDurationHours,
+      deleteBotMessagesEnabled,
+      deleteBotMessagesDelayMinutes,
+      botMessageOptions,
+      banNoticeText,
+    } = params;
     const noticeText = banNoticeText ?? this.buildBanNotice(userLabel, banDurationHours);
     try {
-      if (botMessageOptions) {
-        await this.maxClient.sendMessage(chatId, noticeText, botMessageOptions);
-      } else {
-        await this.maxClient.sendMessage(chatId, noticeText);
-      }
+      await this.sendBotMessageWithOptionalAutoDelete({
+        chatId,
+        text: noticeText,
+        messageOptions: botMessageOptions,
+        deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes,
+      });
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -2482,6 +2454,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     greetingBotButtonEnabled: boolean;
     greetingBotButtonUrl: string;
     greetingBotButtonText: string;
+    deleteBotMessagesEnabled: boolean;
+    deleteBotMessagesDelayMinutes: number;
     excludedUserIds: ReadonlySet<string>;
   }) {
     const {
@@ -2493,6 +2467,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       greetingBotButtonEnabled,
       greetingBotButtonUrl,
       greetingBotButtonText,
+      deleteBotMessagesEnabled,
+      deleteBotMessagesDelayMinutes,
       excludedUserIds,
     } = params;
 
@@ -2517,11 +2493,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
       const greetingMessage = this.buildGreetingMessage(member.userLabel, greetingBotMessageText);
       try {
-        if (greetingMessageOptions) {
-          await this.maxClient.sendMessage(chatId, greetingMessage, greetingMessageOptions);
-        } else {
-          await this.maxClient.sendMessage(chatId, greetingMessage);
-        }
+        await this.sendBotMessageWithOptionalAutoDelete({
+          chatId,
+          text: greetingMessage,
+          messageOptions: greetingMessageOptions ?? undefined,
+          deleteBotMessagesEnabled,
+          deleteBotMessagesDelayMinutes,
+        });
 
         await this.prisma.moderationEvent.create({
           data: {
@@ -2727,6 +2705,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     text: string;
     createdAt: string;
     update: MaxUpdate;
+    deleteBotMessagesEnabled: boolean;
+    deleteBotMessagesDelayMinutes: number;
     mediaFlags: {
       hasPhotoAttachment: boolean;
       hasVideoAttachment: boolean;
@@ -2738,7 +2718,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
-    const { chatId, userId, userLabel, messageId, text, createdAt, update, mediaFlags } = params;
+    const {
+      chatId,
+      userId,
+      userLabel,
+      messageId,
+      text,
+      createdAt,
+      update,
+      deleteBotMessagesEnabled,
+      deleteBotMessagesDelayMinutes,
+      mediaFlags,
+    } = params;
     const signature = this.buildGlobalCrossChatSpamSignature({
       text,
       update,
@@ -2827,10 +2818,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
 
     try {
-      await this.maxClient.sendMessage(
+      await this.sendBotMessageWithOptionalAutoDelete({
         chatId,
-        this.buildGlobalCrossChatSpamNotice(userLabel, uniqueChatsCount),
-      );
+        text: this.buildGlobalCrossChatSpamNotice(userLabel, uniqueChatsCount),
+        deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes,
+      });
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -3188,6 +3181,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
         select: {
           chatId: true,
+          deleteBotMessagesEnabled: true,
+          deleteBotMessagesDelayMinutes: true,
           nightModeStartTimeMinutes: true,
           nightModeEndTimeMinutes: true,
           nightModeTimezone: true,
@@ -3226,11 +3221,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         );
 
         try {
-          if (nightModeMessageOptions) {
-            await this.maxClient.sendMessage(settings.chatId, messageText, nightModeMessageOptions);
-          } else {
-            await this.maxClient.sendMessage(settings.chatId, messageText);
-          }
+          await this.sendBotMessageWithOptionalAutoDelete({
+            chatId: settings.chatId,
+            text: messageText,
+            messageOptions: nightModeMessageOptions ?? undefined,
+            deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
+            deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
+          });
 
           await this.prisma.moderationEvent.create({
             data: {
@@ -3982,6 +3979,53 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return variants;
+  }
+
+  private buildBotMessageDispatchOptions(params: {
+    deleteBotMessagesEnabled: boolean;
+    deleteBotMessagesDelayMinutes: number;
+    immediate?: boolean;
+  }): MaxActionDispatchOptions | undefined {
+    const dispatchOptions: MaxActionDispatchOptions = {};
+    if (params.immediate === true) {
+      dispatchOptions.immediate = true;
+    }
+
+    if (params.deleteBotMessagesEnabled) {
+      dispatchOptions.autoDeleteDelayMs =
+        this.normalizeDeleteBotMessagesDelayMinutes(params.deleteBotMessagesDelayMinutes) * 60 * 1000;
+    }
+
+    return Object.keys(dispatchOptions).length > 0 ? dispatchOptions : undefined;
+  }
+
+  private async sendBotMessageWithOptionalAutoDelete(params: {
+    chatId: string;
+    text: string;
+    messageOptions?: MaxSendMessageOptions;
+    deleteBotMessagesEnabled: boolean;
+    deleteBotMessagesDelayMinutes: number;
+    immediate?: boolean;
+  }) {
+    const {
+      chatId,
+      text,
+      messageOptions,
+      deleteBotMessagesEnabled,
+      deleteBotMessagesDelayMinutes,
+      immediate,
+    } = params;
+
+    await this.maxClient.sendMessage(
+      chatId,
+      text,
+      messageOptions,
+      this.buildBotMessageDispatchOptions({
+        deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes,
+        immediate,
+      }),
+    );
   }
 
   private normalizeDeleteBotMessagesDelayMinutes(value: number): number {

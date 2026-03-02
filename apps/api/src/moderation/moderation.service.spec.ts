@@ -23,7 +23,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     greetingBotButtonEnabled: false,
     greetingBotButtonUrl: '',
     greetingBotButtonText: 'Открыть',
-    deleteBotMessagesEnabled: true,
+    deleteBotMessagesEnabled: false,
     deleteBotMessagesDelayMinutes: 2,
     removeBotsFromGroupEnabled: false,
     globalUserBlacklistEnabled: false,

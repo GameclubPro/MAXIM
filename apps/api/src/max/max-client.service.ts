@@ -40,14 +40,16 @@ export type MaxActionJob = {
   userId?: string;
   text?: string;
   options?: MaxSendMessageOptions;
+  autoDeleteDelayMs?: number;
   attempt: number;
   idempotencyKey: string;
   createdAt: string;
 };
 
-type MaxActionDispatchOptions = {
+export type MaxActionDispatchOptions = {
   delayMs?: number;
   immediate?: boolean;
+  autoDeleteDelayMs?: number;
 };
 
 const MAX_ACTION_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
@@ -216,8 +218,8 @@ export class MaxClientService implements OnModuleDestroy {
           throw new Error('text is required for SEND_MESSAGE');
         }
         const attachments = this.buildMessageAttachments(action.options);
-        await this.executeMutation(action.chatId, async () => {
-          await this.request('post', '/messages', {
+        const sendResponse = await this.executeMutation(action.chatId, async () => {
+          return this.request<Record<string, unknown>>('post', '/messages', {
             params: {
               chat_id: action.chatId,
             },
@@ -227,6 +229,44 @@ export class MaxClientService implements OnModuleDestroy {
             },
           });
         });
+        const autoDeleteDelayMs = this.normalizeDelayMs(action.autoDeleteDelayMs);
+        if (autoDeleteDelayMs > 0) {
+          const sentMessageId = this.extractMessageIdFromSendResponse(sendResponse);
+          if (!sentMessageId) {
+            this.logger.warn(
+              {
+                chatId: action.chatId,
+                autoDeleteDelayMs,
+                sendResponse,
+              },
+              'Failed to schedule auto-delete for sent bot message: response has no message id',
+            );
+            return;
+          }
+
+          try {
+            await this.dispatchAction(
+              {
+                actionType: 'DELETE_MESSAGE',
+                chatId: action.chatId,
+                messageId: sentMessageId,
+              },
+              {
+                delayMs: autoDeleteDelayMs,
+              },
+            );
+          } catch (error: unknown) {
+            this.logger.warn(
+              {
+                chatId: action.chatId,
+                messageId: sentMessageId,
+                autoDeleteDelayMs,
+                error: error instanceof Error ? error.message : 'Unknown error',
+              },
+              'Failed to enqueue auto-delete for sent bot message',
+            );
+          }
+        }
         return;
       }
 
@@ -380,8 +420,12 @@ export class MaxClientService implements OnModuleDestroy {
     payload: Omit<MaxActionJob, 'attempt' | 'idempotencyKey' | 'createdAt'>,
     options?: MaxActionDispatchOptions,
   ) {
+    const autoDeleteDelayMs = this.normalizeDelayMs(options?.autoDeleteDelayMs);
     const job: MaxActionJob = {
       ...payload,
+      ...(payload.actionType === 'SEND_MESSAGE' && autoDeleteDelayMs > 0
+        ? { autoDeleteDelayMs }
+        : {}),
       attempt: 1,
       idempotencyKey: randomUUID(),
       createdAt: new Date().toISOString(),
@@ -494,13 +538,14 @@ export class MaxClientService implements OnModuleDestroy {
     };
   }
 
-  private async executeMutation(chatId: string, operation: () => Promise<void>) {
+  private async executeMutation<T>(chatId: string, operation: () => Promise<T>): Promise<T> {
     await this.ensureCircuitClosed();
     await this.enforceRateLimit(chatId);
 
     try {
-      await operation();
+      const result = await operation();
       this.actionHealthService.recordSuccess();
+      return result;
     } catch (error: unknown) {
       const status = this.extractStatusCode(error);
       const isCritical = status === 429 || (typeof status === 'number' && status >= 500);
@@ -510,6 +555,55 @@ export class MaxClientService implements OnModuleDestroy {
       }
       throw error;
     }
+  }
+
+  private extractMessageIdFromSendResponse(payload: unknown): string | null {
+    const queue: Array<{ node: unknown; depth: number }> = [{ node: payload, depth: 0 }];
+    const visited = new Set<unknown>();
+
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current || current.depth > 4) {
+        continue;
+      }
+
+      const { node, depth } = current;
+      if (!node || typeof node !== 'object') {
+        continue;
+      }
+
+      if (visited.has(node)) {
+        continue;
+      }
+      visited.add(node);
+
+      if (Array.isArray(node)) {
+        for (const item of node) {
+          queue.push({ node: item, depth: depth + 1 });
+        }
+        continue;
+      }
+
+      const row = node as Record<string, unknown>;
+      const directCandidates = [row.message_id, row.messageId, row.mid];
+      for (const value of directCandidates) {
+        if (typeof value === 'string' || typeof value === 'number') {
+          return String(value);
+        }
+      }
+
+      if (typeof row.id === 'string' || typeof row.id === 'number') {
+        return String(row.id);
+      }
+
+      for (const value of Object.values(row)) {
+        if (value && (typeof value === 'object' || Array.isArray(value))) {
+          queue.push({ node: value, depth: depth + 1 });
+        }
+      }
+    }
+
+    return null;
   }
 
   private async enforceRateLimit(chatId: string) {
