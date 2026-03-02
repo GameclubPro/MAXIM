@@ -744,7 +744,7 @@ export class AdminService {
           operator: Operator.ADMIN,
           metadata: {
             ...metadataBase,
-            reason: 'Manual kick from miniapp logs',
+            reason: 'Ручное удаление участника через miniapp',
           },
         },
       });
@@ -815,7 +815,7 @@ export class AdminService {
           operator: Operator.ADMIN,
           metadata: {
             ...metadataBase,
-            reason: 'Manual temporary ban from miniapp logs',
+            reason: 'Ручной бан участника через miniapp',
             banDurationHours,
             unbanScheduledAt: unbanScheduledAt.toISOString(),
             mode: 'MAX_BLOCK',
@@ -863,7 +863,7 @@ export class AdminService {
         operator: Operator.ADMIN,
         metadata: {
           ...metadataBase,
-          reason: 'Manual unban/restore from miniapp logs',
+          reason: 'Ручной разбан участника через miniapp',
           mode: 'MAX_UNBLOCK',
         },
       },
