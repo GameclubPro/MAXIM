@@ -21,12 +21,13 @@ const envSchema = z.object({
   WEBHOOK_BURST_LIMIT: z.coerce.number().int().positive().default(450),
   ENQUEUE_POLL_INTERVAL_MS: z.coerce.number().int().positive().default(500),
   ENQUEUE_BATCH_SIZE: z.coerce.number().int().positive().default(200),
+  ENQUEUE_MAX_ATTEMPTS: z.coerce.number().int().positive().default(120),
   QUEUE_LAG_DEGRADE_SEC: z.coerce.number().int().positive().default(10),
   DEGRADE_STABILIZE_SEC: z.coerce.number().int().positive().default(300),
   RAW_PAYLOAD_SAMPLE_RATE: z.coerce.number().min(0).max(1).default(0.01),
   WEBHOOK_RETENTION_DAYS: z.coerce.number().int().positive().default(7),
   MODERATION_RETENTION_DAYS: z.coerce.number().int().positive().default(90),
-  MAX_API_GLOBAL_RPS: z.coerce.number().int().positive().default(120),
+  MAX_API_GLOBAL_RPS: z.coerce.number().int().positive().default(30),
   MAX_API_CHAT_RPS: z.coerce.number().int().positive().default(10),
   MAX_API_CIRCUIT_FAILURE_THRESHOLD: z.coerce.number().int().positive().default(30),
   MAX_API_CIRCUIT_WINDOW_SEC: z.coerce.number().int().positive().default(30),
@@ -35,7 +36,7 @@ const envSchema = z.object({
   APP_ROLE: z.enum(['all', 'ingress', 'enqueue', 'moderation', 'action']).default('all'),
   MODERATION_CONCURRENCY: z.coerce.number().int().positive().default(24),
   ACTION_CONCURRENCY: z.coerce.number().int().positive().default(24),
-  JSON_BODY_LIMIT: z.coerce.number().int().positive().default(1_048_576),
+  JSON_BODY_LIMIT: z.coerce.number().int().positive().default(6_291_456),
 });
 
 export type EnvSchema = z.infer<typeof envSchema>;

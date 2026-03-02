@@ -4,9 +4,12 @@ export function maskText(text: string): string {
     return '';
   }
 
-  if (normalized.length <= 4) {
-    return '*'.repeat(normalized.length);
+  const symbols = Array.from(normalized);
+  if (symbols.length <= 4) {
+    return '*'.repeat(symbols.length);
   }
 
-  return `${normalized.slice(0, 2)}${'*'.repeat(normalized.length - 4)}${normalized.slice(-2)}`;
+  return `${symbols.slice(0, 2).join('')}${'*'.repeat(symbols.length - 4)}${symbols
+    .slice(-2)
+    .join('')}`;
 }

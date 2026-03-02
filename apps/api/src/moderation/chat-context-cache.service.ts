@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { ChatSettings } from '@prisma/client';
+import { Prisma, type ChatSettings } from '@prisma/client';
 import Redis from 'ioredis';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -62,28 +62,10 @@ export class ChatContextCacheService implements OnModuleDestroy {
 
   private async loadAndCache(chatId: string, chatTitle?: string | null): Promise<ChatContext> {
     const title = chatTitle?.trim();
-    const chat = await this.prisma.chat.upsert({
+    await this.ensureChatInitialized(chatId, title);
+
+    const chat = await this.prisma.chat.findUnique({
       where: { id: chatId },
-      create: {
-        id: chatId,
-        title: title || `Chat ${chatId}`,
-        settings: {
-          create: {},
-        },
-      },
-      update: {
-        ...(title
-          ? {
-              title,
-            }
-          : {}),
-        settings: {
-          upsert: {
-            update: {},
-            create: {},
-          },
-        },
-      },
       include: {
         settings: true,
         domains: {
@@ -102,8 +84,12 @@ export class ChatContextCacheService implements OnModuleDestroy {
       },
     });
 
+    if (!chat) {
+      throw new Error(`Chat missing after initialization for chat ${chatId}`);
+    }
+
     if (!chat.settings) {
-      throw new Error(`Chat settings missing after upsert for chat ${chatId}`);
+      throw new Error(`Chat settings missing after initialization for chat ${chatId}`);
     }
 
     const value: ChatContext = {
@@ -116,6 +102,42 @@ export class ChatContextCacheService implements OnModuleDestroy {
 
     await this.redis.set(ChatContextCacheService.cacheKey(chatId), JSON.stringify(value), 'EX', this.ttlSec);
     return value;
+  }
+
+  private async ensureChatInitialized(chatId: string, title: string | undefined) {
+    const resolvedTitle = title || `Chat ${chatId}`;
+
+    try {
+      await this.prisma.chat.create({
+        data: {
+          id: chatId,
+          title: resolvedTitle,
+        },
+      });
+    } catch (error: unknown) {
+      if (!this.isPrismaError(error, 'P2002')) {
+        throw error;
+      }
+    }
+
+    if (title) {
+      try {
+        await this.prisma.chat.update({
+          where: { id: chatId },
+          data: { title },
+        });
+      } catch (error: unknown) {
+        if (!this.isPrismaError(error, 'P2025')) {
+          throw error;
+        }
+      }
+    }
+
+    await this.prisma.chatSettings.upsert({
+      where: { chatId },
+      create: { chatId },
+      update: {},
+    });
   }
 
   private async updateTitle(chatId: string, title: string) {
@@ -131,5 +153,13 @@ export class ChatContextCacheService implements OnModuleDestroy {
         'Failed to refresh chat title from cache hit',
       );
     }
+  }
+
+  private isPrismaError(error: unknown, code: string): boolean {
+    if (error instanceof Prisma.PrismaClientKnownRequestError) {
+      return error.code === code;
+    }
+
+    return (error as { code?: string } | null)?.code === code;
   }
 }
