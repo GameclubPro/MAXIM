@@ -1126,6 +1126,12 @@ describe('ModerationService', () => {
         '',
         'Схема простая: сначала слово, потом протокол.',
       ].join('\n'),
+      {
+        button: {
+          text: 'Поддержка',
+          url: 'https://max.ru/join/qX7U_Hj-L-xMJG8V7wlF6dD-6a6cXIzTBGRtU2mRMzk',
+        },
+      },
     );
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(prisma.chat.upsert).not.toHaveBeenCalled();

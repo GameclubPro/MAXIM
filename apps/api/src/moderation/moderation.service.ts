@@ -41,6 +41,12 @@ const DEFAULT_NIGHT_MODE_TIMEZONE = 'Europe/Moscow';
 const NIGHT_MODE_NOTICE_RULE_CODE = 'NIGHT_MODE_NOTICE';
 const LINK_ESCALATION_WINDOW_HOURS = 24;
 const TEXT_FILTER_ESCALATION_WINDOW_HOURS = 24;
+const BOT_STARTED_INSTRUCTION_OPTIONS: MaxSendMessageOptions = {
+  button: {
+    text: 'Поддержка',
+    url: 'https://max.ru/join/qX7U_Hj-L-xMJG8V7wlF6dD-6a6cXIzTBGRtU2mRMzk',
+  },
+};
 const BOT_STARTED_INSTRUCTION_TEXT = [
   'Отдел чат-порядка «Майор Максимов» на месте. Чат взят под контроль.',
   '',
@@ -2690,7 +2696,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      await this.maxClient.sendMessage(chatId, BOT_STARTED_INSTRUCTION_TEXT);
+      await this.maxClient.sendMessage(chatId, BOT_STARTED_INSTRUCTION_TEXT, BOT_STARTED_INSTRUCTION_OPTIONS);
     } catch (error: unknown) {
       this.logger.warn(
         {
