@@ -15,7 +15,11 @@ export type QueueCounters = {
 export type QueueMetricsSnapshot = {
   moderation: QueueCounters;
   actions: QueueCounters;
+  oldestQueuedEventId: string | null;
+  oldestQueuedCreatedAt: string | null;
   oldestQueuedLagSec: number;
+  oldestReceivedEventId: string | null;
+  oldestReceivedCreatedAt: string | null;
   oldestReceivedLagSec: number;
   effectiveLagSec: number;
   generatedAt: string;
@@ -44,12 +48,12 @@ export class QueueMetricsService {
       this.prisma.webhookEvent.findFirst({
         where: { status: WebhookStatus.QUEUED },
         orderBy: { createdAt: 'asc' },
-        select: { createdAt: true },
+        select: { id: true, createdAt: true },
       }),
       this.prisma.webhookEvent.findFirst({
         where: { status: WebhookStatus.RECEIVED },
         orderBy: { createdAt: 'asc' },
-        select: { createdAt: true },
+        select: { id: true, createdAt: true },
       }),
     ]);
 
@@ -63,7 +67,11 @@ export class QueueMetricsService {
     return {
       moderation,
       actions,
+      oldestQueuedEventId: oldestQueued?.id ?? null,
+      oldestQueuedCreatedAt: oldestQueued ? oldestQueued.createdAt.toISOString() : null,
       oldestQueuedLagSec,
+      oldestReceivedEventId: oldestReceived?.id ?? null,
+      oldestReceivedCreatedAt: oldestReceived ? oldestReceived.createdAt.toISOString() : null,
       oldestReceivedLagSec,
       effectiveLagSec,
       generatedAt: new Date(now).toISOString(),

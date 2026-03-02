@@ -14,6 +14,12 @@ export type ReadinessSnapshot = {
       ok: boolean;
       thresholdSec: number;
       effectiveLagSec: number;
+      oldestQueuedEventId: string | null;
+      oldestQueuedCreatedAt: string | null;
+      oldestQueuedLagSec: number;
+      oldestReceivedEventId: string | null;
+      oldestReceivedCreatedAt: string | null;
+      oldestReceivedLagSec: number;
     };
   };
 };
@@ -75,6 +81,12 @@ export class HealthService implements OnModuleDestroy {
           ok: queueLagOk,
           thresholdSec: this.queueLagThresholdSec,
           effectiveLagSec: queueMetrics.effectiveLagSec,
+          oldestQueuedEventId: queueMetrics.oldestQueuedEventId,
+          oldestQueuedCreatedAt: queueMetrics.oldestQueuedCreatedAt,
+          oldestQueuedLagSec: queueMetrics.oldestQueuedLagSec,
+          oldestReceivedEventId: queueMetrics.oldestReceivedEventId,
+          oldestReceivedCreatedAt: queueMetrics.oldestReceivedCreatedAt,
+          oldestReceivedLagSec: queueMetrics.oldestReceivedLagSec,
         },
       },
     };
