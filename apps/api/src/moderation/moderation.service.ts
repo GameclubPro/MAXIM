@@ -238,6 +238,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       settings.globalCrossChatSpamEnabled,
     );
 
+    const updateType = this.readLowerString(update.type);
+    const senderIsOwnBotInMessage =
+      updateType === 'message_created' && senderId ? this.isOwnBotSender(senderId) : false;
+    if (senderIsOwnBotInMessage) {
+      if (settings.deleteBotMessagesEnabled) {
+        await this.handleBotMessageAutoDelete({
+          chatId,
+          userId: senderId,
+          messageId,
+          text,
+          delayMinutes: settings.deleteBotMessagesDelayMinutes,
+        });
+      }
+      return;
+    }
+
     if (serviceAuthored || serviceMembersEvent) {
       const excludedGreetingUserIds = new Set<string>();
 
