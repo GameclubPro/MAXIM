@@ -6,6 +6,8 @@ import {
   sendBroadcastRequestSchema,
   sendBroadcastResultSchema,
   moderationEventSchema,
+  logsDashboardRangeSchema,
+  logsDashboardResponseSchema,
   chatSummarySchema,
   globalUserBlacklistEntrySchema,
   meSchema,
@@ -15,6 +17,8 @@ import {
   type GlobalUserBlacklistEntry,
   type Me,
   type ModerationEvent,
+  type LogsDashboardRange,
+  type LogsDashboardResponse,
   type SendBroadcastResult,
 } from '@maxim/contracts';
 
@@ -151,6 +155,17 @@ export class ApiClient {
   async getEvents(chatId: string): Promise<ModerationEvent[]> {
     const response = await this.request(`/chats/${chatId}/moderation-events?limit=50&page=1`);
     return response.map((item: unknown) => moderationEventSchema.parse(item));
+  }
+
+  async getLogsDashboard(
+    chatId: string,
+    range: LogsDashboardRange = '7d',
+  ): Promise<LogsDashboardResponse> {
+    const validatedRange = logsDashboardRangeSchema.parse(range);
+    const response = await this.request(
+      `/chats/${chatId}/logs-dashboard?range=${encodeURIComponent(validatedRange)}`,
+    );
+    return logsDashboardResponseSchema.parse(response);
   }
 
   async getGlobalUserBlacklist(chatId: string): Promise<GlobalUserBlacklistEntry[]> {

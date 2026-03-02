@@ -376,6 +376,50 @@ export const dateRangeQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
 });
 
+export const logsDashboardRangeSchema = z.enum(['24h', '7d', '30d']);
+export type LogsDashboardRange = z.infer<typeof logsDashboardRangeSchema>;
+
+export const logsDashboardQuerySchema = z.object({
+  range: logsDashboardRangeSchema.default('7d'),
+});
+export type LogsDashboardQuery = z.infer<typeof logsDashboardQuerySchema>;
+
+export const logsDashboardViolationSchema = z.object({
+  id: z.string(),
+  action: sanctionActionSchema,
+  ruleCode: z.string(),
+  userId: z.string(),
+  createdAt: z.string().datetime(),
+  maskedExcerpt: z.string().nullable(),
+  metadata: z.record(z.unknown()).nullable().optional(),
+});
+export type LogsDashboardViolation = z.infer<typeof logsDashboardViolationSchema>;
+
+export const logsDashboardResponseSchema = z.object({
+  chat: z.object({
+    id: z.string(),
+    title: z.string(),
+  }),
+  period: z.object({
+    range: logsDashboardRangeSchema,
+    from: z.string().datetime(),
+    to: z.string().datetime(),
+  }),
+  membership: z.object({
+    joinedUsers: z.number().int().min(0),
+    leftUsers: z.number().int().min(0),
+  }),
+  violationsSummary: z.object({
+    warn: z.number().int().min(0),
+    deleteMessage: z.number().int().min(0),
+    kick: z.number().int().min(0),
+    ban: z.number().int().min(0),
+    total: z.number().int().min(0),
+  }),
+  violations: z.array(logsDashboardViolationSchema),
+});
+export type LogsDashboardResponse = z.infer<typeof logsDashboardResponseSchema>;
+
 export const updateSettingsRequestSchema = chatSettingsSchema;
 
 export const addAdminRequestSchema = z.object({

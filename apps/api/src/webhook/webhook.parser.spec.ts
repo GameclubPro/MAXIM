@@ -317,6 +317,46 @@ describe('WebhookParser', () => {
     expect(parsed.message?.senderName).toBe('Иван Смирнов');
   });
 
+  it('builds normalized message for user_removed update without message payload', () => {
+    const parsed = parser.parse({
+      update_id: 'upd-user-removed-1',
+      update_type: 'user_removed',
+      chat_id: -123456789,
+      user: {
+        user_id: 889,
+        first_name: 'Петр',
+        last_name: 'Иванов',
+      },
+      timestamp: 1772249118580,
+    });
+
+    expect(parsed.type).toBe('user_removed');
+    expect(parsed.message?.messageId).toBe('user_removed:upd-user-removed-1');
+    expect(parsed.message?.chatId).toBe('-123456789');
+    expect(parsed.message?.senderId).toBe('889');
+    expect(parsed.message?.senderName).toBe('Петр Иванов');
+  });
+
+  it('builds normalized message for bot_removed update without message payload', () => {
+    const parsed = parser.parse({
+      update_id: 'upd-bot-removed-1',
+      update_type: 'bot_removed',
+      chat_id: -123456789,
+      user: {
+        user_id: 890,
+        first_name: 'Bot',
+        last_name: 'Removed',
+      },
+      timestamp: 1772249118580,
+    });
+
+    expect(parsed.type).toBe('bot_removed');
+    expect(parsed.message?.messageId).toBe('bot_removed:upd-bot-removed-1');
+    expect(parsed.message?.chatId).toBe('-123456789');
+    expect(parsed.message?.senderId).toBe('890');
+    expect(parsed.message?.senderName).toBe('Bot Removed');
+  });
+
   it('builds normalized message for bot_started update without message payload', () => {
     const parsed = parser.parse({
       update_id: 'upd-bot-started-1',

@@ -62,7 +62,13 @@ export class WebhookParser {
 
   private isSyntheticMessageUpdateType(type: string): boolean {
     const normalized = type.trim().toLowerCase();
-    return normalized === 'user_added' || normalized === 'bot_added' || normalized === 'bot_started';
+    return (
+      normalized === 'user_added' ||
+      normalized === 'bot_added' ||
+      normalized === 'user_removed' ||
+      normalized === 'bot_removed' ||
+      normalized === 'bot_started'
+    );
   }
 
   private extractMembershipPayload(

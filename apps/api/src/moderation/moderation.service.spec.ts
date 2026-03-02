@@ -280,6 +280,56 @@ function createUserAddedUpdate(): MaxUpdate {
   };
 }
 
+function createUserRemovedUpdate(): MaxUpdate {
+  return {
+    updateId: 'upd-user-removed-1',
+    type: 'user_removed',
+    message: {
+      messageId: 'user_removed:upd-user-removed-1',
+      chatId: 'chat-1',
+      senderId: 'user-removed-1',
+      senderName: 'Пользователь вышел',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'user_removed',
+      chat_id: 'chat-1',
+      user: {
+        user_id: 'user-removed-1',
+        type: 'user',
+        display_name: 'Пользователь вышел',
+      },
+      timestamp: Date.now(),
+    },
+  };
+}
+
+function createBotRemovedUpdate(): MaxUpdate {
+  return {
+    updateId: 'upd-bot-removed-1',
+    type: 'bot_removed',
+    message: {
+      messageId: 'bot_removed:upd-bot-removed-1',
+      chatId: 'chat-1',
+      senderId: 'bot-removed-1',
+      senderName: 'Бот вышел',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'bot_removed',
+      chat_id: 'chat-1',
+      user: {
+        user_id: 'bot-removed-1',
+        type: 'bot',
+        display_name: 'Бот вышел',
+      },
+      timestamp: Date.now(),
+    },
+  };
+}
+
 function createBotStartedPrivateUpdate(): MaxUpdate {
   return {
     updateId: 'upd-bot-started-private-1',
@@ -1066,6 +1116,108 @@ describe('ModerationService', () => {
         action: SanctionAction.NONE,
       }),
     });
+  });
+
+  it('skips moderation flow for user_removed update', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUserRemovedUpdate());
+
+    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(maxClient.notifyModerators).not.toHaveBeenCalled();
+  });
+
+  it('skips moderation flow for bot_removed update', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createBotRemovedUpdate());
+
+    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(maxClient.notifyModerators).not.toHaveBeenCalled();
   });
 
   it('sends instruction for personal bot_started update and skips moderation flow', async () => {

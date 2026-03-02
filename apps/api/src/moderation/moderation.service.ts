@@ -179,6 +179,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    if (this.isMembershipLeaveUpdate(update)) {
+      return;
+    }
+
     const userLabel = this.formatUserLabel(senderName);
     const mode = this.systemModeService?.getSnapshot() ?? {
       mode: 'normal',
@@ -2688,6 +2692,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private isBotStartedUpdate(update: MaxUpdate): boolean {
     return this.readLowerString(update.type) === 'bot_started';
+  }
+
+  private isMembershipLeaveUpdate(update: MaxUpdate): boolean {
+    const normalizedType = this.readLowerString(update.type);
+    return normalizedType === 'user_removed' || normalizedType === 'bot_removed';
   }
 
   private async handleBotStartedInstruction(update: MaxUpdate, chatId: string) {

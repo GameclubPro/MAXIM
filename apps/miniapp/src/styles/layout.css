@@ -235,7 +235,7 @@
 
 .chat-card,
 .settings-section,
-.events-item {
+.logs-violation-item {
   display: grid;
   gap: var(--space-3);
 }
@@ -264,28 +264,65 @@
   border-top: 1px solid rgba(62, 96, 127, 0.12);
 }
 
-.events-stats {
+.logs-head {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.logs-head__title {
+  display: grid;
+  gap: 4px;
+}
+
+.logs-head__eyebrow {
+  margin: 0;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.logs-head__title h1 {
+  font-size: 1.12rem;
+}
+
+.logs-membership__grid,
+.logs-summary__grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-3);
 }
 
-.events-stats__card {
+.logs-metric-card {
   display: grid;
   gap: 4px;
 }
 
-.events-stats__card small {
+.logs-metric-card small {
   color: var(--text-muted);
+  font-size: 0.78rem;
+  font-weight: 600;
 }
 
-.events-stats__card h3 {
+.logs-metric-card strong {
   font-size: 1.7rem;
 }
 
-.events-tools {
+.logs-section-title {
   display: grid;
-  gap: var(--space-3);
+  gap: 4px;
+  margin-bottom: var(--space-2);
+}
+
+.logs-section-title h2 {
+  font-size: 1rem;
+}
+
+.logs-section-title p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.82rem;
 }
 
 .settings-grid {
@@ -341,7 +378,7 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .events-stats {
+  .logs-summary__grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }

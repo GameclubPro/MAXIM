@@ -3,10 +3,14 @@ import {
   addDomainRequestSchema,
   addAdminRequestSchema,
   dateRangeQuerySchema,
+  logsDashboardQuerySchema,
+  logsDashboardResponseSchema,
   type ChatSettings,
   chatSettingsSchema,
   type DomainAllowlistEntry,
   type GlobalUserBlacklistEntry,
+  type LogsDashboardRange,
+  type LogsDashboardResponse,
   type Me,
   type ModerationEvent,
   type SendBroadcastResult,
@@ -32,6 +36,7 @@ const BROADCAST_MAX_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
 const BROADCAST_CYCLE_MAX_COUNT = 14;
 const BROADCAST_DAY_MS = 24 * 60 * 60 * 1000;
 const BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS = [1_500, 3_000, 6_000];
+const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 30;
 
 @Injectable()
 export class AdminService {
@@ -573,6 +578,119 @@ export class AdminService {
     return 'broadcast-image.jpg';
   }
 
+  async getLogsDashboard(
+    chatId: string,
+    user: AuthUser,
+    query: unknown,
+  ): Promise<LogsDashboardResponse> {
+    await this.assertChatAdmin(chatId, user.userId);
+    const parsed = logsDashboardQuerySchema.safeParse(query);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const now = new Date();
+    const from = this.resolveLogsDashboardFrom(parsed.data.range, now);
+
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: { id: true, title: true },
+    });
+
+    const membershipRows = await this.prisma.$queryRaw<
+      Array<{ joined_users: unknown; left_users: unknown }>
+    >`
+      SELECT
+        COUNT(*) FILTER (WHERE normalized_payload->>'type' = 'user_added') AS joined_users,
+        COUNT(*) FILTER (WHERE normalized_payload->>'type' = 'user_removed') AS left_users
+      FROM webhook_events
+      WHERE normalized_payload->'message'->>'chatId' = ${chatId}
+        AND normalized_payload->>'type' IN ('user_added', 'user_removed')
+        AND created_at >= ${from}
+        AND created_at <= ${now}
+    `;
+
+    const [warnCount, deleteMessageCount, kickCount, banCount, violationRows] = await Promise.all([
+      this.prisma.moderationEvent.count({
+        where: {
+          chatId,
+          action: 'WARN',
+          createdAt: { gte: from, lte: now },
+        },
+      }),
+      this.prisma.moderationEvent.count({
+        where: {
+          chatId,
+          action: 'DELETE_MESSAGE',
+          createdAt: { gte: from, lte: now },
+        },
+      }),
+      this.prisma.moderationEvent.count({
+        where: {
+          chatId,
+          action: 'KICK',
+          createdAt: { gte: from, lte: now },
+        },
+      }),
+      this.prisma.moderationEvent.count({
+        where: {
+          chatId,
+          action: 'BAN',
+          createdAt: { gte: from, lte: now },
+        },
+      }),
+      this.prisma.moderationEvent.findMany({
+        where: {
+          chatId,
+          action: {
+            in: ['WARN', 'DELETE_MESSAGE', 'KICK', 'BAN'],
+          },
+          createdAt: { gte: from, lte: now },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: LOGS_DASHBOARD_VIOLATIONS_LIMIT,
+      }),
+    ]);
+
+    const membershipSource = membershipRows[0] ?? { joined_users: 0, left_users: 0 };
+    const response: LogsDashboardResponse = {
+      chat: {
+        id: chatId,
+        title: chat?.title?.trim() || 'Чат без названия',
+      },
+      period: {
+        range: parsed.data.range,
+        from: from.toISOString(),
+        to: now.toISOString(),
+      },
+      membership: {
+        joinedUsers: this.toSafeInteger(membershipSource.joined_users),
+        leftUsers: this.toSafeInteger(membershipSource.left_users),
+      },
+      violationsSummary: {
+        warn: warnCount,
+        deleteMessage: deleteMessageCount,
+        kick: kickCount,
+        ban: banCount,
+        total: warnCount + deleteMessageCount + kickCount + banCount,
+      },
+      violations: violationRows.map((row) => ({
+        id: row.id,
+        action: row.action,
+        ruleCode: row.ruleCode,
+        userId: row.userId,
+        createdAt: row.createdAt.toISOString(),
+        maskedExcerpt: row.maskedExcerpt,
+        metadata:
+          row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
+            ? (row.metadata as Record<string, unknown>)
+            : null,
+      })),
+    };
+
+    return logsDashboardResponseSchema.parse(response);
+  }
+
   async getEvents(chatId: string, user: AuthUser, query: unknown): Promise<ModerationEvent[]> {
     await this.assertChatAdmin(chatId, user.userId);
     const parsed = dateRangeQuerySchema.safeParse(query);
@@ -925,6 +1043,37 @@ export class AdminService {
     }
 
     await this.upsertUserChatAccess(chatId, userId, null);
+  }
+
+  private resolveLogsDashboardFrom(range: LogsDashboardRange, to: Date): Date {
+    const toTimestamp = to.getTime();
+
+    if (range === '24h') {
+      return new Date(toTimestamp - 24 * 60 * 60 * 1000);
+    }
+
+    if (range === '30d') {
+      return new Date(toTimestamp - 30 * 24 * 60 * 60 * 1000);
+    }
+
+    return new Date(toTimestamp - 7 * 24 * 60 * 60 * 1000);
+  }
+
+  private toSafeInteger(value: unknown): number {
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
+    }
+
+    if (typeof value === 'bigint') {
+      return value > 0n ? Number(value) : 0;
+    }
+
+    if (typeof value === 'string') {
+      const parsed = Number.parseInt(value, 10);
+      return Number.isNaN(parsed) ? 0 : Math.max(0, parsed);
+    }
+
+    return 0;
   }
 
   private activeDomainWhere(chatId: string) {

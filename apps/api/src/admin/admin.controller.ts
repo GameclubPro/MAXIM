@@ -59,6 +59,15 @@ export class AdminController {
     return this.adminService.getEvents(chatId, user, query);
   }
 
+  @Get('chats/:chatId/logs-dashboard')
+  getLogsDashboard(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() query: unknown,
+  ) {
+    return this.adminService.getLogsDashboard(chatId, user, query);
+  }
+
   @Post('chats/:chatId/admin-allowlist')
   addAdmin(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser, @Body() body: unknown) {
     return this.adminService.addAdmin(chatId, user, body);

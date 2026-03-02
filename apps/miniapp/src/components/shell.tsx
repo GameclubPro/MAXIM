@@ -131,7 +131,8 @@ export function Shell() {
   }, [chatId, resolvedChatId, routeChatTitle]);
   const isChatsRoute = location.pathname === '/';
   const isSettingsRoute = location.pathname.includes('/settings');
-  const hasTopbar = !isChatsRoute && !isSettingsRoute;
+  const isEventsRoute = location.pathname.includes('/events');
+  const hasTopbar = !isChatsRoute && !isSettingsRoute && !isEventsRoute;
 
   const screen = useMemo(
     () => resolveScreenInfo(location.pathname, resolvedChatTitle || resolvedChatId),
