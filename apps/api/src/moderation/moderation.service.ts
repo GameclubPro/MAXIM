@@ -41,6 +41,9 @@ const DEFAULT_NIGHT_MODE_TIMEZONE = 'Europe/Moscow';
 const NIGHT_MODE_NOTICE_RULE_CODE = 'NIGHT_MODE_NOTICE';
 const LINK_ESCALATION_WINDOW_HOURS = 24;
 const TEXT_FILTER_ESCALATION_WINDOW_HOURS = 24;
+const MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS = 12;
+const PHOTO_RATE_LIMIT_KICK_THRESHOLD = 5;
+const MESSAGE_TOO_LONG_KICK_THRESHOLD = 6;
 const BOT_STARTED_INSTRUCTION_OPTIONS: MaxSendMessageOptions = {
   button: {
     text: 'Поддержка',
@@ -465,8 +468,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             settings.textFiltersBotButtonText,
           )
         : null;
+    const limitsMessageOptions = this.isMessageLimitsViolation(topViolation.ruleCode)
+      ? this.buildBotMessageOptions(
+          settings.messageLimitsBotButtonEnabled,
+          settings.messageLimitsBotButtonUrl,
+          settings.messageLimitsBotButtonText,
+        )
+      : null;
     const textFilterViolationCount24h = isTextFilterHit
       ? await this.countRecentTextFilterViolations(chatId, senderId, topViolation.ruleCode)
+      : null;
+    const messageLimitsViolationCount12h = this.isMessageLimitsKickRule(topViolation.ruleCode)
+      ? await this.countRecentMessageLimitsViolations(chatId, senderId, topViolation.ruleCode)
       : null;
 
     if (topViolation.ruleCode === 'LINK_BLOCKED' && settings.linkBotMessageEnabled) {
@@ -500,11 +513,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       this.isMessageLimitsViolation(topViolation.ruleCode) &&
       settings.messageLimitsBotMessageEnabled
     ) {
-      const limitsMessageOptions = this.buildBotMessageOptions(
-        settings.messageLimitsBotButtonEnabled,
-        settings.messageLimitsBotButtonUrl,
-        settings.messageLimitsBotButtonText,
-      );
       try {
         if (limitsMessageOptions) {
           await this.maxClient.sendMessage(
@@ -656,6 +664,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           );
         }
       }
+    } else if (this.isMessageLimitsKickRule(topViolation.ruleCode)) {
+      action = this.resolveMessageLimitsEscalationAction(
+        topViolation.ruleCode,
+        messageLimitsViolationCount12h ?? 1,
+      );
     } else if (this.shouldResolveSanction(topViolation.ruleCode)) {
       action = await this.sanctionService.resolveAction({
         chatId,
@@ -718,6 +731,34 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           );
         }
       }
+
+      if (this.isMessageLimitsKickRule(topViolation.ruleCode) && action === SanctionAction.KICK) {
+        try {
+          if (limitsMessageOptions) {
+            await this.maxClient.sendMessage(
+              chatId,
+              this.buildMessageLimitsKickExplanation(userLabel, topViolation.ruleCode),
+              limitsMessageOptions,
+            );
+          } else {
+            await this.maxClient.sendMessage(
+              chatId,
+              this.buildMessageLimitsKickExplanation(userLabel, topViolation.ruleCode),
+            );
+          }
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              userId: senderId,
+              messageId,
+              ruleCode: topViolation.ruleCode,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to send message limits kick message',
+          );
+        }
+      }
     }
 
     await this.prisma.moderationEvent.create({
@@ -745,6 +786,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             ? {
                 textFilterViolationCount24h,
                 textFilterEscalationWindowHours: TEXT_FILTER_ESCALATION_WINDOW_HOURS,
+              }
+            : {}),
+          ...(this.isMessageLimitsKickRule(topViolation.ruleCode) &&
+          messageLimitsViolationCount12h !== null
+            ? {
+                messageLimitsViolationCount12h,
+                messageLimitsEscalationWindowHours: MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS,
               }
             : {}),
         },
@@ -1330,6 +1378,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return SanctionAction.NONE;
   }
 
+  private resolveMessageLimitsEscalationAction(
+    ruleCode: string,
+    violationCount12h: number,
+  ): SanctionAction {
+    const count = Number.isInteger(violationCount12h) ? Math.max(1, violationCount12h) : 1;
+
+    if (ruleCode === 'PHOTO_RATE_LIMIT' && count >= PHOTO_RATE_LIMIT_KICK_THRESHOLD) {
+      return SanctionAction.KICK;
+    }
+
+    if (ruleCode === 'MESSAGE_TOO_LONG' && count >= MESSAGE_TOO_LONG_KICK_THRESHOLD) {
+      return SanctionAction.KICK;
+    }
+
+    return SanctionAction.NONE;
+  }
+
   private resolveTextFilterEscalationSettings(
     ruleCode: string,
     settings: ChatSettings,
@@ -1364,6 +1429,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private isMessageLimitsViolation(ruleCode: string): boolean {
     return MESSAGE_LIMITS_RULE_CODES.has(ruleCode);
+  }
+
+  private isMessageLimitsKickRule(ruleCode: string): boolean {
+    return ruleCode === 'PHOTO_RATE_LIMIT' || ruleCode === 'MESSAGE_TOO_LONG';
   }
 
   private isTextFilterViolation(ruleCode: string): boolean {
@@ -1488,6 +1557,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       reason: `фото можно отправлять не чаще одного раза в ${hours}ч, чтобы не перегружать ленту; используйте альбом или коллаж`,
       photo_cooldown_hours: String(hours),
     });
+  }
+
+  private buildMessageLimitsKickExplanation(userLabel: string, ruleCode: string): string {
+    if (ruleCode === 'PHOTO_RATE_LIMIT') {
+      return `Пользователь ${userLabel} удален из чата за повторные нарушения лимита по фото.`;
+    }
+
+    if (ruleCode === 'MESSAGE_TOO_LONG') {
+      return `Пользователь ${userLabel} удален из чата за повторные слишком длинные сообщения.`;
+    }
+
+    return `Пользователь ${userLabel} удален из чата за повторные нарушения ограничений сообщений.`;
   }
 
   private calculateEffectiveMessageLength(update: MaxUpdate): number {
@@ -1922,6 +2003,39 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId,
         userId,
         ruleCode: ruleCodeFilter,
+        createdAt: { gte: since },
+      },
+    });
+
+    return Number.isInteger(count) && count > 0 ? count : 1;
+  }
+
+  private async countRecentMessageLimitsViolations(
+    chatId: string,
+    userId: string,
+    ruleCode: string,
+  ): Promise<number> {
+    const violationModel = this.prisma.violation as unknown as {
+      count?: (args: {
+        where: {
+          chatId: string;
+          userId: string;
+          ruleCode: string;
+          createdAt: { gte: Date };
+        };
+      }) => Promise<number>;
+    };
+
+    if (typeof violationModel.count !== 'function') {
+      return 1;
+    }
+
+    const since = new Date(Date.now() - MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000);
+    const count = await violationModel.count({
+      where: {
+        chatId,
+        userId,
+        ruleCode,
         createdAt: { gte: since },
       },
     });

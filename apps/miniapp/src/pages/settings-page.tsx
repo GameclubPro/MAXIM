@@ -719,6 +719,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [mailingCycleError, setMailingCycleError] = useState('');
   const [blacklistInput, setBlacklistInput] = useState('');
   const [blacklistInputError, setBlacklistInputError] = useState('');
+  const [duplicateWindowInputValues, setDuplicateWindowInputValues] = useState<
+    Partial<Record<DuplicateWindowKey, string>>
+  >({});
   const [failedSnapshot, setFailedSnapshot] = useState<string>('');
   const [showApplyAllConfirm, setShowApplyAllConfirm] = useState(false);
   const [openHintKey, setOpenHintKey] = useState<HintKey | null>(null);
@@ -768,6 +771,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     setMailingImageError('');
     setMailingScheduleError('');
     setMailingCycleError('');
+    setDuplicateWindowInputValues({});
   }, [chatId]);
 
   useEffect(() => {
@@ -850,6 +854,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
     setDraft(settingsQuery.data);
     setFieldErrors({});
+    setDuplicateWindowInputValues({});
   }, [settingsQuery.data]);
 
   useEffect(() => {
@@ -1079,9 +1084,43 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   }
 
   function handleDuplicateWindowHoursChange(key: DuplicateWindowKey, rawValue: string) {
-    const hours = Number.parseInt(rawValue, 10);
-    const safeHours = Number.isNaN(hours) ? 0 : Math.max(0, hours);
+    setDuplicateWindowInputValues((current) => ({ ...current, [key]: rawValue }));
+
+    const normalized = rawValue.trim();
+    if (normalized.length === 0) {
+      return;
+    }
+
+    const hours = Number.parseInt(normalized, 10);
+    if (Number.isNaN(hours)) {
+      return;
+    }
+
+    const safeHours = Math.min(168, Math.max(1, hours));
     setFieldValue(key, (safeHours * 3600) as ChatSettings[DuplicateWindowKey]);
+  }
+
+  function handleDuplicateWindowHoursBlur(key: DuplicateWindowKey) {
+    const rawValue = duplicateWindowInputValues[key];
+    if (rawValue === undefined) {
+      return;
+    }
+
+    const normalized = rawValue.trim();
+    const parsed = Number.parseInt(normalized, 10);
+
+    const fallbackHours = draft ? secondsToHours(Number(draft[key])) : 1;
+    const safeHours = Number.isNaN(parsed) ? fallbackHours : Math.min(168, Math.max(1, parsed));
+    setFieldValue(key, (safeHours * 3600) as ChatSettings[DuplicateWindowKey]);
+
+    setDuplicateWindowInputValues((current) => {
+      if (!(key in current)) {
+        return current;
+      }
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
   }
 
   function adjustBanDuration(deltaHours: number) {
@@ -3367,8 +3406,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                   {draft.antiDuplicateEnabled ? (
                     <div className="duplicate-stage-list">
-                      <p className="duplicate-stage-list__caption">Количество дублей</p>
-
                     {DUPLICATE_STAGE_OPTIONS.map((stage) => {
                       const enabled = draft[stage.enabledKey];
                       const windowSec = draft[stage.windowKey];
@@ -3411,22 +3448,26 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                                 windowError && 'field--error',
                               )}
                             >
-                              <span className="duplicate-stage__field-label">Окно, ч</span>
+                              <span className="duplicate-stage__field-label">Интервал</span>
                               <div className="duplicate-stage__input-wrap">
                                 <input
                                   type="number"
                                   min={1}
                                   max={168}
                                   step={1}
-                                  value={secondsToHours(Number(windowSec))}
+                                  value={
+                                    duplicateWindowInputValues[stage.windowKey] ??
+                                    String(secondsToHours(Number(windowSec)))
+                                  }
                                   onChange={(event) =>
                                     handleDuplicateWindowHoursChange(
                                       stage.windowKey,
                                       event.target.value,
                                     )
                                   }
+                                  onBlur={() => handleDuplicateWindowHoursBlur(stage.windowKey)}
                                   disabled={!enabled}
-                                  aria-label={`Окно для ступени ${stage.label} в часах`}
+                                  aria-label={`Интервал для ступени ${stage.label} в часах`}
                                 />
                                 <span className="duplicate-stage__suffix" aria-hidden>
                                   часы
