@@ -95,6 +95,118 @@ type SettingsSectionKey =
   | 'night'
   | 'mailing'
   | 'extra';
+type ApplySectionKey = Exclude<SettingsSectionKey, 'mailing'>;
+
+const SECTION_LABELS: Record<ApplySectionKey, string> = {
+  links: 'Модерация ссылок',
+  greeting: 'Приветствие',
+  profanityFilter: 'Фильтр нецензурной лексики',
+  commercialFilter: 'Фильтр коммерции',
+  duplicates: 'Дубли сообщений',
+  limits: 'Ограничения сообщений',
+  night: 'Закрытие чата на ночь',
+  extra: 'Дополнительно',
+};
+
+const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings)[]> = {
+  links: [
+    'linkPolicy',
+    'linkBotMessageEnabled',
+    'linkBotMessageText',
+    'linkWarnEnabled',
+    'linkWarnMessageText',
+    'linkBanEnabled',
+    'linkKickEnabled',
+    'linkBotButtonEnabled',
+    'linkBotButtonUrl',
+    'linkBotButtonText',
+  ],
+  greeting: [
+    'greetingEnabled',
+    'greetingBotMessageEnabled',
+    'greetingBotMessageText',
+    'greetingBotButtonEnabled',
+    'greetingBotButtonUrl',
+    'greetingBotButtonText',
+  ],
+  profanityFilter: [
+    'russianProfanityFilterEnabled',
+    'profanityBotMessageEnabled',
+    'profanityWarnEnabled',
+    'profanityBanEnabled',
+    'profanityKickEnabled',
+  ],
+  commercialFilter: [
+    'commercialAdsFilterEnabled',
+    'commercialAdsSensitivity',
+    'commercialAdsWarnThreshold',
+    'commercialAdsDeleteThreshold',
+    'textFiltersBotMessageEnabled',
+    'textFiltersBotMessageText',
+    'textFiltersWarnEnabled',
+    'textFiltersWarnMessageText',
+    'textFiltersBanEnabled',
+    'textFiltersKickEnabled',
+    'textFiltersBotButtonEnabled',
+    'textFiltersBotButtonUrl',
+    'textFiltersBotButtonText',
+  ],
+  duplicates: [
+    'antiDuplicateEnabled',
+    'duplicateWarnEnabled',
+    'duplicateKickEnabled',
+    'duplicateBanEnabled',
+    'duplicateWarnWindowSec',
+    'duplicateWarnMaxCount',
+    'duplicateKickWindowSec',
+    'duplicateKickMaxCount',
+    'duplicateBanWindowSec',
+    'duplicateBanMaxCount',
+    'duplicateBotMessageEnabled',
+    'duplicateBotMessageText',
+    'duplicateBotButtonEnabled',
+    'duplicateBotButtonUrl',
+    'duplicateBotButtonText',
+    'banDurationHours',
+  ],
+  limits: [
+    'antiSpamEnabled',
+    'maxMessageLengthEnabled',
+    'maxMessageLength',
+    'photoMessageCooldownEnabled',
+    'photoMessageCooldownHours',
+    'videoMessagesEnabled',
+    'fileMessagesEnabled',
+    'voiceMessagesEnabled',
+    'messageLimitsBotMessageEnabled',
+    'messageLimitsBotMessageText',
+    'messageLimitsWarnEnabled',
+    'messageLimitsBanEnabled',
+    'messageLimitsKickEnabled',
+    'messageLimitsBotButtonEnabled',
+    'messageLimitsBotButtonUrl',
+    'messageLimitsBotButtonText',
+    'banDurationHours',
+  ],
+  night: [
+    'nightModeEnabled',
+    'nightModeStartTimeMinutes',
+    'nightModeEndTimeMinutes',
+    'nightModeTimezone',
+    'nightModeBotMessageEnabled',
+    'nightModeBotMessageText',
+    'nightModeBotButtonEnabled',
+    'nightModeBotButtonUrl',
+    'nightModeBotButtonText',
+  ],
+  extra: [
+    'globalCrossChatSpamEnabled',
+    'deleteBotMessagesEnabled',
+    'deleteBotMessagesDelayMinutes',
+    'removeBotsFromGroupEnabled',
+    'globalUserBlacklistEnabled',
+  ],
+};
 
 const DUPLICATE_STAGE_OPTIONS: Array<{
   id: 'WARN' | 'KICK' | 'BAN';
@@ -482,6 +594,22 @@ function inferCommercialSensitivitySliderValue(settings: ChatSettings): number {
   return Math.round(balancedProgress * COMMERCIAL_BALANCED_MAX);
 }
 
+function mergeSectionSettings(
+  targetSettings: ChatSettings,
+  sourceSettings: ChatSettings,
+  section: ApplySectionKey,
+): ChatSettings {
+  const nextSettings = { ...targetSettings } as ChatSettings;
+  const nextRecord = nextSettings as Record<keyof ChatSettings, unknown>;
+  const sourceRecord = sourceSettings as Record<keyof ChatSettings, unknown>;
+
+  for (const key of SECTION_SETTING_KEYS[section]) {
+    nextRecord[key] = sourceRecord[key];
+  }
+
+  return nextSettings;
+}
+
 function getRouteChatTitle(state: unknown): string {
   if (
     typeof state === 'object' &&
@@ -724,7 +852,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     Partial<Record<DuplicateWindowKey, string>>
   >({});
   const [failedSnapshot, setFailedSnapshot] = useState<string>('');
-  const [showApplyAllConfirm, setShowApplyAllConfirm] = useState(false);
+  const [openSectionApplyConfirm, setOpenSectionApplyConfirm] = useState<ApplySectionKey | null>(
+    null,
+  );
   const [openHintKey, setOpenHintKey] = useState<HintKey | null>(null);
   const [openBotEditorKey, setOpenBotEditorKey] = useState<BotMessageEditorKey | null>(null);
   const [openWarnEditorKey, setOpenWarnEditorKey] = useState<WarnMessageEditorKey | null>(null);
@@ -749,7 +879,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   }, [chatId]);
 
   useEffect(() => {
-    setShowApplyAllConfirm(false);
+    setOpenSectionApplyConfirm(null);
     setMailingApplyToAllChats(false);
     setMailingText('');
     setMailingButtonEnabled(false);
@@ -899,29 +1029,81 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const isSavingSettings = saveMutation.isPending;
   const mutateSettings = saveMutation.mutate;
 
-  const applyToAllMutation = useMutation({
-    mutationFn: (payload: ChatSettings) => api.applySettingsToAllChats(chatId ?? '', payload),
-    onSuccess: (result, payload) => {
-      setDraft(payload);
+  const applySectionToAllMutation = useMutation({
+    mutationFn: async ({
+      section,
+      sourceSettings,
+    }: {
+      section: ApplySectionKey;
+      sourceSettings: ChatSettings;
+    }) => {
+      if (!chatId) {
+        throw new Error('Чат не выбран');
+      }
+
+      const savedSourceSettings = await api.updateSettings(chatId, sourceSettings);
+      const chats = chatsQuery.data ?? (await api.getChats());
+      const targetChatIds = Array.from(
+        new Set(chats.map((chat) => chat.id).filter((id) => id !== chatId)),
+      );
+
+      const updated: Array<{ chatId: string; settings: ChatSettings }> = [];
+      const failedChatIds: string[] = [];
+
+      for (const targetChatId of targetChatIds) {
+        try {
+          const targetSettings = await api.getSettings(targetChatId);
+          const mergedSettings = mergeSectionSettings(targetSettings, savedSourceSettings, section);
+          const parsedSettings = chatSettingsSchema.parse(mergedSettings);
+          const savedSettings = await api.updateSettings(targetChatId, parsedSettings);
+          updated.push({ chatId: targetChatId, settings: savedSettings });
+        } catch {
+          failedChatIds.push(targetChatId);
+        }
+      }
+
+      return {
+        section,
+        sourceSettings: savedSourceSettings,
+        updated,
+        failedChatIds,
+        totalChats: targetChatIds.length + 1,
+      };
+    },
+    onSuccess: (result) => {
+      setDraft(result.sourceSettings);
       setFieldErrors({});
       setFailedSnapshot('');
-      setShowApplyAllConfirm(false);
-      queryClient.setQueryData(['settings', chatId], payload);
+      setOpenSectionApplyConfirm(null);
+      if (chatId) {
+        queryClient.setQueryData(['settings', chatId], result.sourceSettings);
+      }
+      for (const item of result.updated) {
+        queryClient.setQueryData(['settings', item.chatId], item.settings);
+      }
+
+      const syncedChats = result.updated.length + 1;
+      const hasFailures = result.failedChatIds.length > 0;
       pushToast({
-        tone: 'success',
-        title: 'Настройки применены ко всем чатам',
-        description: `Обновлено чатов: ${result.updatedChats}.`,
+        tone: hasFailures ? 'info' : 'success',
+        title: hasFailures
+          ? `Блок «${SECTION_LABELS[result.section]}» применен частично`
+          : `Блок «${SECTION_LABELS[result.section]}» применен`,
+        description: hasFailures
+          ? `Успешно: ${syncedChats}/${result.totalChats} чатов.`
+          : `Обновлено чатов: ${syncedChats}.`,
       });
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось применить настройки ко всем чатам',
+        title: 'Не удалось применить блок ко всем чатам',
         description: formatApiError(error),
       });
     },
   });
-  const isApplyingSettingsToAll = applyToAllMutation.isPending;
+  const isApplyingSectionToAll = applySectionToAllMutation.isPending;
+  const applyingSection = applySectionToAllMutation.variables?.section ?? null;
 
   const addDomainMutation = useMutation({
     mutationFn: (domain: string) => api.addDomain(chatId ?? '', domain),
@@ -1173,7 +1355,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   }, [draftSnapshot, failedSnapshot]);
 
   useEffect(() => {
-    if (!chatId || !draft || !hasChanges || isSavingSettings || isApplyingSettingsToAll) {
+    if (!chatId || !draft || !hasChanges || isSavingSettings || isApplyingSectionToAll) {
       return;
     }
 
@@ -1200,7 +1382,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     failedSnapshot,
     hasChanges,
     isSavingSettings,
-    isApplyingSettingsToAll,
+    isApplyingSectionToAll,
     mutateSettings,
   ]);
 
@@ -1468,7 +1650,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     setExpandedSections((current) => ({ ...current, [section]: !current[section] }));
   }
 
-  function handleApplySettingsToAllChats() {
+  function toggleSectionApplyConfirm(section: ApplySectionKey) {
+    setOpenSectionApplyConfirm((current) => (current === section ? null : section));
+  }
+
+  function handleApplySectionToAllChats(section: ApplySectionKey) {
     if (!chatId || !draft) {
       return;
     }
@@ -1479,7 +1665,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         title: 'Нет других чатов для применения',
         description: 'Откройте миниапп в другом чате, чтобы добавить его в список.',
       });
-      setShowApplyAllConfirm(false);
+      setOpenSectionApplyConfirm(null);
       return;
     }
 
@@ -1493,7 +1679,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       return;
     }
 
-    applyToAllMutation.mutate(parsed);
+    applySectionToAllMutation.mutate({
+      section,
+      sourceSettings: parsed,
+    });
   }
 
   if (!chatId) {
@@ -1673,9 +1862,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       : `${globalBlacklistEntries.length} в списке`;
   const chatsCount = chatsQuery.data?.length ?? 0;
   const canApplyToAllChats = chatsCount > 1;
-  const applyAllHint = canApplyToAllChats
-    ? `Применим в ${chatsCount} чатах, где у вас и у бота есть админ-права.`
-    : 'Пока доступен только этот чат.';
   const mailingTargetLabel =
     mailingApplyToAllChats && canApplyToAllChats ? `Во все чаты (${chatsCount})` : 'Только текущий чат';
   const mailingSchedulePreview = mailingScheduleEnabled
@@ -1694,6 +1880,72 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   }${mailingCycleEnabled ? ` · ${mailingCycleSummary}` : ''}`;
   const mailingCanSend = mailingText.trim().length > 0 || mailingImageBase64.length > 0;
   const mailingSendDisabled = sendBroadcastMutation.isPending || !mailingCanSend;
+
+  function renderSectionApplyControl(section: ApplySectionKey) {
+    const isConfirmOpen = openSectionApplyConfirm === section;
+    const isThisSectionApplying = isApplyingSectionToAll && applyingSection === section;
+    const sectionLabel = SECTION_LABELS[section];
+
+    return (
+      <div className={cn('settings-section-apply', !canApplyToAllChats && 'is-disabled')}>
+        <div className="settings-section-apply__row">
+          <div className="settings-section-apply__title-wrap">
+            <span className="settings-section-apply__title">Применить блок ко всем чатам</span>
+            <small className="settings-section-apply__meta">
+              {canApplyToAllChats
+                ? `Синхронизация «${sectionLabel}» в ${chatsCount} чатах.`
+                : 'Пока доступен только текущий чат.'}
+            </small>
+          </div>
+
+          <button
+            type="button"
+            className="button button--ghost settings-section-apply__toggle"
+            onClick={() => toggleSectionApplyConfirm(section)}
+            disabled={!canApplyToAllChats || isApplyingSectionToAll}
+            aria-expanded={isConfirmOpen}
+            aria-controls={`apply-section-${section}-confirm`}
+          >
+            {isThisSectionApplying ? 'Применяем...' : 'Применить'}
+          </button>
+        </div>
+
+        {isConfirmOpen ? (
+          <div
+            id={`apply-section-${section}-confirm`}
+            className="settings-section-apply__confirm"
+            role="group"
+            aria-label={`Подтверждение применения блока ${sectionLabel}`}
+          >
+            <p className="settings-section-apply__confirm-title">
+              Применить блок «{sectionLabel}» ко всем чатам?
+            </p>
+            <p className="settings-section-apply__confirm-description">
+              Будут обновлены только настройки выбранного блока.
+            </p>
+            <div className="settings-section-apply__confirm-actions">
+              <button
+                type="button"
+                className="button button--ghost"
+                onClick={() => setOpenSectionApplyConfirm(null)}
+                disabled={isApplyingSectionToAll}
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                className="button button--accent"
+                onClick={() => handleApplySectionToAllChats(section)}
+                disabled={isApplyingSectionToAll}
+              >
+                Применить сейчас
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
 
   return (
     <div className="page-stack page-enter">
@@ -1732,52 +1984,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 <p className="settings-page-header__eyebrow">Чат</p>
                 <h2 className="settings-page-header__title">{chatTitle || chatId}</h2>
               </div>
-              <button
-                type="button"
-                className="button button--ghost settings-page-header__apply-button"
-                onClick={() => setShowApplyAllConfirm((current) => !current)}
-                disabled={!canApplyToAllChats || isApplyingSettingsToAll}
-                aria-expanded={showApplyAllConfirm}
-                aria-controls="apply-settings-all-confirm"
-              >
-                {isApplyingSettingsToAll ? 'Применяем...' : 'Применить ко всем чатам'}
-              </button>
             </div>
-            <p className="settings-page-header__hint">{applyAllHint}</p>
-
-            {showApplyAllConfirm ? (
-              <div
-                id="apply-settings-all-confirm"
-                className="settings-page-header__confirm"
-                role="group"
-                aria-label="Подтверждение применения настроек ко всем чатам"
-              >
-                <p className="settings-page-header__confirm-title">
-                  Применить текущие настройки ко всем чатам?
-                </p>
-                <p className="settings-page-header__confirm-description">
-                  Будет скопирована текущая конфигурация этого чата.
-                </p>
-                <div className="settings-page-header__confirm-actions">
-                  <button
-                    type="button"
-                    className="button button--ghost"
-                    onClick={() => setShowApplyAllConfirm(false)}
-                    disabled={isApplyingSettingsToAll}
-                  >
-                    Отмена
-                  </button>
-                  <button
-                    type="button"
-                    className="button button--accent"
-                    onClick={handleApplySettingsToAllChats}
-                    disabled={isApplyingSettingsToAll}
-                  >
-                    Применить сейчас
-                  </button>
-                </div>
-              </div>
-            ) : null}
+            <p className="settings-page-header__hint">
+              Настройки сохраняются автоматически. Для каждого блока есть отдельное применение ко
+              всем чатам.
+            </p>
           </header>
 
           <GlassCard className="settings-sections-shell" padding="sm">
@@ -1803,6 +2014,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 className={cn('settings-section__collapse', expandedSections.links && 'is-open')}
               >
                 <div className="settings-section__collapse-inner">
+                  {renderSectionApplyControl('links')}
                   <div className="settings-grid settings-grid--single">
                     <div className={cn('settings-policy', linkPolicyError && 'field--error')}>
                       <span className="field__label">Режим</span>
@@ -2390,6 +2602,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 className={cn('settings-section__collapse', expandedSections.greeting && 'is-open')}
               >
                 <div className="settings-section__collapse-inner">
+                  {renderSectionApplyControl('greeting')}
                   <div className="settings-native-toggle">
                     <div className="settings-native-toggle__row">
                       <div className="settings-native-toggle__title-wrap">
@@ -2660,6 +2873,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 )}
               >
                 <div className="settings-section__collapse-inner">
+                  {renderSectionApplyControl('profanityFilter')}
                   <div className="settings-native-toggle text-filter-card">
                     <div className="settings-native-toggle__row">
                       <div className="settings-native-toggle__title-wrap">
@@ -2852,6 +3066,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 )}
               >
                 <div className="settings-section__collapse-inner">
+                  {renderSectionApplyControl('commercialFilter')}
                   <div className="settings-native-toggle text-filter-card">
                     <div className="settings-native-toggle__row">
                       <div className="settings-native-toggle__title-wrap">
@@ -3319,6 +3534,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 )}
               >
                 <div className="settings-section__collapse-inner">
+                  {renderSectionApplyControl('duplicates')}
                   <div className="settings-native-toggle">
                     <div className="settings-native-toggle__row">
                       <span className="settings-native-toggle__title">Анти дубль</span>
@@ -3756,6 +3972,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 className={cn('settings-section__collapse', expandedSections.limits && 'is-open')}
               >
                 <div className="settings-section__collapse-inner">
+                  {renderSectionApplyControl('limits')}
                   <div className="settings-native-toggle">
                     <div className="settings-native-toggle__row">
                       <div className="settings-native-toggle__title-wrap">
@@ -4342,6 +4559,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 className={cn('settings-section__collapse', expandedSections.night && 'is-open')}
               >
                 <div className="settings-section__collapse-inner">
+                  {renderSectionApplyControl('night')}
                   <div className="settings-native-toggle">
                     <div className="settings-native-toggle__row">
                       <div className="settings-native-toggle__title-wrap">
@@ -5176,6 +5394,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 className={cn('settings-section__collapse', expandedSections.extra && 'is-open')}
               >
                 <div className="settings-section__collapse-inner">
+                  {renderSectionApplyControl('extra')}
                   <div className="settings-native-toggle">
                     <div className="settings-native-toggle__row">
                       <div className="settings-native-toggle__title-wrap">
