@@ -1,5 +1,9 @@
-import type { LogsDashboardRange, LogsDashboardResponse } from '@maxim/contracts';
-import { useQuery } from '@tanstack/react-query';
+import type {
+  LogsDashboardRange,
+  LogsDashboardResponse,
+  ManualModerationAction,
+} from '@maxim/contracts';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { GlassCard } from '../components/ui/glass-card';
@@ -11,6 +15,10 @@ import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { saveLastChatId } from '../lib/last-chat';
 
 type ViolationAction = LogsDashboardResponse['violations'][number]['action'];
+type ViolationItem = LogsDashboardResponse['violations'][number];
+
+const BAN_DURATION_MIN_HOURS = 1;
+const BAN_DURATION_MAX_HOURS = 336;
 
 const actionLabelMap: Record<ViolationAction, string> = {
   DELETE_MESSAGE: 'Удаление',
@@ -32,6 +40,12 @@ const periodOptions: Array<{ value: LogsDashboardRange; label: string }> = [
   { value: '24h', label: '24ч' },
   { value: '7d', label: '7д' },
   { value: '30d', label: '30д' },
+];
+
+const manualActionOptions: Array<{ value: ManualModerationAction; label: string }> = [
+  { value: 'KICK', label: 'Удалить' },
+  { value: 'BAN', label: 'Бан' },
+  { value: 'UNBAN', label: 'Вернуть' },
 ];
 
 function getRouteChatTitle(state: unknown): string {
@@ -90,6 +104,161 @@ function resolveViolationText(violation: LogsDashboardResponse['violations'][num
   }
 
   return `Нарушение: ${formatViolationRule(violation.ruleCode)}.`;
+}
+
+function clampBanDurationHours(value: number): number {
+  const normalized = Number.isFinite(value) ? Math.trunc(value) : BAN_DURATION_MIN_HOURS;
+  return Math.max(BAN_DURATION_MIN_HOURS, Math.min(BAN_DURATION_MAX_HOURS, normalized));
+}
+
+function resolveApplyActionLabel(action: ManualModerationAction, banDurationHours: number): string {
+  if (action === 'KICK') {
+    return 'Удалить участника';
+  }
+
+  if (action === 'BAN') {
+    return `Забанить на ${banDurationHours}ч`;
+  }
+
+  return 'Вернуть и разбанить';
+}
+
+function resolveConfirmMessage(action: ManualModerationAction, banDurationHours: number): string {
+  if (action === 'KICK') {
+    return 'Удалить участника из чата?';
+  }
+
+  if (action === 'BAN') {
+    return `Забанить участника на ${banDurationHours}ч с авторазбаном?`;
+  }
+
+  return 'Вернуть участника в чат и снять блокировку?';
+}
+
+function ViolationModerationControls({
+  api,
+  chatId,
+  violation,
+  onApplied,
+}: {
+  api: ApiClient;
+  chatId: string;
+  violation: ViolationItem;
+  onApplied: () => void;
+}) {
+  const [action, setAction] = useState<ManualModerationAction>('KICK');
+  const [banDurationHours, setBanDurationHours] = useState(6);
+  const [status, setStatus] = useState<{ tone: 'success' | 'danger'; text: string } | null>(null);
+  const isBanAction = action === 'BAN';
+
+  const applyMutation = useMutation({
+    mutationFn: async () =>
+      api.applyManualModerationAction(chatId, violation.userId, {
+        action,
+        ...(isBanAction ? { banDurationHours } : {}),
+      }),
+    onSuccess: (result) => {
+      setStatus({ tone: 'success', text: result.message });
+      onApplied();
+    },
+    onError: (error: unknown) => {
+      const message = error instanceof Error ? error.message : 'Не удалось выполнить действие.';
+      setStatus({ tone: 'danger', text: message });
+    },
+  });
+
+  return (
+    <div className="logs-violation-item__actions" aria-label="Ручная модерация">
+      <div className="logs-violation-item__actions-head">
+        <span>Действие по участнику</span>
+        <code>{violation.userId}</code>
+      </div>
+
+      <div className="logs-violation-item__actions-row">
+        {manualActionOptions.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            className={`logs-violation-item__action-pill ${
+              action === option.value ? 'is-active' : ''
+            }`}
+            onClick={() => {
+              setAction(option.value);
+              setStatus(null);
+            }}
+            disabled={applyMutation.isPending}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+
+      {isBanAction ? (
+        <div className="logs-violation-item__ban-config">
+          <span>Длительность, часы</span>
+          <div className="logs-violation-item__ban-config-controls">
+            <div className="ban-duration-stepper">
+              <button
+                type="button"
+                className="ban-duration-stepper__button"
+                onClick={() => setBanDurationHours((prev) => clampBanDurationHours(prev - 1))}
+                disabled={applyMutation.isPending || banDurationHours <= BAN_DURATION_MIN_HOURS}
+                aria-label="Уменьшить длительность бана"
+              >
+                -
+              </button>
+              <div className="ban-duration-stepper__value">{banDurationHours}ч</div>
+              <button
+                type="button"
+                className="ban-duration-stepper__button"
+                onClick={() => setBanDurationHours((prev) => clampBanDurationHours(prev + 1))}
+                disabled={applyMutation.isPending || banDurationHours >= BAN_DURATION_MAX_HOURS}
+                aria-label="Увеличить длительность бана"
+              >
+                +
+              </button>
+            </div>
+
+            <label className="logs-violation-item__hours-input">
+              <input
+                type="number"
+                min={BAN_DURATION_MIN_HOURS}
+                max={BAN_DURATION_MAX_HOURS}
+                step={1}
+                value={banDurationHours}
+                disabled={applyMutation.isPending}
+                onChange={(event) =>
+                  setBanDurationHours(clampBanDurationHours(Number(event.target.value)))
+                }
+              />
+              <small>1–336ч</small>
+            </label>
+          </div>
+        </div>
+      ) : null}
+
+      <button
+        type="button"
+        className="button button--accent logs-violation-item__apply-button"
+        disabled={applyMutation.isPending}
+        onClick={() => {
+          const confirmed = window.confirm(resolveConfirmMessage(action, banDurationHours));
+          if (!confirmed) {
+            return;
+          }
+
+          setStatus(null);
+          applyMutation.mutate();
+        }}
+      >
+        {applyMutation.isPending ? 'Выполняем…' : resolveApplyActionLabel(action, banDurationHours)}
+      </button>
+
+      {status ? (
+        <p className={`logs-violation-item__action-status is-${status.tone}`}>{status.text}</p>
+      ) : null}
+    </div>
+  );
 }
 
 export function EventsPage({ api }: { api: ApiClient }) {
@@ -314,6 +483,13 @@ export function EventsPage({ api }: { api: ApiClient }) {
               </div>
 
               <p className="logs-violation-item__reason">{resolveViolationText(violation)}</p>
+
+              <ViolationModerationControls
+                api={api}
+                chatId={chatId}
+                violation={violation}
+                onApplied={() => void dashboardQuery.refetch()}
+              />
 
               <details className="logs-violation-item__details">
                 <summary>Подробности</summary>

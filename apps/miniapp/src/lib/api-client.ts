@@ -8,6 +8,8 @@ import {
   moderationEventSchema,
   logsDashboardRangeSchema,
   logsDashboardResponseSchema,
+  manualModerationActionRequestSchema,
+  manualModerationActionResultSchema,
   chatSummarySchema,
   globalUserBlacklistEntrySchema,
   meSchema,
@@ -19,6 +21,8 @@ import {
   type ModerationEvent,
   type LogsDashboardRange,
   type LogsDashboardResponse,
+  type ManualModerationActionRequest,
+  type ManualModerationActionResult,
   type SendBroadcastResult,
 } from '@maxim/contracts';
 
@@ -166,6 +170,22 @@ export class ApiClient {
       `/chats/${chatId}/logs-dashboard?range=${encodeURIComponent(validatedRange)}`,
     );
     return logsDashboardResponseSchema.parse(response);
+  }
+
+  async applyManualModerationAction(
+    chatId: string,
+    userId: string,
+    payload: ManualModerationActionRequest,
+  ): Promise<ManualModerationActionResult> {
+    const requestBody = manualModerationActionRequestSchema.parse(payload);
+    const response = await this.request(
+      `/chats/${chatId}/members/${encodeURIComponent(userId)}/moderation-action`,
+      {
+        method: 'POST',
+        body: JSON.stringify(requestBody),
+      },
+    );
+    return manualModerationActionResultSchema.parse(response);
   }
 
   async getGlobalUserBlacklist(chatId: string): Promise<GlobalUserBlacklistEntry[]> {

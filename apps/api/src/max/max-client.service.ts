@@ -30,6 +30,7 @@ export type MaxActionType =
   | 'SEND_MESSAGE'
   | 'KICK_MEMBER'
   | 'BAN_MEMBER'
+  | 'UNBAN_MEMBER'
   | 'NOTIFY_MODERATORS';
 
 export type MaxActionJob = {
@@ -157,20 +158,28 @@ export class MaxClientService implements OnModuleDestroy {
     throw new Error('MAX upload payload is missing');
   }
 
-  async kickMember(chatId: string, userId: string) {
+  async kickMember(chatId: string, userId: string, options?: MaxActionDispatchOptions) {
     await this.dispatchAction({
       actionType: 'KICK_MEMBER',
       chatId,
       userId,
-    });
+    }, options);
   }
 
-  async banMember(chatId: string, userId: string) {
+  async banMember(chatId: string, userId: string, options?: MaxActionDispatchOptions) {
     await this.dispatchAction({
       actionType: 'BAN_MEMBER',
       chatId,
       userId,
-    });
+    }, options);
+  }
+
+  async unbanMember(chatId: string, userId: string, options?: MaxActionDispatchOptions) {
+    await this.dispatchAction({
+      actionType: 'UNBAN_MEMBER',
+      chatId,
+      userId,
+    }, options);
   }
 
   async notifyModerators(chatId: string, text: string) {
@@ -243,6 +252,24 @@ export class MaxClientService implements OnModuleDestroy {
             params: {
               user_id: action.userId,
               block: true,
+            },
+          });
+        });
+        return;
+
+      case 'UNBAN_MEMBER':
+        if (!action.userId) {
+          throw new Error('userId is required for UNBAN_MEMBER');
+        }
+        const userId = action.userId;
+        await this.executeMutation(action.chatId, async () => {
+          const payload = new URLSearchParams();
+          payload.set('user_ids', userId);
+
+          await this.request('post', `/chats/${action.chatId}/members`, {
+            data: payload.toString(),
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded',
             },
           });
         });

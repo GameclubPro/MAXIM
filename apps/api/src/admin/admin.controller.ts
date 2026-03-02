@@ -68,6 +68,16 @@ export class AdminController {
     return this.adminService.getLogsDashboard(chatId, user, query);
   }
 
+  @Post('chats/:chatId/members/:userId/moderation-action')
+  applyManualModerationAction(
+    @Param('chatId') chatId: string,
+    @Param('userId') targetUserId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.applyManualModerationAction(chatId, targetUserId, user, body);
+  }
+
   @Post('chats/:chatId/admin-allowlist')
   addAdmin(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser, @Body() body: unknown) {
     return this.adminService.addAdmin(chatId, user, body);

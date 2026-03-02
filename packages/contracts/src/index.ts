@@ -420,6 +420,43 @@ export const logsDashboardResponseSchema = z.object({
 });
 export type LogsDashboardResponse = z.infer<typeof logsDashboardResponseSchema>;
 
+export const manualModerationActionSchema = z.enum(['KICK', 'BAN', 'UNBAN']);
+export type ManualModerationAction = z.infer<typeof manualModerationActionSchema>;
+
+export const manualModerationActionRequestSchema = z
+  .object({
+    action: manualModerationActionSchema,
+    banDurationHours: z.number().int().min(1).max(336).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.action === 'BAN' && value.banDurationHours === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['banDurationHours'],
+        message: 'Укажите длительность бана в часах.',
+      });
+    }
+
+    if (value.action !== 'BAN' && value.banDurationHours !== undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['banDurationHours'],
+        message: 'Длительность бана доступна только для действия BAN.',
+      });
+    }
+  });
+export type ManualModerationActionRequest = z.infer<typeof manualModerationActionRequestSchema>;
+
+export const manualModerationActionResultSchema = z.object({
+  ok: z.literal(true),
+  action: manualModerationActionSchema,
+  userId: z.string(),
+  banDurationHours: z.number().int().min(1).max(336).nullable(),
+  unbanScheduledAt: z.string().datetime().nullable(),
+  message: z.string().min(1),
+});
+export type ManualModerationActionResult = z.infer<typeof manualModerationActionResultSchema>;
+
 export const updateSettingsRequestSchema = chatSettingsSchema;
 
 export const addAdminRequestSchema = z.object({

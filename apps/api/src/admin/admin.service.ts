@@ -5,12 +5,15 @@ import {
   dateRangeQuerySchema,
   logsDashboardQuerySchema,
   logsDashboardResponseSchema,
+  manualModerationActionRequestSchema,
+  manualModerationActionResultSchema,
   type ChatSettings,
   chatSettingsSchema,
   type DomainAllowlistEntry,
   type GlobalUserBlacklistEntry,
   type LogsDashboardRange,
   type LogsDashboardResponse,
+  type ManualModerationActionResult,
   type Me,
   type ModerationEvent,
   type SendBroadcastResult,
@@ -18,6 +21,7 @@ import {
   sendBroadcastRequestSchema,
   scheduleDomainRemovalRequestSchema,
 } from '@maxim/contracts';
+import { EventType, Operator, SanctionAction } from '@prisma/client';
 import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { MaxClientService } from '../max/max-client.service';
@@ -37,6 +41,7 @@ const BROADCAST_CYCLE_MAX_COUNT = 14;
 const BROADCAST_DAY_MS = 24 * 60 * 60 * 1000;
 const BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS = [1_500, 3_000, 6_000];
 const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 30;
+const ONE_HOUR_MS = 60 * 60 * 1000;
 
 @Injectable()
 export class AdminService {
@@ -689,6 +694,195 @@ export class AdminService {
     };
 
     return logsDashboardResponseSchema.parse(response);
+  }
+
+  async applyManualModerationAction(
+    chatId: string,
+    targetUserIdRaw: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ManualModerationActionResult> {
+    await this.assertChatAdmin(chatId, user.userId);
+    const targetUserId = targetUserIdRaw.trim();
+    if (!targetUserId) {
+      throw new BadRequestException('User ID is required');
+    }
+    if (targetUserId === user.userId) {
+      throw new BadRequestException('Нельзя применять это действие к своему аккаунту.');
+    }
+
+    const parsed = manualModerationActionRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const metadataBase = {
+      source: 'miniapp',
+      initiatedByUserId: user.userId,
+    } as const;
+
+    if (parsed.data.action === 'KICK') {
+      try {
+        await this.maxClient.kickMember(chatId, targetUserId, { immediate: true });
+      } catch (error: unknown) {
+        const maxApiMessage = this.extractMaxApiErrorMessage(error);
+        throw new BadRequestException(maxApiMessage || 'Не удалось удалить участника из чата.');
+      }
+
+      await this.prisma.moderationEvent.create({
+        data: {
+          chatId,
+          userId: targetUserId,
+          eventType: EventType.MEMBER_ACTION,
+          ruleCode: 'MANUAL_KICK',
+          action: SanctionAction.KICK,
+          operator: Operator.ADMIN,
+          metadata: {
+            ...metadataBase,
+            reason: 'Manual kick from miniapp logs',
+          },
+        },
+      });
+
+      await this.prisma.auditLog.create({
+        data: {
+          chatId,
+          actorUserId: user.userId,
+          action: 'MANUAL_KICK_MEMBER',
+          payload: {
+            userId: targetUserId,
+          },
+        },
+      });
+
+      return manualModerationActionResultSchema.parse({
+        ok: true,
+        action: 'KICK',
+        userId: targetUserId,
+        banDurationHours: null,
+        unbanScheduledAt: null,
+        message: 'Участник удалён из чата.',
+      });
+    }
+
+    if (parsed.data.action === 'BAN') {
+      const banDurationHours = parsed.data.banDurationHours;
+      if (!banDurationHours) {
+        throw new BadRequestException('Укажите длительность бана в часах.');
+      }
+      const unbanScheduledAt = new Date(Date.now() + banDurationHours * ONE_HOUR_MS);
+
+      try {
+        await this.maxClient.banMember(chatId, targetUserId, { immediate: true });
+        try {
+          await this.maxClient.unbanMember(chatId, targetUserId, {
+            delayMs: banDurationHours * ONE_HOUR_MS,
+          });
+        } catch (scheduleError: unknown) {
+          try {
+            await this.maxClient.unbanMember(chatId, targetUserId, { immediate: true });
+          } catch (rollbackError: unknown) {
+            this.logger.warn(
+              {
+                chatId,
+                userId: targetUserId,
+                err:
+                  rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+              },
+              'Failed to rollback manual ban after scheduling error',
+            );
+          }
+
+          throw scheduleError;
+        }
+      } catch (error: unknown) {
+        const maxApiMessage = this.extractMaxApiErrorMessage(error);
+        throw new BadRequestException(maxApiMessage || 'Не удалось применить временный бан.');
+      }
+
+      await this.prisma.moderationEvent.create({
+        data: {
+          chatId,
+          userId: targetUserId,
+          eventType: EventType.MEMBER_ACTION,
+          ruleCode: 'MANUAL_BAN',
+          action: SanctionAction.BAN,
+          operator: Operator.ADMIN,
+          metadata: {
+            ...metadataBase,
+            reason: 'Manual temporary ban from miniapp logs',
+            banDurationHours,
+            unbanScheduledAt: unbanScheduledAt.toISOString(),
+            mode: 'MAX_BLOCK',
+          },
+        },
+      });
+
+      await this.prisma.auditLog.create({
+        data: {
+          chatId,
+          actorUserId: user.userId,
+          action: 'MANUAL_BAN_MEMBER',
+          payload: {
+            userId: targetUserId,
+            banDurationHours,
+            unbanScheduledAt: unbanScheduledAt.toISOString(),
+          },
+        },
+      });
+
+      return manualModerationActionResultSchema.parse({
+        ok: true,
+        action: 'BAN',
+        userId: targetUserId,
+        banDurationHours,
+        unbanScheduledAt: unbanScheduledAt.toISOString(),
+        message: `Участник забанен на ${banDurationHours}ч. Авторазбан запланирован.`,
+      });
+    }
+
+    try {
+      await this.maxClient.unbanMember(chatId, targetUserId, { immediate: true });
+    } catch (error: unknown) {
+      const maxApiMessage = this.extractMaxApiErrorMessage(error);
+      throw new BadRequestException(maxApiMessage || 'Не удалось вернуть участника в чат.');
+    }
+
+    await this.prisma.moderationEvent.create({
+      data: {
+        chatId,
+        userId: targetUserId,
+        eventType: EventType.MEMBER_ACTION,
+        ruleCode: 'MANUAL_UNBAN',
+        action: SanctionAction.NONE,
+        operator: Operator.ADMIN,
+        metadata: {
+          ...metadataBase,
+          reason: 'Manual unban/restore from miniapp logs',
+          mode: 'MAX_UNBLOCK',
+        },
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: 'MANUAL_UNBAN_MEMBER',
+        payload: {
+          userId: targetUserId,
+        },
+      },
+    });
+
+    return manualModerationActionResultSchema.parse({
+      ok: true,
+      action: 'UNBAN',
+      userId: targetUserId,
+      banDurationHours: null,
+      unbanScheduledAt: null,
+      message: 'Участник возвращён в чат и разблокирован.',
+    });
   }
 
   async getEvents(chatId: string, user: AuthUser, query: unknown): Promise<ModerationEvent[]> {
