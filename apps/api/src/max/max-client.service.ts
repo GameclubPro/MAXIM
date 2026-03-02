@@ -297,7 +297,7 @@ export class MaxClientService implements OnModuleDestroy {
         });
         return;
 
-      case 'UNBAN_MEMBER':
+      case 'UNBAN_MEMBER': {
         if (!action.userId) {
           throw new Error('userId is required for UNBAN_MEMBER');
         }
@@ -314,6 +314,7 @@ export class MaxClientService implements OnModuleDestroy {
           });
         });
         return;
+      }
 
       case 'NOTIFY_MODERATORS':
         this.logger.warn({ chatId: action.chatId, text: action.text ?? '' }, 'Moderator alert');
@@ -348,6 +349,10 @@ export class MaxClientService implements OnModuleDestroy {
         }
 
         const row = member as Record<string, unknown>;
+        if (!this.isChatAdminMemberRow(row)) {
+          return null;
+        }
+
         const value = row.user_id ?? row.userId ?? row.id;
         if (typeof value === 'number' || typeof value === 'string') {
           return String(value);
@@ -697,5 +702,90 @@ export class MaxClientService implements OnModuleDestroy {
     );
 
     return response.data;
+  }
+
+  private isChatAdminMemberRow(row: Record<string, unknown>): boolean {
+    const roleValue = this.readLowerString(
+      row.role ??
+        row.member_role ??
+        row.memberRole ??
+        row.chat_role ??
+        row.chatRole ??
+        row.status ??
+        row.member_status ??
+        row.memberStatus,
+    );
+
+    if (roleValue) {
+      if (
+        roleValue.includes('admin') ||
+        roleValue.includes('owner') ||
+        roleValue.includes('creator') ||
+        roleValue.includes('moderator')
+      ) {
+        return true;
+      }
+
+      if (
+        roleValue.includes('member') ||
+        roleValue.includes('user') ||
+        roleValue.includes('participant') ||
+        roleValue.includes('guest')
+      ) {
+        return false;
+      }
+    }
+
+    const positiveFlags = [
+      row.is_admin,
+      row.isAdmin,
+      row.admin,
+      row.is_owner,
+      row.isOwner,
+      row.owner,
+      row.is_creator,
+      row.isCreator,
+      row.creator,
+      row.is_moderator,
+      row.isModerator,
+      row.moderator,
+      row.can_manage_chat,
+      row.canManageChat,
+      row.can_delete_messages,
+      row.canDeleteMessages,
+    ];
+    if (positiveFlags.some((value) => value === true)) {
+      return true;
+    }
+
+    const explicitNegativeFlags = [
+      row.is_admin,
+      row.isAdmin,
+      row.admin,
+      row.is_owner,
+      row.isOwner,
+      row.owner,
+      row.is_creator,
+      row.isCreator,
+      row.creator,
+      row.is_moderator,
+      row.isModerator,
+      row.moderator,
+    ];
+    if (explicitNegativeFlags.some((value) => value === false)) {
+      return false;
+    }
+
+    // Backward compatibility: keep old behavior when API does not expose roles/flags.
+    return true;
+  }
+
+  private readLowerString(value: unknown): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim().toLowerCase();
+    return normalized.length > 0 ? normalized : null;
   }
 }

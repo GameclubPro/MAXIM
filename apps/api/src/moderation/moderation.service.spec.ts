@@ -2281,7 +2281,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(redisCounter.getString).toHaveBeenCalledWith('chat-admins:v1:chat-1');
+    expect(redisCounter.getString).toHaveBeenCalledWith('chat-admins:v2:chat-1');
     expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();
   });
