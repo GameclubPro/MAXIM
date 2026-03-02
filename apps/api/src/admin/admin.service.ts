@@ -1044,7 +1044,10 @@ export class AdminService {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const normalized = parsed.data.domain.toLowerCase();
+    const normalized = this.normalizeAllowlistLink(parsed.data.domain);
+    if (!normalized) {
+      throw new BadRequestException('Invalid allowlist link');
+    }
 
     await this.prisma.domainAllowlist.upsert({
       where: {
@@ -1079,7 +1082,10 @@ export class AdminService {
 
   async removeDomain(chatId: string, user: AuthUser, domain: string) {
     await this.assertChatAdmin(chatId, user.userId);
-    const normalized = domain.toLowerCase();
+    const normalized = this.normalizeAllowlistLink(this.decodePathParam(domain));
+    if (!normalized) {
+      throw new BadRequestException('Invalid allowlist link');
+    }
 
     await this.prisma.domainAllowlist.delete({
       where: {
@@ -1107,7 +1113,10 @@ export class AdminService {
 
   async scheduleDomainRemoval(chatId: string, user: AuthUser, domain: string, body: unknown) {
     await this.assertChatAdmin(chatId, user.userId);
-    const normalizedDomain = domain.toLowerCase();
+    const normalizedDomain = this.normalizeAllowlistLink(this.decodePathParam(domain));
+    if (!normalizedDomain) {
+      throw new BadRequestException('Invalid allowlist link');
+    }
     const parsed = scheduleDomainRemovalRequestSchema.safeParse(body);
 
     if (!parsed.success) {
@@ -1317,6 +1326,48 @@ export class AdminService {
       chatId,
       OR: [{ removeAfterAt: null }, { removeAfterAt: { gt: now } }],
     };
+  }
+
+  private decodePathParam(value: string): string {
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return value;
+    }
+  }
+
+  private normalizeAllowlistLink(value: string): string | null {
+    const raw = value.trim();
+    if (!raw) {
+      return null;
+    }
+
+    const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    let parsed: URL;
+    try {
+      parsed = new URL(withScheme);
+    } catch {
+      return null;
+    }
+
+    const protocol = parsed.protocol.toLowerCase();
+    if (protocol !== 'http:' && protocol !== 'https:') {
+      return null;
+    }
+
+    const hostname = parsed.hostname.toLowerCase();
+    if (!hostname) {
+      return null;
+    }
+
+    const shouldKeepPort =
+      parsed.port.length > 0 &&
+      !((protocol === 'https:' && parsed.port === '443') || (protocol === 'http:' && parsed.port === '80'));
+    const port = shouldKeepPort ? `:${parsed.port}` : '';
+    const pathname = parsed.pathname.length > 1 ? parsed.pathname.replace(/\/+$/, '') : '/';
+    const search = parsed.search;
+
+    return `${hostname}${port}${pathname}${search}`.toLowerCase();
   }
 
   private isFallbackTitle(chatId: string, title: string): boolean {

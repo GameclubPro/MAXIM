@@ -315,7 +315,7 @@ export class RuleEngineService {
       }
     }
 
-    const linkViolation = this.hasBlockedLink(lowered, settings.linkPolicy, domainAllowlist);
+    const linkViolation = this.hasBlockedLink(text, settings.linkPolicy, domainAllowlist);
     if (linkViolation) {
       violations.push({ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: linkViolation });
     }
@@ -602,10 +602,9 @@ export class RuleEngineService {
       return null;
     }
 
-    const linkRegex = /((https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,})(\/\S*)?/gi;
-    const matches = [...text.matchAll(linkRegex)];
+    const links = this.extractUrlsFromText(text);
 
-    if (matches.length === 0) {
+    if (links.length === 0) {
       return null;
     }
 
@@ -613,19 +612,69 @@ export class RuleEngineService {
       return 'Links are not allowed by policy';
     }
 
-    for (const match of matches) {
-      const full = match[0];
-      const domain = full
-        .replace(/^https?:\/\//, '')
-        .split('/')[0]
-        .toLowerCase();
-      const allowed = allowlist.some((entry) => domain === entry || domain.endsWith(`.${entry}`));
-      if (!allowed) {
-        return `Domain ${domain} is not in allowlist`;
+    const normalizedAllowlist = new Set(
+      allowlist
+        .map((entry) => this.normalizeAllowlistLink(entry))
+        .filter((entry): entry is string => Boolean(entry)),
+    );
+
+    for (const link of links) {
+      const normalizedLink = this.normalizeAllowlistLink(link);
+      if (!normalizedLink) {
+        continue;
+      }
+
+      if (!normalizedAllowlist.has(normalizedLink)) {
+        return `Link ${normalizedLink} is not in allowlist`;
       }
     }
 
     return null;
+  }
+
+  private extractUrlsFromText(value: string): string[] {
+    if (!value || value.trim().length === 0) {
+      return [];
+    }
+
+    const regex = /((https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,})(\/\S*)?/gi;
+    return [...value.matchAll(regex)]
+      .map((match) => match[0].trim().replace(/[),.;!?]+$/, ''))
+      .filter((url) => url.length > 0);
+  }
+
+  private normalizeAllowlistLink(value: string): string | null {
+    const raw = value.trim();
+    if (!raw) {
+      return null;
+    }
+
+    const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+    let parsed: URL;
+    try {
+      parsed = new URL(withScheme);
+    } catch {
+      return null;
+    }
+
+    const protocol = parsed.protocol.toLowerCase();
+    if (protocol !== 'http:' && protocol !== 'https:') {
+      return null;
+    }
+
+    const hostname = parsed.hostname.toLowerCase();
+    if (!hostname) {
+      return null;
+    }
+
+    const shouldKeepPort =
+      parsed.port.length > 0 &&
+      !((protocol === 'https:' && parsed.port === '443') || (protocol === 'http:' && parsed.port === '80'));
+    const port = shouldKeepPort ? `:${parsed.port}` : '';
+    const pathname = parsed.pathname.length > 1 ? parsed.pathname.replace(/\/+$/, '') : '/';
+    const search = parsed.search;
+
+    return `${hostname}${port}${pathname}${search}`.toLowerCase();
   }
 
   private detectCommercialAd(params: {

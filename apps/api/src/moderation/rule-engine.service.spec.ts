@@ -117,6 +117,27 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
   });
 
+  it('allows only exact links from allowlist in ALLOWLIST_ONLY mode', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const allowed = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'смотри https://max.ru/channel/news',
+      settings: buildSettings(),
+      domainAllowlist: ['max.ru/channel/news'],
+    });
+    const blocked = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'смотри https://max.ru/channel/another',
+      settings: buildSettings(),
+      domainAllowlist: ['max.ru/channel/news'],
+    });
+
+    expect(allowed.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+    expect(blocked.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
+  });
+
   it('does not detect PROFANITY when russian profanity filter is disabled', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({

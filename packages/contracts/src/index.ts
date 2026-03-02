@@ -26,6 +26,21 @@ function isValidBotButtonUrl(value: string): boolean {
   }
 }
 
+function isValidAllowlistLink(value: string): boolean {
+  const raw = value.trim();
+  if (!raw) {
+    return false;
+  }
+
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    const parsed = new URL(withScheme);
+    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+  } catch {
+    return false;
+  }
+}
+
 function isValidBotButtonText(value: string): boolean {
   const normalized = value.trim();
   return normalized.length > 0 && normalized.length <= 32;
@@ -473,11 +488,14 @@ export const addDomainRequestSchema = z.object({
     .string()
     .trim()
     .min(3)
-    .regex(/^[a-zA-Z0-9.-]+$/),
+    .max(2_048)
+    .refine((value) => isValidAllowlistLink(value), {
+      message: 'Укажите корректную ссылку (http/https).',
+    }),
 });
 
 export const domainAllowlistEntrySchema = z.object({
-  domain: z.string().trim().min(3),
+  domain: z.string().trim().min(3).max(2_048),
   removeAfterAt: z.string().datetime().nullable(),
 });
 export type DomainAllowlistEntry = z.infer<typeof domainAllowlistEntrySchema>;

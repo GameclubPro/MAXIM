@@ -18,7 +18,6 @@ import { saveLastChatId } from '../lib/last-chat';
 
 type FieldErrors = Partial<Record<keyof ChatSettings, string>>;
 
-const DOMAIN_PATTERN = /^(?=.{3,253}$)(?!-)(?:[a-z0-9-]{1,63}\.)+[a-z0-9-]{2,63}$/i;
 const AUTO_SAVE_DELAY_MS = 650;
 const BAN_DURATION_MIN_HOURS = 1;
 const BAN_DURATION_MAX_HOURS = 36;
@@ -400,24 +399,36 @@ function formatApiError(error: unknown): string {
   return rawMessage.trim() ? 'Не удалось выполнить запрос.' : 'Неизвестная ошибка.';
 }
 
-function normalizeDomain(value: string): string {
-  const raw = value.trim().toLowerCase();
+function normalizeAllowlistLink(value: string): string {
+  const raw = value.trim();
   if (!raw) {
     return '';
   }
 
-  const withScheme = /^[a-z][a-z\d+\-.]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+  const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
 
   try {
-    const hostname = new URL(withScheme).hostname.toLowerCase();
-    return hostname.replace(/^www\./, '').replace(/\.$/, '');
+    const parsed = new URL(withScheme);
+    const protocol = parsed.protocol.toLowerCase();
+    if (protocol !== 'http:' && protocol !== 'https:') {
+      return '';
+    }
+
+    const hostname = parsed.hostname.toLowerCase();
+    if (!hostname) {
+      return '';
+    }
+
+    const shouldKeepPort =
+      parsed.port.length > 0 &&
+      !((protocol === 'https:' && parsed.port === '443') || (protocol === 'http:' && parsed.port === '80'));
+    const port = shouldKeepPort ? `:${parsed.port}` : '';
+    const pathname = parsed.pathname.length > 1 ? parsed.pathname.replace(/\/+$/, '') : '/';
+    const search = parsed.search;
+
+    return `${hostname}${port}${pathname}${search}`.toLowerCase();
   } catch {
-    return raw
-      .replace(/^[a-z][a-z\d+\-.]*:\/\//i, '')
-      .split(/[/?#]/)[0]
-      .replace(/:\d+$/, '')
-      .replace(/^www\./, '')
-      .replace(/\.$/, '');
+    return '';
   }
 }
 
@@ -1391,14 +1402,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       return;
     }
 
-    const normalized = normalizeDomain(domainInput);
+    const normalized = normalizeAllowlistLink(domainInput);
     if (!normalized) {
-      setDomainInputError('Введите домен или полную ссылку');
-      return;
-    }
-
-    if (!DOMAIN_PATTERN.test(normalized)) {
-      setDomainInputError('Не удалось распознать домен в ссылке');
+      setDomainInputError('Введите корректную ссылку (http/https).');
       return;
     }
 
@@ -2067,7 +2073,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             </div>
 
                             <p className="allowlist-panel__subtitle">
-                              Можно вставить полный URL, сохраним домен автоматически.
+                              Добавьте точную ссылку. Разрешается только полное совпадение.
                             </p>
 
                             <div className="allowlist-add-row">
@@ -2117,6 +2123,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                                   {allowlistEntries.map((entry) => {
                                     const isScheduleOpen = scheduleDomain === entry.domain;
                                     const scheduledAtLabel = formatRemovalDateTime(entry.removeAfterAt);
+                                    const entryIdSuffix = encodeURIComponent(entry.domain);
 
                                     return (
                                       <li
@@ -2173,11 +2180,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                                               <div className="allowlist-item__schedule-fields">
                                                 <label
                                                   className="field allowlist-item__schedule-field"
-                                                  htmlFor={`domain-schedule-date-${entry.domain}`}
+                                                  htmlFor={`domain-schedule-date-${entryIdSuffix}`}
                                                 >
                                                   <span className="field__label">День удаления</span>
                                                   <input
-                                                    id={`domain-schedule-date-${entry.domain}`}
+                                                    id={`domain-schedule-date-${entryIdSuffix}`}
                                                     type="date"
                                                     value={scheduleDate}
                                                     min={toLocalDateInputValue(new Date())}
@@ -2189,11 +2196,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                                                 </label>
                                                 <label
                                                   className="field allowlist-item__schedule-field"
-                                                  htmlFor={`domain-schedule-time-${entry.domain}`}
+                                                  htmlFor={`domain-schedule-time-${entryIdSuffix}`}
                                                 >
                                                   <span className="field__label">Время удаления</span>
                                                   <input
-                                                    id={`domain-schedule-time-${entry.domain}`}
+                                                    id={`domain-schedule-time-${entryIdSuffix}`}
                                                     type="time"
                                                     value={scheduleTime}
                                                     onChange={(event) => {
