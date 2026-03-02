@@ -90,6 +90,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ModerationService.name);
   private globalUserBlacklistEnabledCache: { value: boolean; checkedAt: number } | null = null;
   private readonly ownBotUserId: string | null;
+  private readonly ownBotUserIdVariants: Set<string>;
   private nightModeAnnounceTimer: NodeJS.Timeout | null = null;
   private nightModeAnnounceInFlight = false;
 
@@ -103,6 +104,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     @Optional() configService?: ConfigService,
   ) {
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
+    this.ownBotUserIdVariants = this.buildBotIdVariants(this.ownBotUserId);
   }
 
   onModuleInit() {
@@ -3505,7 +3507,44 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private isOwnBotSender(userId: string): boolean {
-    return this.ownBotUserId !== null && userId === this.ownBotUserId;
+    if (this.ownBotUserIdVariants.size === 0) {
+      return false;
+    }
+
+    for (const variant of this.buildBotIdVariants(userId)) {
+      if (this.ownBotUserIdVariants.has(variant)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private buildBotIdVariants(value: string | null | undefined): Set<string> {
+    if (typeof value !== 'string') {
+      return new Set<string>();
+    }
+
+    const normalized = value.trim().toLowerCase();
+    if (normalized.length === 0) {
+      return new Set<string>();
+    }
+
+    const variants = new Set<string>([normalized]);
+
+    if (normalized.startsWith('id') && normalized.length > 2) {
+      variants.add(normalized.slice(2));
+    }
+
+    if (normalized.endsWith('_bot') && normalized.length > 4) {
+      variants.add(normalized.slice(0, -4));
+    }
+
+    if (normalized.startsWith('id') && normalized.endsWith('_bot') && normalized.length > 6) {
+      variants.add(normalized.slice(2, -4));
+    }
+
+    return variants;
   }
 
   private normalizeDeleteBotMessagesDelayMinutes(value: number): number {
