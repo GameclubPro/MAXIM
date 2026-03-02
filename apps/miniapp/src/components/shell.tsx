@@ -19,13 +19,13 @@ function BottomNavIcon({ name }: { name: BottomNavIconName }) {
         className="bottom-nav__icon-svg"
         fill="none"
         stroke="currentColor"
-        strokeWidth="1.9"
+        strokeWidth="1.85"
         strokeLinecap="round"
         strokeLinejoin="round"
         aria-hidden
       >
-        <path d="M5 6.2h8.6a3.1 3.1 0 0 1 3.1 3.1v2a3.1 3.1 0 0 1-3.1 3.1H9.3l-3.9 3v-3.5A3.1 3.1 0 0 1 2.8 11V9.3A3.1 3.1 0 0 1 5 6.2Z" />
-        <path d="M15 8.5h3.6a2.6 2.6 0 0 1 2.6 2.6v1.4a2.6 2.6 0 0 1-2.6 2.6h-.8v2.1L15.6 15" />
+        <path d="M7 6.5h10A3.5 3.5 0 0 1 20.5 10v4a3.5 3.5 0 0 1-3.5 3.5h-4.8L8 21v-3.5H7A3.5 3.5 0 0 1 3.5 14v-4A3.5 3.5 0 0 1 7 6.5Z" />
+        <path d="M9 11.2h6M9 14h4.1" />
       </svg>
     );
   }
@@ -37,13 +37,17 @@ function BottomNavIcon({ name }: { name: BottomNavIconName }) {
         className="bottom-nav__icon-svg"
         fill="none"
         stroke="currentColor"
-        strokeWidth="1.9"
+        strokeWidth="1.85"
         strokeLinecap="round"
         strokeLinejoin="round"
         aria-hidden
       >
-        <path d="M12 9.1a2.9 2.9 0 1 0 0 5.8 2.9 2.9 0 0 0 0-5.8Z" />
-        <path d="M12.2 2h-.4a2 2 0 0 0-1.9 1.5l-.3 1.2c-.6.2-1.1.5-1.6.9l-1.2-.7a2 2 0 0 0-2.5.3l-.3.3a2 2 0 0 0-.3 2.5l.7 1.2c-.4.5-.7 1-.9 1.6l-1.2.3A2 2 0 0 0 2 11.8v.4a2 2 0 0 0 1.5 1.9l1.2.3c.2.6.5 1.1.9 1.6l-.7 1.2a2 2 0 0 0 .3 2.5l.3.3a2 2 0 0 0 2.5.3l1.2-.7c.5.4 1 .7 1.6.9l.3 1.2a2 2 0 0 0 1.9 1.5h.4a2 2 0 0 0 1.9-1.5l.3-1.2c.6-.2 1.1-.5 1.6-.9l1.2.7a2 2 0 0 0 2.5-.3l.3-.3a2 2 0 0 0 .3-2.5l-.7-1.2c.4-.5.7-1 .9-1.6l1.2-.3a2 2 0 0 0 1.5-1.9v-.4a2 2 0 0 0-1.5-1.9l-1.2-.3c-.2-.6-.5-1.1-.9-1.6l.7-1.2a2 2 0 0 0-.3-2.5l-.3-.3a2 2 0 0 0-2.5-.3l-1.2.7c-.5-.4-1-.7-1.6-.9l-.3-1.2A2 2 0 0 0 12.2 2Z" />
+        <path d="M4.5 7h2.6M11.1 7h8.4" />
+        <circle cx="9.1" cy="7" r="2" />
+        <path d="M4.5 12h8.6M17.1 12h2.4" />
+        <circle cx="15.1" cy="12" r="2" />
+        <path d="M4.5 17h5M13.5 17h6" />
+        <circle cx="11.5" cy="17" r="2" />
       </svg>
     );
   }
@@ -54,15 +58,16 @@ function BottomNavIcon({ name }: { name: BottomNavIconName }) {
       className="bottom-nav__icon-svg"
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.9"
+      strokeWidth="1.85"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden
     >
-      <rect x="4.2" y="4.2" width="15.6" height="15.6" rx="3.2" />
-      <path d="M8 8.5h7.5M8 12.2h7.8M8 15.9h4.8" />
-      <circle cx="16.2" cy="16.1" r="2.6" />
-      <path d="M16.2 14.9v1.4l1 0.6" />
+      <rect x="4.5" y="4.5" width="15" height="15" rx="3.2" />
+      <path d="M8.8 8.7h6.4M8.8 12h6.4M8.8 15.3h4.1" />
+      <circle cx="6.8" cy="8.7" r="0.5" fill="currentColor" stroke="none" />
+      <circle cx="6.8" cy="12" r="0.5" fill="currentColor" stroke="none" />
+      <circle cx="6.8" cy="15.3" r="0.5" fill="currentColor" stroke="none" />
     </svg>
   );
 }
