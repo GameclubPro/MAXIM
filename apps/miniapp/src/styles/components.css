@@ -1968,29 +1968,10 @@
   padding: 10px;
 }
 
-.logs-violation-item__moderation-toggle {
-  width: 100%;
-  min-height: 44px;
-  border-radius: 12px;
-  border: 1px solid rgba(62, 96, 127, 0.18);
-  background: rgba(255, 255, 255, 0.84);
+.logs-violation-item__moderation summary {
   cursor: pointer;
-  padding: 8px 10px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.logs-violation-item__moderation-toggle span {
-  color: var(--text-primary);
-  font-size: 0.84rem;
-  font-weight: 700;
-}
-
-.logs-violation-item__moderation-toggle small {
-  color: #0a5ea9;
-  font-size: 0.74rem;
+  font-size: 0.82rem;
+  color: var(--text-secondary);
   font-weight: 700;
 }
 

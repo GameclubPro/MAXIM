@@ -199,7 +199,6 @@ function ViolationModerationControls({
   violation: ViolationItem;
   onApplied: () => void;
 }) {
-  const [isExpanded, setIsExpanded] = useState(false);
   const [action, setAction] = useState<VisibleManualAction>('KICK');
   const [banDurationHours, setBanDurationHours] = useState(6);
   const [status, setStatus] = useState<{ tone: 'success' | 'danger'; text: string } | null>(null);
@@ -223,17 +222,8 @@ function ViolationModerationControls({
   });
 
   return (
-    <section className="logs-violation-item__moderation" aria-label="Действия модератора">
-      <button
-        type="button"
-        className="logs-violation-item__moderation-toggle"
-        onClick={() => setIsExpanded((value) => !value)}
-      >
-        <span>Действия модератора</span>
-        <small>{isExpanded ? 'Свернуть' : 'Открыть управление'}</small>
-      </button>
-
-      {isExpanded ? (
+    <details className="logs-violation-item__moderation">
+      <summary>Действия модератора</summary>
         <div className="logs-violation-item__actions">
           <p className="logs-violation-item__actions-caption">Нарушитель: {offenderName}</p>
           <p className="logs-violation-item__actions-hint">
@@ -325,8 +315,7 @@ function ViolationModerationControls({
             <p className={`logs-violation-item__action-status is-${status.tone}`}>{status.text}</p>
           ) : null}
         </div>
-      ) : null}
-    </section>
+    </details>
   );
 }
 
