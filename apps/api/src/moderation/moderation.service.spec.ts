@@ -132,6 +132,27 @@ function createBotAuthoredUpdate(): MaxUpdate {
   };
 }
 
+function createOwnBotUpdateWithoutBotFlags(): MaxUpdate {
+  return {
+    updateId: 'upd-own-bot-no-flags-1',
+    type: 'message_created',
+    message: {
+      messageId: 'msg-own-bot-no-flags-1',
+      chatId: 'chat-1',
+      senderId: '613002203036',
+      text: 'service notice',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      message: {
+        sender: {
+          user_id: 613002203036,
+        },
+      },
+    },
+  };
+}
+
 function createServiceBotJoinedUpdate(): MaxUpdate {
   return {
     updateId: 'upd-service-bot-join-1',
@@ -786,6 +807,71 @@ describe('ModerationService', () => {
     await service.handleUpdate(createBotAuthoredUpdate());
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-bot-1', {
+      delayMs: 2 * 60 * 1000,
+    });
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+  });
+
+  it('schedules auto-delete for own bot message without explicit bot flags in payload', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            removeBotsFromGroupEnabled: false,
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 2,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalUserBlacklist: {
+        upsert: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn().mockReturnValue('id613002203036_4_bot'),
+      } as never,
+    );
+
+    await service.handleUpdate(createOwnBotUpdateWithoutBotFlags());
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-own-bot-no-flags-1', {
       delayMs: 2 * 60 * 1000,
     });
     expect(maxClient.kickMember).not.toHaveBeenCalled();

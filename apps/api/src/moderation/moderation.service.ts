@@ -285,9 +285,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    if (this.isBotAuthoredMessage(update)) {
-      const senderIsOwnBot = this.isOwnBotSender(senderId);
-
+    const senderIsOwnBot = this.isOwnBotSender(senderId);
+    const senderIsBot = senderIsOwnBot || this.isBotAuthoredMessage(update);
+    if (senderIsBot) {
       if (settings.removeBotsFromGroupEnabled && !senderIsOwnBot) {
         await this.handleBotMessage({
           chatId,
@@ -3956,6 +3956,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (normalized.startsWith('id') && normalized.endsWith('_bot') && normalized.length > 6) {
       variants.add(normalized.slice(2, -4));
+    }
+
+    for (const variant of [...variants]) {
+      const primary = variant.split('_')[0];
+      if (/^\d+$/.test(primary)) {
+        variants.add(primary);
+      }
     }
 
     return variants;
