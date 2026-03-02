@@ -937,6 +937,93 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
   });
 
+  it('does not auto-delete scheduled night mode notice from own bot', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            nightModeEnabled: true,
+            nightModeStartTimeMinutes: 23 * 60,
+            nightModeEndTimeMinutes: 8 * 60,
+            nightModeTimezone: 'Europe/Moscow',
+            nightModeBotMessageEnabled: true,
+            nightModeBotMessageText: '',
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 2,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalUserBlacklist: {
+        upsert: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn().mockReturnValue('bot-1'),
+      } as never,
+    );
+
+    await service.handleUpdate({
+      updateId: 'upd-night-own-bot-1',
+      type: 'message_created',
+      message: {
+        messageId: 'msg-night-own-bot-1',
+        chatId: 'chat-1',
+        senderId: 'bot-1',
+        text: 'Чат сейчас закрыт на ночь (23:00-08:00, Москва). Новые сообщения временно не принимаются.',
+        createdAt: new Date().toISOString(),
+      },
+      raw: {
+        message: {
+          sender: {
+            id: 'bot-1',
+            type: 'bot',
+            is_bot: true,
+          },
+        },
+      },
+    });
+
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
   it('deletes cross-chat spam on the third chat when global toggle is enabled', async () => {
     const nowIso = new Date().toISOString();
     const createSpamUpdate = (chatId: string, messageId: string): MaxUpdate => ({
@@ -2200,7 +2287,7 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
   });
 
-  it('does not trust stale local allowlist when remote admins no longer include sender', async () => {
+  it('keeps local allowlist admin bypass even when remote list does not include sender', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -2250,7 +2337,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
-    expect(ruleEngine.detect).toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
   });
 
   it('uses shared cache for remote chat admins to avoid MAX API call', async () => {

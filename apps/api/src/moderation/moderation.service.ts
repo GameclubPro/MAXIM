@@ -38,6 +38,13 @@ type ActiveBan = {
   durationHours: number;
 };
 
+type ChatAdminCheckSource = 'remote' | 'local' | 'remote+local' | 'local_fallback';
+
+type ChatAdminCheckResult = {
+  isAdmin: boolean;
+  source: ChatAdminCheckSource;
+};
+
 const DEFAULT_BAN_DURATION_HOURS = 6;
 const DEFAULT_BOT_BUTTON_TEXT = 'Открыть';
 const DEFAULT_BOT_MESSAGES_DELETE_DELAY_MINUTES = 2;
@@ -258,7 +265,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const senderIsOwnBotInMessage =
       updateType === 'message_created' && senderId ? this.isOwnBotSender(senderId) : false;
     if (senderIsOwnBotInMessage) {
-      if (settings.deleteBotMessagesEnabled) {
+      const skipOwnBotAutoDelete = this.isNightModeNoticeMessage({
+        text,
+        settings,
+      });
+      if (settings.deleteBotMessagesEnabled && !skipOwnBotAutoDelete) {
         await this.handleBotMessageAutoDelete({
           chatId,
           userId: senderId,
@@ -266,6 +277,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           text,
           delayMinutes: settings.deleteBotMessagesDelayMinutes,
         });
+      } else if (skipOwnBotAutoDelete) {
+        this.logger.debug(
+          {
+            chatId,
+            messageId,
+          },
+          'Skipped auto-delete for scheduled night mode notice',
+        );
       }
       return;
     }
@@ -330,19 +349,41 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           text,
         });
       } else if (settings.deleteBotMessagesEnabled && senderIsOwnBot) {
-        await this.handleBotMessageAutoDelete({
-          chatId,
-          userId: senderId,
-          messageId,
+        const skipOwnBotAutoDelete = this.isNightModeNoticeMessage({
           text,
-          delayMinutes: settings.deleteBotMessagesDelayMinutes,
+          settings,
         });
+        if (skipOwnBotAutoDelete) {
+          this.logger.debug(
+            {
+              chatId,
+              messageId,
+            },
+            'Skipped auto-delete for scheduled night mode notice',
+          );
+        } else {
+          await this.handleBotMessageAutoDelete({
+            chatId,
+            userId: senderId,
+            messageId,
+            text,
+            delayMinutes: settings.deleteBotMessagesDelayMinutes,
+          });
+        }
       }
       return;
     }
 
-    const senderIsChatAdmin = await this.isSenderChatAdminWithFallback(chatId, chat.adminUserIds, senderId);
-    if (senderIsChatAdmin) {
+    const senderChatAdminCheck = await this.resolveSenderChatAdminCheck(chatId, chat.adminUserIds, senderId);
+    if (senderChatAdminCheck.isAdmin) {
+      this.logger.debug(
+        {
+          chatId,
+          userId: senderId,
+          source: senderChatAdminCheck.source,
+        },
+        'Moderation bypassed for chat admin',
+      );
       return;
     }
 
@@ -3287,7 +3328,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             chatId: settings.chatId,
             text: messageText,
             messageOptions: nightModeMessageOptions ?? undefined,
-            deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
+            deleteBotMessagesEnabled: false,
             deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
           });
 
@@ -3526,24 +3567,40 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async isSenderChatAdminWithFallback(
+  private async resolveSenderChatAdminCheck(
     chatId: string,
     localAdminUserIds: string[] | undefined,
     userId: string,
-  ): Promise<boolean> {
+  ): Promise<ChatAdminCheckResult> {
+    const localIsAdmin = this.isSenderChatAdmin(localAdminUserIds, userId);
     const remoteAdminIds = await this.getRemoteChatAdminIds(chatId);
     if (remoteAdminIds) {
+      let remoteIsAdmin = false;
       for (const variant of this.buildUserIdVariants(userId)) {
         if (remoteAdminIds.has(variant)) {
-          return true;
+          remoteIsAdmin = true;
+          break;
         }
       }
 
-      return false;
+      if (remoteIsAdmin && localIsAdmin) {
+        return { isAdmin: true, source: 'remote+local' };
+      }
+      if (remoteIsAdmin) {
+        return { isAdmin: true, source: 'remote' };
+      }
+      if (localIsAdmin) {
+        return { isAdmin: true, source: 'local' };
+      }
+
+      return { isAdmin: false, source: 'remote' };
     }
 
-    // Fallback for temporary MAX API issues: keep legacy local allowlist behavior.
-    return this.isSenderChatAdmin(localAdminUserIds, userId);
+    // Fallback for temporary MAX API issues: keep local allowlist behavior.
+    return {
+      isAdmin: localIsAdmin,
+      source: 'local_fallback',
+    };
   }
 
   private isSenderChatAdmin(adminUserIds: string[] | undefined, userId: string): boolean {
@@ -4237,6 +4294,41 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return variants;
+  }
+
+  private isNightModeNoticeMessage(params: {
+    text: string;
+    settings: Pick<
+      ChatSettings,
+      | 'nightModeEnabled'
+      | 'nightModeBotMessageEnabled'
+      | 'nightModeStartTimeMinutes'
+      | 'nightModeEndTimeMinutes'
+      | 'nightModeTimezone'
+      | 'nightModeBotMessageText'
+    >;
+  }): boolean {
+    if (!params.settings.nightModeEnabled || !params.settings.nightModeBotMessageEnabled) {
+      return false;
+    }
+
+    const normalizedMessage = this.normalizeTextForComparison(params.text);
+    if (!normalizedMessage) {
+      return false;
+    }
+
+    const expectedNotice = this.buildNightModeClosedNotice(
+      params.settings.nightModeStartTimeMinutes,
+      params.settings.nightModeEndTimeMinutes,
+      params.settings.nightModeTimezone,
+      params.settings.nightModeBotMessageText,
+    );
+
+    return normalizedMessage === this.normalizeTextForComparison(expectedNotice);
+  }
+
+  private normalizeTextForComparison(value: string): string {
+    return value.replace(/\s+/g, ' ').trim();
   }
 
   private buildBotMessageDispatchOptions(params: {
