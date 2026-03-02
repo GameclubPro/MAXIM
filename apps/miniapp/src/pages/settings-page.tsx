@@ -4110,8 +4110,91 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         className="settings-native-toggle__hint"
                       >
                         Бот отправляет пояснение при удалении сообщения по правилам этого блока.
+                        Текст фиксированный и в этом разделе не редактируется.
                       </p>
                     ) : null}
+                  </div>
+
+                  <div className="settings-native-toggle settings-native-toggle--nested">
+                    <div className="settings-native-toggle__row">
+                      <span className="settings-native-toggle__title">2. Предупреждение</span>
+
+                      <label
+                        className="settings-native-switch"
+                        aria-label="Включить предупреждение за второе нарушение ограничений сообщений за 12 часов"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={draft.messageLimitsWarnEnabled}
+                          onChange={(event) => {
+                            const enabled = event.target.checked;
+                            setFieldValue('messageLimitsWarnEnabled', enabled);
+                            if (enabled) {
+                              setFieldValue('messageLimitsBotMessageEnabled', true);
+                            }
+                          }}
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="settings-native-toggle settings-native-toggle--nested">
+                    <div className="settings-native-toggle__row">
+                      <span className="settings-native-toggle__title">
+                        3. Бан на {draft.banDurationHours}ч
+                      </span>
+
+                      <label
+                        className="settings-native-switch"
+                        aria-label="Включить бан за третье нарушение ограничений сообщений за 12 часов"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={draft.messageLimitsBanEnabled}
+                          onChange={(event) => {
+                            const enabled = event.target.checked;
+                            setFieldValue('messageLimitsBanEnabled', enabled);
+                            if (enabled) {
+                              setFieldValue('messageLimitsWarnEnabled', true);
+                              setFieldValue('messageLimitsBotMessageEnabled', true);
+                            }
+                          }}
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+
+                  <div className="settings-native-toggle settings-native-toggle--nested">
+                    <div className="settings-native-toggle__row">
+                      <span className="settings-native-toggle__title">4. Удаление из группы</span>
+
+                      <label
+                        className="settings-native-switch"
+                        aria-label="Включить удаление из группы за четвертое нарушение ограничений сообщений за 12 часов"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={draft.messageLimitsKickEnabled}
+                          onChange={(event) => {
+                            const enabled = event.target.checked;
+                            setFieldValue('messageLimitsKickEnabled', enabled);
+                            if (enabled) {
+                              setFieldValue('messageLimitsWarnEnabled', true);
+                              setFieldValue('messageLimitsBotMessageEnabled', true);
+                            }
+                          }}
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
                   </div>
 
                   {draft.messageLimitsBotMessageEnabled ? (

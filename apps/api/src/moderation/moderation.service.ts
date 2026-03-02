@@ -42,8 +42,6 @@ const NIGHT_MODE_NOTICE_RULE_CODE = 'NIGHT_MODE_NOTICE';
 const LINK_ESCALATION_WINDOW_HOURS = 24;
 const TEXT_FILTER_ESCALATION_WINDOW_HOURS = 24;
 const MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS = 12;
-const PHOTO_RATE_LIMIT_KICK_THRESHOLD = 5;
-const MESSAGE_TOO_LONG_KICK_THRESHOLD = 6;
 const BOT_STARTED_INSTRUCTION_OPTIONS: MaxSendMessageOptions = {
   button: {
     text: 'Поддержка',
@@ -457,6 +455,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ? await this.countRecentLinkViolations(chatId, senderId)
         : null;
     const isTextFilterHit = this.isTextFilterViolation(topViolation.ruleCode);
+    const isMessageLimitsHit = this.isMessageLimitsViolation(topViolation.ruleCode);
     const textFilterEscalationSettings = isTextFilterHit
       ? this.resolveTextFilterEscalationSettings(topViolation.ruleCode, settings)
       : null;
@@ -468,7 +467,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             settings.textFiltersBotButtonText,
           )
         : null;
-    const limitsMessageOptions = this.isMessageLimitsViolation(topViolation.ruleCode)
+    const limitsMessageOptions = isMessageLimitsHit
       ? this.buildBotMessageOptions(
           settings.messageLimitsBotButtonEnabled,
           settings.messageLimitsBotButtonUrl,
@@ -478,7 +477,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const textFilterViolationCount24h = isTextFilterHit
       ? await this.countRecentTextFilterViolations(chatId, senderId, topViolation.ruleCode)
       : null;
-    const messageLimitsViolationCount12h = this.isMessageLimitsKickRule(topViolation.ruleCode)
+    const messageLimitsViolationCount12h = isMessageLimitsHit
       ? await this.countRecentMessageLimitsViolations(chatId, senderId, topViolation.ruleCode)
       : null;
 
@@ -509,10 +508,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    if (
-      this.isMessageLimitsViolation(topViolation.ruleCode) &&
-      settings.messageLimitsBotMessageEnabled
-    ) {
+    if (isMessageLimitsHit && settings.messageLimitsBotMessageEnabled) {
       try {
         if (limitsMessageOptions) {
           await this.maxClient.sendMessage(
@@ -664,11 +660,42 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           );
         }
       }
-    } else if (this.isMessageLimitsKickRule(topViolation.ruleCode)) {
+    } else if (isMessageLimitsHit) {
       action = this.resolveMessageLimitsEscalationAction(
-        topViolation.ruleCode,
         messageLimitsViolationCount12h ?? 1,
+        {
+          warnEnabled: settings.messageLimitsWarnEnabled,
+          banEnabled: settings.messageLimitsBanEnabled,
+          kickEnabled: settings.messageLimitsKickEnabled,
+        },
       );
+
+      if (action === SanctionAction.WARN) {
+        try {
+          if (limitsMessageOptions) {
+            await this.maxClient.sendMessage(
+              chatId,
+              this.buildMessageLimitsWarnExplanation(userLabel, topViolation.ruleCode),
+              limitsMessageOptions,
+            );
+          } else {
+            await this.maxClient.sendMessage(
+              chatId,
+              this.buildMessageLimitsWarnExplanation(userLabel, topViolation.ruleCode),
+            );
+          }
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              userId: senderId,
+              messageId,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to send message limits warning message',
+          );
+        }
+      }
     } else if (this.shouldResolveSanction(topViolation.ruleCode)) {
       action = await this.sanctionService.resolveAction({
         chatId,
@@ -686,7 +713,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         messageId,
         banDurationHours: actionBanDurationHours,
         botMessageOptions:
-          topViolation.ruleCode === 'LINK_BLOCKED' ? (linkMessageOptions ?? undefined) : undefined,
+          topViolation.ruleCode === 'LINK_BLOCKED'
+            ? (linkMessageOptions ?? undefined)
+            : isMessageLimitsHit
+              ? (limitsMessageOptions ?? undefined)
+              : undefined,
+        banNoticeText:
+          isMessageLimitsHit && action === SanctionAction.BAN
+            ? this.buildMessageLimitsBanExplanation(
+                userLabel,
+                topViolation.ruleCode,
+                actionBanDurationHours,
+              )
+            : undefined,
       });
 
       if (topViolation.ruleCode === 'LINK_BLOCKED' && action === SanctionAction.KICK) {
@@ -732,7 +771,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
-      if (this.isMessageLimitsKickRule(topViolation.ruleCode) && action === SanctionAction.KICK) {
+      if (isMessageLimitsHit && action === SanctionAction.KICK) {
         try {
           if (limitsMessageOptions) {
             await this.maxClient.sendMessage(
@@ -788,8 +827,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 textFilterEscalationWindowHours: TEXT_FILTER_ESCALATION_WINDOW_HOURS,
               }
             : {}),
-          ...(this.isMessageLimitsKickRule(topViolation.ruleCode) &&
-          messageLimitsViolationCount12h !== null
+          ...(isMessageLimitsHit && messageLimitsViolationCount12h !== null
             ? {
                 messageLimitsViolationCount12h,
                 messageLimitsEscalationWindowHours: MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS,
@@ -1224,9 +1262,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageId: string;
     banDurationHours: number;
     botMessageOptions?: MaxSendMessageOptions;
+    banNoticeText?: string;
   }) {
-    const { chatId, userId, action, userLabel, messageId, banDurationHours, botMessageOptions } =
-      params;
+    const {
+      chatId,
+      userId,
+      action,
+      userLabel,
+      messageId,
+      banDurationHours,
+      botMessageOptions,
+      banNoticeText,
+    } = params;
     if (action === SanctionAction.KICK) {
       await this.upsertGlobalUserBlacklistEntry({
         userId,
@@ -1261,6 +1308,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       userLabel,
       banDurationHours,
       botMessageOptions,
+      banNoticeText,
     });
   }
 
@@ -1271,17 +1319,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userLabel: string;
     banDurationHours: number;
     botMessageOptions?: MaxSendMessageOptions;
+    banNoticeText?: string;
   }) {
-    const { chatId, userId, messageId, userLabel, banDurationHours, botMessageOptions } = params;
+    const { chatId, userId, messageId, userLabel, banDurationHours, botMessageOptions, banNoticeText } =
+      params;
+    const noticeText = banNoticeText ?? this.buildBanNotice(userLabel, banDurationHours);
     try {
       if (botMessageOptions) {
-        await this.maxClient.sendMessage(
-          chatId,
-          this.buildBanNotice(userLabel, banDurationHours),
-          botMessageOptions,
-        );
+        await this.maxClient.sendMessage(chatId, noticeText, botMessageOptions);
       } else {
-        await this.maxClient.sendMessage(chatId, this.buildBanNotice(userLabel, banDurationHours));
+        await this.maxClient.sendMessage(chatId, noticeText);
       }
     } catch (error: unknown) {
       this.logger.warn(
@@ -1379,17 +1426,36 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private resolveMessageLimitsEscalationAction(
-    ruleCode: string,
     violationCount12h: number,
+    settings: { warnEnabled: boolean; banEnabled: boolean; kickEnabled: boolean },
   ): SanctionAction {
     const count = Number.isInteger(violationCount12h) ? Math.max(1, violationCount12h) : 1;
 
-    if (ruleCode === 'PHOTO_RATE_LIMIT' && count >= PHOTO_RATE_LIMIT_KICK_THRESHOLD) {
-      return SanctionAction.KICK;
+    if (count >= 4) {
+      if (settings.kickEnabled) {
+        return SanctionAction.KICK;
+      }
+      if (settings.banEnabled) {
+        return SanctionAction.BAN;
+      }
+      if (settings.warnEnabled) {
+        return SanctionAction.WARN;
+      }
+      return SanctionAction.NONE;
     }
 
-    if (ruleCode === 'MESSAGE_TOO_LONG' && count >= MESSAGE_TOO_LONG_KICK_THRESHOLD) {
-      return SanctionAction.KICK;
+    if (count === 3) {
+      if (settings.banEnabled) {
+        return SanctionAction.BAN;
+      }
+      if (settings.warnEnabled) {
+        return SanctionAction.WARN;
+      }
+      return SanctionAction.NONE;
+    }
+
+    if (count === 2 && settings.warnEnabled) {
+      return SanctionAction.WARN;
     }
 
     return SanctionAction.NONE;
@@ -1429,10 +1495,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private isMessageLimitsViolation(ruleCode: string): boolean {
     return MESSAGE_LIMITS_RULE_CODES.has(ruleCode);
-  }
-
-  private isMessageLimitsKickRule(ruleCode: string): boolean {
-    return ruleCode === 'PHOTO_RATE_LIMIT' || ruleCode === 'MESSAGE_TOO_LONG';
   }
 
   private isTextFilterViolation(ruleCode: string): boolean {
@@ -1568,7 +1630,73 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return `Пользователь ${userLabel} удален из чата за повторные слишком длинные сообщения.`;
     }
 
+    if (ruleCode === 'VIDEO_BLOCKED') {
+      return `Пользователь ${userLabel} удален из чата за повторную отправку видео при отключенном видео-режиме.`;
+    }
+
+    if (ruleCode === 'FILE_BLOCKED') {
+      return `Пользователь ${userLabel} удален из чата за повторную отправку файлов при отключенной отправке файлов.`;
+    }
+
+    if (ruleCode === 'VOICE_BLOCKED') {
+      return `Пользователь ${userLabel} удален из чата за повторную отправку голосовых при отключенных голосовых сообщениях.`;
+    }
+
     return `Пользователь ${userLabel} удален из чата за повторные нарушения ограничений сообщений.`;
+  }
+
+  private buildMessageLimitsWarnExplanation(userLabel: string, ruleCode: string): string {
+    if (ruleCode === 'PHOTO_RATE_LIMIT') {
+      return `Пользователю ${userLabel} вынесено предупреждение: слишком частая отправка фото.`;
+    }
+
+    if (ruleCode === 'MESSAGE_TOO_LONG') {
+      return `Пользователю ${userLabel} вынесено предупреждение: слишком длинные сообщения.`;
+    }
+
+    if (ruleCode === 'VIDEO_BLOCKED') {
+      return `Пользователю ${userLabel} вынесено предупреждение: отправка видео в этом чате отключена.`;
+    }
+
+    if (ruleCode === 'FILE_BLOCKED') {
+      return `Пользователю ${userLabel} вынесено предупреждение: отправка файлов в этом чате отключена.`;
+    }
+
+    if (ruleCode === 'VOICE_BLOCKED') {
+      return `Пользователю ${userLabel} вынесено предупреждение: голосовые сообщения в этом чате отключены.`;
+    }
+
+    return `Пользователю ${userLabel} вынесено предупреждение за нарушение ограничений сообщений.`;
+  }
+
+  private buildMessageLimitsBanExplanation(
+    userLabel: string,
+    ruleCode: string,
+    banDurationHours: number,
+  ): string {
+    const durationLabel = this.formatBanDurationLabel(banDurationHours);
+
+    if (ruleCode === 'PHOTO_RATE_LIMIT') {
+      return `Пользователю ${userLabel} выдан временный бан на ${durationLabel} за повторные нарушения лимита по фото.`;
+    }
+
+    if (ruleCode === 'MESSAGE_TOO_LONG') {
+      return `Пользователю ${userLabel} выдан временный бан на ${durationLabel} за повторные слишком длинные сообщения.`;
+    }
+
+    if (ruleCode === 'VIDEO_BLOCKED') {
+      return `Пользователю ${userLabel} выдан временный бан на ${durationLabel} за повторную отправку видео при отключенном видео-режиме.`;
+    }
+
+    if (ruleCode === 'FILE_BLOCKED') {
+      return `Пользователю ${userLabel} выдан временный бан на ${durationLabel} за повторную отправку файлов при отключенной отправке файлов.`;
+    }
+
+    if (ruleCode === 'VOICE_BLOCKED') {
+      return `Пользователю ${userLabel} выдан временный бан на ${durationLabel} за повторную отправку голосовых при отключенных голосовых сообщениях.`;
+    }
+
+    return `Пользователю ${userLabel} выдан временный бан на ${durationLabel} за повторные нарушения ограничений сообщений.`;
   }
 
   private calculateEffectiveMessageLength(update: MaxUpdate): number {

@@ -37,6 +37,9 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     voiceMessagesEnabled: true,
     messageLimitsBotMessageEnabled: false,
     messageLimitsBotMessageText: '',
+    messageLimitsWarnEnabled: false,
+    messageLimitsBanEnabled: false,
+    messageLimitsKickEnabled: false,
     messageLimitsBotButtonEnabled: false,
     messageLimitsBotButtonUrl: '',
     messageLimitsBotButtonText: 'Открыть',
@@ -3885,7 +3888,7 @@ describe('ModerationService', () => {
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
   });
 
-  it('kicks user on sixth MESSAGE_TOO_LONG violation within 12h', async () => {
+  it('issues WARN on second MESSAGE_TOO_LONG violation in 12h when warning stage is enabled', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -3895,13 +3898,14 @@ describe('ModerationService', () => {
             maxMessageLengthEnabled: true,
             maxMessageLength: 100,
             messageLimitsBotMessageEnabled: false,
+            messageLimitsWarnEnabled: true,
           }),
           domains: [],
         }),
       },
       violation: {
         create: jest.fn(),
-        count: jest.fn().mockResolvedValue(6),
+        count: jest.fn().mockResolvedValue(2),
       },
       moderationEvent: {
         findFirst: jest.fn().mockResolvedValue(null),
@@ -3938,26 +3942,26 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-1');
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
-      'Пользователь "Алексей" удален из чата за повторные слишком длинные сообщения.',
+      'Пользователю "Алексей" вынесено предупреждение: слишком длинные сообщения.',
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
         ruleCode: 'MESSAGE_TOO_LONG',
-        action: SanctionAction.KICK,
+        action: SanctionAction.WARN,
         metadata: expect.objectContaining({
-          messageLimitsViolationCount12h: 6,
+          messageLimitsViolationCount12h: 2,
           messageLimitsEscalationWindowHours: 12,
         }),
       }),
     });
   });
 
-  it('kicks user on fifth PHOTO_RATE_LIMIT violation within 12h', async () => {
+  it('issues BAN on third PHOTO_RATE_LIMIT violation in 12h when ban stage is enabled', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -3967,13 +3971,91 @@ describe('ModerationService', () => {
             photoMessageCooldownEnabled: true,
             photoMessageCooldownHours: 12,
             messageLimitsBotMessageEnabled: false,
+            messageLimitsWarnEnabled: true,
+            messageLimitsBanEnabled: true,
+            banDurationHours: 12,
           }),
           domains: [],
         }),
       },
       violation: {
         create: jest.fn(),
-        count: jest.fn().mockResolvedValue(5),
+        count: jest.fn().mockResolvedValue(3),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'PHOTO_RATE_LIMIT', score: 0.88, reason: 'Photo cooldown hit' }],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Пользователю "Алексей" выдан временный бан на 12ч за повторные нарушения лимита по фото.',
+    );
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        ruleCode: 'PHOTO_RATE_LIMIT',
+        action: SanctionAction.BAN,
+        metadata: expect.objectContaining({
+          messageLimitsViolationCount12h: 3,
+          messageLimitsEscalationWindowHours: 12,
+          banDurationHours: 12,
+        }),
+      }),
+    });
+  });
+
+  it('kicks user on fourth PHOTO_RATE_LIMIT violation within 12h when kick stage is enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            photoMessageCooldownEnabled: true,
+            photoMessageCooldownHours: 12,
+            messageLimitsBotMessageEnabled: false,
+            messageLimitsWarnEnabled: true,
+            messageLimitsKickEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+        count: jest.fn().mockResolvedValue(4),
       },
       moderationEvent: {
         findFirst: jest.fn().mockResolvedValue(null),
@@ -4022,7 +4104,7 @@ describe('ModerationService', () => {
         ruleCode: 'PHOTO_RATE_LIMIT',
         action: SanctionAction.KICK,
         metadata: expect.objectContaining({
-          messageLimitsViolationCount12h: 5,
+          messageLimitsViolationCount12h: 4,
           messageLimitsEscalationWindowHours: 12,
         }),
       }),
