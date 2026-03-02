@@ -3474,23 +3474,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     localAdminUserIds: string[] | undefined,
     userId: string,
   ): Promise<boolean> {
-    if (this.isSenderChatAdmin(localAdminUserIds, userId)) {
-      return true;
-    }
-
     const remoteAdminIds = await this.getRemoteChatAdminIds(chatId);
-    if (!remoteAdminIds) {
+    if (remoteAdminIds) {
+      for (const variant of this.buildUserIdVariants(userId)) {
+        if (remoteAdminIds.has(variant)) {
+          return true;
+        }
+      }
+
       return false;
     }
 
-    for (const variant of this.buildUserIdVariants(userId)) {
-      if (remoteAdminIds.has(variant)) {
-        void this.persistDetectedAdmin(chatId, userId);
-        return true;
-      }
-    }
-
-    return false;
+    // Fallback for temporary MAX API issues: keep legacy local allowlist behavior.
+    return this.isSenderChatAdmin(localAdminUserIds, userId);
   }
 
   private isSenderChatAdmin(adminUserIds: string[] | undefined, userId: string): boolean {
@@ -3527,7 +3523,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      const adminUserIds = await getChatAdminIds.call(this.maxClient, chatId);
+      const rawAdminUserIds = await getChatAdminIds.call(this.maxClient, chatId);
+      if (!Array.isArray(rawAdminUserIds)) {
+        return null;
+      }
+
+      const adminUserIds = rawAdminUserIds;
       const normalizedAdminUserIds = new Set<string>();
       for (const adminUserId of adminUserIds) {
         for (const variant of this.buildUserIdVariants(adminUserId)) {
@@ -3551,41 +3552,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         'Failed to resolve chat admins for moderation bypass',
       );
       return null;
-    }
-  }
-
-  private async persistDetectedAdmin(chatId: string, userId: string) {
-    const normalizedUserId = typeof userId === 'string' ? userId.trim() : '';
-    if (!normalizedUserId) {
-      return;
-    }
-
-    try {
-      await this.prisma.chatAdminAllowlist.upsert({
-        where: {
-          chatId_userId: {
-            chatId,
-            userId: normalizedUserId,
-          },
-        },
-        create: {
-          chatId,
-          userId: normalizedUserId,
-        },
-        update: {},
-      });
-      if (this.chatContextCache) {
-        await this.chatContextCache.invalidate(chatId);
-      }
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          userId: normalizedUserId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to persist detected chat admin in allowlist',
-      );
     }
   }
 

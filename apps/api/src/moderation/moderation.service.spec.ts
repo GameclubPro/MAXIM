@@ -2,6 +2,35 @@ import type { MaxUpdate } from '@maxim/contracts';
 import { SanctionAction } from '@prisma/client';
 import { ModerationService } from './moderation.service';
 
+expect.extend({
+  toHaveBeenCalledWithPrefix(
+    this: jest.MatcherContext,
+    received: unknown,
+    ...expected: unknown[]
+  ) {
+    if (typeof received !== 'function' || !('mock' in received)) {
+      return {
+        pass: false,
+        message: () => 'Expected a Jest mock function',
+      };
+    }
+
+    const mockFn = received as jest.Mock;
+    const calls = mockFn.mock.calls ?? [];
+    const pass = calls.some((call) =>
+      expected.every((expectedArg, index) => this.equals(call[index], expectedArg)),
+    );
+
+    return {
+      pass,
+      message: () =>
+        pass
+          ? `Expected mock not to be called with prefix ${this.utils.printExpected(expected)}`
+          : `Expected mock to be called with prefix ${this.utils.printExpected(expected)}, but got ${this.utils.printReceived(calls)}`,
+    };
+  },
+});
+
 function createSettings(overrides: Record<string, unknown> = {}) {
   return {
     id: 'settings-1',
@@ -984,7 +1013,7 @@ describe('ModerationService', () => {
 
     expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-3', 'msg-3');
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-3',
       expect.stringContaining('кросс-чат спам'),
     );
@@ -1181,7 +1210,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createServiceUserJoinedUpdate());
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Добро пожаловать, "Новый участник"! добро пожаловать в чат.',
     );
@@ -1247,7 +1276,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createServiceUserJoinedUpdateInDataEnvelope());
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Добро пожаловать, "Новый участник из data"! добро пожаловать в чат.',
     );
@@ -1313,7 +1342,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createServiceUserJoinedUpdateWithoutServiceSender());
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Добро пожаловать, "Новый участник без sender"! добро пожаловать в чат.',
     );
@@ -1379,7 +1408,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUserAddedUpdate());
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Добро пожаловать, "Новый участник user_added"! добро пожаловать в чат.',
     );
@@ -1536,7 +1565,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createBotStartedPrivateUpdate());
 
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       '152517912',
       [
         'Отдел чат-порядка «Майор Максимов» на месте. Чат взят под контроль.',
@@ -2005,7 +2034,7 @@ describe('ModerationService', () => {
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       expect.stringContaining('Чат сейчас закрыт на ночь'),
     );
@@ -2077,7 +2106,7 @@ describe('ModerationService', () => {
     expect(prisma.moderationEvent.findFirst).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -2093,9 +2122,6 @@ describe('ModerationService', () => {
           domains: [],
           admins: [],
         }),
-      },
-      chatAdminAllowlist: {
-        upsert: jest.fn(),
       },
       violation: {
         create: jest.fn(),
@@ -2142,6 +2168,59 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
+  });
+
+  it('does not trust stale local allowlist when remote admins no longer include sender', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+          admins: [{ userId: 'user-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn().mockResolvedValue(['another-admin']),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
+    expect(ruleEngine.detect).toHaveBeenCalled();
   });
 
   it('handles duplicate escalation separately and does not call SanctionService', async () => {
@@ -2290,7 +2369,7 @@ describe('ModerationService', () => {
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Сообщение пользователя "Алексей" удалено как дубль. Пользователю вынесено предупреждение.',
     );
@@ -2369,7 +2448,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Сообщение пользователя "Алексей" удалено: в этом чате нельзя отправлять дубли сообщений.',
     );
@@ -2435,7 +2514,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Сообщение пользователя "Алексей" удалено как дубль. Пользователю вынесено предупреждение.',
       {
@@ -2505,7 +2584,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователю "Алексей" выдан временный бан на 6ч.',
     );
@@ -2567,7 +2646,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.banMember).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователю "Алексей" выдан временный бан на 12ч.',
     );
@@ -2628,7 +2707,7 @@ describe('ModerationService', () => {
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Сообщение пользователя "Алексей" удалено: в этом чате нельзя отправлять дубли сообщений.',
     );
@@ -2763,7 +2842,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователю "Алексей" вынесено предупреждение за нецензурную лексику.',
     );
@@ -2836,7 +2915,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Сообщение пользователя "Алексей" удалено: нецензурная лексика запрещена правилами чата.',
     );
@@ -2897,7 +2976,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователю "Алексей" выдан временный бан на 12ч.',
     );
@@ -2973,7 +3052,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-1');
     expect(maxClient.banMember).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователь "Алексей" удален из чата за повторную нецензурную лексику.',
     );
@@ -3135,7 +3214,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Сообщение пользователя "Алексей" удалено: коммерческие объявления в этом чате запрещены.',
       {
@@ -3304,7 +3383,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователю "Алексей" вынесено предупреждение за коммерческую рекламу.',
     );
@@ -3376,7 +3455,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Сообщение пользователя "Алексей" удалено: в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.',
     );
@@ -3444,7 +3523,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Сообщение пользователя "Алексей" удалено: в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.',
       {
@@ -3510,7 +3589,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Сообщение пользователя "Алексей" удалено: в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.',
     );
@@ -3569,7 +3648,7 @@ describe('ModerationService', () => {
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Сообщение пользователя "Алексей" нарушает правило: в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.',
     );
@@ -3627,7 +3706,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователю "Алексей" вынесено предупреждение за ссылку. В этом чате нельзя отправлять ссылки.',
     );
@@ -3700,7 +3779,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователю "Алексей" вынесено предупреждение за ссылку. В этом чате нельзя отправлять ссылки.',
       {
@@ -3767,7 +3846,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     expect(maxClient.banMember).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователю "Алексей" выдан временный бан на 12ч.',
     );
@@ -3840,7 +3919,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователю "Алексей" выдан временный бан на 12ч.',
       {
@@ -3906,7 +3985,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-1');
     expect(maxClient.banMember).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователь "Алексей" удален из чата за повторные сообщения со ссылками.',
     );
@@ -3977,7 +4056,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователь "Алексей" удален из чата за повторные сообщения со ссылками.',
       {
@@ -4217,7 +4296,7 @@ describe('ModerationService', () => {
     const forwarded = 'x'.repeat(180);
     await service.handleUpdate(createForwardedUpdate(forwarded));
 
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Сообщение пользователя "Алексей" удалено: длина сообщения 187 символов, лимит 100.',
     );
@@ -4280,7 +4359,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователю "Алексей" вынесено предупреждение: слишком длинные сообщения.',
     );
@@ -4355,7 +4434,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователю "Алексей" выдан временный бан на 12ч за повторные нарушения лимита по фото.',
     );
@@ -4430,7 +4509,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-1');
     expect(maxClient.banMember).not.toHaveBeenCalled();
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователь "Алексей" удален из чата за повторные нарушения лимита по фото.',
     );
@@ -4791,7 +4870,7 @@ describe('ModerationService', () => {
     };
     expect(detectionArgs.hasVoiceAttachment).toBe(true);
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-voice-1');
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Сообщение пользователя "Алексей" удалено: голосовые сообщения в этом чате отключены.',
       {
