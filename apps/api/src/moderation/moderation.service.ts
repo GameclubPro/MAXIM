@@ -11,11 +11,13 @@ import {
   type ChatSettings,
 } from '@prisma/client';
 import type { Job } from 'bullmq';
+import { createHash } from 'node:crypto';
 import { MaxClientService, type MaxSendMessageOptions } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
 import { SystemModeService } from '../system/system-mode.service';
 import { ChatContextCacheService } from './chat-context-cache.service';
+import { RedisCounterService } from './redis-counter.service';
 import type { DuplicateAction, DuplicateDecision, DuplicateHit } from './rule-engine.service';
 import { RuleEngineService } from './rule-engine.service';
 import { SanctionService } from './sanction.service';
@@ -66,6 +68,26 @@ const BOT_STARTED_INSTRUCTION_TEXT = [
 ].join('\n');
 const MAX_FORWARD_SCAN_DEPTH = 8;
 const GLOBAL_BLACKLIST_TOGGLE_CACHE_TTL_MS = 30_000;
+const GLOBAL_CROSS_CHAT_SPAM_TOGGLE_CACHE_TTL_MS = 30_000;
+const GLOBAL_CROSS_CHAT_SPAM_WINDOW_SEC = 2 * 60;
+const GLOBAL_CROSS_CHAT_SPAM_MIN_CHATS = 3;
+const CROSS_CHAT_SPAM_ALWAYS_IGNORED_KEYS = new Set([
+  'chat_id',
+  'chatid',
+  'message_id',
+  'messageid',
+  'sender_id',
+  'senderid',
+  'user_id',
+  'userid',
+  'update_id',
+  'updateid',
+  'created_at',
+  'createdat',
+  'timestamp',
+  'seq',
+  'mid',
+]);
 const NON_SANCTION_RULE_CODES = new Set([
   'LINK_BLOCKED',
   'PROFANITY',
@@ -89,6 +111,7 @@ const TEXT_FILTER_RULE_CODES = new Set(['PROFANITY', 'COMMERCIAL_AD']);
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ModerationService.name);
   private globalUserBlacklistEnabledCache: { value: boolean; checkedAt: number } | null = null;
+  private globalCrossChatSpamEnabledCache: { value: boolean; checkedAt: number } | null = null;
   private readonly ownBotUserId: string | null;
   private readonly ownBotUserIdVariants: Set<string>;
   private nightModeAnnounceTimer: NodeJS.Timeout | null = null;
@@ -102,6 +125,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly chatContextCache?: ChatContextCacheService,
     @Optional() private readonly systemModeService?: SystemModeService,
     @Optional() configService?: ConfigService,
+    @Optional() private readonly redisCounter?: RedisCounterService,
   ) {
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
     this.ownBotUserIdVariants = this.buildBotIdVariants(this.ownBotUserId);
@@ -209,6 +233,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const settings = this.applyDegradeSettings(chat.settings, degradeMode);
     const globalUserBlacklistEnabled = await this.isGlobalUserBlacklistEnabled(
       settings.globalUserBlacklistEnabled,
+    );
+    const globalCrossChatSpamEnabled = await this.isGlobalCrossChatSpamEnabled(
+      settings.globalCrossChatSpamEnabled,
     );
 
     if (serviceAuthored || serviceMembersEvent) {
@@ -329,6 +356,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const effectiveMessageLength = this.calculateEffectiveMessageLength(update);
     const mediaFlags = this.detectMediaFlags(update);
+    if (globalCrossChatSpamEnabled) {
+      const handled = await this.handleGlobalCrossChatSpamMessage({
+        chatId,
+        userId: senderId,
+        userLabel,
+        messageId,
+        text,
+        createdAt,
+        update,
+        mediaFlags,
+      });
+      if (handled) {
+        return;
+      }
+    }
 
     const detection = await this.ruleEngine.detect({
       chatId,
@@ -2659,6 +2701,378 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         'Failed to kick globally blacklisted user',
       );
     }
+  }
+
+  private async handleGlobalCrossChatSpamMessage(params: {
+    chatId: string;
+    userId: string;
+    userLabel: string;
+    messageId: string;
+    text: string;
+    createdAt: string;
+    update: MaxUpdate;
+    mediaFlags: {
+      hasPhotoAttachment: boolean;
+      hasVideoAttachment: boolean;
+      hasFileAttachment: boolean;
+      hasVoiceAttachment: boolean;
+    };
+  }): Promise<boolean> {
+    if (!this.redisCounter) {
+      return false;
+    }
+
+    const { chatId, userId, userLabel, messageId, text, createdAt, update, mediaFlags } = params;
+    const signature = this.buildGlobalCrossChatSpamSignature({
+      text,
+      update,
+      mediaFlags,
+    });
+    if (!signature) {
+      return false;
+    }
+
+    const redisKey = `cross-chat-spam:v1:${userId}:${signature.kind}:${signature.hash}`;
+    let uniqueChatsCount: number;
+
+    try {
+      const spreadState = await this.redisCounter.addToSetWithTtl(
+        redisKey,
+        chatId,
+        GLOBAL_CROSS_CHAT_SPAM_WINDOW_SEC + 5,
+      );
+      uniqueChatsCount = spreadState.size;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to evaluate global cross-chat spam state',
+      );
+      return false;
+    }
+
+    if (uniqueChatsCount < GLOBAL_CROSS_CHAT_SPAM_MIN_CHATS) {
+      return false;
+    }
+
+    const messageAgeMs = Date.now() - new Date(createdAt).getTime();
+    const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
+    if (!canDeleteMessage) {
+      return false;
+    }
+
+    try {
+      await this.maxClient.deleteMessage(chatId, messageId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          messageId,
+          uniqueChatsCount,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to delete global cross-chat spam message',
+      );
+      return false;
+    }
+
+    await this.prisma.violation.create({
+      data: {
+        chatId,
+        userId,
+        ruleCode: 'GLOBAL_CROSS_CHAT_SPAM',
+        score: 0.94,
+      },
+    });
+
+    await this.prisma.moderationEvent.create({
+      data: {
+        chatId,
+        userId,
+        messageId,
+        eventType: EventType.MESSAGE,
+        ruleCode: 'GLOBAL_CROSS_CHAT_SPAM_DELETE',
+        action: SanctionAction.DELETE_MESSAGE,
+        maskedExcerpt: maskText(text),
+        score: 0.94,
+        operator: Operator.BOT,
+        metadata: {
+          reason: 'Same payload was sent to multiple chats in a short window',
+          uniqueChatsCount,
+          windowSec: GLOBAL_CROSS_CHAT_SPAM_WINDOW_SEC,
+          signatureKind: signature.kind,
+        },
+      },
+    });
+
+    try {
+      await this.maxClient.sendMessage(
+        chatId,
+        this.buildGlobalCrossChatSpamNotice(userLabel, uniqueChatsCount),
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          messageId,
+          uniqueChatsCount,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to send global cross-chat spam notice',
+      );
+    }
+
+    return true;
+  }
+
+  private buildGlobalCrossChatSpamSignature(params: {
+    text: string;
+    update: MaxUpdate;
+    mediaFlags: {
+      hasPhotoAttachment: boolean;
+      hasVideoAttachment: boolean;
+      hasFileAttachment: boolean;
+      hasVoiceAttachment: boolean;
+    };
+  }): { kind: 'text' | 'photo' | 'forwarded'; hash: string } | null {
+    const { text, update, mediaFlags } = params;
+    const normalizedText = this.normalizeSpamText(text);
+    const rawRecord = this.asRecord(update.raw);
+    const messageNode = rawRecord ? this.extractRawMessageNode(rawRecord) ?? rawRecord : null;
+    const forwardedNodes = messageNode ? this.collectForwardedNodes(messageNode) : [];
+
+    if (forwardedNodes.length > 0) {
+      const forwardedTokens = new Set<string>();
+      for (const node of forwardedNodes) {
+        this.collectSignatureTokens(node, forwardedTokens, {
+          mediaOnly: false,
+        });
+      }
+      if (normalizedText.length > 0) {
+        forwardedTokens.add(`message_text:${normalizedText}`);
+      }
+      const hash = this.hashSpamSignature(forwardedTokens);
+      if (hash) {
+        return { kind: 'forwarded', hash };
+      }
+    }
+
+    if (mediaFlags.hasPhotoAttachment && messageNode) {
+      const photoTokens = new Set<string>();
+      this.collectSignatureTokens(messageNode, photoTokens, {
+        mediaOnly: true,
+      });
+      if (normalizedText.length > 0) {
+        photoTokens.add(`caption:${normalizedText}`);
+      }
+      const hash = this.hashSpamSignature(photoTokens);
+      if (hash) {
+        return { kind: 'photo', hash };
+      }
+    }
+
+    if (normalizedText.length === 0) {
+      return null;
+    }
+
+    return {
+      kind: 'text',
+      hash: createHash('sha256').update(normalizedText).digest('hex').slice(0, 24),
+    };
+  }
+
+  private hashSpamSignature(tokens: Set<string>): string | null {
+    if (tokens.size === 0) {
+      return null;
+    }
+
+    const normalized = [...tokens]
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0)
+      .sort();
+    if (normalized.length === 0) {
+      return null;
+    }
+
+    return createHash('sha256').update(normalized.join('\n')).digest('hex').slice(0, 24);
+  }
+
+  private normalizeSpamText(value: string): string {
+    return value.replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
+  private collectSignatureTokens(
+    node: unknown,
+    tokens: Set<string>,
+    options: {
+      mediaOnly: boolean;
+    },
+    depth = 0,
+    mediaContext = false,
+  ) {
+    if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined || tokens.size >= 120) {
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        this.collectSignatureTokens(item, tokens, options, depth + 1, mediaContext);
+        if (tokens.size >= 120) {
+          return;
+        }
+      }
+      return;
+    }
+
+    if (typeof node === 'string' || typeof node === 'number' || typeof node === 'boolean') {
+      if (options.mediaOnly && !mediaContext) {
+        return;
+      }
+      const normalizedValue = this.normalizeSignatureValue(String(node));
+      if (!normalizedValue) {
+        return;
+      }
+      tokens.add(`value:${normalizedValue}`);
+      return;
+    }
+
+    if (typeof node !== 'object') {
+      return;
+    }
+
+    const row = node as Record<string, unknown>;
+    for (const [key, value] of Object.entries(row)) {
+      const keyLower = key.toLowerCase();
+      const nextMediaContext = mediaContext || this.isStableMediaSignatureKey(keyLower);
+
+      if (value && (typeof value === 'object' || Array.isArray(value))) {
+        this.collectSignatureTokens(value, tokens, options, depth + 1, nextMediaContext);
+        if (tokens.size >= 120) {
+          return;
+        }
+        continue;
+      }
+
+      if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') {
+        continue;
+      }
+
+      if (this.shouldSkipSignatureKey(keyLower, nextMediaContext)) {
+        continue;
+      }
+
+      if (options.mediaOnly && !nextMediaContext) {
+        continue;
+      }
+
+      const normalizedValue = this.normalizeSignatureValue(String(value));
+      if (!normalizedValue) {
+        continue;
+      }
+
+      tokens.add(`${keyLower}:${normalizedValue}`);
+      if (tokens.size >= 120) {
+        return;
+      }
+    }
+  }
+
+  private normalizeSignatureValue(value: string): string {
+    const normalized = value.replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!normalized) {
+      return '';
+    }
+
+    if (normalized.startsWith('http://') || normalized.startsWith('https://')) {
+      try {
+        const parsed = new URL(normalized);
+        parsed.search = '';
+        parsed.hash = '';
+        const safeUrl = parsed.toString();
+        return safeUrl.slice(0, 512);
+      } catch {
+        return normalized.slice(0, 512);
+      }
+    }
+
+    return normalized.slice(0, 512);
+  }
+
+  private shouldSkipSignatureKey(key: string, mediaContext: boolean): boolean {
+    if (CROSS_CHAT_SPAM_ALWAYS_IGNORED_KEYS.has(key)) {
+      return true;
+    }
+
+    if ((key === 'id' || key.endsWith('_id')) && !mediaContext) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private isStableMediaSignatureKey(key: string): boolean {
+    return (
+      key.includes('photo') ||
+      key.includes('image') ||
+      key.includes('picture') ||
+      key.includes('sticker') ||
+      key.includes('attachment') ||
+      key.includes('media') ||
+      key.includes('file') ||
+      key.includes('video') ||
+      key.includes('voice') ||
+      key.includes('audio') ||
+      key.includes('url') ||
+      key.includes('uri') ||
+      key.includes('token') ||
+      key.includes('hash') ||
+      key.includes('checksum') ||
+      key.includes('mime') ||
+      key.includes('payload')
+    );
+  }
+
+  private buildGlobalCrossChatSpamNotice(userLabel: string, uniqueChatsCount: number): string {
+    return `Сообщение пользователя ${userLabel} удалено: одинаковый текст/фото/пересланное отправлено в ${uniqueChatsCount} чатах за 2 минуты (кросс-чат спам).`;
+  }
+
+  private async isGlobalCrossChatSpamEnabled(chatSettingEnabled: boolean): Promise<boolean> {
+    if (chatSettingEnabled) {
+      this.globalCrossChatSpamEnabledCache = {
+        value: true,
+        checkedAt: Date.now(),
+      };
+      return true;
+    }
+
+    const now = Date.now();
+    if (
+      this.globalCrossChatSpamEnabledCache &&
+      now - this.globalCrossChatSpamEnabledCache.checkedAt <= GLOBAL_CROSS_CHAT_SPAM_TOGGLE_CACHE_TTL_MS
+    ) {
+      return this.globalCrossChatSpamEnabledCache.value;
+    }
+
+    const enabledSomewhere = await this.prisma.chatSettings?.findFirst({
+      where: {
+        globalCrossChatSpamEnabled: true,
+      },
+      select: {
+        chatId: true,
+      },
+    });
+    const value = Boolean(enabledSomewhere);
+    this.globalCrossChatSpamEnabledCache = {
+      value,
+      checkedAt: now,
+    };
+    return value;
   }
 
   private async isGlobalUserBlacklistEnabled(chatSettingEnabled: boolean): Promise<boolean> {

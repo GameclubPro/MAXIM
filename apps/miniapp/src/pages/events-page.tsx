@@ -79,6 +79,8 @@ function formatViolationRule(ruleCode: string): string {
     MANUAL_BAN: 'Ручной бан',
     MANUAL_UNBAN: 'Ручной разбан',
     GLOBAL_USER_BLACKLIST_KICK: 'Глобальный черный список',
+    GLOBAL_CROSS_CHAT_SPAM: 'Кросс-чат спам',
+    GLOBAL_CROSS_CHAT_SPAM_DELETE: 'Кросс-чат спам',
     BAN_ACTIVE_DELETE: 'Активный бан',
     NIGHT_MODE_DELETE: 'Ночной режим',
   };

@@ -68,6 +68,7 @@ export const chatSettingsSchema = z
     deleteBotMessagesDelayMinutes: z.number().int().min(1).max(60).default(2),
     removeBotsFromGroupEnabled: z.boolean().default(false),
     globalUserBlacklistEnabled: z.boolean().default(false),
+    globalCrossChatSpamEnabled: z.boolean().default(false),
     antiSpamEnabled: z.boolean().default(true),
     maxMessageLengthEnabled: z.boolean().default(false),
     maxMessageLength: z.number().int().min(50).max(1500).default(1500),

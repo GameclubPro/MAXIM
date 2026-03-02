@@ -51,6 +51,7 @@ type DuplicateMaxCountKey =
   | 'duplicateBanMaxCount';
 type HintKey =
   | 'antiSpam'
+  | 'globalCrossChatSpam'
   | 'linkBotMessage'
   | 'linkWarnMessage'
   | 'linkBotButton'
@@ -1661,6 +1662,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     ? `${textFiltersStagesEnabledCount}/4 ступени · ${commercialSensitivityLabel.toLowerCase()}`
     : 'Выключено';
   const extraEnabledCount = [
+    draft?.globalCrossChatSpamEnabled,
     draft?.deleteBotMessagesEnabled,
     draft?.removeBotsFromGroupEnabled,
     draft?.globalUserBlacklistEnabled,
@@ -5272,6 +5274,53 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       ) : null}
                     </div>
                   ) : null}
+
+                  <div className="settings-native-toggle">
+                    <div className="settings-native-toggle__row">
+                      <div className="settings-native-toggle__title-wrap">
+                        <span className="settings-native-toggle__title">
+                          Анти-спам во всех чатах
+                        </span>
+                        <button
+                          type="button"
+                          className={cn(
+                            'settings-info-button',
+                            openHintKey === 'globalCrossChatSpam' && 'is-open',
+                          )}
+                          aria-label="Пояснение для анти-спама во всех чатах"
+                          aria-controls="global-cross-chat-spam-hint"
+                          aria-expanded={openHintKey === 'globalCrossChatSpam'}
+                          onClick={() => toggleHint('globalCrossChatSpam')}
+                        >
+                          <span aria-hidden>i</span>
+                        </button>
+                      </div>
+
+                      <label
+                        className="settings-native-switch"
+                        aria-label="Включить анти-спам во всех чатах"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={draft.globalCrossChatSpamEnabled}
+                          onChange={(event) =>
+                            setFieldValue('globalCrossChatSpamEnabled', event.target.checked)
+                          }
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
+
+                    {openHintKey === 'globalCrossChatSpam' ? (
+                      <p id="global-cross-chat-spam-hint" className="settings-native-toggle__hint">
+                        Если пользователь отправляет одинаковый текст/фото/пересланное в 3+ чата за
+                        2 минуты, бот удаляет сообщение и пишет предупреждение о спаме. Опция
+                        действует глобально во всех чатах, где у бота есть права администратора.
+                      </p>
+                    ) : null}
+                  </div>
 
                   <div className="settings-native-toggle">
                     <div className="settings-native-toggle__row">

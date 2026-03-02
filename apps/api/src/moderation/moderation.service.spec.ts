@@ -27,6 +27,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     deleteBotMessagesDelayMinutes: 2,
     removeBotsFromGroupEnabled: false,
     globalUserBlacklistEnabled: false,
+    globalCrossChatSpamEnabled: false,
     antiSpamEnabled: true,
     maxMessageLengthEnabled: false,
     maxMessageLength: 1500,
@@ -789,6 +790,127 @@ describe('ModerationService', () => {
     });
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
+  });
+
+  it('deletes cross-chat spam on the third chat when global toggle is enabled', async () => {
+    const nowIso = new Date().toISOString();
+    const createSpamUpdate = (chatId: string, messageId: string): MaxUpdate => ({
+      updateId: `upd-${chatId}-${messageId}`,
+      type: 'message_created',
+      message: {
+        messageId,
+        chatId,
+        senderId: 'user-spam-1',
+        senderName: 'Спамер',
+        text: 'Заходите в канал, там все подробности',
+        createdAt: nowIso,
+      },
+      raw: {
+        message: {
+          sender: {
+            id: 'user-spam-1',
+            type: 'user',
+          },
+          body: {
+            text: 'Заходите в канал, там все подробности',
+          },
+        },
+      },
+    });
+
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockImplementation(({ where }: { where: { id: string } }) =>
+          Promise.resolve({
+            id: where.id,
+            title: `Chat ${where.id}`,
+            settings: createSettings({
+              globalCrossChatSpamEnabled: false,
+            }),
+            domains: [],
+            admins: [],
+          }),
+        ),
+      },
+      chatSettings: {
+        findFirst: jest.fn().mockImplementation((args: {
+          where?: { globalCrossChatSpamEnabled?: boolean; globalUserBlacklistEnabled?: boolean };
+        }) => {
+          if (args.where?.globalCrossChatSpamEnabled) {
+            return Promise.resolve({ chatId: 'chat-global-toggle' });
+          }
+          return Promise.resolve(null);
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalUserBlacklist: {
+        upsert: jest.fn(),
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({ violations: [] }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const redisCounter = {
+      addToSetWithTtl: jest
+        .fn()
+        .mockResolvedValueOnce({ added: true, size: 1 })
+        .mockResolvedValueOnce({ added: true, size: 2 })
+        .mockResolvedValueOnce({ added: true, size: 3 }),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn().mockReturnValue('bot-1'),
+      } as never,
+      redisCounter as never,
+    );
+
+    await service.handleUpdate(createSpamUpdate('chat-1', 'msg-1'));
+    await service.handleUpdate(createSpamUpdate('chat-2', 'msg-2'));
+    await service.handleUpdate(createSpamUpdate('chat-3', 'msg-3'));
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-3', 'msg-3');
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-3',
+      expect.stringContaining('кросс-чат спам'),
+    );
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-3',
+        userId: 'user-spam-1',
+        messageId: 'msg-3',
+        ruleCode: 'GLOBAL_CROSS_CHAT_SPAM_DELETE',
+        action: SanctionAction.DELETE_MESSAGE,
+      }),
+    });
   });
 
   it('removes bot-authored accounts from group when toggle is enabled', async () => {
