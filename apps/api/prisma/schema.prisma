@@ -97,6 +97,8 @@ model ChatSettings {
   maxMessageLength       Int            @default(1500) @map("max_message_length")
   photoMessageCooldownEnabled Boolean   @default(false) @map("photo_message_cooldown_enabled")
   photoMessageCooldownHours Int         @default(1) @map("photo_message_cooldown_hours")
+  stickerMessageCooldownEnabled Boolean @default(false) @map("sticker_message_cooldown_enabled")
+  stickerMessageCooldownMinutes Int     @default(5) @map("sticker_message_cooldown_minutes")
   videoMessagesEnabled   Boolean        @default(true) @map("video_messages_enabled")
   fileMessagesEnabled    Boolean        @default(true) @map("file_messages_enabled")
   voiceMessagesEnabled   Boolean        @default(true) @map("voice_messages_enabled")

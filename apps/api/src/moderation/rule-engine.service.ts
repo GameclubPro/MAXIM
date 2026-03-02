@@ -265,6 +265,7 @@ export class RuleEngineService {
     domainAllowlist: string[];
     effectiveLength?: number;
     hasPhotoAttachment?: boolean;
+    hasStickerAttachment?: boolean;
     hasVideoAttachment?: boolean;
     hasFileAttachment?: boolean;
     hasVoiceAttachment?: boolean;
@@ -277,6 +278,7 @@ export class RuleEngineService {
       domainAllowlist,
       effectiveLength,
       hasPhotoAttachment,
+      hasStickerAttachment,
       hasVideoAttachment,
       hasFileAttachment,
       hasVoiceAttachment,
@@ -361,6 +363,19 @@ export class RuleEngineService {
           ruleCode: 'PHOTO_RATE_LIMIT',
           score: 0.86,
           reason: `Messages with photos are limited to one per ${settings.photoMessageCooldownHours}h`,
+        });
+      }
+    }
+
+    if (hasStickerAttachment && settings.stickerMessageCooldownEnabled) {
+      const cooldownSec = settings.stickerMessageCooldownMinutes * 60;
+      const key = `sticker:cooldown:${chatId}:${userId}`;
+      const count = await this.redisCounter.incrementWithTtl(key, cooldownSec + 1);
+      if (count > 1) {
+        violations.push({
+          ruleCode: 'STICKER_RATE_LIMIT',
+          score: 0.86,
+          reason: `Stickers are limited to one per ${settings.stickerMessageCooldownMinutes}m`,
         });
       }
     }

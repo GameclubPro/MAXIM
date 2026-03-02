@@ -104,6 +104,7 @@ const NON_SANCTION_RULE_CODES = new Set([
   'FILE_BLOCKED',
   'VOICE_BLOCKED',
   'PHOTO_RATE_LIMIT',
+  'STICKER_RATE_LIMIT',
 ]);
 const MESSAGE_LIMITS_RULE_CODES = new Set([
   'MESSAGE_TOO_LONG',
@@ -111,6 +112,7 @@ const MESSAGE_LIMITS_RULE_CODES = new Set([
   'FILE_BLOCKED',
   'VOICE_BLOCKED',
   'PHOTO_RATE_LIMIT',
+  'STICKER_RATE_LIMIT',
 ]);
 const TEXT_FILTER_RULE_CODES = new Set(['PROFANITY', 'COMMERCIAL_AD']);
 
@@ -411,6 +413,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       domainAllowlist: chat.domainAllowlist,
       effectiveLength: effectiveMessageLength,
       hasPhotoAttachment: mediaFlags.hasPhotoAttachment,
+      hasStickerAttachment: mediaFlags.hasStickerAttachment,
       hasVideoAttachment: mediaFlags.hasVideoAttachment,
       hasFileAttachment: mediaFlags.hasFileAttachment,
       hasVoiceAttachment: mediaFlags.hasVoiceAttachment,
@@ -426,7 +429,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         item.ruleCode === 'VIDEO_BLOCKED' ||
         item.ruleCode === 'FILE_BLOCKED' ||
         item.ruleCode === 'VOICE_BLOCKED' ||
-        item.ruleCode === 'PHOTO_RATE_LIMIT',
+        item.ruleCode === 'PHOTO_RATE_LIMIT' ||
+        item.ruleCode === 'STICKER_RATE_LIMIT',
     );
     if (!hasBlockingDeleteViolation && detection.duplicateDecision) {
       await this.handleDuplicateDecision({
@@ -482,6 +486,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       violations.find((item) => item.ruleCode === 'FILE_BLOCKED') ??
       violations.find((item) => item.ruleCode === 'VOICE_BLOCKED') ??
       violations.find((item) => item.ruleCode === 'PHOTO_RATE_LIMIT') ??
+      violations.find((item) => item.ruleCode === 'STICKER_RATE_LIMIT') ??
       violations[0];
 
     await this.prisma.violation.create({
@@ -595,6 +600,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             topViolation.ruleCode,
             canDeleteMessage,
             settings.photoMessageCooldownHours,
+            settings.stickerMessageCooldownMinutes,
             effectiveMessageLength,
             settings.maxMessageLength,
             '',
@@ -1574,6 +1580,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     ruleCode: string,
     canDeleteMessage: boolean,
     photoCooldownHours: number,
+    stickerCooldownMinutes: number,
     messageLength?: number,
     maxMessageLength?: number,
     templateText?: string,
@@ -1645,6 +1652,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
     }
 
+    if (ruleCode === 'STICKER_RATE_LIMIT') {
+      const minutes =
+        Number.isInteger(stickerCooldownMinutes) &&
+        stickerCooldownMinutes >= 1 &&
+        stickerCooldownMinutes <= 60
+          ? stickerCooldownMinutes
+          : 5;
+      const fallback = canDeleteMessage
+        ? `Сообщение пользователя ${userLabel} удалено: стикеры можно отправлять не чаще одного раза в ${minutes} мин.`
+        : `Сообщение пользователя ${userLabel} нарушает правило: стикеры можно отправлять не чаще одного раза в ${minutes} мин.`;
+      return this.renderBotMessageTemplate(templateText ?? '', fallback, {
+        user: userLabel,
+        message_status: messageStatus,
+        reason: `стикеры можно отправлять не чаще одного раза в ${minutes} мин`,
+      });
+    }
+
     const hours =
       Number.isInteger(photoCooldownHours) && photoCooldownHours >= 1 && photoCooldownHours <= 24
         ? photoCooldownHours
@@ -1663,6 +1687,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private buildMessageLimitsKickExplanation(userLabel: string, ruleCode: string): string {
     if (ruleCode === 'PHOTO_RATE_LIMIT') {
       return `Пользователь ${userLabel} удален из чата за повторные нарушения лимита по фото.`;
+    }
+
+    if (ruleCode === 'STICKER_RATE_LIMIT') {
+      return `Пользователь ${userLabel} удален из чата за повторные нарушения лимита по стикерам.`;
     }
 
     if (ruleCode === 'MESSAGE_TOO_LONG') {
@@ -1687,6 +1715,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private buildMessageLimitsWarnExplanation(userLabel: string, ruleCode: string): string {
     if (ruleCode === 'PHOTO_RATE_LIMIT') {
       return `Пользователю ${userLabel} вынесено предупреждение: слишком частая отправка фото.`;
+    }
+
+    if (ruleCode === 'STICKER_RATE_LIMIT') {
+      return `Пользователю ${userLabel} вынесено предупреждение: слишком частая отправка стикеров.`;
     }
 
     if (ruleCode === 'MESSAGE_TOO_LONG') {
@@ -1717,6 +1749,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (ruleCode === 'PHOTO_RATE_LIMIT') {
       return `Пользователю ${userLabel} выдан временный бан на ${durationLabel} за повторные нарушения лимита по фото.`;
+    }
+
+    if (ruleCode === 'STICKER_RATE_LIMIT') {
+      return `Пользователю ${userLabel} выдан временный бан на ${durationLabel} за повторные нарушения лимита по стикерам.`;
     }
 
     if (ruleCode === 'MESSAGE_TOO_LONG') {
@@ -1902,6 +1938,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private detectMediaFlags(update: MaxUpdate): {
     hasPhotoAttachment: boolean;
+    hasStickerAttachment: boolean;
     hasVideoAttachment: boolean;
     hasFileAttachment: boolean;
     hasVoiceAttachment: boolean;
@@ -1910,6 +1947,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (!rawRecord) {
       return {
         hasPhotoAttachment: false,
+        hasStickerAttachment: false,
         hasVideoAttachment: false,
         hasFileAttachment: false,
         hasVoiceAttachment: false,
@@ -1919,6 +1957,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const messageNode = this.extractRawMessageNode(rawRecord) ?? rawRecord;
     const flags = {
       hasPhotoAttachment: false,
+      hasStickerAttachment: false,
       hasVideoAttachment: false,
       hasFileAttachment: false,
       hasVoiceAttachment: false,
@@ -1931,17 +1970,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     node: unknown,
     flags: {
       hasPhotoAttachment: boolean;
+      hasStickerAttachment: boolean;
       hasVideoAttachment: boolean;
       hasFileAttachment: boolean;
       hasVoiceAttachment: boolean;
     },
     depth = 0,
+    inStickerContext = false,
   ) {
     if (
       depth > MAX_FORWARD_SCAN_DEPTH ||
       node === null ||
       node === undefined ||
       (flags.hasPhotoAttachment &&
+        flags.hasStickerAttachment &&
         flags.hasVideoAttachment &&
         flags.hasFileAttachment &&
         flags.hasVoiceAttachment)
@@ -1951,7 +1993,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (Array.isArray(node)) {
       for (const item of node) {
-        this.collectMediaFlags(item, flags, depth + 1);
+        this.collectMediaFlags(item, flags, depth + 1, inStickerContext);
       }
       return;
     }
@@ -1965,17 +2007,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const mimeType = this.readLowerString(row.mime_type ?? row.mimeType);
     const fileName = this.readLowerString(row.file_name ?? row.fileName ?? row.filename);
     const mediaType = this.readLowerString(row.media_type ?? row.mediaType);
+    const stickerContext =
+      inStickerContext || type === 'sticker' || mediaType === 'sticker';
 
     if (
-      type === 'photo' ||
-      type === 'image' ||
-      type === 'picture' ||
-      type === 'sticker' ||
-      mimeType?.startsWith('image/') ||
-      mediaType === 'photo' ||
-      mediaType === 'image'
+      !stickerContext &&
+      (type === 'photo' ||
+        type === 'image' ||
+        type === 'picture' ||
+        mimeType?.startsWith('image/') ||
+        mediaType === 'photo' ||
+        mediaType === 'image')
     ) {
       flags.hasPhotoAttachment = true;
+    }
+
+    if (stickerContext) {
+      flags.hasStickerAttachment = true;
     }
 
     if (
@@ -2013,12 +2061,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     for (const [key, value] of Object.entries(row)) {
       const keyLower = key.toLowerCase();
       if (
-        keyLower === 'photo' ||
-        keyLower === 'image' ||
-        keyLower === 'picture' ||
-        keyLower === 'images'
+        !stickerContext &&
+        (keyLower === 'photo' ||
+          keyLower === 'image' ||
+          keyLower === 'picture' ||
+          keyLower === 'images')
       ) {
         flags.hasPhotoAttachment = true;
+      }
+
+      if (keyLower === 'sticker' || keyLower === 'stickers') {
+        flags.hasStickerAttachment = true;
       }
 
       if (keyLower === 'video' || keyLower === 'videos') {
@@ -2039,7 +2092,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (value && (typeof value === 'object' || Array.isArray(value))) {
-        this.collectMediaFlags(value, flags, depth + 1);
+        const childStickerContext =
+          stickerContext || keyLower === 'sticker' || keyLower === 'stickers';
+        this.collectMediaFlags(value, flags, depth + 1, childStickerContext);
       }
     }
   }

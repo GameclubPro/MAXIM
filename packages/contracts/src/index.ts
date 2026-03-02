@@ -89,6 +89,8 @@ export const chatSettingsSchema = z
     maxMessageLength: z.number().int().min(50).max(1500).default(1500),
     photoMessageCooldownEnabled: z.boolean().default(false),
     photoMessageCooldownHours: z.number().int().min(1).max(24).default(1),
+    stickerMessageCooldownEnabled: z.boolean().default(false),
+    stickerMessageCooldownMinutes: z.number().int().min(1).max(60).default(5),
     videoMessagesEnabled: z.boolean().default(true),
     fileMessagesEnabled: z.boolean().default(true),
     voiceMessagesEnabled: z.boolean().default(true),

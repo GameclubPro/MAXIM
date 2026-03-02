@@ -42,6 +42,8 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     maxMessageLength: 1500,
     photoMessageCooldownEnabled: false,
     photoMessageCooldownHours: 1,
+    stickerMessageCooldownEnabled: false,
+    stickerMessageCooldownMinutes: 5,
     videoMessagesEnabled: true,
     fileMessagesEnabled: true,
     voiceMessagesEnabled: true,
@@ -387,6 +389,65 @@ describe('RuleEngineService', () => {
 
     expect(first.violations.some((item) => item.ruleCode === 'PHOTO_RATE_LIMIT')).toBe(false);
     expect(second.violations.some((item) => item.ruleCode === 'PHOTO_RATE_LIMIT')).toBe(true);
+  });
+
+  it('detects STICKER_RATE_LIMIT from second sticker when cooldown is enabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      stickerMessageCooldownEnabled: true,
+      stickerMessageCooldownMinutes: 5,
+    });
+
+    const first = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings,
+      domainAllowlist: [],
+      hasStickerAttachment: true,
+    });
+
+    const second = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings,
+      domainAllowlist: [],
+      hasStickerAttachment: true,
+    });
+
+    expect(first.violations.some((item) => item.ruleCode === 'STICKER_RATE_LIMIT')).toBe(false);
+    expect(second.violations.some((item) => item.ruleCode === 'STICKER_RATE_LIMIT')).toBe(true);
+  });
+
+  it('does not trigger PHOTO_RATE_LIMIT for sticker-only attachments', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      photoMessageCooldownEnabled: true,
+      photoMessageCooldownHours: 2,
+      stickerMessageCooldownEnabled: true,
+      stickerMessageCooldownMinutes: 5,
+    });
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings,
+      domainAllowlist: [],
+      hasStickerAttachment: true,
+    });
+    const second = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '',
+      settings,
+      domainAllowlist: [],
+      hasStickerAttachment: true,
+    });
+
+    expect(second.violations.some((item) => item.ruleCode === 'PHOTO_RATE_LIMIT')).toBe(false);
+    expect(second.violations.some((item) => item.ruleCode === 'STICKER_RATE_LIMIT')).toBe(true);
   });
 
   it('respects anti-spam toggle for flood detection', async () => {

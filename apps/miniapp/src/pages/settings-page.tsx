@@ -27,6 +27,8 @@ const MESSAGE_LENGTH_MIN = 50;
 const MESSAGE_LENGTH_MAX = 1500;
 const PHOTO_COOLDOWN_MIN_HOURS = 1;
 const PHOTO_COOLDOWN_MAX_HOURS = 24;
+const STICKER_COOLDOWN_MIN_MINUTES = 1;
+const STICKER_COOLDOWN_MAX_MINUTES = 60;
 const COMMERCIAL_SENSITIVITY_MIN = 0;
 const COMMERCIAL_SENSITIVITY_MAX = 100;
 const COMMERCIAL_BALANCED_MAX = 69;
@@ -68,6 +70,7 @@ type HintKey =
   | 'banDuration'
   | 'maxMessageLength'
   | 'photoCooldown'
+  | 'stickerCooldown'
   | 'messageLimitsBotMessage'
   | 'messageLimitsBotButton'
   | 'nightModeEnabled'
@@ -174,6 +177,8 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'maxMessageLength',
     'photoMessageCooldownEnabled',
     'photoMessageCooldownHours',
+    'stickerMessageCooldownEnabled',
+    'stickerMessageCooldownMinutes',
     'videoMessagesEnabled',
     'fileMessagesEnabled',
     'voiceMessagesEnabled',
@@ -1349,6 +1354,25 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     );
   }
 
+  function adjustStickerMessageCooldown(deltaMinutes: number) {
+    if (!draft) {
+      return;
+    }
+
+    const next = Math.min(
+      STICKER_COOLDOWN_MAX_MINUTES,
+      Math.max(
+        STICKER_COOLDOWN_MIN_MINUTES,
+        Number(draft.stickerMessageCooldownMinutes) + deltaMinutes,
+      ),
+    );
+
+    setFieldValue(
+      'stickerMessageCooldownMinutes',
+      next as ChatSettings['stickerMessageCooldownMinutes'],
+    );
+  }
+
   function adjustDuplicateMaxCount(key: DuplicateMaxCountKey, currentValue: number, delta: number) {
     const next = Math.min(
       DUPLICATE_COUNT_MAX,
@@ -1838,6 +1862,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     draft?.antiSpamEnabled,
     draft?.maxMessageLengthEnabled,
     draft?.photoMessageCooldownEnabled,
+    draft?.stickerMessageCooldownEnabled,
     draft ? !draft.videoMessagesEnabled : false,
     draft ? !draft.fileMessagesEnabled : false,
     draft ? !draft.voiceMessagesEnabled : false,
@@ -4190,6 +4215,101 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       <p id="photo-cooldown-hint" className="settings-native-toggle__hint">
                         При включении пользователь может отправить только одно сообщение с
                         фотографиями за выбранный интервал.
+                      </p>
+                    ) : null}
+                  </div>
+
+                  <div
+                    className={cn(
+                      'settings-native-toggle',
+                      fieldErrors.stickerMessageCooldownMinutes && 'field--error',
+                    )}
+                  >
+                    <div className="settings-native-toggle__row">
+                      <div className="settings-native-toggle__title-wrap">
+                        <span className="settings-native-toggle__title">Стикеры: не чаще 1 раза</span>
+                        <button
+                          type="button"
+                          className={cn(
+                            'settings-info-button',
+                            openHintKey === 'stickerCooldown' && 'is-open',
+                          )}
+                          aria-label="Пояснение для ограничения частоты стикеров"
+                          aria-controls="sticker-cooldown-hint"
+                          aria-expanded={openHintKey === 'stickerCooldown'}
+                          onClick={() => toggleHint('stickerCooldown')}
+                        >
+                          <span aria-hidden>i</span>
+                        </button>
+                      </div>
+
+                      <label
+                        className="settings-native-switch"
+                        aria-label="Ограничить отправку стикеров по времени"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={draft.stickerMessageCooldownEnabled}
+                          onChange={(event) => {
+                            const enabled = event.target.checked;
+                            setFieldValue('stickerMessageCooldownEnabled', enabled);
+                            if (enabled) {
+                              setFieldValue('messageLimitsBotMessageEnabled', true);
+                            }
+                          }}
+                        />
+                        <span className="toggle-switch" aria-hidden>
+                          <span className="toggle-switch__thumb" />
+                        </span>
+                      </label>
+                    </div>
+
+                    {draft.stickerMessageCooldownEnabled ? (
+                      <div className="settings-native-toggle__row">
+                        <span className="settings-native-toggle__title settings-native-toggle__title--sub">
+                          Интервал
+                        </span>
+                        <div
+                          className="ban-duration-stepper"
+                          role="group"
+                          aria-label="Интервал отправки стикеров в минутах"
+                        >
+                          <button
+                            type="button"
+                            className="ban-duration-stepper__button"
+                            onClick={() => adjustStickerMessageCooldown(-1)}
+                            disabled={
+                              draft.stickerMessageCooldownMinutes <= STICKER_COOLDOWN_MIN_MINUTES
+                            }
+                            aria-label="Уменьшить интервал отправки стикеров"
+                          >
+                            -
+                          </button>
+                          <output className="ban-duration-stepper__value" aria-live="polite">
+                            {draft.stickerMessageCooldownMinutes} мин
+                          </output>
+                          <button
+                            type="button"
+                            className="ban-duration-stepper__button"
+                            onClick={() => adjustStickerMessageCooldown(1)}
+                            disabled={
+                              draft.stickerMessageCooldownMinutes >= STICKER_COOLDOWN_MAX_MINUTES
+                            }
+                            aria-label="Увеличить интервал отправки стикеров"
+                          >
+                            +
+                          </button>
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {fieldErrors.stickerMessageCooldownMinutes ? (
+                      <small className="field__hint">
+                        {fieldErrors.stickerMessageCooldownMinutes}
+                      </small>
+                    ) : openHintKey === 'stickerCooldown' ? (
+                      <p id="sticker-cooldown-hint" className="settings-native-toggle__hint">
+                        Стикеры считаются отдельно и не попадают в лимит фото.
                       </p>
                     ) : null}
                   </div>

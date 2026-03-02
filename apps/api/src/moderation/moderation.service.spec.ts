@@ -62,6 +62,8 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     maxMessageLength: 1500,
     photoMessageCooldownEnabled: false,
     photoMessageCooldownHours: 1,
+    stickerMessageCooldownEnabled: false,
+    stickerMessageCooldownMinutes: 5,
     videoMessagesEnabled: true,
     fileMessagesEnabled: true,
     voiceMessagesEnabled: true,
@@ -504,6 +506,34 @@ function createVideoAttachmentUpdate(): MaxUpdate {
             type: 'video',
             payload: {
               url: 'https://cdn.example/video.mp4',
+            },
+          },
+        ],
+      },
+    },
+  };
+}
+
+function createStickerAttachmentUpdate(): MaxUpdate {
+  return {
+    updateId: 'upd-sticker-1',
+    type: 'message_created',
+    message: {
+      messageId: 'msg-sticker-1',
+      chatId: 'chat-1',
+      senderId: 'user-1',
+      senderName: 'Алексей',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      message: {
+        attachments: [
+          {
+            type: 'sticker',
+            payload: {
+              mime_type: 'image/webp',
+              url: 'https://cdn.example/sticker.webp',
             },
           },
         ],
@@ -4657,6 +4687,63 @@ describe('ModerationService', () => {
         action: SanctionAction.NONE,
       }),
     });
+  });
+
+  it('passes sticker attachments separately from photos to rule engine', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            photoMessageCooldownEnabled: true,
+            stickerMessageCooldownEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({ violations: [] }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createStickerAttachmentUpdate());
+
+    const detectionArgs = (ruleEngine.detect as jest.Mock).mock.calls[0][0] as {
+      hasPhotoAttachment?: boolean;
+      hasStickerAttachment?: boolean;
+    };
+    expect(detectionArgs.hasStickerAttachment).toBe(true);
+    expect(detectionArgs.hasPhotoAttachment).toBe(false);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
   });
 
   it('detects forwarded video attachment and moderates it as regular message content', async () => {
