@@ -469,11 +469,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       ? await this.countRecentTextFilterViolations(chatId, senderId, topViolation.ruleCode)
       : null;
 
-    if (
-      topViolation.ruleCode === 'LINK_BLOCKED' &&
-      settings.linkBotMessageEnabled &&
-      linkViolationCount24h === 1
-    ) {
+    if (topViolation.ruleCode === 'LINK_BLOCKED' && settings.linkBotMessageEnabled) {
       try {
         if (linkMessageOptions) {
           await this.maxClient.sendMessage(
@@ -552,11 +548,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    if (
-      isTextFilterHit &&
-      textFilterEscalationSettings?.botMessageEnabled &&
-      textFilterViolationCount24h === 1
-    ) {
+    if (isTextFilterHit && textFilterEscalationSettings?.botMessageEnabled) {
       try {
         if (textFilterMessageOptions) {
           await this.maxClient.sendMessage(
@@ -3253,13 +3245,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     return {
       ...settings,
-      linkBotMessageEnabled: false,
-      textFiltersBotMessageEnabled: false,
-      profanityBotMessageEnabled: false,
-      messageLimitsBotMessageEnabled: false,
-      duplicateBotMessageEnabled: false,
-      greetingBotMessageEnabled: false,
-      nightModeBotMessageEnabled: false,
       commercialAdsFilterEnabled: false,
       russianProfanityFilterEnabled: false,
     };

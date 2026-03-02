@@ -1957,6 +1957,85 @@ describe('ModerationService', () => {
     );
   });
 
+  it('sends duplicate explanation in degrade mode when duplicate bot toggle is enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ duplicateBotMessageEnabled: true }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [],
+        duplicateHit: {
+          count: 1,
+          windowSec: 60,
+          hash: 'dup-hit-degrade-1',
+        },
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const systemModeService = {
+      getSnapshot: jest.fn().mockReturnValue({
+        mode: 'degrade',
+        source: 'auto',
+        reason: 'queue lag',
+        updatedAt: new Date().toISOString(),
+        manualMode: null,
+        queueLagSec: 20,
+        action: {
+          windowSec: 60,
+          total: 100,
+          success: 96,
+          failure: 4,
+          critical: 0,
+          errorRate: 0.04,
+          criticalRate: 0,
+        },
+      }),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      systemModeService as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Сообщение пользователя "Алексей" удалено: в этом чате нельзя отправлять дубли сообщений.',
+    );
+  });
+
   it('sends duplicate explanation with inline button when button toggle is enabled', async () => {
     const prisma = {
       chat: {
@@ -2362,6 +2441,66 @@ describe('ModerationService', () => {
         }),
       }),
     });
+  });
+
+  it('sends text-filter explanation on repeated violation when bot message toggle is enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            profanityBotMessageEnabled: true,
+            profanityWarnEnabled: false,
+            profanityBanEnabled: false,
+            profanityKickEnabled: false,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+        count: jest.fn().mockResolvedValue(2),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'PROFANITY', score: 0.95, reason: 'Profanity detected' }],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Сообщение пользователя "Алексей" удалено: нецензурная лексика запрещена правилами чата.',
+    );
   });
 
   it('uses configured ban duration for text-filter BAN escalation', async () => {
@@ -2975,6 +3114,66 @@ describe('ModerationService', () => {
           url: 'https://max.ru/channel/news',
         },
       },
+    );
+  });
+
+  it('sends link explanation on repeated violation when link bot toggle is enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            linkBotMessageEnabled: true,
+            linkWarnEnabled: false,
+            linkBanEnabled: false,
+            linkKickEnabled: false,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+        count: jest.fn().mockResolvedValue(2),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Link detected' }],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Сообщение пользователя "Алексей" удалено: в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.',
     );
   });
 
