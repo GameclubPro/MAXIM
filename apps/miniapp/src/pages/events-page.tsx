@@ -31,7 +31,7 @@ const actionLabelMap: Record<ViolationAction, string> = {
 
 const actionToneMap: Record<ViolationAction, 'neutral' | 'warning' | 'danger'> = {
   WARN: 'warning',
-  DELETE_MESSAGE: 'danger',
+  DELETE_MESSAGE: 'neutral',
   KICK: 'danger',
   BAN: 'danger',
   NONE: 'neutral',
@@ -72,8 +72,12 @@ function formatViolationRule(ruleCode: string): string {
     VOICE_BLOCKED: 'Голосовые запрещены',
     PHOTO_RATE_LIMIT: 'Слишком много фото',
     DUPLICATE_WARN: 'Повторяющиеся сообщения',
+    DUPLICATE_DELETE: 'Повторяющиеся сообщения',
     DUPLICATE_KICK: 'Повторяющиеся сообщения',
     DUPLICATE_BAN: 'Повторяющиеся сообщения',
+    MANUAL_KICK: 'Ручное удаление',
+    MANUAL_BAN: 'Ручной бан',
+    MANUAL_UNBAN: 'Ручной разбан',
     GLOBAL_USER_BLACKLIST_KICK: 'Глобальный черный список',
     BAN_ACTIVE_DELETE: 'Активный бан',
     NIGHT_MODE_DELETE: 'Ночной режим',
