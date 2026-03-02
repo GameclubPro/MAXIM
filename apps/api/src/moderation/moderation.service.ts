@@ -48,6 +48,7 @@ const NIGHT_MODE_NOTICE_RULE_CODE = 'NIGHT_MODE_NOTICE';
 const LINK_ESCALATION_WINDOW_HOURS = 24;
 const TEXT_FILTER_ESCALATION_WINDOW_HOURS = 24;
 const MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS = 12;
+const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
 const BOT_STARTED_INSTRUCTION_OPTIONS: MaxSendMessageOptions = {
   button: {
     text: 'Поддержка',
@@ -116,6 +117,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ModerationService.name);
   private globalUserBlacklistEnabledCache: { value: boolean; checkedAt: number } | null = null;
   private globalCrossChatSpamEnabledCache: { value: boolean; checkedAt: number } | null = null;
+  private readonly chatAdminCache = new Map<
+    string,
+    {
+      expiresAt: number;
+      adminUserIds: Set<string>;
+    }
+  >();
   private readonly ownBotUserId: string | null;
   private readonly ownBotUserIdVariants: Set<string>;
   private nightModeAnnounceTimer: NodeJS.Timeout | null = null;
@@ -329,10 +337,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const senderIsChatAdmin = this.isSenderChatAdmin(
-      chat.adminUserIds.map((userId) => ({ userId })),
-      senderId,
-    );
+    const senderIsChatAdmin = await this.isSenderChatAdminWithFallback(chatId, chat.adminUserIds, senderId);
     if (senderIsChatAdmin) {
       return;
     }
@@ -3464,15 +3469,124 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private isSenderChatAdmin(
-    admins: Array<{ userId: string }> | undefined,
+  private async isSenderChatAdminWithFallback(
+    chatId: string,
+    localAdminUserIds: string[] | undefined,
     userId: string,
-  ): boolean {
-    if (!Array.isArray(admins) || admins.length === 0) {
+  ): Promise<boolean> {
+    if (this.isSenderChatAdmin(localAdminUserIds, userId)) {
+      return true;
+    }
+
+    const remoteAdminIds = await this.getRemoteChatAdminIds(chatId);
+    if (!remoteAdminIds) {
       return false;
     }
 
-    return admins.some((item) => String(item.userId) === String(userId));
+    for (const variant of this.buildUserIdVariants(userId)) {
+      if (remoteAdminIds.has(variant)) {
+        void this.persistDetectedAdmin(chatId, userId);
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private isSenderChatAdmin(adminUserIds: string[] | undefined, userId: string): boolean {
+    if (!Array.isArray(adminUserIds) || adminUserIds.length === 0) {
+      return false;
+    }
+
+    const senderVariants = this.buildUserIdVariants(userId);
+    if (senderVariants.size === 0) {
+      return false;
+    }
+
+    for (const adminUserId of adminUserIds) {
+      for (const variant of this.buildUserIdVariants(adminUserId)) {
+        if (senderVariants.has(variant)) {
+          return true;
+        }
+      }
+    }
+
+    return false;
+  }
+
+  private async getRemoteChatAdminIds(chatId: string): Promise<Set<string> | null> {
+    const now = Date.now();
+    const cached = this.chatAdminCache.get(chatId);
+    if (cached && cached.expiresAt > now) {
+      return cached.adminUserIds;
+    }
+
+    const getChatAdminIds = (this.maxClient as Partial<MaxClientService>).getChatAdminIds;
+    if (typeof getChatAdminIds !== 'function') {
+      return null;
+    }
+
+    try {
+      const adminUserIds = await getChatAdminIds.call(this.maxClient, chatId);
+      const normalizedAdminUserIds = new Set<string>();
+      for (const adminUserId of adminUserIds) {
+        for (const variant of this.buildUserIdVariants(adminUserId)) {
+          normalizedAdminUserIds.add(variant);
+        }
+      }
+
+      this.chatAdminCache.set(chatId, {
+        expiresAt: now + CHAT_ADMIN_CACHE_TTL_MS,
+        adminUserIds: normalizedAdminUserIds,
+      });
+
+      return normalizedAdminUserIds;
+    } catch (error: unknown) {
+      this.chatAdminCache.delete(chatId);
+      this.logger.warn(
+        {
+          chatId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to resolve chat admins for moderation bypass',
+      );
+      return null;
+    }
+  }
+
+  private async persistDetectedAdmin(chatId: string, userId: string) {
+    const normalizedUserId = typeof userId === 'string' ? userId.trim() : '';
+    if (!normalizedUserId) {
+      return;
+    }
+
+    try {
+      await this.prisma.chatAdminAllowlist.upsert({
+        where: {
+          chatId_userId: {
+            chatId,
+            userId: normalizedUserId,
+          },
+        },
+        create: {
+          chatId,
+          userId: normalizedUserId,
+        },
+        update: {},
+      });
+      if (this.chatContextCache) {
+        await this.chatContextCache.invalidate(chatId);
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId: normalizedUserId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to persist detected chat admin in allowlist',
+      );
+    }
   }
 
   private normalizeNightModeTimezone(value: string): string {
@@ -3976,6 +4090,27 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (/^\d+$/.test(primary)) {
         variants.add(primary);
       }
+    }
+
+    return variants;
+  }
+
+  private buildUserIdVariants(value: string | null | undefined): Set<string> {
+    if (typeof value !== 'string') {
+      return new Set<string>();
+    }
+
+    const normalized = value.trim().toLowerCase();
+    if (normalized.length === 0) {
+      return new Set<string>();
+    }
+
+    const variants = new Set<string>([normalized]);
+
+    if (normalized.startsWith('id') && normalized.length > 2) {
+      variants.add(normalized.slice(2));
+    } else {
+      variants.add(`id${normalized}`);
     }
 
     return variants;

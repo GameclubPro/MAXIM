@@ -2056,6 +2056,7 @@ describe('ModerationService', () => {
     };
     const maxClient = {
       deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn(),
       sendMessage: jest.fn(),
       kickMember: jest.fn(),
       banMember: jest.fn(),
@@ -2075,6 +2076,68 @@ describe('ModerationService', () => {
     expect(prisma.violation.create).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.findFirst).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+  });
+
+  it('skips moderation for remote chat admins when local allowlist is stale', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+          admins: [],
+        }),
+      },
+      chatAdminAllowlist: {
+        upsert: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Blocked link' }],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn().mockResolvedValue(['user-1']),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
