@@ -84,11 +84,11 @@ export function EventsPage({ api }: { api: ApiClient }) {
   const segmentedOptions = useMemo(
     () => [
       { value: 'ALL' as const, label: 'Все', count: eventsQuery.data?.length ?? 0 },
-      { value: 'WARN' as const, label: 'Warn', count: actionStats.WARN },
-      { value: 'DELETE_MESSAGE' as const, label: 'Delete', count: actionStats.DELETE_MESSAGE },
-      { value: 'KICK' as const, label: 'Kick', count: actionStats.KICK },
-      { value: 'BAN' as const, label: 'Ban', count: actionStats.BAN },
-      { value: 'NONE' as const, label: 'None', count: actionStats.NONE },
+      { value: 'WARN' as const, label: 'Варн', count: actionStats.WARN },
+      { value: 'DELETE_MESSAGE' as const, label: 'Удаление', count: actionStats.DELETE_MESSAGE },
+      { value: 'KICK' as const, label: 'Кик', count: actionStats.KICK },
+      { value: 'BAN' as const, label: 'Бан', count: actionStats.BAN },
+      { value: 'NONE' as const, label: 'Без санкции', count: actionStats.NONE },
     ],
     [actionStats, eventsQuery.data?.length],
   );
@@ -196,36 +196,45 @@ export function EventsPage({ api }: { api: ApiClient }) {
               style={{ animationDelay: `${Math.min(index, 8) * 35}ms` }}
             >
               <div className="events-item__head">
-                <span className="events-item__date">
-                  {new Date(event.createdAt).toLocaleString('ru-RU', {
-                    day: '2-digit',
-                    month: 'short',
-                    year: 'numeric',
-                    hour: '2-digit',
-                    minute: '2-digit',
-                  })}
-                </span>
+                <div className="events-item__meta">
+                  <span className="events-item__date">
+                    {new Date(event.createdAt).toLocaleString('ru-RU', {
+                      day: '2-digit',
+                      month: 'short',
+                      year: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </span>
+                  <span className="events-item__rule-chip">{event.ruleCode}</span>
+                </div>
                 <span className={`badge-action badge-action--${actionToneMap[event.action]}`}>
                   {actionLabelMap[event.action]}
                 </span>
               </div>
 
-              <div className="events-item__grid">
-                <p>
-                  <strong>User:</strong> {event.userId}
-                </p>
-                <p>
-                  <strong>Rule:</strong> {event.ruleCode}
-                </p>
-                <p>
-                  <strong>Score:</strong> {event.score}
-                </p>
-                <p>
-                  <strong>Operator:</strong> {event.operator}
-                </p>
+              <div className="events-item__identity">
+                <span className="events-item__identity-label">Пользователь</span>
+                <code className="events-item__identity-value">{event.userId}</code>
               </div>
 
-              {event.maskedExcerpt ? <p className="events-item__excerpt">{event.maskedExcerpt}</p> : null}
+              <div className="events-item__facts">
+                <div className="events-item__fact">
+                  <span>Score</span>
+                  <strong>{event.score}</strong>
+                </div>
+                <div className="events-item__fact">
+                  <span>Operator</span>
+                  <strong>{event.operator}</strong>
+                </div>
+              </div>
+
+              {event.maskedExcerpt ? (
+                <div className="events-item__excerpt">
+                  <span className="events-item__excerpt-label">Excerpt</span>
+                  <p>{event.maskedExcerpt}</p>
+                </div>
+              ) : null}
             </GlassCard>
           ))}
         </section>
