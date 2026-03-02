@@ -210,9 +210,6 @@ const ADS_URGENCY_PATTERN = /\b(срочно|только сегодня|до к
 const ADS_QUANTITY_PATTERN = /\b(шт|штук|шт\.|пачк|упак|остатк|места)\b/iu;
 const ADS_PHONE_PATTERN = /\b(?:\+7|8)\s*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b/u;
 const DEFAULT_PROFANITY_LEVEL = ProfanityLevel.MEDIUM;
-const DEFAULT_CAPS_THRESHOLD = 70;
-const DEFAULT_FLOOD_WINDOW_SEC = 10;
-const DEFAULT_FLOOD_MAX_MESSAGES = 5;
 const DEFAULT_DUPLICATE_WINDOW_SEC = 60;
 const MIXED_CHAR_MAP: Record<string, string> = {
   a: 'а',
@@ -377,21 +374,6 @@ export class RuleEngineService {
           score: 0.86,
           reason: `Stickers are limited to one per ${settings.stickerMessageCooldownMinutes}m`,
         });
-      }
-    }
-
-    if (this.isCapsAbuse(text, DEFAULT_CAPS_THRESHOLD)) {
-      violations.push({ ruleCode: 'CAPS_ABUSE', score: 0.7, reason: 'Excessive uppercase ratio' });
-    }
-
-    if (settings.antiSpamEnabled) {
-      const floodKey = `flood:${chatId}:${userId}:${Math.floor(Date.now() / (DEFAULT_FLOOD_WINDOW_SEC * 1000))}`;
-      const floodCount = await this.redisCounter.incrementWithTtl(
-        floodKey,
-        DEFAULT_FLOOD_WINDOW_SEC + 1,
-      );
-      if (floodCount > DEFAULT_FLOOD_MAX_MESSAGES) {
-        violations.push({ ruleCode: 'FLOOD', score: 0.85, reason: 'Message flood detected' });
       }
     }
 
@@ -686,10 +668,7 @@ export class RuleEngineService {
       parsed.port.length > 0 &&
       !((protocol === 'https:' && parsed.port === '443') || (protocol === 'http:' && parsed.port === '80'));
     const port = shouldKeepPort ? `:${parsed.port}` : '';
-    const pathname = parsed.pathname.length > 1 ? parsed.pathname.replace(/\/+$/, '') : '/';
-    const search = parsed.search;
-
-    return `${hostname}${port}${pathname}${search}`.toLowerCase();
+    return `${hostname}${port}`.toLowerCase();
   }
 
   private detectCommercialAd(params: {
@@ -933,14 +912,4 @@ export class RuleEngineService {
     return value.match(/[a-zа-яё0-9]+/giu) ?? [];
   }
 
-  private isCapsAbuse(text: string, threshold: number): boolean {
-    const letters = text.match(/[a-zа-яё]/gi);
-    if (!letters || letters.length <= 20) {
-      return false;
-    }
-
-    const upper = text.match(/[A-ZА-ЯЁ]/g)?.length ?? 0;
-    const ratio = (upper / letters.length) * 100;
-    return ratio > threshold;
-  }
 }

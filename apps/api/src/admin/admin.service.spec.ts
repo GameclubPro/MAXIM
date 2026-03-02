@@ -16,6 +16,14 @@ function createPrismaMock() {
     chatAdminAllowlist: {
       upsert: jest.fn().mockResolvedValue(undefined),
     },
+    domainAllowlist: {
+      findMany: jest.fn().mockResolvedValue([]),
+      upsert: jest.fn().mockResolvedValue(undefined),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
+    auditLog: {
+      create: jest.fn().mockResolvedValue(undefined),
+    },
     moderationEvent: {
       count: jest.fn(),
       findMany: jest.fn(),
@@ -165,5 +173,88 @@ describe('AdminService.getLogsDashboard', () => {
     expect(createdAt.gte.toISOString()).toBe('2026-03-01T12:00:00.000Z');
     expect(createdAt.lte.toISOString()).toBe('2026-03-02T12:00:00.000Z');
 
+  });
+});
+
+describe('AdminService domain allowlist normalization', () => {
+  it('returns deduplicated domain-only allowlist', async () => {
+    const prisma = createPrismaMock();
+    prisma.domainAllowlist.findMany.mockResolvedValue([
+      { domain: 'max.ru/news', removeAfterAt: null },
+      { domain: 'https://max.ru/another?x=1', removeAfterAt: null },
+      { domain: 'example.org', removeAfterAt: null },
+    ]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(prisma as never, maxClient as never, chatContextCache as never);
+
+    const result = await service.getDomainAllowlist('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(result).toEqual(['example.org', 'max.ru']);
+  });
+
+  it('canonicalizes legacy domain rows with path when adding domain', async () => {
+    const prisma = createPrismaMock();
+    prisma.domainAllowlist.findMany.mockResolvedValueOnce([
+      { domain: 'max.ru/old/path' },
+      { domain: 'another.org' },
+    ]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(prisma as never, maxClient as never, chatContextCache as never);
+
+    await service.addDomain(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        domain: 'https://max.ru/new/path',
+      },
+    );
+
+    expect(prisma.domainAllowlist.upsert).toHaveBeenCalledWith({
+      where: {
+        chatId_domain: {
+          chatId: 'chat-1',
+          domain: 'max.ru',
+        },
+      },
+      create: {
+        chatId: 'chat-1',
+        domain: 'max.ru',
+      },
+      update: {
+        removeAfterAt: null,
+      },
+    });
+    expect(prisma.domainAllowlist.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        domain: {
+          in: ['max.ru/old/path'],
+        },
+      },
+    });
   });
 });

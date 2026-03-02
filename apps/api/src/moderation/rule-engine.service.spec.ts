@@ -119,25 +119,38 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
   });
 
-  it('allows only exact links from allowlist in ALLOWLIST_ONLY mode', async () => {
+  it('allows links from the same domain in ALLOWLIST_ONLY mode', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const allowed = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'смотри https://max.ru/channel/news',
       settings: buildSettings(),
-      domainAllowlist: ['max.ru/channel/news'],
+      domainAllowlist: ['max.ru'],
     });
     const blocked = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'смотри https://max.ru/channel/another',
+      text: 'смотри https://example.org/channel/another',
       settings: buildSettings(),
-      domainAllowlist: ['max.ru/channel/news'],
+      domainAllowlist: ['max.ru'],
     });
 
     expect(allowed.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
     expect(blocked.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
+  });
+
+  it('normalizes legacy allowlist entries with path to domain-only matching', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'смотри https://max.ru/another/path',
+      settings: buildSettings(),
+      domainAllowlist: ['max.ru/old/path?x=1'],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
   });
 
   it('does not detect PROFANITY when russian profanity filter is disabled', async () => {
@@ -450,7 +463,7 @@ describe('RuleEngineService', () => {
     expect(second.violations.some((item) => item.ruleCode === 'STICKER_RATE_LIMIT')).toBe(true);
   });
 
-  it('respects anti-spam toggle for flood detection', async () => {
+  it('does not emit legacy FLOOD violation', async () => {
     const enabledService = new RuleEngineService(new MockRedisCounterService() as never);
     const disabledService = new RuleEngineService(new MockRedisCounterService() as never);
 
@@ -488,7 +501,7 @@ describe('RuleEngineService', () => {
       });
     }
 
-    expect(enabledResult.violations.some((item) => item.ruleCode === 'FLOOD')).toBe(true);
+    expect(enabledResult.violations.some((item) => item.ruleCode === 'FLOOD')).toBe(false);
     expect(disabledResult.violations.some((item) => item.ruleCode === 'FLOOD')).toBe(false);
   });
 

@@ -42,6 +42,7 @@ const BROADCAST_DAY_MS = 24 * 60 * 60 * 1000;
 const BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS = [1_500, 3_000, 6_000];
 const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 30;
 const ONE_HOUR_MS = 60 * 60 * 1000;
+const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 5;
 
 @Injectable()
 export class AdminService {
@@ -64,8 +65,10 @@ export class AdminService {
   async listChats(user: AuthUser): Promise<ChatSummary[]> {
     try {
       const remoteChats = await this.maxClient.listBotChats();
-      const resolvedChats = await Promise.all(
-        remoteChats.map(async (remoteChat) => {
+      const resolvedChats = await this.mapWithConcurrencyLimit(
+        remoteChats,
+        LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
+        async (remoteChat) => {
           const hasAdminAccess = await this.hasUserAndBotAdminAccess(
             remoteChat.chatId,
             user.userId,
@@ -94,7 +97,7 @@ export class AdminService {
             chat,
             lastEventTime: remoteChat.lastEventTime ?? 0,
           };
-        }),
+        },
       );
 
       const filtered = resolvedChats.filter(
@@ -1016,7 +1019,13 @@ export class AdminService {
       select: { domain: true },
     });
 
-    return rows.map((row: { domain: string }) => row.domain);
+    return Array.from(
+      new Set(
+        rows
+          .map((row: { domain: string }) => this.normalizeAllowlistLink(row.domain))
+          .filter((value): value is string => Boolean(value)),
+      ),
+    ).sort((left, right) => left.localeCompare(right));
   }
 
   async getDomainAllowlistDetails(chatId: string, user: AuthUser): Promise<DomainAllowlistEntry[]> {
@@ -1031,10 +1040,50 @@ export class AdminService {
       },
     });
 
-    return rows.map((row: { domain: string; removeAfterAt: Date | null }) => ({
-      domain: row.domain,
-      removeAfterAt: row.removeAfterAt ? row.removeAfterAt.toISOString() : null,
-    }));
+    const byDomain = new Map<string, Date | null>();
+    for (const row of rows) {
+      const normalizedDomain = this.normalizeAllowlistLink(row.domain);
+      if (!normalizedDomain) {
+        continue;
+      }
+
+      const current = byDomain.get(normalizedDomain);
+      if (current === undefined) {
+        byDomain.set(normalizedDomain, row.removeAfterAt);
+        continue;
+      }
+
+      if (current === null || row.removeAfterAt === null) {
+        byDomain.set(normalizedDomain, null);
+        continue;
+      }
+
+      if (row.removeAfterAt.getTime() < current.getTime()) {
+        byDomain.set(normalizedDomain, row.removeAfterAt);
+      }
+    }
+
+    return Array.from(byDomain.entries())
+      .sort(([leftDomain, leftRemoveAfter], [rightDomain, rightRemoveAfter]) => {
+        if (leftRemoveAfter === null && rightRemoveAfter !== null) {
+          return -1;
+        }
+        if (leftRemoveAfter !== null && rightRemoveAfter === null) {
+          return 1;
+        }
+        if (leftRemoveAfter !== null && rightRemoveAfter !== null) {
+          const byTime = leftRemoveAfter.getTime() - rightRemoveAfter.getTime();
+          if (byTime !== 0) {
+            return byTime;
+          }
+        }
+
+        return leftDomain.localeCompare(rightDomain);
+      })
+      .map(([domain, removeAfterAt]) => ({
+        domain,
+        removeAfterAt: removeAfterAt ? removeAfterAt.toISOString() : null,
+      }));
   }
 
   async addDomain(chatId: string, user: AuthUser, body: unknown) {
@@ -1046,24 +1095,10 @@ export class AdminService {
 
     const normalized = this.normalizeAllowlistLink(parsed.data.domain);
     if (!normalized) {
-      throw new BadRequestException('Invalid allowlist link');
+      throw new BadRequestException('Invalid allowlist domain');
     }
 
-    await this.prisma.domainAllowlist.upsert({
-      where: {
-        chatId_domain: {
-          chatId,
-          domain: normalized,
-        },
-      },
-      create: {
-        chatId,
-        domain: normalized,
-      },
-      update: {
-        removeAfterAt: null,
-      },
-    });
+    await this.upsertNormalizedAllowlistDomain(chatId, normalized);
 
     await this.prisma.auditLog.create({
       data: {
@@ -1084,14 +1119,19 @@ export class AdminService {
     await this.assertChatAdmin(chatId, user.userId);
     const normalized = this.normalizeAllowlistLink(this.decodePathParam(domain));
     if (!normalized) {
-      throw new BadRequestException('Invalid allowlist link');
+      throw new BadRequestException('Invalid allowlist domain');
     }
 
-    await this.prisma.domainAllowlist.delete({
+    const matchingDomains = await this.findStoredAllowlistDomains(chatId, normalized);
+    if (matchingDomains.length === 0) {
+      throw new BadRequestException('Domain not found in allowlist');
+    }
+
+    await this.prisma.domainAllowlist.deleteMany({
       where: {
-        chatId_domain: {
-          chatId,
-          domain: normalized,
+        chatId,
+        domain: {
+          in: matchingDomains,
         },
       },
     });
@@ -1115,7 +1155,7 @@ export class AdminService {
     await this.assertChatAdmin(chatId, user.userId);
     const normalizedDomain = this.normalizeAllowlistLink(this.decodePathParam(domain));
     if (!normalizedDomain) {
-      throw new BadRequestException('Invalid allowlist link');
+      throw new BadRequestException('Invalid allowlist domain');
     }
     const parsed = scheduleDomainRemovalRequestSchema.safeParse(body);
 
@@ -1137,11 +1177,16 @@ export class AdminService {
       removeAfterAt = scheduledAt;
     }
 
-    await this.prisma.domainAllowlist.update({
+    const matchingDomains = await this.findStoredAllowlistDomains(chatId, normalizedDomain);
+    if (matchingDomains.length === 0) {
+      throw new BadRequestException('Domain not found in allowlist');
+    }
+
+    await this.prisma.domainAllowlist.updateMany({
       where: {
-        chatId_domain: {
-          chatId,
-          domain: normalizedDomain,
+        chatId,
+        domain: {
+          in: matchingDomains,
         },
       },
       data: {
@@ -1364,10 +1409,101 @@ export class AdminService {
       parsed.port.length > 0 &&
       !((protocol === 'https:' && parsed.port === '443') || (protocol === 'http:' && parsed.port === '80'));
     const port = shouldKeepPort ? `:${parsed.port}` : '';
-    const pathname = parsed.pathname.length > 1 ? parsed.pathname.replace(/\/+$/, '') : '/';
-    const search = parsed.search;
 
-    return `${hostname}${port}${pathname}${search}`.toLowerCase();
+    return `${hostname}${port}`.toLowerCase();
+  }
+
+  private async upsertNormalizedAllowlistDomain(chatId: string, normalizedDomain: string) {
+    const rows = await this.prisma.domainAllowlist.findMany({
+      where: {
+        chatId,
+      },
+      select: {
+        domain: true,
+      },
+    });
+
+    const obsoleteDomains = rows
+      .map((row: { domain: string }) => row.domain)
+      .filter(
+        (storedDomain) =>
+          storedDomain !== normalizedDomain &&
+          this.normalizeAllowlistLink(storedDomain) === normalizedDomain,
+      );
+
+    await this.prisma.domainAllowlist.upsert({
+      where: {
+        chatId_domain: {
+          chatId,
+          domain: normalizedDomain,
+        },
+      },
+      create: {
+        chatId,
+        domain: normalizedDomain,
+      },
+      update: {
+        removeAfterAt: null,
+      },
+    });
+
+    if (obsoleteDomains.length === 0) {
+      return;
+    }
+
+    await this.prisma.domainAllowlist.deleteMany({
+      where: {
+        chatId,
+        domain: {
+          in: obsoleteDomains,
+        },
+      },
+    });
+  }
+
+  private async findStoredAllowlistDomains(chatId: string, normalizedDomain: string): Promise<string[]> {
+    const rows = await this.prisma.domainAllowlist.findMany({
+      where: {
+        chatId,
+      },
+      select: {
+        domain: true,
+      },
+    });
+
+    return rows
+      .map((row: { domain: string }) => row.domain)
+      .filter((storedDomain) => this.normalizeAllowlistLink(storedDomain) === normalizedDomain);
+  }
+
+  private async mapWithConcurrencyLimit<T, R>(
+    items: T[],
+    limit: number,
+    worker: (item: T) => Promise<R>,
+  ): Promise<R[]> {
+    if (items.length === 0) {
+      return [];
+    }
+
+    const concurrency = Math.max(1, Math.min(limit, items.length));
+    const results: R[] = new Array<R>(items.length);
+    let currentIndex = 0;
+
+    const runWorker = async () => {
+      while (true) {
+        const itemIndex = currentIndex;
+        currentIndex += 1;
+
+        if (itemIndex >= items.length) {
+          return;
+        }
+
+        results[itemIndex] = await worker(items[itemIndex]);
+      }
+    };
+
+    await Promise.all(Array.from({ length: concurrency }, () => runWorker()));
+    return results;
   }
 
   private isFallbackTitle(chatId: string, title: string): boolean {
