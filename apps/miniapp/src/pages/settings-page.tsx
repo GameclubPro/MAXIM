@@ -1888,27 +1888,22 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
     return (
       <div className={cn('settings-section-apply', !canApplyToAllChats && 'is-disabled')}>
-        <div className="settings-section-apply__row">
-          <div className="settings-section-apply__title-wrap">
-            <span className="settings-section-apply__title">Применить блок ко всем чатам</span>
-            <small className="settings-section-apply__meta">
-              {canApplyToAllChats
-                ? `Синхронизация «${sectionLabel}» в ${chatsCount} чатах.`
-                : 'Пока доступен только текущий чат.'}
-            </small>
-          </div>
+        <button
+          type="button"
+          className="button button--accent settings-section-apply__cta"
+          onClick={() => toggleSectionApplyConfirm(section)}
+          disabled={!canApplyToAllChats || isApplyingSectionToAll}
+          aria-expanded={isConfirmOpen}
+          aria-controls={`apply-section-${section}-confirm`}
+        >
+          {isThisSectionApplying ? 'Применяем...' : 'Применить этот блок ко всем чатам'}
+        </button>
 
-          <button
-            type="button"
-            className="button button--ghost settings-section-apply__toggle"
-            onClick={() => toggleSectionApplyConfirm(section)}
-            disabled={!canApplyToAllChats || isApplyingSectionToAll}
-            aria-expanded={isConfirmOpen}
-            aria-controls={`apply-section-${section}-confirm`}
-          >
-            {isThisSectionApplying ? 'Применяем...' : 'Применить'}
-          </button>
-        </div>
+        <small className="settings-section-apply__meta">
+          {canApplyToAllChats
+            ? `Синхронизация «${sectionLabel}» в ${chatsCount} чатах.`
+            : 'Пока доступен только текущий чат.'}
+        </small>
 
         {isConfirmOpen ? (
           <div
@@ -2014,7 +2009,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 className={cn('settings-section__collapse', expandedSections.links && 'is-open')}
               >
                 <div className="settings-section__collapse-inner">
-                  {renderSectionApplyControl('links')}
                   <div className="settings-grid settings-grid--single">
                     <div className={cn('settings-policy', linkPolicyError && 'field--error')}>
                       <span className="field__label">Режим</span>
@@ -2572,6 +2566,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       </div>
                     )}
                   </div>
+                  {renderSectionApplyControl('links')}
                 </div>
               </div>
             </GlassCard>
@@ -2602,7 +2597,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 className={cn('settings-section__collapse', expandedSections.greeting && 'is-open')}
               >
                 <div className="settings-section__collapse-inner">
-                  {renderSectionApplyControl('greeting')}
                   <div className="settings-native-toggle">
                     <div className="settings-native-toggle__row">
                       <div className="settings-native-toggle__title-wrap">
@@ -2840,6 +2834,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       ) : null}
                     </>
                   ) : null}
+                  {renderSectionApplyControl('greeting')}
                 </div>
               </div>
             </GlassCard>
@@ -2873,7 +2868,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 )}
               >
                 <div className="settings-section__collapse-inner">
-                  {renderSectionApplyControl('profanityFilter')}
                   <div className="settings-native-toggle text-filter-card">
                     <div className="settings-native-toggle__row">
                       <div className="settings-native-toggle__title-wrap">
@@ -3033,6 +3027,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       </div>
                     </>
                   ) : null}
+                  {renderSectionApplyControl('profanityFilter')}
                 </div>
               </div>
             </GlassCard>
@@ -3066,7 +3061,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 )}
               >
                 <div className="settings-section__collapse-inner">
-                  {renderSectionApplyControl('commercialFilter')}
                   <div className="settings-native-toggle text-filter-card">
                     <div className="settings-native-toggle__row">
                       <div className="settings-native-toggle__title-wrap">
@@ -3501,6 +3495,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       ) : null}
                     </>
                   ) : null}
+                  {renderSectionApplyControl('commercialFilter')}
                 </div>
               </div>
             </GlassCard>
@@ -3534,7 +3529,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 )}
               >
                 <div className="settings-section__collapse-inner">
-                  {renderSectionApplyControl('duplicates')}
                   <div className="settings-native-toggle">
                     <div className="settings-native-toggle__row">
                       <span className="settings-native-toggle__title">Анти дубль</span>
@@ -3942,6 +3936,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       ) : null}
                     </div>
                   ) : null}
+                  {renderSectionApplyControl('duplicates')}
                 </div>
               </div>
             </GlassCard>
@@ -3972,7 +3967,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 className={cn('settings-section__collapse', expandedSections.limits && 'is-open')}
               >
                 <div className="settings-section__collapse-inner">
-                  {renderSectionApplyControl('limits')}
                   <div className="settings-native-toggle">
                     <div className="settings-native-toggle__row">
                       <div className="settings-native-toggle__title-wrap">
@@ -4525,6 +4519,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       ) : null}
                     </div>
                   ) : null}
+                  {renderSectionApplyControl('limits')}
                 </div>
               </div>
             </GlassCard>
@@ -4559,7 +4554,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 className={cn('settings-section__collapse', expandedSections.night && 'is-open')}
               >
                 <div className="settings-section__collapse-inner">
-                  {renderSectionApplyControl('night')}
                   <div className="settings-native-toggle">
                     <div className="settings-native-toggle__row">
                       <div className="settings-native-toggle__title-wrap">
@@ -4854,6 +4848,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       ) : null}
                     </div>
                   ) : null}
+                  {renderSectionApplyControl('night')}
                 </div>
               </div>
             </GlassCard>
@@ -5394,7 +5389,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 className={cn('settings-section__collapse', expandedSections.extra && 'is-open')}
               >
                 <div className="settings-section__collapse-inner">
-                  {renderSectionApplyControl('extra')}
                   <div className="settings-native-toggle">
                     <div className="settings-native-toggle__row">
                       <div className="settings-native-toggle__title-wrap">
@@ -5720,6 +5714,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       ) : null}
                     </div>
                   ) : null}
+                  {renderSectionApplyControl('extra')}
                 </div>
               </div>
             </GlassCard>
