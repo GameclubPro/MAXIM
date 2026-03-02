@@ -28,3 +28,7 @@ For Docker-based split runtime use `infra/docker-compose.scale.yml`.
 
 ## Security note
 Never commit real bot tokens or production secrets.
+
+## Documentation
+- Detailed project description: `docs/project-description.md`
+- Bot card description (Major Maksimov): `docs/bot-card-description-major-maksimov.md`

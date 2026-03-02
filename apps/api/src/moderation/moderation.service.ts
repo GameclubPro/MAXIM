@@ -41,7 +41,14 @@ const DEFAULT_NIGHT_MODE_TIMEZONE = 'Europe/Moscow';
 const NIGHT_MODE_NOTICE_RULE_CODE = 'NIGHT_MODE_NOTICE';
 const LINK_ESCALATION_WINDOW_HOURS = 24;
 const TEXT_FILTER_ESCALATION_WINDOW_HOURS = 24;
-const BOT_STARTED_INSTRUCTION_TEXT = 'Перед запуском mini app нажмите кнопку open_app в чате с ботом.';
+const BOT_STARTED_INSTRUCTION_TEXT = [
+  '«Майор Максимов» — бот-модератор, который помогает держать чат в порядке и снижает количество спама.',
+  'Он автоматически отслеживает подозрительные ссылки, мат, повторяющиеся сообщения и другие частые нарушения.',
+  'Если правило нарушено, бот действует по шагам: удаляет сообщение, выдает предупреждение, а при повторе может кикнуть или забанить нарушителя.',
+  'Это помогает быстрее навести порядок и сохранить комфортное общение для всех участников.',
+  'Управление правилами доступно в mini app: откройте бота в MAX и нажмите кнопку «Открыть» (open_app).',
+  'Там можно гибко настроить модерацию под ваш чат и сразу видеть результат.',
+].join('\n');
 const MAX_FORWARD_SCAN_DEPTH = 8;
 const GLOBAL_BLACKLIST_TOGGLE_CACHE_TTL_MS = 30_000;
 const NON_SANCTION_RULE_CODES = new Set([
