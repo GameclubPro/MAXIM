@@ -607,10 +607,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       if (linkAction === SanctionAction.WARN) {
         try {
-          await this.maxClient.sendMessage(
-            chatId,
-            this.buildLinkWarnExplanation(userLabel, settings.linkWarnMessageText),
-          );
+          if (linkMessageOptions) {
+            await this.maxClient.sendMessage(
+              chatId,
+              this.buildLinkWarnExplanation(userLabel, settings.linkWarnMessageText),
+              linkMessageOptions,
+            );
+          } else {
+            await this.maxClient.sendMessage(
+              chatId,
+              this.buildLinkWarnExplanation(userLabel, settings.linkWarnMessageText),
+            );
+          }
         } catch (error: unknown) {
           this.logger.warn(
             {
@@ -672,11 +680,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         userLabel,
         messageId,
         banDurationHours: actionBanDurationHours,
+        botMessageOptions:
+          topViolation.ruleCode === 'LINK_BLOCKED' ? (linkMessageOptions ?? undefined) : undefined,
       });
 
       if (topViolation.ruleCode === 'LINK_BLOCKED' && action === SanctionAction.KICK) {
         try {
-          await this.maxClient.sendMessage(chatId, this.buildLinkKickExplanation(userLabel));
+          if (linkMessageOptions) {
+            await this.maxClient.sendMessage(
+              chatId,
+              this.buildLinkKickExplanation(userLabel),
+              linkMessageOptions,
+            );
+          } else {
+            await this.maxClient.sendMessage(chatId, this.buildLinkKickExplanation(userLabel));
+          }
         } catch (error: unknown) {
           this.logger.warn(
             {
