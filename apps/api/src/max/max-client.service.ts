@@ -301,15 +301,10 @@ export class MaxClientService implements OnModuleDestroy {
         if (!action.userId) {
           throw new Error('userId is required for UNBAN_MEMBER');
         }
-        const userId = action.userId;
         await this.executeMutation(action.chatId, async () => {
-          const payload = new URLSearchParams();
-          payload.set('user_ids', userId);
-
           await this.request('post', `/chats/${action.chatId}/members`, {
-            data: payload.toString(),
-            headers: {
-              'Content-Type': 'application/x-www-form-urlencoded',
+            data: {
+              user_ids: [action.userId],
             },
           });
         });
