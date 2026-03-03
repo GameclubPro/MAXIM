@@ -211,13 +211,17 @@ export class ApiClient {
   }
 
   private async request(path: string, init: RequestInit = {}) {
+    const headers = new Headers(init.headers);
+    headers.set('Authorization', `InitData ${this.initData}`);
+    const hasBody = init.body !== undefined && init.body !== null;
+    const isFormDataBody = typeof FormData !== 'undefined' && init.body instanceof FormData;
+    if (hasBody && !isFormDataBody && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
+    }
+
     const response = await fetch(`${API_BASE}${path}`, {
       ...init,
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `InitData ${this.initData}`,
-        ...(init.headers ?? {}),
-      },
+      headers,
     });
 
     if (!response.ok) {
