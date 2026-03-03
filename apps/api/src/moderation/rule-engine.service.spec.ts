@@ -104,6 +104,8 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
   };
 }
 
+const DUPLICATE_SPAM_TEXT = 'продам курс по маркетингу пишите в личные сообщения сегодня скидка';
+
 describe('RuleEngineService', () => {
   it('detects profanity and blocked links', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
@@ -563,7 +565,7 @@ describe('RuleEngineService', () => {
     await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'same text',
+      text: DUPLICATE_SPAM_TEXT,
       settings: buildSettings(),
       domainAllowlist: [],
     });
@@ -571,28 +573,28 @@ describe('RuleEngineService', () => {
     const second = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'same text',
+      text: DUPLICATE_SPAM_TEXT,
       settings: buildSettings(),
       domainAllowlist: [],
     });
     const third = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'same text',
+      text: DUPLICATE_SPAM_TEXT,
       settings: buildSettings(),
       domainAllowlist: [],
     });
     const fourth = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'same text',
+      text: DUPLICATE_SPAM_TEXT,
       settings: buildSettings(),
       domainAllowlist: [],
     });
     const fifth = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'same text',
+      text: DUPLICATE_SPAM_TEXT,
       settings: buildSettings(),
       domainAllowlist: [],
     });
@@ -616,28 +618,28 @@ describe('RuleEngineService', () => {
     await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'same text',
+      text: DUPLICATE_SPAM_TEXT,
       settings: localSettings,
       domainAllowlist: [],
     });
     await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'same text',
+      text: DUPLICATE_SPAM_TEXT,
       settings: localSettings,
       domainAllowlist: [],
     });
     await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'same text',
+      text: DUPLICATE_SPAM_TEXT,
       settings: localSettings,
       domainAllowlist: [],
     });
     const fourth = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'same text',
+      text: DUPLICATE_SPAM_TEXT,
       settings: localSettings,
       domainAllowlist: [],
     });
@@ -651,7 +653,7 @@ describe('RuleEngineService', () => {
     await service.detect({
       chatId: 'chat-1',
       userId: 'user-1',
-      text: 'same text',
+      text: DUPLICATE_SPAM_TEXT,
       settings: buildSettings(),
       domainAllowlist: [],
     });
@@ -659,7 +661,7 @@ describe('RuleEngineService', () => {
     const user1Second = await service.detect({
       chatId: 'chat-1',
       userId: 'user-1',
-      text: 'same text',
+      text: DUPLICATE_SPAM_TEXT,
       settings: buildSettings(),
       domainAllowlist: [],
     });
@@ -667,7 +669,7 @@ describe('RuleEngineService', () => {
     const user2First = await service.detect({
       chatId: 'chat-1',
       userId: 'user-2',
-      text: 'same text',
+      text: DUPLICATE_SPAM_TEXT,
       settings: buildSettings(),
       domainAllowlist: [],
     });
@@ -684,7 +686,7 @@ describe('RuleEngineService', () => {
     await service.detect({
       chatId: 'chat-1',
       userId: 'user-1',
-      text: 'same text',
+      text: DUPLICATE_SPAM_TEXT,
       settings,
       domainAllowlist: [],
     });
@@ -692,13 +694,37 @@ describe('RuleEngineService', () => {
     const second = await service.detect({
       chatId: 'chat-1',
       userId: 'user-1',
-      text: 'same text',
+      text: DUPLICATE_SPAM_TEXT,
       settings,
       domainAllowlist: [],
     });
 
     expect(second.duplicateHit).toBeUndefined();
     expect(second.duplicateDecision).toBeUndefined();
+  });
+
+  it('does not track duplicates for short everyday phrases', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    let lastResult = await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: 'спасибо большое',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    for (let index = 0; index < 4; index += 1) {
+      lastResult = await service.detect({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        text: 'спасибо большое',
+        settings: buildSettings(),
+        domainAllowlist: [],
+      });
+    }
+
+    expect(lastResult.duplicateHit).toBeUndefined();
+    expect(lastResult.duplicateDecision).toBeUndefined();
   });
 
   it('blocks any links when link policy is BLOCKLIST_ONLY', async () => {

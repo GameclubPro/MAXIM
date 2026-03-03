@@ -172,6 +172,9 @@ const ADS_URGENCY_PATTERN = /\b(срочно|только сегодня|до к
 const ADS_QUANTITY_PATTERN = /\b(шт|штук|шт\.|пачк|упак|остатк|места)\b/iu;
 const ADS_PHONE_PATTERN = /\b(?:\+7|8)\s*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b/u;
 const DEFAULT_DUPLICATE_WINDOW_SEC = 60;
+const DUPLICATE_MIN_LENGTH = 32;
+const DUPLICATE_MIN_TOKEN_COUNT = 5;
+const DUPLICATE_MIN_UNIQUE_LONG_TOKENS = 3;
 const MIXED_CHAR_MAP: Record<string, string> = {
   a: 'а',
   b: 'б',
@@ -339,8 +342,9 @@ export class RuleEngineService {
     }
 
     const compactText = normalized.replace(/\s+/g, ' ').trim();
+    const duplicateCandidate = this.shouldTrackDuplicate(compactText);
     const duplicateState =
-      settings.antiDuplicateEnabled && compactText.length > 0
+      settings.antiDuplicateEnabled && duplicateCandidate
         ? await this.detectDuplicateState({
             chatId,
             userId,
@@ -528,6 +532,35 @@ export class RuleEngineService {
 
   private escapeRegExp(value: string): string {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  private shouldTrackDuplicate(compactText: string): boolean {
+    if (!compactText) {
+      return false;
+    }
+
+    const hasUrl = this.extractUrlsFromText(compactText).length > 0;
+    if (hasUrl || ADS_PHONE_PATTERN.test(compactText)) {
+      return true;
+    }
+
+    const hasAdMarker =
+      ADS_INTENT_MARKERS.some((marker) => compactText.includes(marker)) ||
+      ADS_CONTACT_MARKERS.some((marker) => compactText.includes(marker)) ||
+      ADS_PROMO_MARKERS.some((marker) => compactText.includes(marker)) ||
+      ADS_PRICE_PATTERN.test(compactText) ||
+      ADS_TRANSACTIONAL_PATTERN.test(compactText);
+    if (hasAdMarker) {
+      return true;
+    }
+
+    const tokens = this.extractTokens(compactText);
+    if (tokens.length < DUPLICATE_MIN_TOKEN_COUNT || compactText.length < DUPLICATE_MIN_LENGTH) {
+      return false;
+    }
+
+    const uniqueLongTokens = new Set(tokens.filter((token) => token.length >= 4)).size;
+    return uniqueLongTokens >= DUPLICATE_MIN_UNIQUE_LONG_TOKENS;
   }
 
   private hasBlockedLink(text: string, policy: LinkPolicy, allowlist: string[]): string | null {
