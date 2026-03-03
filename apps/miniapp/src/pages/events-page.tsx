@@ -16,7 +16,6 @@ import { saveLastChatId } from '../lib/last-chat';
 
 type ViolationAction = LogsDashboardResponse['violations'][number]['action'];
 type ViolationItem = LogsDashboardResponse['violations'][number];
-type VisibleManualAction = Exclude<ManualModerationAction, 'UNBAN'>;
 
 const BAN_DURATION_MIN_HOURS = 1;
 const BAN_DURATION_MAX_HOURS = 336;
@@ -41,11 +40,6 @@ const periodOptions: Array<{ value: LogsDashboardRange; label: string }> = [
   { value: '24h', label: '24ч' },
   { value: '7d', label: '7д' },
   { value: '30d', label: '30д' },
-];
-
-const manualActionOptions: Array<{ value: VisibleManualAction; label: string }> = [
-  { value: 'KICK', label: 'Удалить' },
-  { value: 'BAN', label: 'Бан' },
 ];
 
 function getRouteChatTitle(state: unknown): string {
@@ -149,20 +143,67 @@ function clampBanDurationHours(value: number): number {
   return Math.max(BAN_DURATION_MIN_HOURS, Math.min(BAN_DURATION_MAX_HOURS, normalized));
 }
 
-function resolveApplyActionLabel(action: VisibleManualAction, banDurationHours: number): string {
+function resolveApplyActionLabel(action: ManualModerationAction, banDurationHours: number): string {
   if (action === 'KICK') {
     return 'Удалить участника';
+  }
+
+  if (action === 'UNBAN') {
+    return 'Разбанить участника';
   }
 
   return `Забанить на ${banDurationHours}ч`;
 }
 
-function resolveConfirmMessage(action: VisibleManualAction, banDurationHours: number): string {
+function resolveConfirmMessage(action: ManualModerationAction, banDurationHours: number): string {
   if (action === 'KICK') {
     return 'Удалить участника из чата?';
   }
 
+  if (action === 'UNBAN') {
+    return 'Снять бан и вернуть участника в чат?';
+  }
+
   return `Забанить участника на ${banDurationHours}ч с авторазбаном?`;
+}
+
+function isBanActiveFromViolation(violation: ViolationItem): boolean {
+  const metadata =
+    violation.metadata && typeof violation.metadata === 'object' && !Array.isArray(violation.metadata)
+      ? violation.metadata
+      : null;
+  const now = Date.now();
+
+  const readFutureIso = (key: string): boolean => {
+    if (!metadata || !(key in metadata) || typeof metadata[key] !== 'string') {
+      return false;
+    }
+    const timestamp = new Date(metadata[key] as string).getTime();
+    return Number.isFinite(timestamp) && timestamp > now;
+  };
+
+  if (readFutureIso('banExpiresAt') || readFutureIso('unbanScheduledAt')) {
+    return true;
+  }
+
+  if (violation.action !== 'BAN') {
+    return false;
+  }
+
+  const createdAtMs = new Date(violation.createdAt).getTime();
+  if (!Number.isFinite(createdAtMs)) {
+    return false;
+  }
+
+  const banDurationHours =
+    metadata && 'banDurationHours' in metadata && typeof metadata.banDurationHours === 'number'
+      ? metadata.banDurationHours
+      : null;
+  if (banDurationHours === null || !Number.isFinite(banDurationHours) || banDurationHours <= 0) {
+    return false;
+  }
+
+  return createdAtMs + banDurationHours * 60 * 60 * 1000 > now;
 }
 
 function normalizeActionErrorMessage(error: unknown): string {
@@ -205,11 +246,17 @@ function ViolationModerationControls({
   violation: ViolationItem;
   onApplied: () => void;
 }) {
-  const [action, setAction] = useState<VisibleManualAction>('KICK');
+  const canUnban = isBanActiveFromViolation(violation);
+  const [action, setAction] = useState<ManualModerationAction>(canUnban ? 'UNBAN' : 'KICK');
   const [banDurationHours, setBanDurationHours] = useState(6);
   const [status, setStatus] = useState<{ tone: 'success' | 'danger'; text: string } | null>(null);
   const isBanAction = action === 'BAN';
   const offenderName = resolveOffenderName(violation);
+  const actionOptions: Array<{ value: ManualModerationAction; label: string }> = [
+    { value: 'KICK', label: 'Удалить' },
+    { value: 'BAN', label: 'Бан' },
+    ...(canUnban ? [{ value: 'UNBAN' as const, label: 'Разбан' }] : []),
+  ];
 
   const applyMutation = useMutation({
     mutationFn: async () =>
@@ -237,7 +284,7 @@ function ViolationModerationControls({
           </p>
 
           <div className="logs-violation-item__actions-row">
-            {manualActionOptions.map((option) => (
+            {actionOptions.map((option) => (
               <button
                 key={option.value}
                 type="button"
