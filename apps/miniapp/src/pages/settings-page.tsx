@@ -428,10 +428,7 @@ function normalizeAllowlistLink(value: string): string {
       parsed.port.length > 0 &&
       !((protocol === 'https:' && parsed.port === '443') || (protocol === 'http:' && parsed.port === '80'));
     const port = shouldKeepPort ? `:${parsed.port}` : '';
-    const pathname = parsed.pathname.length > 1 ? parsed.pathname.replace(/\/+$/, '') : '/';
-    const search = parsed.search;
-
-    return `${hostname}${port}${pathname}${search}`.toLowerCase();
+    return `${hostname}${port}`.toLowerCase();
   } catch {
     return '';
   }

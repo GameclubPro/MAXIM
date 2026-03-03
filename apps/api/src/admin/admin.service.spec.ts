@@ -20,6 +20,7 @@ function createPrismaMock() {
       findMany: jest.fn().mockResolvedValue([]),
       upsert: jest.fn().mockResolvedValue(undefined),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     auditLog: {
       create: jest.fn().mockResolvedValue(undefined),
@@ -256,5 +257,102 @@ describe('AdminService domain allowlist normalization', () => {
         },
       },
     });
+  });
+
+  it('removes canonical and legacy rows by normalized domain', async () => {
+    const prisma = createPrismaMock();
+    prisma.domainAllowlist.findMany.mockResolvedValue([
+      { domain: 'https://max.ru/news' },
+      { domain: 'max.ru' },
+      { domain: 'example.org' },
+    ]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(prisma as never, maxClient as never, chatContextCache as never);
+
+    await service.removeDomain(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      'https://max.ru/another/path?x=1',
+    );
+
+    expect(prisma.domainAllowlist.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        domain: {
+          in: ['https://max.ru/news', 'max.ru'],
+        },
+      },
+    });
+  });
+});
+
+describe('AdminService.sendBroadcast', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('schedules image broadcast with delayed send', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-1' }),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(prisma as never, maxClient as never, chatContextCache as never);
+
+    const result = await service.sendBroadcast(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: '',
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: true,
+        imageBase64: Buffer.from('test-image').toString('base64'),
+        imageMimeType: 'image/jpeg',
+        imageFileName: 'photo.jpg',
+        sendAt: '2026-03-03T11:00:00.000Z',
+        cycleEnabled: false,
+        cycleEveryDays: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(maxClient.uploadImage).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      ' ',
+      { imagePayload: { token: 'upload-token-1' } },
+      { delayMs: 3_600_000 },
+    );
+    expect(result.sendAt).toBe('2026-03-03T11:00:00.000Z');
+    expect(result.sentChats).toBe(1);
+    expect(result.failedChats).toBe(0);
   });
 });

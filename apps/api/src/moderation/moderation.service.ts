@@ -2018,6 +2018,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     },
     depth = 0,
     inStickerContext = false,
+    inFileContext = false,
   ) {
     if (
       depth > MAX_FORWARD_SCAN_DEPTH ||
@@ -2034,7 +2035,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (Array.isArray(node)) {
       for (const item of node) {
-        this.collectMediaFlags(item, flags, depth + 1, inStickerContext);
+        this.collectMediaFlags(item, flags, depth + 1, inStickerContext, inFileContext);
       }
       return;
     }
@@ -2050,9 +2051,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const mediaType = this.readLowerString(row.media_type ?? row.mediaType);
     const stickerContext =
       inStickerContext || type === 'sticker' || mediaType === 'sticker';
+    const fileContext =
+      inFileContext ||
+      type === 'file' ||
+      type === 'document' ||
+      type === 'doc' ||
+      mediaType === 'file' ||
+      mediaType === 'document';
 
     if (
       !stickerContext &&
+      !fileContext &&
       (type === 'photo' ||
         type === 'image' ||
         type === 'picture' ||
@@ -2089,13 +2098,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       flags.hasVoiceAttachment = true;
     }
 
-    if (
-      type === 'file' ||
-      type === 'document' ||
-      type === 'doc' ||
-      mediaType === 'file' ||
-      mediaType === 'document'
-    ) {
+    if (fileContext) {
       flags.hasFileAttachment = true;
     }
 
@@ -2103,6 +2106,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const keyLower = key.toLowerCase();
       if (
         !stickerContext &&
+        !fileContext &&
         (keyLower === 'photo' ||
           keyLower === 'image' ||
           keyLower === 'picture' ||
@@ -2135,7 +2139,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (value && (typeof value === 'object' || Array.isArray(value))) {
         const childStickerContext =
           stickerContext || keyLower === 'sticker' || keyLower === 'stickers';
-        this.collectMediaFlags(value, flags, depth + 1, childStickerContext);
+        const childFileContext =
+          fileContext ||
+          keyLower === 'file' ||
+          keyLower === 'files' ||
+          keyLower === 'document' ||
+          keyLower === 'documents';
+        this.collectMediaFlags(value, flags, depth + 1, childStickerContext, childFileContext);
       }
     }
   }

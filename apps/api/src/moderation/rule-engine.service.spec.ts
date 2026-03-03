@@ -110,7 +110,7 @@ describe('RuleEngineService', () => {
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'ты сука иди на http://bad.com',
+      text: 'ты блять иди на http://bad.com',
       settings: buildSettings(),
       domainAllowlist: ['example.com'],
     });
@@ -179,17 +179,30 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
   });
 
-  it('detects PROFANITY in mixed latin/cyrillic abuse forms', async () => {
+  it('detects PROFANITY in core mat forms with common prefixes', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'ты p1dor и мр@зь',
+      text: 'мне похуй, ты меня заебал',
       settings: buildSettings(),
       domainAllowlist: [],
     });
 
     expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
+  });
+
+  it('does not detect PROFANITY for insults without mat roots', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'ты идиот и мразь',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
   });
 
   it('does not detect PROFANITY for safe exception words', async () => {
@@ -211,6 +224,19 @@ describe('RuleEngineService', () => {
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'Доставлю щебень и песок тебе до подъезда',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
+  });
+
+  it('does not detect PROFANITY in neutral words with "ебл" fragment', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Важно потреблять воду и поддерживать режим',
       settings: buildSettings(),
       domainAllowlist: [],
     });
