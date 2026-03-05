@@ -79,6 +79,18 @@ function BottomNavIcon({ name }: { name: BottomNavIconName }) {
 }
 
 function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
+  if (pathname.includes('/channel/') && pathname.includes('/dialog/')) {
+    const isSuggest = pathname.includes('/dialog/suggest');
+    return {
+      title: isSuggest ? 'Предложка' : 'Обсуждение',
+      subtitle: chatLabel
+        ? `Канал: ${chatLabel}`
+        : isSuggest
+          ? 'Отправка идеи поста админу.'
+          : 'Диалог обсуждения в miniapp.',
+    };
+  }
+
   if (pathname.includes('/channel/') && pathname.includes('/settings')) {
     return {
       title: 'Настройки канала',

@@ -48,6 +48,29 @@ function extractSqlText(arg: unknown): string {
   return String(arg);
 }
 
+function createConfigMock() {
+  return {
+    getOrThrow: jest.fn((key: string) => {
+      if (key === 'MAX_BOT_TOKEN') {
+        return 'test-max-bot-token';
+      }
+      throw new Error(`Missing key: ${key}`);
+    }),
+    get: jest.fn((key: string) => {
+      if (key === 'APP_BASE_URL') {
+        return 'https://maxim.play-team.ru';
+      }
+      if (key === 'MAX_BOT_ID') {
+        return '777000_bot';
+      }
+      if (key === 'MAX_BOT_CONTACT_ID') {
+        return '777000';
+      }
+      return null;
+    }),
+  };
+}
+
 describe('AdminService.getLogsDashboard', () => {
   afterEach(() => {
     jest.useRealTimers();
@@ -94,7 +117,12 @@ describe('AdminService.getLogsDashboard', () => {
       invalidate: jest.fn(),
     };
 
-    const service = new AdminService(prisma as never, maxClient as never, chatContextCache as never);
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
 
     const result = await service.getLogsDashboard(
       'chat-1',
@@ -152,7 +180,12 @@ describe('AdminService.getLogsDashboard', () => {
       invalidate: jest.fn(),
     };
 
-    const service = new AdminService(prisma as never, maxClient as never, chatContextCache as never);
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
 
     const result = await service.getLogsDashboard(
       'chat-1',
@@ -193,7 +226,12 @@ describe('AdminService domain allowlist normalization', () => {
       invalidate: jest.fn(),
     };
 
-    const service = new AdminService(prisma as never, maxClient as never, chatContextCache as never);
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
 
     const result = await service.getDomainAllowlist('chat-1', {
       userId: 'admin-1',
@@ -219,7 +257,12 @@ describe('AdminService domain allowlist normalization', () => {
       invalidate: jest.fn().mockResolvedValue(undefined),
     };
 
-    const service = new AdminService(prisma as never, maxClient as never, chatContextCache as never);
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
 
     await service.addDomain(
       'chat-1',
@@ -274,7 +317,12 @@ describe('AdminService domain allowlist normalization', () => {
       invalidate: jest.fn().mockResolvedValue(undefined),
     };
 
-    const service = new AdminService(prisma as never, maxClient as never, chatContextCache as never);
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
 
     await service.removeDomain(
       'chat-1',
@@ -316,7 +364,12 @@ describe('AdminService.sendBroadcast', () => {
       invalidate: jest.fn(),
     };
 
-    const service = new AdminService(prisma as never, maxClient as never, chatContextCache as never);
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
 
     const result = await service.sendBroadcast(
       'chat-1',

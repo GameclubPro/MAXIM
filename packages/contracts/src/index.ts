@@ -642,6 +642,59 @@ export const sendBroadcastResultSchema = z.object({
 });
 export type SendBroadcastResult = z.infer<typeof sendBroadcastResultSchema>;
 
+export const channelDialogTypeSchema = z.enum(['comments', 'suggest']);
+export type ChannelDialogType = z.infer<typeof channelDialogTypeSchema>;
+
+export const publishChannelEngagementRequestSchema = z.object({
+  text: z
+    .string()
+    .trim()
+    .min(1)
+    .max(2_000)
+    .default('Есть идея или обратная связь? Нажмите кнопку ниже.'),
+  commentsButtonText: z.string().trim().min(1).max(32).default('Обсудить'),
+  suggestButtonText: z.string().trim().min(1).max(32).default('Предложить пост'),
+});
+export type PublishChannelEngagementRequest = z.infer<typeof publishChannelEngagementRequestSchema>;
+
+export const publishChannelEngagementResultSchema = z.object({
+  chatId: z.string(),
+  sent: z.boolean(),
+  messageId: z.string().nullable(),
+});
+export type PublishChannelEngagementResult = z.infer<typeof publishChannelEngagementResultSchema>;
+
+export const createChannelDialogMessageRequestSchema = z.object({
+  token: z.string().trim().min(16).max(256),
+  text: z.string().trim().min(1).max(2_000),
+});
+export type CreateChannelDialogMessageRequest = z.infer<typeof createChannelDialogMessageRequestSchema>;
+
+export const channelDialogMessageSchema = z.object({
+  id: z.string(),
+  type: channelDialogTypeSchema,
+  text: z.string(),
+  authorUserId: z.string(),
+  authorDisplayName: z.string().nullable(),
+  createdAt: z.string().datetime(),
+  delivered: z.boolean().optional(),
+  deliveredToUserId: z.string().nullable().optional(),
+});
+export type ChannelDialogMessage = z.infer<typeof channelDialogMessageSchema>;
+
+export const channelDialogResponseSchema = z.object({
+  chatId: z.string(),
+  type: channelDialogTypeSchema,
+  messages: z.array(channelDialogMessageSchema),
+});
+export type ChannelDialogResponse = z.infer<typeof channelDialogResponseSchema>;
+
+export const createChannelDialogMessageResponseSchema = z.object({
+  ok: z.boolean(),
+  message: channelDialogMessageSchema,
+});
+export type CreateChannelDialogMessageResponse = z.infer<typeof createChannelDialogMessageResponseSchema>;
+
 export const maxMessagePayloadSchema = z.object({
   messageId: z.string(),
   chatId: z.string(),

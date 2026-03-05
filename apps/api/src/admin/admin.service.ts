@@ -2,12 +2,17 @@ import {
   addGlobalUserBlacklistRequestSchema,
   addDomainRequestSchema,
   addAdminRequestSchema,
+  channelDialogResponseSchema,
+  channelDialogTypeSchema,
   channelSettingsSchema,
+  createChannelDialogMessageRequestSchema,
+  createChannelDialogMessageResponseSchema,
   dateRangeQuerySchema,
   logsDashboardQuerySchema,
   logsDashboardResponseSchema,
   manualModerationActionRequestSchema,
   manualModerationActionResultSchema,
+  type ChannelDialogType,
   type ChannelSettings,
   type ChatSettings,
   chatSettingsSchema,
@@ -19,16 +24,24 @@ import {
   type ManualModerationActionResult,
   type Me,
   type ModerationEvent,
+  publishChannelEngagementRequestSchema,
+  publishChannelEngagementResultSchema,
   type SendBroadcastResult,
   type ChatSummary,
   sendBroadcastRequestSchema,
   scheduleDomainRemovalRequestSchema,
 } from '@maxim/contracts';
 import { ChatEntityType, EventType, Operator, Prisma, SanctionAction } from '@prisma/client';
+import { ConfigService } from '@nestjs/config';
 import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
-import { MaxClientService } from '../max/max-client.service';
+import {
+  MaxClientService,
+  type MaxMessageButton,
+  type MaxSendMessageOptions,
+} from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 type ApplySettingsToAllChatsResult = {
@@ -50,16 +63,30 @@ const BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS = [1_500, 3_000, 6_000];
 const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 30;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 5;
+const CHANNEL_DIALOG_MESSAGES_LIMIT = 80;
+const CHANNEL_DIALOG_ACTION_COMMENT = 'CHANNEL_DIALOG_COMMENT';
+const CHANNEL_DIALOG_ACTION_SUGGEST = 'CHANNEL_DIALOG_SUGGESTION';
+const CHANNEL_DIALOG_ACTION_PUBLISH = 'PUBLISH_CHANNEL_ENGAGEMENT';
 
 @Injectable()
 export class AdminService {
   private readonly logger = new Logger(AdminService.name);
+  private readonly appBaseUrl: string | null;
+  private readonly explicitBotContactId: string | null;
+  private readonly ownBotUserId: string | null;
+  private readonly maxBotToken: string;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly maxClient: MaxClientService,
     private readonly chatContextCache: ChatContextCacheService,
-  ) {}
+    configService: ConfigService,
+  ) {
+    this.maxBotToken = configService.getOrThrow<string>('MAX_BOT_TOKEN');
+    this.appBaseUrl = this.normalizeAppBaseUrl(configService.get<string>('APP_BASE_URL'));
+    this.explicitBotContactId = this.normalizeBotContactId(configService.get<string>('MAX_BOT_CONTACT_ID'));
+    this.ownBotUserId = this.normalizeOwnBotUserId(configService.get<string>('MAX_BOT_ID'));
+  }
 
   getMe(user: AuthUser): Me {
     return {
@@ -372,6 +399,169 @@ export class AdminService {
     });
 
     return parsed.data;
+  }
+
+  async publishChannelEngagementMessage(chatId: string, user: AuthUser, body: unknown) {
+    await this.assertChatAdmin(chatId, user.userId, 'channel');
+    await this.ensureEntityType(chatId, user.userId, 'channel');
+
+    const parsed = publishChannelEngagementRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const commentsUrl = this.buildChannelDialogWebAppUrl(chatId, 'comments');
+    const suggestUrl = this.buildChannelDialogWebAppUrl(chatId, 'suggest');
+    const botContactId = this.resolveBotContactId();
+    const buttons: MaxMessageButton[] = [];
+    buttons.push(
+      commentsUrl && botContactId
+        ? {
+            type: 'open_app',
+            text: parsed.data.commentsButtonText,
+            webApp: commentsUrl,
+            contactId: botContactId,
+          }
+        : {
+            type: 'link',
+            text: parsed.data.commentsButtonText,
+            url: commentsUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
+          },
+    );
+    buttons.push(
+      suggestUrl && botContactId
+        ? {
+            type: 'open_app',
+            text: parsed.data.suggestButtonText,
+            webApp: suggestUrl,
+            contactId: botContactId,
+          }
+        : {
+            type: 'link',
+            text: parsed.data.suggestButtonText,
+            url: suggestUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
+          },
+    );
+
+    await this.maxClient.sendMessage(
+      chatId,
+      parsed.data.text,
+      {
+        buttons: [buttons],
+      } satisfies MaxSendMessageOptions,
+      { immediate: true },
+    );
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: CHANNEL_DIALOG_ACTION_PUBLISH,
+        payload: {
+          text: parsed.data.text,
+          commentsButtonText: parsed.data.commentsButtonText,
+          suggestButtonText: parsed.data.suggestButtonText,
+          commentsUrl,
+          suggestUrl,
+        },
+      },
+    });
+
+    return publishChannelEngagementResultSchema.parse({
+      chatId,
+      sent: true,
+      messageId: null,
+    });
+  }
+
+  async getChannelDialog(chatId: string, user: AuthUser, dialogTypeRaw: string, token: string | null) {
+    const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
+    this.assertValidChannelDialogToken(chatId, dialogType, token);
+
+    const action = dialogType === 'comments' ? CHANNEL_DIALOG_ACTION_COMMENT : CHANNEL_DIALOG_ACTION_SUGGEST;
+    const rows = await this.prisma.auditLog.findMany({
+      where: {
+        chatId,
+        action,
+        ...(dialogType === 'suggest' ? { actorUserId: user.userId } : {}),
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+      take: CHANNEL_DIALOG_MESSAGES_LIMIT,
+    });
+
+    const messages = rows
+      .slice()
+      .reverse()
+      .map((row) => this.mapChannelDialogAuditLog(row, dialogType));
+
+    return channelDialogResponseSchema.parse({
+      chatId,
+      type: dialogType,
+      messages,
+    });
+  }
+
+  async createChannelDialogMessage(
+    chatId: string,
+    user: AuthUser,
+    dialogTypeRaw: string,
+    body: unknown,
+  ) {
+    const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
+    const parsed = createChannelDialogMessageRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    this.assertValidChannelDialogToken(chatId, dialogType, parsed.data.token);
+    const text = parsed.data.text.trim();
+    const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
+
+    let delivered = true;
+    let deliveredToUserId: string | null = null;
+    if (dialogType === 'suggest') {
+      const delivery = await this.deliverSuggestionToAdminPrivate(chatId, user, text);
+      delivered = delivery.delivered;
+      deliveredToUserId = delivery.deliveredToUserId;
+    }
+
+    const created = await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: dialogType === 'comments' ? CHANNEL_DIALOG_ACTION_COMMENT : CHANNEL_DIALOG_ACTION_SUGGEST,
+        payload: {
+          type: dialogType,
+          text,
+          authorDisplayName: authorDisplayName ?? null,
+          delivered,
+          deliveredToUserId,
+          source: 'miniapp_dialog',
+        },
+      },
+    });
+
+    const message = {
+      id: created.id,
+      type: dialogType,
+      text,
+      authorUserId: user.userId,
+      authorDisplayName: authorDisplayName ?? null,
+      createdAt: created.createdAt.toISOString(),
+      ...(dialogType === 'suggest'
+        ? {
+            delivered,
+            deliveredToUserId,
+          }
+        : {}),
+    };
+
+    return createChannelDialogMessageResponseSchema.parse({
+      ok: true,
+      message,
+    });
   }
 
   async applySettingsToAllChats(
@@ -1686,6 +1876,238 @@ export class AdminService {
     return rows
       .map((row: { domain: string }) => row.domain)
       .filter((storedDomain) => this.normalizeAllowlistLink(storedDomain) === normalizedDomain);
+  }
+
+  private mapChannelDialogAuditLog(
+    row: { id: string; actorUserId: string; payload: Prisma.JsonValue; createdAt: Date },
+    fallbackType: ChannelDialogType,
+  ) {
+    const payload = this.readObjectPayload(row.payload);
+    const rawType = this.readLowerString(payload.type);
+    const type: ChannelDialogType =
+      rawType === 'suggest' || rawType === 'comments' ? rawType : fallbackType;
+    const authorDisplayName = this.readTrimmedString(payload.authorDisplayName);
+    const text = this.readTrimmedString(payload.text) ?? '';
+    const delivered = payload.delivered === true;
+    const deliveredToUserId = this.readTrimmedString(payload.deliveredToUserId);
+
+    return {
+      id: row.id,
+      type,
+      text,
+      authorUserId: row.actorUserId,
+      authorDisplayName,
+      createdAt: row.createdAt.toISOString(),
+      ...(type === 'suggest' ? { delivered, deliveredToUserId: deliveredToUserId ?? null } : {}),
+    };
+  }
+
+  private readObjectPayload(value: Prisma.JsonValue): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return {};
+    }
+    return value as Record<string, unknown>;
+  }
+
+  private readTrimmedString(value: unknown): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const normalized = value.trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private readLowerString(value: unknown): string | null {
+    const normalized = this.readTrimmedString(value);
+    return normalized ? normalized.toLowerCase() : null;
+  }
+
+  private async deliverSuggestionToAdminPrivate(
+    chatId: string,
+    user: AuthUser,
+    text: string,
+  ): Promise<{ delivered: boolean; deliveredToUserId: string | null }> {
+    const adminIds = Array.from(
+      new Set(
+        (await this.maxClient.getChatAdminIds(chatId)).filter(
+          (id) => id.trim().length > 0 && !this.isOwnBotUserId(id),
+        ),
+      ),
+    );
+
+    if (adminIds.length === 0) {
+      return { delivered: false, deliveredToUserId: null };
+    }
+
+    const channelTitle = await this.resolveChannelTitle(chatId);
+    const actorName = user.displayName?.trim() || user.username?.trim() || `user:${user.userId}`;
+    const message = [
+      'Новая предложка поста',
+      '',
+      `Канал: ${channelTitle}`,
+      `Отправитель: ${actorName} (${user.userId})`,
+      '',
+      text,
+    ].join('\n');
+
+    for (const adminUserId of adminIds) {
+      const privateChatId = await this.findLatestPrivateChatIdForUser(adminUserId);
+      if (!privateChatId) {
+        continue;
+      }
+
+      try {
+        await this.maxClient.sendMessage(privateChatId, message, undefined, { immediate: true });
+        return { delivered: true, deliveredToUserId: adminUserId };
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            adminUserId,
+            privateChatId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to deliver suggestion to admin private chat',
+        );
+      }
+    }
+
+    return { delivered: false, deliveredToUserId: null };
+  }
+
+  private async findLatestPrivateChatIdForUser(userId: string): Promise<string | null> {
+    const normalizedUserId = userId.trim();
+    if (!normalizedUserId) {
+      return null;
+    }
+
+    const rows = await this.prisma.$queryRaw<Array<{ recipient_chat_id: string | null }>>`
+      SELECT
+        COALESCE(raw_payload->'message'->'recipient'->>'chat_id', raw_payload->'message'->>'chat_id') AS recipient_chat_id
+      FROM webhook_events
+      WHERE COALESCE(raw_payload->'message'->'sender'->>'user_id', raw_payload->'message'->>'sender_id') = ${normalizedUserId}
+        AND COALESCE(raw_payload->'message'->'recipient'->>'chat_id', raw_payload->'message'->>'chat_id') ~ '^[0-9]+$'
+      ORDER BY created_at DESC
+      LIMIT 1
+    `;
+
+    if (!rows[0]?.recipient_chat_id) {
+      return null;
+    }
+
+    return rows[0].recipient_chat_id.trim();
+  }
+
+  private async resolveChannelTitle(chatId: string): Promise<string> {
+    const local = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: { title: true },
+    });
+    if (local?.title?.trim()) {
+      return local.title.trim();
+    }
+
+    const remote = await this.maxClient.getChatTitle(chatId);
+    if (remote?.trim()) {
+      return remote.trim();
+    }
+
+    return `Канал ${chatId}`;
+  }
+
+  private buildChannelDialogWebAppUrl(chatId: string, type: ChannelDialogType): string | null {
+    if (!this.appBaseUrl) {
+      return null;
+    }
+
+    const token = this.buildChannelDialogToken(chatId, type);
+    const encodedChatId = encodeURIComponent(chatId);
+    return `${this.appBaseUrl}/app/channel/${encodedChatId}/dialog/${type}?token=${token}`;
+  }
+
+  private buildChannelDialogToken(chatId: string, type: ChannelDialogType): string {
+    return createHmac('sha256', this.maxBotToken).update(`dialog:${chatId}:${type}`).digest('hex');
+  }
+
+  private assertValidChannelDialogToken(
+    chatId: string,
+    type: ChannelDialogType,
+    token: string | null | undefined,
+  ): void {
+    const normalizedToken = typeof token === 'string' ? token.trim().toLowerCase() : '';
+    if (!/^[a-f0-9]{64}$/u.test(normalizedToken)) {
+      throw new BadRequestException('Неверный токен кнопки. Откройте диалог заново из сообщения канала.');
+    }
+
+    const expected = this.buildChannelDialogToken(chatId, type);
+    const isValid =
+      normalizedToken.length === expected.length &&
+      timingSafeEqual(Buffer.from(normalizedToken, 'hex'), Buffer.from(expected, 'hex'));
+
+    if (!isValid) {
+      throw new BadRequestException('Кнопка устарела. Откройте сообщение в канале и нажмите кнопку снова.');
+    }
+  }
+
+  private normalizeAppBaseUrl(value: string | undefined): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim().replace(/\/+$/, '');
+    if (!normalized || !/^https?:\/\//iu.test(normalized)) {
+      return null;
+    }
+
+    return normalized;
+  }
+
+  private normalizeOwnBotUserId(value: string | undefined): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private normalizeBotContactId(value: string | undefined): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim();
+    if (!normalized || !/^\d+$/u.test(normalized)) {
+      return null;
+    }
+
+    return normalized;
+  }
+
+  private resolveBotContactId(): string | null {
+    if (this.explicitBotContactId) {
+      return this.explicitBotContactId;
+    }
+
+    if (!this.ownBotUserId) {
+      return null;
+    }
+
+    const [candidate] = this.ownBotUserId.split('_');
+    return /^\d+$/u.test(candidate) ? candidate : null;
+  }
+
+  private isOwnBotUserId(userId: string): boolean {
+    if (!this.ownBotUserId) {
+      return false;
+    }
+
+    const normalized = userId.trim();
+    if (!normalized) {
+      return false;
+    }
+
+    return normalized === this.ownBotUserId || normalized === this.ownBotUserId.split('_')[0];
   }
 
   private async mapWithConcurrencyLimit<T, R>(

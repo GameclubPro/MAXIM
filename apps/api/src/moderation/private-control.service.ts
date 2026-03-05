@@ -220,6 +220,7 @@ const CHANNEL_ONLY_CALLBACK_ACTIONS = new Set<string>([
   'open_channel_section',
   'toggle_channel',
   'set_channel_input',
+  'publish_channel_engagement',
 ]);
 
 const SECTION_LABELS: Record<PrivateSectionKey, string> = {
@@ -1068,6 +1069,27 @@ export class PrivateControlService {
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: `Жду значение: ${config.label}`,
+        });
+        return;
+      }
+
+      case 'publish_channel_engagement': {
+        this.assertSelectedEntityType(session, 'channel');
+        const chatId = session.selectedChatId;
+        if (!chatId) {
+          throw new BadRequestException('Channel is not selected');
+        }
+
+        await this.adminService.publishChannelEngagementMessage(chatId, context.actor, {
+          text: 'Есть идея или обратная связь? Нажмите кнопку ниже.',
+          commentsButtonText: 'Обсудить',
+          suggestButtonText: 'Предложить пост',
+        });
+
+        const view = await this.renderChannelHomeScreen(context, session);
+        await this.respond(context, session, view, {
+          callbackId: context.callbackId,
+          notification: 'Пост с кнопками опубликован',
         });
         return;
       }
@@ -2444,6 +2466,7 @@ export class PrivateControlService {
         this.callbackButton('Предложить пост', this.cb('open_channel_section', 'post_suggestions')),
         this.callbackButton('Обсуждение и реакции', this.cb('open_channel_section', 'comments')),
       ],
+      [this.callbackButton('Опубликовать пост с кнопками', this.cb('publish_channel_engagement'))],
       [this.callbackButton('Другой канал', this.cb('change_chat'))],
       [this.callbackButton('Помощь', this.cb('help'))],
       ...this.buildFooterButtons(),

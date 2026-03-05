@@ -1,7 +1,11 @@
 import {
   addGlobalUserBlacklistRequestSchema,
+  channelDialogResponseSchema,
+  channelDialogTypeSchema,
   channelSettingsSchema,
   chatSettingsSchema,
+  createChannelDialogMessageRequestSchema,
+  createChannelDialogMessageResponseSchema,
   domainAllowlistEntrySchema,
   scheduleDomainRemovalRequestSchema,
   sendBroadcastRequestSchema,
@@ -21,10 +25,16 @@ import {
   type GlobalUserBlacklistEntry,
   type Me,
   type ModerationEvent,
+  type ChannelDialogType,
+  type ChannelDialogResponse,
+  type CreateChannelDialogMessageResponse,
   type LogsDashboardRange,
   type LogsDashboardResponse,
   type ManualModerationActionRequest,
   type ManualModerationActionResult,
+  publishChannelEngagementRequestSchema,
+  publishChannelEngagementResultSchema,
+  type PublishChannelEngagementResult,
   type SendBroadcastResult,
 } from '@maxim/contracts';
 
@@ -50,6 +60,17 @@ export type SendBroadcastPayload = {
   cycleEnabled: boolean;
   cycleEveryDays: number;
   cycleCount: number;
+};
+
+export type PublishChannelEngagementPayload = {
+  text: string;
+  commentsButtonText: string;
+  suggestButtonText: string;
+};
+
+export type CreateChannelDialogMessagePayload = {
+  token: string;
+  text: string;
 };
 
 export class ApiClient {
@@ -94,6 +115,44 @@ export class ApiClient {
       body: JSON.stringify(data),
     });
     return channelSettingsSchema.parse(response);
+  }
+
+  async publishChannelEngagement(
+    chatId: string,
+    payload: PublishChannelEngagementPayload,
+  ): Promise<PublishChannelEngagementResult> {
+    const requestBody = publishChannelEngagementRequestSchema.parse(payload);
+    const response = await this.request(`/channels/${chatId}/engagement-publish`, {
+      method: 'POST',
+      body: JSON.stringify(requestBody),
+    });
+    return publishChannelEngagementResultSchema.parse(response);
+  }
+
+  async getChannelDialog(
+    chatId: string,
+    dialogType: ChannelDialogType,
+    token: string,
+  ): Promise<ChannelDialogResponse> {
+    const parsedType = channelDialogTypeSchema.parse(dialogType);
+    const response = await this.request(
+      `/channels/${chatId}/dialog/${parsedType}?token=${encodeURIComponent(token)}`,
+    );
+    return channelDialogResponseSchema.parse(response);
+  }
+
+  async createChannelDialogMessage(
+    chatId: string,
+    dialogType: ChannelDialogType,
+    payload: CreateChannelDialogMessagePayload,
+  ): Promise<CreateChannelDialogMessageResponse> {
+    const parsedType = channelDialogTypeSchema.parse(dialogType);
+    const requestBody = createChannelDialogMessageRequestSchema.parse(payload);
+    const response = await this.request(`/channels/${chatId}/dialog/${parsedType}/messages`, {
+      method: 'POST',
+      body: JSON.stringify(requestBody),
+    });
+    return createChannelDialogMessageResponseSchema.parse(response);
   }
 
   async applySettingsToAllChats(

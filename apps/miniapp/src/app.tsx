@@ -9,6 +9,7 @@ import { ApiClient } from './lib/api-client';
 import { getInitData } from './lib/init-data';
 import { ChatsPage } from './pages/chats-page';
 import { ChannelSettingsPage } from './pages/channel-settings-page';
+import { ChannelDialogPage } from './pages/channel-dialog-page';
 import { EventsPage } from './pages/events-page';
 import { SettingsPage } from './pages/settings-page';
 
@@ -54,6 +55,7 @@ export function App() {
               <Route path="/" element={<ChatsPage api={apiClient} />} />
               <Route path="/chat/:chatId/settings" element={<SettingsPage api={apiClient} />} />
               <Route path="/channel/:chatId/settings" element={<ChannelSettingsPage api={apiClient} />} />
+              <Route path="/channel/:chatId/dialog/:mode" element={<ChannelDialogPage api={apiClient} />} />
               <Route path="/chat/:chatId/events" element={<EventsPage api={apiClient} />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>

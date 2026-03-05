@@ -299,6 +299,32 @@
   gap: var(--space-2);
 }
 
+.channel-dialog-list {
+  display: grid;
+  gap: 12px;
+}
+
+.channel-dialog-item {
+  display: grid;
+  gap: 8px;
+}
+
+.channel-dialog-item p {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.channel-dialog-item__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.channel-dialog-item__head small {
+  color: var(--text-muted);
+}
+
 .chats-search-card__field input {
   min-height: 40px;
 }

@@ -51,6 +51,35 @@ export class AdminController {
     return this.adminService.updateChannelSettings(chatId, user, body);
   }
 
+  @Post('channels/:chatId/engagement-publish')
+  publishChannelEngagementMessage(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.publishChannelEngagementMessage(chatId, user, body);
+  }
+
+  @Get('channels/:chatId/dialog/:dialogType')
+  getChannelDialog(
+    @Param('chatId') chatId: string,
+    @Param('dialogType') dialogType: string,
+    @CurrentUser() user: AuthUser,
+    @Query('token') token: string | undefined,
+  ) {
+    return this.adminService.getChannelDialog(chatId, user, dialogType, token ?? null);
+  }
+
+  @Post('channels/:chatId/dialog/:dialogType/messages')
+  createChannelDialogMessage(
+    @Param('chatId') chatId: string,
+    @Param('dialogType') dialogType: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.createChannelDialogMessage(chatId, user, dialogType, body);
+  }
+
   @Post('chats/:chatId/settings/apply-to-all')
   applySettingsToAllChats(
     @Param('chatId') chatId: string,

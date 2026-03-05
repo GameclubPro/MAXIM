@@ -65,6 +65,11 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   const routeChatLink = routeState.chatLink;
   const [draft, setDraft] = useState<ChannelSettings | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState<ChannelSettings | null>(null);
+  const [engagementText, setEngagementText] = useState(
+    'Есть идея или обратная связь? Нажмите кнопку ниже.',
+  );
+  const [engagementCommentsButtonText, setEngagementCommentsButtonText] = useState('Обсудить');
+  const [engagementSuggestButtonText, setEngagementSuggestButtonText] = useState('Предложить пост');
   const { pushToast } = useToast();
 
   const settingsQuery = useQuery({
@@ -94,6 +99,29 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
       pushToast({
         tone: 'danger',
         title: 'Ошибка сохранения',
+        description: normalizeApiError(error),
+      });
+    },
+  });
+
+  const publishEngagementMutation = useMutation({
+    mutationFn: () =>
+      api.publishChannelEngagement(chatId, {
+        text: engagementText,
+        commentsButtonText: engagementCommentsButtonText,
+        suggestButtonText: engagementSuggestButtonText,
+      }),
+    onSuccess: () => {
+      pushToast({
+        tone: 'success',
+        title: 'Опубликовано',
+        description: 'Сообщение с кнопками отправлено в канал.',
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось опубликовать',
         description: normalizeApiError(error),
       });
     },
@@ -279,6 +307,61 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
           title="Важный момент по MAX"
           description="В каналах MAX сейчас нет нативных комментариев. Здесь мы настраиваем предложку, реакции и сценарий обсуждения через бота/отдельный чат."
         />
+      </GlassCard>
+
+      <GlassCard className="settings-section" elevated>
+        <h2>Пост с кнопками для подписчиков</h2>
+        <p className="field__hint">
+          Бот опубликует сообщение в канале с двумя кнопками: «Обсудить» и «Предложить пост».
+        </p>
+
+        <label className="field">
+          <span>Текст сообщения</span>
+          <textarea
+            rows={3}
+            value={engagementText}
+            onChange={(event) => setEngagementText(event.target.value)}
+            placeholder="Есть идея или обратная связь? Нажмите кнопку ниже."
+            maxLength={2_000}
+          />
+        </label>
+
+        <div className="chat-card__actions">
+          <label className="field">
+            <span>Кнопка 1</span>
+            <input
+              type="text"
+              value={engagementCommentsButtonText}
+              onChange={(event) => setEngagementCommentsButtonText(event.target.value)}
+              maxLength={32}
+            />
+          </label>
+          <label className="field">
+            <span>Кнопка 2</span>
+            <input
+              type="text"
+              value={engagementSuggestButtonText}
+              onChange={(event) => setEngagementSuggestButtonText(event.target.value)}
+              maxLength={32}
+            />
+          </label>
+        </div>
+
+        <div className="chat-card__actions">
+          <button
+            type="button"
+            className="button button--accent"
+            onClick={() => publishEngagementMutation.mutate()}
+            disabled={
+              publishEngagementMutation.isPending ||
+              !engagementText.trim() ||
+              !engagementCommentsButtonText.trim() ||
+              !engagementSuggestButtonText.trim()
+            }
+          >
+            {publishEngagementMutation.isPending ? 'Публикуем...' : 'Опубликовать в канал'}
+          </button>
+        </div>
       </GlassCard>
 
       <GlassCard className="settings-section" elevated>
