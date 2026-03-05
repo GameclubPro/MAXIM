@@ -246,17 +246,17 @@ const CHANNEL_SECTION_FIELDS: Record<ChannelSectionKey, Array<{
   max?: number;
 }>> = {
   post_suggestions: [
-    { key: 'postSuggestionsEnabled', label: 'Включить раздел', type: 'boolean' },
-    { key: 'postSuggestionsText', label: 'Текст подсказки', type: 'text' },
-    { key: 'postSuggestionsButtonEnabled', label: 'Показывать кнопку', type: 'boolean' },
-    { key: 'postSuggestionsButtonText', label: 'Текст кнопки', type: 'text' },
-    { key: 'postSuggestionsButtonUrl', label: 'Ссылка кнопки', type: 'url' },
+    { key: 'postSuggestionsEnabled', label: 'Подсказка «Предложить пост»', type: 'boolean' },
+    { key: 'postSuggestionsText', label: 'Текст для участников', type: 'text' },
+    { key: 'postSuggestionsButtonEnabled', label: 'Показывать кнопку перехода', type: 'boolean' },
+    { key: 'postSuggestionsButtonText', label: 'Название кнопки', type: 'text' },
+    { key: 'postSuggestionsButtonUrl', label: 'Ссылка кнопки (из MAX)', type: 'url' },
   ],
   comments: [
-    { key: 'commentsEnabled', label: 'Разрешить комментарии', type: 'boolean' },
-    { key: 'commentsModerationEnabled', label: 'Включить модерацию комментариев', type: 'boolean' },
+    { key: 'commentsEnabled', label: 'Комментарии включены в канале', type: 'boolean' },
+    { key: 'commentsModerationEnabled', label: 'Модерация комментариев ботом', type: 'boolean' },
     { key: 'commentsSlowModeSeconds', label: 'Медленный режим (сек)', type: 'number', min: 0, max: 3600 },
-    { key: 'commentsMessageText', label: 'Текст для комментариев', type: 'text' },
+    { key: 'commentsMessageText', label: 'Подсказка для комментариев', type: 'text' },
   ],
 };
 
@@ -2433,6 +2433,9 @@ export class PrivateControlService {
       `Канал: ${selectedChannel.title}`,
       `ID: ${selectedChannel.id}`,
       '',
+      'Важно: права комментариев/предложки включаются в самом MAX-канале.',
+      'Здесь вы настраиваете тексты и кнопки бота.',
+      '',
       'Разделы канала',
     ];
 
@@ -2465,9 +2468,15 @@ export class PrivateControlService {
 
     const settings = await this.adminService.getChannelSettings(session.selectedChatId, context.actor);
     const fieldConfigs = CHANNEL_SECTION_FIELDS[section];
+    const sectionHint =
+      section === 'post_suggestions'
+        ? 'Совет: ссылку для кнопки копируйте в MAX: канал → Поделиться → Скопировать ссылку.'
+        : 'Напоминание: включение комментариев делается в настройках самого канала MAX.';
 
     const lines: string[] = [
       `${CHANNEL_SECTION_LABELS[section]}`,
+      '',
+      sectionHint,
       '',
       ...fieldConfigs.map((field) => `- ${field.label}: ${this.formatSettingValue(settings[field.key], field.type)}`),
       '',

@@ -422,6 +422,7 @@ export const chatSummarySchema = z.object({
   title: z.string(),
   createdAt: z.string().datetime(),
   entityType: managedEntityTypeSchema.default('chat'),
+  link: z.string().trim().max(2048).nullable().optional().default(null),
 });
 export type ChatSummary = z.infer<typeof chatSummarySchema>;
 

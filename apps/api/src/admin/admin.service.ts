@@ -108,6 +108,7 @@ export class AdminService {
             title: persistedChat.title,
             createdAt: persistedChat.createdAt.toISOString(),
             entityType: this.fromPrismaEntityType(persistedChat.entityType),
+            link: remoteChat.link,
           };
 
           if (this.isFallbackTitle(chat.id, chat.title)) {
@@ -1792,6 +1793,7 @@ export class AdminService {
       title: row.chat.title,
       createdAt: row.chat.createdAt.toISOString(),
       entityType: this.fromPrismaEntityType(row.chat.entityType),
+      link: null,
     }));
   }
 
@@ -1870,6 +1872,7 @@ export class AdminService {
       title: persistedChat.title,
       createdAt: persistedChat.createdAt.toISOString(),
       entityType: this.fromPrismaEntityType(persistedChat.entityType),
+      link: null,
     };
 
     if (this.isFallbackTitle(chat.id, chat.title)) {

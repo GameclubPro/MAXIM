@@ -307,18 +307,30 @@ export function ChatsPage({ api }: { api: ApiClient }) {
                     </Link>
                   </>
                 ) : (
-                  <Link
-                    to={`/channel/${entity.id}/settings`}
-                    className="button button--accent"
-                    state={{ chatTitle: entity.title }}
-                    onClick={() => {
-                      saveLastChatId(entity.id);
-                      saveLastEntityType('channel');
-                      saveChatTitle(entity.id, entity.title);
-                    }}
-                  >
-                    Управление каналом
-                  </Link>
+                  <>
+                    <Link
+                      to={`/channel/${entity.id}/settings`}
+                      className="button button--accent"
+                      state={{ chatTitle: entity.title, chatLink: entity.link ?? '' }}
+                      onClick={() => {
+                        saveLastChatId(entity.id);
+                        saveLastEntityType('channel');
+                        saveChatTitle(entity.id, entity.title);
+                      }}
+                    >
+                      Настроить канал
+                    </Link>
+                    {entity.link ? (
+                      <a
+                        href={entity.link}
+                        className="button button--ghost"
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Открыть канал
+                      </a>
+                    ) : null}
+                  </>
                 )}
               </div>
             </GlassCard>

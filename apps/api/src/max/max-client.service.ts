@@ -14,6 +14,7 @@ export type MaxBotChat = {
   title: string | null;
   lastEventTime: number | null;
   entityType: 'chat' | 'channel';
+  link: string | null;
 };
 
 export type MaxButtonIntent = 'default' | 'positive' | 'negative';
@@ -442,6 +443,7 @@ export class MaxClientService implements OnModuleDestroy {
         const title = row.title ?? row.name;
         const lastEventTime = row.last_event_time ?? row.lastEventTime;
         const entityType = this.parseChatEntityType(row);
+        const link = this.parseChatLink(row);
         results.push({
           chatId: String(chatId),
           title: typeof title === 'string' ? title : null,
@@ -452,6 +454,7 @@ export class MaxClientService implements OnModuleDestroy {
                 ? Number(lastEventTime)
                 : null,
           entityType,
+          link,
         });
       }
 
@@ -487,15 +490,30 @@ export class MaxClientService implements OnModuleDestroy {
       }
     }
 
-    const rawLink = row.link ?? row.url ?? row.message_url ?? row.messageUrl;
-    if (typeof rawLink === 'string') {
-      const normalizedLink = rawLink.trim().toLowerCase();
-      if (normalizedLink.includes('/channel/')) {
-        return 'channel';
-      }
+    const link = this.parseChatLink(row);
+    if (link && link.toLowerCase().includes('/channel/')) {
+      return 'channel';
     }
 
     return 'chat';
+  }
+
+  private parseChatLink(row: Record<string, unknown>): string | null {
+    const rawLink = row.link ?? row.url ?? row.message_url ?? row.messageUrl;
+    if (typeof rawLink !== 'string') {
+      return null;
+    }
+
+    const normalizedLink = rawLink.trim();
+    if (!normalizedLink) {
+      return null;
+    }
+
+    if (normalizedLink.startsWith('http://') || normalizedLink.startsWith('https://')) {
+      return normalizedLink;
+    }
+
+    return null;
   }
 
   async answerCallback(

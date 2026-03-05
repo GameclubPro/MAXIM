@@ -10,17 +10,33 @@ import type { ApiClient } from '../lib/api-client';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { saveLastChatId, saveLastEntityType } from '../lib/last-chat';
 
-function getRouteChatTitle(state: unknown): string {
-  if (
-    typeof state === 'object' &&
-    state &&
-    'chatTitle' in state &&
-    typeof state.chatTitle === 'string'
-  ) {
-    return state.chatTitle.trim();
+type ChannelRouteState = {
+  chatTitle: string;
+  chatLink: string;
+};
+
+function isHttpUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+function getRouteState(state: unknown): ChannelRouteState {
+  if (!state || typeof state !== 'object') {
+    return { chatTitle: '', chatLink: '' };
   }
 
-  return '';
+  const row = state as Record<string, unknown>;
+  const chatTitle =
+    typeof row.chatTitle === 'string' && row.chatTitle.trim() ? row.chatTitle.trim() : '';
+  const candidateLink =
+    typeof row.chatLink === 'string' && row.chatLink.trim() ? row.chatLink.trim() : '';
+  const chatLink = isHttpUrl(candidateLink) ? candidateLink : '';
+
+  return { chatTitle, chatLink };
 }
 
 function normalizeApiError(error: unknown): string {
@@ -44,7 +60,9 @@ function normalizeApiError(error: unknown): string {
 export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   const { chatId = '' } = useParams();
   const location = useLocation();
-  const routeChatTitle = getRouteChatTitle(location.state);
+  const routeState = getRouteState(location.state);
+  const routeChatTitle = routeState.chatTitle;
+  const routeChatLink = routeState.chatLink;
   const [draft, setDraft] = useState<ChannelSettings | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState<ChannelSettings | null>(null);
   const { pushToast } = useToast();
@@ -52,6 +70,12 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   const settingsQuery = useQuery({
     queryKey: ['channel-settings', chatId],
     queryFn: () => api.getChannelSettings(chatId),
+    enabled: Boolean(chatId),
+  });
+
+  const channelsQuery = useQuery({
+    queryKey: ['channels'],
+    queryFn: () => api.getChannels(),
     enabled: Boolean(chatId),
   });
 
@@ -103,6 +127,15 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
 
     return readChatTitle(chatId);
   }, [chatId, routeChatTitle]);
+
+  const resolvedChannelLink = useMemo(() => {
+    if (routeChatLink) {
+      return routeChatLink;
+    }
+
+    const candidate = channelsQuery.data?.find((channel) => channel.id === chatId)?.link?.trim() ?? '';
+    return isHttpUrl(candidate) ? candidate : '';
+  }, [chatId, channelsQuery.data, routeChatLink]);
 
   const isDirty = useMemo(() => {
     if (!draft || !savedSnapshot) {
@@ -186,6 +219,40 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     });
   };
 
+  const useDetectedChannelLink = () => {
+    if (!resolvedChannelLink) {
+      return;
+    }
+
+    setDraft((current) => {
+      if (!current) {
+        return current;
+      }
+
+      return {
+        ...current,
+        postSuggestionsButtonEnabled: true,
+        postSuggestionsButtonUrl: resolvedChannelLink,
+        postSuggestionsButtonText: current.postSuggestionsButtonText.trim() || 'Предложить пост',
+      };
+    });
+  };
+
+  const useChannelLinkTemplate = () => {
+    setDraft((current) => {
+      if (!current) {
+        return current;
+      }
+
+      return {
+        ...current,
+        postSuggestionsButtonEnabled: true,
+        postSuggestionsButtonUrl: 'https://max.ru/channel/ваш_канал',
+        postSuggestionsButtonText: current.postSuggestionsButtonText.trim() || 'Предложить пост',
+      };
+    });
+  };
+
   const saveDraft = () => {
     if (!draft || saveMutation.isPending || !isDirty) {
       return;
@@ -200,14 +267,25 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
         <div className="page-header">
           <div className="page-header__main">
             <h1>Настройки канала</h1>
-            <p>{resolvedTitle ? `Канал: ${resolvedTitle}` : 'Управление разделами канала'}</p>
+            <p>{resolvedTitle ? `Канал: ${resolvedTitle}` : 'Простая настройка для подписчиков канала'}</p>
           </div>
           <span className="page-header__badge">ID: {chatId}</span>
         </div>
       </GlassCard>
 
+      <GlassCard>
+        <StatusState
+          tone="warning"
+          title="Важно: права участников включаются в MAX"
+          description="Комментарии и приём предложенных постов включаются в самом канале MAX. Здесь вы настраиваете подсказки, кнопку и правила работы бота."
+        />
+      </GlassCard>
+
       <GlassCard className="settings-section" elevated>
         <h2>Предложить пост</h2>
+        <p className="field__hint">
+          Если включить, бот покажет участникам понятную инструкцию и кнопку, куда отправлять пост.
+        </p>
 
         <label className="field">
           <span>
@@ -216,18 +294,19 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
               checked={draft.postSuggestionsEnabled}
               onChange={(event) => patchDraft('postSuggestionsEnabled', event.target.checked)}
             />{' '}
-            Включить раздел
+            Включить подсказку «Предложить пост»
           </span>
         </label>
 
         <label className="field">
-          <span>Текст подсказки</span>
+          <span>Что увидят участники</span>
           <textarea
             rows={3}
             value={draft.postSuggestionsText}
             onChange={(event) => patchDraft('postSuggestionsText', event.target.value)}
-            placeholder="Опишите, как правильно предложить пост"
+            placeholder="Например: отправьте текст и фото через форму, ответ придёт в течение дня."
           />
+          <small className="field__hint">Пишите простыми словами, как в обычном сообщении.</small>
         </label>
 
         <label className="field">
@@ -237,14 +316,14 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
               checked={draft.postSuggestionsButtonEnabled}
               onChange={(event) => patchDraft('postSuggestionsButtonEnabled', event.target.checked)}
             />{' '}
-            Показывать кнопку
+            Показать кнопку для перехода
           </span>
         </label>
 
         {draft.postSuggestionsButtonEnabled ? (
           <>
             <label className="field">
-              <span>Текст кнопки</span>
+              <span>Название кнопки</span>
               <input
                 type="text"
                 value={draft.postSuggestionsButtonText}
@@ -255,20 +334,38 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
             </label>
 
             <label className="field">
-              <span>Ссылка кнопки</span>
+              <span>Ссылка, куда ведёт кнопка</span>
               <input
                 type="url"
                 value={draft.postSuggestionsButtonUrl}
                 onChange={(event) => patchDraft('postSuggestionsButtonUrl', event.target.value)}
-                placeholder="https://max.ru/..."
+                placeholder="https://max.ru/channel/..."
               />
+              <small className="field__hint">
+                Если не знаете ссылку: в MAX откройте канал → Поделиться → Скопировать ссылку.
+              </small>
             </label>
+
+            <div className="chat-card__actions">
+              {resolvedChannelLink ? (
+                <button type="button" className="button button--ghost" onClick={useDetectedChannelLink}>
+                  Подставить ссылку канала
+                </button>
+              ) : null}
+              <button type="button" className="button button--ghost" onClick={useChannelLinkTemplate}>
+                Вставить шаблон
+              </button>
+            </div>
           </>
         ) : null}
       </GlassCard>
 
       <GlassCard className="settings-section" elevated>
         <h2>Комментарии</h2>
+        <p className="field__hint">
+          Здесь настраиваются подсказки и правила бота для комментариев. Включение самих комментариев делается в
+          настройках канала MAX.
+        </p>
 
         <label className="field">
           <span>
@@ -277,8 +374,9 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
               checked={draft.commentsEnabled}
               onChange={(event) => patchDraft('commentsEnabled', event.target.checked)}
             />{' '}
-            Разрешить комментарии
+            Комментарии включены в канале
           </span>
+          <small className="field__hint">Это флаг состояния для интерфейса и команды.</small>
         </label>
 
         <label className="field">
@@ -288,12 +386,12 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
               checked={draft.commentsModerationEnabled}
               onChange={(event) => patchDraft('commentsModerationEnabled', event.target.checked)}
             />{' '}
-            Включить модерацию комментариев
+            Включить модерацию комментариев ботом
           </span>
         </label>
 
         <label className="field">
-          <span>Медленный режим (сек)</span>
+          <span>Пауза между комментариями (сек)</span>
           <input
             type="number"
             min={0}
@@ -308,15 +406,16 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
               )
             }
           />
+          <small className="field__hint">0 = без ограничения.</small>
         </label>
 
         <label className="field">
-          <span>Текст для комментариев</span>
+          <span>Подсказка для комментаторов</span>
           <textarea
             rows={3}
             value={draft.commentsMessageText}
             onChange={(event) => patchDraft('commentsMessageText', event.target.value)}
-            placeholder="Правила и подсказки для комментаторов"
+            placeholder="Например: без оскорблений и рекламы, нарушители блокируются автоматически."
           />
         </label>
       </GlassCard>
@@ -329,7 +428,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
             onClick={saveDraft}
             disabled={!isDirty || saveMutation.isPending}
           >
-            {saveMutation.isPending ? 'Сохраняем...' : 'Сохранить'}
+            {saveMutation.isPending ? 'Сохраняем...' : 'Сохранить изменения'}
           </button>
           <Link to="/" className="button button--ghost">
             К списку
