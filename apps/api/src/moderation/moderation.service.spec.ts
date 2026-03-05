@@ -444,6 +444,68 @@ function createBotStartedGroupUpdate(): MaxUpdate {
   };
 }
 
+function createPrivateCommandUpdate(text: string): MaxUpdate {
+  return {
+    updateId: 'upd-private-command-1',
+    type: 'message_created',
+    message: {
+      messageId: 'msg-private-command-1',
+      chatId: '152517912',
+      senderId: 'user-private-1',
+      senderName: 'Пользователь private',
+      text,
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'message_created',
+      message: {
+        body: {
+          mid: 'msg-private-command-1',
+          text,
+        },
+        sender: {
+          user_id: 'user-private-1',
+          type: 'user',
+        },
+        recipient: {
+          chat_id: 152517912,
+          chat_type: 'dialog',
+        },
+      },
+    },
+  };
+}
+
+function createPrivateCallbackUpdate(payload: string): MaxUpdate {
+  return {
+    updateId: 'upd-private-callback-1',
+    type: 'message_callback',
+    message: {
+      messageId: 'msg-private-callback-1',
+      chatId: '152517912',
+      senderId: '613002203036',
+      senderName: 'Майор Максимов',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'message_callback',
+      callback: {
+        callback_id: 'callback-1',
+        payload,
+        user: {
+          user_id: 'user-private-1',
+        },
+      },
+      message: {
+        recipient: {
+          chat_id: 152517912,
+        },
+      },
+    },
+  };
+}
+
 function createOldUpdate(): MaxUpdate {
   return {
     updateId: 'upd-old-1',
@@ -1724,7 +1786,7 @@ describe('ModerationService', () => {
         '- Новых людей встречаю, ботов из группы вывожу.',
         '- Могу сделать рассылку: текст, кнопка, фото, сразу или по времени.',
         '',
-        'Настройка в mini app: открой бота в MAX и нажми «Открыть».',
+        'Настройка во встроенном приложении: открой бота в MAX и нажми «Открыть».',
         'Там включаешь правила и тексты так, как нужно вашему чату.',
         '',
         'Схема простая: сначала слово, потом протокол.',
@@ -1785,6 +1847,239 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('handles /menu in private chat without moderation flow', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+      answerCallback: jest.fn(),
+      listBotChats: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createPrivateCommandUpdate('/menu'));
+
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      '152517912',
+      expect.stringContaining('Управление без приложения'),
+      expect.objectContaining({
+        buttons: expect.any(Array),
+      }),
+    );
+    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('handles plain text in private chat and returns menu', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+      answerCallback: jest.fn(),
+      listBotChats: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createPrivateCommandUpdate('привет'));
+
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      '152517912',
+      expect.stringContaining('Управление без приложения'),
+      expect.objectContaining({
+        buttons: expect.any(Array),
+      }),
+    );
+    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('handles attachment-only message in private chat and returns menu', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+      answerCallback: jest.fn(),
+      listBotChats: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createPrivateCommandUpdate(''));
+
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      '152517912',
+      expect.stringContaining('Управление без приложения'),
+      expect.objectContaining({
+        buttons: expect.any(Array),
+      }),
+    );
+    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('handles callback menu command in private chat and returns chats list', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+      answerCallback: jest.fn(),
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: '-70000000000001',
+          title: 'Тестовый чат 1',
+          lastEventTime: null,
+        },
+        {
+          chatId: '-70000000000002',
+          title: 'Тестовый чат 2',
+          lastEventTime: null,
+        },
+      ]),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createPrivateCallbackUpdate('private_menu:chats'));
+
+    expect(maxClient.answerCallback).toHaveBeenCalledWith('callback-1', 'Собираю список чатов');
+    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      '152517912',
+      expect.stringContaining('Чаты с ботом: 2'),
+      expect.objectContaining({
+        buttons: expect.any(Array),
+      }),
+    );
+    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(prisma.violation.create).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });

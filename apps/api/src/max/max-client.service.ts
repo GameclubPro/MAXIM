@@ -13,16 +13,72 @@ export type MaxBotChat = {
   chatId: string;
   title: string | null;
   lastEventTime: number | null;
+  entityType: 'chat' | 'channel';
 };
 
-export type MaxMessageButton = {
+export type MaxButtonIntent = 'default' | 'positive' | 'negative';
+
+export type MaxLinkButton = {
+  type?: 'link';
   text: string;
   url: string;
 };
 
+export type MaxCallbackButton = {
+  type: 'callback';
+  text: string;
+  payload: string;
+  intent?: MaxButtonIntent;
+};
+
+export type MaxOpenAppButton = {
+  type: 'open_app';
+  text: string;
+  webApp?: string | null;
+  contactId?: string | number | null;
+};
+
+export type MaxRequestContactButton = {
+  type: 'request_contact';
+  text: string;
+};
+
+export type MaxRequestGeoLocationButton = {
+  type: 'request_geo_location';
+  text: string;
+  quick?: boolean;
+};
+
+export type MaxChatButton = {
+  type: 'chat';
+  text: string;
+  chatTitle: string;
+  chatDescription?: string | null;
+  startPayload?: string | null;
+  uuid?: string | null;
+};
+
+export type MaxMessageButton =
+  | MaxLinkButton
+  | MaxCallbackButton
+  | MaxOpenAppButton
+  | MaxRequestContactButton
+  | MaxRequestGeoLocationButton
+  | MaxChatButton;
+
 export type MaxSendMessageOptions = {
-  button?: MaxMessageButton;
+  button?: MaxLinkButton;
+  buttons?: MaxMessageButton[][];
   imagePayload?: Record<string, unknown>;
+  debugContext?: {
+    screen?: string;
+    action?: string;
+  };
+};
+
+export type MaxCallbackMessageEdit = {
+  text: string;
+  options?: MaxSendMessageOptions;
 };
 
 export type MaxActionType =
@@ -53,6 +109,7 @@ export type MaxActionDispatchOptions = {
 };
 
 const MAX_ACTION_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
+const MAX_INLINE_KEYBOARD_BUTTONS = 210;
 
 @Injectable()
 export class MaxClientService implements OnModuleDestroy {
@@ -384,6 +441,7 @@ export class MaxClientService implements OnModuleDestroy {
 
         const title = row.title ?? row.name;
         const lastEventTime = row.last_event_time ?? row.lastEventTime;
+        const entityType = this.parseChatEntityType(row);
         results.push({
           chatId: String(chatId),
           title: typeof title === 'string' ? title : null,
@@ -393,6 +451,7 @@ export class MaxClientService implements OnModuleDestroy {
               : typeof lastEventTime === 'string' && lastEventTime.trim() !== ''
                 ? Number(lastEventTime)
                 : null,
+          entityType,
         });
       }
 
@@ -414,6 +473,64 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     return results;
+  }
+
+  private parseChatEntityType(row: Record<string, unknown>): 'chat' | 'channel' {
+    const rawType = row.type ?? row.chat_type ?? row.chatType;
+    if (typeof rawType === 'string') {
+      const normalized = rawType.trim().toLowerCase();
+      if (normalized === 'channel') {
+        return 'channel';
+      }
+      if (normalized === 'chat' || normalized === 'group' || normalized === 'supergroup') {
+        return 'chat';
+      }
+    }
+
+    const rawLink = row.link ?? row.url ?? row.message_url ?? row.messageUrl;
+    if (typeof rawLink === 'string') {
+      const normalizedLink = rawLink.trim().toLowerCase();
+      if (normalizedLink.includes('/channel/')) {
+        return 'channel';
+      }
+    }
+
+    return 'chat';
+  }
+
+  async answerCallback(
+    callbackId: string,
+    notification?: string,
+    messageEdit?: MaxCallbackMessageEdit,
+  ): Promise<void> {
+    const normalizedCallbackId = callbackId.trim();
+    if (!normalizedCallbackId) {
+      throw new Error('callbackId is required');
+    }
+
+    const normalizedNotification = typeof notification === 'string' ? notification.trim() : '';
+    const hasMessageEdit =
+      Boolean(messageEdit) &&
+      typeof messageEdit?.text === 'string' &&
+      messageEdit.text.trim().length > 0;
+    const callbackData: Record<string, unknown> = {};
+    if (normalizedNotification) {
+      callbackData.notification = normalizedNotification;
+    }
+    if (hasMessageEdit) {
+      const attachments = this.buildMessageAttachments(messageEdit?.options);
+      callbackData.message = {
+        text: messageEdit!.text.trim(),
+        ...(attachments.length > 0 ? { attachments } : {}),
+      };
+    }
+
+    await this.request('post', '/answers', {
+      params: {
+        callback_id: normalizedCallbackId,
+      },
+      data: callbackData,
+    });
   }
 
   private async dispatchAction(
@@ -499,7 +616,7 @@ export class MaxClientService implements OnModuleDestroy {
     if (imageAttachment) {
       attachments.push(imageAttachment);
     }
-    const keyboardAttachment = this.buildInlineKeyboardAttachment(options?.button);
+    const keyboardAttachment = this.buildInlineKeyboardAttachment(options);
     if (keyboardAttachment) {
       attachments.push(keyboardAttachment);
     }
@@ -517,25 +634,191 @@ export class MaxClientService implements OnModuleDestroy {
     };
   }
 
-  private buildInlineKeyboardAttachment(button?: MaxMessageButton): Record<string, unknown> | null {
-    if (!button) {
+  private buildInlineKeyboardAttachment(options?: MaxSendMessageOptions): Record<string, unknown> | null {
+    const buttons = this.normalizeInlineKeyboardButtons(options);
+    if (!buttons) {
       return null;
     }
 
     return {
       type: 'inline_keyboard',
       payload: {
-        buttons: [
-          [
-            {
-              type: 'link',
-              text: button.text,
-              url: button.url,
-            },
-          ],
-        ],
+        buttons,
       },
     };
+  }
+
+  private normalizeInlineKeyboardButtons(
+    options?: MaxSendMessageOptions,
+  ): Array<Array<Record<string, unknown>>> | null {
+    if (!options) {
+      return null;
+    }
+
+    const sourceButtons: MaxMessageButton[][] =
+      Array.isArray(options.buttons) && options.buttons.length > 0
+        ? options.buttons
+        : options.button
+          ? [[options.button]]
+          : [];
+
+    if (sourceButtons.length === 0) {
+      return null;
+    }
+
+    const rows: Array<Array<Record<string, unknown>>> = [];
+    const requestedButtons = sourceButtons.reduce((acc, row) => acc + (Array.isArray(row) ? row.length : 0), 0);
+    let totalButtons = 0;
+    let truncated = false;
+
+    for (const row of sourceButtons) {
+      if (!Array.isArray(row) || row.length === 0) {
+        continue;
+      }
+
+      const normalizedRow: Array<Record<string, unknown>> = [];
+      for (const button of row) {
+        if (totalButtons >= MAX_INLINE_KEYBOARD_BUTTONS) {
+          truncated = true;
+          break;
+        }
+
+        const normalizedButton = this.normalizeInlineKeyboardButton(button);
+        if (normalizedButton) {
+          normalizedRow.push(normalizedButton);
+          totalButtons += 1;
+        }
+      }
+
+      if (normalizedRow.length > 0) {
+        rows.push(normalizedRow);
+      }
+
+      if (truncated) {
+        break;
+      }
+    }
+
+    if (truncated || requestedButtons > MAX_INLINE_KEYBOARD_BUTTONS) {
+      this.logger.warn(
+        {
+          requestedButtons,
+          deliveredButtons: totalButtons,
+          limit: MAX_INLINE_KEYBOARD_BUTTONS,
+          screen: options.debugContext?.screen ?? null,
+          action: options.debugContext?.action ?? null,
+        },
+        'Inline keyboard exceeds MAX limit; tail buttons were trimmed',
+      );
+    }
+
+    return rows.length > 0 ? rows : null;
+  }
+
+  private normalizeInlineKeyboardButton(button: MaxMessageButton): Record<string, unknown> | null {
+    const text = typeof button.text === 'string' ? button.text.trim() : '';
+    if (!text) {
+      return null;
+    }
+
+    const explicitType = this.readLowerString((button as { type?: unknown }).type);
+    const type = explicitType ?? ('url' in button ? 'link' : null);
+
+    switch (type) {
+      case 'link': {
+        const url = 'url' in button && typeof button.url === 'string' ? button.url.trim() : '';
+        if (!url) {
+          return null;
+        }
+        return {
+          type: 'link',
+          text,
+          url,
+        };
+      }
+      case 'callback': {
+        const payload = 'payload' in button && typeof button.payload === 'string' ? button.payload.trim() : '';
+        if (!payload) {
+          return null;
+        }
+
+        const intent =
+          'intent' in button && typeof button.intent === 'string'
+            ? this.readLowerString(button.intent)
+            : null;
+
+        return {
+          type: 'callback',
+          text,
+          payload,
+          ...(intent === 'default' || intent === 'positive' || intent === 'negative'
+            ? { intent }
+            : {}),
+        };
+      }
+      case 'open_app': {
+        const webApp =
+          'webApp' in button && typeof button.webApp === 'string' ? button.webApp.trim() : '';
+        const contactIdCandidate = 'contactId' in button ? button.contactId : null;
+        const contactId =
+          typeof contactIdCandidate === 'number'
+            ? String(contactIdCandidate)
+            : typeof contactIdCandidate === 'string'
+              ? contactIdCandidate.trim()
+              : '';
+
+        return {
+          type: 'open_app',
+          text,
+          ...(webApp ? { web_app: webApp } : {}),
+          ...(contactId ? { contact_id: contactId } : {}),
+        };
+      }
+      case 'request_contact':
+        return {
+          type: 'request_contact',
+          text,
+        };
+      case 'request_geo_location': {
+        const quick =
+          'quick' in button && typeof button.quick === 'boolean'
+            ? button.quick
+            : undefined;
+        return {
+          type: 'request_geo_location',
+          text,
+          ...(quick !== undefined ? { quick } : {}),
+        };
+      }
+      case 'chat': {
+        const chatTitle =
+          'chatTitle' in button && typeof button.chatTitle === 'string' ? button.chatTitle.trim() : '';
+        if (!chatTitle) {
+          return null;
+        }
+
+        const chatDescription =
+          'chatDescription' in button && typeof button.chatDescription === 'string'
+            ? button.chatDescription.trim()
+            : '';
+        const startPayload =
+          'startPayload' in button && typeof button.startPayload === 'string'
+            ? button.startPayload.trim()
+            : '';
+        const uuid = 'uuid' in button && typeof button.uuid === 'string' ? button.uuid.trim() : '';
+
+        return {
+          type: 'chat',
+          text,
+          chat_title: chatTitle,
+          ...(chatDescription ? { chat_description: chatDescription } : {}),
+          ...(startPayload ? { start_payload: startPayload } : {}),
+          ...(uuid ? { uuid } : {}),
+        };
+      }
+      default:
+        return null;
+    }
   }
 
   private async executeMutation<T>(chatId: string, operation: () => Promise<T>): Promise<T> {

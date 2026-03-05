@@ -2,17 +2,20 @@ import {
   addGlobalUserBlacklistRequestSchema,
   addDomainRequestSchema,
   addAdminRequestSchema,
+  channelSettingsSchema,
   dateRangeQuerySchema,
   logsDashboardQuerySchema,
   logsDashboardResponseSchema,
   manualModerationActionRequestSchema,
   manualModerationActionResultSchema,
+  type ChannelSettings,
   type ChatSettings,
   chatSettingsSchema,
   type DomainAllowlistEntry,
   type GlobalUserBlacklistEntry,
   type LogsDashboardRange,
   type LogsDashboardResponse,
+  type ManagedEntityType,
   type ManualModerationActionResult,
   type Me,
   type ModerationEvent,
@@ -21,11 +24,11 @@ import {
   sendBroadcastRequestSchema,
   scheduleDomainRemovalRequestSchema,
 } from '@maxim/contracts';
-import { EventType, Operator, Prisma, SanctionAction } from '@prisma/client';
+import { ChatEntityType, EventType, Operator, Prisma, SanctionAction } from '@prisma/client';
 import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
+import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { MaxClientService } from '../max/max-client.service';
-import { ChatContextCacheService } from '../moderation/chat-context-cache.service';
 import { PrismaService } from '../prisma/prisma.service';
 
 type ApplySettingsToAllChatsResult = {
@@ -33,6 +36,10 @@ type ApplySettingsToAllChatsResult = {
   updatedChats: number;
   appliedChatIds: string[];
 };
+
+type ManagedEntityTypeFilter = ManagedEntityType | 'all';
+
+export type AdminActionSource = 'miniapp' | 'private_bot';
 
 const BROADCAST_IMAGE_MAX_BYTES = 1_000_000;
 const BROADCAST_MIN_DELAY_MS = 30_000;
@@ -63,6 +70,17 @@ export class AdminService {
   }
 
   async listChats(user: AuthUser): Promise<ChatSummary[]> {
+    return this.listManagedEntities(user, 'chat');
+  }
+
+  async listChannels(user: AuthUser): Promise<ChatSummary[]> {
+    return this.listManagedEntities(user, 'channel');
+  }
+
+  async listManagedEntities(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter = 'all',
+  ): Promise<ChatSummary[]> {
     try {
       const remoteChats = await this.maxClient.listBotChats();
       const resolvedChats = await this.mapWithConcurrencyLimit(
@@ -81,12 +99,15 @@ export class AdminService {
             remoteChat.chatId,
             user.userId,
             remoteChat.title,
+            remoteChat.entityType,
+            { updateEntityType: true },
           );
 
           const chat: ChatSummary = {
             id: persistedChat.id,
             title: persistedChat.title,
             createdAt: persistedChat.createdAt.toISOString(),
+            entityType: this.fromPrismaEntityType(persistedChat.entityType),
           };
 
           if (this.isFallbackTitle(chat.id, chat.title)) {
@@ -105,8 +126,12 @@ export class AdminService {
       );
 
       if (filtered.length > 0) {
-        filtered.sort((a, b) => b.lastEventTime - a.lastEventTime);
-        return filtered.map((item) => item.chat);
+        const byType =
+          entityType === 'all'
+            ? filtered
+            : filtered.filter((item) => item.chat.entityType === entityType);
+        byType.sort((a, b) => b.lastEventTime - a.lastEventTime);
+        return byType.map((item) => item.chat);
       }
     } catch (error: unknown) {
       this.logger.warn(
@@ -115,23 +140,25 @@ export class AdminService {
       );
     }
 
-    const cached = await this.listChatsFromAllowlist(user.userId);
+    const cached = await this.listChatsFromAllowlist(user.userId, entityType);
     if (cached.length > 0) {
       return cached;
     }
 
-    const bootstrapped = await this.bootstrapCurrentChat(user);
+    const bootstrapped = await this.bootstrapCurrentChat(user, entityType);
     return bootstrapped ? [bootstrapped] : [];
   }
 
   async getSettings(chatId: string, user: AuthUser): Promise<ChatSettings> {
-    await this.assertChatAdmin(chatId, user.userId);
+    await this.assertChatAdmin(chatId, user.userId, 'chat');
+    await this.ensureEntityType(chatId, user.userId, 'chat');
 
     const chat = await this.prisma.chat.upsert({
       where: { id: chatId },
       create: {
         id: chatId,
         title: `Chat ${chatId}`,
+        entityType: ChatEntityType.CHAT,
         settings: {
           create: {},
         },
@@ -179,8 +206,14 @@ export class AdminService {
     return fallback;
   }
 
-  async updateSettings(chatId: string, user: AuthUser, body: unknown): Promise<ChatSettings> {
-    await this.assertChatAdmin(chatId, user.userId);
+  async updateSettings(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ChatSettings> {
+    await this.assertChatAdmin(chatId, user.userId, 'chat');
+    await this.ensureEntityType(chatId, user.userId, 'chat');
     const parsed = chatSettingsSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -191,6 +224,7 @@ export class AdminService {
       create: {
         id: chatId,
         title: `Chat ${chatId}`,
+        entityType: ChatEntityType.CHAT,
         settings: {
           create: {
             ...parsed.data,
@@ -216,10 +250,125 @@ export class AdminService {
         chatId,
         actorUserId: user.userId,
         action: 'UPDATE_SETTINGS',
-        payload: parsed.data,
+        payload: {
+          ...parsed.data,
+          source,
+        },
       },
     });
     await this.chatContextCache.invalidate(chatId);
+
+    return parsed.data;
+  }
+
+  async getChannelSettings(chatId: string, user: AuthUser): Promise<ChannelSettings> {
+    await this.assertChatAdmin(chatId, user.userId, 'channel');
+    await this.ensureEntityType(chatId, user.userId, 'channel');
+
+    const chat = await this.prisma.chat.upsert({
+      where: { id: chatId },
+      create: {
+        id: chatId,
+        title: `Channel ${chatId}`,
+        entityType: ChatEntityType.CHANNEL,
+        channelSettings: {
+          create: {},
+        },
+      },
+      update: {
+        entityType: ChatEntityType.CHANNEL,
+        channelSettings: {
+          upsert: {
+            update: {},
+            create: {},
+          },
+        },
+      },
+      include: { channelSettings: true },
+    });
+
+    if (!chat.channelSettings) {
+      throw new Error('Channel settings missing after upsert');
+    }
+
+    const parsed = channelSettingsSchema.safeParse(chat.channelSettings);
+    if (parsed.success) {
+      return parsed.data;
+    }
+
+    this.logger.warn(
+      {
+        chatId,
+        issues: parsed.error.issues.map((issue) => ({
+          path: issue.path.join('.'),
+          message: issue.message,
+        })),
+      },
+      'Invalid channel settings found in DB, applying defaults',
+    );
+
+    const fallback = channelSettingsSchema.parse({});
+    await this.prisma.channelSettings.update({
+      where: { chatId },
+      data: {
+        ...fallback,
+      },
+    });
+
+    return fallback;
+  }
+
+  async updateChannelSettings(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ChannelSettings> {
+    await this.assertChatAdmin(chatId, user.userId, 'channel');
+    await this.ensureEntityType(chatId, user.userId, 'channel');
+    const parsed = channelSettingsSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    await this.prisma.chat.upsert({
+      where: { id: chatId },
+      create: {
+        id: chatId,
+        title: `Channel ${chatId}`,
+        entityType: ChatEntityType.CHANNEL,
+        channelSettings: {
+          create: {
+            ...parsed.data,
+          },
+        },
+      },
+      update: {
+        entityType: ChatEntityType.CHANNEL,
+        channelSettings: {
+          upsert: {
+            update: {
+              ...parsed.data,
+            },
+            create: {
+              ...parsed.data,
+            },
+          },
+        },
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: 'UPDATE_CHANNEL_SETTINGS',
+        payload: {
+          ...parsed.data,
+          source,
+        },
+      },
+    });
 
     return parsed.data;
   }
@@ -228,8 +377,11 @@ export class AdminService {
     sourceChatId: string,
     user: AuthUser,
     body: unknown,
+    source: AdminActionSource = 'miniapp',
+    settingKeys?: readonly (keyof ChatSettings)[],
   ): Promise<ApplySettingsToAllChatsResult> {
-    await this.assertChatAdmin(sourceChatId, user.userId);
+    await this.assertChatAdmin(sourceChatId, user.userId, 'chat');
+    await this.ensureEntityType(sourceChatId, user.userId, 'chat');
     const parsed = chatSettingsSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -239,6 +391,18 @@ export class AdminService {
     const appliedChatIds = Array.from(
       new Set([sourceChatId, ...availableChats.map((chat) => chat.id)]),
     );
+    const filteredSettingKeys = Array.isArray(settingKeys)
+      ? Array.from(new Set(settingKeys)).filter(
+          (key): key is keyof ChatSettings => typeof key === 'string' && key in parsed.data,
+        )
+      : [];
+    const settingsUpdatePayload: Partial<ChatSettings> =
+      filteredSettingKeys.length > 0
+        ? filteredSettingKeys.reduce<Partial<ChatSettings>>((acc, key) => {
+            (acc as Record<keyof ChatSettings, ChatSettings[keyof ChatSettings]>)[key] = parsed.data[key];
+            return acc;
+          }, {})
+        : parsed.data;
 
     for (const chatId of appliedChatIds) {
       await this.prisma.chat.upsert({
@@ -246,6 +410,7 @@ export class AdminService {
         create: {
           id: chatId,
           title: `Chat ${chatId}`,
+          entityType: ChatEntityType.CHAT,
           settings: {
             create: {
               ...parsed.data,
@@ -256,7 +421,7 @@ export class AdminService {
           settings: {
             upsert: {
               update: {
-                ...parsed.data,
+                ...settingsUpdatePayload,
               },
               create: {
                 ...parsed.data,
@@ -288,6 +453,10 @@ export class AdminService {
           payload: {
             sourceChatId,
             targetChatId: chatId,
+            source,
+            ...(filteredSettingKeys.length > 0
+              ? { settingKeys: filteredSettingKeys }
+              : {}),
           },
         },
       });
@@ -306,8 +475,10 @@ export class AdminService {
     sourceChatId: string,
     user: AuthUser,
     body: unknown,
+    source: AdminActionSource = 'miniapp',
   ): Promise<SendBroadcastResult> {
-    await this.assertChatAdmin(sourceChatId, user.userId);
+    await this.assertChatAdmin(sourceChatId, user.userId, 'chat');
+    await this.ensureEntityType(sourceChatId, user.userId, 'chat');
     const parsed = sendBroadcastRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -467,6 +638,7 @@ export class AdminService {
           cycleCount,
           sentChatIds,
           failedChatIds,
+          source,
         },
       },
     });
@@ -709,6 +881,7 @@ export class AdminService {
     targetUserIdRaw: string,
     user: AuthUser,
     body: unknown,
+    source: AdminActionSource = 'miniapp',
   ): Promise<ManualModerationActionResult> {
     await this.assertChatAdmin(chatId, user.userId);
     const targetUserId = targetUserIdRaw.trim();
@@ -725,7 +898,7 @@ export class AdminService {
     }
 
     const metadataBase = {
-      source: 'miniapp',
+      source,
       initiatedByUserId: user.userId,
     } as const;
 
@@ -759,6 +932,7 @@ export class AdminService {
           action: 'MANUAL_KICK_MEMBER',
           payload: {
             userId: targetUserId,
+            source,
           },
         },
       });
@@ -835,6 +1009,7 @@ export class AdminService {
             userId: targetUserId,
             banDurationHours,
             unbanScheduledAt: unbanScheduledAt.toISOString(),
+            source,
           },
         },
       });
@@ -877,11 +1052,12 @@ export class AdminService {
         chatId,
         actorUserId: user.userId,
         action: 'MANUAL_UNBAN_MEMBER',
-        payload: {
-          userId: targetUserId,
+          payload: {
+            userId: targetUserId,
+            source,
+          },
         },
-      },
-    });
+      });
 
     return manualModerationActionResultSchema.parse({
       ok: true,
@@ -1086,7 +1262,12 @@ export class AdminService {
       }));
   }
 
-  async addDomain(chatId: string, user: AuthUser, body: unknown) {
+  async addDomain(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+    source: AdminActionSource = 'miniapp',
+  ) {
     await this.assertChatAdmin(chatId, user.userId);
     const parsed = addDomainRequestSchema.safeParse(body);
     if (!parsed.success) {
@@ -1107,6 +1288,7 @@ export class AdminService {
         action: 'ADD_DOMAIN',
         payload: {
           domain: normalized,
+          source,
         },
       },
     });
@@ -1115,7 +1297,12 @@ export class AdminService {
     return { ok: true };
   }
 
-  async removeDomain(chatId: string, user: AuthUser, domain: string) {
+  async removeDomain(
+    chatId: string,
+    user: AuthUser,
+    domain: string,
+    source: AdminActionSource = 'miniapp',
+  ) {
     await this.assertChatAdmin(chatId, user.userId);
     const normalized = this.normalizeAllowlistLink(this.decodePathParam(domain));
     if (!normalized) {
@@ -1143,6 +1330,7 @@ export class AdminService {
         action: 'REMOVE_DOMAIN',
         payload: {
           domain: normalized,
+          source,
         },
       },
     });
@@ -1151,7 +1339,13 @@ export class AdminService {
     return { ok: true };
   }
 
-  async scheduleDomainRemoval(chatId: string, user: AuthUser, domain: string, body: unknown) {
+  async scheduleDomainRemoval(
+    chatId: string,
+    user: AuthUser,
+    domain: string,
+    body: unknown,
+    source: AdminActionSource = 'miniapp',
+  ) {
     await this.assertChatAdmin(chatId, user.userId);
     const normalizedDomain = this.normalizeAllowlistLink(this.decodePathParam(domain));
     if (!normalizedDomain) {
@@ -1202,6 +1396,7 @@ export class AdminService {
         payload: {
           domain: normalizedDomain,
           removeAfterAt: removeAfterAt ? removeAfterAt.toISOString() : null,
+          source,
         },
       },
     });
@@ -1227,7 +1422,12 @@ export class AdminService {
     }));
   }
 
-  async addGlobalUserBlacklistUser(chatId: string, user: AuthUser, body: unknown) {
+  async addGlobalUserBlacklistUser(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+    source: AdminActionSource = 'miniapp',
+  ) {
     await this.assertChatAdmin(chatId, user.userId);
     const parsed = addGlobalUserBlacklistRequestSchema.safeParse(body);
     if (!parsed.success) {
@@ -1258,6 +1458,7 @@ export class AdminService {
         action: 'ADD_GLOBAL_USER_BLACKLIST',
         payload: {
           userId: normalizedUserId,
+          source,
         },
       },
     });
@@ -1265,7 +1466,12 @@ export class AdminService {
     return { ok: true };
   }
 
-  async removeGlobalUserBlacklistUser(chatId: string, user: AuthUser, targetUserId: string) {
+  async removeGlobalUserBlacklistUser(
+    chatId: string,
+    user: AuthUser,
+    targetUserId: string,
+    source: AdminActionSource = 'miniapp',
+  ) {
     await this.assertChatAdmin(chatId, user.userId);
     const normalizedUserId = targetUserId.trim();
 
@@ -1282,6 +1488,7 @@ export class AdminService {
         action: 'REMOVE_GLOBAL_USER_BLACKLIST',
         payload: {
           userId: normalizedUserId,
+          source,
         },
       },
     });
@@ -1289,13 +1496,17 @@ export class AdminService {
     return { ok: true };
   }
 
-  async assertChatAdmin(chatId: string, userId: string) {
+  async assertChatAdmin(
+    chatId: string,
+    userId: string,
+    entityType: ManagedEntityType | null = null,
+  ) {
     const hasAdminAccess = await this.hasUserAndBotAdminAccess(chatId, userId);
     if (!hasAdminAccess) {
       throw new ForbiddenException('User is not chat admin');
     }
 
-    await this.upsertUserChatAccess(chatId, userId, null);
+    await this.upsertUserChatAccess(chatId, userId, null, entityType);
   }
 
   private resolveLogsDashboardFrom(range: LogsDashboardRange, to: Date): Date {
@@ -1507,7 +1718,8 @@ export class AdminService {
   }
 
   private isFallbackTitle(chatId: string, title: string): boolean {
-    return title.trim() === `Chat ${chatId}`;
+    const normalized = title.trim();
+    return normalized === `Chat ${chatId}` || normalized === `Channel ${chatId}`;
   }
 
   private async hasUserAndBotAdminAccess(chatId: string, userId: string): Promise<boolean> {
@@ -1552,9 +1764,21 @@ export class AdminService {
     }
   }
 
-  private async listChatsFromAllowlist(userId: string): Promise<ChatSummary[]> {
+  private async listChatsFromAllowlist(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+  ): Promise<ChatSummary[]> {
+    const whereClause =
+      entityType === 'all'
+        ? { userId }
+        : {
+            userId,
+            chat: {
+              entityType: this.toPrismaEntityType(entityType),
+            },
+          };
     const rows = await this.prisma.chatAdminAllowlist.findMany({
-      where: { userId },
+      where: whereClause,
       include: { chat: true },
       orderBy: {
         chat: {
@@ -1563,26 +1787,39 @@ export class AdminService {
       },
     });
 
-    return rows.map((row: { chat: { id: string; title: string; createdAt: Date } }) => ({
+    return rows.map((row: { chat: { id: string; title: string; createdAt: Date; entityType: ChatEntityType } }) => ({
       id: row.chat.id,
       title: row.chat.title,
       createdAt: row.chat.createdAt.toISOString(),
+      entityType: this.fromPrismaEntityType(row.chat.entityType),
     }));
   }
 
-  private async upsertUserChatAccess(chatId: string, userId: string, chatTitle: string | null) {
+  private async upsertUserChatAccess(
+    chatId: string,
+    userId: string,
+    chatTitle: string | null,
+    entityType: ManagedEntityType | null = null,
+    options: { updateEntityType?: boolean } = {},
+  ) {
     const normalizedTitle = chatTitle?.trim() ? chatTitle.trim() : null;
+    const fallbackTitle = entityType === 'channel' ? `Channel ${chatId}` : `Chat ${chatId}`;
+    const updateEntityType = options.updateEntityType === true;
     const persistedChat = await this.prisma.chat.upsert({
       where: { id: chatId },
       create: {
         id: chatId,
-        title: normalizedTitle ?? `Chat ${chatId}`,
+        title: normalizedTitle ?? fallbackTitle,
+        ...(entityType ? { entityType: this.toPrismaEntityType(entityType) } : {}),
       },
       update: {
         ...(normalizedTitle
           ? {
               title: normalizedTitle,
             }
+          : {}),
+        ...(updateEntityType && entityType
+          ? { entityType: this.toPrismaEntityType(entityType) }
           : {}),
       },
     });
@@ -1604,7 +1841,14 @@ export class AdminService {
     return persistedChat;
   }
 
-  private async bootstrapCurrentChat(user: AuthUser): Promise<ChatSummary | null> {
+  private async bootstrapCurrentChat(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+  ): Promise<ChatSummary | null> {
+    if (entityType === 'channel') {
+      return null;
+    }
+
     if (!user.chatId) {
       return null;
     }
@@ -1618,12 +1862,14 @@ export class AdminService {
       user.chatId,
       user.userId,
       user.chatTitle ?? null,
+      'chat',
     );
 
     const chat: ChatSummary = {
       id: user.chatId,
       title: persistedChat.title,
       createdAt: persistedChat.createdAt.toISOString(),
+      entityType: this.fromPrismaEntityType(persistedChat.entityType),
     };
 
     if (this.isFallbackTitle(chat.id, chat.title)) {
@@ -1631,5 +1877,55 @@ export class AdminService {
     }
 
     return chat;
+  }
+
+  private async ensureEntityType(
+    chatId: string,
+    userId: string,
+    expectedEntityType: ManagedEntityType,
+  ): Promise<void> {
+    const current = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: {
+        entityType: true,
+      },
+    });
+
+    if (current) {
+      if (this.fromPrismaEntityType(current.entityType) !== expectedEntityType) {
+        throw new BadRequestException(
+          expectedEntityType === 'channel'
+            ? 'Этот ID относится к чату, а не к каналу.'
+            : 'Этот ID относится к каналу, а не к чату.',
+        );
+      }
+      return;
+    }
+
+    try {
+      const remoteChats = await this.maxClient.listBotChats();
+      const discovered = remoteChats.find((item) => item.chatId === chatId);
+      if (discovered && discovered.entityType !== expectedEntityType) {
+        throw new BadRequestException(
+          expectedEntityType === 'channel'
+            ? 'Этот ID относится к чату, а не к каналу.'
+            : 'Этот ID относится к каналу, а не к чату.',
+        );
+      }
+    } catch (error: unknown) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+    }
+
+    await this.upsertUserChatAccess(chatId, userId, null, expectedEntityType);
+  }
+
+  private toPrismaEntityType(entityType: ManagedEntityType): ChatEntityType {
+    return entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT;
+  }
+
+  private fromPrismaEntityType(entityType: ChatEntityType): ManagedEntityType {
+    return entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat';
   }
 }

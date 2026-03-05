@@ -18,6 +18,11 @@ export class AdminController {
     return this.adminService.listChats(user);
   }
 
+  @Get('channels')
+  getChannels(@CurrentUser() user: AuthUser) {
+    return this.adminService.listChannels(user);
+  }
+
   @Get('chats/:chatId/settings')
   getSettings(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.adminService.getSettings(chatId, user);
@@ -30,6 +35,20 @@ export class AdminController {
     @Body() body: unknown,
   ) {
     return this.adminService.updateSettings(chatId, user, body);
+  }
+
+  @Get('channels/:chatId/settings')
+  getChannelSettings(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.adminService.getChannelSettings(chatId, user);
+  }
+
+  @Put('channels/:chatId/settings')
+  updateChannelSettings(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.updateChannelSettings(chatId, user, body);
   }
 
   @Post('chats/:chatId/settings/apply-to-all')

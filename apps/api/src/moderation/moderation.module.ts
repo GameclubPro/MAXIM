@@ -1,17 +1,19 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
+import { AdminModule } from '../admin/admin.module';
+import { ChatContextModule } from '../chat-context/chat-context.module';
 import { MaxModule } from '../max/max.module';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
 import { SystemModule } from '../system/system.module';
-import { ChatContextCacheService } from './chat-context-cache.service';
 import { ModerationProcessor, ModerationService } from './moderation.service';
+import { PrivateControlService } from './private-control.service';
 import { RedisCounterService } from './redis-counter.service';
 import { RuleEngineService } from './rule-engine.service';
 import { SanctionService } from './sanction.service';
 
 const moderationProviders = [
   ModerationService,
-  ChatContextCacheService,
+  PrivateControlService,
   RedisCounterService,
   RuleEngineService,
   SanctionService,
@@ -19,8 +21,14 @@ const moderationProviders = [
 ];
 
 @Module({
-  imports: [BullModule.registerQueue({ name: 'moderation' }), MaxModule, SystemModule],
+  imports: [
+    BullModule.registerQueue({ name: 'moderation' }),
+    MaxModule,
+    SystemModule,
+    ChatContextModule,
+    AdminModule,
+  ],
   providers: moderationProviders,
-  exports: [ModerationService, ChatContextCacheService],
+  exports: [ModerationService],
 })
 export class ModerationModule {}

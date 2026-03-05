@@ -1,5 +1,6 @@
 import {
   addGlobalUserBlacklistRequestSchema,
+  channelSettingsSchema,
   chatSettingsSchema,
   domainAllowlistEntrySchema,
   scheduleDomainRemovalRequestSchema,
@@ -13,6 +14,7 @@ import {
   chatSummarySchema,
   globalUserBlacklistEntrySchema,
   meSchema,
+  type ChannelSettings,
   type ChatSettings,
   type ChatSummary,
   type DomainAllowlistEntry,
@@ -63,6 +65,11 @@ export class ApiClient {
     return response.map((item: unknown) => chatSummarySchema.parse(item));
   }
 
+  async getChannels(): Promise<ChatSummary[]> {
+    const response = await this.request('/channels');
+    return response.map((item: unknown) => chatSummarySchema.parse(item));
+  }
+
   async getSettings(chatId: string): Promise<ChatSettings> {
     const response = await this.request(`/chats/${chatId}/settings`);
     return chatSettingsSchema.parse(response);
@@ -74,6 +81,19 @@ export class ApiClient {
       body: JSON.stringify(data),
     });
     return chatSettingsSchema.parse(response);
+  }
+
+  async getChannelSettings(chatId: string): Promise<ChannelSettings> {
+    const response = await this.request(`/channels/${chatId}/settings`);
+    return channelSettingsSchema.parse(response);
+  }
+
+  async updateChannelSettings(chatId: string, data: ChannelSettings): Promise<ChannelSettings> {
+    const response = await this.request(`/channels/${chatId}/settings`, {
+      method: 'PUT',
+      body: JSON.stringify(data),
+    });
+    return channelSettingsSchema.parse(response);
   }
 
   async applySettingsToAllChats(

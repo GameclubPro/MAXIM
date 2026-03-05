@@ -6,6 +6,7 @@ const envSchema = z.object({
   APP_BASE_URL: z.string().url(),
 
   MAX_BOT_ID: z.string().min(3),
+  MAX_BOT_CONTACT_ID: z.string().regex(/^\d+$/).optional(),
   MAX_BOT_TOKEN: z.string().min(10),
   MAX_WEBHOOK_SECRET_PATH: z.string().min(8),
   MAX_WEBHOOK_HEADER_SECRET: z.string().min(8),

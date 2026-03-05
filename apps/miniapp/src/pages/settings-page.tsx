@@ -14,7 +14,7 @@ import { useToast } from '../components/ui/toast';
 import { cn } from '../lib/cn';
 import type { ApiClient, SendBroadcastPayload } from '../lib/api-client';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
-import { saveLastChatId } from '../lib/last-chat';
+import { saveLastChatId, saveLastEntityType } from '../lib/last-chat';
 
 type FieldErrors = Partial<Record<keyof ChatSettings, string>>;
 
@@ -888,6 +888,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   useEffect(() => {
     if (chatId) {
       saveLastChatId(chatId);
+      saveLastEntityType('chat');
     }
   }, [chatId]);
 

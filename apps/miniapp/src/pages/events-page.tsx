@@ -12,7 +12,7 @@ import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import type { ApiClient } from '../lib/api-client';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
-import { saveLastChatId } from '../lib/last-chat';
+import { saveLastChatId, saveLastEntityType } from '../lib/last-chat';
 
 type ViolationAction = LogsDashboardResponse['violations'][number]['action'];
 type ViolationItem = LogsDashboardResponse['violations'][number];
@@ -392,6 +392,7 @@ export function EventsPage({ api }: { api: ApiClient }) {
   useEffect(() => {
     if (chatId) {
       saveLastChatId(chatId);
+      saveLastEntityType('chat');
     }
   }, [chatId]);
 

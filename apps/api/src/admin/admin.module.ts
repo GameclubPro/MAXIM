@@ -1,12 +1,12 @@
 import { Module } from '@nestjs/common';
 import { AuthModule } from '../auth/auth.module';
+import { ChatContextModule } from '../chat-context/chat-context.module';
 import { MaxModule } from '../max/max.module';
-import { ModerationModule } from '../moderation/moderation.module';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 
 @Module({
-  imports: [AuthModule, MaxModule, ModerationModule],
+  imports: [AuthModule, MaxModule, ChatContextModule],
   controllers: [AdminController],
   providers: [AdminService],
   exports: [AdminService],

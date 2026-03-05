@@ -2,7 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useParams } from 'react-router-dom';
 import { cn } from '../lib/cn';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
-import { readLastChatId, saveLastChatId } from '../lib/last-chat';
+import {
+  readLastChatId,
+  readLastEntityType,
+  saveLastChatId,
+  saveLastEntityType,
+  type LastEntityType,
+} from '../lib/last-chat';
 
 type ScreenInfo = {
   title: string;
@@ -73,6 +79,13 @@ function BottomNavIcon({ name }: { name: BottomNavIconName }) {
 }
 
 function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
+  if (pathname.includes('/channel/') && pathname.includes('/settings')) {
+    return {
+      title: 'Настройки канала',
+      subtitle: chatLabel ? `Канал: ${chatLabel}` : 'Выберите канал для настройки.',
+    };
+  }
+
   if (pathname.includes('/settings')) {
     return {
       title: 'Настройки модерации',
@@ -97,7 +110,9 @@ export function Shell() {
   const { chatId = '' } = useParams();
   const location = useLocation();
   const [lastChatId, setLastChatId] = useState<string>(() => readLastChatId());
+  const [lastEntityType, setLastEntityType] = useState<LastEntityType>(() => readLastEntityType());
   const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
+  const routeEntityType: LastEntityType = location.pathname.includes('/channel/') ? 'channel' : 'chat';
   const routeChatTitle =
     typeof location.state === 'object' &&
     location.state &&
@@ -112,16 +127,19 @@ export function Shell() {
     }
 
     saveLastChatId(chatId);
+    saveLastEntityType(routeEntityType);
     setLastChatId(chatId);
+    setLastEntityType(routeEntityType);
 
     if (!routeChatTitle) {
       return;
     }
 
     saveChatTitle(chatId, routeChatTitle);
-  }, [chatId, routeChatTitle]);
+  }, [chatId, routeChatTitle, routeEntityType]);
 
   const resolvedChatId = chatId || lastChatId;
+  const resolvedEntityType: LastEntityType = chatId ? routeEntityType : lastEntityType;
 
   const resolvedChatTitle = useMemo(() => {
     if (!resolvedChatId) {
@@ -135,6 +153,7 @@ export function Shell() {
     return readChatTitle(resolvedChatId);
   }, [chatId, resolvedChatId, routeChatTitle]);
   const isChatsRoute = location.pathname === '/';
+  const isChannelRoute = resolvedEntityType === 'channel';
   const isSettingsRoute = location.pathname.includes('/settings');
   const isEventsRoute = location.pathname.includes('/events');
   const hasTopbar = !isChatsRoute && !isSettingsRoute && !isEventsRoute;
@@ -224,7 +243,7 @@ export function Shell() {
 
         {resolvedChatId ? (
           <NavLink
-            to={`/chat/${resolvedChatId}/settings`}
+            to={isChannelRoute ? `/channel/${resolvedChatId}/settings` : `/chat/${resolvedChatId}/settings`}
             className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
           >
             <span className="bottom-nav__icon" aria-hidden>
@@ -241,7 +260,7 @@ export function Shell() {
           </span>
         )}
 
-        {resolvedChatId ? (
+        {resolvedChatId && resolvedEntityType === 'chat' ? (
           <NavLink
             to={`/chat/${resolvedChatId}/events`}
             className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}

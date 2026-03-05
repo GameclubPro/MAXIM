@@ -51,13 +51,20 @@ enum WebhookStatus {
   FAILED
 }
 
+enum ChatEntityType {
+  CHAT
+  CHANNEL
+}
+
 model Chat {
-  id        String   @id
-  title     String
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id         String         @id
+  title      String
+  entityType ChatEntityType @default(CHAT) @map("entity_type")
+  createdAt  DateTime       @default(now()) @map("created_at")
+  updatedAt  DateTime       @updatedAt @map("updated_at")
 
   settings            ChatSettings?
+  channelSettings     ChannelSettings?
   admins              ChatAdminAllowlist[]
   domains             DomainAllowlist[]
   violations          Violation[]
@@ -159,6 +166,26 @@ model ChatSettings {
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
   @@map("chat_settings")
+}
+
+model ChannelSettings {
+  id                          String   @id @default(cuid())
+  chatId                      String   @unique @map("chat_id")
+  postSuggestionsEnabled      Boolean  @default(false) @map("post_suggestions_enabled")
+  postSuggestionsText         String   @default("") @map("post_suggestions_text")
+  postSuggestionsButtonEnabled Boolean @default(false) @map("post_suggestions_button_enabled")
+  postSuggestionsButtonText   String   @default("Предложить пост") @map("post_suggestions_button_text")
+  postSuggestionsButtonUrl    String   @default("") @map("post_suggestions_button_url")
+  commentsEnabled             Boolean  @default(true) @map("comments_enabled")
+  commentsModerationEnabled   Boolean  @default(false) @map("comments_moderation_enabled")
+  commentsSlowModeSeconds     Int      @default(0) @map("comments_slow_mode_seconds")
+  commentsMessageText         String   @default("") @map("comments_message_text")
+  createdAt                   DateTime @default(now()) @map("created_at")
+  updatedAt                   DateTime @updatedAt @map("updated_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@map("channel_settings")
 }
 
 model ChatAdminAllowlist {

@@ -15,12 +15,14 @@ import { createHash } from 'node:crypto';
 import {
   MaxClientService,
   type MaxActionDispatchOptions,
+  type MaxMessageButton,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
 import { SystemModeService } from '../system/system-mode.service';
-import { ChatContextCacheService } from './chat-context-cache.service';
+import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
+import { PrivateControlService } from './private-control.service';
 import { RedisCounterService } from './redis-counter.service';
 import type { DuplicateAction, DuplicateDecision, DuplicateHit } from './rule-engine.service';
 import { RuleEngineService } from './rule-engine.service';
@@ -58,10 +60,11 @@ const MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS = 12;
 const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
 const CHAT_ADMIN_CACHE_TTL_SEC = Math.ceil(CHAT_ADMIN_CACHE_TTL_MS / 1_000);
 const CHAT_ADMIN_SHARED_CACHE_KEY_PREFIX = 'chat-admins:v2';
+const SUPPORT_CHAT_URL = 'https://max.ru/join/qX7U_Hj-L-xMJG8V7wlF6dD-6a6cXIzTBGRtU2mRMzk';
 const BOT_STARTED_INSTRUCTION_OPTIONS: MaxSendMessageOptions = {
   button: {
     text: 'Поддержка',
-    url: 'https://max.ru/join/qX7U_Hj-L-xMJG8V7wlF6dD-6a6cXIzTBGRtU2mRMzk',
+    url: SUPPORT_CHAT_URL,
   },
 };
 const BOT_STARTED_INSTRUCTION_TEXT = [
@@ -75,10 +78,31 @@ const BOT_STARTED_INSTRUCTION_TEXT = [
   '- Новых людей встречаю, ботов из группы вывожу.',
   '- Могу сделать рассылку: текст, кнопка, фото, сразу или по времени.',
   '',
-  'Настройка в mini app: открой бота в MAX и нажми «Открыть».',
+  'Настройка во встроенном приложении: открой бота в MAX и нажми «Открыть».',
   'Там включаешь правила и тексты так, как нужно вашему чату.',
   '',
   'Схема простая: сначала слово, потом протокол.',
+].join('\n');
+const PRIVATE_MENU_CALLBACK_MENU = 'private_menu:menu';
+const PRIVATE_MENU_CALLBACK_CHATS = 'private_menu:chats';
+const PRIVATE_MENU_CALLBACK_HELP = 'private_menu:help';
+const PRIVATE_BOT_CHATS_PREVIEW_LIMIT = 12;
+const PRIVATE_MENU_PROMPT_TEXT = [
+  'Управление без приложения:',
+  '- «Мои чаты» — список чатов, где бот уже подключён.',
+  '- «Помощь» — короткий гайд по запуску и правам.',
+  '- «Открыть приложение» — полный набор настроек.',
+].join('\n');
+const PRIVATE_HELP_TEXT = [
+  'Быстрый гайд:',
+  '1) Добавьте бота в нужный чат.',
+  '2) Дайте боту права администратора.',
+  '3) Откройте приложение для тонкой настройки правил.',
+  '',
+  'Команды в личке:',
+  '- /menu',
+  '- /chats',
+  '- /help',
 ].join('\n');
 const MAX_FORWARD_SCAN_DEPTH = 8;
 const GLOBAL_BLACKLIST_TOGGLE_CACHE_TTL_MS = 30_000;
@@ -122,6 +146,7 @@ const MESSAGE_LIMITS_RULE_CODES = new Set([
   'STICKER_RATE_LIMIT',
 ]);
 const TEXT_FILTER_RULE_CODES = new Set(['PROFANITY', 'COMMERCIAL_AD']);
+type PrivateControlCommand = 'menu' | 'chats' | 'help';
 
 @Injectable()
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
@@ -139,6 +164,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly ownBotUserIdVariants: Set<string>;
   private nightModeAnnounceTimer: NodeJS.Timeout | null = null;
   private nightModeAnnounceInFlight = false;
+  private readonly appBaseUrl: string | null;
+  private readonly explicitBotContactId: string | null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -149,9 +176,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly systemModeService?: SystemModeService,
     @Optional() configService?: ConfigService,
     @Optional() private readonly redisCounter?: RedisCounterService,
+    @Optional() private readonly privateControlService?: PrivateControlService,
   ) {
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
     this.ownBotUserIdVariants = this.buildBotIdVariants(this.ownBotUserId);
+    this.appBaseUrl = this.normalizeAppBaseUrl(configService?.get<string>('APP_BASE_URL'));
+    this.explicitBotContactId = this.normalizeBotContactId(
+      configService?.get<string>('MAX_BOT_CONTACT_ID'),
+    );
   }
 
   onModuleInit() {
@@ -217,6 +249,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   async handleUpdate(update: MaxUpdate) {
     if (!update.message) {
+      const callbackId = this.extractCallbackId(update);
+      if (callbackId) {
+        await this.answerCallbackSafe(callbackId, 'Команда принята');
+      }
       return;
     }
 
@@ -230,6 +266,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (this.isMembershipLeaveUpdate(update)) {
+      return;
+    }
+
+    if (this.isPrivateDirectChat(chatId)) {
+      if (this.privateControlService) {
+        await this.privateControlService.handleUpdate(update);
+        return;
+      }
+      await this.handlePrivateChatControl(update);
       return;
     }
 
@@ -3500,6 +3545,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     try {
       await this.maxClient.sendMessage(chatId, BOT_STARTED_INSTRUCTION_TEXT, BOT_STARTED_INSTRUCTION_OPTIONS);
+      if (this.privateControlService) {
+        await this.privateControlService.handleBotStarted(update);
+      } else {
+        await this.sendPrivateMenu(chatId, PRIVATE_MENU_PROMPT_TEXT);
+      }
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -3575,6 +3625,373 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     } catch {
       return null;
     }
+  }
+
+  private isPrivateDirectChat(chatId: string): boolean {
+    const numericChatId = this.parseChatIdAsBigInt(chatId);
+    return numericChatId !== null && numericChatId > 0n;
+  }
+
+  private async handlePrivateChatControl(update: MaxUpdate): Promise<void> {
+    if (!update.message) {
+      return;
+    }
+
+    const callbackId = this.extractCallbackId(update);
+    const callbackCommand = this.resolvePrivateCallbackCommand(this.extractCallbackPayload(update));
+    if (callbackId) {
+      await this.answerCallbackSafe(
+        callbackId,
+        this.buildPrivateCallbackNotification(callbackCommand),
+      );
+    }
+
+    const { chatId, text, senderId } = update.message;
+
+    if (callbackCommand) {
+      await this.executePrivateCommand(chatId, callbackCommand);
+      return;
+    }
+
+    if (senderId && this.isOwnBotSender(senderId)) {
+      return;
+    }
+
+    const textCommand = this.resolvePrivateTextCommand(text);
+    if (textCommand) {
+      await this.executePrivateCommand(chatId, textCommand);
+      return;
+    }
+
+    if (this.looksLikeSlashCommand(text)) {
+      await this.sendPrivateMenu(
+        chatId,
+        'Команду не понял. Нажмите кнопку ниже или используйте /menu.',
+      );
+      return;
+    }
+
+    await this.sendPrivateMenu(chatId, PRIVATE_MENU_PROMPT_TEXT);
+  }
+
+  private buildPrivateCallbackNotification(command: PrivateControlCommand | null): string {
+    if (command === 'chats') {
+      return 'Собираю список чатов';
+    }
+    if (command === 'help') {
+      return 'Открываю подсказки';
+    }
+    return 'Открываю меню';
+  }
+
+  private async answerCallbackSafe(callbackId: string, notification: string): Promise<void> {
+    try {
+      await this.maxClient.answerCallback(callbackId, notification);
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          callbackId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to answer callback',
+      );
+    }
+  }
+
+  private extractCallbackNode(update: MaxUpdate): Record<string, unknown> | null {
+    const raw = this.asRecord(update.raw);
+    if (!raw) {
+      return null;
+    }
+
+    const data = this.asRecord(raw.data);
+    const event = this.asRecord(raw.event);
+    const candidates = [
+      this.asRecord(raw.callback),
+      this.asRecord(raw.message_callback),
+      data ? this.asRecord(data.callback) : null,
+      data ? this.asRecord(data.message_callback) : null,
+      event ? this.asRecord(event.callback) : null,
+      event ? this.asRecord(event.message_callback) : null,
+    ];
+
+    for (const candidate of candidates) {
+      if (!candidate) {
+        continue;
+      }
+
+      const nested = this.asRecord(candidate.callback);
+      if (nested) {
+        return nested;
+      }
+
+      if (
+        candidate.callback_id !== undefined ||
+        candidate.callbackId !== undefined ||
+        candidate.payload !== undefined
+      ) {
+        return candidate;
+      }
+    }
+
+    return null;
+  }
+
+  private extractCallbackId(update: MaxUpdate): string | null {
+    const callback = this.extractCallbackNode(update);
+    if (!callback) {
+      return null;
+    }
+
+    const value = callback.callback_id ?? callback.callbackId ?? callback.id;
+    if (typeof value !== 'string' && typeof value !== 'number') {
+      return null;
+    }
+
+    const normalized = String(value).trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private extractCallbackPayload(update: MaxUpdate): string | null {
+    const callback = this.extractCallbackNode(update);
+    if (!callback) {
+      return null;
+    }
+
+    const value = callback.payload ?? callback.data;
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim().toLowerCase();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private resolvePrivateCallbackCommand(payload: string | null): PrivateControlCommand | null {
+    if (!payload) {
+      return null;
+    }
+
+    if (payload === PRIVATE_MENU_CALLBACK_CHATS) {
+      return 'chats';
+    }
+    if (payload === PRIVATE_MENU_CALLBACK_HELP) {
+      return 'help';
+    }
+    if (payload === PRIVATE_MENU_CALLBACK_MENU) {
+      return 'menu';
+    }
+
+    return null;
+  }
+
+  private resolvePrivateTextCommand(text: string): PrivateControlCommand | null {
+    const normalized = this.readLowerString(text);
+    if (!normalized) {
+      return null;
+    }
+
+    if (
+      normalized === '/start' ||
+      normalized === '/menu' ||
+      normalized === 'menu' ||
+      normalized === 'меню' ||
+      normalized === 'кнопки'
+    ) {
+      return 'menu';
+    }
+
+    if (
+      normalized === '/chats' ||
+      normalized === '/chat' ||
+      normalized === 'чаты' ||
+      normalized === 'мои чаты'
+    ) {
+      return 'chats';
+    }
+
+    if (
+      normalized === '/help' ||
+      normalized === 'help' ||
+      normalized === 'помощь' ||
+      normalized === 'что умеешь'
+    ) {
+      return 'help';
+    }
+
+    return null;
+  }
+
+  private looksLikeSlashCommand(text: string): boolean {
+    return typeof text === 'string' && text.trim().startsWith('/');
+  }
+
+  private async executePrivateCommand(chatId: string, command: PrivateControlCommand): Promise<void> {
+    if (command === 'help') {
+      await this.sendPrivateMenu(chatId, PRIVATE_HELP_TEXT);
+      return;
+    }
+
+    if (command === 'chats') {
+      await this.sendPrivateChatList(chatId);
+      return;
+    }
+
+    await this.sendPrivateMenu(chatId, PRIVATE_MENU_PROMPT_TEXT);
+  }
+
+  private async sendPrivateChatList(chatId: string): Promise<void> {
+    try {
+      const chats = await this.maxClient.listBotChats();
+      const groupChats = chats.filter((chat) => {
+        const numericChatId = this.parseChatIdAsBigInt(chat.chatId);
+        return numericChatId !== null && numericChatId < 0n;
+      });
+
+      if (groupChats.length === 0) {
+        await this.sendPrivateMenu(
+          chatId,
+          'Пока нет групповых чатов с ботом. Добавьте бота в чат и выдайте права администратора.',
+        );
+        return;
+      }
+
+      const preview = groupChats.slice(0, PRIVATE_BOT_CHATS_PREVIEW_LIMIT);
+      const lines = preview.map((chat, index) => {
+        const title = (chat.title ?? `Чат ${chat.chatId}`).replace(/\s+/g, ' ').trim();
+        return `${index + 1}. ${title} (${chat.chatId})`;
+      });
+
+      const moreCount = groupChats.length - preview.length;
+      const message = [
+        `Чаты с ботом: ${groupChats.length}`,
+        '',
+        ...lines,
+        ...(moreCount > 0 ? ['', `... и ещё ${moreCount} чатов.`] : []),
+        '',
+        'Для подробной настройки откройте приложение.',
+      ].join('\n');
+
+      await this.sendPrivateMenu(chatId, message);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to load private chats list',
+      );
+      await this.sendPrivateMenu(
+        chatId,
+        'Не удалось получить список чатов. Повторите запрос через несколько секунд.',
+      );
+    }
+  }
+
+  private async sendPrivateMenu(chatId: string, text: string): Promise<void> {
+    await this.maxClient.sendMessage(chatId, text, this.buildPrivateMenuOptions());
+  }
+
+  private buildPrivateMenuOptions(): MaxSendMessageOptions {
+    const miniappUrl = this.resolveMiniappUrl();
+    const botContactId = this.resolveBotContactId();
+    const miniappButton: MaxMessageButton =
+      miniappUrl && botContactId
+        ? {
+            type: 'open_app',
+            text: 'Открыть приложение',
+            webApp: miniappUrl,
+            contactId: botContactId,
+          }
+        : {
+          type: 'link',
+          text: 'Открыть приложение',
+            url: miniappUrl ?? 'https://maxim.play-team.ru/app/',
+          };
+
+    const buttons: MaxSendMessageOptions['buttons'] = [
+      [
+        {
+          type: 'callback',
+          text: 'Меню',
+          payload: PRIVATE_MENU_CALLBACK_MENU,
+        },
+        {
+          type: 'callback',
+          text: 'Мои чаты',
+          payload: PRIVATE_MENU_CALLBACK_CHATS,
+        },
+      ],
+      [
+        {
+          type: 'callback',
+          text: 'Помощь',
+          payload: PRIVATE_MENU_CALLBACK_HELP,
+        },
+      ],
+      [
+        miniappButton,
+        {
+          type: 'link',
+          text: 'Поддержка',
+          url: SUPPORT_CHAT_URL,
+        },
+      ],
+    ];
+
+    return {
+      buttons,
+    };
+  }
+
+  private normalizeAppBaseUrl(value: string | undefined): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim().replace(/\/+$/, '');
+    if (!normalized) {
+      return null;
+    }
+
+    if (!/^https?:\/\//i.test(normalized)) {
+      return null;
+    }
+
+    return normalized;
+  }
+
+  private resolveMiniappUrl(): string | null {
+    if (!this.appBaseUrl) {
+      return null;
+    }
+
+    return `${this.appBaseUrl}/app/`;
+  }
+
+  private resolveBotContactId(): string | null {
+    if (this.explicitBotContactId) {
+      return this.explicitBotContactId;
+    }
+
+    if (!this.ownBotUserId) {
+      return null;
+    }
+
+    const normalized = this.ownBotUserId.trim().replace(/^id/i, '').replace(/_bot$/i, '');
+    const [primary] = normalized.split('_');
+    return /^\d+$/.test(primary) ? primary : null;
+  }
+
+  private normalizeBotContactId(value: string | undefined): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const normalized = value.trim();
+    if (!normalized || !/^\d+$/.test(normalized)) {
+      return null;
+    }
+    return normalized;
   }
 
   private async resolveSenderChatAdminCheck(

@@ -5,6 +5,8 @@ export type SanctionAction = z.infer<typeof sanctionActionSchema>;
 
 export const linkPolicySchema = z.enum(['ALLOWLIST_ONLY', 'BLOCKLIST_ONLY', 'ALERT_ONLY']);
 export const commercialAdsSensitivitySchema = z.enum(['BALANCED', 'STRICT']);
+export const managedEntityTypeSchema = z.enum(['chat', 'channel']);
+export type ManagedEntityType = z.infer<typeof managedEntityTypeSchema>;
 
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
 const duplicateMaxCountSchema = z.number().int().min(2).max(20);
@@ -361,6 +363,45 @@ export const chatSettingsSchema = z
   });
 export type ChatSettings = z.infer<typeof chatSettingsSchema>;
 
+export const channelSettingsSchema = z
+  .object({
+    postSuggestionsEnabled: z.boolean().default(false),
+    postSuggestionsText: botMessageTextSchema,
+    postSuggestionsButtonEnabled: z.boolean().default(false),
+    postSuggestionsButtonText: z.string().trim().max(32).default('Предложить пост'),
+    postSuggestionsButtonUrl: botButtonUrlSchema,
+    commentsEnabled: z.boolean().default(true),
+    commentsModerationEnabled: z.boolean().default(false),
+    commentsSlowModeSeconds: z.number().int().min(0).max(3600).default(0),
+    commentsMessageText: botMessageTextSchema,
+  })
+  .superRefine((value, ctx) => {
+    if (
+      value.postSuggestionsEnabled &&
+      value.postSuggestionsButtonEnabled &&
+      !isValidBotButtonUrl(value.postSuggestionsButtonUrl)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['postSuggestionsButtonUrl'],
+        message: 'Укажите корректную ссылку для кнопки (http/https).',
+      });
+    }
+
+    if (
+      value.postSuggestionsEnabled &&
+      value.postSuggestionsButtonEnabled &&
+      !isValidBotButtonText(value.postSuggestionsButtonText)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['postSuggestionsButtonText'],
+        message: 'Введите название кнопки.',
+      });
+    }
+  });
+export type ChannelSettings = z.infer<typeof channelSettingsSchema>;
+
 export const moderationEventSchema = z.object({
   id: z.string(),
   chatId: z.string(),
@@ -380,6 +421,7 @@ export const chatSummarySchema = z.object({
   id: z.string(),
   title: z.string(),
   createdAt: z.string().datetime(),
+  entityType: managedEntityTypeSchema.default('chat'),
 });
 export type ChatSummary = z.infer<typeof chatSummarySchema>;
 
