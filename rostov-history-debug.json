@@ -1,0 +1,280 @@
+{
+  "generatedAt": "2026-03-03T22:05:32.048Z",
+  "botId": "214634783",
+  "rows": [
+    {
+      "chatId": "-70275080156515",
+      "title": "3🔝Об'явления РнД",
+      "apiMessagesCount": 323,
+      "fetchedCount": 18,
+      "pageLens": [
+        18,
+        0
+      ],
+      "pagesUsed": 2,
+      "latestTs": 1772561194829,
+      "earliestTs": 1772472217992,
+      "botJoinTime": 1772468712535,
+      "earliestMinusBotJoinMs": 3505457
+    },
+    {
+      "chatId": "-70275264443747",
+      "title": "5🔝💥РОСТОВ + ОБЛАСТЬ🛒🛍️",
+      "apiMessagesCount": 351,
+      "fetchedCount": 21,
+      "pageLens": [
+        21,
+        0
+      ],
+      "pagesUsed": 2,
+      "latestTs": 1772564689815,
+      "earliestTs": 1772461054179,
+      "botJoinTime": 1772454272915,
+      "earliestMinusBotJoinMs": 6781264
+    },
+    {
+      "chatId": "-71644395571207",
+      "title": "АВТОРЫНОК | Ростовская область",
+      "apiMessagesCount": 0,
+      "fetchedCount": 0,
+      "pageLens": [
+        0
+      ],
+      "pagesUsed": 1,
+      "latestTs": null,
+      "earliestTs": null,
+      "botJoinTime": 1772574519540,
+      "earliestMinusBotJoinMs": null
+    },
+    {
+      "chatId": "-69836390888803",
+      "title": "Большие Салы",
+      "apiMessagesCount": 1171,
+      "fetchedCount": 35,
+      "pageLens": [
+        35,
+        0
+      ],
+      "pagesUsed": 2,
+      "latestTs": 1772570872136,
+      "earliestTs": 1772469685477,
+      "botJoinTime": 1772469421928,
+      "earliestMinusBotJoinMs": 263549
+    },
+    {
+      "chatId": "-70852769379683",
+      "title": "Военвед 🏡 Ростова-на-Дону 💫",
+      "apiMessagesCount": 323,
+      "fetchedCount": 10,
+      "pageLens": [
+        10,
+        0
+      ],
+      "pagesUsed": 2,
+      "latestTs": 1772561740824,
+      "earliestTs": 1772474181283,
+      "botJoinTime": 1772469298189,
+      "earliestMinusBotJoinMs": 4883094
+    },
+    {
+      "chatId": "-71525320394759",
+      "title": "Волгодонск Объявления | Объявления",
+      "apiMessagesCount": 203,
+      "fetchedCount": 203,
+      "pageLens": [
+        100,
+        100,
+        3,
+        0
+      ],
+      "pagesUsed": 4,
+      "latestTs": 1772568014523,
+      "earliestTs": 1772337966804,
+      "botJoinTime": 1772451652803,
+      "earliestMinusBotJoinMs": -113685999
+    },
+    {
+      "chatId": "-68365639185763",
+      "title": "Жизнь Чалтыря ❤️",
+      "apiMessagesCount": 1833,
+      "fetchedCount": 52,
+      "pageLens": [
+        52,
+        0
+      ],
+      "pagesUsed": 2,
+      "latestTs": 1772563160699,
+      "earliestTs": 1772469287893,
+      "botJoinTime": 1772468966633,
+      "earliestMinusBotJoinMs": 321260
+    },
+    {
+      "chatId": "-70275482285411",
+      "title": "Левенцовский🏘 Ростова-на-Дону 💫",
+      "apiMessagesCount": 720,
+      "fetchedCount": 18,
+      "pageLens": [
+        18,
+        0
+      ],
+      "pagesUsed": 2,
+      "latestTs": 1772564690365,
+      "earliestTs": 1772472182268,
+      "botJoinTime": 1772468526587,
+      "earliestMinusBotJoinMs": 3655681
+    },
+    {
+      "chatId": "-69864692151651",
+      "title": "Мясниковский район объявления",
+      "apiMessagesCount": 909,
+      "fetchedCount": 30,
+      "pageLens": [
+        30,
+        0
+      ],
+      "pagesUsed": 2,
+      "latestTs": 1772564691274,
+      "earliestTs": 1772469896247,
+      "botJoinTime": 1772469680006,
+      "earliestMinusBotJoinMs": 216241
+    },
+    {
+      "chatId": "-71489753942023",
+      "title": "Новошахтинск Объявления | Новости",
+      "apiMessagesCount": 660,
+      "fetchedCount": 660,
+      "pageLens": [
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        60,
+        0
+      ],
+      "pagesUsed": 8,
+      "latestTs": 1772568014524,
+      "earliestTs": 1772164290072,
+      "botJoinTime": 1772451768524,
+      "earliestMinusBotJoinMs": -287478452
+    },
+    {
+      "chatId": "-71336283338218",
+      "title": "Родионовка Объявления | Новости",
+      "apiMessagesCount": 644,
+      "fetchedCount": 644,
+      "pageLens": [
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        44,
+        0
+      ],
+      "pagesUsed": 8,
+      "latestTs": 1772568014516,
+      "earliestTs": 1771777909939,
+      "botJoinTime": 1772451732459,
+      "earliestMinusBotJoinMs": -673822520
+    },
+    {
+      "chatId": "-69049244448234",
+      "title": "Ростов-на-Дону Объявления | Новости",
+      "apiMessagesCount": 3713,
+      "fetchedCount": 3713,
+      "pageLens": [
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        13,
+        0
+      ],
+      "pagesUsed": 39,
+      "latestTs": 1772568014445,
+      "earliestTs": 1763036847843,
+      "botJoinTime": 1772452015610,
+      "earliestMinusBotJoinMs": -9415167767
+    },
+    {
+      "chatId": "-70275338827107",
+      "title": "СУВОРОВСКИЙ РОСТОВ 🏘️",
+      "apiMessagesCount": 467,
+      "fetchedCount": 21,
+      "pageLens": [
+        21,
+        0
+      ],
+      "pagesUsed": 2,
+      "latestTs": 1772564690193,
+      "earliestTs": 1772472203740,
+      "botJoinTime": 1772468629721,
+      "earliestMinusBotJoinMs": 3574019
+    },
+    {
+      "chatId": "-70092184778083",
+      "title": "Чалтырь Официальный",
+      "apiMessagesCount": 1464,
+      "fetchedCount": 1464,
+      "pageLens": [
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        100,
+        64,
+        0
+      ],
+      "pagesUsed": 16,
+      "latestTs": 1772570872203,
+      "earliestTs": 1767423345883,
+      "botJoinTime": 1772469751697,
+      "earliestMinusBotJoinMs": -5046405814
+    }
+  ]
+}

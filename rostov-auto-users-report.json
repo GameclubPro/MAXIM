@@ -1,0 +1,254 @@
+{
+  "generatedAt": "2026-03-03T21:58:31.627Z",
+  "region": "Ростовская область",
+  "chatsChecked": 14,
+  "totalScannedMessages": 6176,
+  "totalMatchedAutoMessages": 11,
+  "uniqueUsers": 6,
+  "users": [
+    {
+      "userId": "6440625",
+      "count": 4
+    },
+    {
+      "userId": "12036342",
+      "count": 2
+    },
+    {
+      "userId": "26895440",
+      "count": 2
+    },
+    {
+      "userId": "16196830",
+      "count": 1
+    },
+    {
+      "userId": "7369944",
+      "count": 1
+    },
+    {
+      "userId": "102932620",
+      "count": 1
+    }
+  ],
+  "perChat": [
+    {
+      "chatId": "-70275080156515",
+      "chatTitle": "3🔝Об'явления РнД",
+      "scannedMessages": 18,
+      "matchedMessages": 0,
+      "uniqueUsers": 0,
+      "users": [],
+      "samples": []
+    },
+    {
+      "chatId": "-70275264443747",
+      "chatTitle": "5🔝💥РОСТОВ + ОБЛАСТЬ🛒🛍️",
+      "scannedMessages": 21,
+      "matchedMessages": 0,
+      "uniqueUsers": 0,
+      "users": [],
+      "samples": []
+    },
+    {
+      "chatId": "-71644395571207",
+      "chatTitle": "АВТОРЫНОК | Ростовская область",
+      "scannedMessages": 0,
+      "matchedMessages": 0,
+      "uniqueUsers": 0,
+      "users": [],
+      "samples": []
+    },
+    {
+      "chatId": "-69836390888803",
+      "chatTitle": "Большие Салы",
+      "scannedMessages": 35,
+      "matchedMessages": 0,
+      "uniqueUsers": 0,
+      "users": [],
+      "samples": []
+    },
+    {
+      "chatId": "-70852769379683",
+      "chatTitle": "Военвед 🏡 Ростова-на-Дону 💫",
+      "scannedMessages": 10,
+      "matchedMessages": 0,
+      "uniqueUsers": 0,
+      "users": [],
+      "samples": []
+    },
+    {
+      "chatId": "-71525320394759",
+      "chatTitle": "Волгодонск Объявления | Объявления",
+      "scannedMessages": 203,
+      "matchedMessages": 0,
+      "uniqueUsers": 0,
+      "users": [],
+      "samples": []
+    },
+    {
+      "chatId": "-68365639185763",
+      "chatTitle": "Жизнь Чалтыря ❤️",
+      "scannedMessages": 52,
+      "matchedMessages": 0,
+      "uniqueUsers": 0,
+      "users": [],
+      "samples": []
+    },
+    {
+      "chatId": "-70275482285411",
+      "chatTitle": "Левенцовский🏘 Ростова-на-Дону 💫",
+      "scannedMessages": 18,
+      "matchedMessages": 0,
+      "uniqueUsers": 0,
+      "users": [],
+      "samples": []
+    },
+    {
+      "chatId": "-69864692151651",
+      "chatTitle": "Мясниковский район объявления",
+      "scannedMessages": 30,
+      "matchedMessages": 0,
+      "uniqueUsers": 0,
+      "users": [],
+      "samples": []
+    },
+    {
+      "chatId": "-71489753942023",
+      "chatTitle": "Новошахтинск Объявления | Новости",
+      "scannedMessages": 660,
+      "matchedMessages": 0,
+      "uniqueUsers": 0,
+      "users": [],
+      "samples": []
+    },
+    {
+      "chatId": "-71336283338218",
+      "chatTitle": "Родионовка Объявления | Новости",
+      "scannedMessages": 644,
+      "matchedMessages": 0,
+      "uniqueUsers": 0,
+      "users": [],
+      "samples": []
+    },
+    {
+      "chatId": "-69049244448234",
+      "chatTitle": "Ростов-на-Дону Объявления | Новости",
+      "scannedMessages": 3000,
+      "matchedMessages": 11,
+      "uniqueUsers": 6,
+      "users": [
+        {
+          "userId": "6440625",
+          "count": 4
+        },
+        {
+          "userId": "12036342",
+          "count": 2
+        },
+        {
+          "userId": "26895440",
+          "count": 2
+        },
+        {
+          "userId": "16196830",
+          "count": 1
+        },
+        {
+          "userId": "7369944",
+          "count": 1
+        },
+        {
+          "userId": "102932620",
+          "count": 1
+        }
+      ],
+      "samples": [
+        {
+          "ts": 1772472590791,
+          "userId": "6440625",
+          "mid": "mid.ffffc13338500a16019caf9961c72774",
+          "text": "🙂🙂🙂 из китая 🇨🇳 в наличии и доступен к покупке с выгодой более 200 000₽! 🚘 hyundai elantra в комплектации 1.5 cvt 2wd glx elite edition год: 2023 пробег: 36000 км❗️ объем: 1.5 л трансмиссия: вариатор мощность: 115 л.с. привод: передний (2wd) цена ~ 1 820"
+        },
+        {
+          "ts": 1772375372982,
+          "userId": "16196830",
+          "mid": "mid.ffffc13338500a16019ca9cdf4b64649",
+          "text": "продам решетка радиатора audi q7 по вопросам в лс. ti7qdvjsral+goybjol3bm1sr41fqijepti1qziomhcvhreo9/+1pa0jrayrhyzwxaf0qip9zuqdjlkdt89cuaisszlcbh+rypm7d1vrgpw= https://i.oneme.ru/i?r=btgbpuwtwgyueofho7resmr8j9trcuazrz8ucc-wqfy9cwkx2sbpxpx-bebzfjx2vdy dn/k/hi2h"
+        },
+        {
+          "ts": 1772351448919,
+          "userId": "6440625",
+          "mid": "mid.ffffc13338500a16019ca860e7573133",
+          "text": "🚗 volkswagen bora 📅 год выпуска: 03.2023 📈 пробег: 39 231 км ⚙️ двигатель: 1.5l, 113 л.с. 🚗 привод: передний (2wd) 🔑 ключи: 2 шт. 🎨 состояние: оригинальный окрас 💰 цена со всеми расходами: 1 750 000 ₽ (по текущему курсу юаня до г. краснодар) комплектаци"
+        },
+        {
+          "ts": 1772269527570,
+          "userId": "7369944",
+          "mid": "mid.ffffc13338500a16019ca37ee2120f8b",
+          "text": "продам машину opel corsa 1.4 at, 2001 категория: автомобили цена, ₽: 250000т пробег, км: 25 vin или номер кузова: wolo************* количество дверей: 5 поколение: с (2000-2003) тип двигателя: бензин привод: передний мощность, л.с.: 90 модификация: 1.4 ат (90 "
+        },
+        {
+          "ts": 1772208643985,
+          "userId": "12036342",
+          "mid": "mid.ffffc13338500a16019c9fdddf913f49",
+          "text": "не переплачивайте новые и исключительно оригинальные рычаги и тяги , детали подвески для bmw и mercedes , vag, корея,япония. цены ниже, отправка из москвы. ☎️ 89035496858, звоните пожалуйста, или пишите в вотсап,либо imo! в мах не отвечу из-за блокировки,лучше"
+        },
+        {
+          "ts": 1772188423808,
+          "userId": "6440625",
+          "mid": "mid.ffffc13338500a16019c9ea9568042c2",
+          "text": "🚗 exeed lx 📅 год выпуска: 12.2023 📈 пробег: 38 000 км ⚙️ двигатель: 1.5t, 147 л.с. 🚗 привод: передний (2wd) 🔑 ключи: 2 шт. 🎨 состояние: оригинальный окрас 💰 цена со всеми расходами: 1 800 000 ₽ (по текущему курсу юаня до г. краснодар) ⚠️ внимание! все а"
+        },
+        {
+          "ts": 1772101700381,
+          "userId": "102932620",
+          "mid": "mid.ffffc13338500a16019c997e0b1d17d0",
+          "text": "раковина морская харония тритонис очeнь кpacивая большaя рaкoвинa c oстрым завиткoм. дpугое название - pог тритона моллюск харонии обитает в тропическом индо-тихоокеанском регионе. длина 30 см. на кончике и на самой раковине есть скол. привезли из испании. рос"
+        },
+        {
+          "ts": 1772096869197,
+          "userId": "12036342",
+          "mid": "mid.ffffc13338500a16019c9934534d4772",
+          "text": "не переплачивайте новые и исключительно оригинальные рычаги и тяги , детали подвески для bmw и mercedes , vag, корея,япония. цены ниже, отправка из москвы. ☎️ 89035496858, звоните пожалуйста, или пишите в вотсап,либо imo! ⛔️в мах не отвечу из-за блокировки,луч"
+        },
+        {
+          "ts": 1772028329672,
+          "userId": "6440625",
+          "mid": "mid.ffffc13338500a16019c951e7ec851ae",
+          "text": "chery tiggo 7 из китая 🇨🇳 2025 год выпуска, пробег 3 тыс.км стоимость со всеми расходами 2.050.000 до г. краснодар 89146164641 89248067321 вячеслав h78zdlpseweuoyosuelt/rio4rzlt9nhgnzgtcnfby0x8rjuc5a7bqn5pnulzmcdwhr5qg4dlrwju8prbrgdxfsvbbcmvk1ba87/lpnnnqe= h"
+        },
+        {
+          "ts": 1769751645672,
+          "userId": "26895440",
+          "mid": "mid.ffffc13338500a16019c0d6b0de8701d",
+          "text": "🚩продаётся lada priora 2010г мотор без нареканий работает тихо масла не расходует. 🚩каробка переключается без хрустов плавно. 🚩по ходавой части всё что надо было паменять поменяно что надо было сделать сделано. 🚩дно стаканы караба всё целое без гнили. 🚩по"
+        },
+        {
+          "ts": 1766512658612,
+          "userId": "26895440",
+          "mid": "mid.ffffc13338500a16019b4c5c08b41fa4",
+          "text": "продаётся lada vesta 2021г. машина в хорошем состоянии,без вложений в комплектации (comfort) а именно (кондиционер, круиз-контроль, задний парктроник, электростеклоподъемники (передние и задние), электропривод и обогрев зеркал, мультируль,бортовой компьютер, а"
+        }
+      ]
+    },
+    {
+      "chatId": "-70275338827107",
+      "chatTitle": "СУВОРОВСКИЙ РОСТОВ 🏘️",
+      "scannedMessages": 21,
+      "matchedMessages": 0,
+      "uniqueUsers": 0,
+      "users": [],
+      "samples": []
+    },
+    {
+      "chatId": "-70092184778083",
+      "chatTitle": "Чалтырь Официальный",
+      "scannedMessages": 1464,
+      "matchedMessages": 0,
+      "uniqueUsers": 0,
+      "users": [],
+      "samples": []
+    }
+  ]
+}
