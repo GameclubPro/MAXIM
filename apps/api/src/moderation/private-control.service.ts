@@ -235,7 +235,7 @@ const SECTION_LABELS: Record<PrivateSectionKey, string> = {
 
 const CHANNEL_SECTION_LABELS: Record<ChannelSectionKey, string> = {
   post_suggestions: 'Предложить пост',
-  comments: 'Комментарии',
+  comments: 'Обсуждение и реакции',
 };
 
 const CHANNEL_SECTION_FIELDS: Record<ChannelSectionKey, Array<{
@@ -253,10 +253,10 @@ const CHANNEL_SECTION_FIELDS: Record<ChannelSectionKey, Array<{
     { key: 'postSuggestionsButtonUrl', label: 'Ссылка кнопки (из MAX)', type: 'url' },
   ],
   comments: [
-    { key: 'commentsEnabled', label: 'Комментарии включены в канале', type: 'boolean' },
-    { key: 'commentsModerationEnabled', label: 'Модерация комментариев ботом', type: 'boolean' },
-    { key: 'commentsSlowModeSeconds', label: 'Медленный режим (сек)', type: 'number', min: 0, max: 3600 },
-    { key: 'commentsMessageText', label: 'Подсказка для комментариев', type: 'text' },
+    { key: 'commentsEnabled', label: 'Сценарий обсуждения через бота/чат', type: 'boolean' },
+    { key: 'commentsModerationEnabled', label: 'Модерация обсуждений ботом', type: 'boolean' },
+    { key: 'commentsSlowModeSeconds', label: 'Пауза между сообщениями (сек)', type: 'number', min: 0, max: 3600 },
+    { key: 'commentsMessageText', label: 'Текст-подсказка для участников', type: 'text' },
   ],
 };
 
@@ -2433,8 +2433,8 @@ export class PrivateControlService {
       `Канал: ${selectedChannel.title}`,
       `ID: ${selectedChannel.id}`,
       '',
-      'Важно: права комментариев/предложки включаются в самом MAX-канале.',
-      'Здесь вы настраиваете тексты и кнопки бота.',
+      'Важно: в каналах MAX нет нативных комментариев.',
+      'Здесь: предложка, реакции и обсуждение через бота/чат.',
       '',
       'Разделы канала',
     ];
@@ -2442,7 +2442,7 @@ export class PrivateControlService {
     const rows: MaxMessageButton[][] = [
       [
         this.callbackButton('Предложить пост', this.cb('open_channel_section', 'post_suggestions')),
-        this.callbackButton('Комментарии', this.cb('open_channel_section', 'comments')),
+        this.callbackButton('Обсуждение и реакции', this.cb('open_channel_section', 'comments')),
       ],
       [this.callbackButton('Другой канал', this.cb('change_chat'))],
       [this.callbackButton('Помощь', this.cb('help'))],
@@ -2471,7 +2471,7 @@ export class PrivateControlService {
     const sectionHint =
       section === 'post_suggestions'
         ? 'Совет: ссылку для кнопки копируйте в MAX: канал → Поделиться → Скопировать ссылку.'
-        : 'Напоминание: включение комментариев делается в настройках самого канала MAX.';
+        : 'Комментариев в канале MAX нет: включайте реакции в MAX и направляйте обсуждение в бота/чат.';
 
     const lines: string[] = [
       `${CHANNEL_SECTION_LABELS[section]}`,

@@ -276,8 +276,8 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
       <GlassCard>
         <StatusState
           tone="warning"
-          title="Важно: права участников включаются в MAX"
-          description="Комментарии и приём предложенных постов включаются в самом канале MAX. Здесь вы настраиваете подсказки, кнопку и правила работы бота."
+          title="Важный момент по MAX"
+          description="В каналах MAX сейчас нет нативных комментариев. Здесь мы настраиваем предложку, реакции и сценарий обсуждения через бота/отдельный чат."
         />
       </GlassCard>
 
@@ -361,11 +361,17 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
       </GlassCard>
 
       <GlassCard className="settings-section" elevated>
-        <h2>Комментарии</h2>
+        <h2>Обсуждение и реакции</h2>
         <p className="field__hint">
-          Здесь настраиваются подсказки и правила бота для комментариев. Включение самих комментариев делается в
-          настройках канала MAX.
+          Импровизация под MAX 2026: обсуждение переносим в бота/чат, а в канале используем реакции.
         </p>
+
+        <label className="field">
+          <span>Реакции в канале (включаются в MAX вручную)</span>
+          <small className="field__hint">
+            Откройте канал в MAX → Настройки канала → Реакции. Бот это переключать не может.
+          </small>
+        </label>
 
         <label className="field">
           <span>
@@ -374,9 +380,9 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
               checked={draft.commentsEnabled}
               onChange={(event) => patchDraft('commentsEnabled', event.target.checked)}
             />{' '}
-            Комментарии включены в канале
+            Включить сценарий обсуждения через бота/чат
           </span>
-          <small className="field__hint">Это флаг состояния для интерфейса и команды.</small>
+          <small className="field__hint">При включении бот показывает участникам, где обсуждать посты.</small>
         </label>
 
         <label className="field">
@@ -386,12 +392,12 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
               checked={draft.commentsModerationEnabled}
               onChange={(event) => patchDraft('commentsModerationEnabled', event.target.checked)}
             />{' '}
-            Включить модерацию комментариев ботом
+            Включить модерацию обсуждений ботом
           </span>
         </label>
 
         <label className="field">
-          <span>Пауза между комментариями (сек)</span>
+          <span>Пауза между сообщениями в обсуждении (сек)</span>
           <input
             type="number"
             min={0}
@@ -410,12 +416,12 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
         </label>
 
         <label className="field">
-          <span>Подсказка для комментаторов</span>
+          <span>Текст для участников (куда писать и правила)</span>
           <textarea
             rows={3}
             value={draft.commentsMessageText}
             onChange={(event) => patchDraft('commentsMessageText', event.target.value)}
-            placeholder="Например: без оскорблений и рекламы, нарушители блокируются автоматически."
+            placeholder="Например: обсуждаем посты в личке бота или в чате @..., без оскорблений и рекламы."
           />
         </label>
       </GlassCard>
