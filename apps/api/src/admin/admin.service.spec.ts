@@ -411,7 +411,7 @@ describe('AdminService.sendBroadcast', () => {
 });
 
 describe('AdminService.publishChannelEngagementMessage', () => {
-  it('publishes channel buttons as MAX startapp deep links', async () => {
+  it('publishes channel buttons as MAX deep links via link buttons', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       entityType: 'CHANNEL',
@@ -455,19 +455,17 @@ describe('AdminService.publishChannelEngagementMessage', () => {
 
     expect(dispatchOptions).toEqual({ immediate: true });
     expect(commentsButton).toMatchObject({
-      type: 'open_app',
+      type: 'link',
       text: 'Комментарии',
-      contactId: '777000',
     });
     expect(suggestButton).toMatchObject({
-      type: 'open_app',
+      type: 'link',
       text: 'Предложить пост',
-      contactId: '777000',
     });
-    expect(commentsButton.webApp).toContain('https://max.ru/777000_bot?startapp=');
-    expect(suggestButton.webApp).toContain('https://max.ru/777000_bot?startapp=');
+    expect(commentsButton.url).toContain('https://max.ru/777000_bot?startapp=');
+    expect(suggestButton.url).toContain('https://max.ru/777000_bot?startapp=');
 
-    const commentsUrl = new URL(commentsButton.webApp);
+    const commentsUrl = new URL(commentsButton.url);
     const commentsStartParam = commentsUrl.searchParams.get('startapp');
     expect(commentsStartParam).toMatch(/^cd-/u);
   });

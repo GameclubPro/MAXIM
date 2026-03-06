@@ -411,36 +411,50 @@ export class AdminService {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const commentsUrl = this.buildChannelDialogWebAppUrl(chatId, 'comments');
-    const suggestUrl = this.buildChannelDialogWebAppUrl(chatId, 'suggest');
+    const commentsUrl = this.buildChannelDialogLaunchUrl(chatId, 'comments');
+    const suggestUrl = this.buildChannelDialogLaunchUrl(chatId, 'suggest');
+    const commentsWebAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, 'comments');
+    const suggestWebAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, 'suggest');
     const botContactId = this.resolveBotContactId();
     const buttons: MaxMessageButton[] = [];
     buttons.push(
-      commentsUrl && botContactId
+      commentsUrl
+        ? {
+            type: 'link',
+            text: parsed.data.commentsButtonText,
+            url: commentsUrl,
+          }
+        : commentsWebAppUrl && botContactId
         ? {
             type: 'open_app',
             text: parsed.data.commentsButtonText,
-            webApp: commentsUrl,
+            webApp: commentsWebAppUrl,
             contactId: botContactId,
           }
         : {
             type: 'link',
             text: parsed.data.commentsButtonText,
-            url: commentsUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
+            url: commentsWebAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
           },
     );
     buttons.push(
-      suggestUrl && botContactId
+      suggestUrl
+        ? {
+            type: 'link',
+            text: parsed.data.suggestButtonText,
+            url: suggestUrl,
+          }
+        : suggestWebAppUrl && botContactId
         ? {
             type: 'open_app',
             text: parsed.data.suggestButtonText,
-            webApp: suggestUrl,
+            webApp: suggestWebAppUrl,
             contactId: botContactId,
           }
         : {
             type: 'link',
             text: parsed.data.suggestButtonText,
-            url: suggestUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
+            url: suggestWebAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
           },
     );
 
@@ -2016,12 +2030,11 @@ export class AdminService {
     return `Канал ${chatId}`;
   }
 
-  private buildChannelDialogWebAppUrl(chatId: string, type: ChannelDialogType): string | null {
-    const launchUrl = this.buildMiniappStartUrl(this.buildChannelDialogStartParam(chatId, type));
-    if (launchUrl) {
-      return launchUrl;
-    }
+  private buildChannelDialogLaunchUrl(chatId: string, type: ChannelDialogType): string | null {
+    return this.buildMiniappStartUrl(this.buildChannelDialogStartParam(chatId, type));
+  }
 
+  private buildChannelDialogDirectWebAppUrl(chatId: string, type: ChannelDialogType): string | null {
     if (!this.appBaseUrl) {
       return null;
     }
