@@ -1126,11 +1126,14 @@ export class PrivateControlService {
         if (!chatId) {
           throw new BadRequestException('Channel is not selected');
         }
+        const settings = await this.adminService.getChannelSettings(chatId, context.actor);
 
         await this.adminService.publishChannelEngagementMessage(chatId, context.actor, {
           text: 'Есть идея или обратная связь? Нажмите кнопку ниже.',
           commentsButtonText: '💬 Комментарии',
-          suggestButtonText: '📰 Предложить пост',
+          suggestButtonText: settings.postSuggestionsButtonText.trim() || '📰 Предложить пост',
+          includeCommentsButton: settings.commentsEnabled,
+          includeSuggestButton: settings.postSuggestionsEnabled,
         });
 
         const view = await this.renderChannelHomeScreen(context, session);
@@ -3520,9 +3523,7 @@ export class PrivateControlService {
     };
   }
 
-  private findSettingMatches(
-    query: string,
-  ): Array<{
+  private findSettingMatches(query: string): Array<{
     section: PrivateSectionKey;
     key: keyof ChatSettings;
     label: string;

@@ -66,6 +66,8 @@ export type PublishChannelEngagementPayload = {
   text: string;
   commentsButtonText: string;
   suggestButtonText: string;
+  includeCommentsButton: boolean;
+  includeSuggestButton: boolean;
 };
 
 export type CreateChannelDialogMessagePayload = {

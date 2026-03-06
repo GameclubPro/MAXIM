@@ -7,7 +7,7 @@ import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import { cn } from '../lib/cn';
-import type { ApiClient } from '../lib/api-client';
+import type { ApiClient, PublishChannelEngagementPayload } from '../lib/api-client';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { saveLastChatId, saveLastEntityType } from '../lib/last-chat';
 
@@ -15,6 +15,10 @@ type ChannelRouteState = {
   chatTitle: string;
   chatLink: string;
 };
+
+const DEFAULT_ENGAGEMENT_TEXT = 'Есть идея или обратная связь? Нажмите кнопку ниже.';
+const DEFAULT_COMMENTS_BUTTON_TEXT = '💬 Комментарии';
+const DEFAULT_SUGGEST_BUTTON_TEXT = '📰 Предложить пост';
 
 function isHttpUrl(value: string): boolean {
   try {
@@ -112,6 +116,20 @@ function ChannelSettingsToggleCard({
   );
 }
 
+function normalizeChannelSettingsDraft(
+  draft: ChannelSettings,
+  resolvedChannelLink: string,
+): ChannelSettings {
+  return {
+    ...draft,
+    postSuggestionsButtonText: draft.postSuggestionsButtonText.trim() || 'Предложить пост',
+    postSuggestionsButtonUrl:
+      draft.postSuggestionsButtonEnabled && resolvedChannelLink
+        ? resolvedChannelLink
+        : draft.postSuggestionsButtonUrl,
+  };
+}
+
 export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   const { chatId = '' } = useParams();
   const location = useLocation();
@@ -120,13 +138,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   const routeChatLink = routeState.chatLink;
   const [draft, setDraft] = useState<ChannelSettings | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState<ChannelSettings | null>(null);
-  const [engagementText, setEngagementText] = useState(
-    'Есть идея или обратная связь? Нажмите кнопку ниже.',
-  );
-  const [engagementCommentsButtonText, setEngagementCommentsButtonText] =
-    useState('💬 Комментарии');
-  const [engagementSuggestButtonText, setEngagementSuggestButtonText] =
-    useState('📰 Предложить пост');
+  const [engagementText, setEngagementText] = useState(DEFAULT_ENGAGEMENT_TEXT);
   const { pushToast } = useToast();
 
   const settingsQuery = useQuery({
@@ -162,12 +174,8 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   });
 
   const publishEngagementMutation = useMutation({
-    mutationFn: () =>
-      api.publishChannelEngagement(chatId, {
-        text: engagementText,
-        commentsButtonText: engagementCommentsButtonText,
-        suggestButtonText: engagementSuggestButtonText,
-      }),
+    mutationFn: (payload: PublishChannelEngagementPayload) =>
+      api.publishChannelEngagement(chatId, payload),
     onSuccess: () => {
       pushToast({
         tone: 'success',
@@ -305,20 +313,72 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     });
   };
 
-  const saveDraft = () => {
+  const toggleEngagementOption = (key: 'commentsEnabled' | 'postSuggestionsEnabled') => {
+    if (!draft) {
+      return;
+    }
+
+    const otherKey = key === 'commentsEnabled' ? 'postSuggestionsEnabled' : 'commentsEnabled';
+    const nextValue = !draft[key];
+    if (!nextValue && !draft[otherKey]) {
+      pushToast({
+        tone: 'info',
+        title: 'Нужна хотя бы одна кнопка',
+        description: 'Оставьте комментарии, предложку или оба варианта.',
+      });
+      return;
+    }
+
+    patchDraft(key, nextValue);
+  };
+
+  const saveDraft = async () => {
     if (!draft || saveMutation.isPending || !isDirty) {
       return;
     }
 
-    saveMutation.mutate({
-      ...draft,
-      postSuggestionsButtonText: draft.postSuggestionsButtonText.trim() || 'Предложить пост',
-      postSuggestionsButtonUrl:
-        draft.postSuggestionsButtonEnabled && resolvedChannelLink
-          ? resolvedChannelLink
-          : draft.postSuggestionsButtonUrl,
-    });
+    await saveMutation.mutateAsync(normalizeChannelSettingsDraft(draft, resolvedChannelLink));
   };
+
+  const handlePublishEngagement = async () => {
+    if (!draft || publishEngagementMutation.isPending || saveMutation.isPending) {
+      return;
+    }
+
+    const normalizedDraft = normalizeChannelSettingsDraft(draft, resolvedChannelLink);
+    if (!normalizedDraft.commentsEnabled && !normalizedDraft.postSuggestionsEnabled) {
+      pushToast({
+        tone: 'info',
+        title: 'Нечего публиковать',
+        description: 'Включите комментарии, предложку или оба варианта.',
+      });
+      return;
+    }
+
+    try {
+      if (isDirty) {
+        await saveMutation.mutateAsync(normalizeChannelSettingsDraft(draft, resolvedChannelLink));
+      }
+
+      await publishEngagementMutation.mutateAsync({
+        text: engagementText,
+        commentsButtonText: DEFAULT_COMMENTS_BUTTON_TEXT,
+        suggestButtonText:
+          normalizedDraft.postSuggestionsButtonText.trim() || DEFAULT_SUGGEST_BUTTON_TEXT,
+        includeCommentsButton: normalizedDraft.commentsEnabled,
+        includeSuggestButton: normalizedDraft.postSuggestionsEnabled,
+      });
+    } catch {
+      return;
+    }
+  };
+
+  const engagementButtons = [
+    draft.commentsEnabled ? DEFAULT_COMMENTS_BUTTON_TEXT : null,
+    draft.postSuggestionsEnabled
+      ? draft.postSuggestionsButtonText.trim() || DEFAULT_SUGGEST_BUTTON_TEXT
+      : null,
+  ].filter((value): value is string => Boolean(value));
 
   return (
     <div className="channel-settings-screen page-enter">
@@ -330,11 +390,32 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
       </GlassCard>
 
       <GlassCard className="channel-settings-card channel-settings-card--engagement" elevated>
-        <ChannelSettingsSectionHead title="Кнопки под постом" description="Что увидят подписчики" />
+        <ChannelSettingsSectionHead
+          title="Кнопки под постом"
+          description="Бот прикрепит выбранные варианты автоматически"
+        />
+
+        <div className="channel-settings-choice-grid">
+          <button
+            type="button"
+            className={cn('channel-settings-choice', draft.commentsEnabled && 'is-active')}
+            onClick={() => toggleEngagementOption('commentsEnabled')}
+          >
+            {DEFAULT_COMMENTS_BUTTON_TEXT}
+          </button>
+          <button
+            type="button"
+            className={cn('channel-settings-choice', draft.postSuggestionsEnabled && 'is-active')}
+            onClick={() => toggleEngagementOption('postSuggestionsEnabled')}
+          >
+            {draft.postSuggestionsButtonText.trim() || DEFAULT_SUGGEST_BUTTON_TEXT}
+          </button>
+        </div>
 
         <div className="channel-settings-preview">
-          <span>{engagementCommentsButtonText.trim() || '💬 Комментарии'}</span>
-          <span>{engagementSuggestButtonText.trim() || '📰 Предложить пост'}</span>
+          {engagementButtons.map((buttonText) => (
+            <span key={buttonText}>{buttonText}</span>
+          ))}
         </div>
 
         <label className="field">
@@ -343,42 +424,21 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
             rows={3}
             value={engagementText}
             onChange={(event) => setEngagementText(event.target.value)}
-            placeholder="Есть идея или обратная связь? Нажмите кнопку ниже."
+            placeholder={DEFAULT_ENGAGEMENT_TEXT}
             maxLength={2_000}
           />
         </label>
-
-        <div className="channel-settings-inline-fields">
-          <label className="field">
-            <span>Первая кнопка</span>
-            <input
-              type="text"
-              value={engagementCommentsButtonText}
-              onChange={(event) => setEngagementCommentsButtonText(event.target.value)}
-              maxLength={32}
-            />
-          </label>
-          <label className="field">
-            <span>Вторая кнопка</span>
-            <input
-              type="text"
-              value={engagementSuggestButtonText}
-              onChange={(event) => setEngagementSuggestButtonText(event.target.value)}
-              maxLength={32}
-            />
-          </label>
-        </div>
 
         <div className="channel-settings-card__footer">
           <button
             type="button"
             className="button button--accent"
-            onClick={() => publishEngagementMutation.mutate()}
+            onClick={() => void handlePublishEngagement()}
             disabled={
+              saveMutation.isPending ||
               publishEngagementMutation.isPending ||
               !engagementText.trim() ||
-              !engagementCommentsButtonText.trim() ||
-              !engagementSuggestButtonText.trim()
+              engagementButtons.length === 0
             }
           >
             {publishEngagementMutation.isPending ? 'Публикуем...' : 'Опубликовать пост'}
@@ -386,17 +446,22 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
         </div>
       </GlassCard>
 
-      <GlassCard className="channel-settings-card" elevated>
-        <ChannelSettingsSectionHead title="Предложка" description="Приём идей от подписчиков" />
+      {draft.postSuggestionsEnabled ? (
+        <GlassCard className="channel-settings-card" elevated>
+          <ChannelSettingsSectionHead title="Предложка" />
 
-        <ChannelSettingsToggleCard
-          title="Включить предложку"
-          checked={draft.postSuggestionsEnabled}
-          onChange={(nextValue) => patchDraft('postSuggestionsEnabled', nextValue)}
-        />
-
-        {draft.postSuggestionsEnabled ? (
           <div className="channel-settings-stack">
+            <label className="field">
+              <span>Название кнопки</span>
+              <input
+                type="text"
+                value={draft.postSuggestionsButtonText}
+                onChange={(event) => patchDraft('postSuggestionsButtonText', event.target.value)}
+                placeholder="Предложить пост"
+                maxLength={32}
+              />
+            </label>
+
             <label className="field">
               <span>Короткая инструкция</span>
               <textarea
@@ -406,51 +471,20 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                 placeholder="Например: отправьте текст и фото, ответим после проверки."
               />
             </label>
-
-            <ChannelSettingsToggleCard
-              title="Показывать кнопку"
-              checked={draft.postSuggestionsButtonEnabled}
-              onChange={(nextValue) => patchDraft('postSuggestionsButtonEnabled', nextValue)}
-            />
-
-            {draft.postSuggestionsButtonEnabled ? (
-              <div className="channel-settings-stack channel-settings-stack--tight">
-                {resolvedChannelLink ? null : (
-                  <label className="field">
-                    <span>Ссылка</span>
-                    <input
-                      type="url"
-                      value={draft.postSuggestionsButtonUrl}
-                      onChange={(event) =>
-                        patchDraft('postSuggestionsButtonUrl', event.target.value)
-                      }
-                      placeholder="https://max.ru/channel/..."
-                    />
-                  </label>
-                )}
-              </div>
-            ) : null}
           </div>
-        ) : null}
-      </GlassCard>
+        </GlassCard>
+      ) : null}
 
-      <GlassCard className="channel-settings-card" elevated>
-        <ChannelSettingsSectionHead title="Комментарии" description="Обсуждение через mini app" />
+      {draft.commentsEnabled ? (
+        <GlassCard className="channel-settings-card" elevated>
+          <ChannelSettingsSectionHead title="Комментарии" />
 
-        <ChannelSettingsToggleCard
-          title="Включить комментарии"
-          checked={draft.commentsEnabled}
-          onChange={(nextValue) => patchDraft('commentsEnabled', nextValue)}
-        />
+          <ChannelSettingsToggleCard
+            title="Модерация"
+            checked={draft.commentsModerationEnabled}
+            onChange={(nextValue) => patchDraft('commentsModerationEnabled', nextValue)}
+          />
 
-        <ChannelSettingsToggleCard
-          title="Включить модерацию"
-          checked={draft.commentsModerationEnabled}
-          onChange={(nextValue) => patchDraft('commentsModerationEnabled', nextValue)}
-          disabled={!draft.commentsEnabled}
-        />
-
-        {draft.commentsEnabled ? (
           <div className="channel-settings-stack">
             <div className="channel-settings-inline-fields channel-settings-inline-fields--narrow">
               <label className="field">
@@ -486,15 +520,15 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
               />
             </label>
           </div>
-        ) : null}
-      </GlassCard>
+        </GlassCard>
+      ) : null}
 
       {isDirty || saveMutation.isPending ? (
         <GlassCard className="channel-settings-savebar" elevated>
           <button
             type="button"
             className="button button--accent"
-            onClick={saveDraft}
+            onClick={() => void saveDraft()}
             disabled={saveMutation.isPending}
           >
             {saveMutation.isPending ? 'Сохраняем...' : 'Сохранить'}

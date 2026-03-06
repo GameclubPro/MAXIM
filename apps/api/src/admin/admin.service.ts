@@ -462,12 +462,19 @@ export class AdminService {
             text: parsed.data.suggestButtonText,
             url: suggestWebAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
           };
+    const buttons: MaxMessageButton[][] = [];
+    if (parsed.data.includeCommentsButton) {
+      buttons.push([commentsButton]);
+    }
+    if (parsed.data.includeSuggestButton) {
+      buttons.push([suggestButton]);
+    }
 
     await this.maxClient.sendMessage(
       chatId,
       parsed.data.text,
       {
-        buttons: [[commentsButton], [suggestButton]],
+        buttons,
       } satisfies MaxSendMessageOptions,
       { immediate: true },
     );
@@ -481,6 +488,8 @@ export class AdminService {
           text: parsed.data.text,
           commentsButtonText: parsed.data.commentsButtonText,
           suggestButtonText: parsed.data.suggestButtonText,
+          includeCommentsButton: parsed.data.includeCommentsButton,
+          includeSuggestButton: parsed.data.includeSuggestButton,
           threadId,
           commentsUrl,
           suggestUrl,

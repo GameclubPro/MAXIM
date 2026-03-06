@@ -645,16 +645,28 @@ export type SendBroadcastResult = z.infer<typeof sendBroadcastResultSchema>;
 export const channelDialogTypeSchema = z.enum(['comments', 'suggest']);
 export type ChannelDialogType = z.infer<typeof channelDialogTypeSchema>;
 
-export const publishChannelEngagementRequestSchema = z.object({
-  text: z
-    .string()
-    .trim()
-    .min(1)
-    .max(2_000)
-    .default('Есть идея или обратная связь? Нажмите кнопку ниже.'),
-  commentsButtonText: z.string().trim().min(1).max(32).default('💬 Комментарии'),
-  suggestButtonText: z.string().trim().min(1).max(32).default('📰 Предложить пост'),
-});
+export const publishChannelEngagementRequestSchema = z
+  .object({
+    text: z
+      .string()
+      .trim()
+      .min(1)
+      .max(2_000)
+      .default('Есть идея или обратная связь? Нажмите кнопку ниже.'),
+    commentsButtonText: z.string().trim().min(1).max(32).default('💬 Комментарии'),
+    suggestButtonText: z.string().trim().min(1).max(32).default('📰 Предложить пост'),
+    includeCommentsButton: z.boolean().default(true),
+    includeSuggestButton: z.boolean().default(true),
+  })
+  .superRefine((value, ctx) => {
+    if (!value.includeCommentsButton && !value.includeSuggestButton) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['includeCommentsButton'],
+        message: 'Включите хотя бы один вариант кнопки под постом.',
+      });
+    }
+  });
 export type PublishChannelEngagementRequest = z.infer<typeof publishChannelEngagementRequestSchema>;
 
 export const publishChannelEngagementResultSchema = z.object({

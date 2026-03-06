@@ -507,6 +507,96 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(publishAuditPayload.threadId).toBe(commentsToken.d);
   });
 
+  it('publishes only the selected engagement button rows', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await service.publishChannelEngagementMessage(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Нажмите кнопку ниже.',
+        commentsButtonText: 'Комментарии',
+        suggestButtonText: 'Предложить пост',
+        includeCommentsButton: false,
+        includeSuggestButton: true,
+      },
+    );
+
+    const [, , options] = maxClient.sendMessage.mock.calls[0] ?? [];
+    expect(options.buttons).toHaveLength(1);
+    expect(options.buttons?.[0]).toHaveLength(1);
+    expect(options.buttons?.[0]?.[0]).toMatchObject({
+      type: 'link',
+      text: 'Предложить пост',
+    });
+  });
+
+  it('rejects publishing when all engagement buttons are disabled', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.publishChannelEngagementMessage(
+        'channel-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        {
+          text: 'Нажмите кнопку ниже.',
+          commentsButtonText: 'Комментарии',
+          suggestButtonText: 'Предложить пост',
+          includeCommentsButton: false,
+          includeSuggestButton: false,
+        },
+      ),
+    ).rejects.toThrow();
+
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+  });
+
   it('stores and queries dialog messages inside the thread encoded in the button token', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
