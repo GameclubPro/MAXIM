@@ -3,15 +3,17 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@ne
 import { ConfigService } from '@nestjs/config';
 import type { MaxUpdate } from '@maxim/contracts';
 import {
+  ChatEntityType,
   EventType,
   Operator,
   Prisma,
   SanctionAction,
   WebhookStatus,
+  type ChannelSettings as PersistedChannelSettings,
   type ChatSettings,
 } from '@prisma/client';
 import type { Job } from 'bullmq';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, randomUUID } from 'node:crypto';
 import {
   MaxClientService,
   type MaxActionDispatchOptions,
@@ -46,6 +48,13 @@ type ChatAdminCheckResult = {
   isAdmin: boolean;
   source: ChatAdminCheckSource;
 };
+
+type ManagedChannelContext = {
+  channelSettings: PersistedChannelSettings;
+  adminUserIds: string[];
+};
+
+type ChannelDialogType = 'comments' | 'suggest';
 
 const DEFAULT_BAN_DURATION_HOURS = 6;
 const DEFAULT_BOT_BUTTON_TEXT = 'Открыть';
@@ -105,6 +114,9 @@ const PRIVATE_HELP_TEXT = [
   '- /help',
 ].join('\n');
 const MAX_FORWARD_SCAN_DEPTH = 8;
+const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
+const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
+const CHANNEL_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
 const GLOBAL_BLACKLIST_TOGGLE_CACHE_TTL_MS = 30_000;
 const GLOBAL_CROSS_CHAT_SPAM_TOGGLE_CACHE_TTL_MS = 30_000;
 const GLOBAL_CROSS_CHAT_SPAM_WINDOW_SEC = 2 * 60;
@@ -166,6 +178,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private nightModeAnnounceInFlight = false;
   private readonly appBaseUrl: string | null;
   private readonly explicitBotContactId: string | null;
+  private readonly maxBotToken: string | null;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -178,6 +191,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     @Optional() private readonly redisCounter?: RedisCounterService,
     @Optional() private readonly privateControlService?: PrivateControlService,
   ) {
+    this.maxBotToken = this.normalizeSecret(configService?.get<string>('MAX_BOT_TOKEN'));
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
     this.ownBotUserIdVariants = this.buildBotIdVariants(this.ownBotUserId);
     this.appBaseUrl = this.normalizeAppBaseUrl(configService?.get<string>('APP_BASE_URL'));
@@ -275,6 +289,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         return;
       }
       await this.handlePrivateChatControl(update);
+      return;
+    }
+
+    const channelMessage = this.isChannelMessage(update);
+    const managedChannel = channelMessage
+      ? await this.loadManagedChannelContext(chatId, chatTitle)
+      : null;
+    if (channelMessage || managedChannel) {
+      await this.handleChannelUpdate(update, managedChannel);
       return;
     }
 
@@ -419,7 +442,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const senderChatAdminCheck = await this.resolveSenderChatAdminCheck(chatId, chat.adminUserIds, senderId);
+    const senderChatAdminCheck = await this.resolveSenderChatAdminCheck(
+      chatId,
+      chat.adminUserIds,
+      senderId,
+    );
     if (senderChatAdminCheck.isAdmin) {
       this.logger.debug(
         {
@@ -794,14 +821,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
       }
     } else if (isMessageLimitsHit) {
-      action = this.resolveMessageLimitsEscalationAction(
-        messageLimitsViolationCount12h ?? 1,
-        {
-          warnEnabled: settings.messageLimitsWarnEnabled,
-          banEnabled: settings.messageLimitsBanEnabled,
-          kickEnabled: settings.messageLimitsKickEnabled,
-        },
-      );
+      action = this.resolveMessageLimitsEscalationAction(messageLimitsViolationCount12h ?? 1, {
+        warnEnabled: settings.messageLimitsWarnEnabled,
+        banEnabled: settings.messageLimitsBanEnabled,
+        kickEnabled: settings.messageLimitsKickEnabled,
+      });
 
       if (action === SanctionAction.WARN) {
         try {
@@ -2094,8 +2118,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const mimeType = this.readLowerString(row.mime_type ?? row.mimeType);
     const fileName = this.readLowerString(row.file_name ?? row.fileName ?? row.filename);
     const mediaType = this.readLowerString(row.media_type ?? row.mediaType);
-    const stickerContext =
-      inStickerContext || type === 'sticker' || mediaType === 'sticker';
+    const stickerContext = inStickerContext || type === 'sticker' || mediaType === 'sticker';
     const fileContext =
       inFileContext ||
       type === 'file' ||
@@ -3011,7 +3034,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const { text, update, mediaFlags } = params;
     const normalizedText = this.normalizeSpamText(text);
     const rawRecord = this.asRecord(update.raw);
-    const messageNode = rawRecord ? this.extractRawMessageNode(rawRecord) ?? rawRecord : null;
+    const messageNode = rawRecord ? (this.extractRawMessageNode(rawRecord) ?? rawRecord) : null;
     const forwardedNodes = messageNode ? this.collectForwardedNodes(messageNode) : [];
 
     if (forwardedNodes.length > 0) {
@@ -3083,7 +3106,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     depth = 0,
     mediaContext = false,
   ) {
-    if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined || tokens.size >= 120) {
+    if (
+      depth > MAX_FORWARD_SCAN_DEPTH ||
+      node === null ||
+      node === undefined ||
+      tokens.size >= 120
+    ) {
       return;
     }
 
@@ -3221,7 +3249,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const now = Date.now();
     if (
       this.globalCrossChatSpamEnabledCache &&
-      now - this.globalCrossChatSpamEnabledCache.checkedAt <= GLOBAL_CROSS_CHAT_SPAM_TOGGLE_CACHE_TTL_MS
+      now - this.globalCrossChatSpamEnabledCache.checkedAt <=
+        GLOBAL_CROSS_CHAT_SPAM_TOGGLE_CACHE_TTL_MS
     ) {
       return this.globalCrossChatSpamEnabledCache.value;
     }
@@ -3361,7 +3390,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
 
         const nightSessionKey = this.buildNightModeSessionKey(startMinutes, endMinutes, timezone);
-        const noticeAlreadySent = await this.wasNightModeNoticeSent(settings.chatId, nightSessionKey);
+        const noticeAlreadySent = await this.wasNightModeNoticeSent(
+          settings.chatId,
+          nightSessionKey,
+        );
         if (noticeAlreadySent) {
           continue;
         }
@@ -3544,7 +3576,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      await this.maxClient.sendMessage(chatId, BOT_STARTED_INSTRUCTION_TEXT, BOT_STARTED_INSTRUCTION_OPTIONS);
+      await this.maxClient.sendMessage(
+        chatId,
+        BOT_STARTED_INSTRUCTION_TEXT,
+        BOT_STARTED_INSTRUCTION_OPTIONS,
+      );
       if (this.privateControlService) {
         await this.privateControlService.handleBotStarted(update);
       } else {
@@ -3600,7 +3636,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       const chat = this.asRecord(candidate.chat);
       const type = this.readLowerString(
-        candidate.chat_type ?? candidate.chatType ?? chat?.type ?? chat?.chat_type ?? chat?.chatType,
+        candidate.chat_type ??
+          candidate.chatType ??
+          chat?.type ??
+          chat?.chat_type ??
+          chat?.chatType,
       );
       if (type) {
         return type;
@@ -3826,7 +3866,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return typeof text === 'string' && text.trim().startsWith('/');
   }
 
-  private async executePrivateCommand(chatId: string, command: PrivateControlCommand): Promise<void> {
+  private async executePrivateCommand(
+    chatId: string,
+    command: PrivateControlCommand,
+  ): Promise<void> {
     if (command === 'help') {
       await this.sendPrivateMenu(chatId, PRIVATE_HELP_TEXT);
       return;
@@ -3904,8 +3947,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             contactId: botContactId,
           }
         : {
-          type: 'link',
-          text: 'Открыть приложение',
+            type: 'link',
+            text: 'Открыть приложение',
             url: miniappUrl ?? 'https://maxim.play-team.ru/app/',
           };
 
@@ -4171,7 +4214,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async writeChatAdminsToSharedCache(chatId: string, adminUserIds: Set<string>): Promise<void> {
+  private async writeChatAdminsToSharedCache(
+    chatId: string,
+    adminUserIds: Set<string>,
+  ): Promise<void> {
     const setStringWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
       ?.setStringWithTtl;
     if (typeof setStringWithTtl !== 'function') {
@@ -4566,6 +4612,364 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       : null;
   }
 
+  private async handleChannelUpdate(
+    update: MaxUpdate,
+    managedChannel: ManagedChannelContext | null,
+  ): Promise<void> {
+    if (!managedChannel || update.type !== 'message_created' || !update.message) {
+      return;
+    }
+
+    const { chatId, senderId, messageId, text } = update.message;
+    if (!senderId || !messageId) {
+      return;
+    }
+
+    if (
+      this.isOwnBotSender(senderId) ||
+      this.isBotAuthoredMessage(update) ||
+      this.isServiceAuthoredMessage(update)
+    ) {
+      return;
+    }
+
+    const { includeCommentsButton, includeSuggestButton } = this.resolveChannelAutoPostButtons(
+      managedChannel.channelSettings.autoPostButtonsMode,
+    );
+    if (!includeCommentsButton && !includeSuggestButton) {
+      return;
+    }
+
+    const senderAdminCheck = await this.resolveSenderChatAdminCheck(
+      chatId,
+      managedChannel.adminUserIds,
+      senderId,
+    );
+    if (!senderAdminCheck.isAdmin) {
+      return;
+    }
+
+    const alreadyAttached = await this.prisma.auditLog.findFirst({
+      where: {
+        chatId,
+        action: CHANNEL_DIALOG_AUTO_ATTACH_ACTION,
+        payload: {
+          path: ['messageId'],
+          equals: messageId,
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+    if (alreadyAttached) {
+      return;
+    }
+
+    const threadId = randomUUID();
+    const buttons = this.buildChannelAutoPostButtons(
+      chatId,
+      threadId,
+      managedChannel.channelSettings,
+      includeCommentsButton,
+      includeSuggestButton,
+    );
+    if (buttons.length === 0) {
+      return;
+    }
+
+    try {
+      await this.maxClient.editMessageInlineKeyboard(
+        chatId,
+        messageId,
+        typeof text === 'string' && text.trim() ? text : null,
+        {
+          buttons,
+          debugContext: {
+            screen: 'channel-auto-post',
+            action: 'attach-buttons',
+          },
+        },
+      );
+    } catch (error: unknown) {
+      const status = this.extractStatusCode(error);
+      if (status && status < 500 && status !== 429) {
+        this.logger.warn(
+          {
+            chatId,
+            messageId,
+            status,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to auto-attach channel post buttons; skipping retry',
+        );
+        return;
+      }
+      throw error;
+    }
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: senderId,
+        action: CHANNEL_DIALOG_AUTO_ATTACH_ACTION,
+        payload: {
+          messageId,
+          threadId,
+          includeCommentsButton,
+          includeSuggestButton,
+          autoPostButtonsMode: managedChannel.channelSettings.autoPostButtonsMode,
+        },
+      },
+    });
+  }
+
+  private async loadManagedChannelContext(
+    chatId: string,
+    chatTitle?: string,
+  ): Promise<ManagedChannelContext | null> {
+    if (typeof this.prisma.chat.findUnique !== 'function') {
+      return null;
+    }
+
+    let channel = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      include: {
+        channelSettings: true,
+        admins: {
+          select: {
+            userId: true,
+          },
+        },
+      },
+    });
+
+    if (!channel || channel.entityType !== ChatEntityType.CHANNEL) {
+      return null;
+    }
+
+    if (!channel.channelSettings || (chatTitle?.trim() && channel.title !== chatTitle.trim())) {
+      if (typeof this.prisma.chat.update !== 'function') {
+        return channel.channelSettings
+          ? {
+              channelSettings: channel.channelSettings,
+              adminUserIds: channel.admins.map((item) => item.userId),
+            }
+          : null;
+      }
+
+      channel = await this.prisma.chat.update({
+        where: { id: chatId },
+        data: {
+          ...(chatTitle?.trim()
+            ? {
+                title: chatTitle.trim(),
+              }
+            : {}),
+          channelSettings: {
+            upsert: {
+              update: {},
+              create: {},
+            },
+          },
+        },
+        include: {
+          channelSettings: true,
+          admins: {
+            select: {
+              userId: true,
+            },
+          },
+        },
+      });
+    }
+
+    if (!channel.channelSettings) {
+      return null;
+    }
+
+    return {
+      channelSettings: channel.channelSettings,
+      adminUserIds: channel.admins.map((item) => item.userId),
+    };
+  }
+
+  private isChannelMessage(update: MaxUpdate): boolean {
+    const raw = this.asRecord(update.raw);
+    const message = this.asRecord(raw?.message);
+    const recipient = this.asRecord(message?.recipient);
+    const chat = this.asRecord(message?.chat);
+
+    const candidates = [
+      recipient?.chat_type,
+      recipient?.chatType,
+      chat?.chat_type,
+      chat?.chatType,
+      raw?.chat_type,
+      raw?.chatType,
+    ];
+
+    return candidates.some((candidate) => this.readLowerString(candidate) === 'channel');
+  }
+
+  private resolveChannelAutoPostButtons(mode: PersistedChannelSettings['autoPostButtonsMode']) {
+    switch (mode) {
+      case 'COMMENTS':
+        return {
+          includeCommentsButton: true,
+          includeSuggestButton: false,
+        };
+      case 'SUGGEST':
+        return {
+          includeCommentsButton: false,
+          includeSuggestButton: true,
+        };
+      case 'BOTH':
+        return {
+          includeCommentsButton: true,
+          includeSuggestButton: true,
+        };
+      default:
+        return {
+          includeCommentsButton: false,
+          includeSuggestButton: false,
+        };
+    }
+  }
+
+  private buildChannelAutoPostButtons(
+    chatId: string,
+    threadId: string,
+    settings: PersistedChannelSettings,
+    includeCommentsButton: boolean,
+    includeSuggestButton: boolean,
+  ): MaxMessageButton[][] {
+    const rows: MaxMessageButton[][] = [];
+
+    if (includeCommentsButton) {
+      rows.push([this.buildChannelDialogButton(chatId, 'comments', threadId, '💬 Комментарии')]);
+    }
+
+    if (includeSuggestButton) {
+      rows.push([
+        this.buildChannelDialogButton(
+          chatId,
+          'suggest',
+          threadId,
+          settings.postSuggestionsButtonText.trim() || '📰 Предложить пост',
+        ),
+      ]);
+    }
+
+    return rows;
+  }
+
+  private buildChannelDialogButton(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+    text: string,
+  ): MaxMessageButton {
+    const launchUrl = this.buildChannelDialogLaunchUrl(chatId, type, threadId);
+    const webAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, type, threadId);
+    const botContactId = this.resolveBotContactId();
+
+    if (launchUrl) {
+      return {
+        type: 'link',
+        text,
+        url: launchUrl,
+      };
+    }
+
+    if (webAppUrl && botContactId) {
+      return {
+        type: 'open_app',
+        text,
+        webApp: webAppUrl,
+        contactId: botContactId,
+      };
+    }
+
+    return {
+      type: 'link',
+      text,
+      url: webAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
+    };
+  }
+
+  private buildChannelDialogLaunchUrl(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+  ): string | null {
+    const startParam = this.buildChannelDialogStartParam(chatId, type, threadId);
+    return this.buildMiniappStartUrl(startParam);
+  }
+
+  private buildChannelDialogDirectWebAppUrl(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+  ): string | null {
+    if (!this.appBaseUrl) {
+      return null;
+    }
+
+    const token = this.buildChannelDialogToken(chatId, type, threadId);
+    return `${this.appBaseUrl}/app/channel/${encodeURIComponent(chatId)}/dialog/${type}?token=${token}`;
+  }
+
+  private buildChannelDialogStartParam(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+  ): string {
+    const token = this.buildChannelDialogToken(chatId, type, threadId);
+    const payload = JSON.stringify({
+      v: 1,
+      k: 'channel-dialog',
+      c: chatId,
+      m: type,
+      t: token,
+    });
+    const encoded = Buffer.from(payload, 'utf8').toString('base64url');
+    return `${CHANNEL_DIALOG_START_PARAM_PREFIX}${encoded}`;
+  }
+
+  private buildMiniappStartUrl(startParam: string): string | null {
+    if (!this.ownBotUserId) {
+      return null;
+    }
+
+    return `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(startParam)}`;
+  }
+
+  private buildChannelDialogToken(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+  ): string {
+    const payload = JSON.stringify({
+      v: 1,
+      d: threadId,
+      s: this.buildChannelDialogTokenSignature(chatId, type, threadId),
+    });
+    const encoded = Buffer.from(payload, 'utf8').toString('base64url');
+    return `${CHANNEL_DIALOG_TOKEN_PREFIX}${encoded}`;
+  }
+
+  private buildChannelDialogTokenSignature(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+  ): string {
+    const scope = `dialog:${chatId}:${type}:${threadId}`;
+    return createHmac('sha256', this.maxBotToken ?? '')
+      .update(scope)
+      .digest('hex');
+  }
+
   private async loadChatContext(
     chatId: string,
     chatTitle?: string,
@@ -4644,6 +5048,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private readLowerString(value: unknown): string | null {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim().toLowerCase() : null;
+  }
+
+  private extractStatusCode(error: unknown): number | null {
+    const maybeStatus = (error as { response?: { status?: number } })?.response?.status;
+    return typeof maybeStatus === 'number' ? maybeStatus : null;
+  }
+
+  private normalizeSecret(value: string | undefined): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim();
+    return normalized.length > 0 ? normalized : null;
   }
 
   private normalizeOwnBotUserId(value: string | undefined): string | null {
@@ -4770,7 +5188,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (params.deleteBotMessagesEnabled) {
       dispatchOptions.autoDeleteDelayMs =
-        this.normalizeDeleteBotMessagesDelayMinutes(params.deleteBotMessagesDelayMinutes) * 60 * 1000;
+        this.normalizeDeleteBotMessagesDelayMinutes(params.deleteBotMessagesDelayMinutes) *
+        60 *
+        1000;
     }
 
     return Object.keys(dispatchOptions).length > 0 ? dispatchOptions : undefined;

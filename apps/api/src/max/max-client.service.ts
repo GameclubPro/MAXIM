@@ -132,14 +132,19 @@ export class MaxClientService implements OnModuleDestroy {
     private readonly httpService: HttpService,
     configService: ConfigService,
     private readonly actionHealthService: ActionHealthService,
-    @Optional() @InjectQueue('moderation-actions') private readonly actionQueue?: Queue<MaxActionJob>,
+    @Optional()
+    @InjectQueue('moderation-actions')
+    private readonly actionQueue?: Queue<MaxActionJob>,
   ) {
     this.baseUrl = configService.getOrThrow<string>('MAX_API_BASE_URL');
     this.token = configService.getOrThrow<string>('MAX_BOT_TOKEN');
     this.dispatchEnabled = configService.get<boolean>('MAX_ACTION_DISPATCH_ENABLED', true);
     this.globalRpsLimit = configService.get<number>('MAX_API_GLOBAL_RPS', 120);
     this.chatRpsLimit = configService.get<number>('MAX_API_CHAT_RPS', 10);
-    this.circuitFailureThreshold = configService.get<number>('MAX_API_CIRCUIT_FAILURE_THRESHOLD', 30);
+    this.circuitFailureThreshold = configService.get<number>(
+      'MAX_API_CIRCUIT_FAILURE_THRESHOLD',
+      30,
+    );
     this.circuitWindowSec = configService.get<number>('MAX_API_CIRCUIT_WINDOW_SEC', 30);
     this.circuitOpenSec = configService.get<number>('MAX_API_CIRCUIT_OPEN_SEC', 20);
     this.limiterRedis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
@@ -154,11 +159,14 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async deleteMessage(chatId: string, messageId: string, options?: MaxActionDispatchOptions) {
-    await this.dispatchAction({
-      actionType: 'DELETE_MESSAGE',
-      chatId,
-      messageId,
-    }, options);
+    await this.dispatchAction(
+      {
+        actionType: 'DELETE_MESSAGE',
+        chatId,
+        messageId,
+      },
+      options,
+    );
   }
 
   async sendMessage(
@@ -167,12 +175,38 @@ export class MaxClientService implements OnModuleDestroy {
     options?: MaxSendMessageOptions,
     dispatchOptions?: MaxActionDispatchOptions,
   ) {
-    await this.dispatchAction({
-      actionType: 'SEND_MESSAGE',
-      chatId,
-      text,
-      options,
-    }, dispatchOptions);
+    await this.dispatchAction(
+      {
+        actionType: 'SEND_MESSAGE',
+        chatId,
+        text,
+        options,
+      },
+      dispatchOptions,
+    );
+  }
+
+  async editMessageInlineKeyboard(
+    chatId: string,
+    messageId: string,
+    text: string | null,
+    options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext'>,
+  ) {
+    const message = await this.getMessageById(messageId);
+    const attachments = this.buildEditableMessageAttachments(message, options);
+
+    await this.executeMutation(chatId, async () => {
+      await this.request('put', '/messages', {
+        params: {
+          chat_id: chatId,
+          message_id: messageId,
+        },
+        data: {
+          ...(typeof text === 'string' ? { text } : {}),
+          attachments,
+        },
+      });
+    });
   }
 
   async uploadImage(
@@ -219,27 +253,36 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async kickMember(chatId: string, userId: string, options?: MaxActionDispatchOptions) {
-    await this.dispatchAction({
-      actionType: 'KICK_MEMBER',
-      chatId,
-      userId,
-    }, options);
+    await this.dispatchAction(
+      {
+        actionType: 'KICK_MEMBER',
+        chatId,
+        userId,
+      },
+      options,
+    );
   }
 
   async banMember(chatId: string, userId: string, options?: MaxActionDispatchOptions) {
-    await this.dispatchAction({
-      actionType: 'BAN_MEMBER',
-      chatId,
-      userId,
-    }, options);
+    await this.dispatchAction(
+      {
+        actionType: 'BAN_MEMBER',
+        chatId,
+        userId,
+      },
+      options,
+    );
   }
 
   async unbanMember(chatId: string, userId: string, options?: MaxActionDispatchOptions) {
-    await this.dispatchAction({
-      actionType: 'UNBAN_MEMBER',
-      chatId,
-      userId,
-    }, options);
+    await this.dispatchAction(
+      {
+        actionType: 'UNBAN_MEMBER',
+        chatId,
+        userId,
+      },
+      options,
+    );
   }
 
   async notifyModerators(chatId: string, text: string) {
@@ -478,6 +521,24 @@ export class MaxClientService implements OnModuleDestroy {
     return results;
   }
 
+  private async getMessageById(messageId: string): Promise<Record<string, unknown> | null> {
+    const normalizedMessageId = messageId.trim();
+    if (!normalizedMessageId) {
+      return null;
+    }
+
+    const data = await this.request<Record<string, unknown>>('get', '/messages', {
+      params: {
+        message_ids: normalizedMessageId,
+      },
+    });
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+    const firstMessage = messages[0];
+    return firstMessage && typeof firstMessage === 'object' && !Array.isArray(firstMessage)
+      ? (firstMessage as Record<string, unknown>)
+      : null;
+  }
+
   private parseChatEntityType(row: Record<string, unknown>): 'chat' | 'channel' {
     const rawType = row.type ?? row.chat_type ?? row.chatType;
     if (typeof rawType === 'string') {
@@ -641,8 +702,53 @@ export class MaxClientService implements OnModuleDestroy {
     return attachments;
   }
 
-  private buildImageAttachment(imagePayload?: Record<string, unknown>): Record<string, unknown> | null {
-    if (!imagePayload || typeof imagePayload !== 'object' || Object.keys(imagePayload).length === 0) {
+  private buildEditableMessageAttachments(
+    message: Record<string, unknown> | null,
+    options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext'>,
+  ): Record<string, unknown>[] {
+    const existingAttachments = this.extractEditableAttachments(message).filter(
+      (attachment) => this.readLowerString(attachment.type) !== 'inline_keyboard',
+    );
+    const keyboardAttachment = this.buildInlineKeyboardAttachment(options);
+    return keyboardAttachment ? [...existingAttachments, keyboardAttachment] : existingAttachments;
+  }
+
+  private extractEditableAttachments(
+    message: Record<string, unknown> | null,
+  ): Record<string, unknown>[] {
+    const body = this.asRecord(message?.body);
+    const attachments = Array.isArray(body?.attachments) ? body.attachments : [];
+    return attachments
+      .map((attachment) => this.normalizeEditableAttachment(attachment))
+      .filter((attachment): attachment is Record<string, unknown> => attachment !== null);
+  }
+
+  private normalizeEditableAttachment(attachment: unknown): Record<string, unknown> | null {
+    if (!attachment || typeof attachment !== 'object' || Array.isArray(attachment)) {
+      return null;
+    }
+
+    const row = attachment as Record<string, unknown>;
+    const type = this.readLowerString(row.type);
+    const payload = row.payload;
+    if (!type || !payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return null;
+    }
+
+    return {
+      type,
+      payload,
+    };
+  }
+
+  private buildImageAttachment(
+    imagePayload?: Record<string, unknown>,
+  ): Record<string, unknown> | null {
+    if (
+      !imagePayload ||
+      typeof imagePayload !== 'object' ||
+      Object.keys(imagePayload).length === 0
+    ) {
       return null;
     }
 
@@ -652,7 +758,9 @@ export class MaxClientService implements OnModuleDestroy {
     };
   }
 
-  private buildInlineKeyboardAttachment(options?: MaxSendMessageOptions): Record<string, unknown> | null {
+  private buildInlineKeyboardAttachment(
+    options?: MaxSendMessageOptions,
+  ): Record<string, unknown> | null {
     const buttons = this.normalizeInlineKeyboardButtons(options);
     if (!buttons) {
       return null;
@@ -685,7 +793,10 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     const rows: Array<Array<Record<string, unknown>>> = [];
-    const requestedButtons = sourceButtons.reduce((acc, row) => acc + (Array.isArray(row) ? row.length : 0), 0);
+    const requestedButtons = sourceButtons.reduce(
+      (acc, row) => acc + (Array.isArray(row) ? row.length : 0),
+      0,
+    );
     let totalButtons = 0;
     let truncated = false;
 
@@ -755,7 +866,8 @@ export class MaxClientService implements OnModuleDestroy {
         };
       }
       case 'callback': {
-        const payload = 'payload' in button && typeof button.payload === 'string' ? button.payload.trim() : '';
+        const payload =
+          'payload' in button && typeof button.payload === 'string' ? button.payload.trim() : '';
         if (!payload) {
           return null;
         }
@@ -799,9 +911,7 @@ export class MaxClientService implements OnModuleDestroy {
         };
       case 'request_geo_location': {
         const quick =
-          'quick' in button && typeof button.quick === 'boolean'
-            ? button.quick
-            : undefined;
+          'quick' in button && typeof button.quick === 'boolean' ? button.quick : undefined;
         return {
           type: 'request_geo_location',
           text,
@@ -810,7 +920,9 @@ export class MaxClientService implements OnModuleDestroy {
       }
       case 'chat': {
         const chatTitle =
-          'chatTitle' in button && typeof button.chatTitle === 'string' ? button.chatTitle.trim() : '';
+          'chatTitle' in button && typeof button.chatTitle === 'string'
+            ? button.chatTitle.trim()
+            : '';
         if (!chatTitle) {
           return null;
         }
@@ -959,7 +1071,7 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private async request<T = unknown>(
-    method: 'delete' | 'post' | 'get',
+    method: 'delete' | 'post' | 'get' | 'put',
     path: string,
     config: Record<string, unknown> = {},
   ): Promise<T> {
@@ -980,7 +1092,7 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   private async requestAbsolute<T = unknown>(
-    method: 'delete' | 'post' | 'get',
+    method: 'delete' | 'post' | 'get' | 'put',
     url: string,
     config: Record<string, unknown> = {},
   ): Promise<T> {
@@ -1074,6 +1186,12 @@ export class MaxClientService implements OnModuleDestroy {
 
     // Backward compatibility: keep old behavior when API does not expose roles/flags.
     return true;
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
   }
 
   private readLowerString(value: unknown): string | null {

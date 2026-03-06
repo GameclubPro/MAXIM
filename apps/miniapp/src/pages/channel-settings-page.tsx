@@ -1,4 +1,4 @@
-import type { ChannelSettings } from '@maxim/contracts';
+import type { ChannelAutoPostButtonsMode, ChannelSettings } from '@maxim/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
@@ -19,6 +19,33 @@ type ChannelRouteState = {
 const DEFAULT_ENGAGEMENT_TEXT = 'Есть идея или обратная связь? Нажмите кнопку ниже.';
 const DEFAULT_COMMENTS_BUTTON_TEXT = '💬 Комментарии';
 const DEFAULT_SUGGEST_BUTTON_TEXT = '📰 Предложить пост';
+
+function modeHasComments(mode: ChannelAutoPostButtonsMode): boolean {
+  return mode === 'COMMENTS' || mode === 'BOTH';
+}
+
+function modeHasSuggest(mode: ChannelAutoPostButtonsMode): boolean {
+  return mode === 'SUGGEST' || mode === 'BOTH';
+}
+
+function toggleAutoPostButtonsMode(
+  mode: ChannelAutoPostButtonsMode,
+  key: 'comments' | 'suggest',
+): ChannelAutoPostButtonsMode {
+  const includeComments = key === 'comments' ? !modeHasComments(mode) : modeHasComments(mode);
+  const includeSuggest = key === 'suggest' ? !modeHasSuggest(mode) : modeHasSuggest(mode);
+
+  if (includeComments && includeSuggest) {
+    return 'BOTH';
+  }
+  if (includeComments) {
+    return 'COMMENTS';
+  }
+  if (includeSuggest) {
+    return 'SUGGEST';
+  }
+  return 'OFF';
+}
 
 function isHttpUrl(value: string): boolean {
   try {
@@ -313,23 +340,12 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     });
   };
 
-  const toggleEngagementOption = (key: 'commentsEnabled' | 'postSuggestionsEnabled') => {
+  const toggleEngagementOption = (key: 'comments' | 'suggest') => {
     if (!draft) {
       return;
     }
 
-    const otherKey = key === 'commentsEnabled' ? 'postSuggestionsEnabled' : 'commentsEnabled';
-    const nextValue = !draft[key];
-    if (!nextValue && !draft[otherKey]) {
-      pushToast({
-        tone: 'info',
-        title: 'Нужна хотя бы одна кнопка',
-        description: 'Оставьте комментарии, предложку или оба варианта.',
-      });
-      return;
-    }
-
-    patchDraft(key, nextValue);
+    patchDraft('autoPostButtonsMode', toggleAutoPostButtonsMode(draft.autoPostButtonsMode, key));
   };
 
   const saveDraft = async () => {
@@ -346,7 +362,15 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     }
 
     const normalizedDraft = normalizeChannelSettingsDraft(draft, resolvedChannelLink);
-    if (!normalizedDraft.commentsEnabled && !normalizedDraft.postSuggestionsEnabled) {
+    const includeCommentsButton =
+      normalizedDraft.autoPostButtonsMode === 'OFF'
+        ? normalizedDraft.commentsEnabled
+        : modeHasComments(normalizedDraft.autoPostButtonsMode);
+    const includeSuggestButton =
+      normalizedDraft.autoPostButtonsMode === 'OFF'
+        ? normalizedDraft.postSuggestionsEnabled
+        : modeHasSuggest(normalizedDraft.autoPostButtonsMode);
+    if (!includeCommentsButton && !includeSuggestButton) {
       pushToast({
         tone: 'info',
         title: 'Нечего публиковать',
@@ -365,8 +389,8 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
         commentsButtonText: DEFAULT_COMMENTS_BUTTON_TEXT,
         suggestButtonText:
           normalizedDraft.postSuggestionsButtonText.trim() || DEFAULT_SUGGEST_BUTTON_TEXT,
-        includeCommentsButton: normalizedDraft.commentsEnabled,
-        includeSuggestButton: normalizedDraft.postSuggestionsEnabled,
+        includeCommentsButton,
+        includeSuggestButton,
       });
     } catch {
       return;
@@ -374,8 +398,8 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   };
 
   const engagementButtons = [
-    draft.commentsEnabled ? DEFAULT_COMMENTS_BUTTON_TEXT : null,
-    draft.postSuggestionsEnabled
+    modeHasComments(draft.autoPostButtonsMode) ? DEFAULT_COMMENTS_BUTTON_TEXT : null,
+    modeHasSuggest(draft.autoPostButtonsMode)
       ? draft.postSuggestionsButtonText.trim() || DEFAULT_SUGGEST_BUTTON_TEXT
       : null,
   ].filter((value): value is string => Boolean(value));
@@ -391,22 +415,28 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
 
       <GlassCard className="channel-settings-card channel-settings-card--engagement" elevated>
         <ChannelSettingsSectionHead
-          title="Кнопки под постом"
-          description="Бот прикрепит выбранные варианты автоматически"
+          title="Авто под каждым постом"
+          description="Бот сам добавит эти кнопки к новым постам админов"
         />
 
         <div className="channel-settings-choice-grid">
           <button
             type="button"
-            className={cn('channel-settings-choice', draft.commentsEnabled && 'is-active')}
-            onClick={() => toggleEngagementOption('commentsEnabled')}
+            className={cn(
+              'channel-settings-choice',
+              modeHasComments(draft.autoPostButtonsMode) && 'is-active',
+            )}
+            onClick={() => toggleEngagementOption('comments')}
           >
             {DEFAULT_COMMENTS_BUTTON_TEXT}
           </button>
           <button
             type="button"
-            className={cn('channel-settings-choice', draft.postSuggestionsEnabled && 'is-active')}
-            onClick={() => toggleEngagementOption('postSuggestionsEnabled')}
+            className={cn(
+              'channel-settings-choice',
+              modeHasSuggest(draft.autoPostButtonsMode) && 'is-active',
+            )}
+            onClick={() => toggleEngagementOption('suggest')}
           >
             {draft.postSuggestionsButtonText.trim() || DEFAULT_SUGGEST_BUTTON_TEXT}
           </button>

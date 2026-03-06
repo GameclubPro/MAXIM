@@ -3,6 +3,7 @@ import {
   channelDialogResponseSchema,
   channelDialogTypeSchema,
   channelSettingsSchema,
+  type ChannelAutoPostButtonsMode,
   chatSettingsSchema,
   createChannelDialogMessageRequestSchema,
   createChannelDialogMessageResponseSchema,
@@ -69,6 +70,8 @@ export type PublishChannelEngagementPayload = {
   includeCommentsButton: boolean;
   includeSuggestButton: boolean;
 };
+
+export type ChannelAutoButtonsSelection = ChannelAutoPostButtonsMode;
 
 export type CreateChannelDialogMessagePayload = {
   token: string;

@@ -1127,13 +1127,25 @@ export class PrivateControlService {
           throw new BadRequestException('Channel is not selected');
         }
         const settings = await this.adminService.getChannelSettings(chatId, context.actor);
+        const includeCommentsButton =
+          settings.autoPostButtonsMode === 'COMMENTS' || settings.autoPostButtonsMode === 'BOTH'
+            ? true
+            : settings.autoPostButtonsMode === 'OFF'
+              ? settings.commentsEnabled
+              : false;
+        const includeSuggestButton =
+          settings.autoPostButtonsMode === 'SUGGEST' || settings.autoPostButtonsMode === 'BOTH'
+            ? true
+            : settings.autoPostButtonsMode === 'OFF'
+              ? settings.postSuggestionsEnabled
+              : false;
 
         await this.adminService.publishChannelEngagementMessage(chatId, context.actor, {
           text: 'Есть идея или обратная связь? Нажмите кнопку ниже.',
           commentsButtonText: '💬 Комментарии',
           suggestButtonText: settings.postSuggestionsButtonText.trim() || '📰 Предложить пост',
-          includeCommentsButton: settings.commentsEnabled,
-          includeSuggestButton: settings.postSuggestionsEnabled,
+          includeCommentsButton,
+          includeSuggestButton,
         });
 
         const view = await this.renderChannelHomeScreen(context, session);

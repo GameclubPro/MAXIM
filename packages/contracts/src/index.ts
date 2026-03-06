@@ -6,7 +6,9 @@ export type SanctionAction = z.infer<typeof sanctionActionSchema>;
 export const linkPolicySchema = z.enum(['ALLOWLIST_ONLY', 'BLOCKLIST_ONLY', 'ALERT_ONLY']);
 export const commercialAdsSensitivitySchema = z.enum(['BALANCED', 'STRICT']);
 export const managedEntityTypeSchema = z.enum(['chat', 'channel']);
+export const channelAutoPostButtonsModeSchema = z.enum(['OFF', 'COMMENTS', 'SUGGEST', 'BOTH']);
 export type ManagedEntityType = z.infer<typeof managedEntityTypeSchema>;
+export type ChannelAutoPostButtonsMode = z.infer<typeof channelAutoPostButtonsModeSchema>;
 
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
 const duplicateMaxCountSchema = z.number().int().min(2).max(20);
@@ -365,6 +367,7 @@ export type ChatSettings = z.infer<typeof chatSettingsSchema>;
 
 export const channelSettingsSchema = z
   .object({
+    autoPostButtonsMode: channelAutoPostButtonsModeSchema.default('OFF'),
     postSuggestionsEnabled: z.boolean().default(false),
     postSuggestionsText: botMessageTextSchema,
     postSuggestionsButtonEnabled: z.boolean().default(false),

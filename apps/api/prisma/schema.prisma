@@ -56,6 +56,13 @@ enum ChatEntityType {
   CHANNEL
 }
 
+enum ChannelAutoPostButtonsMode {
+  OFF
+  COMMENTS
+  SUGGEST
+  BOTH
+}
+
 model Chat {
   id         String         @id
   title      String
@@ -169,6 +176,7 @@ model ChatSettings {
 }
 
 model ChannelSettings {
+  autoPostButtonsMode         ChannelAutoPostButtonsMode @default(OFF) @map("auto_post_buttons_mode")
   id                          String   @id @default(cuid())
   chatId                      String   @unique @map("chat_id")
   postSuggestionsEnabled      Boolean  @default(false) @map("post_suggestions_enabled")
