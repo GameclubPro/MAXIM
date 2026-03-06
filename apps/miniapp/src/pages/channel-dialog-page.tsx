@@ -44,34 +44,6 @@ function formatDateTime(value: string): string {
   });
 }
 
-function formatRelativeMoment(value: string | null): string {
-  if (!value) {
-    return 'Сейчас';
-  }
-
-  const date = new Date(value);
-  const diffMs = Date.now() - date.getTime();
-  if (Number.isNaN(diffMs) || diffMs < 0) {
-    return 'Сейчас';
-  }
-
-  const diffMin = Math.floor(diffMs / 60_000);
-  if (diffMin < 1) {
-    return 'Только что';
-  }
-  if (diffMin < 60) {
-    return `${diffMin} мин назад`;
-  }
-
-  const diffHours = Math.floor(diffMin / 60);
-  if (diffHours < 24) {
-    return `${diffHours} ч назад`;
-  }
-
-  const diffDays = Math.floor(diffHours / 24);
-  return `${diffDays} д назад`;
-}
-
 function buildAuthorBadge(value: string | null | undefined): string {
   const normalized = value?.trim() ?? '';
   if (!normalized) {
@@ -91,69 +63,21 @@ function buildAuthorBadge(value: string | null | undefined): string {
 }
 
 type DialogViewModel = {
-  eyebrow: string;
   title: string;
-  subtitle: string;
-  liveBadge: string;
-  leadTitle: string;
-  leadDescription: string;
-  supportTitle: string;
-  supportDescription: string;
-  timelineTitle: string;
-  timelineHint: string;
-  inputLabel: string;
-  inputPlaceholder: string;
-  submitLabel: string;
-  emptyTitle: string;
-  emptyDescription: string;
-  statusTone: 'live' | 'private';
+  placeholder: string;
 };
 
 function buildViewModel(dialogType: ChannelDialogType): DialogViewModel {
   if (dialogType === 'suggest') {
     return {
-      eyebrow: 'Приватная предложка',
       title: 'Предложить новость',
-      subtitle:
-        'Отдельное окно для идей, анонсов и черновиков. Сообщение не уходит в публичную ленту и попадает админу напрямую.',
-      liveBadge: 'Только для вас',
-      leadTitle: 'Личный канал связи',
-      leadDescription:
-        'Опишите тему, тезисы и формат публикации. Если админ доступен в личке бота, идея уйдёт сразу.',
-      supportTitle: 'Что написать',
-      supportDescription:
-        'Лучше всего работают короткий заголовок, суть новости, ссылка на источник и желаемое время публикации.',
-      timelineTitle: 'Ваши идеи',
-      timelineHint: 'Здесь видны только ваши отправки и статус доставки.',
-      inputLabel: 'Текст предложки',
-      inputPlaceholder: 'Например: короткая новость, ссылка, пара тезисов и почему это стоит выложить сегодня.',
-      submitLabel: 'Отправить админу',
-      emptyTitle: 'Пока нет предложек',
-      emptyDescription: 'Отправьте первую идею. Она появится здесь отдельной карточкой.',
-      statusTone: 'private',
+      placeholder: 'Напишите идею поста',
     };
   }
 
   return {
-    eyebrow: 'Живая комната канала',
     title: 'Комментарии',
-    subtitle:
-      'Отдельная комната обсуждения без экрана настроек. Пишите быстро, коротко и по делу, как в нативном чате.',
-    liveBadge: 'Эфир обновляется',
-    leadTitle: 'Обсуждение без шума',
-    leadDescription:
-      'Комментарии собираются в отдельном потоке miniapp. Новые сообщения подгружаются автоматически каждые несколько секунд.',
-    supportTitle: 'Формат',
-    supportDescription:
-      'Подходит для реакции на пост, коротких уточнений и обратной связи без перехода в админские разделы.',
-    timelineTitle: 'Лента обсуждения',
-    timelineHint: 'Новые комментарии появляются в хронологическом порядке.',
-    inputLabel: 'Ваш комментарий',
-    inputPlaceholder: 'Напишите, что думаете о посте.',
-    submitLabel: 'Отправить комментарий',
-    emptyTitle: 'Обсуждение ещё не началось',
-    emptyDescription: 'Откройте ленту первым и задайте тон разговору.',
-    statusTone: 'live',
+    placeholder: 'Напишите комментарий',
   };
 }
 
@@ -177,15 +101,6 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
   });
 
   const messages = dialogQuery.data?.messages ?? [];
-  const authorsCount = useMemo(
-    () => new Set(messages.map((message) => message.authorUserId)).size,
-    [messages],
-  );
-  const lastActivityAt = messages.at(-1)?.createdAt ?? null;
-  const pendingSuggestionsCount = useMemo(
-    () => messages.filter((message) => message.delivered === false).length,
-    [messages],
-  );
 
   const sendMutation = useMutation({
     mutationFn: (text: string) =>
@@ -194,17 +109,15 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
         text,
       }),
     onSuccess: (result) => {
-      const deliveryHint =
-        dialogType === 'suggest'
-          ? result.message.delivered
-            ? 'Идея отправлена админу.'
-            : 'Идея сохранена. Админ ещё не открыл личку бота.'
-          : 'Комментарий добавлен в ленту.';
-
       pushToast({
         tone: result.message.delivered === false ? 'info' : 'success',
         title: 'Готово',
-        description: deliveryHint,
+        description:
+          dialogType === 'suggest'
+            ? result.message.delivered
+              ? 'Идея отправлена админу.'
+              : 'Идея сохранена.'
+            : 'Комментарий отправлен.',
       });
       setDraft('');
       void queryClient.invalidateQueries({ queryKey: ['channel-dialog', chatId, dialogType, token] });
@@ -268,164 +181,97 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
   return (
     <div className={cn('channel-dialog-screen', `channel-dialog-screen--${dialogType}`, 'page-enter')}>
       <div className="channel-dialog-screen__backdrop" aria-hidden />
-      <div className="channel-dialog-screen__glow channel-dialog-screen__glow--one" aria-hidden />
-      <div className="channel-dialog-screen__glow channel-dialog-screen__glow--two" aria-hidden />
 
-      <header className="channel-dialog-hero">
-        <div className="channel-dialog-hero__topbar">
-          <span className="channel-dialog-hero__eyebrow">{view.eyebrow}</span>
-          <Link to="/" className="channel-dialog-hero__close">
+      <div className="channel-dialog-shell">
+        <header className="channel-dialog-topbar">
+          <div className="channel-dialog-topbar__title">
+            <h1>{view.title}</h1>
+            <span>{chatTitle || chatId}</span>
+          </div>
+          <Link to="/" className="channel-dialog-close">
             Закрыть
           </Link>
-        </div>
+        </header>
 
-        <div className="channel-dialog-hero__content">
-          <div className="channel-dialog-hero__copy">
-            <h1>{view.title}</h1>
-            <p>{view.subtitle}</p>
-          </div>
-
-          <div className="channel-dialog-hero__chips">
-            <span className={cn('channel-dialog-pill', `is-${view.statusTone}`)}>
-              <span className="channel-dialog-pill__dot" aria-hidden />
-              {view.liveBadge}
-            </span>
-            <span className="channel-dialog-pill is-neutral">
-              {chatTitle ? `Канал: ${chatTitle}` : `ID: ${chatId}`}
-            </span>
-          </div>
-
-          <div className="channel-dialog-stats">
-            <div className="channel-dialog-stat">
-              <strong>{messages.length}</strong>
-              <span>{dialogType === 'suggest' ? 'идей отправлено' : 'сообщений в ленте'}</span>
-            </div>
-            <div className="channel-dialog-stat">
-              <strong>{dialogType === 'suggest' ? pendingSuggestionsCount : authorsCount || 1}</strong>
-              <span>
-                {dialogType === 'suggest' ? 'ожидают доставки' : 'участников в обсуждении'}
-              </span>
-            </div>
-            <div className="channel-dialog-stat">
-              <strong>{formatRelativeMoment(lastActivityAt)}</strong>
-              <span>последняя активность</span>
-            </div>
-          </div>
-        </div>
-      </header>
-
-      <section className="channel-dialog-panels">
-        <article className="channel-dialog-panel channel-dialog-panel--lead">
-          <span className="channel-dialog-panel__label">Сценарий</span>
-          <h2>{view.leadTitle}</h2>
-          <p>{view.leadDescription}</p>
-        </article>
-
-        <article className="channel-dialog-panel channel-dialog-panel--support">
-          <span className="channel-dialog-panel__label">Подсказка</span>
-          <h2>{view.supportTitle}</h2>
-          <p>{view.supportDescription}</p>
-        </article>
-      </section>
-
-      <section className="channel-dialog-timeline">
-        <div className="channel-dialog-timeline__head">
-          <div>
-            <span className="channel-dialog-panel__label">Поток</span>
-            <h2>{view.timelineTitle}</h2>
-          </div>
-          <p>{view.timelineHint}</p>
-        </div>
-
-        {dialogQuery.isLoading ? (
-          <div className="channel-dialog-skeletons" aria-label="Загрузка">
-            {Array.from({ length: 3 }, (_, index) => (
-              <div key={index} className="channel-dialog-skeleton">
-                <span className="channel-dialog-skeleton__avatar" />
-                <div className="channel-dialog-skeleton__body">
-                  <span className="channel-dialog-skeleton__line is-short" />
-                  <span className="channel-dialog-skeleton__line" />
-                  <span className="channel-dialog-skeleton__line is-mid" />
+        <section className="channel-dialog-body">
+          {dialogQuery.isLoading ? (
+            <div className="channel-dialog-skeletons" aria-label="Загрузка">
+              {Array.from({ length: 3 }, (_, index) => (
+                <div key={index} className="channel-dialog-skeleton">
+                  <span className="channel-dialog-skeleton__avatar" />
+                  <div className="channel-dialog-skeleton__body">
+                    <span className="channel-dialog-skeleton__line is-short" />
+                    <span className="channel-dialog-skeleton__line" />
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        ) : null}
-
-        {dialogQuery.error ? (
-          <div className="channel-dialog-error">
-            <StatusState
-              tone="danger"
-              title="Не удалось загрузить поток"
-              description={normalizeApiError(dialogQuery.error)}
-              action={
-                <button
-                  type="button"
-                  className="button button--danger"
-                  onClick={() => void dialogQuery.refetch()}
-                >
-                  Повторить
-                </button>
-              }
-            />
-          </div>
-        ) : null}
-
-        {!dialogQuery.isLoading && !dialogQuery.error ? (
-          messages.length ? (
-            <div className="channel-dialog-message-list">
-              {messages.map((message) => (
-                <article key={message.id} className="channel-dialog-message">
-                  <div className="channel-dialog-message__avatar">
-                    {buildAuthorBadge(message.authorDisplayName || message.authorUserId)}
-                  </div>
-                  <div className="channel-dialog-message__bubble">
-                    <div className="channel-dialog-message__meta">
-                      <strong>{message.authorDisplayName || `Участник ${message.authorUserId}`}</strong>
-                      <span>{formatDateTime(message.createdAt)}</span>
-                    </div>
-                    <p>{message.text}</p>
-                    {dialogType === 'suggest' ? (
-                      <div className="channel-dialog-message__footer">
-                        <span
-                          className={cn(
-                            'channel-dialog-delivery',
-                            message.delivered ? 'is-delivered' : 'is-pending',
-                          )}
-                        >
-                          {message.delivered ? 'Доставлено админу' : 'Ожидает открытия лички админом'}
-                        </span>
-                      </div>
-                    ) : null}
-                  </div>
-                </article>
               ))}
             </div>
-          ) : (
-            <div className="channel-dialog-empty">
-              <h3>{view.emptyTitle}</h3>
-              <p>{view.emptyDescription}</p>
+          ) : null}
+
+          {dialogQuery.error ? (
+            <div className="channel-dialog-error">
+              <StatusState
+                tone="danger"
+                title="Не удалось загрузить"
+                description={normalizeApiError(dialogQuery.error)}
+                action={
+                  <button
+                    type="button"
+                    className="button button--danger"
+                    onClick={() => void dialogQuery.refetch()}
+                  >
+                    Повторить
+                  </button>
+                }
+              />
             </div>
-          )
-        ) : null}
-      </section>
+          ) : null}
+
+          {!dialogQuery.isLoading && !dialogQuery.error ? (
+            messages.length ? (
+              <div className="channel-dialog-message-list">
+                {messages.map((message) => (
+                  <article key={message.id} className="channel-dialog-message">
+                    <div className="channel-dialog-message__avatar">
+                      {buildAuthorBadge(message.authorDisplayName || message.authorUserId)}
+                    </div>
+                    <div className="channel-dialog-message__bubble">
+                      <div className="channel-dialog-message__meta">
+                        <strong>{message.authorDisplayName || `Участник ${message.authorUserId}`}</strong>
+                        <span>{formatDateTime(message.createdAt)}</span>
+                      </div>
+                      <p>{message.text}</p>
+                      {dialogType === 'suggest' ? (
+                        <div className="channel-dialog-message__footer">
+                          <span
+                            className={cn(
+                              'channel-dialog-delivery',
+                              message.delivered ? 'is-delivered' : 'is-pending',
+                            )}
+                          >
+                            {message.delivered ? 'доставлено' : 'в очереди'}
+                          </span>
+                        </div>
+                      ) : null}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <div className="channel-dialog-empty">Пока пусто</div>
+            )
+          ) : null}
+        </section>
+      </div>
 
       <section className="channel-dialog-compose">
         <div className="channel-dialog-compose__surface">
-          <div className="channel-dialog-compose__head">
-            <div>
-              <span className="channel-dialog-panel__label">Новое сообщение</span>
-              <h2>{view.inputLabel}</h2>
-            </div>
-            <span className="channel-dialog-compose__counter">{draft.length}/2000</span>
-          </div>
-
           <label className="channel-dialog-compose__field">
             <textarea
               rows={5}
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
-              placeholder={view.inputPlaceholder}
+              placeholder={view.placeholder}
               maxLength={2_000}
             />
           </label>
@@ -437,11 +283,8 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
               onClick={onSubmit}
               disabled={!draft.trim() || sendMutation.isPending}
             >
-              {sendMutation.isPending ? 'Отправляем...' : view.submitLabel}
+              {sendMutation.isPending ? 'Отправляем...' : 'Отправить'}
             </button>
-            <Link to="/" className="channel-dialog-secondary">
-              Вернуться к чатам
-            </Link>
           </div>
         </div>
       </section>
