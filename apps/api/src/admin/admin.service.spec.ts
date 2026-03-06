@@ -453,11 +453,13 @@ describe('AdminService.publishChannelEngagementMessage', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     const [, , options, dispatchOptions] = maxClient.sendMessage.mock.calls[0] ?? [];
-    const buttons = options.buttons?.[0] ?? [];
-    const commentsButton = buttons[0];
-    const suggestButton = buttons[1];
+    const commentsButton = options.buttons?.[0]?.[0];
+    const suggestButton = options.buttons?.[1]?.[0];
 
     expect(dispatchOptions).toEqual({ immediate: true });
+    expect(options.buttons).toHaveLength(2);
+    expect(options.buttons?.[0]).toHaveLength(1);
+    expect(options.buttons?.[1]).toHaveLength(1);
     expect(commentsButton).toMatchObject({
       type: 'link',
       text: 'Комментарии',

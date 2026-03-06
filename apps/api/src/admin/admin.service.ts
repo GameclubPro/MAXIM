@@ -426,53 +426,48 @@ export class AdminService {
     const commentsWebAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, 'comments', threadId);
     const suggestWebAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, 'suggest', threadId);
     const botContactId = this.resolveBotContactId();
-    const buttons: MaxMessageButton[] = [];
-    buttons.push(
-      commentsUrl
+    const commentsButton: MaxMessageButton = commentsUrl
+      ? {
+          type: 'link',
+          text: parsed.data.commentsButtonText,
+          url: commentsUrl,
+        }
+      : commentsWebAppUrl && botContactId
         ? {
+            type: 'open_app',
+            text: parsed.data.commentsButtonText,
+            webApp: commentsWebAppUrl,
+            contactId: botContactId,
+          }
+        : {
             type: 'link',
             text: parsed.data.commentsButtonText,
-            url: commentsUrl,
-          }
-        : commentsWebAppUrl && botContactId
-          ? {
-              type: 'open_app',
-              text: parsed.data.commentsButtonText,
-              webApp: commentsWebAppUrl,
-              contactId: botContactId,
-            }
-          : {
-              type: 'link',
-              text: parsed.data.commentsButtonText,
-              url: commentsWebAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
-            },
-    );
-    buttons.push(
-      suggestUrl
+            url: commentsWebAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
+          };
+    const suggestButton: MaxMessageButton = suggestUrl
+      ? {
+          type: 'link',
+          text: parsed.data.suggestButtonText,
+          url: suggestUrl,
+        }
+      : suggestWebAppUrl && botContactId
         ? {
+            type: 'open_app',
+            text: parsed.data.suggestButtonText,
+            webApp: suggestWebAppUrl,
+            contactId: botContactId,
+          }
+        : {
             type: 'link',
             text: parsed.data.suggestButtonText,
-            url: suggestUrl,
-          }
-        : suggestWebAppUrl && botContactId
-          ? {
-              type: 'open_app',
-              text: parsed.data.suggestButtonText,
-              webApp: suggestWebAppUrl,
-              contactId: botContactId,
-            }
-          : {
-              type: 'link',
-              text: parsed.data.suggestButtonText,
-              url: suggestWebAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
-            },
-    );
+            url: suggestWebAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
+          };
 
     await this.maxClient.sendMessage(
       chatId,
       parsed.data.text,
       {
-        buttons: [buttons],
+        buttons: [[commentsButton], [suggestButton]],
       } satisfies MaxSendMessageOptions,
       { immediate: true },
     );

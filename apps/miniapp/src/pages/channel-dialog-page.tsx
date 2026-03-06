@@ -310,7 +310,7 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
         <div className="channel-dialog-compose__surface">
           <label className="channel-dialog-compose__field">
             <textarea
-              rows={3}
+              rows={2}
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               placeholder={view.placeholder}
