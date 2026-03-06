@@ -68,8 +68,10 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   const [engagementText, setEngagementText] = useState(
     'Есть идея или обратная связь? Нажмите кнопку ниже.',
   );
-  const [engagementCommentsButtonText, setEngagementCommentsButtonText] = useState('Обсудить');
-  const [engagementSuggestButtonText, setEngagementSuggestButtonText] = useState('Предложить пост');
+  const [engagementCommentsButtonText, setEngagementCommentsButtonText] =
+    useState('💬 Комментарии');
+  const [engagementSuggestButtonText, setEngagementSuggestButtonText] =
+    useState('📰 Предложить пост');
   const { pushToast } = useToast();
 
   const settingsQuery = useQuery({
@@ -161,7 +163,8 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
       return routeChatLink;
     }
 
-    const candidate = channelsQuery.data?.find((channel) => channel.id === chatId)?.link?.trim() ?? '';
+    const candidate =
+      channelsQuery.data?.find((channel) => channel.id === chatId)?.link?.trim() ?? '';
     return isHttpUrl(candidate) ? candidate : '';
   }, [chatId, channelsQuery.data, routeChatLink]);
 
@@ -295,7 +298,11 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
         <div className="page-header">
           <div className="page-header__main">
             <h1>Настройки канала</h1>
-            <p>{resolvedTitle ? `Канал: ${resolvedTitle}` : 'Простая настройка для подписчиков канала'}</p>
+            <p>
+              {resolvedTitle
+                ? `Канал: ${resolvedTitle}`
+                : 'Простая настройка для подписчиков канала'}
+            </p>
           </div>
           <span className="page-header__badge">ID: {chatId}</span>
         </div>
@@ -312,7 +319,8 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
       <GlassCard className="settings-section" elevated>
         <h2>Пост с кнопками для подписчиков</h2>
         <p className="field__hint">
-          Бот опубликует сообщение в канале с двумя кнопками: «Обсудить» и «Предложить пост».
+          Бот опубликует сообщение в канале с двумя кнопками: «💬 Комментарии» и «📰 Предложить
+          пост».
         </p>
 
         <label className="field">
@@ -431,11 +439,19 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
 
             <div className="chat-card__actions">
               {resolvedChannelLink ? (
-                <button type="button" className="button button--ghost" onClick={useDetectedChannelLink}>
+                <button
+                  type="button"
+                  className="button button--ghost"
+                  onClick={useDetectedChannelLink}
+                >
                   Подставить ссылку канала
                 </button>
               ) : null}
-              <button type="button" className="button button--ghost" onClick={useChannelLinkTemplate}>
+              <button
+                type="button"
+                className="button button--ghost"
+                onClick={useChannelLinkTemplate}
+              >
                 Вставить шаблон
               </button>
             </div>
@@ -465,7 +481,9 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
             />{' '}
             Включить сценарий обсуждения через бота/чат
           </span>
-          <small className="field__hint">При включении бот показывает участникам, где обсуждать посты.</small>
+          <small className="field__hint">
+            При включении бот показывает участникам, где обсуждать посты.
+          </small>
         </label>
 
         <label className="field">

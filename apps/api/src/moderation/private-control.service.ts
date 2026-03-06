@@ -239,13 +239,16 @@ const CHANNEL_SECTION_LABELS: Record<ChannelSectionKey, string> = {
   comments: 'Обсуждение и реакции',
 };
 
-const CHANNEL_SECTION_FIELDS: Record<ChannelSectionKey, Array<{
-  key: keyof ChannelSettings;
-  label: string;
-  type: SettingFieldType;
-  min?: number;
-  max?: number;
-}>> = {
+const CHANNEL_SECTION_FIELDS: Record<
+  ChannelSectionKey,
+  Array<{
+    key: keyof ChannelSettings;
+    label: string;
+    type: SettingFieldType;
+    min?: number;
+    max?: number;
+  }>
+> = {
   post_suggestions: [
     { key: 'postSuggestionsEnabled', label: 'Подсказка «Предложить пост»', type: 'boolean' },
     { key: 'postSuggestionsText', label: 'Текст для участников', type: 'text' },
@@ -256,7 +259,13 @@ const CHANNEL_SECTION_FIELDS: Record<ChannelSectionKey, Array<{
   comments: [
     { key: 'commentsEnabled', label: 'Сценарий обсуждения через бота/чат', type: 'boolean' },
     { key: 'commentsModerationEnabled', label: 'Модерация обсуждений ботом', type: 'boolean' },
-    { key: 'commentsSlowModeSeconds', label: 'Пауза между сообщениями (сек)', type: 'number', min: 0, max: 3600 },
+    {
+      key: 'commentsSlowModeSeconds',
+      label: 'Пауза между сообщениями (сек)',
+      type: 'number',
+      min: 0,
+      max: 3600,
+    },
     { key: 'commentsMessageText', label: 'Текст-подсказка для участников', type: 'text' },
   ],
 };
@@ -378,7 +387,13 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'duplicateBotButtonEnabled', label: 'Показывать кнопку', type: 'boolean' },
     { key: 'duplicateBotButtonUrl', label: 'Ссылка кнопки', type: 'url' },
     { key: 'duplicateBotButtonText', label: 'Текст кнопки', type: 'text' },
-    { key: 'banDurationHours', label: 'Длительность бана (часы)', type: 'number', min: 1, max: 336 },
+    {
+      key: 'banDurationHours',
+      label: 'Длительность бана (часы)',
+      type: 'number',
+      min: 1,
+      max: 336,
+    },
   ],
   limits: [
     { key: 'antiSpamEnabled', label: 'Включить антиспам', type: 'boolean' },
@@ -417,7 +432,13 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'messageLimitsBotButtonEnabled', label: 'Показывать кнопку', type: 'boolean' },
     { key: 'messageLimitsBotButtonUrl', label: 'Ссылка кнопки', type: 'url' },
     { key: 'messageLimitsBotButtonText', label: 'Текст кнопки', type: 'text' },
-    { key: 'banDurationHours', label: 'Длительность бана (часы)', type: 'number', min: 1, max: 336 },
+    {
+      key: 'banDurationHours',
+      label: 'Длительность бана (часы)',
+      type: 'number',
+      min: 1,
+      max: 336,
+    },
   ],
   night: [
     { key: 'nightModeEnabled', label: 'Включить ночной режим', type: 'boolean' },
@@ -431,7 +452,11 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'nightModeBotButtonText', label: 'Текст кнопки', type: 'text' },
   ],
   extra: [
-    { key: 'globalCrossChatSpamEnabled', label: 'Глобальный антиспам между чатами', type: 'boolean' },
+    {
+      key: 'globalCrossChatSpamEnabled',
+      label: 'Глобальный антиспам между чатами',
+      type: 'boolean',
+    },
     { key: 'deleteBotMessagesEnabled', label: 'Удалять сообщения бота', type: 'boolean' },
     {
       key: 'deleteBotMessagesDelayMinutes',
@@ -441,7 +466,11 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
       max: 60,
     },
     { key: 'removeBotsFromGroupEnabled', label: 'Удалять ботов из чата', type: 'boolean' },
-    { key: 'globalUserBlacklistEnabled', label: 'Включить глобальный чёрный список', type: 'boolean' },
+    {
+      key: 'globalUserBlacklistEnabled',
+      label: 'Включить глобальный чёрный список',
+      type: 'boolean',
+    },
   ],
 };
 
@@ -472,7 +501,13 @@ const SECTION_CARD_FIELDS: Record<
   { basic: readonly (keyof ChatSettings)[]; advanced: readonly (keyof ChatSettings)[] }
 > = {
   links: {
-    basic: ['linkPolicy', 'linkWarnEnabled', 'linkKickEnabled', 'linkBanEnabled', 'linkBotMessageEnabled'],
+    basic: [
+      'linkPolicy',
+      'linkWarnEnabled',
+      'linkKickEnabled',
+      'linkBanEnabled',
+      'linkBotMessageEnabled',
+    ],
     advanced: [
       'linkBotMessageText',
       'linkWarnMessageText',
@@ -615,7 +650,10 @@ export class PrivateControlService {
   private readonly explicitBotContactId: string | null;
   private readonly ownBotUserId: string | null;
   private readonly ownBotUserIdVariants: Set<string>;
-  private readonly memorySession = new Map<string, { expiresAt: number; session: PrivateSession }>();
+  private readonly memorySession = new Map<
+    string,
+    { expiresAt: number; session: PrivateSession }
+  >();
 
   constructor(
     private readonly maxClient: MaxClientService,
@@ -912,7 +950,8 @@ export class PrivateControlService {
         const view = await this.renderChatSelection(context, session);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: session.entityTab === 'channel' ? 'Показываю список каналов' : 'Показываю список чатов',
+          notification:
+            session.entityTab === 'channel' ? 'Показываю список каналов' : 'Показываю список чатов',
         });
         return;
       }
@@ -934,7 +973,7 @@ export class PrivateControlService {
         const hasExplicitType = callback.args.length >= 2;
         const selectedEntityType: ManagedEntityType =
           hasExplicitType && callback.args[0] === 'channel' ? 'channel' : 'chat';
-        const chatId = hasExplicitType ? callback.args[1] ?? '' : callback.args[0] ?? '';
+        const chatId = hasExplicitType ? (callback.args[1] ?? '') : (callback.args[0] ?? '');
         if (!chatId) {
           throw new BadRequestException('chatId is required');
         }
@@ -1031,9 +1070,17 @@ export class PrivateControlService {
           throw new BadRequestException('Setting is not toggle');
         }
 
-        const current = await this.adminService.getChannelSettings(session.selectedChatId!, context.actor);
+        const current = await this.adminService.getChannelSettings(
+          session.selectedChatId!,
+          context.actor,
+        );
         const nextValue = !Boolean(current[key] as boolean);
-        await this.updateSingleChannelSetting(session.selectedChatId!, context.actor, key, nextValue);
+        await this.updateSingleChannelSetting(
+          session.selectedChatId!,
+          context.actor,
+          key,
+          nextValue,
+        );
 
         const view = await this.renderChannelSectionScreen(context, session, section);
         await this.respond(context, session, view, {
@@ -1082,8 +1129,8 @@ export class PrivateControlService {
 
         await this.adminService.publishChannelEngagementMessage(chatId, context.actor, {
           text: 'Есть идея или обратная связь? Нажмите кнопку ниже.',
-          commentsButtonText: 'Обсудить',
-          suggestButtonText: 'Предложить пост',
+          commentsButtonText: '💬 Комментарии',
+          suggestButtonText: '📰 Предложить пост',
         });
 
         const view = await this.renderChannelHomeScreen(context, session);
@@ -1329,7 +1376,10 @@ export class PrivateControlService {
 
         if (session.pendingMassAction.kind === 'apply_section') {
           const section = session.pendingMassAction.section;
-          const settings = await this.adminService.getSettings(session.selectedChatId!, context.actor);
+          const settings = await this.adminService.getSettings(
+            session.selectedChatId!,
+            context.actor,
+          );
           const result = await this.adminService.applySettingsToAllChats(
             session.selectedChatId!,
             context.actor,
@@ -1496,7 +1546,10 @@ export class PrivateControlService {
       case 'blacklist_remove': {
         this.assertChatSelected(session);
         const index = this.toPositiveInt(callback.args[0], 1) - 1;
-        const entries = await this.adminService.getGlobalUserBlacklist(session.selectedChatId!, context.actor);
+        const entries = await this.adminService.getGlobalUserBlacklist(
+          session.selectedChatId!,
+          context.actor,
+        );
         if (!entries[index]) {
           throw new BadRequestException('Пользователь не найден в списке');
         }
@@ -1710,7 +1763,11 @@ export class PrivateControlService {
 
         session.screen = 'manual_actions';
         session.manualTargetUserId = targetUserId;
-        const view = this.renderManualActionsScreen(session.manualTargetUserId, null, session.uiMode);
+        const view = this.renderManualActionsScreen(
+          session.manualTargetUserId,
+          null,
+          session.uiMode,
+        );
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Пользователь выбран',
@@ -1768,7 +1825,11 @@ export class PrivateControlService {
       case 'input_cancel': {
         session.pendingInput = null;
         if (session.screen === 'channel_section' && session.channelSection) {
-          const view = await this.renderChannelSectionScreen(context, session, session.channelSection);
+          const view = await this.renderChannelSectionScreen(
+            context,
+            session,
+            session.channelSection,
+          );
           await this.respond(context, session, view, {
             callbackId: context.callbackId,
             notification: 'Отменено',
@@ -1816,7 +1877,11 @@ export class PrivateControlService {
         }
 
         if (session.screen === 'manual_actions') {
-          const view = this.renderManualActionsScreen(session.manualTargetUserId, null, session.uiMode);
+          const view = this.renderManualActionsScreen(
+            session.manualTargetUserId,
+            null,
+            session.uiMode,
+          );
           await this.respond(context, session, view, {
             callbackId: context.callbackId,
             notification: 'Отменено',
@@ -1854,7 +1919,10 @@ export class PrivateControlService {
     }
   }
 
-  private async processPendingInput(context: PrivateContext, session: PrivateSession): Promise<void> {
+  private async processPendingInput(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<void> {
     if (!session.pendingInput) {
       return;
     }
@@ -1864,7 +1932,11 @@ export class PrivateControlService {
       session.pendingInput = null;
 
       if (session.screen === 'channel_section' && session.channelSection) {
-        const view = await this.renderChannelSectionScreen(context, session, session.channelSection);
+        const view = await this.renderChannelSectionScreen(
+          context,
+          session,
+          session.channelSection,
+        );
         await this.respond(context, session, view, {
           callbackId: null,
           notification: null,
@@ -1912,7 +1984,11 @@ export class PrivateControlService {
       }
 
       if (session.screen === 'manual_actions') {
-        const view = this.renderManualActionsScreen(session.manualTargetUserId, null, session.uiMode);
+        const view = this.renderManualActionsScreen(
+          session.manualTargetUserId,
+          null,
+          session.uiMode,
+        );
         await this.respond(context, session, view, {
           callbackId: null,
           notification: null,
@@ -2203,7 +2279,11 @@ export class PrivateControlService {
 
         session.pendingInput = null;
         session.screen = 'broadcast';
-        const view = await this.renderBroadcastScreen(context, session, 'Фото добавлено в черновик.');
+        const view = await this.renderBroadcastScreen(
+          context,
+          session,
+          'Фото добавлено в черновик.',
+        );
         await this.respond(context, session, view, {
           callbackId: null,
           notification: null,
@@ -2288,7 +2368,10 @@ export class PrivateControlService {
     return result;
   }
 
-  private async renderChatSelection(context: PrivateContext, session: PrivateSession): Promise<PrivateView> {
+  private async renderChatSelection(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<PrivateView> {
     const entityType = session.entityTab;
     const entities = await this.adminService.listManagedEntities(context.actor, entityType);
     const singleEntityWord = entityType === 'channel' ? 'канал' : 'чат';
@@ -2301,9 +2384,7 @@ export class PrivateControlService {
             : 'Пока не вижу доступных чатов.',
           '',
           'Проверьте, пожалуйста:',
-          entityType === 'channel'
-            ? '- бот добавлен в канал;'
-            : '- бот добавлен в чат;',
+          entityType === 'channel' ? '- бот добавлен в канал;' : '- бот добавлен в чат;',
           '- у бота есть права администратора;',
           '- у вас есть права администратора.',
         ].join('\n'),
@@ -2364,7 +2445,10 @@ export class PrivateControlService {
     };
   }
 
-  private async renderPrimaryScreen(context: PrivateContext, session: PrivateSession): Promise<PrivateView> {
+  private async renderPrimaryScreen(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<PrivateView> {
     if (!session.selectedChatId) {
       return this.renderChatSelection(context, session);
     }
@@ -2380,7 +2464,10 @@ export class PrivateControlService {
     return this.renderMainMenu(context, session);
   }
 
-  private async renderByCurrentScreen(context: PrivateContext, session: PrivateSession): Promise<PrivateView> {
+  private async renderByCurrentScreen(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<PrivateView> {
     if (!session.selectedChatId) {
       return this.renderChatSelection(context, session);
     }
@@ -2489,7 +2576,10 @@ export class PrivateControlService {
       return this.renderChatSelection(context, session);
     }
 
-    const settings = await this.adminService.getChannelSettings(session.selectedChatId, context.actor);
+    const settings = await this.adminService.getChannelSettings(
+      session.selectedChatId,
+      context.actor,
+    );
     const fieldConfigs = CHANNEL_SECTION_FIELDS[section];
     const sectionHint =
       section === 'post_suggestions'
@@ -2501,7 +2591,9 @@ export class PrivateControlService {
       '',
       sectionHint,
       '',
-      ...fieldConfigs.map((field) => `- ${field.label}: ${this.formatSettingValue(settings[field.key], field.type)}`),
+      ...fieldConfigs.map(
+        (field) => `- ${field.label}: ${this.formatSettingValue(settings[field.key], field.type)}`,
+      ),
       '',
       'Нажмите на параметр, чтобы изменить значение.',
     ];
@@ -2519,7 +2611,10 @@ export class PrivateControlService {
       }
 
       rows.push([
-        this.callbackButton(`✏️ ${field.label}`, this.cb('set_channel_input', section, String(field.key))),
+        this.callbackButton(
+          `✏️ ${field.label}`,
+          this.cb('set_channel_input', section, String(field.key)),
+        ),
       ]);
     }
 
@@ -2537,7 +2632,10 @@ export class PrivateControlService {
     };
   }
 
-  private async renderHomeScreen(context: PrivateContext, session: PrivateSession): Promise<PrivateView> {
+  private async renderHomeScreen(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<PrivateView> {
     if (!session.selectedChatId) {
       return this.renderChatSelection(context, session);
     }
@@ -2562,9 +2660,7 @@ export class PrivateControlService {
       `Чат: ${selectedChat.title}`,
       `ID: ${selectedChat.id}`,
       '',
-      session.homeTab === 'quick'
-        ? 'Частые действия'
-        : 'Все настройки',
+      session.homeTab === 'quick' ? 'Частые действия' : 'Все настройки',
     ];
 
     const rows: MaxMessageButton[][] = [];
@@ -2644,7 +2740,9 @@ export class PrivateControlService {
     const lines: string[] = [
       `${SECTION_LABELS[section]} • ${session.sectionView === 'basic' ? 'Основное' : 'Ещё параметры'}`,
       '',
-      ...fieldConfigs.map((field) => `- ${field.label}: ${this.formatSettingValue(settings[field.key], field.type)}`),
+      ...fieldConfigs.map(
+        (field) => `- ${field.label}: ${this.formatSettingValue(settings[field.key], field.type)}`,
+      ),
       '',
       'Нажмите на параметр, чтобы изменить значение.',
     ];
@@ -2690,14 +2788,20 @@ export class PrivateControlService {
     const hasAdvanced = SECTION_CARD_FIELDS[section].advanced.length > 0;
     if (hasAdvanced) {
       if (session.sectionView === 'basic') {
-        rows.push([this.callbackButton('⚙️ Ещё параметры', this.cb('section_view', section, 'advanced'))]);
+        rows.push([
+          this.callbackButton('⚙️ Ещё параметры', this.cb('section_view', section, 'advanced')),
+        ]);
       } else {
         rows.push([this.callbackButton('⬅️ Основное', this.cb('section_view', section, 'basic'))]);
       }
     }
 
     rows.push([
-      this.callbackButton('Применить раздел ко всем чатам', this.cb('apply_section_preview', section), 'positive'),
+      this.callbackButton(
+        'Применить раздел ко всем чатам',
+        this.cb('apply_section_preview', section),
+        'positive',
+      ),
     ]);
     rows.push([
       this.callbackButton('⬅️ Назад', this.cb('back')),
@@ -2713,7 +2817,10 @@ export class PrivateControlService {
     };
   }
 
-  private async renderMainMenu(context: PrivateContext, session: PrivateSession): Promise<PrivateView> {
+  private async renderMainMenu(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<PrivateView> {
     if (!session.selectedChatId) {
       return this.renderChatSelection(context, session);
     }
@@ -2795,7 +2902,9 @@ export class PrivateControlService {
     const lines: string[] = [
       `${SECTION_LABELS[section]}`,
       '',
-      ...fieldConfigs.map((field) => `- ${field.label}: ${this.formatSettingValue(settings[field.key], field.type)}`),
+      ...fieldConfigs.map(
+        (field) => `- ${field.label}: ${this.formatSettingValue(settings[field.key], field.type)}`,
+      ),
       '',
       'Нажмите на параметр, чтобы изменить его.',
       'Чтобы очистить текст или ссылку, отправьте `-` во время ввода.',
@@ -2814,9 +2923,7 @@ export class PrivateControlService {
       }
 
       if (field.type === 'enum') {
-        rows.push([
-          this.callbackButton(`🎛 ${field.label}`, this.cb('noop')),
-        ]);
+        rows.push([this.callbackButton(`🎛 ${field.label}`, this.cb('noop'))]);
         for (const enumValue of field.enumValues ?? []) {
           rows.push([
             this.callbackButton(
@@ -2834,19 +2941,19 @@ export class PrivateControlService {
     }
 
     if (section === 'links') {
-      rows.push([
-        this.callbackButton('Разрешённые домены', this.cb('open_domains')),
-      ]);
+      rows.push([this.callbackButton('Разрешённые домены', this.cb('open_domains'))]);
     }
 
     if (section === 'extra') {
-      rows.push([
-        this.callbackButton('Глобальный чёрный список', this.cb('open_blacklist')),
-      ]);
+      rows.push([this.callbackButton('Глобальный чёрный список', this.cb('open_blacklist'))]);
     }
 
     rows.push([
-      this.callbackButton('Применить раздел ко всем чатам', this.cb('apply_section_preview', section), 'positive'),
+      this.callbackButton(
+        'Применить раздел ко всем чатам',
+        this.cb('apply_section_preview', section),
+        'positive',
+      ),
     ]);
     rows.push([this.callbackButton('⬅️ Главное меню', this.cb('main'))]);
     rows.push(...this.buildFooterButtons());
@@ -2859,19 +2966,22 @@ export class PrivateControlService {
     };
   }
 
-  private async renderDomainsScreen(context: PrivateContext, session: PrivateSession): Promise<PrivateView> {
+  private async renderDomainsScreen(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<PrivateView> {
     if (!session.selectedChatId) {
       return this.renderChatSelection(context, session);
     }
 
-    const domains = await this.adminService.getDomainAllowlistDetails(session.selectedChatId, context.actor);
+    const domains = await this.adminService.getDomainAllowlistDetails(
+      session.selectedChatId,
+      context.actor,
+    );
     const pageInfo = this.paginate(domains, session.domainPage, PAGE_SIZE_DOMAINS);
     session.domainPage = pageInfo.page;
 
-    const lines: string[] = [
-      'Разрешённые домены',
-      '',
-    ];
+    const lines: string[] = ['Разрешённые домены', ''];
 
     if (domains.length === 0) {
       lines.push('Список пока пуст.');
@@ -2900,8 +3010,14 @@ export class PrivateControlService {
     for (const [index, entry] of pageInfo.items.entries()) {
       const globalIndex = pageInfo.start + index + 1;
       rows.push([
-        this.callbackButton(`❌ ${this.compactText(entry.domain, 20)}`, this.cb('domain_remove', String(globalIndex))),
-        this.callbackButton(`🕒 ${globalIndex}`, this.cb('domain_schedule_prompt', String(globalIndex))),
+        this.callbackButton(
+          `❌ ${this.compactText(entry.domain, 20)}`,
+          this.cb('domain_remove', String(globalIndex)),
+        ),
+        this.callbackButton(
+          `🕒 ${globalIndex}`,
+          this.cb('domain_schedule_prompt', String(globalIndex)),
+        ),
       ]);
     }
 
@@ -2912,9 +3028,7 @@ export class PrivateControlService {
         this.callbackButton('Главный экран', this.cb('home')),
       ]);
     } else {
-      rows.push([
-        this.callbackButton('⬅️ К разделу «Ссылки»', this.cb('open_section', 'links')),
-      ]);
+      rows.push([this.callbackButton('⬅️ К разделу «Ссылки»', this.cb('open_section', 'links'))]);
     }
     rows.push(...this.buildFooterButtons());
 
@@ -2934,7 +3048,10 @@ export class PrivateControlService {
       return this.renderChatSelection(context, session);
     }
 
-    const entries = await this.adminService.getGlobalUserBlacklist(session.selectedChatId, context.actor);
+    const entries = await this.adminService.getGlobalUserBlacklist(
+      session.selectedChatId,
+      context.actor,
+    );
     const preview = entries.slice(0, 12);
 
     const lines: string[] = [
@@ -2942,8 +3059,12 @@ export class PrivateControlService {
       '',
       `Всего пользователей: ${entries.length}`,
       '',
-      ...preview.map((entry, index) => `${index + 1}. ${entry.userId} (${this.formatIsoDate(entry.createdAt)})`),
-      ...(entries.length > preview.length ? ['', `... и ещё ${entries.length - preview.length}.`] : []),
+      ...preview.map(
+        (entry, index) => `${index + 1}. ${entry.userId} (${this.formatIsoDate(entry.createdAt)})`,
+      ),
+      ...(entries.length > preview.length
+        ? ['', `... и ещё ${entries.length - preview.length}.`]
+        : []),
       '',
       'Можно добавить или удалить пользователя по user_id.',
     ];
@@ -3016,21 +3137,21 @@ export class PrivateControlService {
 
     const isBasicModern = session.uiMode === 'modern' && session.broadcastView === 'basic';
     if (isBasicModern) {
-      rows.push([this.callbackButton('✏️ Текст сообщения', this.cb('broadcast_input_prompt', 'text'))]);
+      rows.push([
+        this.callbackButton('✏️ Текст сообщения', this.cb('broadcast_input_prompt', 'text')),
+      ]);
       rows.push([
         this.callbackButton(
           `${draft.applyToAllChats ? '✅' : '⬜'} Во все чаты`,
           this.cb('broadcast_toggle', 'apply_to_all'),
         ),
       ]);
-      rows.push([
-        this.callbackButton('🚀 Отправить', this.cb('broadcast_send'), 'positive'),
-      ]);
-      rows.push([
-        this.callbackButton('⚙️ Ещё параметры', this.cb('broadcast_view', 'advanced')),
-      ]);
+      rows.push([this.callbackButton('🚀 Отправить', this.cb('broadcast_send'), 'positive')]);
+      rows.push([this.callbackButton('⚙️ Ещё параметры', this.cb('broadcast_view', 'advanced'))]);
     } else {
-      rows.push([this.callbackButton('✏️ Текст сообщения', this.cb('broadcast_input_prompt', 'text'))]);
+      rows.push([
+        this.callbackButton('✏️ Текст сообщения', this.cb('broadcast_input_prompt', 'text')),
+      ]);
       rows.push([
         this.callbackButton(
           `${draft.applyToAllChats ? '✅' : '⬜'} Во все чаты`,
@@ -3081,7 +3202,10 @@ export class PrivateControlService {
 
       if (draft.cycleEnabled) {
         rows.push([
-          this.callbackButton('🔁 Шаг цикла (дни)', this.cb('broadcast_input_prompt', 'cycle_days')),
+          this.callbackButton(
+            '🔁 Шаг цикла (дни)',
+            this.cb('broadcast_input_prompt', 'cycle_days'),
+          ),
         ]);
         rows.push([
           this.callbackButton('🔢 Повторов', this.cb('broadcast_input_prompt', 'cycle_count')),
@@ -3089,14 +3213,10 @@ export class PrivateControlService {
       }
 
       if (session.uiMode === 'modern') {
-        rows.push([
-          this.callbackButton('⬅️ Основное', this.cb('broadcast_view', 'basic')),
-        ]);
+        rows.push([this.callbackButton('⬅️ Основное', this.cb('broadcast_view', 'basic'))]);
       }
 
-      rows.push([
-        this.callbackButton('🚀 Отправить', this.cb('broadcast_send'), 'positive'),
-      ]);
+      rows.push([this.callbackButton('🚀 Отправить', this.cb('broadcast_send'), 'positive')]);
     }
 
     if (session.uiMode === 'modern') {
@@ -3117,7 +3237,10 @@ export class PrivateControlService {
     };
   }
 
-  private async renderEventsScreen(context: PrivateContext, session: PrivateSession): Promise<PrivateView> {
+  private async renderEventsScreen(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<PrivateView> {
     if (!session.selectedChatId) {
       return this.renderChatSelection(context, session);
     }
@@ -3129,10 +3252,7 @@ export class PrivateControlService {
 
     const hasFullPage = events.length === PAGE_SIZE_EVENTS;
 
-    const lines: string[] = [
-      `События модерации (страница ${session.eventsPage})`,
-      '',
-    ];
+    const lines: string[] = [`События модерации (страница ${session.eventsPage})`, ''];
 
     if (events.length === 0) {
       lines.push('Событий пока нет.');
@@ -3147,12 +3267,20 @@ export class PrivateControlService {
 
     const rows: MaxMessageButton[][] = [
       [
-        this.callbackButton('⬅️ Назад', this.cb('events_page', String(Math.max(1, session.eventsPage - 1)))),
+        this.callbackButton(
+          '⬅️ Назад',
+          this.cb('events_page', String(Math.max(1, session.eventsPage - 1))),
+        ),
         this.callbackButton('➡️ Вперёд', this.cb('events_page', String(session.eventsPage + 1))),
       ],
       [
-        this.callbackButton(session.uiMode === 'modern' ? '⬅️ Назад' : '⬅️ Главное меню', this.cb(session.uiMode === 'modern' ? 'back' : 'main')),
-        ...(session.uiMode === 'modern' ? [this.callbackButton('Главный экран', this.cb('home'))] : []),
+        this.callbackButton(
+          session.uiMode === 'modern' ? '⬅️ Назад' : '⬅️ Главное меню',
+          this.cb(session.uiMode === 'modern' ? 'back' : 'main'),
+        ),
+        ...(session.uiMode === 'modern'
+          ? [this.callbackButton('Главный экран', this.cb('home'))]
+          : []),
       ],
       ...this.buildFooterButtons(),
     ];
@@ -3169,14 +3297,21 @@ export class PrivateControlService {
     };
   }
 
-  private async renderLogsScreen(context: PrivateContext, session: PrivateSession): Promise<PrivateView> {
+  private async renderLogsScreen(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<PrivateView> {
     if (!session.selectedChatId) {
       return this.renderChatSelection(context, session);
     }
 
-    const dashboard = await this.adminService.getLogsDashboard(session.selectedChatId, context.actor, {
-      range: session.logsRange,
-    });
+    const dashboard = await this.adminService.getLogsDashboard(
+      session.selectedChatId,
+      context.actor,
+      {
+        range: session.logsRange,
+      },
+    );
 
     const lines: string[] = [
       `Сводка и логи (${session.logsRange})`,
@@ -3190,21 +3325,37 @@ export class PrivateControlService {
       `Всего: ${dashboard.violationsSummary.total}`,
       '',
       'Последние нарушения:',
-      ...dashboard.violations.slice(0, 10).map(
-        (violation, index) =>
-          `${index + 1}. [${violation.action}] ${violation.ruleCode} • ${violation.userDisplayName ?? violation.userId}`,
-      ),
+      ...dashboard.violations
+        .slice(0, 10)
+        .map(
+          (violation, index) =>
+            `${index + 1}. [${violation.action}] ${violation.ruleCode} • ${violation.userDisplayName ?? violation.userId}`,
+        ),
     ];
 
     const rows: MaxMessageButton[][] = [
       [
-        this.callbackButton(`${session.logsRange === '24h' ? '✅' : '◻️'} 24h`, this.cb('logs_range', '24h')),
-        this.callbackButton(`${session.logsRange === '7d' ? '✅' : '◻️'} 7d`, this.cb('logs_range', '7d')),
-        this.callbackButton(`${session.logsRange === '30d' ? '✅' : '◻️'} 30d`, this.cb('logs_range', '30d')),
+        this.callbackButton(
+          `${session.logsRange === '24h' ? '✅' : '◻️'} 24h`,
+          this.cb('logs_range', '24h'),
+        ),
+        this.callbackButton(
+          `${session.logsRange === '7d' ? '✅' : '◻️'} 7d`,
+          this.cb('logs_range', '7d'),
+        ),
+        this.callbackButton(
+          `${session.logsRange === '30d' ? '✅' : '◻️'} 30d`,
+          this.cb('logs_range', '30d'),
+        ),
       ],
       [
-        this.callbackButton(session.uiMode === 'modern' ? '⬅️ Назад' : '⬅️ Главное меню', this.cb(session.uiMode === 'modern' ? 'back' : 'main')),
-        ...(session.uiMode === 'modern' ? [this.callbackButton('Главный экран', this.cb('home'))] : []),
+        this.callbackButton(
+          session.uiMode === 'modern' ? '⬅️ Назад' : '⬅️ Главное меню',
+          this.cb(session.uiMode === 'modern' ? 'back' : 'main'),
+        ),
+        ...(session.uiMode === 'modern'
+          ? [this.callbackButton('Главный экран', this.cb('home'))]
+          : []),
       ],
       ...this.buildFooterButtons(),
     ];
@@ -3225,9 +3376,13 @@ export class PrivateControlService {
       return this.renderChatSelection(context, session);
     }
 
-    const dashboard = await this.adminService.getLogsDashboard(session.selectedChatId, context.actor, {
-      range: session.logsRange,
-    });
+    const dashboard = await this.adminService.getLogsDashboard(
+      session.selectedChatId,
+      context.actor,
+      {
+        range: session.logsRange,
+      },
+    );
 
     const users = dashboard.violations
       .map((violation) => ({
@@ -3267,8 +3422,13 @@ export class PrivateControlService {
 
     rows.push(this.paginationButtons(pageInfo.page, pageInfo.pages, 'manual_users_page'));
     rows.push([
-      this.callbackButton(session.uiMode === 'modern' ? '⬅️ Назад' : '⬅️ Главное меню', this.cb(session.uiMode === 'modern' ? 'back' : 'main')),
-      ...(session.uiMode === 'modern' ? [this.callbackButton('Главный экран', this.cb('home'))] : []),
+      this.callbackButton(
+        session.uiMode === 'modern' ? '⬅️ Назад' : '⬅️ Главное меню',
+        this.cb(session.uiMode === 'modern' ? 'back' : 'main'),
+      ),
+      ...(session.uiMode === 'modern'
+        ? [this.callbackButton('Главный экран', this.cb('home'))]
+        : []),
     ]);
     rows.push(...this.buildFooterButtons());
 
@@ -3312,9 +3472,7 @@ export class PrivateControlService {
             this.callbackButton('Кик', this.cb('manual_action', 'KICK'), 'negative'),
             this.callbackButton('Бан', this.cb('manual_action', 'BAN'), 'negative'),
           ],
-          [
-            this.callbackButton('Разбан', this.cb('manual_action', 'UNBAN'), 'positive'),
-          ],
+          [this.callbackButton('Разбан', this.cb('manual_action', 'UNBAN'), 'positive')],
           [
             this.callbackButton(
               uiMode === 'modern' ? '⬅️ Назад' : '⬅️ К списку пользователей',
@@ -3330,15 +3488,14 @@ export class PrivateControlService {
 
   private renderSearchResultsScreen(query: string): PrivateView {
     const matches = this.findSettingMatches(query);
-    const lines: string[] = [
-      `Результаты поиска: «${this.compactText(query, 60)}»`,
-      '',
-    ];
+    const lines: string[] = [`Результаты поиска: «${this.compactText(query, 60)}»`, ''];
 
     if (matches.length === 0) {
       lines.push('Ничего не нашёл. Попробуйте другое слово.');
     } else {
-      lines.push(...matches.map((item, index) => `${index + 1}. ${item.sectionLabel} • ${item.label}`));
+      lines.push(
+        ...matches.map((item, index) => `${index + 1}. ${item.sectionLabel} • ${item.label}`),
+      );
     }
 
     const rows: MaxMessageButton[][] = matches.map((item) => [
@@ -3348,9 +3505,7 @@ export class PrivateControlService {
       ),
     ]);
 
-    rows.push([
-      this.callbackButton('🔎 Новый поиск', this.cb('open_search')),
-    ]);
+    rows.push([this.callbackButton('🔎 Новый поиск', this.cb('open_search'))]);
     rows.push([
       this.callbackButton('⬅️ Назад', this.cb('back')),
       this.callbackButton('Главный экран', this.cb('home')),
@@ -3367,13 +3522,23 @@ export class PrivateControlService {
 
   private findSettingMatches(
     query: string,
-  ): Array<{ section: PrivateSectionKey; key: keyof ChatSettings; label: string; sectionLabel: string }> {
+  ): Array<{
+    section: PrivateSectionKey;
+    key: keyof ChatSettings;
+    label: string;
+    sectionLabel: string;
+  }> {
     const normalized = query.trim().toLowerCase();
     if (!normalized) {
       return [];
     }
 
-    const results: Array<{ section: PrivateSectionKey; key: keyof ChatSettings; label: string; sectionLabel: string }> = [];
+    const results: Array<{
+      section: PrivateSectionKey;
+      key: keyof ChatSettings;
+      label: string;
+      sectionLabel: string;
+    }> = [];
     for (const section of SECTION_ORDER) {
       for (const field of SECTION_FIELDS[section]) {
         const fieldKey = String(field.key);
@@ -3418,7 +3583,10 @@ export class PrivateControlService {
       label.toLowerCase(),
       loweredKey,
       SECTION_LABELS[section].toLowerCase(),
-      ...loweredKey.split(/_|(?=[A-Z])/).map((part) => part.toLowerCase()).filter(Boolean),
+      ...loweredKey
+        .split(/_|(?=[A-Z])/)
+        .map((part) => part.toLowerCase())
+        .filter(Boolean),
     ];
 
     for (const [needle, aliases] of Object.entries(aliasMap)) {
@@ -3438,7 +3606,10 @@ export class PrivateControlService {
     return SECTION_FIELDS[section].filter((field) => allowed.has(field.key));
   }
 
-  private resolveSectionViewForField(section: PrivateSectionKey, key: keyof ChatSettings): PrivateSectionView {
+  private resolveSectionViewForField(
+    section: PrivateSectionKey,
+    key: keyof ChatSettings,
+  ): PrivateSectionView {
     return SECTION_CARD_FIELDS[section].advanced.includes(key) ? 'advanced' : 'basic';
   }
 
@@ -3482,10 +3653,11 @@ export class PrivateControlService {
     try {
       const row = JSON.parse(raw) as Record<string, unknown>;
       session.screen = this.parseScreen(row.screen);
-      session.section =
-        typeof row.section === 'string' ? this.parseSection(row.section) : null;
+      session.section = typeof row.section === 'string' ? this.parseSection(row.section) : null;
       session.channelSection =
-        typeof row.channelSection === 'string' ? this.parseChannelSection(row.channelSection) : null;
+        typeof row.channelSection === 'string'
+          ? this.parseChannelSection(row.channelSection)
+          : null;
       session.sectionView = this.parseSectionView(row.sectionView);
       session.homeTab = this.parseHomeTab(row.homeTab);
       session.selectedEntityType = this.parseEntityType(row.selectedEntityType);
@@ -3493,7 +3665,9 @@ export class PrivateControlService {
       session.domainPage = this.toPositiveInt(row.domainPage, 1);
       session.eventsPage = this.toPositiveInt(row.eventsPage, 1);
       session.manualPage = this.toPositiveInt(row.manualPage, 1);
-      session.logsRange = this.parseLogsRange(typeof row.logsRange === 'string' ? row.logsRange : undefined);
+      session.logsRange = this.parseLogsRange(
+        typeof row.logsRange === 'string' ? row.logsRange : undefined,
+      );
       session.manualTargetUserId =
         typeof row.manualTargetUserId === 'string' && row.manualTargetUserId.trim().length > 0
           ? row.manualTargetUserId.trim()
@@ -3858,9 +4032,7 @@ export class PrivateControlService {
       return null;
     }
 
-    return SECTION_ORDER.includes(value as PrivateSectionKey)
-      ? (value as PrivateSectionKey)
-      : null;
+    return SECTION_ORDER.includes(value as PrivateSectionKey) ? (value as PrivateSectionKey) : null;
   }
 
   private parseChannelSection(value: string | undefined): ChannelSectionKey | null {
@@ -3890,7 +4062,13 @@ export class PrivateControlService {
   private findChannelFieldConfig(
     section: ChannelSectionKey,
     key: keyof ChannelSettings,
-  ): { key: keyof ChannelSettings; label: string; type: SettingFieldType; min?: number; max?: number } | null {
+  ): {
+    key: keyof ChannelSettings;
+    label: string;
+    type: SettingFieldType;
+    min?: number;
+    max?: number;
+  } | null {
     const fields = CHANNEL_SECTION_FIELDS[section];
     return fields.find((field) => field.key === key) ?? null;
   }
@@ -3992,7 +4170,11 @@ export class PrivateControlService {
     await this.sendImmediate(context.chatId, text, options);
   }
 
-  private async sendImmediate(chatId: string, text: string, options?: MaxSendMessageOptions): Promise<void> {
+  private async sendImmediate(
+    chatId: string,
+    text: string,
+    options?: MaxSendMessageOptions,
+  ): Promise<void> {
     await this.maxClient.sendMessage(chatId, text, options, { immediate: true });
   }
 
@@ -4212,7 +4394,10 @@ export class PrivateControlService {
     };
   }
 
-  private extractCallbackUser(update: MaxUpdate): { userId: string | null; displayName: string | null } {
+  private extractCallbackUser(update: MaxUpdate): {
+    userId: string | null;
+    displayName: string | null;
+  } {
     const callback = this.extractCallbackNode(update);
     if (!callback) {
       return {
@@ -4464,7 +4649,9 @@ export class PrivateControlService {
     return session.uiMode === 'modern' ? 'home' : 'main';
   }
 
-  private assertChatSelected(session: PrivateSession): asserts session is PrivateSession & { selectedChatId: string } {
+  private assertChatSelected(
+    session: PrivateSession,
+  ): asserts session is PrivateSession & { selectedChatId: string } {
     if (!session.selectedChatId) {
       throw new BadRequestException('Сначала выберите чат.');
     }
@@ -4628,7 +4815,11 @@ export class PrivateControlService {
     const sessionKey = this.sessionKey(userId);
 
     if (this.redisCounter) {
-      await this.redisCounter.setStringWithTtl(sessionKey, JSON.stringify(normalized), SESSION_TTL_SEC);
+      await this.redisCounter.setStringWithTtl(
+        sessionKey,
+        JSON.stringify(normalized),
+        SESSION_TTL_SEC,
+      );
       return;
     }
 
@@ -4748,7 +4939,9 @@ export class PrivateControlService {
     }
 
     if (kind === 'set_channel_field') {
-      const section = this.parseChannelSection(typeof row.section === 'string' ? row.section : undefined);
+      const section = this.parseChannelSection(
+        typeof row.section === 'string' ? row.section : undefined,
+      );
       const key = typeof row.key === 'string' ? (row.key as keyof ChannelSettings) : null;
       const type = this.parseSettingFieldType(typeof row.type === 'string' ? row.type : undefined);
       if (!section || !key || !type) {

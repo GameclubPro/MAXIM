@@ -652,8 +652,8 @@ export const publishChannelEngagementRequestSchema = z.object({
     .min(1)
     .max(2_000)
     .default('Есть идея или обратная связь? Нажмите кнопку ниже.'),
-  commentsButtonText: z.string().trim().min(1).max(32).default('Обсудить'),
-  suggestButtonText: z.string().trim().min(1).max(32).default('Предложить пост'),
+  commentsButtonText: z.string().trim().min(1).max(32).default('💬 Комментарии'),
+  suggestButtonText: z.string().trim().min(1).max(32).default('📰 Предложить пост'),
 });
 export type PublishChannelEngagementRequest = z.infer<typeof publishChannelEngagementRequestSchema>;
 
@@ -668,7 +668,9 @@ export const createChannelDialogMessageRequestSchema = z.object({
   token: z.string().trim().min(16).max(256),
   text: z.string().trim().min(1).max(2_000),
 });
-export type CreateChannelDialogMessageRequest = z.infer<typeof createChannelDialogMessageRequestSchema>;
+export type CreateChannelDialogMessageRequest = z.infer<
+  typeof createChannelDialogMessageRequestSchema
+>;
 
 export const channelDialogMessageSchema = z.object({
   id: z.string(),
@@ -693,7 +695,9 @@ export const createChannelDialogMessageResponseSchema = z.object({
   ok: z.boolean(),
   message: channelDialogMessageSchema,
 });
-export type CreateChannelDialogMessageResponse = z.infer<typeof createChannelDialogMessageResponseSchema>;
+export type CreateChannelDialogMessageResponse = z.infer<
+  typeof createChannelDialogMessageResponseSchema
+>;
 
 export const maxMessagePayloadSchema = z.object({
   messageId: z.string(),
