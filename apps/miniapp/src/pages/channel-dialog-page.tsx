@@ -1,6 +1,6 @@
 import type { ChannelDialogType } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
@@ -87,6 +87,8 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
   const token = searchParams.get('token')?.trim() ?? '';
   const dialogType = resolveDialogType(mode);
   const [draft, setDraft] = useState('');
+  const scrollViewportRef = useRef<HTMLElement | null>(null);
+  const lastMessageIdRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
 
@@ -105,6 +107,30 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
   });
 
   const messages = dialogQuery.data?.messages ?? [];
+
+  useEffect(() => {
+    const viewport = scrollViewportRef.current;
+    const lastMessageId = messages[messages.length - 1]?.id ?? null;
+    if (!viewport || !lastMessageId) {
+      lastMessageIdRef.current = lastMessageId;
+      return;
+    }
+
+    const previousMessageId = lastMessageIdRef.current;
+    const distanceToBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+    const shouldStickToBottom = previousMessageId === null || distanceToBottom < 160;
+
+    if (previousMessageId !== lastMessageId && shouldStickToBottom) {
+      requestAnimationFrame(() => {
+        viewport.scrollTo({
+          top: viewport.scrollHeight,
+          behavior: previousMessageId ? 'smooth' : 'auto',
+        });
+      });
+    }
+
+    lastMessageIdRef.current = lastMessageId;
+  }, [messages]);
 
   const sendMutation = useMutation({
     mutationFn: (text: string) =>
@@ -201,7 +227,7 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
           </Link>
         </header>
 
-        <section className="channel-dialog-body">
+        <section ref={scrollViewportRef} className="channel-dialog-body">
           {dialogQuery.isLoading ? (
             <div className="channel-dialog-skeletons" aria-label="Загрузка">
               {Array.from({ length: 3 }, (_, index) => (
@@ -284,7 +310,7 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
         <div className="channel-dialog-compose__surface">
           <label className="channel-dialog-compose__field">
             <textarea
-              rows={5}
+              rows={3}
               value={draft}
               onChange={(event) => setDraft(event.target.value)}
               placeholder={view.placeholder}

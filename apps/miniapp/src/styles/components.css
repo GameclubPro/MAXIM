@@ -306,9 +306,12 @@
   position: relative;
   min-height: 100vh;
   min-height: 100dvh;
+  height: 100vh;
+  height: 100dvh;
   overflow: hidden;
-  padding: max(18px, env(safe-area-inset-top, 0px)) var(--space-4) calc(var(--safe-bottom) + 138px)
-    var(--space-4);
+  display: grid;
+  padding: max(18px, env(safe-area-inset-top, 0px)) var(--space-4)
+    max(var(--space-3), var(--safe-bottom)) var(--space-4);
   background: linear-gradient(180deg, var(--dialog-bg-start), var(--dialog-bg-end));
 }
 
@@ -340,6 +343,11 @@
 .channel-dialog-shell {
   width: min(100%, 760px);
   margin: 0 auto;
+  min-height: 0;
+  height: 100%;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 12px;
 }
 
 .channel-dialog-topbar {
@@ -386,12 +394,20 @@
 .channel-dialog-body {
   display: grid;
   gap: 12px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-right: 4px;
+  padding-bottom: 4px;
+  scrollbar-gutter: stable;
 }
 
 .channel-dialog-skeletons,
 .channel-dialog-message-list {
   display: grid;
   gap: 10px;
+  align-content: start;
 }
 
 .channel-dialog-skeleton,
@@ -556,22 +572,15 @@
 }
 
 .channel-dialog-compose {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
   z-index: 2;
-  padding: var(--space-3) var(--space-3) calc(var(--safe-bottom) + var(--space-3)) var(--space-3);
-  background: linear-gradient(180deg, rgba(248, 251, 255, 0), rgba(248, 251, 255, 0.94) 24%);
+  padding-top: 4px;
 }
 
 .channel-dialog-screen--suggest .channel-dialog-compose {
-  background: linear-gradient(180deg, rgba(255, 253, 249, 0), rgba(255, 253, 249, 0.94) 24%);
+  background: none;
 }
 
 .channel-dialog-compose__surface {
-  width: min(100%, 760px);
-  margin: 0 auto;
   display: grid;
   gap: 12px;
   padding: 12px;
@@ -585,7 +594,8 @@
 
 .channel-dialog-compose__field textarea {
   width: 100%;
-  min-height: 104px;
+  min-height: 76px;
+  max-height: 160px;
   resize: none;
   padding: 14px 16px;
   border-radius: 18px;
@@ -633,7 +643,6 @@
   .channel-dialog-screen {
     padding-left: 12px;
     padding-right: 12px;
-    padding-bottom: calc(var(--safe-bottom) + 126px);
   }
 
   .channel-dialog-topbar {
@@ -649,8 +658,7 @@
   }
 
   .channel-dialog-compose {
-    padding-left: 10px;
-    padding-right: 10px;
+    padding-top: 2px;
   }
 
   .channel-dialog-compose__surface {
@@ -659,7 +667,7 @@
   }
 
   .channel-dialog-compose__field textarea {
-    min-height: 96px;
+    min-height: 72px;
   }
 
   .channel-dialog-submit {
