@@ -307,32 +307,32 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
             )
           ) : null}
         </section>
-      </div>
 
-      <section className="channel-dialog-compose">
-        <div className="channel-dialog-compose__surface">
-          <label className="channel-dialog-compose__field">
-            <textarea
-              rows={2}
-              value={draft}
-              onChange={(event) => setDraft(event.target.value)}
-              placeholder={view.placeholder}
-              maxLength={2_000}
-            />
-          </label>
+        <section className="channel-dialog-compose">
+          <div className="channel-dialog-compose__surface">
+            <label className="channel-dialog-compose__field">
+              <textarea
+                rows={1}
+                value={draft}
+                onChange={(event) => setDraft(event.target.value)}
+                placeholder={view.placeholder}
+                maxLength={2_000}
+              />
+            </label>
 
-          <div className="channel-dialog-compose__actions">
-            <button
-              type="button"
-              className="channel-dialog-submit"
-              onClick={onSubmit}
-              disabled={!draft.trim() || sendMutation.isPending}
-            >
-              {sendMutation.isPending ? 'Отправляем...' : 'Отправить'}
-            </button>
+            <div className="channel-dialog-compose__actions">
+              <button
+                type="button"
+                className="channel-dialog-submit"
+                onClick={onSubmit}
+                disabled={!draft.trim() || sendMutation.isPending}
+              >
+                {sendMutation.isPending ? '...' : 'Отправить'}
+              </button>
+            </div>
           </div>
-        </div>
-      </section>
+        </section>
+      </div>
     </div>
   );
 }
