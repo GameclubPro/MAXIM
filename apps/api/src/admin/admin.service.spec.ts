@@ -23,6 +23,7 @@ function createPrismaMock() {
       updateMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     auditLog: {
+      findMany: jest.fn().mockResolvedValue([]),
       create: jest.fn().mockResolvedValue(undefined),
     },
     moderationEvent: {
@@ -69,6 +70,10 @@ function createConfigMock() {
       return null;
     }),
   };
+}
+
+function decodeBase64UrlJson<T>(value: string): T {
+  return JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as T;
 }
 
 describe('AdminService.getLogsDashboard', () => {
@@ -149,9 +154,9 @@ describe('AdminService.getLogsDashboard', () => {
     expect(result.violations[1]?.userDisplayName).toBe('Мария');
 
     const membershipSqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
-    expect(membershipSqlText).toContain("user_added");
-    expect(membershipSqlText).toContain("user_removed");
-    expect(membershipSqlText).not.toContain("bot_added");
+    expect(membershipSqlText).toContain('user_added');
+    expect(membershipSqlText).toContain('user_removed');
+    expect(membershipSqlText).not.toContain('bot_added');
 
     expect(prisma.moderationEvent.count).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ chatId: 'chat-1' }) }),
@@ -206,7 +211,6 @@ describe('AdminService.getLogsDashboard', () => {
     const createdAt = countArgs.where.createdAt;
     expect(createdAt.gte.toISOString()).toBe('2026-03-01T12:00:00.000Z');
     expect(createdAt.lte.toISOString()).toBe('2026-03-02T12:00:00.000Z');
-
   });
 });
 
@@ -411,7 +415,7 @@ describe('AdminService.sendBroadcast', () => {
 });
 
 describe('AdminService.publishChannelEngagementMessage', () => {
-  it('publishes channel buttons as MAX deep links via link buttons', async () => {
+  it('publishes channel buttons as MAX deep links with a dedicated post thread', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       entityType: 'CHANNEL',
@@ -467,6 +471,131 @@ describe('AdminService.publishChannelEngagementMessage', () => {
 
     const commentsUrl = new URL(commentsButton.url);
     const commentsStartParam = commentsUrl.searchParams.get('startapp');
+    const suggestUrl = new URL(suggestButton.url);
+    const suggestStartParam = suggestUrl.searchParams.get('startapp');
+
     expect(commentsStartParam).toMatch(/^cd-/u);
+    expect(suggestStartParam).toMatch(/^cd-/u);
+
+    const commentsLaunch = decodeBase64UrlJson<{ c: string; m: string; t: string }>(
+      commentsStartParam!.slice(3),
+    );
+    const suggestLaunch = decodeBase64UrlJson<{ c: string; m: string; t: string }>(
+      suggestStartParam!.slice(3),
+    );
+    const commentsToken = decodeBase64UrlJson<{ d: string; s: string }>(commentsLaunch.t.slice(4));
+    const suggestToken = decodeBase64UrlJson<{ d: string; s: string }>(suggestLaunch.t.slice(4));
+
+    expect(commentsLaunch).toMatchObject({
+      c: 'channel-1',
+      m: 'comments',
+    });
+    expect(suggestLaunch).toMatchObject({
+      c: 'channel-1',
+      m: 'suggest',
+    });
+    expect(commentsLaunch.t).toMatch(/^cdt-/u);
+    expect(suggestLaunch.t).toMatch(/^cdt-/u);
+    expect(commentsToken.d).toBe(suggestToken.d);
+    expect(commentsToken.s).not.toBe(suggestToken.s);
+
+    const publishAuditPayload = prisma.auditLog.create.mock.calls[0]?.[0]?.data?.payload as {
+      threadId?: unknown;
+    };
+    expect(publishAuditPayload.threadId).toBe(commentsToken.d);
+  });
+
+  it('stores and queries dialog messages inside the thread encoded in the button token', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+      id: 'message-1',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-06T08:00:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await service.publishChannelEngagementMessage(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Нажмите кнопку ниже.',
+        commentsButtonText: 'Комментарии',
+        suggestButtonText: 'Предложить пост',
+      },
+    );
+
+    const [, , options] = maxClient.sendMessage.mock.calls[0] ?? [];
+    const commentsButton = options.buttons?.[0]?.[0];
+    const commentsStartParam = new URL(commentsButton.url).searchParams.get('startapp');
+    const commentsLaunch = decodeBase64UrlJson<{ t: string }>(commentsStartParam!.slice(3));
+    const commentsToken = commentsLaunch.t;
+    const commentsTokenPayload = decodeBase64UrlJson<{ d: string }>(commentsToken.slice(4));
+
+    await service.createChannelDialogMessage(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        text: 'Первый комментарий',
+      },
+    );
+
+    await service.getChannelDialog(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      commentsToken,
+    );
+
+    const commentAuditPayload = prisma.auditLog.create.mock.calls[1]?.[0]?.data?.payload as {
+      threadId?: unknown;
+    };
+    expect(commentAuditPayload.threadId).toBe(commentsTokenPayload.d);
+    expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: 'channel-1',
+          action: 'CHANNEL_DIALOG_COMMENT',
+          payload: {
+            path: ['threadId'],
+            equals: commentsTokenPayload.d,
+          },
+        }),
+      }),
+    );
   });
 });

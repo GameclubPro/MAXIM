@@ -84,16 +84,19 @@ function parseChannelDialogStartParam(value: string): ChannelDialogLaunchPayload
   }
 
   try {
-    const parsed = JSON.parse(decodeBase64Url(encodedPayload)) as Partial<ChannelDialogLaunchPayload>;
+    const parsed = JSON.parse(
+      decodeBase64Url(encodedPayload),
+    ) as Partial<ChannelDialogLaunchPayload>;
     const chatId = readString(parsed.c);
     const type = parsed.m === 'suggest' ? 'suggest' : parsed.m === 'comments' ? 'comments' : null;
-    const token = readString(parsed.t).toLowerCase();
+    const token = readString(parsed.t);
     if (
       parsed.v !== 1 ||
       parsed.k !== 'channel-dialog' ||
       !chatId ||
       !type ||
-      !/^[a-f0-9]{64}$/u.test(token)
+      token.length < 16 ||
+      token.length > 256
     ) {
       return null;
     }
@@ -112,7 +115,9 @@ function parseChannelDialogStartParam(value: string): ChannelDialogLaunchPayload
 
 export function resolveLaunchDialogRoute(initData: string): string | null {
   const startParam =
-    readStartParamFromLocation() || readStartParamFromBridge() || readStartParamFromInitData(initData);
+    readStartParamFromLocation() ||
+    readStartParamFromBridge() ||
+    readStartParamFromInitData(initData);
   const launch = parseChannelDialogStartParam(startParam);
   if (!launch) {
     return null;

@@ -307,10 +307,7 @@
   min-height: 100vh;
   min-height: 100dvh;
   overflow: hidden;
-  padding:
-    max(18px, env(safe-area-inset-top, 0px))
-    var(--space-4)
-    calc(var(--safe-bottom) + 138px)
+  padding: max(18px, env(safe-area-inset-top, 0px)) var(--space-4) calc(var(--safe-bottom) + 138px)
     var(--space-4);
   background: linear-gradient(180deg, var(--dialog-bg-start), var(--dialog-bg-end));
 }
@@ -326,7 +323,11 @@
   inset: 0;
   pointer-events: none;
   background:
-    radial-gradient(circle at top right, color-mix(in srgb, var(--dialog-accent) 12%, transparent), transparent 30%),
+    radial-gradient(
+      circle at top right,
+      color-mix(in srgb, var(--dialog-accent) 12%, transparent),
+      transparent 30%
+    ),
     linear-gradient(180deg, rgba(255, 255, 255, 0.35), transparent 26%);
 }
 
@@ -395,10 +396,23 @@
 
 .channel-dialog-skeleton,
 .channel-dialog-message {
+  gap: 10px;
+  align-items: flex-end;
+}
+
+.channel-dialog-skeleton {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   gap: 10px;
   align-items: start;
+}
+
+.channel-dialog-message {
+  display: flex;
+}
+
+.channel-dialog-message.is-own {
+  flex-direction: row-reverse;
 }
 
 .channel-dialog-skeleton__avatar,
@@ -434,6 +448,11 @@
   padding: 14px 16px;
 }
 
+.channel-dialog-message__bubble {
+  width: fit-content;
+  max-width: min(calc(100% - 50px), 560px);
+}
+
 .channel-dialog-message__avatar {
   display: grid;
   place-items: center;
@@ -449,6 +468,16 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+.channel-dialog-message.is-own .channel-dialog-message__bubble {
+  background: color-mix(in srgb, var(--dialog-accent) 13%, white);
+  border-color: color-mix(in srgb, var(--dialog-accent) 18%, white);
+}
+
+.channel-dialog-message.is-own .channel-dialog-message__meta,
+.channel-dialog-message.is-own .channel-dialog-message__footer {
+  justify-content: flex-end;
 }
 
 .channel-dialog-message__meta strong {
@@ -532,11 +561,7 @@
   right: 0;
   bottom: 0;
   z-index: 2;
-  padding:
-    var(--space-3)
-    var(--space-3)
-    calc(var(--safe-bottom) + var(--space-3))
-    var(--space-3);
+  padding: var(--space-3) var(--space-3) calc(var(--safe-bottom) + var(--space-3)) var(--space-3);
   background: linear-gradient(180deg, rgba(248, 251, 255, 0), rgba(248, 251, 255, 0.94) 24%);
 }
 
@@ -590,7 +615,11 @@
   color: #fff;
   cursor: pointer;
   font-weight: 800;
-  background: linear-gradient(145deg, var(--dialog-accent), color-mix(in srgb, var(--dialog-accent) 70%, black));
+  background: linear-gradient(
+    145deg,
+    var(--dialog-accent),
+    color-mix(in srgb, var(--dialog-accent) 70%, black)
+  );
   box-shadow: 0 14px 28px color-mix(in srgb, var(--dialog-accent) 24%, transparent);
 }
 
@@ -612,7 +641,7 @@
   }
 
   .channel-dialog-message {
-    grid-template-columns: 1fr;
+    gap: 8px;
   }
 
   .channel-dialog-close {

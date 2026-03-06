@@ -34,7 +34,7 @@ import {
 import { ChatEntityType, EventType, Operator, Prisma, SanctionAction } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
-import { createHmac, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
@@ -68,6 +68,13 @@ const CHANNEL_DIALOG_ACTION_COMMENT = 'CHANNEL_DIALOG_COMMENT';
 const CHANNEL_DIALOG_ACTION_SUGGEST = 'CHANNEL_DIALOG_SUGGESTION';
 const CHANNEL_DIALOG_ACTION_PUBLISH = 'PUBLISH_CHANNEL_ENGAGEMENT';
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
+const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
+
+type ChannelDialogTokenPayload = {
+  v: 1;
+  d: string;
+  s: string;
+};
 
 @Injectable()
 export class AdminService {
@@ -85,7 +92,9 @@ export class AdminService {
   ) {
     this.maxBotToken = configService.getOrThrow<string>('MAX_BOT_TOKEN');
     this.appBaseUrl = this.normalizeAppBaseUrl(configService.get<string>('APP_BASE_URL'));
-    this.explicitBotContactId = this.normalizeBotContactId(configService.get<string>('MAX_BOT_CONTACT_ID'));
+    this.explicitBotContactId = this.normalizeBotContactId(
+      configService.get<string>('MAX_BOT_CONTACT_ID'),
+    );
     this.ownBotUserId = this.normalizeOwnBotUserId(configService.get<string>('MAX_BOT_ID'));
   }
 
@@ -411,10 +420,11 @@ export class AdminService {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const commentsUrl = this.buildChannelDialogLaunchUrl(chatId, 'comments');
-    const suggestUrl = this.buildChannelDialogLaunchUrl(chatId, 'suggest');
-    const commentsWebAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, 'comments');
-    const suggestWebAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, 'suggest');
+    const threadId = randomUUID();
+    const commentsUrl = this.buildChannelDialogLaunchUrl(chatId, 'comments', threadId);
+    const suggestUrl = this.buildChannelDialogLaunchUrl(chatId, 'suggest', threadId);
+    const commentsWebAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, 'comments', threadId);
+    const suggestWebAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, 'suggest', threadId);
     const botContactId = this.resolveBotContactId();
     const buttons: MaxMessageButton[] = [];
     buttons.push(
@@ -425,17 +435,17 @@ export class AdminService {
             url: commentsUrl,
           }
         : commentsWebAppUrl && botContactId
-        ? {
-            type: 'open_app',
-            text: parsed.data.commentsButtonText,
-            webApp: commentsWebAppUrl,
-            contactId: botContactId,
-          }
-        : {
-            type: 'link',
-            text: parsed.data.commentsButtonText,
-            url: commentsWebAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
-          },
+          ? {
+              type: 'open_app',
+              text: parsed.data.commentsButtonText,
+              webApp: commentsWebAppUrl,
+              contactId: botContactId,
+            }
+          : {
+              type: 'link',
+              text: parsed.data.commentsButtonText,
+              url: commentsWebAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
+            },
     );
     buttons.push(
       suggestUrl
@@ -445,17 +455,17 @@ export class AdminService {
             url: suggestUrl,
           }
         : suggestWebAppUrl && botContactId
-        ? {
-            type: 'open_app',
-            text: parsed.data.suggestButtonText,
-            webApp: suggestWebAppUrl,
-            contactId: botContactId,
-          }
-        : {
-            type: 'link',
-            text: parsed.data.suggestButtonText,
-            url: suggestWebAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
-          },
+          ? {
+              type: 'open_app',
+              text: parsed.data.suggestButtonText,
+              webApp: suggestWebAppUrl,
+              contactId: botContactId,
+            }
+          : {
+              type: 'link',
+              text: parsed.data.suggestButtonText,
+              url: suggestWebAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
+            },
     );
 
     await this.maxClient.sendMessage(
@@ -476,6 +486,7 @@ export class AdminService {
           text: parsed.data.text,
           commentsButtonText: parsed.data.commentsButtonText,
           suggestButtonText: parsed.data.suggestButtonText,
+          threadId,
           commentsUrl,
           suggestUrl,
         },
@@ -489,15 +500,29 @@ export class AdminService {
     });
   }
 
-  async getChannelDialog(chatId: string, user: AuthUser, dialogTypeRaw: string, token: string | null) {
+  async getChannelDialog(
+    chatId: string,
+    user: AuthUser,
+    dialogTypeRaw: string,
+    token: string | null,
+  ) {
     const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
-    this.assertValidChannelDialogToken(chatId, dialogType, token);
+    const threadId = this.resolveChannelDialogThreadId(chatId, dialogType, token);
 
-    const action = dialogType === 'comments' ? CHANNEL_DIALOG_ACTION_COMMENT : CHANNEL_DIALOG_ACTION_SUGGEST;
+    const action =
+      dialogType === 'comments' ? CHANNEL_DIALOG_ACTION_COMMENT : CHANNEL_DIALOG_ACTION_SUGGEST;
     const rows = await this.prisma.auditLog.findMany({
       where: {
         chatId,
         action,
+        ...(threadId
+          ? {
+              payload: {
+                path: ['threadId'],
+                equals: threadId,
+              },
+            }
+          : {}),
         ...(dialogType === 'suggest' ? { actorUserId: user.userId } : {}),
       },
       orderBy: {
@@ -530,7 +555,7 @@ export class AdminService {
       throw new BadRequestException(parsed.error.format());
     }
 
-    this.assertValidChannelDialogToken(chatId, dialogType, parsed.data.token);
+    const threadId = this.resolveChannelDialogThreadId(chatId, dialogType, parsed.data.token);
     const text = parsed.data.text.trim();
     const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
 
@@ -546,9 +571,11 @@ export class AdminService {
       data: {
         chatId,
         actorUserId: user.userId,
-        action: dialogType === 'comments' ? CHANNEL_DIALOG_ACTION_COMMENT : CHANNEL_DIALOG_ACTION_SUGGEST,
+        action:
+          dialogType === 'comments' ? CHANNEL_DIALOG_ACTION_COMMENT : CHANNEL_DIALOG_ACTION_SUGGEST,
         payload: {
           type: dialogType,
+          threadId,
           text,
           authorDisplayName: authorDisplayName ?? null,
           delivered,
@@ -605,7 +632,8 @@ export class AdminService {
     const settingsUpdatePayload: Partial<ChatSettings> =
       filteredSettingKeys.length > 0
         ? filteredSettingKeys.reduce<Partial<ChatSettings>>((acc, key) => {
-            (acc as Record<keyof ChatSettings, ChatSettings[keyof ChatSettings]>)[key] = parsed.data[key];
+            (acc as Record<keyof ChatSettings, ChatSettings[keyof ChatSettings]>)[key] =
+              parsed.data[key];
             return acc;
           }, {})
         : parsed.data;
@@ -660,9 +688,7 @@ export class AdminService {
             sourceChatId,
             targetChatId: chatId,
             source,
-            ...(filteredSettingKeys.length > 0
-              ? { settingKeys: filteredSettingKeys }
-              : {}),
+            ...(filteredSettingKeys.length > 0 ? { settingKeys: filteredSettingKeys } : {}),
           },
         },
       });
@@ -723,9 +749,7 @@ export class AdminService {
     const cycleEveryMs = cycleEveryDays * BROADCAST_DAY_MS;
     const maxDelayWithCycles = delayMs + (cycleCount - 1) * cycleEveryMs;
     if (maxDelayWithCycles > BROADCAST_MAX_DELAY_MS) {
-      throw new BadRequestException(
-        'Все циклы должны укладываться в 14 дней от текущего момента.',
-      );
+      throw new BadRequestException('Все циклы должны укладываться в 14 дней от текущего момента.');
     }
 
     let imagePayload: Record<string, unknown> | undefined;
@@ -866,7 +890,9 @@ export class AdminService {
   private async sendBroadcastImageMessageWithRetry(
     chatId: string,
     text: string,
-    options: { button?: { text: string; url: string }; imagePayload?: Record<string, unknown> } | undefined,
+    options:
+      | { button?: { text: string; url: string }; imagePayload?: Record<string, unknown> }
+      | undefined,
   ): Promise<void> {
     let lastError: unknown = null;
     const attempts = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length + 1;
@@ -1174,8 +1200,7 @@ export class AdminService {
               {
                 chatId,
                 userId: targetUserId,
-                err:
-                  rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
+                err: rollbackError instanceof Error ? rollbackError.message : String(rollbackError),
               },
               'Failed to rollback manual ban after scheduling error',
             );
@@ -1258,12 +1283,12 @@ export class AdminService {
         chatId,
         actorUserId: user.userId,
         action: 'MANUAL_UNBAN_MEMBER',
-          payload: {
-            userId: targetUserId,
-            source,
-          },
+        payload: {
+          userId: targetUserId,
+          source,
         },
-      });
+      },
+    });
 
     return manualModerationActionResultSchema.parse({
       ok: true,
@@ -1611,7 +1636,10 @@ export class AdminService {
     return { ok: true };
   }
 
-  async getGlobalUserBlacklist(chatId: string, user: AuthUser): Promise<GlobalUserBlacklistEntry[]> {
+  async getGlobalUserBlacklist(
+    chatId: string,
+    user: AuthUser,
+  ): Promise<GlobalUserBlacklistEntry[]> {
     await this.assertChatAdmin(chatId, user.userId);
 
     const rows = await this.prisma.globalUserBlacklist.findMany({
@@ -1746,13 +1774,18 @@ export class AdminService {
     return 0;
   }
 
-  private async resolveUserDisplayNames(chatId: string, userIds: string[]): Promise<Map<string, string>> {
+  private async resolveUserDisplayNames(
+    chatId: string,
+    userIds: string[],
+  ): Promise<Map<string, string>> {
     const normalizedUserIds = [...new Set(userIds.map((item) => item.trim()).filter(Boolean))];
     if (normalizedUserIds.length === 0) {
       return new Map();
     }
 
-    const rows = await this.prisma.$queryRaw<Array<{ user_id: string | null; sender_name: string | null }>>`
+    const rows = await this.prisma.$queryRaw<
+      Array<{ user_id: string | null; sender_name: string | null }>
+    >`
       SELECT DISTINCT ON (sender_id)
         sender_id AS user_id,
         sender_name
@@ -1824,7 +1857,10 @@ export class AdminService {
 
     const shouldKeepPort =
       parsed.port.length > 0 &&
-      !((protocol === 'https:' && parsed.port === '443') || (protocol === 'http:' && parsed.port === '80'));
+      !(
+        (protocol === 'https:' && parsed.port === '443') ||
+        (protocol === 'http:' && parsed.port === '80')
+      );
     const port = shouldKeepPort ? `:${parsed.port}` : '';
 
     return `${hostname}${port}`.toLowerCase();
@@ -1878,7 +1914,10 @@ export class AdminService {
     });
   }
 
-  private async findStoredAllowlistDomains(chatId: string, normalizedDomain: string): Promise<string[]> {
+  private async findStoredAllowlistDomains(
+    chatId: string,
+    normalizedDomain: string,
+  ): Promise<string[]> {
     const rows = await this.prisma.domainAllowlist.findMany({
       where: {
         chatId,
@@ -2030,22 +2069,34 @@ export class AdminService {
     return `Канал ${chatId}`;
   }
 
-  private buildChannelDialogLaunchUrl(chatId: string, type: ChannelDialogType): string | null {
-    return this.buildMiniappStartUrl(this.buildChannelDialogStartParam(chatId, type));
+  private buildChannelDialogLaunchUrl(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+  ): string | null {
+    return this.buildMiniappStartUrl(this.buildChannelDialogStartParam(chatId, type, threadId));
   }
 
-  private buildChannelDialogDirectWebAppUrl(chatId: string, type: ChannelDialogType): string | null {
+  private buildChannelDialogDirectWebAppUrl(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+  ): string | null {
     if (!this.appBaseUrl) {
       return null;
     }
 
-    const token = this.buildChannelDialogToken(chatId, type);
+    const token = this.buildChannelDialogToken(chatId, type, threadId);
     const encodedChatId = encodeURIComponent(chatId);
     return `${this.appBaseUrl}/app/channel/${encodedChatId}/dialog/${type}?token=${token}`;
   }
 
-  private buildChannelDialogStartParam(chatId: string, type: ChannelDialogType): string {
-    const token = this.buildChannelDialogToken(chatId, type);
+  private buildChannelDialogStartParam(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+  ): string {
+    const token = this.buildChannelDialogToken(chatId, type, threadId);
     const payload = JSON.stringify({
       v: 1,
       k: 'channel-dialog',
@@ -2065,28 +2116,113 @@ export class AdminService {
     return `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(startParam)}`;
   }
 
-  private buildChannelDialogToken(chatId: string, type: ChannelDialogType): string {
-    return createHmac('sha256', this.maxBotToken).update(`dialog:${chatId}:${type}`).digest('hex');
+  private buildChannelDialogToken(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId?: string | null,
+  ): string {
+    const normalizedThreadId = threadId?.trim() ?? '';
+    if (!normalizedThreadId) {
+      return this.buildChannelDialogTokenSignature(chatId, type);
+    }
+
+    const payload = JSON.stringify({
+      v: 1,
+      d: normalizedThreadId,
+      s: this.buildChannelDialogTokenSignature(chatId, type, normalizedThreadId),
+    } satisfies ChannelDialogTokenPayload);
+    const encoded = Buffer.from(payload, 'utf8').toString('base64url');
+    return `${CHANNEL_DIALOG_TOKEN_PREFIX}${encoded}`;
   }
 
-  private assertValidChannelDialogToken(
+  private buildChannelDialogTokenSignature(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId?: string | null,
+  ): string {
+    const normalizedThreadId = threadId?.trim() ?? '';
+    const scope = normalizedThreadId
+      ? `dialog:${chatId}:${type}:${normalizedThreadId}`
+      : `dialog:${chatId}:${type}`;
+    return createHmac('sha256', this.maxBotToken).update(scope).digest('hex');
+  }
+
+  private resolveChannelDialogThreadId(
     chatId: string,
     type: ChannelDialogType,
     token: string | null | undefined,
-  ): void {
-    const normalizedToken = typeof token === 'string' ? token.trim().toLowerCase() : '';
-    if (!/^[a-f0-9]{64}$/u.test(normalizedToken)) {
-      throw new BadRequestException('Неверный токен кнопки. Откройте диалог заново из сообщения канала.');
+  ): string | null {
+    const normalizedToken = typeof token === 'string' ? token.trim() : '';
+    if (!normalizedToken) {
+      throw new BadRequestException(
+        'Неверный токен кнопки. Откройте диалог заново из сообщения канала.',
+      );
     }
 
-    const expected = this.buildChannelDialogToken(chatId, type);
-    const isValid =
-      normalizedToken.length === expected.length &&
-      timingSafeEqual(Buffer.from(normalizedToken, 'hex'), Buffer.from(expected, 'hex'));
+    if (/^[a-f0-9]{64}$/iu.test(normalizedToken)) {
+      const signature = normalizedToken.toLowerCase();
+      const expected = this.buildChannelDialogTokenSignature(chatId, type);
+      if (!this.isValidChannelDialogSignature(signature, expected)) {
+        throw new BadRequestException(
+          'Кнопка устарела. Откройте сообщение в канале и нажмите кнопку снова.',
+        );
+      }
 
-    if (!isValid) {
-      throw new BadRequestException('Кнопка устарела. Откройте сообщение в канале и нажмите кнопку снова.');
+      return null;
     }
+
+    if (!normalizedToken.startsWith(CHANNEL_DIALOG_TOKEN_PREFIX)) {
+      throw new BadRequestException(
+        'Неверный токен кнопки. Откройте диалог заново из сообщения канала.',
+      );
+    }
+
+    const encodedPayload = normalizedToken.slice(CHANNEL_DIALOG_TOKEN_PREFIX.length);
+    if (!encodedPayload) {
+      throw new BadRequestException(
+        'Неверный токен кнопки. Откройте диалог заново из сообщения канала.',
+      );
+    }
+
+    let payload: Partial<ChannelDialogTokenPayload>;
+    try {
+      payload = JSON.parse(
+        Buffer.from(encodedPayload, 'base64url').toString('utf8'),
+      ) as Partial<ChannelDialogTokenPayload>;
+    } catch {
+      throw new BadRequestException(
+        'Неверный токен кнопки. Откройте диалог заново из сообщения канала.',
+      );
+    }
+
+    const threadId = this.readTrimmedString(payload.d);
+    const signature = this.readTrimmedString(payload.s)?.toLowerCase() ?? '';
+    if (
+      payload.v !== 1 ||
+      !threadId ||
+      threadId.length > 120 ||
+      !/^[a-f0-9]{64}$/u.test(signature)
+    ) {
+      throw new BadRequestException(
+        'Неверный токен кнопки. Откройте диалог заново из сообщения канала.',
+      );
+    }
+
+    const expected = this.buildChannelDialogTokenSignature(chatId, type, threadId);
+    if (!this.isValidChannelDialogSignature(signature, expected)) {
+      throw new BadRequestException(
+        'Кнопка устарела. Откройте сообщение в канале и нажмите кнопку снова.',
+      );
+    }
+
+    return threadId;
+  }
+
+  private isValidChannelDialogSignature(providedHex: string, expectedHex: string): boolean {
+    return (
+      providedHex.length === expectedHex.length &&
+      timingSafeEqual(Buffer.from(providedHex, 'hex'), Buffer.from(expectedHex, 'hex'))
+    );
   }
 
   private normalizeAppBaseUrl(value: string | undefined): string | null {
@@ -2250,13 +2386,17 @@ export class AdminService {
       },
     });
 
-    return rows.map((row: { chat: { id: string; title: string; createdAt: Date; entityType: ChatEntityType } }) => ({
-      id: row.chat.id,
-      title: row.chat.title,
-      createdAt: row.chat.createdAt.toISOString(),
-      entityType: this.fromPrismaEntityType(row.chat.entityType),
-      link: null,
-    }));
+    return rows.map(
+      (row: {
+        chat: { id: string; title: string; createdAt: Date; entityType: ChatEntityType };
+      }) => ({
+        id: row.chat.id,
+        title: row.chat.title,
+        createdAt: row.chat.createdAt.toISOString(),
+        entityType: this.fromPrismaEntityType(row.chat.entityType),
+        link: null,
+      }),
+    );
   }
 
   private async upsertUserChatAccess(

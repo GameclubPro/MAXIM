@@ -92,6 +92,10 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
 
   const chatTitle = useMemo(() => readChatTitle(chatId), [chatId]);
   const view = useMemo(() => buildViewModel(dialogType), [dialogType]);
+  const meQuery = useQuery({
+    queryKey: ['me'],
+    queryFn: () => api.getMe(),
+  });
 
   const dialogQuery = useQuery({
     queryKey: ['channel-dialog', chatId, dialogType, token],
@@ -120,7 +124,9 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
             : 'Комментарий отправлен.',
       });
       setDraft('');
-      void queryClient.invalidateQueries({ queryKey: ['channel-dialog', chatId, dialogType, token] });
+      void queryClient.invalidateQueries({
+        queryKey: ['channel-dialog', chatId, dialogType, token],
+      });
     },
     onError: (error) => {
       pushToast({
@@ -179,7 +185,9 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
   }
 
   return (
-    <div className={cn('channel-dialog-screen', `channel-dialog-screen--${dialogType}`, 'page-enter')}>
+    <div
+      className={cn('channel-dialog-screen', `channel-dialog-screen--${dialogType}`, 'page-enter')}
+    >
       <div className="channel-dialog-screen__backdrop" aria-hidden />
 
       <div className="channel-dialog-shell">
@@ -230,32 +238,40 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
           {!dialogQuery.isLoading && !dialogQuery.error ? (
             messages.length ? (
               <div className="channel-dialog-message-list">
-                {messages.map((message) => (
-                  <article key={message.id} className="channel-dialog-message">
-                    <div className="channel-dialog-message__avatar">
-                      {buildAuthorBadge(message.authorDisplayName || message.authorUserId)}
-                    </div>
-                    <div className="channel-dialog-message__bubble">
-                      <div className="channel-dialog-message__meta">
-                        <strong>{message.authorDisplayName || `Участник ${message.authorUserId}`}</strong>
-                        <span>{formatDateTime(message.createdAt)}</span>
+                {messages.map((message) => {
+                  const isOwnMessage = meQuery.data?.userId === message.authorUserId;
+                  return (
+                    <article
+                      key={message.id}
+                      className={cn('channel-dialog-message', isOwnMessage && 'is-own')}
+                    >
+                      <div className="channel-dialog-message__avatar">
+                        {buildAuthorBadge(message.authorDisplayName || message.authorUserId)}
                       </div>
-                      <p>{message.text}</p>
-                      {dialogType === 'suggest' ? (
-                        <div className="channel-dialog-message__footer">
-                          <span
-                            className={cn(
-                              'channel-dialog-delivery',
-                              message.delivered ? 'is-delivered' : 'is-pending',
-                            )}
-                          >
-                            {message.delivered ? 'доставлено' : 'в очереди'}
-                          </span>
+                      <div className="channel-dialog-message__bubble">
+                        <div className="channel-dialog-message__meta">
+                          <strong>
+                            {message.authorDisplayName || `Участник ${message.authorUserId}`}
+                          </strong>
+                          <span>{formatDateTime(message.createdAt)}</span>
                         </div>
-                      ) : null}
-                    </div>
-                  </article>
-                ))}
+                        <p>{message.text}</p>
+                        {dialogType === 'suggest' ? (
+                          <div className="channel-dialog-message__footer">
+                            <span
+                              className={cn(
+                                'channel-dialog-delivery',
+                                message.delivered ? 'is-delivered' : 'is-pending',
+                              )}
+                            >
+                              {message.delivered ? 'доставлено' : 'в очереди'}
+                            </span>
+                          </div>
+                        ) : null}
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
             ) : (
               <div className="channel-dialog-empty">Пока пусто</div>
