@@ -3,6 +3,14 @@
 type MaxWebAppBridge = {
   initData?: string;
   init_data?: string;
+  initDataUnsafe?: {
+    start_param?: string;
+  };
+  init_data_unsafe?: {
+    start_param?: string;
+  };
+  startParam?: string;
+  start_param?: string;
   ready?: () => void;
 };
 

@@ -67,6 +67,7 @@ const CHANNEL_DIALOG_MESSAGES_LIMIT = 80;
 const CHANNEL_DIALOG_ACTION_COMMENT = 'CHANNEL_DIALOG_COMMENT';
 const CHANNEL_DIALOG_ACTION_SUGGEST = 'CHANNEL_DIALOG_SUGGESTION';
 const CHANNEL_DIALOG_ACTION_PUBLISH = 'PUBLISH_CHANNEL_ENGAGEMENT';
+const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 
 @Injectable()
 export class AdminService {
@@ -2016,6 +2017,11 @@ export class AdminService {
   }
 
   private buildChannelDialogWebAppUrl(chatId: string, type: ChannelDialogType): string | null {
+    const launchUrl = this.buildMiniappStartUrl(this.buildChannelDialogStartParam(chatId, type));
+    if (launchUrl) {
+      return launchUrl;
+    }
+
     if (!this.appBaseUrl) {
       return null;
     }
@@ -2023,6 +2029,27 @@ export class AdminService {
     const token = this.buildChannelDialogToken(chatId, type);
     const encodedChatId = encodeURIComponent(chatId);
     return `${this.appBaseUrl}/app/channel/${encodedChatId}/dialog/${type}?token=${token}`;
+  }
+
+  private buildChannelDialogStartParam(chatId: string, type: ChannelDialogType): string {
+    const token = this.buildChannelDialogToken(chatId, type);
+    const payload = JSON.stringify({
+      v: 1,
+      k: 'channel-dialog',
+      c: chatId,
+      m: type,
+      t: token,
+    });
+    const encoded = Buffer.from(payload, 'utf8').toString('base64url');
+    return `${CHANNEL_DIALOG_START_PARAM_PREFIX}${encoded}`;
+  }
+
+  private buildMiniappStartUrl(startParam: string): string | null {
+    if (!this.ownBotUserId) {
+      return null;
+    }
+
+    return `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(startParam)}`;
   }
 
   private buildChannelDialogToken(chatId: string, type: ChannelDialogType): string {

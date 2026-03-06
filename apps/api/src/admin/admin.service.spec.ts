@@ -409,3 +409,66 @@ describe('AdminService.sendBroadcast', () => {
     expect(result.failedChats).toBe(0);
   });
 });
+
+describe('AdminService.publishChannelEngagementMessage', () => {
+  it('publishes channel buttons as MAX startapp deep links', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await service.publishChannelEngagementMessage(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Нажмите кнопку ниже.',
+        commentsButtonText: 'Комментарии',
+        suggestButtonText: 'Предложить пост',
+      },
+    );
+
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    const [, , options, dispatchOptions] = maxClient.sendMessage.mock.calls[0] ?? [];
+    const buttons = options.buttons?.[0] ?? [];
+    const commentsButton = buttons[0];
+    const suggestButton = buttons[1];
+
+    expect(dispatchOptions).toEqual({ immediate: true });
+    expect(commentsButton).toMatchObject({
+      type: 'open_app',
+      text: 'Комментарии',
+      contactId: '777000',
+    });
+    expect(suggestButton).toMatchObject({
+      type: 'open_app',
+      text: 'Предложить пост',
+      contactId: '777000',
+    });
+    expect(commentsButton.webApp).toContain('https://max.ru/777000_bot?startapp=');
+    expect(suggestButton.webApp).toContain('https://max.ru/777000_bot?startapp=');
+
+    const commentsUrl = new URL(commentsButton.webApp);
+    const commentsStartParam = commentsUrl.searchParams.get('startapp');
+    expect(commentsStartParam).toMatch(/^cd-/u);
+  });
+});
