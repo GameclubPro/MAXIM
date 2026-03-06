@@ -6,6 +6,7 @@ import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
+import { cn } from '../lib/cn';
 import type { ApiClient } from '../lib/api-client';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { saveLastChatId, saveLastEntityType } from '../lib/last-chat';
@@ -55,6 +56,88 @@ function normalizeApiError(error: unknown): string {
   }
 
   return text;
+}
+
+function ChannelSettingsSectionHead({
+  eyebrow,
+  title,
+  description,
+}: {
+  eyebrow: string;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="channel-settings-section-head">
+      <span className="channel-settings-section-head__eyebrow">{eyebrow}</span>
+      <div className="channel-settings-section-head__copy">
+        <h2>{title}</h2>
+        <p>{description}</p>
+      </div>
+    </div>
+  );
+}
+
+function ChannelSettingsStatusPill({
+  icon,
+  label,
+  enabled,
+  tone,
+}: {
+  icon: string;
+  label: string;
+  enabled: boolean;
+  tone: 'blue' | 'orange' | 'emerald';
+}) {
+  return (
+    <span
+      className={cn(
+        'channel-settings-status-pill',
+        `channel-settings-status-pill--${tone}`,
+        enabled ? 'is-on' : 'is-off',
+      )}
+    >
+      <span>{`${icon} ${label}`}</span>
+      <strong>{enabled ? 'вкл' : 'выкл'}</strong>
+    </span>
+  );
+}
+
+function ChannelSettingsToggleCard({
+  title,
+  description,
+  checked,
+  onChange,
+  disabled = false,
+}: {
+  title: string;
+  description: string;
+  checked: boolean;
+  onChange: (nextValue: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <label className={cn('channel-settings-toggle-card', disabled && 'is-disabled')}>
+      <div className="channel-settings-toggle-card__copy">
+        <strong>{title}</strong>
+        <span>{description}</span>
+      </div>
+      <span className={cn('channel-settings-toggle-card__state', checked && 'is-on')}>
+        {checked ? 'Вкл' : 'Выкл'}
+      </span>
+      <span className="settings-native-switch">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(event) => onChange(event.target.checked)}
+          disabled={disabled}
+        />
+        <span className="toggle-switch" aria-hidden>
+          <span className="toggle-switch__thumb" />
+        </span>
+      </span>
+    </label>
+  );
 }
 
 export function ChannelSettingsPage({ api }: { api: ApiClient }) {
@@ -293,38 +376,74 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   };
 
   return (
-    <div className="page-stack page-enter">
-      <GlassCard className="hero-card" elevated>
-        <div className="page-header">
-          <div className="page-header__main">
-            <h1>Настройки канала</h1>
-            <p>
-              {resolvedTitle
-                ? `Канал: ${resolvedTitle}`
-                : 'Простая настройка для подписчиков канала'}
-            </p>
+    <div className="channel-settings-screen page-enter">
+      <GlassCard className="channel-settings-hero" elevated>
+        <div className="channel-settings-hero__top">
+          <div className="channel-settings-hero__identity">
+            <span className="channel-settings-hero__eyebrow">Управление каналом</span>
+            <h1>{resolvedTitle || 'Настройки канала'}</h1>
+            <p>Только нужные сценарии для подписчиков: пост с кнопками, предложка и обсуждение.</p>
           </div>
           <span className="page-header__badge">ID: {chatId}</span>
         </div>
+
+        <div className="channel-settings-hero__status">
+          <ChannelSettingsStatusPill
+            icon="📰"
+            label="Предложка"
+            enabled={draft.postSuggestionsEnabled}
+            tone="orange"
+          />
+          <ChannelSettingsStatusPill
+            icon="💬"
+            label="Комментарии"
+            enabled={draft.commentsEnabled}
+            tone="blue"
+          />
+          <ChannelSettingsStatusPill
+            icon="🛡️"
+            label="Модерация"
+            enabled={draft.commentsModerationEnabled}
+            tone="emerald"
+          />
+        </div>
+
+        <div className="channel-settings-hero__actions">
+          {resolvedChannelLink ? (
+            <a
+              className="button button--ghost"
+              href={resolvedChannelLink}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Открыть канал
+            </a>
+          ) : null}
+          <button
+            type="button"
+            className="button button--accent"
+            onClick={saveDraft}
+            disabled={!isDirty || saveMutation.isPending}
+          >
+            {saveMutation.isPending ? 'Сохраняем...' : isDirty ? 'Сохранить' : 'Сохранено'}
+          </button>
+        </div>
       </GlassCard>
 
-      <GlassCard>
-        <StatusState
-          tone="warning"
-          title="Важный момент по MAX"
-          description="В каналах MAX сейчас нет нативных комментариев. Здесь мы настраиваем предложку, реакции и сценарий обсуждения через бота/отдельный чат."
+      <GlassCard className="channel-settings-card channel-settings-card--engagement" elevated>
+        <ChannelSettingsSectionHead
+          eyebrow="Пост"
+          title="Кнопки под постом"
+          description="Подписчик видит два понятных действия без лишнего текста."
         />
-      </GlassCard>
 
-      <GlassCard className="settings-section" elevated>
-        <h2>Пост с кнопками для подписчиков</h2>
-        <p className="field__hint">
-          Бот опубликует сообщение в канале с двумя кнопками: «💬 Комментарии» и «📰 Предложить
-          пост».
-        </p>
+        <div className="channel-settings-preview">
+          <span>{engagementCommentsButtonText.trim() || '💬 Комментарии'}</span>
+          <span>{engagementSuggestButtonText.trim() || '📰 Предложить пост'}</span>
+        </div>
 
         <label className="field">
-          <span>Текст сообщения</span>
+          <span>Текст поста</span>
           <textarea
             rows={3}
             value={engagementText}
@@ -334,9 +453,9 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
           />
         </label>
 
-        <div className="chat-card__actions">
+        <div className="channel-settings-inline-fields">
           <label className="field">
-            <span>Кнопка 1</span>
+            <span>Первая кнопка</span>
             <input
               type="text"
               value={engagementCommentsButtonText}
@@ -345,7 +464,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
             />
           </label>
           <label className="field">
-            <span>Кнопка 2</span>
+            <span>Вторая кнопка</span>
             <input
               type="text"
               value={engagementSuggestButtonText}
@@ -355,7 +474,10 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
           </label>
         </div>
 
-        <div className="chat-card__actions">
+        <div className="channel-settings-card__footer">
+          <p className="channel-settings-muted">
+            В канале они будут стоять друг под другом на всю ширину.
+          </p>
           <button
             type="button"
             className="button button--accent"
@@ -367,175 +489,174 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
               !engagementSuggestButtonText.trim()
             }
           >
-            {publishEngagementMutation.isPending ? 'Публикуем...' : 'Опубликовать в канал'}
+            {publishEngagementMutation.isPending ? 'Публикуем...' : 'Опубликовать пост'}
           </button>
         </div>
       </GlassCard>
 
-      <GlassCard className="settings-section" elevated>
-        <h2>Предложить пост</h2>
-        <p className="field__hint">
-          Если включить, бот покажет участникам понятную инструкцию и кнопку, куда отправлять пост.
-        </p>
+      <GlassCard className="channel-settings-card" elevated>
+        <ChannelSettingsSectionHead
+          eyebrow="Предложка"
+          title="Приём идей от подписчиков"
+          description="Короткая подсказка и одна кнопка перехода."
+        />
 
-        <label className="field">
-          <span>
-            <input
-              type="checkbox"
-              checked={draft.postSuggestionsEnabled}
-              onChange={(event) => patchDraft('postSuggestionsEnabled', event.target.checked)}
-            />{' '}
-            Включить подсказку «Предложить пост»
-          </span>
-        </label>
+        <ChannelSettingsToggleCard
+          title="Включить предложку"
+          description="Показывать подписчикам, куда отправлять идеи для постов."
+          checked={draft.postSuggestionsEnabled}
+          onChange={(nextValue) => patchDraft('postSuggestionsEnabled', nextValue)}
+        />
 
-        <label className="field">
-          <span>Что увидят участники</span>
-          <textarea
-            rows={3}
-            value={draft.postSuggestionsText}
-            onChange={(event) => patchDraft('postSuggestionsText', event.target.value)}
-            placeholder="Например: отправьте текст и фото через форму, ответ придёт в течение дня."
-          />
-          <small className="field__hint">Пишите простыми словами, как в обычном сообщении.</small>
-        </label>
+        {draft.postSuggestionsEnabled ? (
+          <div className="channel-settings-stack">
+            <label className="field">
+              <span>Короткая инструкция</span>
+              <textarea
+                rows={3}
+                value={draft.postSuggestionsText}
+                onChange={(event) => patchDraft('postSuggestionsText', event.target.value)}
+                placeholder="Например: отправьте текст и фото, ответим после проверки."
+              />
+            </label>
 
-        <label className="field">
-          <span>
-            <input
-              type="checkbox"
+            <ChannelSettingsToggleCard
+              title="Показывать кнопку"
+              description="Подписчик увидит переход по ссылке без лишних шагов."
               checked={draft.postSuggestionsButtonEnabled}
-              onChange={(event) => patchDraft('postSuggestionsButtonEnabled', event.target.checked)}
-            />{' '}
-            Показать кнопку для перехода
-          </span>
-        </label>
+              onChange={(nextValue) => patchDraft('postSuggestionsButtonEnabled', nextValue)}
+            />
 
-        {draft.postSuggestionsButtonEnabled ? (
-          <>
-            <label className="field">
-              <span>Название кнопки</span>
-              <input
-                type="text"
-                value={draft.postSuggestionsButtonText}
-                onChange={(event) => patchDraft('postSuggestionsButtonText', event.target.value)}
-                placeholder="Предложить пост"
-                maxLength={32}
-              />
-            </label>
+            {draft.postSuggestionsButtonEnabled ? (
+              <div className="channel-settings-stack channel-settings-stack--tight">
+                <div className="channel-settings-inline-fields">
+                  <label className="field">
+                    <span>Текст кнопки</span>
+                    <input
+                      type="text"
+                      value={draft.postSuggestionsButtonText}
+                      onChange={(event) =>
+                        patchDraft('postSuggestionsButtonText', event.target.value)
+                      }
+                      placeholder="Предложить пост"
+                      maxLength={32}
+                    />
+                  </label>
+                  <label className="field">
+                    <span>Ссылка</span>
+                    <input
+                      type="url"
+                      value={draft.postSuggestionsButtonUrl}
+                      onChange={(event) =>
+                        patchDraft('postSuggestionsButtonUrl', event.target.value)
+                      }
+                      placeholder="https://max.ru/channel/..."
+                    />
+                  </label>
+                </div>
 
-            <label className="field">
-              <span>Ссылка, куда ведёт кнопка</span>
-              <input
-                type="url"
-                value={draft.postSuggestionsButtonUrl}
-                onChange={(event) => patchDraft('postSuggestionsButtonUrl', event.target.value)}
-                placeholder="https://max.ru/channel/..."
-              />
-              <small className="field__hint">
-                Если не знаете ссылку: в MAX откройте канал → Поделиться → Скопировать ссылку.
-              </small>
-            </label>
-
-            <div className="chat-card__actions">
-              {resolvedChannelLink ? (
-                <button
-                  type="button"
-                  className="button button--ghost"
-                  onClick={useDetectedChannelLink}
-                >
-                  Подставить ссылку канала
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="button button--ghost"
-                onClick={useChannelLinkTemplate}
-              >
-                Вставить шаблон
-              </button>
-            </div>
-          </>
+                <div className="channel-settings-inline-actions">
+                  {resolvedChannelLink ? (
+                    <button
+                      type="button"
+                      className="button button--ghost"
+                      onClick={useDetectedChannelLink}
+                    >
+                      Подставить ссылку
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="button button--ghost"
+                    onClick={useChannelLinkTemplate}
+                  >
+                    Вставить шаблон
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </div>
         ) : null}
       </GlassCard>
 
-      <GlassCard className="settings-section" elevated>
-        <h2>Обсуждение и реакции</h2>
-        <p className="field__hint">
-          Импровизация под MAX 2026: обсуждение переносим в бота/чат, а в канале используем реакции.
-        </p>
+      <GlassCard className="channel-settings-card" elevated>
+        <ChannelSettingsSectionHead
+          eyebrow="Комментарии"
+          title="Обсуждение через mini app"
+          description="Понятный сценарий для подписчиков без лишнего шума."
+        />
 
-        <label className="field">
-          <span>Реакции в канале (включаются в MAX вручную)</span>
-          <small className="field__hint">
-            Откройте канал в MAX → Настройки канала → Реакции. Бот это переключать не может.
-          </small>
-        </label>
+        <div className="channel-settings-quiet-note">
+          Реакции в канале по-прежнему включаются вручную в MAX.
+        </div>
 
-        <label className="field">
-          <span>
-            <input
-              type="checkbox"
-              checked={draft.commentsEnabled}
-              onChange={(event) => patchDraft('commentsEnabled', event.target.checked)}
-            />{' '}
-            Включить сценарий обсуждения через бота/чат
-          </span>
-          <small className="field__hint">
-            При включении бот показывает участникам, где обсуждать посты.
-          </small>
-        </label>
+        <ChannelSettingsToggleCard
+          title="Включить комментарии"
+          description="Открывать отдельное окно обсуждения под постом."
+          checked={draft.commentsEnabled}
+          onChange={(nextValue) => patchDraft('commentsEnabled', nextValue)}
+        />
 
-        <label className="field">
-          <span>
-            <input
-              type="checkbox"
-              checked={draft.commentsModerationEnabled}
-              onChange={(event) => patchDraft('commentsModerationEnabled', event.target.checked)}
-            />{' '}
-            Включить модерацию обсуждений ботом
-          </span>
-        </label>
+        <ChannelSettingsToggleCard
+          title="Включить модерацию"
+          description="Бот будет следить за сообщениями внутри обсуждения."
+          checked={draft.commentsModerationEnabled}
+          onChange={(nextValue) => patchDraft('commentsModerationEnabled', nextValue)}
+          disabled={!draft.commentsEnabled}
+        />
 
-        <label className="field">
-          <span>Пауза между сообщениями в обсуждении (сек)</span>
-          <input
-            type="number"
-            min={0}
-            max={3600}
-            value={draft.commentsSlowModeSeconds}
-            onChange={(event) =>
-              patchDraft(
-                'commentsSlowModeSeconds',
-                Number.isFinite(Number(event.target.value))
-                  ? Math.max(0, Math.min(3600, Number.parseInt(event.target.value || '0', 10)))
-                  : 0,
-              )
-            }
-          />
-          <small className="field__hint">0 = без ограничения.</small>
-        </label>
+        {draft.commentsEnabled ? (
+          <div className="channel-settings-stack">
+            <div className="channel-settings-inline-fields channel-settings-inline-fields--narrow">
+              <label className="field">
+                <span>Пауза между сообщениями, сек</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={3600}
+                  value={draft.commentsSlowModeSeconds}
+                  onChange={(event) =>
+                    patchDraft(
+                      'commentsSlowModeSeconds',
+                      Number.isFinite(Number(event.target.value))
+                        ? Math.max(
+                            0,
+                            Math.min(3600, Number.parseInt(event.target.value || '0', 10)),
+                          )
+                        : 0,
+                    )
+                  }
+                />
+                <small className="field__hint">0 = без паузы</small>
+              </label>
+            </div>
 
-        <label className="field">
-          <span>Текст для участников (куда писать и правила)</span>
-          <textarea
-            rows={3}
-            value={draft.commentsMessageText}
-            onChange={(event) => patchDraft('commentsMessageText', event.target.value)}
-            placeholder="Например: обсуждаем посты в личке бота или в чате @..., без оскорблений и рекламы."
-          />
-        </label>
+            <label className="field">
+              <span>Что увидят участники</span>
+              <textarea
+                rows={3}
+                value={draft.commentsMessageText}
+                onChange={(event) => patchDraft('commentsMessageText', event.target.value)}
+                placeholder="Например: обсуждаем посты спокойно, без рекламы и оскорблений."
+              />
+            </label>
+          </div>
+        ) : null}
       </GlassCard>
 
-      <GlassCard className="settings-section" elevated>
-        <div className="chat-card__actions">
+      <GlassCard className="channel-settings-actionbar" elevated>
+        <div className="channel-settings-actionbar__meta">
+          <strong>{isDirty ? 'Есть несохранённые изменения' : 'Все изменения сохранены'}</strong>
+          <span>Обычному администратору должно быть понятно с первого захода.</span>
+        </div>
+        <div className="channel-settings-actionbar__actions">
           <button
             type="button"
             className="button button--accent"
             onClick={saveDraft}
             disabled={!isDirty || saveMutation.isPending}
           >
-            {saveMutation.isPending ? 'Сохраняем...' : 'Сохранить изменения'}
+            {saveMutation.isPending ? 'Сохраняем...' : 'Сохранить'}
           </button>
           <Link to="/" className="button button--ghost">
             К списку
