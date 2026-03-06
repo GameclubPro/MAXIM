@@ -59,47 +59,19 @@ function normalizeApiError(error: unknown): string {
 }
 
 function ChannelSettingsSectionHead({
-  eyebrow,
   title,
   description,
 }: {
-  eyebrow: string;
   title: string;
-  description: string;
+  description?: string;
 }) {
   return (
     <div className="channel-settings-section-head">
-      <span className="channel-settings-section-head__eyebrow">{eyebrow}</span>
       <div className="channel-settings-section-head__copy">
         <h2>{title}</h2>
-        <p>{description}</p>
+        {description ? <p>{description}</p> : null}
       </div>
     </div>
-  );
-}
-
-function ChannelSettingsStatusPill({
-  icon,
-  label,
-  enabled,
-  tone,
-}: {
-  icon: string;
-  label: string;
-  enabled: boolean;
-  tone: 'blue' | 'orange' | 'emerald';
-}) {
-  return (
-    <span
-      className={cn(
-        'channel-settings-status-pill',
-        `channel-settings-status-pill--${tone}`,
-        enabled ? 'is-on' : 'is-off',
-      )}
-    >
-      <span>{`${icon} ${label}`}</span>
-      <strong>{enabled ? 'вкл' : 'выкл'}</strong>
-    </span>
   );
 }
 
@@ -111,7 +83,7 @@ function ChannelSettingsToggleCard({
   disabled = false,
 }: {
   title: string;
-  description: string;
+  description?: string;
   checked: boolean;
   onChange: (nextValue: boolean) => void;
   disabled?: boolean;
@@ -120,7 +92,7 @@ function ChannelSettingsToggleCard({
     <label className={cn('channel-settings-toggle-card', disabled && 'is-disabled')}>
       <div className="channel-settings-toggle-card__copy">
         <strong>{title}</strong>
-        <span>{description}</span>
+        {description ? <span>{description}</span> : null}
       </div>
       <span className={cn('channel-settings-toggle-card__state', checked && 'is-on')}>
         {checked ? 'Вкл' : 'Выкл'}
@@ -333,109 +305,32 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     });
   };
 
-  const useDetectedChannelLink = () => {
-    if (!resolvedChannelLink) {
-      return;
-    }
-
-    setDraft((current) => {
-      if (!current) {
-        return current;
-      }
-
-      return {
-        ...current,
-        postSuggestionsButtonEnabled: true,
-        postSuggestionsButtonUrl: resolvedChannelLink,
-        postSuggestionsButtonText: current.postSuggestionsButtonText.trim() || 'Предложить пост',
-      };
-    });
-  };
-
-  const useChannelLinkTemplate = () => {
-    setDraft((current) => {
-      if (!current) {
-        return current;
-      }
-
-      return {
-        ...current,
-        postSuggestionsButtonEnabled: true,
-        postSuggestionsButtonUrl: 'https://max.ru/channel/ваш_канал',
-        postSuggestionsButtonText: current.postSuggestionsButtonText.trim() || 'Предложить пост',
-      };
-    });
-  };
-
   const saveDraft = () => {
     if (!draft || saveMutation.isPending || !isDirty) {
       return;
     }
 
-    saveMutation.mutate(draft);
+    saveMutation.mutate({
+      ...draft,
+      postSuggestionsButtonText: draft.postSuggestionsButtonText.trim() || 'Предложить пост',
+      postSuggestionsButtonUrl:
+        draft.postSuggestionsButtonEnabled && resolvedChannelLink
+          ? resolvedChannelLink
+          : draft.postSuggestionsButtonUrl,
+    });
   };
 
   return (
     <div className="channel-settings-screen page-enter">
-      <GlassCard className="channel-settings-hero" elevated>
-        <div className="channel-settings-hero__top">
-          <div className="channel-settings-hero__identity">
-            <span className="channel-settings-hero__eyebrow">Управление каналом</span>
-            <h1>{resolvedTitle || 'Настройки канала'}</h1>
-            <p>Только нужные сценарии для подписчиков: пост с кнопками, предложка и обсуждение.</p>
-          </div>
-          <span className="page-header__badge">ID: {chatId}</span>
-        </div>
-
-        <div className="channel-settings-hero__status">
-          <ChannelSettingsStatusPill
-            icon="📰"
-            label="Предложка"
-            enabled={draft.postSuggestionsEnabled}
-            tone="orange"
-          />
-          <ChannelSettingsStatusPill
-            icon="💬"
-            label="Комментарии"
-            enabled={draft.commentsEnabled}
-            tone="blue"
-          />
-          <ChannelSettingsStatusPill
-            icon="🛡️"
-            label="Модерация"
-            enabled={draft.commentsModerationEnabled}
-            tone="emerald"
-          />
-        </div>
-
-        <div className="channel-settings-hero__actions">
-          {resolvedChannelLink ? (
-            <a
-              className="button button--ghost"
-              href={resolvedChannelLink}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Открыть канал
-            </a>
-          ) : null}
-          <button
-            type="button"
-            className="button button--accent"
-            onClick={saveDraft}
-            disabled={!isDirty || saveMutation.isPending}
-          >
-            {saveMutation.isPending ? 'Сохраняем...' : isDirty ? 'Сохранить' : 'Сохранено'}
-          </button>
+      <GlassCard className="channel-settings-header" elevated>
+        <div className="channel-settings-header__main">
+          <h1>{resolvedTitle || 'Настройки канала'}</h1>
+          <p>{chatId}</p>
         </div>
       </GlassCard>
 
       <GlassCard className="channel-settings-card channel-settings-card--engagement" elevated>
-        <ChannelSettingsSectionHead
-          eyebrow="Пост"
-          title="Кнопки под постом"
-          description="Подписчик видит два понятных действия без лишнего текста."
-        />
+        <ChannelSettingsSectionHead title="Кнопки под постом" description="Что увидят подписчики" />
 
         <div className="channel-settings-preview">
           <span>{engagementCommentsButtonText.trim() || '💬 Комментарии'}</span>
@@ -475,9 +370,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
         </div>
 
         <div className="channel-settings-card__footer">
-          <p className="channel-settings-muted">
-            В канале они будут стоять друг под другом на всю ширину.
-          </p>
           <button
             type="button"
             className="button button--accent"
@@ -495,15 +387,10 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
       </GlassCard>
 
       <GlassCard className="channel-settings-card" elevated>
-        <ChannelSettingsSectionHead
-          eyebrow="Предложка"
-          title="Приём идей от подписчиков"
-          description="Короткая подсказка и одна кнопка перехода."
-        />
+        <ChannelSettingsSectionHead title="Предложка" description="Приём идей от подписчиков" />
 
         <ChannelSettingsToggleCard
           title="Включить предложку"
-          description="Показывать подписчикам, куда отправлять идеи для постов."
           checked={draft.postSuggestionsEnabled}
           onChange={(nextValue) => patchDraft('postSuggestionsEnabled', nextValue)}
         />
@@ -522,26 +409,13 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
 
             <ChannelSettingsToggleCard
               title="Показывать кнопку"
-              description="Подписчик увидит переход по ссылке без лишних шагов."
               checked={draft.postSuggestionsButtonEnabled}
               onChange={(nextValue) => patchDraft('postSuggestionsButtonEnabled', nextValue)}
             />
 
             {draft.postSuggestionsButtonEnabled ? (
               <div className="channel-settings-stack channel-settings-stack--tight">
-                <div className="channel-settings-inline-fields">
-                  <label className="field">
-                    <span>Текст кнопки</span>
-                    <input
-                      type="text"
-                      value={draft.postSuggestionsButtonText}
-                      onChange={(event) =>
-                        patchDraft('postSuggestionsButtonText', event.target.value)
-                      }
-                      placeholder="Предложить пост"
-                      maxLength={32}
-                    />
-                  </label>
+                {resolvedChannelLink ? null : (
                   <label className="field">
                     <span>Ссылка</span>
                     <input
@@ -553,26 +427,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                       placeholder="https://max.ru/channel/..."
                     />
                   </label>
-                </div>
-
-                <div className="channel-settings-inline-actions">
-                  {resolvedChannelLink ? (
-                    <button
-                      type="button"
-                      className="button button--ghost"
-                      onClick={useDetectedChannelLink}
-                    >
-                      Подставить ссылку
-                    </button>
-                  ) : null}
-                  <button
-                    type="button"
-                    className="button button--ghost"
-                    onClick={useChannelLinkTemplate}
-                  >
-                    Вставить шаблон
-                  </button>
-                </div>
+                )}
               </div>
             ) : null}
           </div>
@@ -580,26 +435,16 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
       </GlassCard>
 
       <GlassCard className="channel-settings-card" elevated>
-        <ChannelSettingsSectionHead
-          eyebrow="Комментарии"
-          title="Обсуждение через mini app"
-          description="Понятный сценарий для подписчиков без лишнего шума."
-        />
-
-        <div className="channel-settings-quiet-note">
-          Реакции в канале по-прежнему включаются вручную в MAX.
-        </div>
+        <ChannelSettingsSectionHead title="Комментарии" description="Обсуждение через mini app" />
 
         <ChannelSettingsToggleCard
           title="Включить комментарии"
-          description="Открывать отдельное окно обсуждения под постом."
           checked={draft.commentsEnabled}
           onChange={(nextValue) => patchDraft('commentsEnabled', nextValue)}
         />
 
         <ChannelSettingsToggleCard
           title="Включить модерацию"
-          description="Бот будет следить за сообщениями внутри обсуждения."
           checked={draft.commentsModerationEnabled}
           onChange={(nextValue) => patchDraft('commentsModerationEnabled', nextValue)}
           disabled={!draft.commentsEnabled}
@@ -644,25 +489,18 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
         ) : null}
       </GlassCard>
 
-      <GlassCard className="channel-settings-actionbar" elevated>
-        <div className="channel-settings-actionbar__meta">
-          <strong>{isDirty ? 'Есть несохранённые изменения' : 'Все изменения сохранены'}</strong>
-          <span>Обычному администратору должно быть понятно с первого захода.</span>
-        </div>
-        <div className="channel-settings-actionbar__actions">
+      {isDirty || saveMutation.isPending ? (
+        <GlassCard className="channel-settings-savebar" elevated>
           <button
             type="button"
             className="button button--accent"
             onClick={saveDraft}
-            disabled={!isDirty || saveMutation.isPending}
+            disabled={saveMutation.isPending}
           >
             {saveMutation.isPending ? 'Сохраняем...' : 'Сохранить'}
           </button>
-          <Link to="/" className="button button--ghost">
-            К списку
-          </Link>
-        </div>
-      </GlassCard>
+        </GlassCard>
+      ) : null}
     </div>
   );
 }
