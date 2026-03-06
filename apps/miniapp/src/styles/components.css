@@ -321,6 +321,10 @@
   --dialog-bg-end: #fffdf9;
 }
 
+.channel-dialog-screen--comments {
+  padding-top: max(8px, env(safe-area-inset-top, 0px));
+}
+
 .channel-dialog-screen__backdrop {
   position: absolute;
   inset: 0;
@@ -348,6 +352,11 @@
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   gap: 12px;
+}
+
+.channel-dialog-shell--no-topbar {
+  grid-template-rows: minmax(0, 1fr) auto;
+  gap: 8px;
 }
 
 .channel-dialog-topbar {

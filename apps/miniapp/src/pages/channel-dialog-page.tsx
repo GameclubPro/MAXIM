@@ -94,6 +94,7 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
 
   const chatTitle = useMemo(() => readChatTitle(chatId), [chatId]);
   const view = useMemo(() => buildViewModel(dialogType), [dialogType]);
+  const showTopbar = dialogType !== 'comments';
   const meQuery = useQuery({
     queryKey: ['me'],
     queryFn: () => api.getMe(),
@@ -216,16 +217,18 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
     >
       <div className="channel-dialog-screen__backdrop" aria-hidden />
 
-      <div className="channel-dialog-shell">
-        <header className="channel-dialog-topbar">
-          <div className="channel-dialog-topbar__title">
-            <h1>{view.title}</h1>
-            <span>{chatTitle || chatId}</span>
-          </div>
-          <Link to="/" className="channel-dialog-close">
-            Закрыть
-          </Link>
-        </header>
+      <div className={cn('channel-dialog-shell', !showTopbar && 'channel-dialog-shell--no-topbar')}>
+        {showTopbar ? (
+          <header className="channel-dialog-topbar">
+            <div className="channel-dialog-topbar__title">
+              <h1>{view.title}</h1>
+              <span>{chatTitle || chatId}</span>
+            </div>
+            <Link to="/" className="channel-dialog-close">
+              Закрыть
+            </Link>
+          </header>
+        ) : null}
 
         <section ref={scrollViewportRef} className="channel-dialog-body">
           {dialogQuery.isLoading ? (
