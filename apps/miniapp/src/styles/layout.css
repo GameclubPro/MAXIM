@@ -21,6 +21,17 @@
   padding-top: max(20vh, 80px);
 }
 
+.app-shell--immersive {
+  gap: 0;
+  padding: 0;
+  padding-bottom: 0;
+}
+
+.app-shell--immersive .shell-content {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
 .shell-topbar {
   display: grid;
   gap: var(--space-2);
