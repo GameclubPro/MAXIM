@@ -181,4 +181,80 @@ describe('ModerationService channel auto post buttons', () => {
     expect(prisma.auditLog.findFirst).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
+
+  it('polls channel posts and attaches buttons even without webhook delivery', async () => {
+    const prisma = {
+      channelSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'channel-1',
+            autoPostButtonsMode: 'BOTH',
+            postSuggestionsButtonText: '📰 Предложить пост',
+            updatedAt: new Date('2026-03-06T15:00:00.000Z'),
+            chat: {
+              admins: [],
+            },
+          },
+        ]),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      listMessages: jest.fn().mockResolvedValue([
+        {
+          timestamp: 1772810100000,
+          body: {
+            mid: 'mid-polled-1',
+            text: 'Пост из канала',
+            attachments: [],
+          },
+        },
+      ]),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      getChatAdminIds: jest.fn(),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+    );
+
+    await (service as any).processChannelAutoPostButtons();
+
+    expect(maxClient.listMessages).toHaveBeenCalledWith('channel-1', 10);
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-polled-1',
+      'Пост из канала',
+      expect.objectContaining({
+        buttons: [
+          [expect.objectContaining({ text: '💬 Комментарии' })],
+          [expect.objectContaining({ text: '📰 Предложить пост' })],
+        ],
+        debugContext: {
+          screen: 'channel-auto-post',
+          action: 'scan-attach-buttons',
+        },
+      }),
+    );
+  });
 });

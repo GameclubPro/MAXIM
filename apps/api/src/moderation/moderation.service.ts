@@ -114,6 +114,7 @@ const PRIVATE_HELP_TEXT = [
   '- /help',
 ].join('\n');
 const MAX_FORWARD_SCAN_DEPTH = 8;
+const CHANNEL_AUTO_POST_SCAN_INTERVAL_MS = 15_000;
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
 const CHANNEL_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
@@ -176,6 +177,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly ownBotUserIdVariants: Set<string>;
   private nightModeAnnounceTimer: NodeJS.Timeout | null = null;
   private nightModeAnnounceInFlight = false;
+  private channelAutoPostTimer: NodeJS.Timeout | null = null;
+  private channelAutoPostInFlight = false;
   private readonly appBaseUrl: string | null;
   private readonly explicitBotContactId: string | null;
   private readonly maxBotToken: string | null;
@@ -209,12 +212,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       void this.processNightModeAnnouncements();
     }, 30_000);
     void this.processNightModeAnnouncements();
+
+    this.channelAutoPostTimer = setInterval(() => {
+      void this.processChannelAutoPostButtons();
+    }, CHANNEL_AUTO_POST_SCAN_INTERVAL_MS);
+    void this.processChannelAutoPostButtons();
   }
 
   onModuleDestroy() {
     if (this.nightModeAnnounceTimer) {
       clearInterval(this.nightModeAnnounceTimer);
       this.nightModeAnnounceTimer = null;
+    }
+    if (this.channelAutoPostTimer) {
+      clearInterval(this.channelAutoPostTimer);
+      this.channelAutoPostTimer = null;
     }
   }
 
@@ -4633,19 +4645,152 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const { includeCommentsButton, includeSuggestButton } = this.resolveChannelAutoPostButtons(
-      managedChannel.channelSettings.autoPostButtonsMode,
-    );
-    if (!includeCommentsButton && !includeSuggestButton) {
-      return;
-    }
-
     const senderAdminCheck = await this.resolveSenderChatAdminCheck(
       chatId,
       managedChannel.adminUserIds,
       senderId,
     );
     if (!senderAdminCheck.isAdmin) {
+      return;
+    }
+
+    await this.tryAutoAttachChannelMessageButtons({
+      chatId,
+      messageId,
+      text: typeof text === 'string' && text.trim() ? text : null,
+      managedChannel,
+      source: 'webhook',
+      senderId,
+    });
+  }
+
+  private async processChannelAutoPostButtons(): Promise<void> {
+    if (this.channelAutoPostInFlight) {
+      return;
+    }
+    if (typeof this.prisma.channelSettings?.findMany !== 'function') {
+      return;
+    }
+
+    this.channelAutoPostInFlight = true;
+    try {
+      const channels = await this.prisma.channelSettings.findMany({
+        where: {
+          autoPostButtonsMode: {
+            not: 'OFF',
+          },
+        },
+        include: {
+          chat: {
+            include: {
+              admins: {
+                select: {
+                  userId: true,
+                },
+              },
+            },
+          },
+        },
+      });
+
+      for (const channelSettings of channels) {
+        try {
+          await this.processManagedChannelAutoPostButtons({
+            channelSettings,
+            adminUserIds: channelSettings.chat.admins.map((item) => item.userId),
+          });
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId: channelSettings.chatId,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed channel auto post buttons scan',
+          );
+        }
+      }
+    } finally {
+      this.channelAutoPostInFlight = false;
+    }
+  }
+
+  private async processManagedChannelAutoPostButtons(
+    managedChannel: ManagedChannelContext,
+  ): Promise<void> {
+    const messages = await this.maxClient.listMessages(managedChannel.channelSettings.chatId, 10);
+
+    for (const message of messages) {
+      const normalized = this.parseChannelListedMessage(message);
+      if (!normalized) {
+        continue;
+      }
+      if (normalized.timestampMs < managedChannel.channelSettings.updatedAt.getTime()) {
+        continue;
+      }
+      if (normalized.hasInlineKeyboard) {
+        continue;
+      }
+
+      await this.tryAutoAttachChannelMessageButtons({
+        chatId: managedChannel.channelSettings.chatId,
+        messageId: normalized.messageId,
+        text: normalized.text,
+        managedChannel,
+        source: 'poll',
+        senderId: null,
+      });
+    }
+  }
+
+  private parseChannelListedMessage(message: Record<string, unknown>): {
+    messageId: string;
+    text: string | null;
+    timestampMs: number;
+    hasInlineKeyboard: boolean;
+  } | null {
+    const body = this.asRecord(message.body);
+    const messageIdCandidate = body?.mid;
+    const timestampCandidate = message.timestamp;
+    if (
+      (typeof messageIdCandidate !== 'string' && typeof messageIdCandidate !== 'number') ||
+      (typeof timestampCandidate !== 'number' && typeof timestampCandidate !== 'string')
+    ) {
+      return null;
+    }
+
+    const timestampMs =
+      typeof timestampCandidate === 'number' ? timestampCandidate : Number(timestampCandidate);
+    if (!Number.isFinite(timestampMs) || timestampMs <= 0) {
+      return null;
+    }
+
+    const attachments = Array.isArray(body?.attachments) ? body.attachments : [];
+    const hasInlineKeyboard = attachments.some((attachment) => {
+      const row = this.asRecord(attachment);
+      return this.readLowerString(row?.type) === 'inline_keyboard';
+    });
+
+    return {
+      messageId: String(messageIdCandidate),
+      text: typeof body?.text === 'string' && body.text.trim() ? body.text : null,
+      timestampMs,
+      hasInlineKeyboard,
+    };
+  }
+
+  private async tryAutoAttachChannelMessageButtons(params: {
+    chatId: string;
+    messageId: string;
+    text: string | null;
+    managedChannel: ManagedChannelContext;
+    source: 'webhook' | 'poll';
+    senderId: string | null;
+  }): Promise<void> {
+    const { chatId, messageId, text, managedChannel, source, senderId } = params;
+    const { includeCommentsButton, includeSuggestButton } = this.resolveChannelAutoPostButtons(
+      managedChannel.channelSettings.autoPostButtonsMode,
+    );
+    if (!includeCommentsButton && !includeSuggestButton) {
       return;
     }
 
@@ -4679,18 +4824,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      await this.maxClient.editMessageInlineKeyboard(
-        chatId,
-        messageId,
-        typeof text === 'string' && text.trim() ? text : null,
-        {
-          buttons,
-          debugContext: {
-            screen: 'channel-auto-post',
-            action: 'attach-buttons',
-          },
+      await this.maxClient.editMessageInlineKeyboard(chatId, messageId, text, {
+        buttons,
+        debugContext: {
+          screen: 'channel-auto-post',
+          action: source === 'poll' ? 'scan-attach-buttons' : 'attach-buttons',
         },
-      );
+      });
     } catch (error: unknown) {
       const status = this.extractStatusCode(error);
       if (status && status < 500 && status !== 429) {
@@ -4711,7 +4851,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     await this.prisma.auditLog.create({
       data: {
         chatId,
-        actorUserId: senderId,
+        actorUserId: senderId ?? 'system',
         action: CHANNEL_DIALOG_AUTO_ATTACH_ACTION,
         payload: {
           messageId,
@@ -4719,6 +4859,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           includeCommentsButton,
           includeSuggestButton,
           autoPostButtonsMode: managedChannel.channelSettings.autoPostButtonsMode,
+          source,
         },
       },
     });

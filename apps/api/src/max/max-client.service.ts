@@ -209,6 +209,20 @@ export class MaxClientService implements OnModuleDestroy {
     });
   }
 
+  async listMessages(chatId: string, count = 10): Promise<Record<string, unknown>[]> {
+    const data = await this.request<Record<string, unknown>>('get', '/messages', {
+      params: {
+        chat_id: chatId,
+        count,
+      },
+    });
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+    return messages.filter(
+      (message): message is Record<string, unknown> =>
+        Boolean(message) && typeof message === 'object' && !Array.isArray(message),
+    );
+  }
+
   async uploadImage(
     data: Buffer,
     fileName = 'broadcast-image.jpg',
