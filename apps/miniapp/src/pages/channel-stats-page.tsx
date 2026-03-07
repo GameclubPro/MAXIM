@@ -118,6 +118,50 @@ function resolveStatusChips(
   return chips;
 }
 
+function buildActivityChart(summary: ChannelStatsResponse['summary']): {
+  total: number;
+  background: string;
+  segments: Array<{ label: string; value: number; colorClassName: string }>;
+} {
+  const posts = Math.max(0, summary.postsWithButtons);
+  const comments = Math.max(0, summary.comments);
+  const suggestions = Math.max(0, summary.suggestions);
+  const total = posts + comments + suggestions;
+
+  if (total === 0) {
+    return {
+      total,
+      background: 'conic-gradient(#d9e6f2 0deg 360deg)',
+      segments: [
+        { label: 'Посты', value: posts, colorClassName: 'is-posts' },
+        { label: 'Комментарии', value: comments, colorClassName: 'is-comments' },
+        { label: 'Предложки', value: suggestions, colorClassName: 'is-suggestions' },
+      ],
+    };
+  }
+
+  const postsAngle = (posts / total) * 360;
+  const commentsAngle = (comments / total) * 360;
+  const suggestionsAngle = 360 - postsAngle - commentsAngle;
+  const postsEnd = postsAngle;
+  const commentsEnd = postsEnd + commentsAngle;
+  const suggestionsEnd = commentsEnd + suggestionsAngle;
+
+  return {
+    total,
+    background: `conic-gradient(
+      #28b47a 0deg ${postsEnd}deg,
+      #0b84ff ${postsEnd}deg ${commentsEnd}deg,
+      #ff8a3d ${commentsEnd}deg ${suggestionsEnd}deg
+    )`,
+    segments: [
+      { label: 'Посты', value: posts, colorClassName: 'is-posts' },
+      { label: 'Комментарии', value: comments, colorClassName: 'is-comments' },
+      { label: 'Предложки', value: suggestions, colorClassName: 'is-suggestions' },
+    ],
+  };
+}
+
 function MetricCard({
   label,
   value,
@@ -232,6 +276,11 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
 
   const statusChips = resolveStatusChips(stats);
   const isEmptyPeriod = !hasActivity(stats.summary);
+  const activityChart = buildActivityChart(stats.summary);
+  const deliveryRate =
+    stats.summary.suggestions > 0
+      ? Math.round((stats.summary.suggestionsDelivered / stats.summary.suggestions) * 100)
+      : 0;
 
   return (
     <div className="channel-stats-screen page-enter">
@@ -274,6 +323,64 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
         ) : null}
       </GlassCard>
 
+      <section className="channel-stats-insights" aria-label="Диаграммы по активности">
+        <GlassCard className="channel-stats-panel" elevated>
+          <div className="channel-stats-panel__head">
+            <small>Срез периода</small>
+            <strong>{formatCount(activityChart.total)} действий</strong>
+          </div>
+
+          <div className="channel-stats-donut-layout">
+            <div
+              className="channel-stats-donut"
+              style={{ background: activityChart.background }}
+              aria-hidden
+            >
+              <div className="channel-stats-donut__core">
+                <span>Всего</span>
+                <strong>{formatCount(activityChart.total)}</strong>
+              </div>
+            </div>
+
+            <div className="channel-stats-legend">
+              {activityChart.segments.map((segment) => (
+                <div key={segment.label} className="channel-stats-legend__item">
+                  <span className={cn('channel-stats-legend__swatch', segment.colorClassName)} />
+                  <div>
+                    <small>{segment.label}</small>
+                    <strong>{formatCount(segment.value)}</strong>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </GlassCard>
+
+        <GlassCard className="channel-stats-panel channel-stats-panel--delivery" elevated>
+          <div className="channel-stats-panel__head">
+            <small>Доставка идей</small>
+            <strong>{stats.summary.suggestions > 0 ? `${deliveryRate}%` : 'Нет данных'}</strong>
+          </div>
+
+          <div className="channel-stats-delivery">
+            <div className="channel-stats-delivery__bar" aria-hidden>
+              <span style={{ width: `${deliveryRate}%` }} />
+            </div>
+
+            <div className="channel-stats-delivery__stats">
+              <article>
+                <small>Доставлено</small>
+                <strong>{formatCount(stats.summary.suggestionsDelivered)}</strong>
+              </article>
+              <article>
+                <small>С ошибкой</small>
+                <strong>{formatCount(stats.summary.suggestionsFailed)}</strong>
+              </article>
+            </div>
+          </div>
+        </GlassCard>
+      </section>
+
       <section className="channel-stats-metrics" aria-label="Основная статистика канала">
         <MetricCard
           label="Участников"
@@ -289,7 +396,7 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
         <MetricCard
           label="Постов с кнопками"
           value={formatCount(stats.summary.postsWithButtons)}
-          hint="Посты, где бот добавил переход в miniapp"
+          hint="Посты с переходом в miniapp"
           highlighted={stats.summary.postsWithButtons > 0}
         />
 
@@ -298,7 +405,7 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
           value={formatCount(stats.summary.comments)}
           hint={
             stats.summary.comments > 0
-              ? `От ${formatCount(stats.summary.commentAuthors)} авторов`
+              ? `Авторов: ${formatCount(stats.summary.commentAuthors)}`
               : 'Пока без комментариев'
           }
           highlighted={stats.summary.comments > 0}
@@ -309,7 +416,7 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
           value={formatCount(stats.summary.suggestions)}
           hint={
             stats.summary.suggestions > 0
-              ? `От ${formatCount(stats.summary.suggestionAuthors)} авторов`
+              ? `Авторов: ${formatCount(stats.summary.suggestionAuthors)}`
               : 'Пока без предложений'
           }
           highlighted={stats.summary.suggestions > 0}
