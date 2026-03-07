@@ -469,6 +469,12 @@ export const channelStatsQuerySchema = z.object({
 });
 export type ChannelStatsQuery = z.infer<typeof channelStatsQuerySchema>;
 
+export const channelStatsBucketSchema = z.enum(['hour', 'day']);
+export type ChannelStatsBucket = z.infer<typeof channelStatsBucketSchema>;
+
+export const channelStatsMissingMetricSchema = z.enum(['reach', 'uniqueViews']);
+export type ChannelStatsMissingMetric = z.infer<typeof channelStatsMissingMetricSchema>;
+
 export const channelStatsResponseSchema = z.object({
   channel: z.object({
     id: z.string(),
@@ -483,8 +489,42 @@ export const channelStatsResponseSchema = z.object({
     range: channelStatsRangeSchema,
     from: z.string().datetime(),
     to: z.string().datetime(),
+    bucket: channelStatsBucketSchema,
   }),
-  summary: z.object({
+  official: z.object({
+    audience: z.object({
+      joined: z.number().int().min(0),
+      left: z.number().int().min(0).nullable(),
+      net: z.number().int().nullable(),
+    }),
+    content: z.object({
+      posts: z.number().int().min(0),
+      views: z.number().int().min(0),
+      lastPublishedAt: z.string().datetime().nullable(),
+    }),
+    series: z.object({
+      participants: z.array(
+        z.object({
+          at: z.string().datetime(),
+          participantsCount: z.number().int().min(0).nullable(),
+        }),
+      ),
+      membership: z.array(
+        z.object({
+          at: z.string().datetime(),
+          joined: z.number().int().min(0),
+          left: z.number().int().min(0).nullable(),
+        }),
+      ),
+      views: z.array(
+        z.object({
+          at: z.string().datetime(),
+          views: z.number().int().min(0),
+        }),
+      ),
+    }),
+  }),
+  secondary: z.object({
     postsWithButtons: z.number().int().min(0),
     comments: z.number().int().min(0),
     suggestions: z.number().int().min(0),
@@ -496,6 +536,10 @@ export const channelStatsResponseSchema = z.object({
   }),
   meta: z.object({
     maxSnapshotAvailable: z.boolean(),
+    viewsAvailable: z.boolean(),
+    churnAvailable: z.boolean(),
+    officialCoverageFrom: z.string().datetime().nullable(),
+    missingOfficialMetrics: z.array(channelStatsMissingMetricSchema),
   }),
 });
 export type ChannelStatsResponse = z.infer<typeof channelStatsResponseSchema>;

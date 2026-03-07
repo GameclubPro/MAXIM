@@ -1,4 +1,4 @@
-import type { ChannelStatsRange, ChannelStatsResponse } from '@maxim/contracts';
+import type { ChannelStatsBucket, ChannelStatsRange, ChannelStatsResponse } from '@maxim/contracts';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
@@ -15,10 +15,32 @@ type ChannelStatsRouteState = {
   chatTitle: string;
 };
 
+type ChartTab = 'audience' | 'views';
+
+type AudienceChartPoint = {
+  x: number;
+  y: number;
+  joinedTop: number;
+  joinedHeight: number;
+  leftTop: number;
+  leftHeight: number;
+};
+
+type ViewChartPoint = {
+  x: number;
+  y: number;
+  height: number;
+};
+
 const periodOptions: Array<{ value: ChannelStatsRange; label: string }> = [
   { value: '24h', label: '24ч' },
   { value: '7d', label: '7д' },
   { value: '30d', label: '30д' },
+];
+
+const audienceTabOptions: Array<{ value: ChartTab; label: string }> = [
+  { value: 'audience', label: 'Аудитория' },
+  { value: 'views', label: 'Просмотры' },
 ];
 
 function getRouteState(state: unknown): ChannelStatsRouteState {
@@ -61,6 +83,29 @@ function formatDateTime(value: string | null): string {
   }).format(parsed);
 }
 
+function formatShortDate(value: string | null, bucket: ChannelStatsBucket): string {
+  if (!value) {
+    return '';
+  }
+
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    return '';
+  }
+
+  if (bucket === 'hour') {
+    return new Intl.DateTimeFormat('ru-RU', {
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(parsed);
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: 'short',
+  }).format(parsed);
+}
+
 function formatLink(value: string | null): string {
   if (!value) {
     return 'Канал приватный';
@@ -74,19 +119,6 @@ function formatLink(value: string | null): string {
   }
 }
 
-function hasActivity(summary: ChannelStatsResponse['summary']): boolean {
-  return (
-    summary.postsWithButtons > 0 ||
-    summary.comments > 0 ||
-    summary.suggestions > 0 ||
-    summary.commentAuthors > 0 ||
-    summary.suggestionAuthors > 0 ||
-    summary.suggestionsDelivered > 0 ||
-    summary.suggestionsFailed > 0 ||
-    summary.lastBotActivityAt !== null
-  );
-}
-
 function resolveStatusChips(
   stats: ChannelStatsResponse | undefined,
 ): Array<{ label: string; className: string }> {
@@ -95,7 +127,7 @@ function resolveStatusChips(
   }
 
   if (!stats.meta.maxSnapshotAvailable) {
-    return [{ label: 'Данные канала недоступны', className: 'chip' }];
+    return [{ label: 'Снимок MAX недоступен', className: 'chip' }];
   }
 
   const chips: Array<{ label: string; className: string }> = [];
@@ -118,47 +150,135 @@ function resolveStatusChips(
   return chips;
 }
 
-function buildActivityChart(summary: ChannelStatsResponse['summary']): {
-  total: number;
-  background: string;
-  segments: Array<{ label: string; value: number; colorClassName: string }>;
-} {
-  const posts = Math.max(0, summary.postsWithButtons);
-  const comments = Math.max(0, summary.comments);
-  const suggestions = Math.max(0, summary.suggestions);
-  const total = posts + comments + suggestions;
+function hasSecondaryActivity(secondary: ChannelStatsResponse['secondary']): boolean {
+  return (
+    secondary.postsWithButtons > 0 ||
+    secondary.comments > 0 ||
+    secondary.suggestions > 0 ||
+    secondary.commentAuthors > 0 ||
+    secondary.suggestionAuthors > 0 ||
+    secondary.suggestionsDelivered > 0 ||
+    secondary.suggestionsFailed > 0 ||
+    secondary.lastBotActivityAt !== null
+  );
+}
 
-  if (total === 0) {
+function buildAudiencePath(points: Array<{ x: number; y: number }>): string {
+  if (points.length === 0) {
+    return '';
+  }
+
+  return points
+    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
+    .join(' ');
+}
+
+function buildAudienceChart(stats: ChannelStatsResponse): {
+  points: AudienceChartPoint[];
+  path: string;
+  hasLine: boolean;
+  maxMembership: number;
+} {
+  const series = stats.official.series.participants;
+  if (series.length === 0) {
     return {
-      total,
-      background: 'conic-gradient(#d9e6f2 0deg 360deg)',
-      segments: [
-        { label: 'Посты', value: posts, colorClassName: 'is-posts' },
-        { label: 'Комментарии', value: comments, colorClassName: 'is-comments' },
-        { label: 'Предложки', value: suggestions, colorClassName: 'is-suggestions' },
-      ],
+      points: [],
+      path: '',
+      hasLine: false,
+      maxMembership: 0,
     };
   }
 
-  const postsAngle = (posts / total) * 360;
-  const commentsAngle = (comments / total) * 360;
-  const suggestionsAngle = 360 - postsAngle - commentsAngle;
-  const postsEnd = postsAngle;
-  const commentsEnd = postsEnd + commentsAngle;
-  const suggestionsEnd = commentsEnd + suggestionsAngle;
+  const width = 320;
+  const height = 180;
+  const leftPad = 14;
+  const rightPad = 14;
+  const topPad = 14;
+  const bottomPad = 18;
+  const baseline = 120;
+  const plotWidth = width - leftPad - rightPad;
+  const participantValues = series
+    .map((item) => item.participantsCount)
+    .filter((item): item is number => typeof item === 'number');
+  const minParticipants = participantValues.length > 0 ? Math.min(...participantValues) : 0;
+  const maxParticipants = participantValues.length > 0 ? Math.max(...participantValues) : 0;
+  const participantSpan = Math.max(1, maxParticipants - minParticipants);
+  const membershipValues = stats.official.series.membership.flatMap((item) => [
+    item.joined,
+    item.left ?? 0,
+  ]);
+  const maxMembership = membershipValues.length > 0 ? Math.max(...membershipValues) : 0;
+  const membershipScale = maxMembership > 0 ? 40 / maxMembership : 0;
+
+  const points = series.map((item, index) => {
+    const x =
+      series.length === 1
+        ? width / 2
+        : leftPad + (plotWidth * index) / Math.max(1, series.length - 1);
+    const participantsY =
+      typeof item.participantsCount === 'number'
+        ? topPad + ((maxParticipants - item.participantsCount) / participantSpan) * 74
+        : baseline;
+    const membership = stats.official.series.membership[index];
+    const joinedHeight = membership ? membership.joined * membershipScale : 0;
+    const leftHeight =
+      membership && typeof membership.left === 'number' ? membership.left * membershipScale : 0;
+
+    return {
+      x,
+      y: participantsY,
+      joinedTop: baseline - joinedHeight,
+      joinedHeight,
+      leftTop: baseline,
+      leftHeight,
+    };
+  });
 
   return {
-    total,
-    background: `conic-gradient(
-      #28b47a 0deg ${postsEnd}deg,
-      #0b84ff ${postsEnd}deg ${commentsEnd}deg,
-      #ff8a3d ${commentsEnd}deg ${suggestionsEnd}deg
-    )`,
-    segments: [
-      { label: 'Посты', value: posts, colorClassName: 'is-posts' },
-      { label: 'Комментарии', value: comments, colorClassName: 'is-comments' },
-      { label: 'Предложки', value: suggestions, colorClassName: 'is-suggestions' },
-    ],
+    points,
+    path: buildAudiencePath(points.map((point) => ({ x: point.x, y: point.y }))),
+    hasLine: participantValues.length > 0,
+    maxMembership,
+  };
+}
+
+function buildViewsChart(stats: ChannelStatsResponse): {
+  bars: ViewChartPoint[];
+  maxViews: number;
+} {
+  const series = stats.official.series.views;
+  if (series.length === 0) {
+    return {
+      bars: [],
+      maxViews: 0,
+    };
+  }
+
+  const width = 320;
+  const height = 180;
+  const leftPad = 14;
+  const rightPad = 14;
+  const topPad = 16;
+  const bottomPad = 18;
+  const plotWidth = width - leftPad - rightPad;
+  const usableHeight = height - topPad - bottomPad;
+  const maxViews = Math.max(...series.map((item) => item.views), 0);
+  const scale = maxViews > 0 ? usableHeight / maxViews : 0;
+
+  return {
+    bars: series.map((item, index) => {
+      const x =
+        series.length === 1
+          ? width / 2
+          : leftPad + (plotWidth * index) / Math.max(1, series.length - 1);
+      const barHeight = item.views * scale;
+      return {
+        x,
+        y: height - bottomPad - barHeight,
+        height: barHeight,
+      };
+    }),
+    maxViews,
   };
 }
 
@@ -182,11 +302,136 @@ function MetricCard({
   );
 }
 
+function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
+  const chart = buildAudienceChart(stats);
+  const labels = stats.official.series.participants;
+
+  return (
+    <div className="channel-stats-graph">
+      {chart.points.length === 0 ? (
+        <div className="channel-stats-graph__empty">MAX ещё не накопил точки для графика.</div>
+      ) : (
+        <>
+          <svg viewBox="0 0 320 180" className="channel-stats-graph__svg" aria-hidden>
+            <line x1="14" y1="120" x2="306" y2="120" className="channel-stats-graph__baseline" />
+            {chart.points.map((point, index) => (
+              <g key={labels[index]?.at ?? index}>
+                <rect
+                  x={point.x - 6}
+                  y={point.joinedTop}
+                  width="12"
+                  height={point.joinedHeight}
+                  rx="5"
+                  className="channel-stats-graph__bar channel-stats-graph__bar--joined"
+                />
+                {stats.meta.churnAvailable && point.leftHeight > 0 ? (
+                  <rect
+                    x={point.x - 6}
+                    y={point.leftTop}
+                    width="12"
+                    height={point.leftHeight}
+                    rx="5"
+                    className="channel-stats-graph__bar channel-stats-graph__bar--left"
+                  />
+                ) : null}
+              </g>
+            ))}
+            {chart.hasLine ? <path d={chart.path} className="channel-stats-graph__line" /> : null}
+            {chart.hasLine
+              ? chart.points.map((point, index) => (
+                  <circle
+                    key={labels[index]?.at ?? index}
+                    cx={point.x}
+                    cy={point.y}
+                    r="3.5"
+                    className="channel-stats-graph__dot"
+                  />
+                ))
+              : null}
+          </svg>
+
+          <div className="channel-stats-graph__legend">
+            <span>
+              <i className="is-line" />
+              Участники
+            </span>
+            <span>
+              <i className="is-joined" />
+              Пришло
+            </span>
+            {stats.meta.churnAvailable ? (
+              <span>
+                <i className="is-left" />
+                Ушло
+              </span>
+            ) : null}
+          </div>
+
+          <div className="channel-stats-graph__labels">
+            {labels.map((item, index) => (
+              <small key={`${item.at}-${index}`}>
+                {formatShortDate(item.at, stats.period.bucket)}
+              </small>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
+  const chart = buildViewsChart(stats);
+  const labels = stats.official.series.views;
+
+  return (
+    <div className="channel-stats-graph">
+      {chart.bars.length === 0 ? (
+        <div className="channel-stats-graph__empty">Посты в этом периоде ещё не найдены.</div>
+      ) : (
+        <>
+          <svg viewBox="0 0 320 180" className="channel-stats-graph__svg" aria-hidden>
+            <line x1="14" y1="162" x2="306" y2="162" className="channel-stats-graph__baseline" />
+            {chart.bars.map((bar, index) => (
+              <rect
+                key={labels[index]?.at ?? index}
+                x={bar.x - 9}
+                y={bar.y}
+                width="18"
+                height={Math.max(4, bar.height)}
+                rx="6"
+                className="channel-stats-graph__bar channel-stats-graph__bar--views"
+              />
+            ))}
+          </svg>
+
+          <div className="channel-stats-graph__legend">
+            <span>
+              <i className="is-views" />
+              Просмотры постов
+            </span>
+            <span className="channel-stats-graph__metric">Пик: {formatCount(chart.maxViews)}</span>
+          </div>
+
+          <div className="channel-stats-graph__labels">
+            {labels.map((item, index) => (
+              <small key={`${item.at}-${index}`}>
+                {formatShortDate(item.at, stats.period.bucket)}
+              </small>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export function ChannelStatsPage({ api }: { api: ApiClient }) {
   const { chatId = '' } = useParams();
   const location = useLocation();
   const routeState = getRouteState(location.state);
   const [range, setRange] = useState<ChannelStatsRange>('7d');
+  const [chartTab, setChartTab] = useState<ChartTab>('audience');
 
   const statsQuery = useQuery({
     queryKey: ['channel-stats', chatId, range],
@@ -217,6 +462,12 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
     saveChatTitle(chatId, resolvedTitle);
   }, [chatId, resolvedTitle]);
 
+  useEffect(() => {
+    if (!statsQuery.data?.meta.viewsAvailable && chartTab === 'views') {
+      setChartTab('audience');
+    }
+  }, [chartTab, statsQuery.data?.meta.viewsAvailable]);
+
   if (!chatId) {
     return (
       <div className="page-stack page-enter">
@@ -240,7 +491,7 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
     return (
       <div className="page-stack page-enter">
         <GlassCard className="settings-section">
-          <SkeletonCard lines={10} />
+          <SkeletonCard lines={12} />
         </GlassCard>
       </div>
     );
@@ -275,12 +526,11 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
   }
 
   const statusChips = resolveStatusChips(stats);
-  const isEmptyPeriod = !hasActivity(stats.summary);
-  const activityChart = buildActivityChart(stats.summary);
-  const deliveryRate =
-    stats.summary.suggestions > 0
-      ? Math.round((stats.summary.suggestionsDelivered / stats.summary.suggestions) * 100)
-      : 0;
+  const chartTabs = stats.meta.viewsAvailable ? audienceTabOptions : audienceTabOptions.slice(0, 1);
+  const effectiveChartTab: ChartTab = stats.meta.viewsAvailable ? chartTab : 'audience';
+  const missingMetricsNote = stats.meta.missingOfficialMetrics
+    .map((item) => (item === 'uniqueViews' ? 'уникальные просмотры' : 'охват'))
+    .join(' и ');
 
   return (
     <div className="channel-stats-screen page-enter">
@@ -316,147 +566,154 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
           </div>
         ) : null}
 
-        {!stats.meta.maxSnapshotAvailable ? (
-          <p className="channel-stats-note">
-            Сейчас доступны только данные активности через бота. Снимок канала временно не получен.
-          </p>
-        ) : null}
+        <p className="channel-stats-note">
+          MAX сейчас отдаёт официально просмотры и состояние канала. {missingMetricsNote} скрыты,
+          пока их нет в API.
+        </p>
       </GlassCard>
 
-      <section className="channel-stats-insights" aria-label="Диаграммы по активности">
-        <GlassCard className="channel-stats-panel" elevated>
-          <div className="channel-stats-panel__head">
-            <small>Срез периода</small>
-            <strong>{formatCount(activityChart.total)} действий</strong>
-          </div>
-
-          <div className="channel-stats-donut-layout">
-            <div
-              className="channel-stats-donut"
-              style={{ background: activityChart.background }}
-              aria-hidden
-            >
-              <div className="channel-stats-donut__core">
-                <span>Всего</span>
-                <strong>{formatCount(activityChart.total)}</strong>
-              </div>
-            </div>
-
-            <div className="channel-stats-legend">
-              {activityChart.segments.map((segment) => (
-                <div key={segment.label} className="channel-stats-legend__item">
-                  <span className={cn('channel-stats-legend__swatch', segment.colorClassName)} />
-                  <div>
-                    <small>{segment.label}</small>
-                    <strong>{formatCount(segment.value)}</strong>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </GlassCard>
-
-        <GlassCard className="channel-stats-panel channel-stats-panel--delivery" elevated>
-          <div className="channel-stats-panel__head">
-            <small>Доставка идей</small>
-            <strong>{stats.summary.suggestions > 0 ? `${deliveryRate}%` : 'Нет данных'}</strong>
-          </div>
-
-          <div className="channel-stats-delivery">
-            <div className="channel-stats-delivery__bar" aria-hidden>
-              <span style={{ width: `${deliveryRate}%` }} />
-            </div>
-
-            <div className="channel-stats-delivery__stats">
-              <article>
-                <small>Доставлено</small>
-                <strong>{formatCount(stats.summary.suggestionsDelivered)}</strong>
-              </article>
-              <article>
-                <small>С ошибкой</small>
-                <strong>{formatCount(stats.summary.suggestionsFailed)}</strong>
-              </article>
-            </div>
-          </div>
-        </GlassCard>
-      </section>
-
-      <section className="channel-stats-metrics" aria-label="Основная статистика канала">
+      <section className="channel-stats-metrics" aria-label="Официальная статистика канала">
         <MetricCard
-          label="Участников"
+          label="Участники"
           value={formatCount(stats.channel.participantsCount)}
           hint={
             stats.meta.maxSnapshotAvailable
-              ? 'Текущее количество подписчиков'
-              : 'Снимок канала временно недоступен'
+              ? 'Текущий снимок канала из MAX'
+              : 'Последний снимок MAX временно недоступен'
           }
           highlighted={typeof stats.channel.participantsCount === 'number'}
         />
 
         <MetricCard
-          label="Постов с кнопками"
-          value={formatCount(stats.summary.postsWithButtons)}
-          hint="Посты с переходом в miniapp"
-          highlighted={stats.summary.postsWithButtons > 0}
+          label="Пришло"
+          value={formatCount(stats.official.audience.joined)}
+          hint="Новые участники за выбранный период"
+          highlighted={stats.official.audience.joined > 0}
         />
 
+        {stats.meta.churnAvailable ? (
+          <>
+            <MetricCard
+              label="Ушло"
+              value={formatCount(stats.official.audience.left)}
+              hint="Участники, покинувшие канал"
+              highlighted={(stats.official.audience.left ?? 0) > 0}
+            />
+
+            <MetricCard
+              label="Чистый рост"
+              value={formatCount(stats.official.audience.net)}
+              hint="Разница между приходом и уходом"
+              highlighted={(stats.official.audience.net ?? 0) > 0}
+            />
+          </>
+        ) : null}
+
         <MetricCard
-          label="Комментариев"
-          value={formatCount(stats.summary.comments)}
+          label="Просмотры"
+          value={stats.meta.viewsAvailable ? formatCount(stats.official.content.views) : '—'}
           hint={
-            stats.summary.comments > 0
-              ? `Авторов: ${formatCount(stats.summary.commentAuthors)}`
-              : 'Пока без комментариев'
+            stats.meta.viewsAvailable
+              ? 'Сумма официальных просмотров постов'
+              : 'Появятся после первого найденного поста'
           }
-          highlighted={stats.summary.comments > 0}
+          highlighted={stats.official.content.views > 0}
         />
 
         <MetricCard
-          label="Предложек"
-          value={formatCount(stats.summary.suggestions)}
-          hint={
-            stats.summary.suggestions > 0
-              ? `Авторов: ${formatCount(stats.summary.suggestionAuthors)}`
-              : 'Пока без предложений'
-          }
-          highlighted={stats.summary.suggestions > 0}
-        />
-
-        <MetricCard
-          label="Авторов комментариев"
-          value={formatCount(stats.summary.commentAuthors)}
-          hint="Уникальные участники за выбранный период"
-          highlighted={stats.summary.commentAuthors > 0}
-        />
-
-        <MetricCard
-          label="Доставлено админам"
-          value={formatCount(stats.summary.suggestionsDelivered)}
-          hint={`Не доставлено: ${formatCount(stats.summary.suggestionsFailed)}`}
-          highlighted={stats.summary.suggestionsDelivered > 0}
+          label="Посты"
+          value={formatCount(stats.official.content.posts)}
+          hint="Официальные посты канала за период"
+          highlighted={stats.official.content.posts > 0}
         />
       </section>
 
-      {isEmptyPeriod ? (
-        <GlassCard>
-          <StatusState
-            tone="neutral"
-            title="За этот период бот ещё не зафиксировал активность"
-            description="Когда появятся комментарии, предложки или посты с кнопками, статистика обновится здесь."
+      <GlassCard className="channel-stats-panel channel-stats-panel--chart" elevated>
+        <div className="channel-stats-panel__head">
+          <div>
+            <small>Официальная динамика</small>
+            <strong>
+              {effectiveChartTab === 'audience'
+                ? 'Участники и движение аудитории'
+                : 'Просмотры найденных постов'}
+            </strong>
+          </div>
+
+          <SegmentedControl
+            value={effectiveChartTab}
+            options={chartTabs}
+            onChange={setChartTab}
+            className="channel-stats-panel__switch"
           />
-        </GlassCard>
-      ) : null}
+        </div>
+
+        {effectiveChartTab === 'audience' ? (
+          <AudienceChart stats={stats} />
+        ) : (
+          <ViewsChart stats={stats} />
+        )}
+
+        {!stats.meta.churnAvailable ? (
+          <p className="channel-stats-panel__note">
+            Отток и чистый рост появятся после накопления полной истории `user_removed`.
+          </p>
+        ) : null}
+      </GlassCard>
+
+      <GlassCard className="channel-stats-secondary" elevated>
+        <div className="channel-stats-panel__head">
+          <div>
+            <small>Через mini app</small>
+            <strong>Вторичная активность</strong>
+          </div>
+        </div>
+
+        <div className="channel-stats-secondary__grid">
+          <article>
+            <small>Комментарии</small>
+            <strong>{formatCount(stats.secondary.comments)}</strong>
+            <span>Авторов: {formatCount(stats.secondary.commentAuthors)}</span>
+          </article>
+          <article>
+            <small>Предложки</small>
+            <strong>{formatCount(stats.secondary.suggestions)}</strong>
+            <span>Авторов: {formatCount(stats.secondary.suggestionAuthors)}</span>
+          </article>
+          <article>
+            <small>Доставлено админам</small>
+            <strong>{formatCount(stats.secondary.suggestionsDelivered)}</strong>
+            <span>Ошибки: {formatCount(stats.secondary.suggestionsFailed)}</span>
+          </article>
+          <article>
+            <small>Постов с кнопками</small>
+            <strong>{formatCount(stats.secondary.postsWithButtons)}</strong>
+            <span>Переходы в mini app</span>
+          </article>
+        </div>
+
+        {!hasSecondaryActivity(stats.secondary) ? (
+          <p className="channel-stats-secondary__empty">
+            Через mini app за этот период активности пока нет.
+          </p>
+        ) : null}
+      </GlassCard>
 
       <GlassCard className="channel-stats-meta" elevated>
         <article className="channel-stats-meta__item">
           <small>Последняя активность в канале</small>
           <strong>{formatDateTime(stats.channel.lastEventAt)}</strong>
-          <p>По данным MAX о самом канале.</p>
+          <p>Официальный снимок MAX по самому каналу.</p>
+        </article>
+
+        <article className="channel-stats-meta__item">
+          <small>Последний найденный пост</small>
+          <strong>{formatDateTime(stats.official.content.lastPublishedAt)}</strong>
+          <p>По истории постов канала за выбранный период.</p>
         </article>
 
         <article className="channel-stats-meta__item">
           <small>Последняя активность через бота</small>
-          <strong>{formatDateTime(stats.summary.lastBotActivityAt)}</strong>
+          <strong>{formatDateTime(stats.secondary.lastBotActivityAt)}</strong>
           <p>Комментарии, предложки и посты с кнопками.</p>
         </article>
 

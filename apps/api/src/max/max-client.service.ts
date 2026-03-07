@@ -28,6 +28,20 @@ export type MaxChatSnapshot = {
   entityType: 'chat' | 'channel';
 };
 
+export type MaxChannelMessageSnapshot = {
+  chatId: string;
+  messageId: string;
+  publishedAt: string;
+  publishedAtMs: number;
+  url: string | null;
+  views: number | null;
+};
+
+export type MaxWebhookSubscription = {
+  url: string;
+  updateTypes: string[];
+};
+
 export type MaxButtonIntent = 'default' | 'positive' | 'negative';
 
 export type MaxLinkButton = {
@@ -134,6 +148,8 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly circuitFailureThreshold: number;
   private readonly circuitWindowSec: number;
   private readonly circuitOpenSec: number;
+  private readonly webhookUrl: string | null;
+  private readonly webhookHeaderSecret: string | null;
   private readonly limiterRedis: Redis;
   private readonly criticalFailuresMs: number[] = [];
   private readonly pendingTimeouts = new Set<NodeJS.Timeout>();
@@ -158,6 +174,14 @@ export class MaxClientService implements OnModuleDestroy {
     );
     this.circuitWindowSec = configService.get<number>('MAX_API_CIRCUIT_WINDOW_SEC', 30);
     this.circuitOpenSec = configService.get<number>('MAX_API_CIRCUIT_OPEN_SEC', 20);
+    this.webhookUrl = this.buildWebhookUrl(
+      configService.get<string>('APP_BASE_URL'),
+      configService.get<string>('MAX_BOT_ID'),
+      configService.get<string>('MAX_WEBHOOK_SECRET_PATH'),
+    );
+    this.webhookHeaderSecret = this.readTrimmedString(
+      configService.get<string>('MAX_WEBHOOK_HEADER_SECRET'),
+    );
     this.limiterRedis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
   }
 
@@ -220,18 +244,172 @@ export class MaxClientService implements OnModuleDestroy {
     });
   }
 
-  async listMessages(chatId: string, count = 10): Promise<Record<string, unknown>[]> {
+  async listMessages(
+    chatId: string,
+    countOrOptions:
+      | number
+      | {
+          count?: number;
+          from?: number | string | Date | null;
+          to?: number | string | Date | null;
+        } = 10,
+  ): Promise<Record<string, unknown>[]> {
+    const options =
+      typeof countOrOptions === 'number'
+        ? { count: countOrOptions }
+        : {
+            count: countOrOptions.count ?? 10,
+            from: countOrOptions.from ?? null,
+            to: countOrOptions.to ?? null,
+          };
     const data = await this.request<Record<string, unknown>>('get', '/messages', {
       params: {
         chat_id: chatId,
-        count,
+        count: options.count,
+        ...(options.from !== null && options.from !== undefined
+          ? { from: this.normalizeMessageTimeBoundary(options.from) }
+          : {}),
+        ...(options.to !== null && options.to !== undefined
+          ? { to: this.normalizeMessageTimeBoundary(options.to) }
+          : {}),
       },
     });
-    const messages = Array.isArray(data.messages) ? data.messages : [];
-    return messages.filter(
-      (message): message is Record<string, unknown> =>
-        Boolean(message) && typeof message === 'object' && !Array.isArray(message),
+    return this.normalizeMessageRows(data);
+  }
+
+  async listMessageSnapshots(
+    chatId: string,
+    options: {
+      from?: Date | number | string | null;
+      to?: Date | number | string | null;
+      count?: number;
+      maxPages?: number;
+    } = {},
+  ): Promise<MaxChannelMessageSnapshot[]> {
+    const fromMs = this.normalizeMessageTimeBoundary(options.from ?? null);
+    const toMs = this.normalizeMessageTimeBoundary(options.to ?? null) ?? Date.now();
+    const count = Math.min(Math.max(options.count ?? 100, 1), 100);
+    const maxPages = Math.min(Math.max(options.maxPages ?? 60, 1), 200);
+    const snapshots = new Map<string, MaxChannelMessageSnapshot>();
+    let cursorTo: number | null = toMs;
+    let previousSignature = '';
+
+    for (let page = 0; page < maxPages; page += 1) {
+      const rows = await this.listMessages(chatId, {
+        count,
+        ...(fromMs !== null ? { from: fromMs } : {}),
+        ...(cursorTo !== null ? { to: cursorTo } : {}),
+      });
+      if (rows.length === 0) {
+        break;
+      }
+
+      const pageItems = rows
+        .map((row) => this.parseMessageSnapshot(chatId, row))
+        .filter((item): item is MaxChannelMessageSnapshot => item !== null)
+        .sort((left, right) => right.publishedAtMs - left.publishedAtMs);
+
+      if (pageItems.length === 0) {
+        break;
+      }
+
+      for (const item of pageItems) {
+        if (fromMs !== null && item.publishedAtMs < fromMs) {
+          continue;
+        }
+        if (item.publishedAtMs > toMs) {
+          continue;
+        }
+        snapshots.set(item.messageId, item);
+      }
+
+      const signature = `${pageItems[0]?.messageId ?? ''}:${pageItems.at(-1)?.messageId ?? ''}`;
+      if (signature && signature === previousSignature) {
+        break;
+      }
+      previousSignature = signature;
+
+      const oldest = pageItems.at(-1);
+      if (!oldest) {
+        break;
+      }
+
+      if (fromMs !== null && oldest.publishedAtMs <= fromMs) {
+        break;
+      }
+
+      const nextCursor = oldest.publishedAtMs - 1;
+      if (cursorTo !== null && nextCursor >= cursorTo) {
+        break;
+      }
+
+      cursorTo = nextCursor;
+
+      if (rows.length < count) {
+        break;
+      }
+    }
+
+    return Array.from(snapshots.values()).sort(
+      (left, right) => right.publishedAtMs - left.publishedAtMs,
     );
+  }
+
+  async listWebhookSubscriptions(): Promise<MaxWebhookSubscription[]> {
+    const data = await this.request<Record<string, unknown> | unknown[]>('get', '/subscriptions');
+    const rows = Array.isArray(data)
+      ? data
+      : Array.isArray((data as { subscriptions?: unknown }).subscriptions)
+        ? ((data as { subscriptions?: unknown[] }).subscriptions ?? [])
+        : [];
+
+    return rows
+      .map((row) => this.parseWebhookSubscription(row))
+      .filter((item): item is MaxWebhookSubscription => item !== null);
+  }
+
+  async ensureWebhookSubscription(
+    requiredUpdateTypes: string[],
+  ): Promise<MaxWebhookSubscription | null> {
+    const normalizedRequired = Array.from(
+      new Set(
+        requiredUpdateTypes
+          .map((value) => this.readLowerString(value))
+          .filter((value): value is string => Boolean(value)),
+      ),
+    );
+    if (normalizedRequired.length === 0 || !this.webhookUrl || !this.webhookHeaderSecret) {
+      return null;
+    }
+
+    const existing = await this.listWebhookSubscriptions();
+    const current =
+      existing.find((item) => item.url === this.webhookUrl) ??
+      existing.find((item) => this.normalizeUrl(item.url) === this.normalizeUrl(this.webhookUrl!));
+    const mergedUpdateTypes = Array.from(
+      new Set([...(current?.updateTypes ?? []), ...normalizedRequired]),
+    ).sort();
+
+    if (
+      current &&
+      current.updateTypes.length === mergedUpdateTypes.length &&
+      current.updateTypes.every((value, index) => value === mergedUpdateTypes[index])
+    ) {
+      return current;
+    }
+
+    await this.request('post', '/subscriptions', {
+      data: {
+        url: this.webhookUrl,
+        update_types: mergedUpdateTypes,
+        secret: this.webhookHeaderSecret,
+      },
+    });
+
+    return {
+      url: this.webhookUrl,
+      updateTypes: mergedUpdateTypes,
+    };
   }
 
   async uploadImage(
@@ -617,6 +795,120 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     return null;
+  }
+
+  private buildWebhookUrl(
+    appBaseUrl: string | undefined,
+    botId: string | undefined,
+    secretPath: string | undefined,
+  ): string | null {
+    const normalizedBase = this.readTrimmedString(appBaseUrl);
+    const normalizedBotId = this.readTrimmedString(botId);
+    const normalizedSecretPath = this.readTrimmedString(secretPath);
+    if (!normalizedBase || !normalizedBotId || !normalizedSecretPath) {
+      return null;
+    }
+
+    return `${normalizedBase.replace(/\/+$/u, '')}/api/webhook/max/${normalizedBotId}/${normalizedSecretPath}`;
+  }
+
+  private normalizeMessageRows(payload: Record<string, unknown>): Record<string, unknown>[] {
+    const messages = Array.isArray(payload.messages) ? payload.messages : [];
+    return messages.filter(
+      (message): message is Record<string, unknown> =>
+        Boolean(message) && typeof message === 'object' && !Array.isArray(message),
+    );
+  }
+
+  private normalizeMessageTimeBoundary(value: unknown): number | null {
+    if (value === null) {
+      return null;
+    }
+    if (value instanceof Date) {
+      const millis = value.getTime();
+      return Number.isFinite(millis) ? millis : null;
+    }
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? Math.trunc(value) : null;
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return null;
+      }
+      if (/^\d+$/u.test(trimmed)) {
+        return Number(trimmed);
+      }
+      const parsed = Date.parse(trimmed);
+      return Number.isFinite(parsed) ? parsed : null;
+    }
+
+    return null;
+  }
+
+  private parseMessageSnapshot(
+    chatId: string,
+    row: Record<string, unknown>,
+  ): MaxChannelMessageSnapshot | null {
+    const body = this.asRecord(row.body);
+    const messageId = this.readTrimmedString(
+      body?.mid ?? row.message_id ?? row.messageId ?? row.id,
+    );
+    const timestampMs = this.normalizeMessageTimeBoundary(
+      row.timestamp ?? row.created_at ?? row.createdAt ?? body?.timestamp,
+    );
+    if (!messageId || timestampMs === null) {
+      return null;
+    }
+
+    const publishedAt = new Date(timestampMs);
+    if (!Number.isFinite(publishedAt.getTime())) {
+      return null;
+    }
+
+    const stat = this.asRecord(row.stat);
+    return {
+      chatId,
+      messageId,
+      publishedAt: publishedAt.toISOString(),
+      publishedAtMs: timestampMs,
+      url: this.parseChatLink(row),
+      views: this.readNullableInteger(stat?.views),
+    };
+  }
+
+  private parseWebhookSubscription(value: unknown): MaxWebhookSubscription | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+
+    const row = value as Record<string, unknown>;
+    const url = this.readTrimmedString(row.url);
+    if (!url) {
+      return null;
+    }
+
+    const updateTypesSource = Array.isArray(row.update_types)
+      ? row.update_types
+      : Array.isArray(row.updateTypes)
+        ? row.updateTypes
+        : [];
+    const updateTypes = Array.from(
+      new Set(
+        updateTypesSource
+          .map((item) => this.readLowerString(item))
+          .filter((item): item is string => Boolean(item)),
+      ),
+    ).sort();
+
+    return {
+      url,
+      updateTypes,
+    };
+  }
+
+  private normalizeUrl(value: string): string {
+    return value.trim().replace(/\/+$/u, '');
   }
 
   async answerCallback(

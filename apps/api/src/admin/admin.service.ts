@@ -15,6 +15,7 @@ import {
   manualModerationActionRequestSchema,
   manualModerationActionResultSchema,
   type ChannelDialogType,
+  type ChannelStatsBucket,
   type ChannelStatsRange,
   type ChannelStatsResponse,
   type ChannelOverview,
@@ -38,7 +39,13 @@ import {
 } from '@maxim/contracts';
 import { ChatEntityType, EventType, Operator, Prisma, SanctionAction } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
-import { BadRequestException, ForbiddenException, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  Optional,
+} from '@nestjs/common';
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
@@ -48,6 +55,7 @@ import {
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 
 type ApplySettingsToAllChatsResult = {
   sourceChatId: string;
@@ -85,6 +93,8 @@ const CHANNEL_STATS_ACTIVITY_ACTIONS = [
   CHANNEL_DIALOG_ACTION_COMMENT,
   CHANNEL_DIALOG_ACTION_SUGGEST,
 ] as const;
+const CHANNEL_STATS_MISSING_METRICS = ['reach', 'uniqueViews'] as const;
+const CHANNEL_STATS_REFRESH_STALE_MS = 2 * 60 * 60 * 1000;
 
 type ChannelDialogTokenPayload = {
   v: 1;
@@ -105,6 +115,8 @@ export class AdminService {
     private readonly maxClient: MaxClientService,
     private readonly chatContextCache: ChatContextCacheService,
     configService: ConfigService,
+    @Optional()
+    private readonly channelStatsCollector?: ChannelStatsCollectorService,
   ) {
     this.maxBotToken = configService.getOrThrow<string>('MAX_BOT_TOKEN');
     this.appBaseUrl = this.normalizeAppBaseUrl(configService.get<string>('APP_BASE_URL'));
@@ -219,87 +231,187 @@ export class AdminService {
 
     const now = new Date();
     const from = this.resolveChannelStatsFrom(parsed.data.range, now);
-    const chat = await this.prisma.chat.findUnique({
-      where: { id: chatId },
-      select: { id: true, title: true },
-    });
-
-    const statsRows = await this.prisma.$queryRaw<
-      Array<{
-        posts_with_buttons: unknown;
-        comments: unknown;
-        suggestions: unknown;
-        comment_authors: unknown;
-        suggestion_authors: unknown;
-        suggestions_delivered: unknown;
-        suggestions_failed: unknown;
-        last_bot_activity_at: Date | string | null;
-      }>
-    >`
-      SELECT
-        COUNT(DISTINCT CASE
-          WHEN action IN (${Prisma.join(CHANNEL_STATS_POST_ACTIONS)})
-          THEN NULLIF(BTRIM(payload->>'threadId'), '')
-          ELSE NULL
-        END) AS posts_with_buttons,
-        COUNT(*) FILTER (WHERE action = ${CHANNEL_DIALOG_ACTION_COMMENT}) AS comments,
-        COUNT(*) FILTER (WHERE action = ${CHANNEL_DIALOG_ACTION_SUGGEST}) AS suggestions,
-        COUNT(DISTINCT CASE
-          WHEN action = ${CHANNEL_DIALOG_ACTION_COMMENT}
-          THEN actor_user_id
-          ELSE NULL
-        END) AS comment_authors,
-        COUNT(DISTINCT CASE
-          WHEN action = ${CHANNEL_DIALOG_ACTION_SUGGEST}
-          THEN actor_user_id
-          ELSE NULL
-        END) AS suggestion_authors,
-        COUNT(*) FILTER (
-          WHERE action = ${CHANNEL_DIALOG_ACTION_SUGGEST}
-            AND payload->>'delivered' = 'true'
-        ) AS suggestions_delivered,
-        COUNT(*) FILTER (
-          WHERE action = ${CHANNEL_DIALOG_ACTION_SUGGEST}
-            AND payload->>'delivered' = 'false'
-        ) AS suggestions_failed,
-        MAX(created_at) FILTER (
-          WHERE action IN (${Prisma.join(CHANNEL_STATS_ACTIVITY_ACTIONS)})
-        ) AS last_bot_activity_at
-      FROM audit_logs
-      WHERE chat_id = ${chatId}
-        AND created_at >= ${from}
-        AND created_at <= ${now}
-    `;
-
-    const localTitle = chat?.title?.trim() || `Канал ${chatId}`;
-    let maxSnapshotAvailable = true;
-    let participantsCount: number | null = null;
-    let status: string | null = null;
-    let isPublic: boolean | null = null;
-    let link: string | null = null;
-    let lastEventAt: string | null = null;
-    let title = localTitle;
+    const bucket = this.resolveChannelStatsBucket(parsed.data.range);
 
     try {
-      const snapshot = await this.maxClient.getChatSnapshot(chatId);
-      title = snapshot.title?.trim() || localTitle;
-      participantsCount = snapshot.participantsCount;
-      status = snapshot.status;
-      isPublic = snapshot.isPublic;
-      link = snapshot.link;
-      lastEventAt = snapshot.lastEventAt;
+      await this.channelStatsCollector?.syncChannelIfStale(chatId, {
+        staleMs: CHANNEL_STATS_REFRESH_STALE_MS,
+        reason: 'stats_endpoint',
+      });
     } catch (error: unknown) {
-      maxSnapshotAvailable = false;
       this.logger.warn(
         {
           chatId,
           err: error instanceof Error ? error.message : String(error),
         },
-        'Failed to fetch MAX channel snapshot for channel stats',
+        'Failed to refresh channel stats opportunistically',
       );
     }
 
-    const stats = statsRows[0] ?? {
+    const [
+      chat,
+      secondaryRows,
+      latestAudienceSnapshot,
+      earliestAudienceSnapshot,
+      previousAudienceSnapshot,
+      audienceSnapshots,
+      syncState,
+      periodPosts,
+      anyPost,
+      membershipRows,
+    ] = await Promise.all([
+      this.prisma.chat.findUnique({
+        where: { id: chatId },
+        select: { id: true, title: true },
+      }),
+      this.prisma.$queryRaw<
+        Array<{
+          posts_with_buttons: unknown;
+          comments: unknown;
+          suggestions: unknown;
+          comment_authors: unknown;
+          suggestion_authors: unknown;
+          suggestions_delivered: unknown;
+          suggestions_failed: unknown;
+          last_bot_activity_at: Date | string | null;
+        }>
+      >`
+        SELECT
+          COUNT(DISTINCT CASE
+            WHEN action IN (${Prisma.join(CHANNEL_STATS_POST_ACTIONS)})
+            THEN NULLIF(BTRIM(payload->>'threadId'), '')
+            ELSE NULL
+          END) AS posts_with_buttons,
+          COUNT(*) FILTER (WHERE action = ${CHANNEL_DIALOG_ACTION_COMMENT}) AS comments,
+          COUNT(*) FILTER (WHERE action = ${CHANNEL_DIALOG_ACTION_SUGGEST}) AS suggestions,
+          COUNT(DISTINCT CASE
+            WHEN action = ${CHANNEL_DIALOG_ACTION_COMMENT}
+            THEN actor_user_id
+            ELSE NULL
+          END) AS comment_authors,
+          COUNT(DISTINCT CASE
+            WHEN action = ${CHANNEL_DIALOG_ACTION_SUGGEST}
+            THEN actor_user_id
+            ELSE NULL
+          END) AS suggestion_authors,
+          COUNT(*) FILTER (
+            WHERE action = ${CHANNEL_DIALOG_ACTION_SUGGEST}
+              AND payload->>'delivered' = 'true'
+          ) AS suggestions_delivered,
+          COUNT(*) FILTER (
+            WHERE action = ${CHANNEL_DIALOG_ACTION_SUGGEST}
+              AND payload->>'delivered' = 'false'
+          ) AS suggestions_failed,
+          MAX(created_at) FILTER (
+            WHERE action IN (${Prisma.join(CHANNEL_STATS_ACTIVITY_ACTIONS)})
+          ) AS last_bot_activity_at
+        FROM audit_logs
+        WHERE chat_id = ${chatId}
+          AND created_at >= ${from}
+          AND created_at <= ${now}
+      `,
+      this.prisma.channelAudienceSnapshot.findFirst({
+        where: { chatId },
+        orderBy: { capturedAt: 'desc' },
+      }),
+      this.prisma.channelAudienceSnapshot.findFirst({
+        where: { chatId },
+        orderBy: { capturedAt: 'asc' },
+        select: {
+          capturedAt: true,
+        },
+      }),
+      this.prisma.channelAudienceSnapshot.findFirst({
+        where: {
+          chatId,
+          capturedAt: { lt: from },
+        },
+        orderBy: { capturedAt: 'desc' },
+        select: {
+          participantsCount: true,
+        },
+      }),
+      this.prisma.channelAudienceSnapshot.findMany({
+        where: {
+          chatId,
+          capturedAt: { gte: from, lte: now },
+        },
+        orderBy: { capturedAt: 'asc' },
+        select: {
+          capturedAt: true,
+          participantsCount: true,
+        },
+      }),
+      this.prisma.channelStatsSyncState.findUnique({
+        where: { chatId },
+      }),
+      this.prisma.channelPost.findMany({
+        where: {
+          chatId,
+          publishedAt: { gte: from, lte: now },
+        },
+        orderBy: { publishedAt: 'asc' },
+        select: {
+          publishedAt: true,
+          latestViews: true,
+        },
+      }),
+      this.prisma.channelPost.findFirst({
+        where: { chatId },
+        select: { id: true },
+      }),
+      this.prisma.$queryRaw<
+        Array<{
+          created_at: Date | string;
+          event_type: string | null;
+        }>
+      >`
+        SELECT
+          created_at,
+          normalized_payload->>'type' AS event_type
+        FROM webhook_events
+        WHERE normalized_payload->'message'->>'chatId' = ${chatId}
+          AND normalized_payload->>'type' IN ('user_added', 'user_removed')
+          AND created_at >= ${from}
+          AND created_at <= ${now}
+        ORDER BY created_at ASC
+      `,
+    ]);
+
+    const localTitle = chat?.title?.trim() || `Канал ${chatId}`;
+    let maxSnapshotAvailable = latestAudienceSnapshot !== null;
+    let title = localTitle;
+    let participantsCount = latestAudienceSnapshot?.participantsCount ?? null;
+    let status = latestAudienceSnapshot?.status ?? null;
+    let isPublic = latestAudienceSnapshot?.isPublic ?? null;
+    let link = latestAudienceSnapshot?.link ?? null;
+    let lastEventAt = latestAudienceSnapshot?.lastEventAt?.toISOString() ?? null;
+
+    if (latestAudienceSnapshot) {
+      title = chat?.title?.trim() || localTitle;
+    } else {
+      try {
+        const snapshot = await this.maxClient.getChatSnapshot(chatId);
+        title = snapshot.title?.trim() || localTitle;
+        participantsCount = snapshot.participantsCount;
+        status = snapshot.status;
+        isPublic = snapshot.isPublic;
+        link = snapshot.link;
+        lastEventAt = snapshot.lastEventAt;
+        maxSnapshotAvailable = true;
+      } catch (error: unknown) {
+        maxSnapshotAvailable = false;
+        this.logger.warn(
+          {
+            chatId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to fetch MAX fallback snapshot for channel stats',
+        );
+      }
+    }
+
+    const secondary = secondaryRows[0] ?? {
       posts_with_buttons: 0,
       comments: 0,
       suggestions: 0,
@@ -310,6 +422,21 @@ export class AdminService {
       last_bot_activity_at: null,
     };
 
+    const churnAvailable = Boolean(
+      syncState?.membershipCoverageFrom &&
+      syncState.membershipCoverageFrom.getTime() <= from.getTime(),
+    );
+    let joined = 0;
+    let left = 0;
+    for (const row of membershipRows) {
+      if (row.event_type === 'user_added') {
+        joined += 1;
+      } else if (row.event_type === 'user_removed') {
+        left += 1;
+      }
+    }
+
+    const bucketStarts = this.buildChannelStatsBucketStarts(from, now, bucket);
     const response: ChannelStatsResponse = {
       channel: {
         id: chatId,
@@ -324,19 +451,57 @@ export class AdminService {
         range: parsed.data.range,
         from: from.toISOString(),
         to: now.toISOString(),
+        bucket,
       },
-      summary: {
-        postsWithButtons: this.toSafeInteger(stats.posts_with_buttons),
-        comments: this.toSafeInteger(stats.comments),
-        suggestions: this.toSafeInteger(stats.suggestions),
-        commentAuthors: this.toSafeInteger(stats.comment_authors),
-        suggestionAuthors: this.toSafeInteger(stats.suggestion_authors),
-        suggestionsDelivered: this.toSafeInteger(stats.suggestions_delivered),
-        suggestionsFailed: this.toSafeInteger(stats.suggestions_failed),
-        lastBotActivityAt: this.toIsoString(stats.last_bot_activity_at),
+      official: {
+        audience: {
+          joined,
+          left: churnAvailable ? left : null,
+          net: churnAvailable ? joined - left : null,
+        },
+        content: {
+          posts: periodPosts.length,
+          views: periodPosts.reduce((total, item) => total + Math.max(0, item.latestViews), 0),
+          lastPublishedAt:
+            periodPosts.length > 0
+              ? periodPosts[periodPosts.length - 1].publishedAt.toISOString()
+              : null,
+        },
+        series: {
+          participants: this.buildParticipantSeries(
+            bucketStarts,
+            bucket,
+            previousAudienceSnapshot?.participantsCount ?? null,
+            audienceSnapshots,
+          ),
+          membership: this.buildMembershipSeries(
+            bucketStarts,
+            bucket,
+            membershipRows,
+            churnAvailable,
+          ),
+          views: this.buildViewsSeries(bucketStarts, bucket, periodPosts),
+        },
+      },
+      secondary: {
+        postsWithButtons: this.toSafeInteger(secondary.posts_with_buttons),
+        comments: this.toSafeInteger(secondary.comments),
+        suggestions: this.toSafeInteger(secondary.suggestions),
+        commentAuthors: this.toSafeInteger(secondary.comment_authors),
+        suggestionAuthors: this.toSafeInteger(secondary.suggestion_authors),
+        suggestionsDelivered: this.toSafeInteger(secondary.suggestions_delivered),
+        suggestionsFailed: this.toSafeInteger(secondary.suggestions_failed),
+        lastBotActivityAt: this.toIsoString(secondary.last_bot_activity_at),
       },
       meta: {
         maxSnapshotAvailable,
+        viewsAvailable: Boolean(anyPost),
+        churnAvailable,
+        officialCoverageFrom: this.resolveOfficialCoverageFrom(
+          syncState,
+          earliestAudienceSnapshot?.capturedAt ?? null,
+        ),
+        missingOfficialMetrics: [...CHANNEL_STATS_MISSING_METRICS],
       },
     };
 
@@ -1919,6 +2084,143 @@ export class AdminService {
 
   private resolveChannelStatsFrom(range: ChannelStatsRange, to: Date): Date {
     return this.resolveLogsDashboardFrom(range, to);
+  }
+
+  private resolveChannelStatsBucket(range: ChannelStatsRange): ChannelStatsBucket {
+    return range === '24h' ? 'hour' : 'day';
+  }
+
+  private buildChannelStatsBucketStarts(from: Date, to: Date, bucket: ChannelStatsBucket): Date[] {
+    const starts: Date[] = [];
+    let cursor = this.floorChannelStatsBucket(from, bucket);
+    const end = this.floorChannelStatsBucket(to, bucket);
+
+    while (cursor.getTime() <= end.getTime()) {
+      starts.push(cursor);
+      cursor = this.shiftChannelStatsBucket(cursor, bucket, 1);
+    }
+
+    return starts;
+  }
+
+  private floorChannelStatsBucket(date: Date, bucket: ChannelStatsBucket): Date {
+    const result = new Date(date);
+    result.setUTCMinutes(0, 0, 0);
+    if (bucket === 'day') {
+      result.setUTCHours(0, 0, 0, 0);
+    }
+    return result;
+  }
+
+  private shiftChannelStatsBucket(date: Date, bucket: ChannelStatsBucket, amount: number): Date {
+    const result = new Date(date);
+    if (bucket === 'hour') {
+      result.setUTCHours(result.getUTCHours() + amount);
+      return result;
+    }
+
+    result.setUTCDate(result.getUTCDate() + amount);
+    return result;
+  }
+
+  private buildParticipantSeries(
+    bucketStarts: Date[],
+    bucket: ChannelStatsBucket,
+    initialParticipantsCount: number | null,
+    snapshots: Array<{ capturedAt: Date; participantsCount: number | null }>,
+  ) {
+    let cursorValue = initialParticipantsCount;
+    let snapshotIndex = 0;
+
+    return bucketStarts.map((bucketStart) => {
+      const bucketEnd = this.shiftChannelStatsBucket(bucketStart, bucket, 1);
+      while (
+        snapshotIndex < snapshots.length &&
+        snapshots[snapshotIndex].capturedAt.getTime() < bucketEnd.getTime()
+      ) {
+        cursorValue = snapshots[snapshotIndex].participantsCount;
+        snapshotIndex += 1;
+      }
+
+      return {
+        at: bucketStart.toISOString(),
+        participantsCount: cursorValue,
+      };
+    });
+  }
+
+  private buildMembershipSeries(
+    bucketStarts: Date[],
+    bucket: ChannelStatsBucket,
+    rows: Array<{ created_at: Date | string; event_type: string | null }>,
+    churnAvailable: boolean,
+  ) {
+    const grouped = new Map<string, { joined: number; left: number }>();
+
+    for (const row of rows) {
+      const createdAt = this.toIsoString(row.created_at);
+      if (!createdAt) {
+        continue;
+      }
+      const bucketStart = this.floorChannelStatsBucket(new Date(createdAt), bucket).toISOString();
+      const current = grouped.get(bucketStart) ?? { joined: 0, left: 0 };
+      if (row.event_type === 'user_added') {
+        current.joined += 1;
+      } else if (row.event_type === 'user_removed') {
+        current.left += 1;
+      }
+      grouped.set(bucketStart, current);
+    }
+
+    return bucketStarts.map((bucketStart) => {
+      const current = grouped.get(bucketStart.toISOString()) ?? { joined: 0, left: 0 };
+      return {
+        at: bucketStart.toISOString(),
+        joined: current.joined,
+        left: churnAvailable ? current.left : null,
+      };
+    });
+  }
+
+  private buildViewsSeries(
+    bucketStarts: Date[],
+    bucket: ChannelStatsBucket,
+    posts: Array<{ publishedAt: Date; latestViews: number }>,
+  ) {
+    const grouped = new Map<string, number>();
+
+    for (const post of posts) {
+      const bucketStart = this.floorChannelStatsBucket(post.publishedAt, bucket).toISOString();
+      grouped.set(bucketStart, (grouped.get(bucketStart) ?? 0) + Math.max(0, post.latestViews));
+    }
+
+    return bucketStarts.map((bucketStart) => ({
+      at: bucketStart.toISOString(),
+      views: grouped.get(bucketStart.toISOString()) ?? 0,
+    }));
+  }
+
+  private resolveOfficialCoverageFrom(
+    syncState: {
+      viewsCoverageFrom: Date | null;
+      membershipCoverageFrom: Date | null;
+    } | null,
+    latestAudienceCapturedAt: Date | null,
+  ): string | null {
+    const candidates = [
+      syncState?.viewsCoverageFrom ?? null,
+      syncState?.membershipCoverageFrom ?? null,
+      latestAudienceCapturedAt,
+    ].filter((value): value is Date => value instanceof Date && Number.isFinite(value.getTime()));
+
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    const earliest = candidates.reduce((acc, item) =>
+      item.getTime() < acc.getTime() ? item : acc,
+    );
+    return earliest.toISOString();
   }
 
   private toSafeInteger(value: unknown): number {
