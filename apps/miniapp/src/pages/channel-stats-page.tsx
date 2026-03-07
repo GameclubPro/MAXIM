@@ -285,19 +285,16 @@ function buildViewsChart(stats: ChannelStatsResponse): {
 function MetricCard({
   label,
   value,
-  hint,
   highlighted = false,
 }: {
   label: string;
   value: string;
-  hint: string;
   highlighted?: boolean;
 }) {
   return (
     <article className={cn('channel-stats-metric', highlighted && 'is-accent')}>
       <small>{label}</small>
       <strong>{value}</strong>
-      <p>{hint}</p>
     </article>
   );
 }
@@ -309,7 +306,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   return (
     <div className="channel-stats-graph">
       {chart.points.length === 0 ? (
-        <div className="channel-stats-graph__empty">MAX ещё не накопил точки для графика.</div>
+        <div className="channel-stats-graph__empty">Пока нет данных за период.</div>
       ) : (
         <>
           <svg viewBox="0 0 320 180" className="channel-stats-graph__svg" aria-hidden>
@@ -387,7 +384,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   return (
     <div className="channel-stats-graph">
       {chart.bars.length === 0 ? (
-        <div className="channel-stats-graph__empty">Посты в этом периоде ещё не найдены.</div>
+        <div className="channel-stats-graph__empty">Пока нет постов за период.</div>
       ) : (
         <>
           <svg viewBox="0 0 320 180" className="channel-stats-graph__svg" aria-hidden>
@@ -410,7 +407,6 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
               <i className="is-views" />
               Просмотры постов
             </span>
-            <span className="channel-stats-graph__metric">Пик: {formatCount(chart.maxViews)}</span>
           </div>
 
           <div className="channel-stats-graph__labels">
@@ -528,9 +524,7 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
   const statusChips = resolveStatusChips(stats);
   const chartTabs = stats.meta.viewsAvailable ? audienceTabOptions : audienceTabOptions.slice(0, 1);
   const effectiveChartTab: ChartTab = stats.meta.viewsAvailable ? chartTab : 'audience';
-  const missingMetricsNote = stats.meta.missingOfficialMetrics
-    .map((item) => (item === 'uniqueViews' ? 'уникальные просмотры' : 'охват'))
-    .join(' и ');
+  const showSecondaryActivity = hasSecondaryActivity(stats.secondary);
 
   return (
     <div className="channel-stats-screen page-enter">
@@ -539,14 +533,13 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
           <Link to="/" className="button button--ghost channel-stats-hero__back">
             Назад
           </Link>
-          <span className="channel-stats-hero__badge">
-            {statsQuery.isFetching ? 'Обновляем' : 'Статистика'}
-          </span>
+          {statsQuery.isFetching ? (
+            <span className="channel-stats-hero__badge">Обновляем</span>
+          ) : null}
         </div>
 
         <div className="channel-stats-hero__main">
           <h1>{resolvedTitle}</h1>
-          <p>{chatId}</p>
         </div>
 
         <SegmentedControl
@@ -565,29 +558,18 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
             ))}
           </div>
         ) : null}
-
-        <p className="channel-stats-note">
-          MAX сейчас отдаёт официально просмотры и состояние канала. {missingMetricsNote} скрыты,
-          пока их нет в API.
-        </p>
       </GlassCard>
 
       <section className="channel-stats-metrics" aria-label="Официальная статистика канала">
         <MetricCard
           label="Участники"
           value={formatCount(stats.channel.participantsCount)}
-          hint={
-            stats.meta.maxSnapshotAvailable
-              ? 'Текущий снимок канала из MAX'
-              : 'Последний снимок MAX временно недоступен'
-          }
           highlighted={typeof stats.channel.participantsCount === 'number'}
         />
 
         <MetricCard
           label="Пришло"
           value={formatCount(stats.official.audience.joined)}
-          hint="Новые участники за выбранный период"
           highlighted={stats.official.audience.joined > 0}
         />
 
@@ -596,14 +578,12 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
             <MetricCard
               label="Ушло"
               value={formatCount(stats.official.audience.left)}
-              hint="Участники, покинувшие канал"
               highlighted={(stats.official.audience.left ?? 0) > 0}
             />
 
             <MetricCard
               label="Чистый рост"
               value={formatCount(stats.official.audience.net)}
-              hint="Разница между приходом и уходом"
               highlighted={(stats.official.audience.net ?? 0) > 0}
             />
           </>
@@ -612,32 +592,19 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
         <MetricCard
           label="Просмотры"
           value={stats.meta.viewsAvailable ? formatCount(stats.official.content.views) : '—'}
-          hint={
-            stats.meta.viewsAvailable
-              ? 'Сумма официальных просмотров постов'
-              : 'Появятся после первого найденного поста'
-          }
           highlighted={stats.official.content.views > 0}
         />
 
         <MetricCard
           label="Посты"
           value={formatCount(stats.official.content.posts)}
-          hint="Официальные посты канала за период"
           highlighted={stats.official.content.posts > 0}
         />
       </section>
 
       <GlassCard className="channel-stats-panel channel-stats-panel--chart" elevated>
         <div className="channel-stats-panel__head">
-          <div>
-            <small>Официальная динамика</small>
-            <strong>
-              {effectiveChartTab === 'audience'
-                ? 'Участники и движение аудитории'
-                : 'Просмотры найденных постов'}
-            </strong>
-          </div>
+          <strong>Динамика</strong>
 
           <SegmentedControl
             value={effectiveChartTab}
@@ -652,75 +619,64 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
         ) : (
           <ViewsChart stats={stats} />
         )}
-
-        {!stats.meta.churnAvailable ? (
-          <p className="channel-stats-panel__note">
-            Отток и чистый рост появятся после накопления полной истории `user_removed`.
-          </p>
-        ) : null}
       </GlassCard>
 
       <GlassCard className="channel-stats-secondary" elevated>
         <div className="channel-stats-panel__head">
-          <div>
-            <small>Через mini app</small>
-            <strong>Вторичная активность</strong>
-          </div>
+          <strong>Через mini app</strong>
         </div>
 
         <div className="channel-stats-secondary__grid">
           <article>
             <small>Комментарии</small>
             <strong>{formatCount(stats.secondary.comments)}</strong>
-            <span>Авторов: {formatCount(stats.secondary.commentAuthors)}</span>
+            <span>Авторов {formatCount(stats.secondary.commentAuthors)}</span>
           </article>
           <article>
             <small>Предложки</small>
             <strong>{formatCount(stats.secondary.suggestions)}</strong>
-            <span>Авторов: {formatCount(stats.secondary.suggestionAuthors)}</span>
+            <span>Авторов {formatCount(stats.secondary.suggestionAuthors)}</span>
           </article>
           <article>
             <small>Доставлено админам</small>
             <strong>{formatCount(stats.secondary.suggestionsDelivered)}</strong>
-            <span>Ошибки: {formatCount(stats.secondary.suggestionsFailed)}</span>
+            <span>Ошибок {formatCount(stats.secondary.suggestionsFailed)}</span>
           </article>
           <article>
             <small>Постов с кнопками</small>
             <strong>{formatCount(stats.secondary.postsWithButtons)}</strong>
-            <span>Переходы в mini app</span>
           </article>
         </div>
 
-        {!hasSecondaryActivity(stats.secondary) ? (
-          <p className="channel-stats-secondary__empty">
-            Через mini app за этот период активности пока нет.
-          </p>
+        {!showSecondaryActivity ? (
+          <p className="channel-stats-secondary__empty">Активности за период пока нет.</p>
         ) : null}
       </GlassCard>
 
       <GlassCard className="channel-stats-meta" elevated>
-        <article className="channel-stats-meta__item">
-          <small>Последняя активность в канале</small>
-          <strong>{formatDateTime(stats.channel.lastEventAt)}</strong>
-          <p>Официальный снимок MAX по самому каналу.</p>
-        </article>
+        {stats.channel.lastEventAt ? (
+          <article className="channel-stats-meta__item">
+            <small>Активность в канале</small>
+            <strong>{formatDateTime(stats.channel.lastEventAt)}</strong>
+          </article>
+        ) : null}
+
+        {stats.official.content.lastPublishedAt ? (
+          <article className="channel-stats-meta__item">
+            <small>Последний пост</small>
+            <strong>{formatDateTime(stats.official.content.lastPublishedAt)}</strong>
+          </article>
+        ) : null}
+
+        {stats.secondary.lastBotActivityAt ? (
+          <article className="channel-stats-meta__item">
+            <small>Через mini app</small>
+            <strong>{formatDateTime(stats.secondary.lastBotActivityAt)}</strong>
+          </article>
+        ) : null}
 
         <article className="channel-stats-meta__item">
-          <small>Последний найденный пост</small>
-          <strong>{formatDateTime(stats.official.content.lastPublishedAt)}</strong>
-          <p>По истории постов канала за выбранный период.</p>
-        </article>
-
-        <article className="channel-stats-meta__item">
-          <small>Последняя активность через бота</small>
-          <strong>{formatDateTime(stats.secondary.lastBotActivityAt)}</strong>
-          <p>Комментарии, предложки и посты с кнопками.</p>
-        </article>
-
-        <article className="channel-stats-meta__item">
-          <small>
-            {stats.channel.isPublic && stats.channel.link ? 'Ссылка на канал' : 'Доступ'}
-          </small>
+          <small>Ссылка</small>
           {stats.channel.isPublic && stats.channel.link ? (
             <a
               href={stats.channel.link}
@@ -733,11 +689,6 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
           ) : (
             <strong>{stats.channel.isPublic === false ? 'Канал приватный' : 'Нет данных'}</strong>
           )}
-          <p>
-            {stats.channel.isPublic && stats.channel.link
-              ? 'Открывается напрямую в MAX.'
-              : 'Ссылка доступна только для публичных каналов.'}
-          </p>
         </article>
       </GlassCard>
     </div>
