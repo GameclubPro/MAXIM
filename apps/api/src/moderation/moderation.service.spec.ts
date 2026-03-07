@@ -3975,7 +3975,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Сообщение пользователя "Алексей" удалено: сообщения длиннее 100 символов должны относиться к теме недвижимости.',
+      'Сообщение пользователя "Алексей" удалено: сообщения должны относиться к теме недвижимости.',
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
       data: expect.objectContaining({
@@ -4058,7 +4058,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" вынесено предупреждение: сообщения длиннее 100 символов должны относиться к теме авторынка.',
+      'Пользователю "Алексей" вынесено предупреждение: сообщения должны относиться к теме авторынка.',
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
@@ -4138,7 +4138,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" выдан временный бан на 12ч за повторные длинные сообщения не по теме недвижимости.',
+      'Пользователю "Алексей" выдан временный бан на 12ч за повторные сообщения не по теме недвижимости.',
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
@@ -4220,7 +4220,7 @@ describe('ModerationService', () => {
     expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователь "Алексей" удален из чата за повторные длинные сообщения не по теме недвижимости или авторынка.',
+      'Пользователь "Алексей" удален из чата за повторные сообщения не по теме недвижимости или авторынка.',
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({

@@ -3619,8 +3619,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               >
                 <div className="settings-section__collapse-inner">
                   <p className="settings-native-toggle__hint">
-                    Правило действует только на сообщения длиннее 100 символов. Если включены обе
-                    темы, достаточно совпадения хотя бы с одной.
+                    Сообщения должны относиться к выбранной теме. Если включены обе темы,
+                    достаточно совпадения хотя бы с одной.
                   </p>
 
                   <div className="settings-native-toggle text-filter-card">

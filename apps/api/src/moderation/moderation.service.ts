@@ -1423,19 +1423,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   ): string {
     const topicLabel = this.resolveTopicFilterLabel(topics);
     const fallback = canDeleteMessage
-      ? `Сообщение пользователя ${userLabel} удалено: сообщения длиннее 100 символов должны относиться к теме ${topicLabel}.`
-      : `Сообщение пользователя ${userLabel} нарушает правило: сообщения длиннее 100 символов должны относиться к теме ${topicLabel}.`;
+      ? `Сообщение пользователя ${userLabel} удалено: сообщения должны относиться к теме ${topicLabel}.`
+      : `Сообщение пользователя ${userLabel} нарушает правило: сообщения должны относиться к теме ${topicLabel}.`;
     return fallback;
   }
 
   private buildTopicFilterWarnExplanation(userLabel: string, topics: TopicFilterTopic[]): string {
     const topicLabel = this.resolveTopicFilterLabel(topics);
-    return `Пользователю ${userLabel} вынесено предупреждение: сообщения длиннее 100 символов должны относиться к теме ${topicLabel}.`;
+    return `Пользователю ${userLabel} вынесено предупреждение: сообщения должны относиться к теме ${topicLabel}.`;
   }
 
   private buildTopicFilterKickExplanation(userLabel: string, topics: TopicFilterTopic[]): string {
     const topicLabel = this.resolveTopicFilterLabel(topics);
-    return `Пользователь ${userLabel} удален из чата за повторные длинные сообщения не по теме ${topicLabel}.`;
+    return `Пользователь ${userLabel} удален из чата за повторные сообщения не по теме ${topicLabel}.`;
   }
 
   private buildTopicFilterBanExplanation(
@@ -1444,7 +1444,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     banDurationHours: number,
   ): string {
     const topicLabel = this.resolveTopicFilterLabel(topics);
-    return `Пользователю ${userLabel} выдан временный бан на ${this.formatBanDurationLabel(banDurationHours)} за повторные длинные сообщения не по теме ${topicLabel}.`;
+    return `Пользователю ${userLabel} выдан временный бан на ${this.formatBanDurationLabel(banDurationHours)} за повторные сообщения не по теме ${topicLabel}.`;
   }
 
   private resolveTopicFilterLabel(topics: TopicFilterTopic[]): string {
