@@ -1,4 +1,4 @@
-import { ChatEntityType } from '@prisma/client';
+import { ChatEntityType, Prisma } from '@prisma/client';
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
@@ -240,6 +240,13 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   ) {
     for (const message of messages) {
       const views = Math.max(message.views ?? 0, 0);
+      const reactions = message.reactions
+        .filter((item) => item.count > 0)
+        .map((item) => ({
+          emoji: item.emoji,
+          count: item.count,
+        }));
+      const reactionsTotal = reactions.reduce((total, item) => total + item.count, 0);
       const post = await this.prisma.channelPost.upsert({
         where: {
           chatId_messageId: {
@@ -253,12 +260,18 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           publishedAt: new Date(message.publishedAt),
           url: message.url,
           latestViews: views,
+          latestReactions:
+            reactions.length > 0 ? (reactions as Prisma.InputJsonValue) : Prisma.DbNull,
+          latestReactionsTotal: reactionsTotal,
           latestSnapshotAt: capturedAt,
         },
         update: {
           publishedAt: new Date(message.publishedAt),
           url: message.url,
           latestViews: views,
+          latestReactions:
+            reactions.length > 0 ? (reactions as Prisma.InputJsonValue) : Prisma.DbNull,
+          latestReactionsTotal: reactionsTotal,
           latestSnapshotAt: capturedAt,
         },
         select: {

@@ -354,6 +354,8 @@ export class AdminService {
         select: {
           publishedAt: true,
           latestViews: true,
+          latestReactions: true,
+          latestReactionsTotal: true,
         },
       }),
       this.prisma.channelPost.findFirst({
@@ -437,6 +439,7 @@ export class AdminService {
     }
 
     const bucketStarts = this.buildChannelStatsBucketStarts(from, now, bucket);
+    const topReactions = this.buildTopReactions(periodPosts);
     const response: ChannelStatsResponse = {
       channel: {
         id: chatId,
@@ -456,12 +459,17 @@ export class AdminService {
       official: {
         audience: {
           joined,
-          left: churnAvailable ? left : null,
-          net: churnAvailable ? joined - left : null,
+          left,
+          net: joined - left,
         },
         content: {
           posts: periodPosts.length,
           views: periodPosts.reduce((total, item) => total + Math.max(0, item.latestViews), 0),
+          reactions: periodPosts.reduce(
+            (total, item) => total + this.toSafeInteger(item.latestReactionsTotal),
+            0,
+          ),
+          topReactions,
           lastPublishedAt:
             periodPosts.length > 0
               ? periodPosts[periodPosts.length - 1].publishedAt.toISOString()
@@ -474,12 +482,7 @@ export class AdminService {
             previousAudienceSnapshot?.participantsCount ?? null,
             audienceSnapshots,
           ),
-          membership: this.buildMembershipSeries(
-            bucketStarts,
-            bucket,
-            membershipRows,
-            churnAvailable,
-          ),
+          membership: this.buildMembershipSeries(bucketStarts, bucket, membershipRows),
           views: this.buildViewsSeries(bucketStarts, bucket, periodPosts),
         },
       },
@@ -2153,7 +2156,6 @@ export class AdminService {
     bucketStarts: Date[],
     bucket: ChannelStatsBucket,
     rows: Array<{ created_at: Date | string; event_type: string | null }>,
-    churnAvailable: boolean,
   ) {
     const grouped = new Map<string, { joined: number; left: number }>();
 
@@ -2177,7 +2179,7 @@ export class AdminService {
       return {
         at: bucketStart.toISOString(),
         joined: current.joined,
-        left: churnAvailable ? current.left : null,
+        left: current.left,
       };
     });
   }
@@ -2198,6 +2200,57 @@ export class AdminService {
       at: bucketStart.toISOString(),
       views: grouped.get(bucketStart.toISOString()) ?? 0,
     }));
+  }
+
+  private buildTopReactions(
+    posts: Array<{
+      latestReactions: Prisma.JsonValue | null;
+    }>,
+  ) {
+    const grouped = new Map<string, number>();
+
+    for (const post of posts) {
+      for (const reaction of this.readChannelPostReactions(post.latestReactions)) {
+        grouped.set(reaction.emoji, (grouped.get(reaction.emoji) ?? 0) + reaction.count);
+      }
+    }
+
+    return Array.from(grouped.entries())
+      .map(([emoji, count]) => ({ emoji, count }))
+      .sort((left, right) => right.count - left.count || left.emoji.localeCompare(right.emoji))
+      .slice(0, 3);
+  }
+
+  private readChannelPostReactions(
+    value: Prisma.JsonValue | null,
+  ): Array<{ emoji: string; count: number }> {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .map((item) => this.readChannelPostReaction(item))
+      .filter((item): item is { emoji: string; count: number } => item !== null);
+  }
+
+  private readChannelPostReaction(
+    value: Prisma.JsonValue,
+  ): { emoji: string; count: number } | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+
+    const row = value as Record<string, unknown>;
+    const emoji = typeof row.emoji === 'string' ? row.emoji.trim() : '';
+    const count = this.toSafeInteger(row.count);
+    if (!emoji || count <= 0) {
+      return null;
+    }
+
+    return {
+      emoji,
+      count,
+    };
   }
 
   private resolveOfficialCoverageFrom(

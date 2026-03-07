@@ -35,6 +35,12 @@ export type MaxChannelMessageSnapshot = {
   publishedAtMs: number;
   url: string | null;
   views: number | null;
+  reactions: MaxChannelMessageReaction[];
+};
+
+export type MaxChannelMessageReaction = {
+  emoji: string;
+  count: number;
 };
 
 export type MaxWebhookSubscription = {
@@ -267,10 +273,10 @@ export class MaxClientService implements OnModuleDestroy {
         chat_id: chatId,
         count: options.count,
         ...(options.from !== null && options.from !== undefined
-          ? { from: this.normalizeMessageTimeBoundary(options.from) }
+          ? { from: this.normalizeMessageQueryBoundary(options.from) }
           : {}),
         ...(options.to !== null && options.to !== undefined
-          ? { to: this.normalizeMessageTimeBoundary(options.to) }
+          ? { to: this.normalizeMessageQueryBoundary(options.to) }
           : {}),
       },
     });
@@ -286,8 +292,8 @@ export class MaxClientService implements OnModuleDestroy {
       maxPages?: number;
     } = {},
   ): Promise<MaxChannelMessageSnapshot[]> {
-    const fromMs = this.normalizeMessageTimeBoundary(options.from ?? null);
-    const toMs = this.normalizeMessageTimeBoundary(options.to ?? null) ?? Date.now();
+    const fromMs = this.normalizeMessageTimestamp(options.from ?? null);
+    const toMs = this.normalizeMessageTimestamp(options.to ?? null) ?? Date.now();
     const count = Math.min(Math.max(options.count ?? 100, 1), 100);
     const maxPages = Math.min(Math.max(options.maxPages ?? 60, 1), 200);
     const snapshots = new Map<string, MaxChannelMessageSnapshot>();
@@ -297,7 +303,6 @@ export class MaxClientService implements OnModuleDestroy {
     for (let page = 0; page < maxPages; page += 1) {
       const rows = await this.listMessages(chatId, {
         count,
-        ...(fromMs !== null ? { from: fromMs } : {}),
         ...(cursorTo !== null ? { to: cursorTo } : {}),
       });
       if (rows.length === 0) {
@@ -320,7 +325,10 @@ export class MaxClientService implements OnModuleDestroy {
         if (item.publishedAtMs > toMs) {
           continue;
         }
-        snapshots.set(item.messageId, item);
+        snapshots.set(
+          item.messageId,
+          this.mergeMessageSnapshots(snapshots.get(item.messageId) ?? null, item),
+        );
       }
 
       const signature = `${pageItems[0]?.messageId ?? ''}:${pageItems.at(-1)?.messageId ?? ''}`;
@@ -338,7 +346,7 @@ export class MaxClientService implements OnModuleDestroy {
         break;
       }
 
-      const nextCursor = oldest.publishedAtMs - 1;
+      const nextCursor = oldest.publishedAtMs - 1_000;
       if (cursorTo !== null && nextCursor >= cursorTo) {
         break;
       }
@@ -820,7 +828,7 @@ export class MaxClientService implements OnModuleDestroy {
     );
   }
 
-  private normalizeMessageTimeBoundary(value: unknown): number | null {
+  private normalizeMessageTimestamp(value: unknown): number | null {
     if (value === null) {
       return null;
     }
@@ -846,6 +854,15 @@ export class MaxClientService implements OnModuleDestroy {
     return null;
   }
 
+  private normalizeMessageQueryBoundary(value: unknown): number | null {
+    const timestampMs = this.normalizeMessageTimestamp(value);
+    if (timestampMs === null) {
+      return null;
+    }
+
+    return Math.floor(timestampMs / 1_000);
+  }
+
   private parseMessageSnapshot(
     chatId: string,
     row: Record<string, unknown>,
@@ -854,7 +871,7 @@ export class MaxClientService implements OnModuleDestroy {
     const messageId = this.readTrimmedString(
       body?.mid ?? row.message_id ?? row.messageId ?? row.id,
     );
-    const timestampMs = this.normalizeMessageTimeBoundary(
+    const timestampMs = this.normalizeMessageTimestamp(
       row.timestamp ?? row.created_at ?? row.createdAt ?? body?.timestamp,
     );
     if (!messageId || timestampMs === null) {
@@ -874,6 +891,129 @@ export class MaxClientService implements OnModuleDestroy {
       publishedAtMs: timestampMs,
       url: this.parseChatLink(row),
       views: this.readNullableInteger(stat?.views),
+      reactions: this.parseMessageReactions(row),
+    };
+  }
+
+  private parseMessageReactions(row: Record<string, unknown>): MaxChannelMessageReaction[] {
+    const body = this.asRecord(row.body);
+    const stat = this.asRecord(row.stat);
+    const candidates = [
+      stat?.reactions,
+      stat?.reaction_counts,
+      stat?.emoji_reactions,
+      row.reactions,
+      body?.reactions,
+    ];
+
+    for (const candidate of candidates) {
+      const normalized = this.normalizeMessageReactionSource(candidate);
+      if (normalized.length > 0) {
+        return normalized;
+      }
+    }
+
+    return [];
+  }
+
+  private normalizeMessageReactionSource(value: unknown): MaxChannelMessageReaction[] {
+    if (Array.isArray(value)) {
+      const normalized = value
+        .map((item) => this.parseMessageReaction(item))
+        .filter((item): item is MaxChannelMessageReaction => item !== null);
+
+      return this.mergeMessageReactions(normalized);
+    }
+
+    const row = this.asRecord(value);
+    if (!row) {
+      return [];
+    }
+
+    const singleReaction = this.parseMessageReaction(row);
+    if (singleReaction) {
+      return [singleReaction];
+    }
+
+    return this.mergeMessageReactions(
+      Object.entries(row)
+        .map(([emoji, count]) => this.parseMessageReaction(count, emoji))
+        .filter((item): item is MaxChannelMessageReaction => item !== null),
+    );
+  }
+
+  private parseMessageReaction(
+    value: unknown,
+    fallbackEmoji?: string,
+  ): MaxChannelMessageReaction | null {
+    if (typeof value === 'number' || typeof value === 'string' || typeof value === 'bigint') {
+      const count = this.readNullableInteger(value);
+      const emoji = this.readTrimmedString(fallbackEmoji);
+      if (!emoji || count === null || count <= 0) {
+        return null;
+      }
+
+      return {
+        emoji,
+        count,
+      };
+    }
+
+    const row = this.asRecord(value);
+    if (!row) {
+      return null;
+    }
+
+    const emoji = this.readTrimmedString(
+      row.emoji ??
+        row.reaction ??
+        row.code ??
+        row.value ??
+        row.text ??
+        row.label ??
+        row.name ??
+        fallbackEmoji,
+    );
+    const count = this.readNullableInteger(
+      row.count ?? row.total ?? row.value_count ?? row.votes ?? row.times ?? row.value,
+    );
+    if (!emoji || count === null || count <= 0) {
+      return null;
+    }
+
+    return {
+      emoji,
+      count,
+    };
+  }
+
+  private mergeMessageReactions(
+    reactions: MaxChannelMessageReaction[],
+  ): MaxChannelMessageReaction[] {
+    const grouped = new Map<string, number>();
+
+    for (const reaction of reactions) {
+      grouped.set(reaction.emoji, (grouped.get(reaction.emoji) ?? 0) + reaction.count);
+    }
+
+    return Array.from(grouped.entries())
+      .map(([emoji, count]) => ({ emoji, count }))
+      .sort((left, right) => right.count - left.count || left.emoji.localeCompare(right.emoji));
+  }
+
+  private mergeMessageSnapshots(
+    current: MaxChannelMessageSnapshot | null,
+    incoming: MaxChannelMessageSnapshot,
+  ): MaxChannelMessageSnapshot {
+    if (!current) {
+      return incoming;
+    }
+
+    return {
+      ...incoming,
+      url: incoming.url ?? current.url,
+      views: Math.max(current.views ?? 0, incoming.views ?? 0),
+      reactions: this.mergeMessageReactions([...current.reactions, ...incoming.reactions]),
     };
   }
 

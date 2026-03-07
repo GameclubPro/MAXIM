@@ -302,6 +302,7 @@ function MetricCard({
 function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   const chart = buildAudienceChart(stats);
   const labels = stats.official.series.participants;
+  const hasLeftBars = stats.official.series.membership.some((item) => (item.left ?? 0) > 0);
 
   return (
     <div className="channel-stats-graph">
@@ -321,7 +322,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                   rx="5"
                   className="channel-stats-graph__bar channel-stats-graph__bar--joined"
                 />
-                {stats.meta.churnAvailable && point.leftHeight > 0 ? (
+                {point.leftHeight > 0 ? (
                   <rect
                     x={point.x - 6}
                     y={point.leftTop}
@@ -356,7 +357,7 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
               <i className="is-joined" />
               Пришло
             </span>
-            {stats.meta.churnAvailable ? (
+            {hasLeftBars ? (
               <span>
                 <i className="is-left" />
                 Ушло
@@ -573,21 +574,17 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
           highlighted={stats.official.audience.joined > 0}
         />
 
-        {stats.meta.churnAvailable ? (
-          <>
-            <MetricCard
-              label="Ушло"
-              value={formatCount(stats.official.audience.left)}
-              highlighted={(stats.official.audience.left ?? 0) > 0}
-            />
+        <MetricCard
+          label="Ушло"
+          value={formatCount(stats.official.audience.left)}
+          highlighted={(stats.official.audience.left ?? 0) > 0}
+        />
 
-            <MetricCard
-              label="Чистый рост"
-              value={formatCount(stats.official.audience.net)}
-              highlighted={(stats.official.audience.net ?? 0) > 0}
-            />
-          </>
-        ) : null}
+        <MetricCard
+          label="Чистый рост"
+          value={formatCount(stats.official.audience.net)}
+          highlighted={(stats.official.audience.net ?? 0) > 0}
+        />
 
         <MetricCard
           label="Просмотры"
@@ -596,11 +593,33 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
         />
 
         <MetricCard
+          label="Реакции"
+          value={formatCount(stats.official.content.reactions)}
+          highlighted={stats.official.content.reactions > 0}
+        />
+
+        <MetricCard
           label="Посты"
           value={formatCount(stats.official.content.posts)}
           highlighted={stats.official.content.posts > 0}
         />
       </section>
+
+      {stats.official.content.topReactions.length > 0 ? (
+        <GlassCard className="channel-stats-top-reactions" elevated>
+          <div className="channel-stats-panel__head">
+            <strong>Топ реакций</strong>
+          </div>
+
+          <div className="channel-stats-top-reactions__list">
+            {stats.official.content.topReactions.map((reaction) => (
+              <span key={reaction.emoji} className="chip">
+                {reaction.emoji} {formatCount(reaction.count)}
+              </span>
+            ))}
+          </div>
+        </GlassCard>
+      ) : null}
 
       <GlassCard className="channel-stats-panel channel-stats-panel--chart" elevated>
         <div className="channel-stats-panel__head">

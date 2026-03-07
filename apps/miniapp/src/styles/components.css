@@ -1108,6 +1108,21 @@
   gap: 8px;
 }
 
+.channel-stats-top-reactions {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 20px;
+  border: 1px solid rgba(87, 114, 141, 0.1);
+  background: rgba(255, 255, 255, 0.84);
+}
+
+.channel-stats-top-reactions__list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .channel-stats-metric {
   min-width: 0;
   display: grid;

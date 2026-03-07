@@ -475,6 +475,12 @@ export type ChannelStatsBucket = z.infer<typeof channelStatsBucketSchema>;
 export const channelStatsMissingMetricSchema = z.enum(['reach', 'uniqueViews']);
 export type ChannelStatsMissingMetric = z.infer<typeof channelStatsMissingMetricSchema>;
 
+export const channelStatsReactionSchema = z.object({
+  emoji: z.string().min(1),
+  count: z.number().int().min(0),
+});
+export type ChannelStatsReaction = z.infer<typeof channelStatsReactionSchema>;
+
 export const channelStatsResponseSchema = z.object({
   channel: z.object({
     id: z.string(),
@@ -500,6 +506,8 @@ export const channelStatsResponseSchema = z.object({
     content: z.object({
       posts: z.number().int().min(0),
       views: z.number().int().min(0),
+      reactions: z.number().int().min(0),
+      topReactions: z.array(channelStatsReactionSchema),
       lastPublishedAt: z.string().datetime().nullable(),
     }),
     series: z.object({

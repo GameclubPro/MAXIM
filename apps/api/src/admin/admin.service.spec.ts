@@ -420,10 +420,20 @@ describe('AdminService.getChannelStats', () => {
       {
         publishedAt: new Date('2026-03-03T07:00:00.000Z'),
         latestViews: 150,
+        latestReactionsTotal: 5,
+        latestReactions: [
+          { emoji: '🔥', count: 3 },
+          { emoji: '👍', count: 2 },
+        ],
       },
       {
         publishedAt: new Date('2026-03-06T14:00:00.000Z'),
         latestViews: 260,
+        latestReactionsTotal: 7,
+        latestReactions: [
+          { emoji: '🔥', count: 4 },
+          { emoji: '❤️', count: 3 },
+        ],
       },
     ]);
     prisma.channelPost.findFirst.mockResolvedValue({ id: 'post-1' });
@@ -481,6 +491,12 @@ describe('AdminService.getChannelStats', () => {
     expect(result.official.content).toEqual({
       posts: 2,
       views: 410,
+      reactions: 12,
+      topReactions: [
+        { emoji: '🔥', count: 7 },
+        { emoji: '❤️', count: 3 },
+        { emoji: '👍', count: 2 },
+      ],
       lastPublishedAt: '2026-03-06T14:00:00.000Z',
     });
     expect(result.secondary).toEqual({
@@ -648,6 +664,8 @@ describe('AdminService.getChannelStats', () => {
       {
         publishedAt: new Date('2026-03-07T09:00:00.000Z'),
         latestViews: 44,
+        latestReactionsTotal: 0,
+        latestReactions: null,
       },
     ]);
     prisma.channelPost.findFirst.mockResolvedValue({ id: 'post-1' });
@@ -689,12 +707,14 @@ describe('AdminService.getChannelStats', () => {
     });
     expect(result.official.audience).toEqual({
       joined: 1,
-      left: null,
-      net: null,
+      left: 0,
+      net: 1,
     });
     expect(result.official.content).toEqual({
       posts: 1,
       views: 44,
+      reactions: 0,
+      topReactions: [],
       lastPublishedAt: '2026-03-07T09:00:00.000Z',
     });
     expect(result.secondary.suggestionsFailed).toBe(1);

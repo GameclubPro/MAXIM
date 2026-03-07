@@ -133,6 +133,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
   it('parses official message snapshots with views and deduplicates pages', async () => {
     const latestTs = Date.parse('2026-03-07T09:00:00.000Z');
     const previousTs = Date.parse('2026-03-06T09:00:00.000Z');
+    const rangeToTs = Date.parse('2026-03-07T12:00:00.000Z');
     const httpService = {
       request: jest
         .fn()
@@ -143,13 +144,19 @@ describe('MaxClientService inline keyboard guardrails', () => {
                 {
                   timestamp: latestTs,
                   body: { mid: 'mid-2' },
-                  stat: { views: 260 },
+                  stat: {
+                    views: 260,
+                    reactions: [
+                      { emoji: '🔥', count: 5 },
+                      { emoji: '❤️', count: 3 },
+                    ],
+                  },
                   url: 'https://max.ru/news/post-2',
                 },
                 {
                   timestamp: previousTs,
                   body: { mid: 'mid-1' },
-                  stat: { views: 120 },
+                  stat: { views: 120, reactions: { '👍': 2 } },
                   url: 'https://max.ru/news/post-1',
                 },
               ],
@@ -188,6 +195,10 @@ describe('MaxClientService inline keyboard guardrails', () => {
         publishedAtMs: latestTs,
         url: 'https://max.ru/news/post-2',
         views: 260,
+        reactions: [
+          { emoji: '🔥', count: 5 },
+          { emoji: '❤️', count: 3 },
+        ],
       },
       {
         chatId: 'channel-1',
@@ -196,9 +207,34 @@ describe('MaxClientService inline keyboard guardrails', () => {
         publishedAtMs: previousTs,
         url: 'https://max.ru/news/post-1',
         views: 120,
+        reactions: [{ emoji: '👍', count: 2 }],
       },
     ]);
     expect(httpService.request).toHaveBeenCalledTimes(2);
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api.max.ru/messages',
+        params: {
+          chat_id: 'channel-1',
+          count: 2,
+          to: Math.floor(rangeToTs / 1_000),
+        },
+      }),
+    );
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api.max.ru/messages',
+        params: {
+          chat_id: 'channel-1',
+          count: 2,
+          to: Math.floor((previousTs - 1_000) / 1_000),
+        },
+      }),
+    );
 
     await service.onModuleDestroy();
   });

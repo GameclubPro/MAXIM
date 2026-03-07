@@ -72,6 +72,10 @@ describe('ChannelStatsCollectorService', () => {
           publishedAtMs: 1772749200000,
           url: 'https://max.ru/news/post-1',
           views: 120,
+          reactions: [
+            { emoji: '🔥', count: 4 },
+            { emoji: '👍', count: 2 },
+          ],
         },
         {
           chatId: 'channel-1',
@@ -80,6 +84,7 @@ describe('ChannelStatsCollectorService', () => {
           publishedAtMs: 1772835600000,
           url: 'https://max.ru/news/post-2',
           views: 260,
+          reactions: [{ emoji: '❤️', count: 6 }],
         },
       ]),
       ensureWebhookSubscription: jest.fn().mockResolvedValue({
@@ -119,6 +124,25 @@ describe('ChannelStatsCollectorService', () => {
       },
     });
     expect(prisma.channelPost.upsert).toHaveBeenCalledTimes(2);
+    expect(prisma.channelPost.upsert).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        create: expect.objectContaining({
+          latestReactionsTotal: 6,
+          latestReactions: [
+            { emoji: '🔥', count: 4 },
+            { emoji: '👍', count: 2 },
+          ],
+        }),
+        update: expect.objectContaining({
+          latestReactionsTotal: 6,
+          latestReactions: [
+            { emoji: '🔥', count: 4 },
+            { emoji: '👍', count: 2 },
+          ],
+        }),
+      }),
+    );
     expect(prisma.channelPostViewSnapshot.create).toHaveBeenCalledTimes(2);
     expect(prisma.channelStatsSyncState.upsert).toHaveBeenCalledWith({
       where: { chatId: 'channel-1' },
