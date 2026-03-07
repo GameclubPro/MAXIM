@@ -82,12 +82,12 @@ function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
   if (pathname.includes('/channel/') && pathname.includes('/dialog/')) {
     const isSuggest = pathname.includes('/dialog/suggest');
     return {
-      title: isSuggest ? 'Предложка' : 'Обсуждение',
+      title: isSuggest ? 'Идея для поста' : 'Обсуждение',
       subtitle: chatLabel
         ? `Канал: ${chatLabel}`
         : isSuggest
           ? 'Отправка идеи поста админу.'
-          : 'Диалог обсуждения в miniapp.',
+          : 'Диалог обсуждения в приложении.',
     };
   }
 
@@ -261,7 +261,7 @@ export function Shell() {
       {!isDialogRoute ? (
         <nav
           className={cn('bottom-nav glass-card', isKeyboardOpen && 'is-keyboard-open')}
-          aria-label="Навигация miniapp"
+          aria-label="Навигация приложения"
         >
           <NavLink
             to="/"

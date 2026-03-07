@@ -576,7 +576,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
 
           <ChannelSettingsFeatureCard
             icon="📰"
-            title="Предложка"
+            title="Идеи для постов"
             description="Идеи постов от подписчиков."
             checked={draft.postSuggestionsEnabled}
             onChange={(nextValue) => patchDraft('postSuggestionsEnabled', nextValue)}
@@ -586,7 +586,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
 
       {draft.postSuggestionsEnabled ? (
         <GlassCard className="channel-settings-card" elevated>
-          <ChannelSettingsSectionHead title="Предложка" />
+          <ChannelSettingsSectionHead title="Идеи для постов" />
 
           <div className="channel-settings-stack">
             <label className="field">

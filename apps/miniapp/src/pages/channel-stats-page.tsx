@@ -623,7 +623,7 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
 
       <GlassCard className="channel-stats-secondary" elevated>
         <div className="channel-stats-panel__head">
-          <strong>Через mini app</strong>
+          <strong>Через приложение</strong>
         </div>
 
         <div className="channel-stats-secondary__grid">
@@ -633,7 +633,7 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
             <span>Авторов {formatCount(stats.secondary.commentAuthors)}</span>
           </article>
           <article>
-            <small>Предложки</small>
+            <small>Идеи</small>
             <strong>{formatCount(stats.secondary.suggestions)}</strong>
             <span>Авторов {formatCount(stats.secondary.suggestionAuthors)}</span>
           </article>
@@ -670,7 +670,7 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
 
         {stats.secondary.lastBotActivityAt ? (
           <article className="channel-stats-meta__item">
-            <small>Через mini app</small>
+            <small>Через приложение</small>
             <strong>{formatDateTime(stats.secondary.lastBotActivityAt)}</strong>
           </article>
         ) : null}

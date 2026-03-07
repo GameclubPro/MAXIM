@@ -57,11 +57,11 @@ export function App() {
     return (
       <div className="app-shell app-shell--centered">
         <GlassCard className="init-missing-card" elevated>
-          <h1>Майор Максимов miniapp</h1>
+          <h1>Майор Максимов</h1>
           <StatusState
             tone="warning"
             title="Init Data не найден"
-            description="Откройте miniapp из MAX через кнопку open_app. При открытии напрямую в браузере авторизация не пройдет."
+            description="Откройте приложение в MAX через кнопку в боте. При открытии напрямую в браузере авторизация не пройдет."
           />
           <div className="init-missing-help">
             <p>Проверьте:</p>

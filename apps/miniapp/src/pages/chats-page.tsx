@@ -72,7 +72,7 @@ export function ChatsPage({ api }: { api: ApiClient }) {
               <p>
                 {activeTab === 'chat'
                   ? 'Быстрый доступ к настройкам и событиям.'
-                  : 'Настройки предложки, реакций и обсуждения через бота.'}
+                  : 'Настройки идей для постов, реакций и обсуждения.'}
               </p>
             </div>
             <div className="chats-search-card__meta" aria-live="polite">
