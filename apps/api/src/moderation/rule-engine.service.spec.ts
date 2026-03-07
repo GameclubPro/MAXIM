@@ -486,6 +486,19 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
   });
 
+  it('does not detect TOPIC_FILTER_MISMATCH for brand-heavy auto listing', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продаю жигу, Ладу 2114: мотор тянет бодро, коробас живой, ПТС оригинал, без запретов, переоформление сразу, по кузову без критики, торг у капота после осмотра.',
+      settings: buildSettings({ autoMarketTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
   it('does not detect TOPIC_FILTER_MISMATCH for auto listing with motorcycle wording', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
