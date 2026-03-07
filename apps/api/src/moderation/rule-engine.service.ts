@@ -190,19 +190,61 @@ const REAL_ESTATE_TOPIC_DICTIONARY: TopicDictionary = {
   phrases: [
     'жилой комплекс',
     'коммерческая недвижимость',
+    'продам квартиру',
+    'продаю квартиру',
+    'куплю квартиру',
     'сдаю квартиру',
     'сниму квартиру',
     'аренда квартиры',
     'продажа квартиры',
     'продается квартира',
     'продаётся квартира',
+    'продам дом',
+    'продаю дом',
+    'куплю дом',
+    'ищу дом',
+    'сдам дом',
+    'сдаю дом',
+    'дом в аренду',
+    'продам дачу',
+    'продаю дачу',
+    'куплю дачу',
+    'сдам дачу',
+    'сдаю дачу',
+    'дачный дом',
+    'садовый дом',
+    'продам участок',
+    'продаю участок',
+    'куплю участок',
+    'ищу участок',
+    'сдам участок',
+    'сдаю участок',
+    'аренда участка',
+    'дачный участок',
+    'садовый участок',
+    'участок ижс',
+    'участок снт',
+    'участок днп',
+    'участок лпх',
+    'земля в собственности',
+    'участок в собственности',
+    'назначение земли',
+    'категория земель',
+    'земли населенных пунктов',
+    'земля населенных пунктов',
+    'участок под строительство',
+    'дом с участком',
+    'межевание сделано',
+    'межевание есть',
+    'выход на сделку',
+    'ипотека проходит',
+    'подходит под ипотеку',
+    'без обременений',
+    'без обременения',
     'кадастровый номер',
     'ипотечная ставка',
     'вторичное жилье',
     'вторичное жильё',
-    'продам квартиру',
-    'продаю квартиру',
-    'куплю квартиру',
     'ищу квартиру',
     'сдам квартиру',
     'сдается квартира',
@@ -225,8 +267,20 @@ const REAL_ESTATE_TOPIC_DICTIONARY: TopicDictionary = {
     'от собственника',
     'первый взнос',
     'ипотека возможна',
+    'сельхозназначения',
   ],
-  exactTokens: ['егрн', 'ижс', 'евродвушка', 'евротрешка'],
+  exactTokens: [
+    'егрн',
+    'ижс',
+    'снт',
+    'днп',
+    'лпх',
+    'евродвушка',
+    'евротрешка',
+    'участок',
+    'комната',
+    'квартира',
+  ],
   strongTokenPrefixes: [
     'квартир',
     'апартамент',
@@ -243,6 +297,11 @@ const REAL_ESTATE_TOPIC_DICTIONARY: TopicDictionary = {
     'дуплекс',
     'кадастр',
     'домовладен',
+    'земельн',
+    'межеван',
+    'обременен',
+    'переуступ',
+    'сельхоз',
     'машиномест',
     'евродвушк',
     'евротрешк',
@@ -254,15 +313,25 @@ const REAL_ESTATE_TOPIC_DICTIONARY: TopicDictionary = {
     'участке',
     'участком',
     'участки',
+    'межевание',
+    'межеванием',
+    'обременение',
+    'обременений',
     'сотка',
     'сотки',
     'соток',
+    'земля',
+    'земли',
+    'землю',
+    'земле',
+    'дача',
+    'дачу',
+    'дачи',
     'жк',
     'комната',
     'комнаты',
     'комнату',
     'комнате',
-    'аренда',
     'сдам',
     'сдаю',
     'сдается',
@@ -276,6 +345,7 @@ const REAL_ESTATE_TOPIC_DICTIONARY: TopicDictionary = {
   ],
   supportingTokenPrefixes: [
     'собственник',
+    'собственност',
     'планировк',
     'паркинг',
     'метраж',
@@ -285,8 +355,31 @@ const REAL_ESTATE_TOPIC_DICTIONARY: TopicDictionary = {
     'ремонт',
     'долгосроч',
     'жилплощ',
+    'газифиц',
+    'скважин',
+    'канализац',
+    'водопровод',
+    'электрич',
+    'фасад',
+    'прописк',
+    'террас',
   ],
-  intentMarkers: ['продаю', 'продам', 'сдам', 'сдаю', 'сдается', 'сдаётся', 'сниму', 'куплю'],
+  intentMarkers: [
+    'продаю',
+    'продам',
+    'продажа',
+    'продается',
+    'продаётся',
+    'сдам',
+    'сдаю',
+    'сдается',
+    'сдаётся',
+    'сниму',
+    'аренда',
+    'куплю',
+    'ищу',
+    'переуступка',
+  ],
   minSupportingIndicators: 2,
 };
 const AUTO_MARKET_TOPIC_DICTIONARY: TopicDictionary = {
@@ -323,12 +416,33 @@ const AUTO_MARKET_TOPIC_DICTIONARY: TopicDictionary = {
     'летняя резина',
     'авто в наличии',
     'коробка не пинается',
+    'продам автомобиль',
+    'продается автомобиль',
+    'продаётся автомобиль',
+    'продается машина',
+    'продаётся машина',
+    'обмен на машину',
+    'переоформление в гибдд',
+    'собственник по птс',
+    'юридически чист',
+    'без запретов',
+    'родной окрас',
+    'без окрасов',
+    'снят с учета',
+    'снята с учета',
+    'на учете',
+    'на учёте',
+    'продам мотоцикл',
+    'куплю мотоцикл',
   ],
-  exactTokens: ['vin', 'акпп', 'мкпп', 'осаго', 'каско', 'птс', 'стс'],
+  exactTokens: ['vin', 'акпп', 'мкпп', 'осаго', 'каско', 'птс', 'стс', 'дкп', 'грм', 'гбо'],
   strongTokenPrefixes: [
     'автомобил',
     'авторын',
     'автосалон',
+    'мотоцикл',
+    'квадроцикл',
+    'скутер',
     'вариатор',
     'седан',
     'кроссовер',
@@ -351,11 +465,19 @@ const AUTO_MARKET_TOPIC_DICTIONARY: TopicDictionary = {
     'тачка',
     'тачку',
     'тачки',
+    'двигатель',
+    'двигателя',
+    'движок',
     'мотор',
     'лс',
     'резина',
     'колеса',
     'колёса',
+    'диски',
+    'фары',
+    'прицеп',
+    'запчасти',
+    'разборка',
   ],
   supportingTokenPrefixes: [
     'пробег',
@@ -369,8 +491,13 @@ const AUTO_MARKET_TOPIC_DICTIONARY: TopicDictionary = {
     'капот',
     'шин',
     'резин',
+    'рулев',
+    'ходов',
+    'окрас',
+    'переоформ',
+    'госномер',
   ],
-  intentMarkers: ['продаю', 'продам', 'куплю', 'обмен', 'торг'],
+  intentMarkers: ['продаю', 'продам', 'продается', 'продаётся', 'куплю', 'обмен', 'торг'],
   minSupportingIndicators: 2,
 };
 const DEFAULT_DUPLICATE_WINDOW_SEC = 60;
@@ -481,11 +608,6 @@ export class RuleEngineService {
       normalizedText: normalized,
       measuredLength,
       settings,
-      hasMediaAttachment:
-        Boolean(hasPhotoAttachment) ||
-        Boolean(hasVideoAttachment) ||
-        Boolean(hasFileAttachment) ||
-        Boolean(hasVoiceAttachment),
     });
     if (topicMismatch) {
       violations.push({
@@ -943,14 +1065,9 @@ export class RuleEngineService {
     normalizedText: string;
     measuredLength: number;
     settings: ChatSettings;
-    hasMediaAttachment: boolean;
   }): TopicFilterDetection | null {
-    const { normalizedText, measuredLength, settings, hasMediaAttachment } = params;
+    const { normalizedText, measuredLength, settings } = params;
     if (measuredLength <= TOPIC_FILTER_MIN_LENGTH) {
-      return null;
-    }
-
-    if (hasMediaAttachment) {
       return null;
     }
 
@@ -997,15 +1114,15 @@ export class RuleEngineService {
     }
 
     const tokenSet = new Set(tokens);
-    if (dictionary.exactTokens.some((token) => this.hasTopicExactTokenMatch(tokenSet, tokens, token))) {
+    if (
+      dictionary.exactTokens.some((token) => this.hasTopicExactTokenMatch(tokenSet, tokens, token))
+    ) {
       return true;
     }
 
     if (
       tokens.some((token) =>
-        dictionary.strongTokenPrefixes.some(
-          (prefix) => this.hasTopicPrefixMatch(token, prefix),
-        ),
+        dictionary.strongTokenPrefixes.some((prefix) => this.hasTopicPrefixMatch(token, prefix)),
       )
     ) {
       return true;
@@ -1013,16 +1130,26 @@ export class RuleEngineService {
 
     const supportingIndicators = new Set<string>();
     for (const token of tokens) {
+      let tokenMatched = false;
+
       for (const exactToken of dictionary.supportingExactTokens) {
-        if (token === exactToken) {
-          supportingIndicators.add(`exact:${exactToken}`);
+        if (this.hasTopicSupportingTokenMatch(token, exactToken)) {
+          tokenMatched = true;
+          break;
         }
       }
 
-      for (const prefix of dictionary.supportingTokenPrefixes) {
-        if (token === prefix || token.startsWith(prefix)) {
-          supportingIndicators.add(`prefix:${prefix}`);
+      if (!tokenMatched) {
+        for (const prefix of dictionary.supportingTokenPrefixes) {
+          if (this.hasTopicSupportingPrefixMatch(token, prefix)) {
+            tokenMatched = true;
+            break;
+          }
         }
+      }
+
+      if (tokenMatched) {
+        supportingIndicators.add(token);
       }
     }
 
@@ -1034,6 +1161,22 @@ export class RuleEngineService {
     }
 
     return supportingIndicators.size >= dictionary.minSupportingIndicators;
+  }
+
+  private hasTopicSupportingTokenMatch(token: string, expectedToken: string): boolean {
+    if (token === expectedToken) {
+      return true;
+    }
+
+    if (expectedToken.length < 6) {
+      return false;
+    }
+
+    return this.isApproximateTopicTokenMatch(token, expectedToken);
+  }
+
+  private hasTopicSupportingPrefixMatch(token: string, prefix: string): boolean {
+    return token === prefix || token.startsWith(prefix);
   }
 
   private hasTopicExactTokenMatch(

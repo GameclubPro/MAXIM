@@ -26,16 +26,24 @@ function hasLoneSurrogate(value: string): boolean {
 }
 
 describe('maskText', () => {
-  it('masks short text fully', () => {
-    expect(maskText('тест')).toBe('****');
+  it('returns short text as-is', () => {
+    expect(maskText('тест')).toBe('тест');
   });
 
-  it('masks middle section for longer text', () => {
-    expect(maskText('нарушение')).toBe('на*****ие');
+  it('truncates long text to a readable preview', () => {
+    const source = 'а'.repeat(260);
+    const masked = maskText(source);
+
+    expect(masked).toHaveLength(220);
+    expect(masked.endsWith('...')).toBe(true);
+  });
+
+  it('normalizes whitespace in preview', () => {
+    expect(maskText('  ссылка   https://max.ru/test  ')).toBe('ссылка https://max.ru/test');
   });
 
   it('keeps emoji surrogate pairs intact', () => {
-    expect(maskText('😀😀😀😀😀')).toBe('😀😀*😀😀');
+    expect(maskText('😀😀😀😀😀')).toBe('😀😀😀😀😀');
   });
 
   it('does not produce lone surrogate symbols', () => {

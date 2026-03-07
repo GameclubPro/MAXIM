@@ -434,12 +434,38 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
   });
 
+  it('does not detect TOPIC_FILTER_MISMATCH for land listing with plot markers', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продаю участок 12 соток в СНТ, земля в собственности, меживание уже сделано, кадастровый номер на руках, подъезд круглый год, электричество подключено, подходит под строительство дома и быструю сделку.',
+      settings: buildSettings({ realEstateTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
   it('does not detect TOPIC_FILTER_MISMATCH for auto ad with typos and colloquial wording', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'Продам автамобиль, пробег 148000, двиготель обслужен, коробка не пинается, кузов живой, один владелец, торг у капота, машина на ходу и без срочных вложений.',
+      settings: buildSettings({ autoMarketTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
+  it('does not detect TOPIC_FILTER_MISMATCH for auto listing with motorcycle wording', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продам мотоцикл, собственник по ПТС, родной окрас, пробег честный, ГРМ обслужен, переоформление в ГИБДД без проблем, документы в порядке, торг у бака после осмотра.',
       settings: buildSettings({ autoMarketTopicFilterEnabled: true }),
       domainAllowlist: [],
     });
@@ -476,7 +502,7 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
   });
 
-  it('does not apply thematic filter to messages with media attachments', async () => {
+  it('still applies thematic filter to off-topic messages with media attachments', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
@@ -487,7 +513,7 @@ describe('RuleEngineService', () => {
       hasPhotoAttachment: true,
     });
 
-    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
   });
 
   it('keeps real-estate filter strict for ambiguous non-property wording', async () => {
