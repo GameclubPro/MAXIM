@@ -70,8 +70,12 @@ type CommercialSignalState = {
 };
 
 type TopicDictionary = {
-  tokenPrefixes: readonly string[];
   phrases: readonly string[];
+  exactTokens: readonly string[];
+  strongTokenPrefixes: readonly string[];
+  supportingExactTokens: readonly string[];
+  supportingTokenPrefixes: readonly string[];
+  minSupportingIndicators: number;
 };
 
 type TopicFilterDetection = {
@@ -182,32 +186,6 @@ const ADS_QUANTITY_PATTERN = /\b(шт|штук|шт\.|пачк|упак|оста
 const ADS_PHONE_PATTERN = /\b(?:\+7|8)\s*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b/u;
 const TOPIC_FILTER_MIN_LENGTH = 100;
 const REAL_ESTATE_TOPIC_DICTIONARY: TopicDictionary = {
-  tokenPrefixes: [
-    'квартир',
-    'апартамент',
-    'ипотек',
-    'новостро',
-    'вторич',
-    'участ',
-    'сотк',
-    'таунхаус',
-    'коттедж',
-    'риелтор',
-    'риэлтор',
-    'жк',
-    'комнат',
-    'аренд',
-    'сним',
-    'сда',
-    'недвиж',
-    'студи',
-    'помещен',
-    'застрой',
-    'пентхаус',
-    'дуплекс',
-    'лофт',
-    'паркинг',
-  ],
   phrases: [
     'жилой комплекс',
     'коммерческая недвижимость',
@@ -217,45 +195,34 @@ const REAL_ESTATE_TOPIC_DICTIONARY: TopicDictionary = {
     'продажа квартиры',
     'продается квартира',
     'продаётся квартира',
+    'кадастровый номер',
+    'ипотечная ставка',
+    'вторичное жилье',
+    'вторичное жильё',
   ],
+  exactTokens: ['егрн', 'ижс'],
+  strongTokenPrefixes: [
+    'квартир',
+    'апартамент',
+    'ипотек',
+    'новострой',
+    'таунхаус',
+    'коттедж',
+    'риелтор',
+    'риэлтор',
+    'недвижим',
+    'застройщ',
+    'пентхаус',
+    'дуплекс',
+    'кадастр',
+    'домовладен',
+    'машиномест',
+  ],
+  supportingExactTokens: ['участок', 'участка', 'участке', 'участком', 'участки', 'сотка', 'сотки', 'соток'],
+  supportingTokenPrefixes: ['собственник', 'планировк', 'паркинг', 'метраж', 'санузел'],
+  minSupportingIndicators: 2,
 };
 const AUTO_MARKET_TOPIC_DICTIONARY: TopicDictionary = {
-  tokenPrefixes: [
-    'авто',
-    'автомоб',
-    'авторын',
-    'машин',
-    'тачк',
-    'пробег',
-    'vin',
-    'двигател',
-    'мотор',
-    'коробк',
-    'акпп',
-    'мкпп',
-    'вариатор',
-    'кузов',
-    'седан',
-    'кроссовер',
-    'хэтчбек',
-    'универсал',
-    'пикап',
-    'внедорож',
-    'шин',
-    'диск',
-    'подвес',
-    'бензин',
-    'дизел',
-    'электромоб',
-    'гибрид',
-    'осаго',
-    'каско',
-    'птс',
-    'стс',
-    'автосалон',
-    'разбор',
-    'лс',
-  ],
   phrases: [
     'лошадиных сил',
     'коробка передач',
@@ -263,7 +230,37 @@ const AUTO_MARKET_TOPIC_DICTIONARY: TopicDictionary = {
     'второй комплект шин',
     'обмен на авто',
     'авто с пробегом',
+    'без дтп',
+    'после дтп',
+    'сервисная книжка',
+    'родной пробег',
   ],
+  exactTokens: ['vin', 'акпп', 'мкпп', 'осаго', 'каско', 'птс', 'стс'],
+  strongTokenPrefixes: [
+    'автомобил',
+    'авторын',
+    'автосалон',
+    'вариатор',
+    'седан',
+    'кроссовер',
+    'хэтчбек',
+    'пикап',
+    'внедорож',
+    'электромоб',
+    'кабриолет',
+    'минивэн',
+  ],
+  supportingExactTokens: ['дтп'],
+  supportingTokenPrefixes: [
+    'пробег',
+    'двигател',
+    'кузов',
+    'подвеск',
+    'бампер',
+    'тормозн',
+    'сцеплен',
+  ],
+  minSupportingIndicators: 2,
 };
 const DEFAULT_DUPLICATE_WINDOW_SEC = 60;
 const DUPLICATE_MIN_LENGTH = 32;
@@ -873,10 +870,40 @@ export class RuleEngineService {
       return true;
     }
 
-    const tokens = normalizedText.split(/\s+/).filter(Boolean);
-    return tokens.some((token) =>
-      dictionary.tokenPrefixes.some((prefix) => token === prefix || token.startsWith(prefix)),
-    );
+    const tokens = this.extractTokens(normalizedText);
+    if (tokens.length === 0) {
+      return false;
+    }
+
+    const tokenSet = new Set(tokens);
+    if (dictionary.exactTokens.some((token) => tokenSet.has(token))) {
+      return true;
+    }
+
+    if (
+      tokens.some((token) =>
+        dictionary.strongTokenPrefixes.some(
+          (prefix) => token === prefix || token.startsWith(prefix),
+        ),
+      )
+    ) {
+      return true;
+    }
+
+    const supportingIndicators = new Set<string>();
+    for (const token of tokens) {
+      if (dictionary.supportingExactTokens.includes(token)) {
+        supportingIndicators.add(`exact:${token}`);
+      }
+
+      for (const prefix of dictionary.supportingTokenPrefixes) {
+        if (token === prefix || token.startsWith(prefix)) {
+          supportingIndicators.add(`prefix:${prefix}`);
+        }
+      }
+    }
+
+    return supportingIndicators.size >= dictionary.minSupportingIndicators;
   }
 
   private collectCommercialSignals(

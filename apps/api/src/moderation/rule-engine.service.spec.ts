@@ -447,6 +447,58 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
   });
 
+  it('keeps real-estate filter strict for ambiguous non-property wording', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Мы обсуждаем аренду студии для подкаста: нужно согласовать часы записи, привезти микрофоны, проверить акустику, собрать монтажный план и подготовить выпуск без привязки к продаже или аренде жилья.',
+      settings: buildSettings({ realEstateTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
+  });
+
+  it('keeps auto-market filter strict for automation-related wording', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'В проекте обсуждаем автоматизацию релизов, автотесты, пайплайны CI, сборку контейнеров, мониторинг очередей и стабильность деплоя, поэтому сообщение длинное, но вообще не про продажу машин или запчастей.',
+      settings: buildSettings({ autoMarketTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
+  });
+
+  it('does not treat a single supporting auto token as sufficient topic match', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Разбираем производственный инцидент: один двигатель стенда заклинил, но дальше идет обсуждение сроков ремонта, бюджета команды, ролей дежурных, каналов связи и организационных процессов без какого-либо контекста продажи транспорта.',
+      settings: buildSettings({ autoMarketTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
+  });
+
+  it('does not treat a single supporting real-estate token as sufficient topic match', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'На встрече обсуждали планировку офиса, график переезда отдела, закупку мебели, видеостену, переговорные комнаты и внутренние регламенты компании, но разговор вообще не касался рынка жилья или продажи объектов.',
+      settings: buildSettings({ realEstateTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
+  });
+
   it('detects MESSAGE_TOO_LONG when effective length exceeds limit', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
