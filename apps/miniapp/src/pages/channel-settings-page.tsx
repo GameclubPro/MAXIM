@@ -511,7 +511,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
         <GlassCard>
           <StatusState
             tone="danger"
-            title="Не удалось загрузить настройки канала"
+            title="Не удалось загрузить настройки"
             description={normalizeApiError(settingsQuery.error)}
             action={
               <button
@@ -549,7 +549,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
         </div>
 
         <div className="channel-settings-header__main">
-          <h1>{resolvedTitle || 'Настройки канала'}</h1>
+          <h1>{resolvedTitle || 'Настройки'}</h1>
           <p>{chatId}</p>
         </div>
       </GlassCard>

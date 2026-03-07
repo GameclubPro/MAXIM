@@ -468,7 +468,7 @@ export function EventsPage({ api }: { api: ApiClient }) {
     <div className="page-stack page-enter">
       <section className="logs-head">
         <div className="logs-head__title">
-          <p className="logs-head__eyebrow">Логи чата</p>
+          <p className="logs-head__eyebrow">События чата</p>
           <h1>{chatTitle}</h1>
         </div>
         <SegmentedControl
@@ -479,7 +479,7 @@ export function EventsPage({ api }: { api: ApiClient }) {
       </section>
 
       {dashboardQuery.isLoading ? (
-        <section className="events-list" aria-label="Загрузка логов">
+        <section className="events-list" aria-label="Загрузка событий">
           {Array.from({ length: 4 }).map((_, index) => (
             <GlassCard key={index} className="logs-violation-item">
               <SkeletonCard lines={3} />
@@ -492,7 +492,7 @@ export function EventsPage({ api }: { api: ApiClient }) {
         <GlassCard>
           <StatusState
             tone="danger"
-            title="Не удалось загрузить логи"
+            title="Не удалось загрузить события"
             description={(dashboardQuery.error as Error).message}
             action={
               <button

@@ -71,8 +71,8 @@ export function ChatsPage({ api }: { api: ApiClient }) {
               <h1>{tabLabel}</h1>
               <p>
                 {activeTab === 'chat'
-                  ? 'Быстрый доступ к настройкам и логам.'
-                  : 'Отдельные настройки канала: предложка, реакции и обсуждение через бота.'}
+                  ? 'Быстрый доступ к настройкам и событиям.'
+                  : 'Настройки предложки, реакций и обсуждения через бота.'}
               </p>
             </div>
             <div className="chats-search-card__meta" aria-live="polite">
@@ -303,7 +303,7 @@ export function ChatsPage({ api }: { api: ApiClient }) {
                         saveChatTitle(entity.id, entity.title);
                       }}
                     >
-                      Логи
+                      События
                     </Link>
                   </>
                 ) : (
@@ -318,7 +318,7 @@ export function ChatsPage({ api }: { api: ApiClient }) {
                         saveChatTitle(entity.id, entity.title);
                       }}
                     >
-                      Настроить канал
+                      Настройки
                     </Link>
                     {entity.link ? (
                       <a
