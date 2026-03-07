@@ -133,10 +133,9 @@ export class ChatContextCacheService implements OnModuleDestroy {
       }
     }
 
-    await this.prisma.chatSettings.upsert({
-      where: { chatId },
-      create: { chatId },
-      update: {},
+    await this.prisma.chatSettings.createMany({
+      data: [{ chatId }],
+      skipDuplicates: true,
     });
   }
 

@@ -131,7 +131,7 @@ describe('ChatContextCacheService', () => {
         }),
       },
       chatSettings: {
-        upsert: jest.fn().mockResolvedValue(undefined),
+        createMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
     };
     const config = {
@@ -147,10 +147,9 @@ describe('ChatContextCacheService', () => {
 
     const context = await service.getChatContext(chatId, 'Chat title');
 
-    expect(prisma.chatSettings.upsert).toHaveBeenCalledWith({
-      where: { chatId },
-      create: { chatId },
-      update: {},
+    expect(prisma.chatSettings.createMany).toHaveBeenCalledWith({
+      data: [{ chatId }],
+      skipDuplicates: true,
     });
     expect(prisma.chat.findUnique).toHaveBeenCalledTimes(1);
     expect(context).toEqual({
