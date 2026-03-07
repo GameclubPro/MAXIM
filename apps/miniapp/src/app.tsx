@@ -17,6 +17,7 @@ import { getInitData } from './lib/init-data';
 import { resolveLaunchDialogRoute } from './lib/launch-route';
 import { ChatsPage } from './pages/chats-page';
 import { ChannelSettingsPage } from './pages/channel-settings-page';
+import { ChannelStatsPage } from './pages/channel-stats-page';
 import { ChannelDialogPage } from './pages/channel-dialog-page';
 import { EventsPage } from './pages/events-page';
 import { SettingsPage } from './pages/settings-page';
@@ -84,8 +85,15 @@ export function App() {
             <Route element={<Shell />}>
               <Route path="/" element={<ChatsPage api={apiClient} />} />
               <Route path="/chat/:chatId/settings" element={<SettingsPage api={apiClient} />} />
-              <Route path="/channel/:chatId/settings" element={<ChannelSettingsPage api={apiClient} />} />
-              <Route path="/channel/:chatId/dialog/:mode" element={<ChannelDialogPage api={apiClient} />} />
+              <Route
+                path="/channel/:chatId/settings"
+                element={<ChannelSettingsPage api={apiClient} />}
+              />
+              <Route path="/channel/:chatId/stats" element={<ChannelStatsPage api={apiClient} />} />
+              <Route
+                path="/channel/:chatId/dialog/:mode"
+                element={<ChannelDialogPage api={apiClient} />}
+              />
               <Route path="/chat/:chatId/events" element={<EventsPage api={apiClient} />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>

@@ -1,4 +1,3 @@
-import type { ChannelOverview } from '@maxim/contracts';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -7,113 +6,11 @@ import grantBotAdminRightsImage from '../assets/onboarding/grant-bot-admin-right
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
-import { cn } from '../lib/cn';
 import type { ApiClient } from '../lib/api-client';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import { saveLastChatId, saveLastEntityType } from '../lib/last-chat';
 
 type ManagedTab = 'chat' | 'channel';
-
-const DEFAULT_CHANNEL_OVERVIEW: ChannelOverview = {
-  enabledScenariosCount: 1,
-  commentsEnabled: true,
-  postSuggestionsEnabled: false,
-  commentsModerationEnabled: false,
-  commentsSlowModeSeconds: 0,
-};
-
-function formatSlowMode(seconds: number): string {
-  if (seconds <= 0) {
-    return 'Нет';
-  }
-
-  if (seconds < 60) {
-    return `${seconds}с`;
-  }
-
-  if (seconds % 60 === 0) {
-    return `${seconds / 60}м`;
-  }
-
-  const minutes = Math.floor(seconds / 60);
-  const restSeconds = seconds % 60;
-  return `${minutes}м ${restSeconds}с`;
-}
-
-function resolveChannelOverviewStatus(enabledScenariosCount: number): {
-  label: string;
-  tone: 'ready' | 'partial' | 'empty';
-} {
-  if (enabledScenariosCount >= 2) {
-    return { label: 'Все включено', tone: 'ready' };
-  }
-
-  if (enabledScenariosCount === 1) {
-    return { label: 'Частично настроен', tone: 'partial' };
-  }
-
-  return { label: 'Нужно настроить', tone: 'empty' };
-}
-
-function ChannelOverviewCard({ overview }: { overview: ChannelOverview | null }) {
-  const resolvedOverview = overview ?? DEFAULT_CHANNEL_OVERVIEW;
-  const status = resolveChannelOverviewStatus(resolvedOverview.enabledScenariosCount);
-
-  return (
-    <section className="channel-overview-card" aria-label="Краткая статистика канала">
-      <div className="channel-overview-card__hero">
-        <div className="channel-overview-card__score">
-          <span className="channel-overview-card__eyebrow">Активно</span>
-          <strong>{resolvedOverview.enabledScenariosCount}/2</strong>
-          <span className="channel-overview-card__hint">сценария канала</span>
-        </div>
-
-        <span className={cn('channel-overview-card__status', `is-${status.tone}`)}>
-          {status.label}
-        </span>
-      </div>
-
-      <div className="channel-overview-card__grid">
-        <article
-          className={cn('channel-overview-card__metric', resolvedOverview.commentsEnabled && 'is-on')}
-        >
-          <small>Комментарии</small>
-          <strong>{resolvedOverview.commentsEnabled ? 'Вкл' : 'Выкл'}</strong>
-        </article>
-
-        <article
-          className={cn(
-            'channel-overview-card__metric',
-            resolvedOverview.postSuggestionsEnabled && 'is-on',
-          )}
-        >
-          <small>Предложка</small>
-          <strong>{resolvedOverview.postSuggestionsEnabled ? 'Вкл' : 'Выкл'}</strong>
-        </article>
-
-        <article
-          className={cn(
-            'channel-overview-card__metric',
-            resolvedOverview.commentsModerationEnabled && 'is-on',
-          )}
-        >
-          <small>Модерация</small>
-          <strong>{resolvedOverview.commentsModerationEnabled ? 'Вкл' : 'Выкл'}</strong>
-        </article>
-
-        <article
-          className={cn(
-            'channel-overview-card__metric',
-            resolvedOverview.commentsSlowModeSeconds > 0 && 'is-on',
-          )}
-        >
-          <small>Пауза</small>
-          <strong>{formatSlowMode(resolvedOverview.commentsSlowModeSeconds)}</strong>
-        </article>
-      </div>
-    </section>
-  );
-}
 
 export function ChatsPage({ api }: { api: ApiClient }) {
   const [query, setQuery] = useState('');
@@ -409,24 +306,33 @@ export function ChatsPage({ api }: { api: ApiClient }) {
                   </Link>
                 </div>
               ) : (
-                <>
-                  <ChannelOverviewCard overview={entity.channelOverview} />
+                <div className="chat-card__actions">
+                  <Link
+                    to={`/channel/${entity.id}/stats`}
+                    className="button button--ghost"
+                    state={{ chatTitle: entity.title, channelOverview: entity.channelOverview }}
+                    onClick={() => {
+                      saveLastChatId(entity.id);
+                      saveLastEntityType('channel');
+                      saveChatTitle(entity.id, entity.title);
+                    }}
+                  >
+                    Статистика
+                  </Link>
 
-                  <div className="chat-card__actions chat-card__actions--single">
-                    <Link
-                      to={`/channel/${entity.id}/settings`}
-                      className="button button--accent"
-                      state={{ chatTitle: entity.title, chatLink: entity.link ?? '' }}
-                      onClick={() => {
-                        saveLastChatId(entity.id);
-                        saveLastEntityType('channel');
-                        saveChatTitle(entity.id, entity.title);
-                      }}
-                    >
-                      Настройки
-                    </Link>
-                  </div>
-                </>
+                  <Link
+                    to={`/channel/${entity.id}/settings`}
+                    className="button button--accent"
+                    state={{ chatTitle: entity.title, chatLink: entity.link ?? '' }}
+                    onClick={() => {
+                      saveLastChatId(entity.id);
+                      saveLastEntityType('channel');
+                      saveChatTitle(entity.id, entity.title);
+                    }}
+                  >
+                    Настройки
+                  </Link>
+                </div>
               )}
             </GlassCard>
           ))}

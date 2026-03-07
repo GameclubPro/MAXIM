@@ -98,6 +98,13 @@ function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
     };
   }
 
+  if (pathname.includes('/channel/') && pathname.includes('/stats')) {
+    return {
+      title: 'Статистика',
+      subtitle: chatLabel ? `Канал: ${chatLabel}` : 'Выберите канал, чтобы посмотреть сводку.',
+    };
+  }
+
   if (pathname.includes('/settings')) {
     return {
       title: 'Настройки модерации',
@@ -124,7 +131,9 @@ export function Shell() {
   const [lastChatId, setLastChatId] = useState<string>(() => readLastChatId());
   const [lastEntityType, setLastEntityType] = useState<LastEntityType>(() => readLastEntityType());
   const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
-  const routeEntityType: LastEntityType = location.pathname.includes('/channel/') ? 'channel' : 'chat';
+  const routeEntityType: LastEntityType = location.pathname.includes('/channel/')
+    ? 'channel'
+    : 'chat';
   const routeChatTitle =
     typeof location.state === 'object' &&
     location.state &&
@@ -170,7 +179,10 @@ export function Shell() {
     location.pathname.includes('/channel/') && location.pathname.includes('/dialog/');
   const isSettingsRoute = location.pathname.includes('/settings');
   const isEventsRoute = location.pathname.includes('/events');
-  const hasTopbar = !isChatsRoute && !isSettingsRoute && !isEventsRoute && !isDialogRoute;
+  const isChannelStatsRoute =
+    location.pathname.includes('/channel/') && location.pathname.includes('/stats');
+  const hasTopbar =
+    !isChatsRoute && !isSettingsRoute && !isEventsRoute && !isDialogRoute && !isChannelStatsRoute;
 
   const screen = useMemo(
     () => resolveScreenInfo(location.pathname, resolvedChatTitle || resolvedChatId),
@@ -264,7 +276,11 @@ export function Shell() {
 
           {resolvedChatId ? (
             <NavLink
-              to={isChannelRoute ? `/channel/${resolvedChatId}/settings` : `/chat/${resolvedChatId}/settings`}
+              to={
+                isChannelRoute
+                  ? `/channel/${resolvedChatId}/settings`
+                  : `/chat/${resolvedChatId}/settings`
+              }
               className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
             >
               <span className="bottom-nav__icon" aria-hidden>
@@ -291,12 +307,24 @@ export function Shell() {
               </span>
               <span className="bottom-nav__label">События</span>
             </NavLink>
+          ) : resolvedChatId && resolvedEntityType === 'channel' ? (
+            <NavLink
+              to={`/channel/${resolvedChatId}/stats`}
+              className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
+            >
+              <span className="bottom-nav__icon" aria-hidden>
+                <BottomNavIcon name="events" />
+              </span>
+              <span className="bottom-nav__label">Статистика</span>
+            </NavLink>
           ) : (
             <span className="bottom-nav__item is-disabled" aria-disabled>
               <span className="bottom-nav__icon" aria-hidden>
                 <BottomNavIcon name="events" />
               </span>
-              <span className="bottom-nav__label">События</span>
+              <span className="bottom-nav__label">
+                {isChannelStatsRoute || resolvedEntityType === 'channel' ? 'Статистика' : 'События'}
+              </span>
             </span>
           )}
         </nav>
