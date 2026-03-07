@@ -73,6 +73,12 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     textFiltersBotButtonEnabled: false,
     textFiltersBotButtonUrl: '',
     textFiltersBotButtonText: 'Открыть',
+    realEstateTopicFilterEnabled: false,
+    autoMarketTopicFilterEnabled: false,
+    thematicFiltersBotMessageEnabled: false,
+    thematicFiltersWarnEnabled: false,
+    thematicFiltersBanEnabled: false,
+    thematicFiltersKickEnabled: false,
     nightModeEnabled: false,
     nightModeStartTimeMinutes: 23 * 60,
     nightModeEndTimeMinutes: 8 * 60,
@@ -371,6 +377,74 @@ describe('RuleEngineService', () => {
     });
 
     expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(true);
+  });
+
+  it('detects TOPIC_FILTER_MISMATCH for long off-topic message when real estate filter is enabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Это длинное сообщение о процессах, дедлайнах, ролях в команде, еженедельных созвонах, постановке задач, бюджетировании, найме и согласовании рабочих документов без привязки к тематике объявлений.',
+      settings: buildSettings({ realEstateTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
+  });
+
+  it('does not detect TOPIC_FILTER_MISMATCH for long auto-market message when auto filter is enabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продаю автомобиль с пробегом: двигатель обслужен, коробка передач без нареканий, VIN читается, комплект зимних шин и документы готовы к сделке хоть сегодня.',
+      settings: buildSettings({ autoMarketTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
+  it('does not detect TOPIC_FILTER_MISMATCH for long real-estate message when real estate filter is enabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Сдаю квартиру в новом жилом комплексе: отдельная комната, свежий ремонт, долгосрочная аренда, адекватный собственник и удобный паркинг рядом с домом.',
+      settings: buildSettings({ realEstateTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
+  it('allows message when any enabled thematic filter matches', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Автомобиль с пробегом в хорошем состоянии: двигатель сухой, АКПП работает ровно, второй комплект дисков и шин уже включен в цену, документы на руках.',
+      settings: buildSettings({
+        realEstateTopicFilterEnabled: true,
+        autoMarketTopicFilterEnabled: true,
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
+  it('does not apply thematic filter to messages with length at or below 100 chars', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Короткий оффтоп про дедлайн и созвон без тематических слов.',
+      settings: buildSettings({ realEstateTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
   });
 
   it('detects MESSAGE_TOO_LONG when effective length exceeds limit', async () => {

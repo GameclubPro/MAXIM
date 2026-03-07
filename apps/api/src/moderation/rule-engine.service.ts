@@ -1,9 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import {
-  CommercialAdsSensitivity,
-  LinkPolicy,
-  type ChatSettings,
-} from '@prisma/client';
+import { CommercialAdsSensitivity, LinkPolicy, type ChatSettings } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { RedisCounterService } from './redis-counter.service';
 
@@ -17,6 +13,7 @@ export type RuleViolation = {
 };
 
 export type DuplicateAction = 'WARN' | 'KICK' | 'BAN';
+export type TopicFilterTopic = 'REAL_ESTATE' | 'AUTO_MARKET';
 
 export type DuplicateDecision = {
   action: DuplicateAction;
@@ -70,6 +67,18 @@ type CommercialSignalState = {
   hasDealChannel: boolean;
   hasTransactional: boolean;
   hasStrongNegativeContext: boolean;
+};
+
+type TopicDictionary = {
+  tokenPrefixes: readonly string[];
+  phrases: readonly string[];
+};
+
+type TopicFilterDetection = {
+  activeTopics: TopicFilterTopic[];
+  matchedTopics: TopicFilterTopic[];
+  messageLength: number;
+  minLengthExclusive: number;
 };
 
 const PROFANITY_CORE_TOKEN_PATTERNS = [
@@ -171,6 +180,91 @@ const ADS_TRANSACTIONAL_PATTERN = /\b(цена|стоимость|оплата|�
 const ADS_URGENCY_PATTERN = /\b(срочно|только сегодня|до конца дня|осталось\s+\d+)\b/iu;
 const ADS_QUANTITY_PATTERN = /\b(шт|штук|шт\.|пачк|упак|остатк|места)\b/iu;
 const ADS_PHONE_PATTERN = /\b(?:\+7|8)\s*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b/u;
+const TOPIC_FILTER_MIN_LENGTH = 100;
+const REAL_ESTATE_TOPIC_DICTIONARY: TopicDictionary = {
+  tokenPrefixes: [
+    'квартир',
+    'апартамент',
+    'ипотек',
+    'новостро',
+    'вторич',
+    'участ',
+    'сотк',
+    'таунхаус',
+    'коттедж',
+    'риелтор',
+    'риэлтор',
+    'жк',
+    'комнат',
+    'аренд',
+    'сним',
+    'сда',
+    'недвиж',
+    'студи',
+    'помещен',
+    'застрой',
+    'пентхаус',
+    'дуплекс',
+    'лофт',
+    'паркинг',
+  ],
+  phrases: [
+    'жилой комплекс',
+    'коммерческая недвижимость',
+    'сдаю квартиру',
+    'сниму квартиру',
+    'аренда квартиры',
+    'продажа квартиры',
+    'продается квартира',
+    'продаётся квартира',
+  ],
+};
+const AUTO_MARKET_TOPIC_DICTIONARY: TopicDictionary = {
+  tokenPrefixes: [
+    'авто',
+    'автомоб',
+    'авторын',
+    'машин',
+    'тачк',
+    'пробег',
+    'vin',
+    'двигател',
+    'мотор',
+    'коробк',
+    'акпп',
+    'мкпп',
+    'вариатор',
+    'кузов',
+    'седан',
+    'кроссовер',
+    'хэтчбек',
+    'универсал',
+    'пикап',
+    'внедорож',
+    'шин',
+    'диск',
+    'подвес',
+    'бензин',
+    'дизел',
+    'электромоб',
+    'гибрид',
+    'осаго',
+    'каско',
+    'птс',
+    'стс',
+    'автосалон',
+    'разбор',
+    'лс',
+  ],
+  phrases: [
+    'лошадиных сил',
+    'коробка передач',
+    'автомобиль с пробегом',
+    'второй комплект шин',
+    'обмен на авто',
+    'авто с пробегом',
+  ],
+};
 const DEFAULT_DUPLICATE_WINDOW_SEC = 60;
 const DUPLICATE_MIN_LENGTH = 32;
 const DUPLICATE_MIN_TOKEN_COUNT = 5;
@@ -249,10 +343,7 @@ export class RuleEngineService {
     const lowered = text.toLowerCase();
     const measuredLength = typeof effectiveLength === 'number' ? effectiveLength : text.length;
 
-    if (
-      settings.russianProfanityFilterEnabled &&
-      this.hasProfanity(normalized)
-    ) {
+    if (settings.russianProfanityFilterEnabled && this.hasProfanity(normalized)) {
       violations.push({ ruleCode: 'PROFANITY', score: 0.95, reason: 'Detected profanity pattern' });
     }
 
@@ -276,6 +367,25 @@ export class RuleEngineService {
           },
         });
       }
+    }
+
+    const topicMismatch = this.detectTopicFilterMismatch({
+      normalizedText: normalized,
+      measuredLength,
+      settings,
+    });
+    if (topicMismatch) {
+      violations.push({
+        ruleCode: 'TOPIC_FILTER_MISMATCH',
+        score: 0.84,
+        reason: 'Long message without required thematic markers',
+        metadata: {
+          activeTopics: topicMismatch.activeTopics,
+          matchedTopics: topicMismatch.matchedTopics,
+          messageLength: topicMismatch.messageLength,
+          minLengthExclusive: topicMismatch.minLengthExclusive,
+        },
+      });
     }
 
     const linkViolation = this.hasBlockedLink(text, settings.linkPolicy, domainAllowlist);
@@ -635,7 +745,10 @@ export class RuleEngineService {
 
     const shouldKeepPort =
       parsed.port.length > 0 &&
-      !((protocol === 'https:' && parsed.port === '443') || (protocol === 'http:' && parsed.port === '80'));
+      !(
+        (protocol === 'https:' && parsed.port === '443') ||
+        (protocol === 'http:' && parsed.port === '80')
+      );
     const port = shouldKeepPort ? `:${parsed.port}` : '';
     return `${hostname}${port}`.toLowerCase();
   }
@@ -711,6 +824,59 @@ export class RuleEngineService {
       deleteThreshold,
       sensitivity: strict ? 'STRICT' : 'BALANCED',
     };
+  }
+
+  private detectTopicFilterMismatch(params: {
+    normalizedText: string;
+    measuredLength: number;
+    settings: ChatSettings;
+  }): TopicFilterDetection | null {
+    const { normalizedText, measuredLength, settings } = params;
+    if (measuredLength <= TOPIC_FILTER_MIN_LENGTH) {
+      return null;
+    }
+
+    const activeTopics: TopicFilterTopic[] = [];
+    if (settings.realEstateTopicFilterEnabled) {
+      activeTopics.push('REAL_ESTATE');
+    }
+    if (settings.autoMarketTopicFilterEnabled) {
+      activeTopics.push('AUTO_MARKET');
+    }
+    if (activeTopics.length === 0) {
+      return null;
+    }
+
+    const matchedTopics = activeTopics.filter((topic) =>
+      this.hasTopicDictionaryMatch(normalizedText, topic),
+    );
+    if (matchedTopics.length > 0) {
+      return null;
+    }
+
+    return {
+      activeTopics,
+      matchedTopics,
+      messageLength: measuredLength,
+      minLengthExclusive: TOPIC_FILTER_MIN_LENGTH,
+    };
+  }
+
+  private hasTopicDictionaryMatch(normalizedText: string, topic: TopicFilterTopic): boolean {
+    if (!normalizedText) {
+      return false;
+    }
+
+    const dictionary =
+      topic === 'REAL_ESTATE' ? REAL_ESTATE_TOPIC_DICTIONARY : AUTO_MARKET_TOPIC_DICTIONARY;
+    if (dictionary.phrases.some((phrase) => normalizedText.includes(phrase))) {
+      return true;
+    }
+
+    const tokens = normalizedText.split(/\s+/).filter(Boolean);
+    return tokens.some((token) =>
+      dictionary.tokenPrefixes.some((prefix) => token === prefix || token.startsWith(prefix)),
+    );
   }
 
   private collectCommercialSignals(
@@ -880,5 +1046,4 @@ export class RuleEngineService {
   private extractProfanityTokens(value: string): string[] {
     return value.match(/[a-zа-яё0-9]+/giu) ?? [];
   }
-
 }

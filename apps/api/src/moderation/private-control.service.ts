@@ -21,6 +21,7 @@ type PrivateSectionKey =
   | 'greeting'
   | 'profanityFilter'
   | 'commercialFilter'
+  | 'thematicFilters'
   | 'duplicates'
   | 'limits'
   | 'night'
@@ -228,6 +229,7 @@ const SECTION_LABELS: Record<PrivateSectionKey, string> = {
   greeting: 'Приветствие',
   profanityFilter: 'Нецензура',
   commercialFilter: 'Реклама',
+  thematicFilters: 'Темы',
   duplicates: 'Дубли',
   limits: 'Лимиты',
   night: 'Тихие часы',
@@ -334,6 +336,38 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'textFiltersBotButtonEnabled', label: 'Показывать кнопку', type: 'boolean' },
     { key: 'textFiltersBotButtonUrl', label: 'Ссылка кнопки', type: 'url' },
     { key: 'textFiltersBotButtonText', label: 'Текст кнопки', type: 'text' },
+  ],
+  thematicFilters: [
+    {
+      key: 'realEstateTopicFilterEnabled',
+      label: 'Тема: недвижимость',
+      type: 'boolean',
+    },
+    {
+      key: 'autoMarketTopicFilterEnabled',
+      label: 'Тема: авторынок',
+      type: 'boolean',
+    },
+    {
+      key: 'thematicFiltersBotMessageEnabled',
+      label: 'Шаг 1: объяснение',
+      type: 'boolean',
+    },
+    {
+      key: 'thematicFiltersWarnEnabled',
+      label: 'Шаг 2: предупреждение',
+      type: 'boolean',
+    },
+    {
+      key: 'thematicFiltersBanEnabled',
+      label: 'Шаг 3: бан',
+      type: 'boolean',
+    },
+    {
+      key: 'thematicFiltersKickEnabled',
+      label: 'Шаг 4: кик',
+      type: 'boolean',
+    },
   ],
   duplicates: [
     { key: 'antiDuplicateEnabled', label: 'Включить антидубли', type: 'boolean' },
@@ -479,6 +513,7 @@ const SECTION_SETTING_KEYS: Record<PrivateSectionKey, readonly (keyof ChatSettin
   greeting: SECTION_FIELDS.greeting.map((field) => field.key),
   profanityFilter: SECTION_FIELDS.profanityFilter.map((field) => field.key),
   commercialFilter: SECTION_FIELDS.commercialFilter.map((field) => field.key),
+  thematicFilters: SECTION_FIELDS.thematicFilters.map((field) => field.key),
   duplicates: SECTION_FIELDS.duplicates.map((field) => field.key),
   limits: SECTION_FIELDS.limits.map((field) => field.key),
   night: SECTION_FIELDS.night.map((field) => field.key),
@@ -490,6 +525,7 @@ const SECTION_ORDER: PrivateSectionKey[] = [
   'greeting',
   'profanityFilter',
   'commercialFilter',
+  'thematicFilters',
   'duplicates',
   'limits',
   'night',
@@ -552,6 +588,17 @@ const SECTION_CARD_FIELDS: Record<
       'textFiltersBotButtonText',
       'textFiltersBotButtonUrl',
     ],
+  },
+  thematicFilters: {
+    basic: [
+      'realEstateTopicFilterEnabled',
+      'autoMarketTopicFilterEnabled',
+      'thematicFiltersBotMessageEnabled',
+      'thematicFiltersWarnEnabled',
+      'thematicFiltersBanEnabled',
+      'thematicFiltersKickEnabled',
+    ],
+    advanced: [],
   },
   duplicates: {
     basic: [
@@ -2686,16 +2733,17 @@ export class PrivateControlService {
       ]);
       rows.push([
         this.callbackButton('Реклама', this.cb('open_section', 'commercialFilter')),
+        this.callbackButton('Темы', this.cb('open_section', 'thematicFilters')),
+      ]);
+      rows.push([
         this.callbackButton('Лимиты', this.cb('open_section', 'limits')),
-      ]);
-      rows.push([
         this.callbackButton('Рассылка', this.cb('open_broadcast')),
-        this.callbackButton('Ручной бан', this.cb('open_manual_users')),
       ]);
       rows.push([
+        this.callbackButton('Ручной бан', this.cb('open_manual_users')),
         this.callbackButton('Нарушения', this.cb('open_events')),
-        this.callbackButton('Статистика', this.cb('open_logs')),
       ]);
+      rows.push([this.callbackButton('Статистика', this.cb('open_logs'))]);
       rows.push([this.callbackButton('Все настройки', this.cb('home_tab', 'all'))]);
     } else {
       rows.push([
@@ -2707,21 +2755,22 @@ export class PrivateControlService {
         this.callbackButton('Реклама', this.cb('open_section', 'commercialFilter')),
       ]);
       rows.push([
+        this.callbackButton('Темы', this.cb('open_section', 'thematicFilters')),
         this.callbackButton('Дубли', this.cb('open_section', 'duplicates')),
+      ]);
+      rows.push([
         this.callbackButton('Лимиты', this.cb('open_section', 'limits')),
-      ]);
-      rows.push([
         this.callbackButton('Тихие часы', this.cb('open_section', 'night')),
+      ]);
+      rows.push([
         this.callbackButton('Ещё', this.cb('open_section', 'extra')),
-      ]);
-      rows.push([
         this.callbackButton('Рассылка', this.cb('open_broadcast')),
-        this.callbackButton('Ручной бан', this.cb('open_manual_users')),
       ]);
       rows.push([
+        this.callbackButton('Ручной бан', this.cb('open_manual_users')),
         this.callbackButton('Нарушения', this.cb('open_events')),
-        this.callbackButton('Статистика', this.cb('open_logs')),
       ]);
+      rows.push([this.callbackButton('Статистика', this.cb('open_logs'))]);
       rows.push([this.callbackButton('Частые действия', this.cb('home_tab', 'quick'))]);
     }
 
@@ -2873,21 +2922,22 @@ export class PrivateControlService {
         this.callbackButton('Реклама', this.cb('open_section', 'commercialFilter')),
       ],
       [
+        this.callbackButton('Темы', this.cb('open_section', 'thematicFilters')),
         this.callbackButton('Дубли', this.cb('open_section', 'duplicates')),
+      ],
+      [
         this.callbackButton('Лимиты', this.cb('open_section', 'limits')),
-      ],
-      [
         this.callbackButton('Тихие часы', this.cb('open_section', 'night')),
+      ],
+      [
         this.callbackButton('Ещё', this.cb('open_section', 'extra')),
-      ],
-      [
         this.callbackButton('Рассылка', this.cb('open_broadcast')),
-        this.callbackButton('Нарушения', this.cb('open_events')),
       ],
       [
+        this.callbackButton('Нарушения', this.cb('open_events')),
         this.callbackButton('Статистика', this.cb('open_logs')),
-        this.callbackButton('Ручной бан', this.cb('open_manual_users')),
       ],
+      [this.callbackButton('Ручной бан', this.cb('open_manual_users'))],
       [this.callbackButton('Другой чат', this.cb('change_chat'))],
       [this.callbackButton('Новый вид', this.cb('home'))],
       [this.callbackButton('Помощь', this.cb('help'))],
@@ -3578,6 +3628,7 @@ export class PrivateControlService {
       greeting: ['приветствие', 'новичок'],
       profanity: ['мат', 'оскорб'],
       commercial: ['реклама', 'коммерция'],
+      thematic: ['тема', 'тематика', 'недвижимость', 'авторынок', 'авто'],
       duplicate: ['дубль', 'повтор'],
       spam: ['спам'],
       night: ['ночной', 'тишина'],

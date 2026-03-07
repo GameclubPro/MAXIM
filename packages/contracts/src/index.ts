@@ -124,6 +124,12 @@ export const chatSettingsSchema = z
     textFiltersBotButtonEnabled: z.boolean().default(false),
     textFiltersBotButtonUrl: botButtonUrlSchema,
     textFiltersBotButtonText: botButtonTextSchema,
+    realEstateTopicFilterEnabled: z.boolean().default(false),
+    autoMarketTopicFilterEnabled: z.boolean().default(false),
+    thematicFiltersBotMessageEnabled: z.boolean().default(false),
+    thematicFiltersWarnEnabled: z.boolean().default(false),
+    thematicFiltersBanEnabled: z.boolean().default(false),
+    thematicFiltersKickEnabled: z.boolean().default(false),
     nightModeEnabled: z.boolean().default(false),
     nightModeStartTimeMinutes: z
       .number()

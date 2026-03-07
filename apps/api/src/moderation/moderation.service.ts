@@ -26,7 +26,12 @@ import { SystemModeService } from '../system/system-mode.service';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { PrivateControlService } from './private-control.service';
 import { RedisCounterService } from './redis-counter.service';
-import type { DuplicateAction, DuplicateDecision, DuplicateHit } from './rule-engine.service';
+import type {
+  DuplicateAction,
+  DuplicateDecision,
+  DuplicateHit,
+  TopicFilterTopic,
+} from './rule-engine.service';
 import { RuleEngineService } from './rule-engine.service';
 import { SanctionService } from './sanction.service';
 import { maskText } from './text-mask.util';
@@ -65,6 +70,7 @@ const DEFAULT_NIGHT_MODE_TIMEZONE = 'Europe/Moscow';
 const NIGHT_MODE_NOTICE_RULE_CODE = 'NIGHT_MODE_NOTICE';
 const LINK_ESCALATION_WINDOW_HOURS = 24;
 const TEXT_FILTER_ESCALATION_WINDOW_HOURS = 24;
+const TOPIC_FILTER_ESCALATION_WINDOW_HOURS = 24;
 const MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS = 12;
 const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
 const CHAT_ADMIN_CACHE_TTL_SEC = Math.ceil(CHAT_ADMIN_CACHE_TTL_MS / 1_000);
@@ -143,6 +149,7 @@ const NON_SANCTION_RULE_CODES = new Set([
   'LINK_BLOCKED',
   'PROFANITY',
   'COMMERCIAL_AD',
+  'TOPIC_FILTER_MISMATCH',
   'MESSAGE_TOO_LONG',
   'VIDEO_BLOCKED',
   'FILE_BLOCKED',
@@ -159,6 +166,7 @@ const MESSAGE_LIMITS_RULE_CODES = new Set([
   'STICKER_RATE_LIMIT',
 ]);
 const TEXT_FILTER_RULE_CODES = new Set(['PROFANITY', 'COMMERCIAL_AD']);
+const TOPIC_FILTER_RULE_CODES = new Set(['TOPIC_FILTER_MISMATCH']);
 type PrivateControlCommand = 'menu' | 'chats' | 'help';
 
 @Injectable()
@@ -550,6 +558,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         item.ruleCode === 'LINK_BLOCKED' ||
         item.ruleCode === 'PROFANITY' ||
         item.ruleCode === 'COMMERCIAL_AD' ||
+        item.ruleCode === 'TOPIC_FILTER_MISMATCH' ||
         item.ruleCode === 'MESSAGE_TOO_LONG' ||
         item.ruleCode === 'VIDEO_BLOCKED' ||
         item.ruleCode === 'FILE_BLOCKED' ||
@@ -606,6 +615,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       violations.find((item) => item.ruleCode === 'LINK_BLOCKED') ??
       violations.find((item) => item.ruleCode === 'COMMERCIAL_AD') ??
       violations.find((item) => item.ruleCode === 'PROFANITY') ??
+      violations.find((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH') ??
       violations.find((item) => item.ruleCode === 'MESSAGE_TOO_LONG') ??
       violations.find((item) => item.ruleCode === 'VIDEO_BLOCKED') ??
       violations.find((item) => item.ruleCode === 'FILE_BLOCKED') ??
@@ -641,6 +651,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           operator: Operator.BOT,
           metadata: {
             reason: topViolation.reason,
+            ...(topViolation.ruleCode === 'TOPIC_FILTER_MISMATCH' &&
+            topViolation.metadata &&
+            typeof topViolation.metadata === 'object'
+              ? topViolation.metadata
+              : {}),
           },
         },
       });
@@ -664,6 +679,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ? await this.countRecentLinkViolations(chatId, senderId)
         : null;
     const isTextFilterHit = this.isTextFilterViolation(topViolation.ruleCode);
+    const isTopicFilterHit = this.isTopicFilterViolation(topViolation.ruleCode);
     const isMessageLimitsHit = this.isMessageLimitsViolation(topViolation.ruleCode);
     const textFilterEscalationSettings = isTextFilterHit
       ? this.resolveTextFilterEscalationSettings(topViolation.ruleCode, settings)
@@ -685,6 +701,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       : null;
     const textFilterViolationCount24h = isTextFilterHit
       ? await this.countRecentTextFilterViolations(chatId, senderId, topViolation.ruleCode)
+      : null;
+    const topicFilterViolationCount24h = isTopicFilterHit
+      ? await this.countRecentTopicFilterViolations(chatId, senderId, topViolation.ruleCode)
       : null;
     const messageLimitsViolationCount12h = isMessageLimitsHit
       ? await this.countRecentMessageLimitsViolations(chatId, senderId, topViolation.ruleCode)
@@ -771,6 +790,29 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
+    if (isTopicFilterHit && settings.thematicFiltersBotMessageEnabled) {
+      try {
+        await sendChatBotMessage(
+          this.buildTopicFilterExplanation(
+            userLabel,
+            canDeleteMessage,
+            this.extractTopicFilterTopics(topViolation.metadata),
+          ),
+        );
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            userId: senderId,
+            messageId,
+            ruleCode: topViolation.ruleCode,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to send thematic filter explanation message',
+        );
+      }
+    }
+
     let action: SanctionAction = SanctionAction.NONE;
     const actionBanDurationHours = settings.banDurationHours;
 
@@ -832,6 +874,33 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           );
         }
       }
+    } else if (isTopicFilterHit) {
+      action = this.resolveTextFilterEscalationAction(topicFilterViolationCount24h ?? 1, {
+        warnEnabled: settings.thematicFiltersWarnEnabled,
+        banEnabled: settings.thematicFiltersBanEnabled,
+        kickEnabled: settings.thematicFiltersKickEnabled,
+      });
+
+      if (action === SanctionAction.WARN) {
+        try {
+          await sendChatBotMessage(
+            this.buildTopicFilterWarnExplanation(
+              userLabel,
+              this.extractTopicFilterTopics(topViolation.metadata),
+            ),
+          );
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              userId: senderId,
+              messageId,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to send thematic filter warning message',
+          );
+        }
+      }
     } else if (isMessageLimitsHit) {
       action = this.resolveMessageLimitsEscalationAction(messageLimitsViolationCount12h ?? 1, {
         warnEnabled: settings.messageLimitsWarnEnabled,
@@ -888,7 +957,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 topViolation.ruleCode,
                 actionBanDurationHours,
               )
-            : undefined,
+            : isTopicFilterHit && action === SanctionAction.BAN
+              ? this.buildTopicFilterBanExplanation(
+                  userLabel,
+                  this.extractTopicFilterTopics(topViolation.metadata),
+                  actionBanDurationHours,
+                )
+              : undefined,
       });
 
       if (topViolation.ruleCode === 'LINK_BLOCKED' && action === SanctionAction.KICK) {
@@ -928,6 +1003,28 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
       }
 
+      if (isTopicFilterHit && action === SanctionAction.KICK) {
+        try {
+          await sendChatBotMessage(
+            this.buildTopicFilterKickExplanation(
+              userLabel,
+              this.extractTopicFilterTopics(topViolation.metadata),
+            ),
+          );
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              userId: senderId,
+              messageId,
+              ruleCode: topViolation.ruleCode,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to send thematic filter kick message',
+          );
+        }
+      }
+
       if (isMessageLimitsHit && action === SanctionAction.KICK) {
         try {
           await sendChatBotMessage(
@@ -963,6 +1060,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         metadata: {
           reason: topViolation.reason,
           action,
+          ...(isTopicFilterHit && topViolation.metadata && typeof topViolation.metadata === 'object'
+            ? topViolation.metadata
+            : {}),
           ...(action === SanctionAction.BAN ? { banDurationHours: actionBanDurationHours } : {}),
           ...(topViolation.ruleCode === 'LINK_BLOCKED' && linkViolationCount24h !== null
             ? {
@@ -974,6 +1074,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             ? {
                 textFilterViolationCount24h,
                 textFilterEscalationWindowHours: TEXT_FILTER_ESCALATION_WINDOW_HOURS,
+              }
+            : {}),
+          ...(isTopicFilterHit && topicFilterViolationCount24h !== null
+            ? {
+                topicFilterViolationCount24h,
+                topicFilterEscalationWindowHours: TOPIC_FILTER_ESCALATION_WINDOW_HOURS,
               }
             : {}),
           ...(isMessageLimitsHit && messageLimitsViolationCount12h !== null
@@ -1308,6 +1414,65 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return `Пользователь ${userLabel} удален из чата за повторные нарушения текстовых правил.`;
+  }
+
+  private buildTopicFilterExplanation(
+    userLabel: string,
+    canDeleteMessage: boolean,
+    topics: TopicFilterTopic[],
+  ): string {
+    const topicLabel = this.resolveTopicFilterLabel(topics);
+    const fallback = canDeleteMessage
+      ? `Сообщение пользователя ${userLabel} удалено: сообщения длиннее 100 символов должны относиться к теме ${topicLabel}.`
+      : `Сообщение пользователя ${userLabel} нарушает правило: сообщения длиннее 100 символов должны относиться к теме ${topicLabel}.`;
+    return fallback;
+  }
+
+  private buildTopicFilterWarnExplanation(userLabel: string, topics: TopicFilterTopic[]): string {
+    const topicLabel = this.resolveTopicFilterLabel(topics);
+    return `Пользователю ${userLabel} вынесено предупреждение: сообщения длиннее 100 символов должны относиться к теме ${topicLabel}.`;
+  }
+
+  private buildTopicFilterKickExplanation(userLabel: string, topics: TopicFilterTopic[]): string {
+    const topicLabel = this.resolveTopicFilterLabel(topics);
+    return `Пользователь ${userLabel} удален из чата за повторные длинные сообщения не по теме ${topicLabel}.`;
+  }
+
+  private buildTopicFilterBanExplanation(
+    userLabel: string,
+    topics: TopicFilterTopic[],
+    banDurationHours: number,
+  ): string {
+    const topicLabel = this.resolveTopicFilterLabel(topics);
+    return `Пользователю ${userLabel} выдан временный бан на ${this.formatBanDurationLabel(banDurationHours)} за повторные длинные сообщения не по теме ${topicLabel}.`;
+  }
+
+  private resolveTopicFilterLabel(topics: TopicFilterTopic[]): string {
+    const normalizedTopics = new Set(topics);
+    if (normalizedTopics.size === 0) {
+      return 'недвижимости или авторынка';
+    }
+
+    if (normalizedTopics.has('REAL_ESTATE') && normalizedTopics.has('AUTO_MARKET')) {
+      return 'недвижимости или авторынка';
+    }
+
+    if (normalizedTopics.has('AUTO_MARKET')) {
+      return 'авторынка';
+    }
+
+    return 'недвижимости';
+  }
+
+  private extractTopicFilterTopics(metadata?: Record<string, unknown>): TopicFilterTopic[] {
+    const rawTopics = metadata?.activeTopics;
+    if (!Array.isArray(rawTopics)) {
+      return [];
+    }
+
+    return rawTopics.filter(
+      (topic): topic is TopicFilterTopic => topic === 'REAL_ESTATE' || topic === 'AUTO_MARKET',
+    );
   }
 
   private buildDuplicateExplanation(
@@ -1666,6 +1831,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private isTextFilterViolation(ruleCode: string): boolean {
     return TEXT_FILTER_RULE_CODES.has(ruleCode);
+  }
+
+  private isTopicFilterViolation(ruleCode: string): boolean {
+    return TOPIC_FILTER_RULE_CODES.has(ruleCode);
   }
 
   private buildTextFilterExplanation(
@@ -2356,6 +2525,39 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId,
         userId,
         ruleCode: ruleCodeFilter,
+        createdAt: { gte: since },
+      },
+    });
+
+    return Number.isInteger(count) && count > 0 ? count : 1;
+  }
+
+  private async countRecentTopicFilterViolations(
+    chatId: string,
+    userId: string,
+    ruleCode: string,
+  ): Promise<number> {
+    const violationModel = this.prisma.violation as unknown as {
+      count?: (args: {
+        where: {
+          chatId: string;
+          userId: string;
+          ruleCode: string;
+          createdAt: { gte: Date };
+        };
+      }) => Promise<number>;
+    };
+
+    if (typeof violationModel.count !== 'function') {
+      return 1;
+    }
+
+    const since = new Date(Date.now() - TOPIC_FILTER_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000);
+    const count = await violationModel.count({
+      where: {
+        chatId,
+        userId,
+        ruleCode,
         createdAt: { gte: since },
       },
     });
@@ -5184,6 +5386,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       ...settings,
       commercialAdsFilterEnabled: false,
       russianProfanityFilterEnabled: false,
+      realEstateTopicFilterEnabled: false,
+      autoMarketTopicFilterEnabled: false,
     };
   }
 
