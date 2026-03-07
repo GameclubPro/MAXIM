@@ -426,68 +426,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     return normalizedDraftKey !== normalizedSavedSnapshotKey;
   }, [normalizedDraft, normalizedDraftKey, normalizedSavedSnapshot, normalizedSavedSnapshotKey]);
 
-  if (!chatId) {
-    return (
-      <div className="page-stack page-enter">
-        <GlassCard>
-          <StatusState
-            tone="warning"
-            title="Канал не выбран"
-            description="Откройте канал из списка на главном экране."
-            action={
-              <Link to="/" className="button button--accent">
-                К списку
-              </Link>
-            }
-          />
-        </GlassCard>
-      </div>
-    );
-  }
-
-  if (settingsQuery.isLoading) {
-    return (
-      <div className="page-stack page-enter">
-        <GlassCard className="settings-section">
-          <SkeletonCard lines={6} />
-        </GlassCard>
-      </div>
-    );
-  }
-
-  if (settingsQuery.error) {
-    return (
-      <div className="page-stack page-enter">
-        <GlassCard>
-          <StatusState
-            tone="danger"
-            title="Не удалось загрузить настройки канала"
-            description={normalizeApiError(settingsQuery.error)}
-            action={
-              <button
-                type="button"
-                className="button button--danger"
-                onClick={() => void settingsQuery.refetch()}
-              >
-                Повторить
-              </button>
-            }
-          />
-        </GlassCard>
-      </div>
-    );
-  }
-
-  if (!draft) {
-    return (
-      <div className="page-stack page-enter">
-        <GlassCard className="settings-section">
-          <SkeletonCard lines={6} />
-        </GlassCard>
-      </div>
-    );
-  }
-
   const patchDraft = <K extends keyof ChannelSettings>(key: K, value: ChannelSettings[K]) => {
     setDraft((current) => {
       if (!current) {
@@ -620,6 +558,68 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
 
     return clearAutosaveTimer;
   }, [chatId, isDirty, normalizedDraft, normalizedDraftKey, normalizedSavedSnapshot]);
+
+  if (!chatId) {
+    return (
+      <div className="page-stack page-enter">
+        <GlassCard>
+          <StatusState
+            tone="warning"
+            title="Канал не выбран"
+            description="Откройте канал из списка на главном экране."
+            action={
+              <Link to="/" className="button button--accent">
+                К списку
+              </Link>
+            }
+          />
+        </GlassCard>
+      </div>
+    );
+  }
+
+  if (settingsQuery.isLoading) {
+    return (
+      <div className="page-stack page-enter">
+        <GlassCard className="settings-section">
+          <SkeletonCard lines={6} />
+        </GlassCard>
+      </div>
+    );
+  }
+
+  if (settingsQuery.error) {
+    return (
+      <div className="page-stack page-enter">
+        <GlassCard>
+          <StatusState
+            tone="danger"
+            title="Не удалось загрузить настройки канала"
+            description={normalizeApiError(settingsQuery.error)}
+            action={
+              <button
+                type="button"
+                className="button button--danger"
+                onClick={() => void settingsQuery.refetch()}
+              >
+                Повторить
+              </button>
+            }
+          />
+        </GlassCard>
+      </div>
+    );
+  }
+
+  if (!draft) {
+    return (
+      <div className="page-stack page-enter">
+        <GlassCard className="settings-section">
+          <SkeletonCard lines={6} />
+        </GlassCard>
+      </div>
+    );
+  }
 
   const normalizedAutoPostButtonsMode = sanitizeAutoPostButtonsMode(
     draft.autoPostButtonsMode,
