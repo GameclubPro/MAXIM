@@ -447,12 +447,38 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
   });
 
+  it('does not detect TOPIC_FILTER_MISMATCH for slangy real-estate listing with typos', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продаеца двушка в апартах, собственик один, ремонт свежий, лоджия застеклена, метро рядом, без посредников, ипотека проходит, показ по договоренности в удобное время.',
+      settings: buildSettings({ realEstateTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
   it('does not detect TOPIC_FILTER_MISMATCH for auto ad with typos and colloquial wording', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'Продам автамобиль, пробег 148000, двиготель обслужен, коробка не пинается, кузов живой, один владелец, торг у капота, машина на ходу и без срочных вложений.',
+      settings: buildSettings({ autoMarketTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
+  it('does not detect TOPIC_FILTER_MISMATCH for slangy auto listing with typos', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продаеца мотик, варик живой, ходовка не стучит, пластик целый, ПТС оригинал, переоформ без проблем, мото на бодром ходу, торг после осмотра реальному покупателю.',
       settings: buildSettings({ autoMarketTopicFilterEnabled: true }),
       domainAllowlist: [],
     });
