@@ -8,13 +8,18 @@ function createPrismaMock() {
         title: 'Команда MAX',
         createdAt: new Date('2026-03-01T00:00:00.000Z'),
       }),
+      update: jest.fn().mockResolvedValue(undefined),
       findUnique: jest.fn().mockResolvedValue({
         id: 'chat-1',
         title: 'Команда MAX',
       }),
     },
+    channelSettings: {
+      findMany: jest.fn().mockResolvedValue([]),
+    },
     chatAdminAllowlist: {
       upsert: jest.fn().mockResolvedValue(undefined),
+      findMany: jest.fn().mockResolvedValue([]),
     },
     domainAllowlist: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -211,6 +216,116 @@ describe('AdminService.getLogsDashboard', () => {
     const createdAt = countArgs.where.createdAt;
     expect(createdAt.gte.toISOString()).toBe('2026-03-01T12:00:00.000Z');
     expect(createdAt.lte.toISOString()).toBe('2026-03-02T12:00:00.000Z');
+  });
+});
+
+describe('AdminService.listChannels', () => {
+  it('returns channel overview summary for each managed channel', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.upsert
+      .mockResolvedValueOnce({
+        id: 'channel-1',
+        title: 'Новости MAX',
+        createdAt: new Date('2026-03-02T10:00:00.000Z'),
+        entityType: 'CHANNEL',
+      })
+      .mockResolvedValueOnce({
+        id: 'channel-2',
+        title: 'Обновления MAX',
+        createdAt: new Date('2026-03-01T10:00:00.000Z'),
+        entityType: 'CHANNEL',
+      });
+    prisma.channelSettings.findMany.mockResolvedValue([
+      {
+        chatId: 'channel-1',
+        commentsEnabled: true,
+        postSuggestionsEnabled: true,
+        commentsModerationEnabled: true,
+        commentsSlowModeSeconds: 45,
+      },
+    ]);
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'channel-1',
+          title: 'Новости MAX',
+          lastEventTime: 200,
+          entityType: 'channel',
+          link: 'https://max.ru/news',
+        },
+        {
+          chatId: 'channel-2',
+          title: 'Обновления MAX',
+          lastEventTime: 100,
+          entityType: 'channel',
+          link: null,
+        },
+      ]),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.listChannels({
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(result).toEqual([
+      {
+        id: 'channel-1',
+        title: 'Новости MAX',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'channel',
+        link: 'https://max.ru/news',
+        channelOverview: {
+          enabledScenariosCount: 2,
+          commentsEnabled: true,
+          postSuggestionsEnabled: true,
+          commentsModerationEnabled: true,
+          commentsSlowModeSeconds: 45,
+        },
+      },
+      {
+        id: 'channel-2',
+        title: 'Обновления MAX',
+        createdAt: '2026-03-01T10:00:00.000Z',
+        entityType: 'channel',
+        link: null,
+        channelOverview: {
+          enabledScenariosCount: 1,
+          commentsEnabled: true,
+          postSuggestionsEnabled: false,
+          commentsModerationEnabled: false,
+          commentsSlowModeSeconds: 0,
+        },
+      },
+    ]);
+    expect(prisma.channelSettings.findMany).toHaveBeenCalledWith({
+      where: {
+        chatId: {
+          in: ['channel-1', 'channel-2'],
+        },
+      },
+      select: {
+        chatId: true,
+        commentsEnabled: true,
+        postSuggestionsEnabled: true,
+        commentsModerationEnabled: true,
+        commentsSlowModeSeconds: true,
+      },
+    });
   });
 });
 

@@ -13,6 +13,7 @@ import {
   manualModerationActionRequestSchema,
   manualModerationActionResultSchema,
   type ChannelDialogType,
+  type ChannelOverview,
   type ChannelSettings,
   type ChatSettings,
   chatSettingsSchema,
@@ -69,6 +70,7 @@ const CHANNEL_DIALOG_ACTION_SUGGEST = 'CHANNEL_DIALOG_SUGGESTION';
 const CHANNEL_DIALOG_ACTION_PUBLISH = 'PUBLISH_CHANNEL_ENGAGEMENT';
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
+const DEFAULT_CHANNEL_SETTINGS = channelSettingsSchema.parse({});
 
 type ChannelDialogTokenPayload = {
   v: 1;
@@ -146,6 +148,7 @@ export class AdminService {
             createdAt: persistedChat.createdAt.toISOString(),
             entityType: this.fromPrismaEntityType(persistedChat.entityType),
             link: remoteChat.link,
+            channelOverview: null,
           };
 
           if (this.isFallbackTitle(chat.id, chat.title)) {
@@ -169,7 +172,7 @@ export class AdminService {
             ? filtered
             : filtered.filter((item) => item.chat.entityType === entityType);
         byType.sort((a, b) => b.lastEventTime - a.lastEventTime);
-        return byType.map((item) => item.chat);
+        return this.attachChannelOverview(byType.map((item) => item.chat));
       }
     } catch (error: unknown) {
       this.logger.warn(
@@ -180,11 +183,11 @@ export class AdminService {
 
     const cached = await this.listChatsFromAllowlist(user.userId, entityType);
     if (cached.length > 0) {
-      return cached;
+      return this.attachChannelOverview(cached);
     }
 
     const bootstrapped = await this.bootstrapCurrentChat(user, entityType);
-    return bootstrapped ? [bootstrapped] : [];
+    return bootstrapped ? this.attachChannelOverview([bootstrapped]) : [];
   }
 
   async getSettings(chatId: string, user: AuthUser): Promise<ChatSettings> {
@@ -2399,8 +2402,66 @@ export class AdminService {
         createdAt: row.chat.createdAt.toISOString(),
         entityType: this.fromPrismaEntityType(row.chat.entityType),
         link: null,
+        channelOverview: null,
       }),
     );
+  }
+
+  private async attachChannelOverview(chats: ChatSummary[]): Promise<ChatSummary[]> {
+    const channelIds = chats
+      .filter((chat) => chat.entityType === 'channel')
+      .map((chat) => chat.id);
+
+    if (channelIds.length === 0 || typeof this.prisma.channelSettings?.findMany !== 'function') {
+      return chats;
+    }
+
+    try {
+      const rows = await this.prisma.channelSettings.findMany({
+        where: {
+          chatId: {
+            in: channelIds,
+          },
+        },
+        select: {
+          chatId: true,
+          commentsEnabled: true,
+          postSuggestionsEnabled: true,
+          commentsModerationEnabled: true,
+          commentsSlowModeSeconds: true,
+        },
+      });
+
+      const byChatId = new Map(
+        rows.map((row) => [
+          row.chatId,
+          {
+            commentsEnabled: row.commentsEnabled,
+            postSuggestionsEnabled: row.postSuggestionsEnabled,
+            commentsModerationEnabled: row.commentsModerationEnabled,
+            commentsSlowModeSeconds: row.commentsSlowModeSeconds,
+          },
+        ]),
+      );
+
+      return chats.map((chat) => {
+        if (chat.entityType !== 'channel') {
+          return chat;
+        }
+
+        const settings = byChatId.get(chat.id) ?? DEFAULT_CHANNEL_SETTINGS;
+        return {
+          ...chat,
+          channelOverview: this.buildChannelOverview(settings),
+        };
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        'Failed to attach channel overview to managed entities list',
+      );
+      return chats;
+    }
   }
 
   private async upsertUserChatAccess(
@@ -2479,6 +2540,7 @@ export class AdminService {
       createdAt: persistedChat.createdAt.toISOString(),
       entityType: this.fromPrismaEntityType(persistedChat.entityType),
       link: null,
+      channelOverview: null,
     };
 
     if (this.isFallbackTitle(chat.id, chat.title)) {
@@ -2536,5 +2598,26 @@ export class AdminService {
 
   private fromPrismaEntityType(entityType: ChatEntityType): ManagedEntityType {
     return entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat';
+  }
+
+  private buildChannelOverview(
+    settings: Pick<
+      ChannelSettings,
+      | 'commentsEnabled'
+      | 'postSuggestionsEnabled'
+      | 'commentsModerationEnabled'
+      | 'commentsSlowModeSeconds'
+    >,
+  ): ChannelOverview {
+    const enabledScenariosCount =
+      Number(settings.commentsEnabled) + Number(settings.postSuggestionsEnabled);
+
+    return {
+      enabledScenariosCount,
+      commentsEnabled: settings.commentsEnabled,
+      postSuggestionsEnabled: settings.postSuggestionsEnabled,
+      commentsModerationEnabled: settings.commentsEnabled && settings.commentsModerationEnabled,
+      commentsSlowModeSeconds: settings.commentsEnabled ? settings.commentsSlowModeSeconds : 0,
+    };
   }
 }

@@ -420,12 +420,22 @@ export const moderationEventSchema = z.object({
 });
 export type ModerationEvent = z.infer<typeof moderationEventSchema>;
 
+export const channelOverviewSchema = z.object({
+  enabledScenariosCount: z.number().int().min(0).max(2),
+  commentsEnabled: z.boolean(),
+  postSuggestionsEnabled: z.boolean(),
+  commentsModerationEnabled: z.boolean(),
+  commentsSlowModeSeconds: z.number().int().min(0).max(3600),
+});
+export type ChannelOverview = z.infer<typeof channelOverviewSchema>;
+
 export const chatSummarySchema = z.object({
   id: z.string(),
   title: z.string(),
   createdAt: z.string().datetime(),
   entityType: managedEntityTypeSchema.default('chat'),
   link: z.string().trim().max(2048).nullable().optional().default(null),
+  channelOverview: channelOverviewSchema.nullable().optional().default(null),
 });
 export type ChatSummary = z.infer<typeof chatSummarySchema>;
 
