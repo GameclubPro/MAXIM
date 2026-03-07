@@ -1,6 +1,6 @@
 import type { ChannelAutoPostButtonsMode, ChannelSettings } from '@maxim/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
@@ -19,6 +19,8 @@ type ChannelRouteState = {
 const DEFAULT_ENGAGEMENT_TEXT = 'Есть идея или обратная связь? Нажмите кнопку ниже.';
 const DEFAULT_COMMENTS_BUTTON_TEXT = '💬 Комментарии';
 const DEFAULT_SUGGEST_BUTTON_TEXT = '📰 Предложить пост';
+const AUTOSAVE_DELAY_MS = 700;
+const AUTOSAVE_SAVED_HIDE_MS = 1600;
 
 function buildAutoPostButtonsMode(
   includeComments: boolean,
@@ -167,14 +169,12 @@ function ChannelSettingsFeatureCard({
   description,
   checked,
   onChange,
-  pills,
 }: {
   icon: string;
   title: string;
   description: string;
   checked: boolean;
   onChange: (nextValue: boolean) => void;
-  pills: string[];
 }) {
   return (
     <label className={cn('channel-settings-feature-card', checked && 'is-active')}>
@@ -204,14 +204,6 @@ function ChannelSettingsFeatureCard({
             </span>
           </span>
         </div>
-      </div>
-
-      <div className="channel-settings-feature-card__pills">
-        {pills.map((pill) => (
-          <span key={pill} className="channel-settings-feature-card__pill">
-            {pill}
-          </span>
-        ))}
       </div>
     </label>
   );
@@ -265,6 +257,34 @@ function ChannelSettingsAutoButtonCard({
   );
 }
 
+function ChannelSettingsSaveNotice({
+  state,
+  onRetry,
+}: {
+  state: 'idle' | 'saving' | 'saved' | 'error';
+  onRetry: () => void;
+}) {
+  if (state === 'idle') {
+    return null;
+  }
+
+  return (
+    <div className="channel-settings-save-float">
+      <div className={cn('channel-settings-save-notice', `is-${state}`)}>
+        <span className="channel-settings-save-notice__dot" aria-hidden />
+        <span className="channel-settings-save-notice__text">
+          {state === 'saving' ? 'Сохраняем' : state === 'saved' ? 'Сохранено' : 'Не сохранилось'}
+        </span>
+        {state === 'error' ? (
+          <button type="button" className="channel-settings-save-notice__retry" onClick={onRetry}>
+            Повторить
+          </button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 function normalizeChannelSettingsDraft(
   draft: ChannelSettings,
   resolvedChannelLink: string,
@@ -295,7 +315,15 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   const [draft, setDraft] = useState<ChannelSettings | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState<ChannelSettings | null>(null);
   const [engagementText, setEngagementText] = useState(DEFAULT_ENGAGEMENT_TEXT);
+  const [autosaveState, setAutosaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const { pushToast } = useToast();
+  const autosaveTimerRef = useRef<number | null>(null);
+  const autosaveHideTimerRef = useRef<number | null>(null);
+  const saveInFlightRef = useRef<Promise<ChannelSettings> | null>(null);
+  const lastFailedDraftKeyRef = useRef<string | null>(null);
+  const latestNormalizedDraftRef = useRef<ChannelSettings | null>(null);
+  const latestDraftKeyRef = useRef('');
+  const isDirtyRef = useRef(false);
 
   const settingsQuery = useQuery({
     queryKey: ['channel-settings', chatId],
@@ -307,26 +335,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     queryKey: ['channels'],
     queryFn: () => api.getChannels(),
     enabled: Boolean(chatId),
-  });
-
-  const saveMutation = useMutation({
-    mutationFn: async (payload: ChannelSettings) => api.updateChannelSettings(chatId, payload),
-    onSuccess: (payload) => {
-      setDraft(payload);
-      setSavedSnapshot(payload);
-      pushToast({
-        tone: 'success',
-        title: 'Сохранено',
-        description: 'Настройки канала обновлены.',
-      });
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Ошибка сохранения',
-        description: normalizeApiError(error),
-      });
-    },
   });
 
   const publishEngagementMutation = useMutation({
@@ -355,6 +363,8 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
 
     setDraft(settingsQuery.data);
     setSavedSnapshot(settingsQuery.data);
+    setAutosaveState('idle');
+    lastFailedDraftKeyRef.current = null;
   }, [settingsQuery.data]);
 
   useEffect(() => {
@@ -387,13 +397,34 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     return isHttpUrl(candidate) ? candidate : '';
   }, [chatId, channelsQuery.data, routeChatLink]);
 
+  const normalizedDraft = useMemo(
+    () => (draft ? normalizeChannelSettingsDraft(draft, resolvedChannelLink) : null),
+    [draft, resolvedChannelLink],
+  );
+
+  const normalizedSavedSnapshot = useMemo(
+    () =>
+      savedSnapshot ? normalizeChannelSettingsDraft(savedSnapshot, resolvedChannelLink) : null,
+    [resolvedChannelLink, savedSnapshot],
+  );
+
+  const normalizedDraftKey = useMemo(
+    () => (normalizedDraft ? JSON.stringify(normalizedDraft) : ''),
+    [normalizedDraft],
+  );
+
+  const normalizedSavedSnapshotKey = useMemo(
+    () => (normalizedSavedSnapshot ? JSON.stringify(normalizedSavedSnapshot) : ''),
+    [normalizedSavedSnapshot],
+  );
+
   const isDirty = useMemo(() => {
-    if (!draft || !savedSnapshot) {
+    if (!normalizedDraft || !normalizedSavedSnapshot) {
       return false;
     }
 
-    return JSON.stringify(draft) !== JSON.stringify(savedSnapshot);
-  }, [draft, savedSnapshot]);
+    return normalizedDraftKey !== normalizedSavedSnapshotKey;
+  }, [normalizedDraft, normalizedDraftKey, normalizedSavedSnapshot, normalizedSavedSnapshotKey]);
 
   if (!chatId) {
     return (
@@ -478,6 +509,118 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     });
   };
 
+  useEffect(() => {
+    latestNormalizedDraftRef.current = normalizedDraft;
+    latestDraftKeyRef.current = normalizedDraftKey;
+    isDirtyRef.current = isDirty;
+  }, [isDirty, normalizedDraft, normalizedDraftKey]);
+
+  const clearAutosaveTimer = () => {
+    if (autosaveTimerRef.current !== null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+  };
+
+  const clearAutosaveHideTimer = () => {
+    if (autosaveHideTimerRef.current !== null) {
+      window.clearTimeout(autosaveHideTimerRef.current);
+      autosaveHideTimerRef.current = null;
+    }
+  };
+
+  useEffect(
+    () => () => {
+      clearAutosaveTimer();
+      clearAutosaveHideTimer();
+    },
+    [],
+  );
+
+  const saveCurrentDraft = async ({
+    force = false,
+  }: {
+    force?: boolean;
+  } = {}): Promise<ChannelSettings | null> => {
+    const payload = latestNormalizedDraftRef.current;
+    const payloadKey = latestDraftKeyRef.current;
+
+    if (!payload || (!force && !isDirtyRef.current)) {
+      return null;
+    }
+
+    if (!force && payloadKey === lastFailedDraftKeyRef.current) {
+      setAutosaveState('error');
+      return null;
+    }
+
+    if (saveInFlightRef.current) {
+      return saveInFlightRef.current;
+    }
+
+    clearAutosaveTimer();
+    clearAutosaveHideTimer();
+    setAutosaveState('saving');
+
+    const request = api
+      .updateChannelSettings(chatId, payload)
+      .then((saved) => {
+        lastFailedDraftKeyRef.current = null;
+        setSavedSnapshot(saved);
+        setDraft((current) => {
+          if (!current) {
+            return current;
+          }
+
+          const currentNormalized = normalizeChannelSettingsDraft(current, resolvedChannelLink);
+          return JSON.stringify(currentNormalized) === payloadKey ? saved : current;
+        });
+        setAutosaveState('saved');
+        autosaveHideTimerRef.current = window.setTimeout(() => {
+          setAutosaveState((current) => (current === 'saved' ? 'idle' : current));
+          autosaveHideTimerRef.current = null;
+        }, AUTOSAVE_SAVED_HIDE_MS);
+        return saved;
+      })
+      .catch((error: unknown) => {
+        lastFailedDraftKeyRef.current = payloadKey;
+        setAutosaveState('error');
+        throw error;
+      })
+      .finally(() => {
+        saveInFlightRef.current = null;
+      });
+
+    saveInFlightRef.current = request;
+    return request;
+  };
+
+  useEffect(() => {
+    clearAutosaveTimer();
+
+    if (!chatId || !normalizedDraft || !normalizedSavedSnapshot || !isDirty) {
+      return;
+    }
+
+    if (saveInFlightRef.current) {
+      setAutosaveState('saving');
+      return;
+    }
+
+    if (normalizedDraftKey === lastFailedDraftKeyRef.current) {
+      setAutosaveState('error');
+      return;
+    }
+
+    clearAutosaveHideTimer();
+    setAutosaveState('saving');
+    autosaveTimerRef.current = window.setTimeout(() => {
+      void saveCurrentDraft();
+    }, AUTOSAVE_DELAY_MS);
+
+    return clearAutosaveTimer;
+  }, [chatId, isDirty, normalizedDraft, normalizedDraftKey, normalizedSavedSnapshot]);
+
   const normalizedAutoPostButtonsMode = sanitizeAutoPostButtonsMode(
     draft.autoPostButtonsMode,
     draft.commentsEnabled,
@@ -485,12 +628,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   );
   const autoPostCommentsEnabled = modeHasComments(normalizedAutoPostButtonsMode);
   const autoPostSuggestEnabled = modeHasSuggest(normalizedAutoPostButtonsMode);
-  const enabledScenariosCount = [draft.commentsEnabled, draft.postSuggestionsEnabled].filter(
-    Boolean,
-  ).length;
-  const enabledAutoButtonsCount = [autoPostCommentsEnabled, autoPostSuggestEnabled].filter(
-    Boolean,
-  ).length;
 
   const toggleEngagementOption = (key: 'comments' | 'suggest') => {
     if (!draft) {
@@ -511,28 +648,42 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     );
   };
 
-  const saveDraft = async () => {
-    if (!draft || saveMutation.isPending || !isDirty) {
-      return;
-    }
-
-    await saveMutation.mutateAsync(normalizeChannelSettingsDraft(draft, resolvedChannelLink));
-  };
-
   const handlePublishEngagement = async () => {
-    if (!draft || publishEngagementMutation.isPending || saveMutation.isPending) {
+    if (!draft || publishEngagementMutation.isPending) {
       return;
     }
 
-    const normalizedDraft = normalizeChannelSettingsDraft(draft, resolvedChannelLink);
+    clearAutosaveTimer();
+
+    if (saveInFlightRef.current) {
+      try {
+        await saveInFlightRef.current;
+      } catch {
+        return;
+      }
+    }
+
+    if (isDirtyRef.current) {
+      try {
+        await saveCurrentDraft({ force: true });
+      } catch {
+        return;
+      }
+    }
+
+    const currentDraft = latestNormalizedDraftRef.current;
+    if (!currentDraft) {
+      return;
+    }
+
     const includeCommentsButton =
-      normalizedDraft.autoPostButtonsMode === 'OFF'
-        ? normalizedDraft.commentsEnabled
-        : modeHasComments(normalizedDraft.autoPostButtonsMode);
+      currentDraft.autoPostButtonsMode === 'OFF'
+        ? currentDraft.commentsEnabled
+        : modeHasComments(currentDraft.autoPostButtonsMode);
     const includeSuggestButton =
-      normalizedDraft.autoPostButtonsMode === 'OFF'
-        ? normalizedDraft.postSuggestionsEnabled
-        : modeHasSuggest(normalizedDraft.autoPostButtonsMode);
+      currentDraft.autoPostButtonsMode === 'OFF'
+        ? currentDraft.postSuggestionsEnabled
+        : modeHasSuggest(currentDraft.autoPostButtonsMode);
     if (!includeCommentsButton && !includeSuggestButton) {
       pushToast({
         tone: 'info',
@@ -543,15 +694,11 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     }
 
     try {
-      if (isDirty) {
-        await saveMutation.mutateAsync(normalizeChannelSettingsDraft(draft, resolvedChannelLink));
-      }
-
       await publishEngagementMutation.mutateAsync({
         text: engagementText,
         commentsButtonText: DEFAULT_COMMENTS_BUTTON_TEXT,
         suggestButtonText:
-          normalizedDraft.postSuggestionsButtonText.trim() || DEFAULT_SUGGEST_BUTTON_TEXT,
+          currentDraft.postSuggestionsButtonText.trim() || DEFAULT_SUGGEST_BUTTON_TEXT,
         includeCommentsButton,
         includeSuggestButton,
       });
@@ -571,87 +718,56 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     <div className="channel-settings-screen page-enter">
       <GlassCard className="channel-settings-header" elevated>
         <div className="channel-settings-hero__top">
-          <div className="channel-settings-hero__eyebrow">
-            <span className="channel-settings-hero__badge">Канал</span>
-            <span className="channel-settings-hero__hint">Сценарии, кнопки и диалоги</span>
-          </div>
-
           <Link to="/" className="button button--ghost channel-settings-hero__back">
-            К списку
+            Назад
           </Link>
+          <span className="channel-settings-hero__badge">Канал</span>
         </div>
 
         <div className="channel-settings-header__main">
           <h1>{resolvedTitle || 'Настройки канала'}</h1>
           <p>{chatId}</p>
         </div>
-
-        <div className="channel-settings-hero__stats">
-          <div className="channel-settings-hero__stat">
-            <strong>{enabledScenariosCount}/2</strong>
-            <span>сценария включено</span>
-          </div>
-          <div className="channel-settings-hero__stat">
-            <strong>{enabledAutoButtonsCount}/2</strong>
-            <span>автокнопки под постами</span>
-          </div>
-          <div className="channel-settings-hero__stat">
-            <strong>
-              {draft.commentsEnabled && draft.commentsModerationEnabled ? 'ON' : 'OFF'}
-            </strong>
-            <span>модерация обсуждения</span>
-          </div>
-        </div>
       </GlassCard>
 
+      <ChannelSettingsSaveNotice
+        state={autosaveState}
+        onRetry={() => {
+          lastFailedDraftKeyRef.current = null;
+          void saveCurrentDraft({ force: true });
+        }}
+      />
+
       <GlassCard className="channel-settings-card" elevated>
-        <ChannelSettingsSectionHead
-          title="Сценарии канала"
-          description="Сначала включите сами режимы. После этого настраивайте тексты и поведение."
-        />
+        <ChannelSettingsSectionHead title="Сценарии" />
 
         <div className="channel-settings-feature-grid">
           <ChannelSettingsFeatureCard
             icon="💬"
             title="Комментарии"
-            description="Отдельный диалог под постом с slow mode и модерацией ботом."
+            description="Диалог под постом."
             checked={draft.commentsEnabled}
             onChange={(nextValue) => patchDraft('commentsEnabled', nextValue)}
-            pills={[
-              draft.commentsModerationEnabled ? 'Модерация ботом' : 'Без модерации ботом',
-              draft.commentsSlowModeSeconds > 0
-                ? `Пауза ${draft.commentsSlowModeSeconds} сек`
-                : 'Без паузы между сообщениями',
-              'Открывается из кнопки в канале',
-            ]}
           />
 
           <ChannelSettingsFeatureCard
             icon="📰"
             title="Предложка"
-            description="Подписчики отправляют идею поста админу прямо из miniapp."
+            description="Идеи постов от подписчиков."
             checked={draft.postSuggestionsEnabled}
             onChange={(nextValue) => patchDraft('postSuggestionsEnabled', nextValue)}
-            pills={[
-              draft.postSuggestionsButtonText.trim() || 'Предложить пост',
-              draft.postSuggestionsText.trim() ? 'Инструкция заполнена' : 'Инструкция пустая',
-              'Работает в формате диалога',
-            ]}
           />
         </div>
       </GlassCard>
 
       <GlassCard className="channel-settings-card channel-settings-card--engagement" elevated>
-        <ChannelSettingsSectionHead
-          title="Кнопки под новыми постами"
-          description="Выберите, какие кнопки бот будет автоматически добавлять к постам админов."
-        />
+        <ChannelSettingsSectionHead title="Кнопки под постом" />
 
         <div className="channel-settings-auto-grid">
           <ChannelSettingsAutoButtonCard
             icon="💬"
             title={DEFAULT_COMMENTS_BUTTON_TEXT}
-            description="Открывает обсуждение конкретного поста."
+            description="Открывает обсуждение."
             checked={autoPostCommentsEnabled}
             disabled={!draft.commentsEnabled}
             onClick={() => toggleEngagementOption('comments')}
@@ -659,7 +775,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
           <ChannelSettingsAutoButtonCard
             icon="📰"
             title={draft.postSuggestionsButtonText.trim() || DEFAULT_SUGGEST_BUTTON_TEXT}
-            description="Ведёт в форму идеи поста для админов."
+            description="Открывает предложку."
             checked={autoPostSuggestEnabled}
             disabled={!draft.postSuggestionsEnabled}
             onClick={() => toggleEngagementOption('suggest')}
@@ -668,7 +784,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
 
         <div className="channel-settings-preview-stage">
           <div className="channel-settings-preview-stage__bubble">
-            <span className="channel-settings-preview-stage__label">Предпросмотр поста</span>
+            <span className="channel-settings-preview-stage__label">Как выглядит</span>
             <p>{engagementText.trim() || DEFAULT_ENGAGEMENT_TEXT}</p>
           </div>
 
@@ -684,7 +800,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
         </div>
 
         <label className="field">
-          <span>Текст поста</span>
+          <span>Текст</span>
           <textarea
             rows={3}
             value={engagementText}
@@ -700,27 +816,19 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
             className="button button--accent"
             onClick={() => void handlePublishEngagement()}
             disabled={
-              saveMutation.isPending ||
               publishEngagementMutation.isPending ||
               !engagementText.trim() ||
               engagementButtons.length === 0
             }
           >
-            {publishEngagementMutation.isPending ? 'Публикуем...' : 'Опубликовать пост'}
+            {publishEngagementMutation.isPending ? 'Отправляем...' : 'Отправить в канал'}
           </button>
         </div>
       </GlassCard>
 
       {draft.postSuggestionsEnabled ? (
         <GlassCard className="channel-settings-card" elevated>
-          <ChannelSettingsSectionHead
-            title="Предложка"
-            description="Текст кнопки и короткая инструкция, которую увидят пользователи."
-          />
-
-          <div className="channel-settings-card__hint">
-            Используйте короткий CTA на кнопке и одну понятную инструкцию без длинных правил.
-          </div>
+          <ChannelSettingsSectionHead title="Предложка" />
 
           <div className="channel-settings-stack">
             <label className="field">
@@ -735,12 +843,12 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
             </label>
 
             <label className="field">
-              <span>Короткая инструкция</span>
+              <span>Текст</span>
               <textarea
                 rows={3}
                 value={draft.postSuggestionsText}
                 onChange={(event) => patchDraft('postSuggestionsText', event.target.value)}
-                placeholder="Например: отправьте текст и фото, ответим после проверки."
+                placeholder="Коротко объясните, что отправлять."
               />
             </label>
           </div>
@@ -749,14 +857,11 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
 
       {draft.commentsEnabled ? (
         <GlassCard className="channel-settings-card" elevated>
-          <ChannelSettingsSectionHead
-            title="Комментарии"
-            description="Настройте, как участники будут обсуждать пост и насколько строг бот."
-          />
+          <ChannelSettingsSectionHead title="Комментарии" />
 
           <ChannelSettingsToggleCard
             title="Модерация"
-            description="Бот будет применять правила и удерживать обсуждение в рамках."
+            description="Бот следит за сообщениями."
             checked={draft.commentsModerationEnabled}
             onChange={(nextValue) => patchDraft('commentsModerationEnabled', nextValue)}
           />
@@ -787,7 +892,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
             </div>
 
             <label className="field">
-              <span>Что увидят участники</span>
+              <span>Текст</span>
               <textarea
                 rows={3}
                 value={draft.commentsMessageText}
@@ -796,29 +901,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
               />
             </label>
           </div>
-        </GlassCard>
-      ) : null}
-
-      {isDirty || saveMutation.isPending ? (
-        <GlassCard className="channel-settings-savebar" elevated>
-          <div className="channel-settings-savebar__copy">
-            <strong>
-              {saveMutation.isPending ? 'Сохраняем изменения' : 'Есть несохранённые правки'}
-            </strong>
-            <span>
-              {saveMutation.isPending
-                ? 'Обновляем настройки канала.'
-                : 'После сохранения бот сразу начнёт работать по новым правилам.'}
-            </span>
-          </div>
-          <button
-            type="button"
-            className="button button--accent"
-            onClick={() => void saveDraft()}
-            disabled={saveMutation.isPending}
-          >
-            {saveMutation.isPending ? 'Сохраняем...' : 'Сохранить'}
-          </button>
         </GlassCard>
       ) : null}
     </div>
