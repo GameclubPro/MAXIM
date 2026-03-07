@@ -3,7 +3,6 @@ import {
   channelDialogResponseSchema,
   channelDialogTypeSchema,
   channelSettingsSchema,
-  type ChannelAutoPostButtonsMode,
   chatSettingsSchema,
   createChannelDialogMessageRequestSchema,
   createChannelDialogMessageResponseSchema,
@@ -33,9 +32,6 @@ import {
   type LogsDashboardResponse,
   type ManualModerationActionRequest,
   type ManualModerationActionResult,
-  publishChannelEngagementRequestSchema,
-  publishChannelEngagementResultSchema,
-  type PublishChannelEngagementResult,
   type SendBroadcastResult,
 } from '@maxim/contracts';
 
@@ -62,16 +58,6 @@ export type SendBroadcastPayload = {
   cycleEveryDays: number;
   cycleCount: number;
 };
-
-export type PublishChannelEngagementPayload = {
-  text: string;
-  commentsButtonText: string;
-  suggestButtonText: string;
-  includeCommentsButton: boolean;
-  includeSuggestButton: boolean;
-};
-
-export type ChannelAutoButtonsSelection = ChannelAutoPostButtonsMode;
 
 export type CreateChannelDialogMessagePayload = {
   token: string;
@@ -120,18 +106,6 @@ export class ApiClient {
       body: JSON.stringify(data),
     });
     return channelSettingsSchema.parse(response);
-  }
-
-  async publishChannelEngagement(
-    chatId: string,
-    payload: PublishChannelEngagementPayload,
-  ): Promise<PublishChannelEngagementResult> {
-    const requestBody = publishChannelEngagementRequestSchema.parse(payload);
-    const response = await this.request(`/channels/${chatId}/engagement-publish`, {
-      method: 'POST',
-      body: JSON.stringify(requestBody),
-    });
-    return publishChannelEngagementResultSchema.parse(response);
   }
 
   async getChannelDialog(

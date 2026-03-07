@@ -1,13 +1,12 @@
 import type { ChannelAutoPostButtonsMode, ChannelSettings } from '@maxim/contracts';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
-import { useToast } from '../components/ui/toast';
 import { cn } from '../lib/cn';
-import type { ApiClient, PublishChannelEngagementPayload } from '../lib/api-client';
+import type { ApiClient } from '../lib/api-client';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { saveLastChatId, saveLastEntityType } from '../lib/last-chat';
 
@@ -16,9 +15,6 @@ type ChannelRouteState = {
   chatLink: string;
 };
 
-const DEFAULT_ENGAGEMENT_TEXT = 'Есть идея или обратная связь? Нажмите кнопку ниже.';
-const DEFAULT_COMMENTS_BUTTON_TEXT = '💬 Комментарии';
-const DEFAULT_SUGGEST_BUTTON_TEXT = '📰 Предложить пост';
 const AUTOSAVE_DELAY_MS = 700;
 const AUTOSAVE_SAVED_HIDE_MS = 1600;
 
@@ -55,16 +51,6 @@ function sanitizeAutoPostButtonsMode(
     commentsEnabled && modeHasComments(mode),
     suggestEnabled && modeHasSuggest(mode),
   );
-}
-
-function toggleAutoPostButtonsMode(
-  mode: ChannelAutoPostButtonsMode,
-  key: 'comments' | 'suggest',
-): ChannelAutoPostButtonsMode {
-  const includeComments = key === 'comments' ? !modeHasComments(mode) : modeHasComments(mode);
-  const includeSuggest = key === 'suggest' ? !modeHasSuggest(mode) : modeHasSuggest(mode);
-
-  return buildAutoPostButtonsMode(includeComments, includeSuggest);
 }
 
 function isHttpUrl(value: string): boolean {
@@ -209,54 +195,6 @@ function ChannelSettingsFeatureCard({
   );
 }
 
-function ChannelSettingsAutoButtonCard({
-  icon,
-  title,
-  description,
-  checked,
-  disabled = false,
-  onClick,
-}: {
-  icon: string;
-  title: string;
-  description: string;
-  checked: boolean;
-  disabled?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className={cn(
-        'channel-settings-auto-card',
-        checked && 'is-active',
-        disabled && 'is-disabled',
-      )}
-      onClick={onClick}
-      disabled={disabled}
-    >
-      <div className="channel-settings-auto-card__head">
-        <div className="channel-settings-auto-card__identity">
-          <span className="channel-settings-auto-card__icon" aria-hidden>
-            {icon}
-          </span>
-          <div className="channel-settings-auto-card__copy">
-            <strong>{title}</strong>
-            <p>{description}</p>
-          </div>
-        </div>
-        <span className="channel-settings-auto-card__state">
-          {checked ? 'Будет под постом' : disabled ? 'Недоступно' : 'Не добавляется'}
-        </span>
-      </div>
-
-      <span className="channel-settings-auto-card__hint">
-        {disabled ? 'Сначала включите сам сценарий.' : 'Можно включить вместе с другой кнопкой.'}
-      </span>
-    </button>
-  );
-}
-
 function ChannelSettingsSaveNotice({
   state,
   onRetry,
@@ -314,9 +252,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   const routeChatLink = routeState.chatLink;
   const [draft, setDraft] = useState<ChannelSettings | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState<ChannelSettings | null>(null);
-  const [engagementText, setEngagementText] = useState(DEFAULT_ENGAGEMENT_TEXT);
   const [autosaveState, setAutosaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-  const { pushToast } = useToast();
   const autosaveTimerRef = useRef<number | null>(null);
   const autosaveHideTimerRef = useRef<number | null>(null);
   const saveInFlightRef = useRef<Promise<ChannelSettings> | null>(null);
@@ -335,25 +271,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     queryKey: ['channels'],
     queryFn: () => api.getChannels(),
     enabled: Boolean(chatId),
-  });
-
-  const publishEngagementMutation = useMutation({
-    mutationFn: (payload: PublishChannelEngagementPayload) =>
-      api.publishChannelEngagement(chatId, payload),
-    onSuccess: () => {
-      pushToast({
-        tone: 'success',
-        title: 'Опубликовано',
-        description: 'Сообщение с кнопками отправлено в канал.',
-      });
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось опубликовать',
-        description: normalizeApiError(error),
-      });
-    },
   });
 
   useEffect(() => {
@@ -621,99 +538,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     );
   }
 
-  const normalizedAutoPostButtonsMode = sanitizeAutoPostButtonsMode(
-    draft.autoPostButtonsMode,
-    draft.commentsEnabled,
-    draft.postSuggestionsEnabled,
-  );
-  const autoPostCommentsEnabled = modeHasComments(normalizedAutoPostButtonsMode);
-  const autoPostSuggestEnabled = modeHasSuggest(normalizedAutoPostButtonsMode);
-
-  const toggleEngagementOption = (key: 'comments' | 'suggest') => {
-    if (!draft) {
-      return;
-    }
-
-    if (key === 'comments' && !draft.commentsEnabled) {
-      return;
-    }
-
-    if (key === 'suggest' && !draft.postSuggestionsEnabled) {
-      return;
-    }
-
-    patchDraft(
-      'autoPostButtonsMode',
-      toggleAutoPostButtonsMode(normalizedAutoPostButtonsMode, key),
-    );
-  };
-
-  const handlePublishEngagement = async () => {
-    if (!draft || publishEngagementMutation.isPending) {
-      return;
-    }
-
-    clearAutosaveTimer();
-
-    if (saveInFlightRef.current) {
-      try {
-        await saveInFlightRef.current;
-      } catch {
-        return;
-      }
-    }
-
-    if (isDirtyRef.current) {
-      try {
-        await saveCurrentDraft({ force: true });
-      } catch {
-        return;
-      }
-    }
-
-    const currentDraft = latestNormalizedDraftRef.current;
-    if (!currentDraft) {
-      return;
-    }
-
-    const includeCommentsButton =
-      currentDraft.autoPostButtonsMode === 'OFF'
-        ? currentDraft.commentsEnabled
-        : modeHasComments(currentDraft.autoPostButtonsMode);
-    const includeSuggestButton =
-      currentDraft.autoPostButtonsMode === 'OFF'
-        ? currentDraft.postSuggestionsEnabled
-        : modeHasSuggest(currentDraft.autoPostButtonsMode);
-    if (!includeCommentsButton && !includeSuggestButton) {
-      pushToast({
-        tone: 'info',
-        title: 'Нечего публиковать',
-        description: 'Включите комментарии, предложку или оба варианта.',
-      });
-      return;
-    }
-
-    try {
-      await publishEngagementMutation.mutateAsync({
-        text: engagementText,
-        commentsButtonText: DEFAULT_COMMENTS_BUTTON_TEXT,
-        suggestButtonText:
-          currentDraft.postSuggestionsButtonText.trim() || DEFAULT_SUGGEST_BUTTON_TEXT,
-        includeCommentsButton,
-        includeSuggestButton,
-      });
-    } catch {
-      return;
-    }
-  };
-
-  const engagementButtons = [
-    autoPostCommentsEnabled ? DEFAULT_COMMENTS_BUTTON_TEXT : null,
-    autoPostSuggestEnabled
-      ? draft.postSuggestionsButtonText.trim() || DEFAULT_SUGGEST_BUTTON_TEXT
-      : null,
-  ].filter((value): value is string => Boolean(value));
-
   return (
     <div className="channel-settings-screen page-enter">
       <GlassCard className="channel-settings-header" elevated>
@@ -757,72 +581,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
             checked={draft.postSuggestionsEnabled}
             onChange={(nextValue) => patchDraft('postSuggestionsEnabled', nextValue)}
           />
-        </div>
-      </GlassCard>
-
-      <GlassCard className="channel-settings-card channel-settings-card--engagement" elevated>
-        <ChannelSettingsSectionHead title="Кнопки под постом" />
-
-        <div className="channel-settings-auto-grid">
-          <ChannelSettingsAutoButtonCard
-            icon="💬"
-            title={DEFAULT_COMMENTS_BUTTON_TEXT}
-            description="Открывает обсуждение."
-            checked={autoPostCommentsEnabled}
-            disabled={!draft.commentsEnabled}
-            onClick={() => toggleEngagementOption('comments')}
-          />
-          <ChannelSettingsAutoButtonCard
-            icon="📰"
-            title={draft.postSuggestionsButtonText.trim() || DEFAULT_SUGGEST_BUTTON_TEXT}
-            description="Открывает предложку."
-            checked={autoPostSuggestEnabled}
-            disabled={!draft.postSuggestionsEnabled}
-            onClick={() => toggleEngagementOption('suggest')}
-          />
-        </div>
-
-        <div className="channel-settings-preview-stage">
-          <div className="channel-settings-preview-stage__bubble">
-            <span className="channel-settings-preview-stage__label">Как выглядит</span>
-            <p>{engagementText.trim() || DEFAULT_ENGAGEMENT_TEXT}</p>
-          </div>
-
-          <div className="channel-settings-preview">
-            {engagementButtons.length ? (
-              engagementButtons.map((buttonText) => <span key={buttonText}>{buttonText}</span>)
-            ) : (
-              <span className="channel-settings-preview__empty">
-                Выберите хотя бы одну кнопку выше.
-              </span>
-            )}
-          </div>
-        </div>
-
-        <label className="field">
-          <span>Текст</span>
-          <textarea
-            rows={3}
-            value={engagementText}
-            onChange={(event) => setEngagementText(event.target.value)}
-            placeholder={DEFAULT_ENGAGEMENT_TEXT}
-            maxLength={2_000}
-          />
-        </label>
-
-        <div className="channel-settings-card__footer">
-          <button
-            type="button"
-            className="button button--accent"
-            onClick={() => void handlePublishEngagement()}
-            disabled={
-              publishEngagementMutation.isPending ||
-              !engagementText.trim() ||
-              engagementButtons.length === 0
-            }
-          >
-            {publishEngagementMutation.isPending ? 'Отправляем...' : 'Отправить в канал'}
-          </button>
         </div>
       </GlassCard>
 
