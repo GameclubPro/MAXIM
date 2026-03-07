@@ -17,6 +17,17 @@ export type MaxBotChat = {
   link: string | null;
 };
 
+export type MaxChatSnapshot = {
+  chatId: string;
+  title: string | null;
+  participantsCount: number | null;
+  status: string | null;
+  isPublic: boolean | null;
+  link: string | null;
+  lastEventAt: string | null;
+  entityType: 'chat' | 'channel';
+};
+
 export type MaxButtonIntent = 'default' | 'positive' | 'negative';
 
 export type MaxLinkButton = {
@@ -435,14 +446,31 @@ export class MaxClientService implements OnModuleDestroy {
 
   async getChatTitle(chatId: string): Promise<string | null> {
     const data = await this.request<Record<string, unknown>>('get', `/chats/${chatId}`);
-    const value = data.title ?? data.name;
+    return this.readTrimmedString(data.title ?? data.name);
+  }
 
-    if (typeof value !== 'string') {
-      return null;
-    }
+  async getChatSnapshot(chatId: string): Promise<MaxChatSnapshot> {
+    const data = await this.request<Record<string, unknown>>('get', `/chats/${chatId}`);
+    const link = this.parseChatLink(data);
+    const isPublic = this.readBoolean(data.is_public ?? data.isPublic ?? data.public);
 
-    const normalized = value.trim();
-    return normalized.length > 0 ? normalized : null;
+    return {
+      chatId,
+      title: this.readTrimmedString(data.title ?? data.name),
+      participantsCount: this.readNullableInteger(
+        data.participants_count ??
+          data.participantsCount ??
+          data.members_count ??
+          data.membersCount,
+      ),
+      status: this.readLowerString(data.status),
+      isPublic: isPublic ?? (link ? true : null),
+      link,
+      lastEventAt: this.readIsoDateTime(
+        data.last_event_time ?? data.lastEventTime ?? data.updated_at ?? data.updatedAt,
+      ),
+      entityType: this.parseChatEntityType(data),
+    };
   }
 
   async getChatAdminIds(chatId: string): Promise<string[]> {
@@ -1208,12 +1236,101 @@ export class MaxClientService implements OnModuleDestroy {
       : null;
   }
 
-  private readLowerString(value: unknown): string | null {
+  private readTrimmedString(value: unknown): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private readBoolean(value: unknown): boolean | null {
+    if (typeof value === 'boolean') {
+      return value;
+    }
+
+    if (typeof value === 'number') {
+      if (value === 1) {
+        return true;
+      }
+      if (value === 0) {
+        return false;
+      }
+      return null;
+    }
+
     if (typeof value !== 'string') {
       return null;
     }
 
     const normalized = value.trim().toLowerCase();
-    return normalized.length > 0 ? normalized : null;
+    if (normalized === 'true' || normalized === '1' || normalized === 'yes') {
+      return true;
+    }
+    if (normalized === 'false' || normalized === '0' || normalized === 'no') {
+      return false;
+    }
+
+    return null;
+  }
+
+  private readNullableInteger(value: unknown): number | null {
+    if (typeof value === 'number') {
+      return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : null;
+    }
+
+    if (typeof value === 'bigint') {
+      return value >= 0n ? Number(value) : null;
+    }
+
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim();
+    if (!normalized) {
+      return null;
+    }
+
+    const parsed = Number.parseInt(normalized, 10);
+    return Number.isNaN(parsed) ? null : Math.max(0, parsed);
+  }
+
+  private readIsoDateTime(value: unknown): string | null {
+    if (value instanceof Date) {
+      return Number.isFinite(value.getTime()) ? value.toISOString() : null;
+    }
+
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) {
+        return null;
+      }
+
+      const timestampMs = value >= 100_000_000_000 ? value : value * 1_000;
+      const parsed = new Date(timestampMs);
+      return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
+    }
+
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim();
+    if (!normalized) {
+      return null;
+    }
+
+    if (/^\d+$/u.test(normalized)) {
+      return this.readIsoDateTime(Number.parseInt(normalized, 10));
+    }
+
+    const parsed = new Date(normalized);
+    return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
+  }
+
+  private readLowerString(value: unknown): string | null {
+    const normalized = this.readTrimmedString(value);
+    return normalized ? normalized.toLowerCase() : null;
   }
 }

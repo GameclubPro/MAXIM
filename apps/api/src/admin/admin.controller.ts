@@ -23,6 +23,15 @@ export class AdminController {
     return this.adminService.listChannels(user);
   }
 
+  @Get('channels/:chatId/stats')
+  getChannelStats(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() query: unknown,
+  ) {
+    return this.adminService.getChannelStats(chatId, user, query);
+  }
+
   @Get('chats/:chatId/settings')
   getSettings(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.adminService.getSettings(chatId, user);

@@ -310,7 +310,7 @@ export function ChatsPage({ api }: { api: ApiClient }) {
                   <Link
                     to={`/channel/${entity.id}/stats`}
                     className="button button--ghost"
-                    state={{ chatTitle: entity.title, channelOverview: entity.channelOverview }}
+                    state={{ chatTitle: entity.title }}
                     onClick={() => {
                       saveLastChatId(entity.id);
                       saveLastEntityType('channel');

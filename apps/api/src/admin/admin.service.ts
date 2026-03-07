@@ -2,6 +2,8 @@ import {
   addGlobalUserBlacklistRequestSchema,
   addDomainRequestSchema,
   addAdminRequestSchema,
+  channelStatsQuerySchema,
+  channelStatsResponseSchema,
   channelDialogResponseSchema,
   channelDialogTypeSchema,
   channelSettingsSchema,
@@ -13,6 +15,8 @@ import {
   manualModerationActionRequestSchema,
   manualModerationActionResultSchema,
   type ChannelDialogType,
+  type ChannelStatsRange,
+  type ChannelStatsResponse,
   type ChannelOverview,
   type ChannelSettings,
   type ChatSettings,
@@ -68,9 +72,19 @@ const CHANNEL_DIALOG_MESSAGES_LIMIT = 80;
 const CHANNEL_DIALOG_ACTION_COMMENT = 'CHANNEL_DIALOG_COMMENT';
 const CHANNEL_DIALOG_ACTION_SUGGEST = 'CHANNEL_DIALOG_SUGGESTION';
 const CHANNEL_DIALOG_ACTION_PUBLISH = 'PUBLISH_CHANNEL_ENGAGEMENT';
+const CHANNEL_DIALOG_ACTION_AUTO_ATTACH = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
 const DEFAULT_CHANNEL_SETTINGS = channelSettingsSchema.parse({});
+const CHANNEL_STATS_POST_ACTIONS = [
+  CHANNEL_DIALOG_ACTION_PUBLISH,
+  CHANNEL_DIALOG_ACTION_AUTO_ATTACH,
+] as const;
+const CHANNEL_STATS_ACTIVITY_ACTIONS = [
+  ...CHANNEL_STATS_POST_ACTIONS,
+  CHANNEL_DIALOG_ACTION_COMMENT,
+  CHANNEL_DIALOG_ACTION_SUGGEST,
+] as const;
 
 type ChannelDialogTokenPayload = {
   v: 1;
@@ -188,6 +202,145 @@ export class AdminService {
 
     const bootstrapped = await this.bootstrapCurrentChat(user, entityType);
     return bootstrapped ? this.attachChannelOverview([bootstrapped]) : [];
+  }
+
+  async getChannelStats(
+    chatId: string,
+    user: AuthUser,
+    query: unknown,
+  ): Promise<ChannelStatsResponse> {
+    await this.assertChatAdmin(chatId, user.userId, 'channel');
+    await this.ensureEntityType(chatId, user.userId, 'channel');
+
+    const parsed = channelStatsQuerySchema.safeParse(query);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const now = new Date();
+    const from = this.resolveChannelStatsFrom(parsed.data.range, now);
+    const chat = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: { id: true, title: true },
+    });
+
+    const statsRows = await this.prisma.$queryRaw<
+      Array<{
+        posts_with_buttons: unknown;
+        comments: unknown;
+        suggestions: unknown;
+        comment_authors: unknown;
+        suggestion_authors: unknown;
+        suggestions_delivered: unknown;
+        suggestions_failed: unknown;
+        last_bot_activity_at: Date | string | null;
+      }>
+    >`
+      SELECT
+        COUNT(DISTINCT CASE
+          WHEN action IN (${Prisma.join(CHANNEL_STATS_POST_ACTIONS)})
+          THEN NULLIF(BTRIM(payload->>'threadId'), '')
+          ELSE NULL
+        END) AS posts_with_buttons,
+        COUNT(*) FILTER (WHERE action = ${CHANNEL_DIALOG_ACTION_COMMENT}) AS comments,
+        COUNT(*) FILTER (WHERE action = ${CHANNEL_DIALOG_ACTION_SUGGEST}) AS suggestions,
+        COUNT(DISTINCT CASE
+          WHEN action = ${CHANNEL_DIALOG_ACTION_COMMENT}
+          THEN actor_user_id
+          ELSE NULL
+        END) AS comment_authors,
+        COUNT(DISTINCT CASE
+          WHEN action = ${CHANNEL_DIALOG_ACTION_SUGGEST}
+          THEN actor_user_id
+          ELSE NULL
+        END) AS suggestion_authors,
+        COUNT(*) FILTER (
+          WHERE action = ${CHANNEL_DIALOG_ACTION_SUGGEST}
+            AND payload->>'delivered' = 'true'
+        ) AS suggestions_delivered,
+        COUNT(*) FILTER (
+          WHERE action = ${CHANNEL_DIALOG_ACTION_SUGGEST}
+            AND payload->>'delivered' = 'false'
+        ) AS suggestions_failed,
+        MAX(created_at) FILTER (
+          WHERE action IN (${Prisma.join(CHANNEL_STATS_ACTIVITY_ACTIONS)})
+        ) AS last_bot_activity_at
+      FROM audit_logs
+      WHERE chat_id = ${chatId}
+        AND created_at >= ${from}
+        AND created_at <= ${now}
+    `;
+
+    const localTitle = chat?.title?.trim() || `Канал ${chatId}`;
+    let maxSnapshotAvailable = true;
+    let participantsCount: number | null = null;
+    let status: string | null = null;
+    let isPublic: boolean | null = null;
+    let link: string | null = null;
+    let lastEventAt: string | null = null;
+    let title = localTitle;
+
+    try {
+      const snapshot = await this.maxClient.getChatSnapshot(chatId);
+      title = snapshot.title?.trim() || localTitle;
+      participantsCount = snapshot.participantsCount;
+      status = snapshot.status;
+      isPublic = snapshot.isPublic;
+      link = snapshot.link;
+      lastEventAt = snapshot.lastEventAt;
+    } catch (error: unknown) {
+      maxSnapshotAvailable = false;
+      this.logger.warn(
+        {
+          chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to fetch MAX channel snapshot for channel stats',
+      );
+    }
+
+    const stats = statsRows[0] ?? {
+      posts_with_buttons: 0,
+      comments: 0,
+      suggestions: 0,
+      comment_authors: 0,
+      suggestion_authors: 0,
+      suggestions_delivered: 0,
+      suggestions_failed: 0,
+      last_bot_activity_at: null,
+    };
+
+    const response: ChannelStatsResponse = {
+      channel: {
+        id: chatId,
+        title,
+        participantsCount,
+        status,
+        isPublic,
+        link,
+        lastEventAt,
+      },
+      period: {
+        range: parsed.data.range,
+        from: from.toISOString(),
+        to: now.toISOString(),
+      },
+      summary: {
+        postsWithButtons: this.toSafeInteger(stats.posts_with_buttons),
+        comments: this.toSafeInteger(stats.comments),
+        suggestions: this.toSafeInteger(stats.suggestions),
+        commentAuthors: this.toSafeInteger(stats.comment_authors),
+        suggestionAuthors: this.toSafeInteger(stats.suggestion_authors),
+        suggestionsDelivered: this.toSafeInteger(stats.suggestions_delivered),
+        suggestionsFailed: this.toSafeInteger(stats.suggestions_failed),
+        lastBotActivityAt: this.toIsoString(stats.last_bot_activity_at),
+      },
+      meta: {
+        maxSnapshotAvailable,
+      },
+    };
+
+    return channelStatsResponseSchema.parse(response);
   }
 
   async getSettings(chatId: string, user: AuthUser): Promise<ChatSettings> {
@@ -1764,6 +1917,10 @@ export class AdminService {
     return new Date(toTimestamp - 7 * 24 * 60 * 60 * 1000);
   }
 
+  private resolveChannelStatsFrom(range: ChannelStatsRange, to: Date): Date {
+    return this.resolveLogsDashboardFrom(range, to);
+  }
+
   private toSafeInteger(value: unknown): number {
     if (typeof value === 'number') {
       return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0;
@@ -1779,6 +1936,33 @@ export class AdminService {
     }
 
     return 0;
+  }
+
+  private toIsoString(value: unknown): string | null {
+    if (value instanceof Date) {
+      return Number.isFinite(value.getTime()) ? value.toISOString() : null;
+    }
+
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) {
+        return null;
+      }
+
+      const parsed = new Date(value);
+      return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
+    }
+
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim();
+    if (!normalized) {
+      return null;
+    }
+
+    const parsed = new Date(normalized);
+    return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
   }
 
   private async resolveUserDisplayNames(
@@ -2408,9 +2592,7 @@ export class AdminService {
   }
 
   private async attachChannelOverview(chats: ChatSummary[]): Promise<ChatSummary[]> {
-    const channelIds = chats
-      .filter((chat) => chat.entityType === 'channel')
-      .map((chat) => chat.id);
+    const channelIds = chats.filter((chat) => chat.entityType === 'channel').map((chat) => chat.id);
 
     if (channelIds.length === 0 || typeof this.prisma.channelSettings?.findMany !== 'function') {
       return chats;

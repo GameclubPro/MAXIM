@@ -461,6 +461,45 @@ export const logsDashboardQuerySchema = z.object({
 });
 export type LogsDashboardQuery = z.infer<typeof logsDashboardQuerySchema>;
 
+export const channelStatsRangeSchema = z.enum(['24h', '7d', '30d']);
+export type ChannelStatsRange = z.infer<typeof channelStatsRangeSchema>;
+
+export const channelStatsQuerySchema = z.object({
+  range: channelStatsRangeSchema.default('7d'),
+});
+export type ChannelStatsQuery = z.infer<typeof channelStatsQuerySchema>;
+
+export const channelStatsResponseSchema = z.object({
+  channel: z.object({
+    id: z.string(),
+    title: z.string(),
+    participantsCount: z.number().int().min(0).nullable(),
+    status: z.string().nullable(),
+    isPublic: z.boolean().nullable(),
+    link: z.string().trim().max(2_048).nullable(),
+    lastEventAt: z.string().datetime().nullable(),
+  }),
+  period: z.object({
+    range: channelStatsRangeSchema,
+    from: z.string().datetime(),
+    to: z.string().datetime(),
+  }),
+  summary: z.object({
+    postsWithButtons: z.number().int().min(0),
+    comments: z.number().int().min(0),
+    suggestions: z.number().int().min(0),
+    commentAuthors: z.number().int().min(0),
+    suggestionAuthors: z.number().int().min(0),
+    suggestionsDelivered: z.number().int().min(0),
+    suggestionsFailed: z.number().int().min(0),
+    lastBotActivityAt: z.string().datetime().nullable(),
+  }),
+  meta: z.object({
+    maxSnapshotAvailable: z.boolean(),
+  }),
+});
+export type ChannelStatsResponse = z.infer<typeof channelStatsResponseSchema>;
+
 export const logsDashboardViolationSchema = z.object({
   id: z.string(),
   action: sanctionActionSchema,

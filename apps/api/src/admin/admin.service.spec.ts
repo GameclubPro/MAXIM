@@ -329,6 +329,233 @@ describe('AdminService.listChannels', () => {
   });
 });
 
+describe('AdminService.getChannelStats', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('returns aggregated channel stats without reading channel settings', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        posts_with_buttons: '2',
+        comments: '4',
+        suggestions: '3',
+        comment_authors: '2',
+        suggestion_authors: '2',
+        suggestions_delivered: '2',
+        suggestions_failed: '1',
+        last_bot_activity_at: new Date('2026-03-07T11:25:00.000Z'),
+      },
+    ]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-1',
+        title: 'Новости MAX',
+        participantsCount: 1240,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/news',
+        lastEventAt: '2026-03-07T11:55:00.000Z',
+        entityType: 'channel',
+      }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.getChannelStats(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { range: '7d' },
+    );
+
+    expect(result).toEqual({
+      channel: {
+        id: 'channel-1',
+        title: 'Новости MAX',
+        participantsCount: 1240,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/news',
+        lastEventAt: '2026-03-07T11:55:00.000Z',
+      },
+      period: {
+        range: '7d',
+        from: '2026-02-28T12:00:00.000Z',
+        to: '2026-03-07T12:00:00.000Z',
+      },
+      summary: {
+        postsWithButtons: 2,
+        comments: 4,
+        suggestions: 3,
+        commentAuthors: 2,
+        suggestionAuthors: 2,
+        suggestionsDelivered: 2,
+        suggestionsFailed: 1,
+        lastBotActivityAt: '2026-03-07T11:25:00.000Z',
+      },
+      meta: {
+        maxSnapshotAvailable: true,
+      },
+    });
+
+    const statsSqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
+    expect(statsSqlText).toContain('COUNT(DISTINCT CASE');
+    expect(statsSqlText).toContain("payload->>'threadId'");
+    expect(statsSqlText).toContain("payload->>'delivered' = 'true'");
+    expect(statsSqlText).toContain("payload->>'delivered' = 'false'");
+  });
+
+  it.each([
+    ['24h', '2026-03-06T12:00:00.000Z'],
+    ['30d', '2026-02-05T12:00:00.000Z'],
+  ] as const)('uses %s boundaries for channel stats period', async (range, expectedFrom) => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        posts_with_buttons: '0',
+        comments: '0',
+        suggestions: '0',
+        comment_authors: '0',
+        suggestion_authors: '0',
+        suggestions_delivered: '0',
+        suggestions_failed: '0',
+        last_bot_activity_at: null,
+      },
+    ]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-1',
+        title: 'Новости MAX',
+        participantsCount: 1240,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/news',
+        lastEventAt: '2026-03-07T11:55:00.000Z',
+        entityType: 'channel',
+      }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.getChannelStats(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { range },
+    );
+
+    expect(result.period.range).toBe(range);
+    expect(result.period.from).toBe(expectedFrom);
+    expect(result.period.to).toBe('2026-03-07T12:00:00.000Z');
+  });
+
+  it('returns partial channel stats when MAX snapshot request fails', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        posts_with_buttons: '1',
+        comments: '0',
+        suggestions: '1',
+        comment_authors: '0',
+        suggestion_authors: '1',
+        suggestions_delivered: '0',
+        suggestions_failed: '1',
+        last_bot_activity_at: new Date('2026-03-07T09:30:00.000Z'),
+      },
+    ]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatSnapshot: jest.fn().mockRejectedValue(new Error('MAX unavailable')),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.getChannelStats(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { range: '24h' },
+    );
+
+    expect(result.channel).toEqual({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      participantsCount: null,
+      status: null,
+      isPublic: null,
+      link: null,
+      lastEventAt: null,
+    });
+    expect(result.summary.suggestionsFailed).toBe(1);
+    expect(result.summary.lastBotActivityAt).toBe('2026-03-07T09:30:00.000Z');
+    expect(result.meta.maxSnapshotAvailable).toBe(false);
+  });
+});
+
 describe('AdminService domain allowlist normalization', () => {
   it('returns deduplicated domain-only allowlist', async () => {
     const prisma = createPrismaMock();

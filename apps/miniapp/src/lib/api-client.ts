@@ -1,5 +1,7 @@
 import {
   addGlobalUserBlacklistRequestSchema,
+  channelStatsRangeSchema,
+  channelStatsResponseSchema,
   channelDialogResponseSchema,
   channelDialogTypeSchema,
   channelSettingsSchema,
@@ -27,6 +29,8 @@ import {
   type ModerationEvent,
   type ChannelDialogType,
   type ChannelDialogResponse,
+  type ChannelStatsRange,
+  type ChannelStatsResponse,
   type CreateChannelDialogMessageResponse,
   type LogsDashboardRange,
   type LogsDashboardResponse,
@@ -80,6 +84,17 @@ export class ApiClient {
   async getChannels(): Promise<ChatSummary[]> {
     const response = await this.request('/channels');
     return response.map((item: unknown) => chatSummarySchema.parse(item));
+  }
+
+  async getChannelStats(
+    chatId: string,
+    range: ChannelStatsRange = '7d',
+  ): Promise<ChannelStatsResponse> {
+    const validatedRange = channelStatsRangeSchema.parse(range);
+    const response = await this.request(
+      `/channels/${chatId}/stats?range=${encodeURIComponent(validatedRange)}`,
+    );
+    return channelStatsResponseSchema.parse(response);
   }
 
   async getSettings(chatId: string): Promise<ChatSettings> {
