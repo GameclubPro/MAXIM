@@ -162,6 +162,9 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'thematicFiltersWarnEnabled',
     'thematicFiltersBanEnabled',
     'thematicFiltersKickEnabled',
+    'thematicFiltersBotButtonEnabled',
+    'thematicFiltersBotButtonUrl',
+    'thematicFiltersBotButtonText',
   ],
   duplicates: [
     'antiDuplicateEnabled',
@@ -1815,6 +1818,18 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     : undefined;
   const hasTextFiltersBotButtonError = Boolean(
     textFiltersBotButtonUrlError || textFiltersBotButtonTextError,
+  );
+  const showThematicBotButtonErrors = Boolean(
+    draft?.thematicFiltersBotMessageEnabled && draft?.thematicFiltersBotButtonEnabled,
+  );
+  const thematicBotButtonUrlError = showThematicBotButtonErrors
+    ? fieldErrors.thematicFiltersBotButtonUrl
+    : undefined;
+  const thematicBotButtonTextError = showThematicBotButtonErrors
+    ? fieldErrors.thematicFiltersBotButtonText
+    : undefined;
+  const hasThematicBotButtonError = Boolean(
+    thematicBotButtonUrlError || thematicBotButtonTextError,
   );
   const showNightBotButtonErrors = Boolean(
     draft?.nightModeBotMessageEnabled && draft?.nightModeBotButtonEnabled,
@@ -3696,12 +3711,15 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             <input
                               type="checkbox"
                               checked={draft.thematicFiltersBotMessageEnabled}
-                              onChange={(event) =>
-                                setFieldValue(
-                                  'thematicFiltersBotMessageEnabled',
-                                  event.target.checked,
-                                )
-                              }
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('thematicFiltersBotMessageEnabled', enabled);
+                                if (!enabled) {
+                                  setFieldValue('thematicFiltersBotButtonEnabled', false);
+                                  clearFieldError('thematicFiltersBotButtonUrl');
+                                  clearFieldError('thematicFiltersBotButtonText');
+                                }
+                              }}
                             />
                             <span className="toggle-switch" aria-hidden>
                               <span className="toggle-switch__thumb" />
@@ -3709,6 +3727,86 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           </label>
                         </div>
                       </div>
+
+                      <div className="settings-native-toggle settings-native-toggle--nested">
+                        <div className="settings-native-toggle__row">
+                          <span className="settings-native-toggle__title">
+                            Кнопка в сообщении бота
+                          </span>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Добавить кнопку в сообщение бота для тематического фильтра"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.thematicFiltersBotButtonEnabled}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('thematicFiltersBotButtonEnabled', enabled);
+                                if (enabled) {
+                                  setFieldValue('thematicFiltersBotMessageEnabled', true);
+                                }
+                                if (!enabled) {
+                                  clearFieldError('thematicFiltersBotButtonUrl');
+                                  clearFieldError('thematicFiltersBotButtonText');
+                                }
+                              }}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+
+                      {draft.thematicFiltersBotButtonEnabled ? (
+                        <div className="settings-button-fields">
+                          <label
+                            className={cn(
+                              'field settings-url-field',
+                              thematicBotButtonUrlError && 'field--error',
+                            )}
+                          >
+                            <span className="field__label">Ссылка кнопки</span>
+                            <input
+                              type="url"
+                              inputMode="url"
+                              value={draft.thematicFiltersBotButtonUrl}
+                              onChange={(event) =>
+                                setFieldValue('thematicFiltersBotButtonUrl', event.target.value)
+                              }
+                              placeholder="https://max.ru/channel/..."
+                            />
+                            {thematicBotButtonUrlError ? (
+                              <small className="field__hint">{thematicBotButtonUrlError}</small>
+                            ) : null}
+                          </label>
+
+                          <label
+                            className={cn(
+                              'field settings-text-field',
+                              thematicBotButtonTextError && 'field--error',
+                            )}
+                          >
+                            <span className="field__label">Название кнопки</span>
+                            <input
+                              type="text"
+                              value={draft.thematicFiltersBotButtonText}
+                              onChange={(event) =>
+                                setFieldValue('thematicFiltersBotButtonText', event.target.value)
+                              }
+                              placeholder="Открыть"
+                              maxLength={32}
+                            />
+                            {thematicBotButtonTextError ? (
+                              <small className="field__hint">{thematicBotButtonTextError}</small>
+                            ) : hasThematicBotButtonError ? null : (
+                              <small className="field__hint">До 32 символов.</small>
+                            )}
+                          </label>
+                        </div>
+                      ) : null}
 
                       <div className="settings-native-toggle settings-native-toggle--nested">
                         <div className="settings-native-toggle__row">

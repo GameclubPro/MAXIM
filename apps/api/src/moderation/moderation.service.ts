@@ -699,6 +699,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           settings.messageLimitsBotButtonText,
         )
       : null;
+    const topicMessageOptions = isTopicFilterHit
+      ? this.buildBotMessageOptions(
+          settings.thematicFiltersBotButtonEnabled,
+          settings.thematicFiltersBotButtonUrl,
+          settings.thematicFiltersBotButtonText,
+        )
+      : null;
     const textFilterViolationCount24h = isTextFilterHit
       ? await this.countRecentTextFilterViolations(chatId, senderId, topViolation.ruleCode)
       : null;
@@ -798,6 +805,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             canDeleteMessage,
             this.extractTopicFilterTopics(topViolation.metadata),
           ),
+          topicMessageOptions ?? undefined,
         );
       } catch (error: unknown) {
         this.logger.warn(
@@ -888,6 +896,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               userLabel,
               this.extractTopicFilterTopics(topViolation.metadata),
             ),
+            topicMessageOptions ?? undefined,
           );
         } catch (error: unknown) {
           this.logger.warn(
@@ -947,6 +956,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         botMessageOptions:
           topViolation.ruleCode === 'LINK_BLOCKED'
             ? (linkMessageOptions ?? undefined)
+            : isTopicFilterHit
+              ? (topicMessageOptions ?? undefined)
             : isMessageLimitsHit
               ? (limitsMessageOptions ?? undefined)
               : undefined,
@@ -1010,6 +1021,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               userLabel,
               this.extractTopicFilterTopics(topViolation.metadata),
             ),
+            topicMessageOptions ?? undefined,
           );
         } catch (error: unknown) {
           this.logger.warn(

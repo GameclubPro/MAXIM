@@ -79,6 +79,9 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     thematicFiltersWarnEnabled: false,
     thematicFiltersBanEnabled: false,
     thematicFiltersKickEnabled: false,
+    thematicFiltersBotButtonEnabled: false,
+    thematicFiltersBotButtonUrl: '',
+    thematicFiltersBotButtonText: 'Открыть',
     nightModeEnabled: false,
     nightModeStartTimeMinutes: 23 * 60,
     nightModeEndTimeMinutes: 8 * 60,
@@ -418,6 +421,32 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
   });
 
+  it('does not detect TOPIC_FILTER_MISMATCH for real-estate ad with typos and loose wording', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продам квартиу в новостройке, 2 комнате, этаж 7, метро рядом, балкон застеклен, собственник на месте, ипатека возможна, фотки и детали скину сразу в чат.',
+      settings: buildSettings({ realEstateTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
+  it('does not detect TOPIC_FILTER_MISMATCH for auto ad with typos and colloquial wording', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продам автамобиль, пробег 148000, двиготель обслужен, коробка не пинается, кузов живой, один владелец, торг у капота, машина на ходу и без срочных вложений.',
+      settings: buildSettings({ autoMarketTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
   it('allows message when any enabled thematic filter matches', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
@@ -442,6 +471,20 @@ describe('RuleEngineService', () => {
       text: 'Короткий оффтоп про дедлайн и созвон без тематических слов.',
       settings: buildSettings({ realEstateTopicFilterEnabled: true }),
       domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
+  it('does not apply thematic filter to messages with media attachments', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Это длинное сообщение без явных тематических слов про встречу, отчеты, документы, сроки, бюджеты и планы команды, но основная информация и фото объявления находятся во вложении.',
+      settings: buildSettings({ realEstateTopicFilterEnabled: true }),
+      domainAllowlist: [],
+      hasPhotoAttachment: true,
     });
 
     expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
@@ -478,7 +521,7 @@ describe('RuleEngineService', () => {
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'Разбираем производственный инцидент: один двигатель стенда заклинил, но дальше идет обсуждение сроков ремонта, бюджета команды, ролей дежурных, каналов связи и организационных процессов без какого-либо контекста продажи транспорта.',
+      text: 'Разбираем производственный инцидент: у испытательного стенда заклинил двигатель, а дальше идет обсуждение бюджета команды, ролей дежурных, каналов связи, планирования спринтов и организационных процессов без тематических маркеров объявлений.',
       settings: buildSettings({ autoMarketTopicFilterEnabled: true }),
       domainAllowlist: [],
     });
@@ -491,7 +534,7 @@ describe('RuleEngineService', () => {
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'На встрече обсуждали планировку офиса, график переезда отдела, закупку мебели, видеостену, переговорные комнаты и внутренние регламенты компании, но разговор вообще не касался рынка жилья или продажи объектов.',
+      text: 'На встрече обсуждали планировку офиса, график переезда отдела, закупку мебели, видеостену, коммуникацию между командами и внутренние регламенты компании, но разговор вообще не касался тематики объявлений.',
       settings: buildSettings({ realEstateTopicFilterEnabled: true }),
       domainAllowlist: [],
     });

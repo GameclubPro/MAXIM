@@ -75,6 +75,7 @@ type TopicDictionary = {
   strongTokenPrefixes: readonly string[];
   supportingExactTokens: readonly string[];
   supportingTokenPrefixes: readonly string[];
+  intentMarkers: readonly string[];
   minSupportingIndicators: number;
 };
 
@@ -199,13 +200,39 @@ const REAL_ESTATE_TOPIC_DICTIONARY: TopicDictionary = {
     'ипотечная ставка',
     'вторичное жилье',
     'вторичное жильё',
+    'продам квартиру',
+    'продаю квартиру',
+    'куплю квартиру',
+    'ищу квартиру',
+    'сдам квартиру',
+    'сдается квартира',
+    'сдаётся квартира',
+    'сдам комнату',
+    'сдается комната',
+    'сдаётся комната',
+    'сниму комнату',
+    'комната в аренду',
+    'долгосрочная аренда',
+    'посуточная аренда',
+    'земельный участок',
+    'частный дом',
+    'загородный дом',
+    'коммерческое помещение',
+    'нежилое помещение',
+    'жилая площадь',
+    'общая площадь',
+    'без посредников',
+    'от собственника',
+    'первый взнос',
+    'ипотека возможна',
   ],
-  exactTokens: ['егрн', 'ижс'],
+  exactTokens: ['егрн', 'ижс', 'евродвушка', 'евротрешка'],
   strongTokenPrefixes: [
     'квартир',
     'апартамент',
     'ипотек',
     'новострой',
+    'вторичк',
     'таунхаус',
     'коттедж',
     'риелтор',
@@ -217,9 +244,49 @@ const REAL_ESTATE_TOPIC_DICTIONARY: TopicDictionary = {
     'кадастр',
     'домовладен',
     'машиномест',
+    'евродвушк',
+    'евротрешк',
+    'посуточн',
   ],
-  supportingExactTokens: ['участок', 'участка', 'участке', 'участком', 'участки', 'сотка', 'сотки', 'соток'],
-  supportingTokenPrefixes: ['собственник', 'планировк', 'паркинг', 'метраж', 'санузел'],
+  supportingExactTokens: [
+    'участок',
+    'участка',
+    'участке',
+    'участком',
+    'участки',
+    'сотка',
+    'сотки',
+    'соток',
+    'жк',
+    'комната',
+    'комнаты',
+    'комнату',
+    'комнате',
+    'аренда',
+    'сдам',
+    'сдаю',
+    'сдается',
+    'сдаётся',
+    'сниму',
+    'этаж',
+    'этаже',
+    'этажа',
+    'балкон',
+    'метро',
+  ],
+  supportingTokenPrefixes: [
+    'собственник',
+    'планировк',
+    'паркинг',
+    'метраж',
+    'санузел',
+    'лоджи',
+    'район',
+    'ремонт',
+    'долгосроч',
+    'жилплощ',
+  ],
+  intentMarkers: ['продаю', 'продам', 'сдам', 'сдаю', 'сдается', 'сдаётся', 'сниму', 'куплю'],
   minSupportingIndicators: 2,
 };
 const AUTO_MARKET_TOPIC_DICTIONARY: TopicDictionary = {
@@ -234,6 +301,28 @@ const AUTO_MARKET_TOPIC_DICTIONARY: TopicDictionary = {
     'после дтп',
     'сервисная книжка',
     'родной пробег',
+    'продаю авто',
+    'продам авто',
+    'продаю машину',
+    'продам машину',
+    'куплю авто',
+    'куплю машину',
+    'на ходу',
+    'сел и поехал',
+    'не бит не крашен',
+    'не битый не крашеный',
+    'один владелец',
+    'вложений не требует',
+    'торг у капота',
+    'без вложений',
+    'в хорошем состоянии',
+    'документы в порядке',
+    'комплект колес',
+    'комплект колёс',
+    'зимняя резина',
+    'летняя резина',
+    'авто в наличии',
+    'коробка не пинается',
   ],
   exactTokens: ['vin', 'акпп', 'мкпп', 'осаго', 'каско', 'птс', 'стс'],
   strongTokenPrefixes: [
@@ -249,8 +338,25 @@ const AUTO_MARKET_TOPIC_DICTIONARY: TopicDictionary = {
     'электромоб',
     'кабриолет',
     'минивэн',
+    'лифтбек',
+    'паркетник',
   ],
-  supportingExactTokens: ['дтп'],
+  supportingExactTokens: [
+    'дтп',
+    'авто',
+    'машина',
+    'машину',
+    'машины',
+    'машиной',
+    'тачка',
+    'тачку',
+    'тачки',
+    'мотор',
+    'лс',
+    'резина',
+    'колеса',
+    'колёса',
+  ],
   supportingTokenPrefixes: [
     'пробег',
     'двигател',
@@ -259,7 +365,12 @@ const AUTO_MARKET_TOPIC_DICTIONARY: TopicDictionary = {
     'бампер',
     'тормозн',
     'сцеплен',
+    'обслуж',
+    'капот',
+    'шин',
+    'резин',
   ],
+  intentMarkers: ['продаю', 'продам', 'куплю', 'обмен', 'торг'],
   minSupportingIndicators: 2,
 };
 const DEFAULT_DUPLICATE_WINDOW_SEC = 60;
@@ -370,6 +481,11 @@ export class RuleEngineService {
       normalizedText: normalized,
       measuredLength,
       settings,
+      hasMediaAttachment:
+        Boolean(hasPhotoAttachment) ||
+        Boolean(hasVideoAttachment) ||
+        Boolean(hasFileAttachment) ||
+        Boolean(hasVoiceAttachment),
     });
     if (topicMismatch) {
       violations.push({
@@ -827,9 +943,14 @@ export class RuleEngineService {
     normalizedText: string;
     measuredLength: number;
     settings: ChatSettings;
+    hasMediaAttachment: boolean;
   }): TopicFilterDetection | null {
-    const { normalizedText, measuredLength, settings } = params;
+    const { normalizedText, measuredLength, settings, hasMediaAttachment } = params;
     if (measuredLength <= TOPIC_FILTER_MIN_LENGTH) {
+      return null;
+    }
+
+    if (hasMediaAttachment) {
       return null;
     }
 
@@ -876,14 +997,14 @@ export class RuleEngineService {
     }
 
     const tokenSet = new Set(tokens);
-    if (dictionary.exactTokens.some((token) => tokenSet.has(token))) {
+    if (dictionary.exactTokens.some((token) => this.hasTopicExactTokenMatch(tokenSet, tokens, token))) {
       return true;
     }
 
     if (
       tokens.some((token) =>
         dictionary.strongTokenPrefixes.some(
-          (prefix) => token === prefix || token.startsWith(prefix),
+          (prefix) => this.hasTopicPrefixMatch(token, prefix),
         ),
       )
     ) {
@@ -892,8 +1013,10 @@ export class RuleEngineService {
 
     const supportingIndicators = new Set<string>();
     for (const token of tokens) {
-      if (dictionary.supportingExactTokens.includes(token)) {
-        supportingIndicators.add(`exact:${token}`);
+      for (const exactToken of dictionary.supportingExactTokens) {
+        if (token === exactToken) {
+          supportingIndicators.add(`exact:${exactToken}`);
+        }
       }
 
       for (const prefix of dictionary.supportingTokenPrefixes) {
@@ -903,7 +1026,124 @@ export class RuleEngineService {
       }
     }
 
+    if (
+      supportingIndicators.size > 0 &&
+      dictionary.intentMarkers.some((marker) => normalizedText.includes(marker))
+    ) {
+      return true;
+    }
+
     return supportingIndicators.size >= dictionary.minSupportingIndicators;
+  }
+
+  private hasTopicExactTokenMatch(
+    tokenSet: Set<string>,
+    tokens: string[],
+    expectedToken: string,
+  ): boolean {
+    if (tokenSet.has(expectedToken)) {
+      return true;
+    }
+
+    if (expectedToken.length < 6) {
+      return false;
+    }
+
+    return tokens.some((token) => this.isApproximateTopicTokenMatch(token, expectedToken));
+  }
+
+  private hasTopicPrefixMatch(token: string, prefix: string): boolean {
+    if (token === prefix || token.startsWith(prefix)) {
+      return true;
+    }
+
+    if (prefix.length < 6 || token.length < prefix.length - 1) {
+      return false;
+    }
+
+    if (token.slice(0, 3) !== prefix.slice(0, 3)) {
+      return false;
+    }
+
+    const candidateLengths = new Set([prefix.length - 1, prefix.length, prefix.length + 1]);
+    for (const candidateLength of candidateLengths) {
+      if (candidateLength < 1 || token.length < candidateLength) {
+        continue;
+      }
+
+      const candidate = token.slice(0, candidateLength);
+      if (this.hasEditDistanceAtMostOne(candidate, prefix)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private isApproximateTopicTokenMatch(token: string, expectedToken: string): boolean {
+    if (token.length < 6 || Math.abs(token.length - expectedToken.length) > 1) {
+      return false;
+    }
+
+    if (token.slice(0, 3) !== expectedToken.slice(0, 3)) {
+      return false;
+    }
+
+    return this.hasEditDistanceAtMostOne(token, expectedToken);
+  }
+
+  private hasEditDistanceAtMostOne(left: string, right: string): boolean {
+    if (left === right) {
+      return true;
+    }
+
+    if (Math.abs(left.length - right.length) > 1) {
+      return false;
+    }
+
+    let leftIndex = 0;
+    let rightIndex = 0;
+    let edits = 0;
+
+    while (leftIndex < left.length && rightIndex < right.length) {
+      if (left[leftIndex] === right[rightIndex]) {
+        leftIndex += 1;
+        rightIndex += 1;
+        continue;
+      }
+
+      if (edits === 1) {
+        return false;
+      }
+
+      if (
+        leftIndex + 1 < left.length &&
+        rightIndex + 1 < right.length &&
+        left[leftIndex] === right[rightIndex + 1] &&
+        left[leftIndex + 1] === right[rightIndex]
+      ) {
+        edits += 1;
+        leftIndex += 2;
+        rightIndex += 2;
+        continue;
+      }
+
+      edits += 1;
+      if (left.length > right.length) {
+        leftIndex += 1;
+      } else if (right.length > left.length) {
+        rightIndex += 1;
+      } else {
+        leftIndex += 1;
+        rightIndex += 1;
+      }
+    }
+
+    if (leftIndex < left.length || rightIndex < right.length) {
+      edits += 1;
+    }
+
+    return edits <= 1;
   }
 
   private collectCommercialSignals(

@@ -130,6 +130,9 @@ export const chatSettingsSchema = z
     thematicFiltersWarnEnabled: z.boolean().default(false),
     thematicFiltersBanEnabled: z.boolean().default(false),
     thematicFiltersKickEnabled: z.boolean().default(false),
+    thematicFiltersBotButtonEnabled: z.boolean().default(false),
+    thematicFiltersBotButtonUrl: botButtonUrlSchema,
+    thematicFiltersBotButtonText: botButtonTextSchema,
     nightModeEnabled: z.boolean().default(false),
     nightModeStartTimeMinutes: z
       .number()
@@ -325,6 +328,30 @@ export const chatSettingsSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['textFiltersBotButtonText'],
+        message: 'Введите название кнопки.',
+      });
+    }
+
+    if (
+      value.thematicFiltersBotMessageEnabled &&
+      value.thematicFiltersBotButtonEnabled &&
+      !isValidBotButtonUrl(value.thematicFiltersBotButtonUrl)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['thematicFiltersBotButtonUrl'],
+        message: 'Укажите корректную ссылку для кнопки (http/https).',
+      });
+    }
+
+    if (
+      value.thematicFiltersBotMessageEnabled &&
+      value.thematicFiltersBotButtonEnabled &&
+      !isValidBotButtonText(value.thematicFiltersBotButtonText)
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['thematicFiltersBotButtonText'],
         message: 'Введите название кнопки.',
       });
     }

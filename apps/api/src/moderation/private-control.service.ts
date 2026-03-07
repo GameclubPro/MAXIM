@@ -368,6 +368,21 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
       label: 'Шаг 4: кик',
       type: 'boolean',
     },
+    {
+      key: 'thematicFiltersBotButtonEnabled',
+      label: 'Показывать кнопку',
+      type: 'boolean',
+    },
+    {
+      key: 'thematicFiltersBotButtonUrl',
+      label: 'Ссылка кнопки',
+      type: 'url',
+    },
+    {
+      key: 'thematicFiltersBotButtonText',
+      label: 'Текст кнопки',
+      type: 'text',
+    },
   ],
   duplicates: [
     { key: 'antiDuplicateEnabled', label: 'Включить антидубли', type: 'boolean' },
@@ -598,7 +613,11 @@ const SECTION_CARD_FIELDS: Record<
       'thematicFiltersBanEnabled',
       'thematicFiltersKickEnabled',
     ],
-    advanced: [],
+    advanced: [
+      'thematicFiltersBotButtonEnabled',
+      'thematicFiltersBotButtonText',
+      'thematicFiltersBotButtonUrl',
+    ],
   },
   duplicates: {
     basic: [

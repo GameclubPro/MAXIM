@@ -95,6 +95,9 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     thematicFiltersWarnEnabled: false,
     thematicFiltersBanEnabled: false,
     thematicFiltersKickEnabled: false,
+    thematicFiltersBotButtonEnabled: false,
+    thematicFiltersBotButtonUrl: '',
+    thematicFiltersBotButtonText: 'Открыть',
     nightModeEnabled: false,
     nightModeStartTimeMinutes: 23 * 60,
     nightModeEndTimeMinutes: 8 * 60,
@@ -3930,6 +3933,9 @@ describe('ModerationService', () => {
           settings: createSettings({
             realEstateTopicFilterEnabled: true,
             thematicFiltersBotMessageEnabled: true,
+            thematicFiltersBotButtonEnabled: true,
+            thematicFiltersBotButtonUrl: 'https://max.ru/channel/rules',
+            thematicFiltersBotButtonText: 'Правила темы',
           }),
           domains: [],
         }),
@@ -3976,6 +3982,12 @@ describe('ModerationService', () => {
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Сообщение пользователя "Алексей" удалено: сообщения должны относиться к теме недвижимости.',
+      expect.objectContaining({
+        button: {
+          text: 'Правила темы',
+          url: 'https://max.ru/channel/rules',
+        },
+      }),
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
       data: expect.objectContaining({
