@@ -538,12 +538,38 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
   });
 
+  it('does not detect TOPIC_FILTER_MISMATCH for russian slangy real-estate listing with colloquial spelling', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продам трёшку в первичке: квартира от собственника, маткапитал и иппотека проходят, никто не прописан, свободная продажа, риэлка не нужна.',
+      settings: buildSettings({ realEstateTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
   it('does not detect TOPIC_FILTER_MISMATCH for auto ad with typos and colloquial wording', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'Продам автамобиль, пробег 148000, двиготель обслужен, коробка не пинается, кузов живой, один владелец, торг у капота, машина на ходу и без срочных вложений.',
+      settings: buildSettings({ autoMarketTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
+  it('does not detect TOPIC_FILTER_MISMATCH for russian slangy auto listing with local market wording', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продам Приору: запретов арестов нет, отчёт зелёный, не из под такси, по ПТС я хозяин, мотор шепчет, торг у капота.',
       settings: buildSettings({ autoMarketTopicFilterEnabled: true }),
       domainAllowlist: [],
     });
@@ -697,12 +723,38 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
   });
 
+  it('detects TOPIC_FILTER_MISMATCH for short slangy auto-market message in real-estate chat', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продам Приору, не такси, по ПТС я хозяин, запретов арестов нет.',
+      settings: buildSettings({ realEstateTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
+  });
+
   it('detects TOPIC_FILTER_MISMATCH for short real-estate message in auto-market chat', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'Сдам студию, 32 м, метро рядом, без комиссии, собственник.',
+      settings: buildSettings({ autoMarketTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
+  });
+
+  it('detects TOPIC_FILTER_MISMATCH for short slangy real-estate message in auto-market chat', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продам однуху, первичка, маткапитал, квартира от собственника.',
       settings: buildSettings({ autoMarketTopicFilterEnabled: true }),
       domainAllowlist: [],
     });
