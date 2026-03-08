@@ -87,6 +87,15 @@ type TopicFilterDetection = {
   detectedOffTopicTopics: TopicFilterTopic[];
 };
 
+type TopicEvidence = {
+  score: number;
+  phraseHits: string[];
+  exactTokenHits: string[];
+  strongPrefixHits: string[];
+  supportingIndicators: string[];
+  hasIntentMarker: boolean;
+};
+
 const PROFANITY_CORE_TOKEN_PATTERNS = [
   /^бля[а-я0-9]*$/u,
   /^пизд[а-я0-9]*$/u,
@@ -188,6 +197,12 @@ const ADS_QUANTITY_PATTERN = /\b(шт|штук|шт\.|пачк|упак|оста
 const ADS_PHONE_PATTERN = /\b(?:\+7|8)\s*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b/u;
 const TOPIC_FILTER_MIN_LENGTH = 100;
 const TOPIC_FILTER_TOPICS: readonly TopicFilterTopic[] = ['REAL_ESTATE', 'AUTO_MARKET'];
+const TOPIC_PHRASE_SCORE = 5;
+const TOPIC_EXACT_TOKEN_SCORE = 5;
+const TOPIC_STRONG_PREFIX_SCORE = 5;
+const TOPIC_SUPPORTING_INDICATOR_SCORE = 2;
+const TOPIC_INTENT_MARKER_SCORE = 1;
+const TOPIC_MIN_MATCH_SCORE = 5;
 const REAL_ESTATE_TOPIC_DICTIONARY: TopicDictionary = {
   phrases: [
     'жилой комплекс',
@@ -382,8 +397,6 @@ const REAL_ESTATE_TOPIC_DICTIONARY: TopicDictionary = {
     'лпх',
     'евродвушка',
     'евротрешка',
-    'участок',
-    'комната',
     'квартира',
     'однушка',
     'двушка',
@@ -1568,17 +1581,18 @@ export class RuleEngineService {
       return null;
     }
 
+    const topicEvidence = new Map(
+      TOPIC_FILTER_TOPICS.map((topic) => [topic, this.collectTopicEvidence(normalizedText, topic)]),
+    );
     const matchedTopics = activeTopics.filter((topic) =>
-      this.hasTopicDictionaryMatch(normalizedText, topic),
+      this.hasSufficientTopicEvidence(topicEvidence.get(topic)),
     );
     if (matchedTopics.length > 0) {
       return null;
     }
 
     const detectedOffTopicTopics = TOPIC_FILTER_TOPICS.filter(
-      (topic) =>
-        !activeTopics.includes(topic) &&
-        this.hasStrongShortTopicDictionaryMatch(normalizedText, topic),
+      (topic) => !activeTopics.includes(topic) && this.hasSufficientTopicEvidence(topicEvidence.get(topic)),
     );
     if (
       measuredLength <= TOPIC_FILTER_MIN_LENGTH &&
@@ -1612,86 +1626,70 @@ export class RuleEngineService {
     return topic === 'REAL_ESTATE' ? REAL_ESTATE_TOPIC_DICTIONARY : AUTO_MARKET_TOPIC_DICTIONARY;
   }
 
-  private hasTopicDictionaryMatch(normalizedText: string, topic: TopicFilterTopic): boolean {
+  private collectTopicEvidence(normalizedText: string, topic: TopicFilterTopic): TopicEvidence {
     if (!normalizedText) {
-      return false;
+      return {
+        score: 0,
+        phraseHits: [],
+        exactTokenHits: [],
+        strongPrefixHits: [],
+        supportingIndicators: [],
+        hasIntentMarker: false,
+      };
     }
 
     const dictionary = this.getTopicDictionary(topic);
-    if (dictionary.phrases.some((phrase) => normalizedText.includes(phrase))) {
-      return true;
-    }
-
+    const phraseHits = dictionary.phrases.filter((phrase) => normalizedText.includes(phrase));
     const tokens = this.extractTokens(normalizedText);
     if (tokens.length === 0) {
-      return false;
+      return {
+        score: phraseHits.length > 0 ? TOPIC_PHRASE_SCORE : 0,
+        phraseHits,
+        exactTokenHits: [],
+        strongPrefixHits: [],
+        supportingIndicators: [],
+        hasIntentMarker: false,
+      };
     }
 
     const tokenSet = new Set(tokens);
-    if (
-      dictionary.exactTokens.some((token) => this.hasTopicExactTokenMatch(tokenSet, tokens, token))
-    ) {
-      return true;
+    const exactTokenHits = new Set<string>();
+    for (const token of dictionary.exactTokens) {
+      if (this.hasTopicExactTokenMatch(tokenSet, tokens, token)) {
+        exactTokenHits.add(token);
+      }
     }
 
-    if (
-      tokens.some((token) =>
-        dictionary.strongTokenPrefixes.some((prefix) => this.hasTopicPrefixMatch(token, prefix)),
-      )
-    ) {
-      return true;
+    const strongPrefixHits = new Set<string>();
+    for (const token of tokens) {
+      if (
+        dictionary.strongTokenPrefixes.some((prefix) => this.hasTopicPrefixMatch(token, prefix))
+      ) {
+        strongPrefixHits.add(token);
+      }
     }
 
-    const supportingIndicators = this.collectTopicSupportingIndicators(tokens, dictionary);
-
-    if (
-      supportingIndicators.size > 0 &&
-      dictionary.intentMarkers.some((marker) => normalizedText.includes(marker))
-    ) {
-      return true;
-    }
-
-    return supportingIndicators.size >= dictionary.minSupportingIndicators;
-  }
-
-  private hasStrongShortTopicDictionaryMatch(
-    normalizedText: string,
-    topic: TopicFilterTopic,
-  ): boolean {
-    if (!normalizedText) {
-      return false;
-    }
-
-    const dictionary = this.getTopicDictionary(topic);
-    if (dictionary.phrases.some((phrase) => normalizedText.includes(phrase))) {
-      return true;
-    }
-
-    const tokens = this.extractTokens(normalizedText);
-    if (tokens.length === 0) {
-      return false;
-    }
-
-    if (
-      tokens.some((token) =>
-        dictionary.strongTokenPrefixes.some((prefix) => this.hasTopicPrefixMatch(token, prefix)),
-      )
-    ) {
-      return true;
-    }
-
-    const tokenSet = new Set(tokens);
     const supportingIndicators = this.collectTopicSupportingIndicators(tokens, dictionary);
     const hasIntentMarker = dictionary.intentMarkers.some((marker) => normalizedText.includes(marker));
-    const hasExactTokenMatch = dictionary.exactTokens.some((token) =>
-      this.hasTopicExactTokenMatch(tokenSet, tokens, token),
-    );
+    const score =
+      (phraseHits.length > 0 ? TOPIC_PHRASE_SCORE : 0) +
+      (exactTokenHits.size > 0 ? TOPIC_EXACT_TOKEN_SCORE : 0) +
+      (strongPrefixHits.size > 0 ? TOPIC_STRONG_PREFIX_SCORE : 0) +
+      supportingIndicators.size * TOPIC_SUPPORTING_INDICATOR_SCORE +
+      (hasIntentMarker ? TOPIC_INTENT_MARKER_SCORE : 0);
 
-    if (hasExactTokenMatch && (hasIntentMarker || supportingIndicators.size > 0)) {
-      return true;
-    }
+    return {
+      score,
+      phraseHits,
+      exactTokenHits: [...exactTokenHits],
+      strongPrefixHits: [...strongPrefixHits],
+      supportingIndicators: [...supportingIndicators],
+      hasIntentMarker,
+    };
+  }
 
-    return supportingIndicators.size >= dictionary.minSupportingIndicators;
+  private hasSufficientTopicEvidence(evidence?: TopicEvidence): boolean {
+    return (evidence?.score ?? 0) >= TOPIC_MIN_MATCH_SCORE;
   }
 
   private collectTopicSupportingIndicators(

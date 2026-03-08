@@ -421,6 +421,45 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
   });
 
+  it('does not detect TOPIC_FILTER_MISMATCH for room rental listing with strong real-estate context', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Сдам комнату в коммуналке: метро рядом, без комиссии, собственник на связи, показ вечером, можно быстро заселиться, документы в порядке.',
+      settings: buildSettings({ realEstateTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
+  it('detects TOPIC_FILTER_MISMATCH for long office discussion with ambiguous room and studio wording', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'У нас в офисе есть комната переговоров, комната отдыха и студия записи для подкаста, обсуждаем график сотрудников и внутренние регламенты компании без связи с объявлениями.',
+      settings: buildSettings({ realEstateTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
+  });
+
+  it('detects TOPIC_FILTER_MISMATCH for long engineering discussion with code section wording', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'В репозитории есть участок кода для авторизации, участок миграции Prisma и участок с очередями, надо созвониться и распределить задачи по команде без связи с тематикой объявлений.',
+      settings: buildSettings({ realEstateTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
+  });
+
   it('does not detect TOPIC_FILTER_MISMATCH for real-estate ad with typos and loose wording', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
