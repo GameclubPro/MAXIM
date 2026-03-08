@@ -486,6 +486,19 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
   });
 
+  it('does not detect TOPIC_FILTER_MISMATCH for office sublease listing with commercial real-estate markers', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Сдам офисное помещение в субаренду: open space, отдельный вход, арендные каникулы, офис в центре, без комиссии, собственник на связи, показ по договоренности, документы готовы к быстрому заезду.',
+      settings: buildSettings({ realEstateTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
   it('does not detect TOPIC_FILTER_MISMATCH for auto ad with typos and colloquial wording', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
@@ -518,6 +531,19 @@ describe('RuleEngineService', () => {
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'Авто в разбор: контрактный двигатель, контрактная коробка, живая рейка, ступицы без люфта, запчасти отправлю быстро, машина после ДТП, но по железу еще много чего годного осталось.',
+      settings: buildSettings({ autoMarketTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
+  it('does not detect TOPIC_FILTER_MISMATCH for commercial transport listing with feature markers', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продаю микроавтобус Isuzu: дизель, полный привод, камера заднего вида, парктроник, фаркоп, автозапуск, по технике без нареканий, документы на руках, коммерческий транспорт готов к работе сразу после покупки.',
       settings: buildSettings({ autoMarketTopicFilterEnabled: true }),
       domainAllowlist: [],
     });
