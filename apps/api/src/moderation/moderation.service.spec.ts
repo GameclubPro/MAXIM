@@ -3958,7 +3958,7 @@ describe('ModerationService', () => {
           {
             ruleCode: 'TOPIC_FILTER_MISMATCH',
             score: 0.84,
-            reason: 'Long message without required thematic markers',
+            reason: 'Message without required thematic markers',
             metadata: {
               activeTopics: ['REAL_ESTATE'],
               matchedTopics: [],
@@ -4047,7 +4047,7 @@ describe('ModerationService', () => {
           {
             ruleCode: 'TOPIC_FILTER_MISMATCH',
             score: 0.84,
-            reason: 'Long message without required thematic markers',
+            reason: 'Message without required thematic markers',
             metadata: {
               activeTopics: ['AUTO_MARKET'],
               matchedTopics: [],
@@ -4127,7 +4127,7 @@ describe('ModerationService', () => {
           {
             ruleCode: 'TOPIC_FILTER_MISMATCH',
             score: 0.84,
-            reason: 'Long message without required thematic markers',
+            reason: 'Message without required thematic markers',
             metadata: {
               activeTopics: ['REAL_ESTATE'],
               matchedTopics: [],
@@ -4208,7 +4208,7 @@ describe('ModerationService', () => {
           {
             ruleCode: 'TOPIC_FILTER_MISMATCH',
             score: 0.84,
-            reason: 'Long message without required thematic markers',
+            reason: 'Message without required thematic markers',
             metadata: {
               activeTopics: ['REAL_ESTATE', 'AUTO_MARKET'],
               matchedTopics: [],

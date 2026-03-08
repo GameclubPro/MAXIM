@@ -84,6 +84,7 @@ type TopicFilterDetection = {
   matchedTopics: TopicFilterTopic[];
   messageLength: number;
   minLengthExclusive: number;
+  detectedOffTopicTopics: TopicFilterTopic[];
 };
 
 const PROFANITY_CORE_TOKEN_PATTERNS = [
@@ -186,6 +187,7 @@ const ADS_URGENCY_PATTERN = /\b(срочно|только сегодня|до к
 const ADS_QUANTITY_PATTERN = /\b(шт|штук|шт\.|пачк|упак|остатк|места)\b/iu;
 const ADS_PHONE_PATTERN = /\b(?:\+7|8)\s*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b/u;
 const TOPIC_FILTER_MIN_LENGTH = 100;
+const TOPIC_FILTER_TOPICS: readonly TopicFilterTopic[] = ['REAL_ESTATE', 'AUTO_MARKET'];
 const REAL_ESTATE_TOPIC_DICTIONARY: TopicDictionary = {
   phrases: [
     'жилой комплекс',
@@ -1106,12 +1108,13 @@ export class RuleEngineService {
       violations.push({
         ruleCode: 'TOPIC_FILTER_MISMATCH',
         score: 0.84,
-        reason: 'Long message without required thematic markers',
+        reason: 'Message without required thematic markers',
         metadata: {
           activeTopics: topicMismatch.activeTopics,
           matchedTopics: topicMismatch.matchedTopics,
           messageLength: topicMismatch.messageLength,
           minLengthExclusive: topicMismatch.minLengthExclusive,
+          detectedOffTopicTopics: topicMismatch.detectedOffTopicTopics,
         },
       });
     }
@@ -1560,17 +1563,7 @@ export class RuleEngineService {
     settings: ChatSettings;
   }): TopicFilterDetection | null {
     const { normalizedText, measuredLength, settings } = params;
-    if (measuredLength <= TOPIC_FILTER_MIN_LENGTH) {
-      return null;
-    }
-
-    const activeTopics: TopicFilterTopic[] = [];
-    if (settings.realEstateTopicFilterEnabled) {
-      activeTopics.push('REAL_ESTATE');
-    }
-    if (settings.autoMarketTopicFilterEnabled) {
-      activeTopics.push('AUTO_MARKET');
-    }
+    const activeTopics = this.getActiveTopics(settings);
     if (activeTopics.length === 0) {
       return null;
     }
@@ -1582,12 +1575,41 @@ export class RuleEngineService {
       return null;
     }
 
+    const detectedOffTopicTopics = TOPIC_FILTER_TOPICS.filter(
+      (topic) =>
+        !activeTopics.includes(topic) &&
+        this.hasStrongShortTopicDictionaryMatch(normalizedText, topic),
+    );
+    if (
+      measuredLength <= TOPIC_FILTER_MIN_LENGTH &&
+      detectedOffTopicTopics.length === 0
+    ) {
+      return null;
+    }
+
     return {
       activeTopics,
       matchedTopics,
       messageLength: measuredLength,
       minLengthExclusive: TOPIC_FILTER_MIN_LENGTH,
+      detectedOffTopicTopics,
     };
+  }
+
+  private getActiveTopics(settings: ChatSettings): TopicFilterTopic[] {
+    const activeTopics: TopicFilterTopic[] = [];
+    if (settings.realEstateTopicFilterEnabled) {
+      activeTopics.push('REAL_ESTATE');
+    }
+    if (settings.autoMarketTopicFilterEnabled) {
+      activeTopics.push('AUTO_MARKET');
+    }
+
+    return activeTopics;
+  }
+
+  private getTopicDictionary(topic: TopicFilterTopic): TopicDictionary {
+    return topic === 'REAL_ESTATE' ? REAL_ESTATE_TOPIC_DICTIONARY : AUTO_MARKET_TOPIC_DICTIONARY;
   }
 
   private hasTopicDictionaryMatch(normalizedText: string, topic: TopicFilterTopic): boolean {
@@ -1595,8 +1617,7 @@ export class RuleEngineService {
       return false;
     }
 
-    const dictionary =
-      topic === 'REAL_ESTATE' ? REAL_ESTATE_TOPIC_DICTIONARY : AUTO_MARKET_TOPIC_DICTIONARY;
+    const dictionary = this.getTopicDictionary(topic);
     if (dictionary.phrases.some((phrase) => normalizedText.includes(phrase))) {
       return true;
     }
@@ -1621,6 +1642,62 @@ export class RuleEngineService {
       return true;
     }
 
+    const supportingIndicators = this.collectTopicSupportingIndicators(tokens, dictionary);
+
+    if (
+      supportingIndicators.size > 0 &&
+      dictionary.intentMarkers.some((marker) => normalizedText.includes(marker))
+    ) {
+      return true;
+    }
+
+    return supportingIndicators.size >= dictionary.minSupportingIndicators;
+  }
+
+  private hasStrongShortTopicDictionaryMatch(
+    normalizedText: string,
+    topic: TopicFilterTopic,
+  ): boolean {
+    if (!normalizedText) {
+      return false;
+    }
+
+    const dictionary = this.getTopicDictionary(topic);
+    if (dictionary.phrases.some((phrase) => normalizedText.includes(phrase))) {
+      return true;
+    }
+
+    const tokens = this.extractTokens(normalizedText);
+    if (tokens.length === 0) {
+      return false;
+    }
+
+    if (
+      tokens.some((token) =>
+        dictionary.strongTokenPrefixes.some((prefix) => this.hasTopicPrefixMatch(token, prefix)),
+      )
+    ) {
+      return true;
+    }
+
+    const tokenSet = new Set(tokens);
+    const supportingIndicators = this.collectTopicSupportingIndicators(tokens, dictionary);
+    const hasIntentMarker = dictionary.intentMarkers.some((marker) => normalizedText.includes(marker));
+    const hasExactTokenMatch = dictionary.exactTokens.some((token) =>
+      this.hasTopicExactTokenMatch(tokenSet, tokens, token),
+    );
+
+    if (hasExactTokenMatch && (hasIntentMarker || supportingIndicators.size > 0)) {
+      return true;
+    }
+
+    return supportingIndicators.size >= dictionary.minSupportingIndicators;
+  }
+
+  private collectTopicSupportingIndicators(
+    tokens: string[],
+    dictionary: TopicDictionary,
+  ): Set<string> {
     const supportingIndicators = new Set<string>();
     for (const token of tokens) {
       let tokenMatched = false;
@@ -1646,14 +1723,7 @@ export class RuleEngineService {
       }
     }
 
-    if (
-      supportingIndicators.size > 0 &&
-      dictionary.intentMarkers.some((marker) => normalizedText.includes(marker))
-    ) {
-      return true;
-    }
-
-    return supportingIndicators.size >= dictionary.minSupportingIndicators;
+    return supportingIndicators;
   }
 
   private hasTopicSupportingTokenMatch(token: string, expectedToken: string): boolean {
