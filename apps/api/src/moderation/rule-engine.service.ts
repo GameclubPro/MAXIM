@@ -83,7 +83,6 @@ type TopicFilterDetection = {
   activeTopics: TopicFilterTopic[];
   matchedTopics: TopicFilterTopic[];
   messageLength: number;
-  minLengthExclusive: number;
   detectedOffTopicTopics: TopicFilterTopic[];
 };
 
@@ -195,7 +194,6 @@ const ADS_TRANSACTIONAL_PATTERN = /\b(цена|стоимость|оплата|�
 const ADS_URGENCY_PATTERN = /\b(срочно|только сегодня|до конца дня|осталось\s+\d+)\b/iu;
 const ADS_QUANTITY_PATTERN = /\b(шт|штук|шт\.|пачк|упак|остатк|места)\b/iu;
 const ADS_PHONE_PATTERN = /\b(?:\+7|8)\s*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b/u;
-const TOPIC_FILTER_MIN_LENGTH = 100;
 const TOPIC_FILTER_TOPICS: readonly TopicFilterTopic[] = ['REAL_ESTATE', 'AUTO_MARKET'];
 const TOPIC_PHRASE_SCORE = 5;
 const TOPIC_EXACT_TOKEN_SCORE = 5;
@@ -1126,7 +1124,6 @@ export class RuleEngineService {
           activeTopics: topicMismatch.activeTopics,
           matchedTopics: topicMismatch.matchedTopics,
           messageLength: topicMismatch.messageLength,
-          minLengthExclusive: topicMismatch.minLengthExclusive,
           detectedOffTopicTopics: topicMismatch.detectedOffTopicTopics,
         },
       });
@@ -1594,18 +1591,11 @@ export class RuleEngineService {
     const detectedOffTopicTopics = TOPIC_FILTER_TOPICS.filter(
       (topic) => !activeTopics.includes(topic) && this.hasSufficientTopicEvidence(topicEvidence.get(topic)),
     );
-    if (
-      measuredLength <= TOPIC_FILTER_MIN_LENGTH &&
-      detectedOffTopicTopics.length === 0
-    ) {
-      return null;
-    }
 
     return {
       activeTopics,
       matchedTopics,
       messageLength: measuredLength,
-      minLengthExclusive: TOPIC_FILTER_MIN_LENGTH,
       detectedOffTopicTopics,
     };
   }

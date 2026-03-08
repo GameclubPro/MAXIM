@@ -645,13 +645,39 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
   });
 
-  it('does not apply thematic filter to messages with length at or below 100 chars', async () => {
+  it('detects TOPIC_FILTER_MISMATCH for short generic off-topic when real-estate filter is enabled', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'Короткий оффтоп про дедлайн и созвон без тематических слов.',
       settings: buildSettings({ realEstateTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
+  });
+
+  it('does not detect TOPIC_FILTER_MISMATCH for short real-estate message in real-estate chat', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Сдам студию, 32 м, метро рядом, без комиссии, собственник.',
+      settings: buildSettings({ realEstateTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
+  it('does not detect TOPIC_FILTER_MISMATCH for short auto-market message in auto-market chat', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продам BMW, дизель, автомат, два ключа, без рыжиков, торг у капота.',
+      settings: buildSettings({ autoMarketTopicFilterEnabled: true }),
       domainAllowlist: [],
     });
 
@@ -684,13 +710,59 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
   });
 
-  it('does not detect TOPIC_FILTER_MISMATCH for short ambiguous studio wording outside real estate', async () => {
+  it('detects TOPIC_FILTER_MISMATCH for short ambiguous non-auto wording in auto-market chat', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'Ищу студию дизайна для записи короткого ролика.',
       settings: buildSettings({ autoMarketTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
+  });
+
+  it('detects TOPIC_FILTER_MISMATCH for empty text with media when real-estate filter is enabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '👍',
+      settings: buildSettings({ realEstateTopicFilterEnabled: true }),
+      domainAllowlist: [],
+      hasPhotoAttachment: true,
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
+  });
+
+  it('detects TOPIC_FILTER_MISMATCH for short unrelated message when both thematic filters are enabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Ок, созвон на 17:00 подтверждаю.',
+      settings: buildSettings({
+        realEstateTopicFilterEnabled: true,
+        autoMarketTopicFilterEnabled: true,
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
+  });
+
+  it('does not detect TOPIC_FILTER_MISMATCH for short auto-market message when both thematic filters are enabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продам авто, автомат, два ключа, на ходу.',
+      settings: buildSettings({
+        realEstateTopicFilterEnabled: true,
+        autoMarketTopicFilterEnabled: true,
+      }),
       domainAllowlist: [],
     });
 
