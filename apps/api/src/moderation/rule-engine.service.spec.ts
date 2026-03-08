@@ -645,7 +645,7 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
   });
 
-  it('detects TOPIC_FILTER_MISMATCH for short generic off-topic when real-estate filter is enabled', async () => {
+  it('does not detect TOPIC_FILTER_MISMATCH for short generic off-topic when real-estate filter is enabled', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
@@ -655,7 +655,7 @@ describe('RuleEngineService', () => {
       domainAllowlist: [],
     });
 
-    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
   });
 
   it('does not detect TOPIC_FILTER_MISMATCH for short real-estate message in real-estate chat', async () => {
@@ -710,7 +710,7 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
   });
 
-  it('detects TOPIC_FILTER_MISMATCH for short ambiguous non-auto wording in auto-market chat', async () => {
+  it('does not detect TOPIC_FILTER_MISMATCH for short ambiguous non-auto wording in auto-market chat', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
@@ -720,10 +720,10 @@ describe('RuleEngineService', () => {
       domainAllowlist: [],
     });
 
-    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
   });
 
-  it('detects TOPIC_FILTER_MISMATCH for empty text with media when real-estate filter is enabled', async () => {
+  it('does not detect TOPIC_FILTER_MISMATCH for short text with media when real-estate filter is enabled', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
@@ -734,10 +734,10 @@ describe('RuleEngineService', () => {
       hasPhotoAttachment: true,
     });
 
-    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
   });
 
-  it('detects TOPIC_FILTER_MISMATCH for short unrelated message when both thematic filters are enabled', async () => {
+  it('does not detect TOPIC_FILTER_MISMATCH for short unrelated message when both thematic filters are enabled', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
@@ -750,7 +750,7 @@ describe('RuleEngineService', () => {
       domainAllowlist: [],
     });
 
-    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
   });
 
   it('does not detect TOPIC_FILTER_MISMATCH for short auto-market message when both thematic filters are enabled', async () => {
@@ -767,6 +767,19 @@ describe('RuleEngineService', () => {
     });
 
     expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
+  it('detects TOPIC_FILTER_MISMATCH for generic off-topic above short-dialog threshold', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Обсуждаем дедлайн, правки, расписание созвона и внутренние задачи команды на сегодня.',
+      settings: buildSettings({ realEstateTopicFilterEnabled: true }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
   });
 
   it('still applies thematic filter to off-topic messages with media attachments', async () => {
