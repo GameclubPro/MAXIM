@@ -3416,7 +3416,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('sends text-filter explanation on repeated violation when bot message toggle is enabled', async () => {
+  it('does not send repeated text-filter explanation when warning stage is disabled', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -3469,11 +3469,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
-      'chat-1',
-      'Сообщение пользователя "Алексей" удалено: нецензурная лексика запрещена правилами чата.',
-    );
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
   it('uses configured ban duration for text-filter BAN escalation', async () => {
@@ -3938,6 +3934,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователю "Алексей" вынесено предупреждение за коммерческую рекламу.',
@@ -4260,6 +4257,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователю "Алексей" вынесено предупреждение: объявления должны начинаться с кодового слова "авторынок".',
@@ -4340,6 +4338,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователю "Алексей" выдан временный бан на 12ч за повторные сообщения не по теме недвижимости.',
@@ -4575,7 +4574,7 @@ describe('ModerationService', () => {
     );
   });
 
-  it('sends link explanation on repeated violation when link bot toggle is enabled', async () => {
+  it('does not send repeated link explanation when warning stage is disabled', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -4628,11 +4627,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
-      'chat-1',
-      'Сообщение пользователя "Алексей" удалено: в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.',
-    );
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
   });
 
   it('sends link explanation for old messages when link bot toggle is enabled', async () => {
@@ -4765,7 +4760,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('issues WARN on second link with inline button when button toggle is enabled', async () => {
+  it('sends only WARN on second link when explanation and warning are enabled', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -4819,6 +4814,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователю "Алексей" вынесено предупреждение за ссылку. В этом чате нельзя отправлять ссылки.',
@@ -5274,6 +5270,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователю "Алексей" выдан временный бан на 12ч.',
@@ -5411,6 +5408,7 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createUpdate());
 
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователь "Алексей" удален из чата за повторные сообщения со ссылками.',
@@ -5667,7 +5665,7 @@ describe('ModerationService', () => {
           settings: createSettings({
             maxMessageLengthEnabled: true,
             maxMessageLength: 100,
-            messageLimitsBotMessageEnabled: false,
+            messageLimitsBotMessageEnabled: true,
             messageLimitsWarnEnabled: true,
           }),
           domains: [],
@@ -5714,6 +5712,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       'Пользователю "Алексей" вынесено предупреждение: слишком длинные сообщения.',

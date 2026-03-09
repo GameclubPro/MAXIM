@@ -769,116 +769,66 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
       });
 
-    if (topViolation.ruleCode === 'LINK_BLOCKED' && settings.linkBotMessageEnabled) {
-      try {
-        await sendChatBotMessage(
-          this.buildLinkExplanation(userLabel, canDeleteMessage, settings.linkBotMessageText),
-          linkMessageOptions ?? undefined,
-        );
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            chatId,
-            userId: senderId,
-            messageId,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Failed to send link explanation message',
-        );
-      }
-    }
-
-    if (isMessageLimitsHit && settings.messageLimitsBotMessageEnabled) {
-      try {
-        await sendChatBotMessage(
-          this.buildMessageLimitsExplanation(
-            userLabel,
-            topViolation.ruleCode,
-            canDeleteMessage,
-            settings.photoMessageCooldownHours,
-            settings.stickerMessageCooldownMinutes,
-            effectiveMessageLength,
-            settings.maxMessageLength,
-            '',
-          ),
-          limitsMessageOptions ?? undefined,
-        );
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            chatId,
-            userId: senderId,
-            messageId,
-            ruleCode: topViolation.ruleCode,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Failed to send message limits explanation message',
-        );
-      }
-    }
-
-    if (isTextFilterHit && textFilterEscalationSettings?.botMessageEnabled) {
-      try {
-        await sendChatBotMessage(
-          this.buildTextFilterExplanation(
-            userLabel,
-            topViolation.ruleCode,
-            canDeleteMessage,
-            textFilterEscalationSettings.botMessageText,
-          ),
-          textFilterMessageOptions ?? undefined,
-        );
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            chatId,
-            userId: senderId,
-            messageId,
-            ruleCode: topViolation.ruleCode,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Failed to send text filter explanation message',
-        );
-      }
-    }
-
-    if (isTopicFilterHit && settings.thematicFiltersBotMessageEnabled) {
-      try {
-        await sendChatBotMessage(
-          this.buildTopicFilterExplanation(
-            userLabel,
-            canDeleteMessage,
-            this.extractTopicFilterRequiredCodeword(topViolation.metadata),
-            this.extractTopicFilterTopics(topViolation.metadata),
-          ),
-          topicMessageOptions ?? undefined,
-        );
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            chatId,
-            userId: senderId,
-            messageId,
-            ruleCode: topViolation.ruleCode,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Failed to send thematic filter explanation message',
-        );
-      }
-    }
-
     let action: SanctionAction = SanctionAction.NONE;
     const actionBanDurationHours = settings.banDurationHours;
 
     if (topViolation.ruleCode === 'LINK_BLOCKED') {
-      const linkAction = this.resolveLinkEscalationAction(linkViolationCount24h ?? 1, {
+      action = this.resolveLinkEscalationAction(linkViolationCount24h ?? 1, {
         warnEnabled: settings.linkWarnEnabled,
         banEnabled: settings.linkBanEnabled,
         kickEnabled: settings.linkKickEnabled,
       });
-      action = linkAction;
+    } else if (isTextFilterHit) {
+      action = this.resolveTextFilterEscalationAction(textFilterViolationCount24h ?? 1, {
+        warnEnabled: Boolean(textFilterEscalationSettings?.warnEnabled),
+        banEnabled: Boolean(textFilterEscalationSettings?.banEnabled),
+        kickEnabled: Boolean(textFilterEscalationSettings?.kickEnabled),
+      });
+    } else if (isTopicFilterHit) {
+      action = this.resolveTextFilterEscalationAction(topicFilterViolationCount24h ?? 1, {
+        warnEnabled: settings.thematicFiltersWarnEnabled,
+        banEnabled: settings.thematicFiltersBanEnabled,
+        kickEnabled: settings.thematicFiltersKickEnabled,
+      });
+    } else if (isMessageLimitsHit) {
+      action = this.resolveMessageLimitsEscalationAction(messageLimitsViolationCount12h ?? 1, {
+        warnEnabled: settings.messageLimitsWarnEnabled,
+        banEnabled: settings.messageLimitsBanEnabled,
+        kickEnabled: settings.messageLimitsKickEnabled,
+      });
+    } else if (this.shouldResolveSanction(topViolation.ruleCode)) {
+      action = await this.sanctionService.resolveAction({
+        chatId,
+        userId: senderId,
+        warnThreshold: settings.warnThreshold,
+      });
+    }
 
-      if (linkAction === SanctionAction.WARN) {
+    const isFirstLinkViolation = topViolation.ruleCode === 'LINK_BLOCKED' && linkViolationCount24h === 1;
+    const isFirstTextFilterViolation = isTextFilterHit && textFilterViolationCount24h === 1;
+    const isFirstTopicFilterViolation = isTopicFilterHit && topicFilterViolationCount24h === 1;
+    const isFirstMessageLimitsViolation =
+      isMessageLimitsHit && messageLimitsViolationCount12h === 1;
+
+    if (topViolation.ruleCode === 'LINK_BLOCKED') {
+      if (action === SanctionAction.NONE && isFirstLinkViolation && settings.linkBotMessageEnabled) {
+        try {
+          await sendChatBotMessage(
+            this.buildLinkExplanation(userLabel, canDeleteMessage, settings.linkBotMessageText),
+            linkMessageOptions ?? undefined,
+          );
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              userId: senderId,
+              messageId,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to send link explanation message',
+          );
+        }
+      } else if (action === SanctionAction.WARN) {
         try {
           await sendChatBotMessage(
             this.buildLinkWarnExplanation(userLabel, settings.linkWarnMessageText),
@@ -896,18 +846,89 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           );
         }
       }
-    } else if (isTextFilterHit) {
-      const textFilterAction = this.resolveTextFilterEscalationAction(
-        textFilterViolationCount24h ?? 1,
-        {
-          warnEnabled: Boolean(textFilterEscalationSettings?.warnEnabled),
-          banEnabled: Boolean(textFilterEscalationSettings?.banEnabled),
-          kickEnabled: Boolean(textFilterEscalationSettings?.kickEnabled),
-        },
-      );
-      action = textFilterAction;
+    }
 
-      if (textFilterAction === SanctionAction.WARN) {
+    if (isMessageLimitsHit) {
+      if (
+        action === SanctionAction.NONE &&
+        isFirstMessageLimitsViolation &&
+        settings.messageLimitsBotMessageEnabled
+      ) {
+        try {
+          await sendChatBotMessage(
+            this.buildMessageLimitsExplanation(
+              userLabel,
+              topViolation.ruleCode,
+              canDeleteMessage,
+              settings.photoMessageCooldownHours,
+              settings.stickerMessageCooldownMinutes,
+              effectiveMessageLength,
+              settings.maxMessageLength,
+              '',
+            ),
+            limitsMessageOptions ?? undefined,
+          );
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              userId: senderId,
+              messageId,
+              ruleCode: topViolation.ruleCode,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to send message limits explanation message',
+          );
+        }
+      } else if (action === SanctionAction.WARN) {
+        try {
+          await sendChatBotMessage(
+            this.buildMessageLimitsWarnExplanation(userLabel, topViolation.ruleCode),
+            limitsMessageOptions ?? undefined,
+          );
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              userId: senderId,
+              messageId,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to send message limits warning message',
+          );
+        }
+      }
+    }
+
+    if (isTextFilterHit) {
+      if (
+        action === SanctionAction.NONE &&
+        isFirstTextFilterViolation &&
+        textFilterEscalationSettings?.botMessageEnabled
+      ) {
+        try {
+          await sendChatBotMessage(
+            this.buildTextFilterExplanation(
+              userLabel,
+              topViolation.ruleCode,
+              canDeleteMessage,
+              textFilterEscalationSettings.botMessageText,
+            ),
+            textFilterMessageOptions ?? undefined,
+          );
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              userId: senderId,
+              messageId,
+              ruleCode: topViolation.ruleCode,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to send text filter explanation message',
+          );
+        }
+      } else if (action === SanctionAction.WARN) {
         try {
           await sendChatBotMessage(
             this.buildTextFilterWarnExplanation(
@@ -928,14 +949,37 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           );
         }
       }
-    } else if (isTopicFilterHit) {
-      action = this.resolveTextFilterEscalationAction(topicFilterViolationCount24h ?? 1, {
-        warnEnabled: settings.thematicFiltersWarnEnabled,
-        banEnabled: settings.thematicFiltersBanEnabled,
-        kickEnabled: settings.thematicFiltersKickEnabled,
-      });
+    }
 
-      if (action === SanctionAction.WARN) {
+    if (isTopicFilterHit) {
+      if (
+        action === SanctionAction.NONE &&
+        isFirstTopicFilterViolation &&
+        settings.thematicFiltersBotMessageEnabled
+      ) {
+        try {
+          await sendChatBotMessage(
+            this.buildTopicFilterExplanation(
+              userLabel,
+              canDeleteMessage,
+              this.extractTopicFilterRequiredCodeword(topViolation.metadata),
+              this.extractTopicFilterTopics(topViolation.metadata),
+            ),
+            topicMessageOptions ?? undefined,
+          );
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              userId: senderId,
+              messageId,
+              ruleCode: topViolation.ruleCode,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to send thematic filter explanation message',
+          );
+        }
+      } else if (action === SanctionAction.WARN) {
         try {
           await sendChatBotMessage(
             this.buildTopicFilterWarnExplanation(
@@ -957,37 +1001,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           );
         }
       }
-    } else if (isMessageLimitsHit) {
-      action = this.resolveMessageLimitsEscalationAction(messageLimitsViolationCount12h ?? 1, {
-        warnEnabled: settings.messageLimitsWarnEnabled,
-        banEnabled: settings.messageLimitsBanEnabled,
-        kickEnabled: settings.messageLimitsKickEnabled,
-      });
-
-      if (action === SanctionAction.WARN) {
-        try {
-          await sendChatBotMessage(
-            this.buildMessageLimitsWarnExplanation(userLabel, topViolation.ruleCode),
-            limitsMessageOptions ?? undefined,
-          );
-        } catch (error: unknown) {
-          this.logger.warn(
-            {
-              chatId,
-              userId: senderId,
-              messageId,
-              error: error instanceof Error ? error.message : 'Unknown error',
-            },
-            'Failed to send message limits warning message',
-          );
-        }
-      }
-    } else if (this.shouldResolveSanction(topViolation.ruleCode)) {
-      action = await this.sanctionService.resolveAction({
-        chatId,
-        userId: senderId,
-        warnThreshold: settings.warnThreshold,
-      });
     }
 
     if (action !== SanctionAction.NONE) {
