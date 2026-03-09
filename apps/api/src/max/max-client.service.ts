@@ -271,12 +271,16 @@ export class MaxClientService implements OnModuleDestroy {
       return { messageId, url: directUrl };
     }
 
-    const sentMessage = await this.getMessageById(messageId);
-    const resolvedUrl = sentMessage ? this.parseChatLink(sentMessage) : null;
+    const resolvedUrl = await this.resolveMessageLink(messageId);
     return {
       messageId,
       url: resolvedUrl ?? null,
     };
+  }
+
+  async resolveMessageLink(messageId: string): Promise<string | null> {
+    const sentMessage = await this.getMessageById(messageId);
+    return sentMessage ? this.parseChatLink(sentMessage) : null;
   }
 
   async editMessageInlineKeyboard(

@@ -1080,6 +1080,7 @@ describe('AdminService chat rules', () => {
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      resolveMessageLink: jest.fn(),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -1108,6 +1109,55 @@ describe('AdminService chat rules', () => {
       publishedUrl: 'https://max.ru/chats/chat-1/message/123',
       publishedAt: '2026-03-09T10:00:00.000Z',
     });
+  });
+
+  it('recovers and persists published rules url by message id when it is missing', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatRules.upsert.mockResolvedValue({
+      id: 'rules-1',
+      chatId: 'chat-1',
+      text: 'Пишите по теме.',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      publishedMessageId: 'mid-rules-9',
+      publishedUrl: null,
+      publishedAt: new Date('2026-03-09T10:00:00.000Z'),
+      createdAt: new Date('2026-03-09T09:00:00.000Z'),
+      updatedAt: new Date('2026-03-09T10:00:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      resolveMessageLink: jest.fn().mockResolvedValue('https://max.ru/chats/chat-1/message/999'),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.getRules('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(maxClient.resolveMessageLink).toHaveBeenCalledWith('mid-rules-9');
+    expect(prisma.chatRules.update).toHaveBeenCalledWith({
+      where: { chatId: 'chat-1' },
+      data: {
+        publishedUrl: 'https://max.ru/chats/chat-1/message/999',
+      },
+    });
+    expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
+    expect(result.publishedUrl).toBe('https://max.ru/chats/chat-1/message/999');
   });
 
   it('saves draft and publishes new rules post with persisted link', async () => {
@@ -1146,6 +1196,7 @@ describe('AdminService chat rules', () => {
         messageId: 'mid-rules-2',
         url: 'https://max.ru/chats/chat-1/message/456',
       }),
+      resolveMessageLink: jest.fn(),
       uploadImage: jest.fn(),
     };
     const chatContextCache = {
@@ -1234,6 +1285,7 @@ describe('AdminService chat rules', () => {
         messageId: 'mid-rules-3',
         url: null,
       }),
+      resolveMessageLink: jest.fn().mockResolvedValue(null),
       uploadImage: jest.fn(),
     };
     const chatContextCache = {

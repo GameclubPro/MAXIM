@@ -4966,7 +4966,7 @@ describe('ModerationService', () => {
     );
   });
 
-  it('uses callback rules button when the rules post has no public url', async () => {
+  it('recovers direct rules link by message id when published url is missing', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -5009,6 +5009,7 @@ describe('ModerationService', () => {
       kickMember: jest.fn(),
       banMember: jest.fn(),
       notifyModerators: jest.fn(),
+      resolveMessageLink: jest.fn().mockResolvedValue('https://max.ru/chats/chat-1/message/123'),
     };
 
     const service = new ModerationService(
@@ -5024,30 +5025,28 @@ describe('ModerationService', () => {
       'chat-1',
       'Пользователю "Алексей" вынесено предупреждение за ссылку. В этом чате нельзя отправлять ссылки.',
       {
-        buttons: [
-          [
-            {
-              type: 'callback',
-              text: 'Правила',
-              payload: 'rules:open',
-            },
-          ],
-        ],
+        button: {
+          text: 'Правила',
+          url: 'https://max.ru/chats/chat-1/message/123',
+        },
       },
     );
   });
 
-  it('sends published rules to chat when the rules callback button is pressed', async () => {
+  it('upgrades legacy callback rules button to direct link when pressed', async () => {
     const prisma = {
       chatRules: {
         findUnique: jest.fn().mockResolvedValue({
+          publishedUrl: null,
           publishedMessageId: 'mid-rules-1',
         }),
+        update: jest.fn().mockResolvedValue(undefined),
       },
     };
     const maxClient = {
       answerCallback: jest.fn(),
-      pinMessage: jest.fn().mockResolvedValue(undefined),
+      resolveMessageLink: jest.fn().mockResolvedValue('https://max.ru/chats/chat-1/message/777'),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
     };
 
     const service = new ModerationService(
@@ -5059,10 +5058,21 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createGroupRulesCallbackUpdate());
 
-    expect(maxClient.pinMessage).toHaveBeenCalledWith('chat-1', 'mid-rules-1', false);
+    expect(maxClient.resolveMessageLink).toHaveBeenCalledWith('mid-rules-1');
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'chat-1',
+      'msg-group-rules-callback-1',
+      null,
+      {
+        button: {
+          text: 'Правила',
+          url: 'https://max.ru/chats/chat-1/message/777',
+        },
+      },
+    );
     expect(maxClient.answerCallback).toHaveBeenCalledWith(
       'callback-rules-1',
-      'Правила закреплены сверху',
+      'Кнопка обновлена. Нажмите ещё раз',
     );
   });
 

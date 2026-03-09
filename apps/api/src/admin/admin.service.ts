@@ -655,7 +655,8 @@ export class AdminService {
     await this.ensureEntityType(chatId, user.userId, 'chat');
 
     const rules = await this.upsertChatRules(chatId);
-    return this.mapChatRules(rules);
+    const hydratedRules = await this.hydratePublishedRulesUrl(chatId, rules);
+    return this.mapChatRules(hydratedRules);
   }
 
   async updateRules(chatId: string, user: AuthUser, body: unknown): Promise<ChatRules> {
@@ -785,12 +786,19 @@ export class AdminService {
         },
       },
     });
+
+    const hydratedRules = await this.hydratePublishedRulesUrl(chatId, {
+      ...rules,
+      publishedMessageId: published.messageId,
+      publishedUrl: published.url,
+      publishedAt,
+    });
     await this.chatContextCache?.invalidate(chatId);
 
     return publishChatRulesResultSchema.parse({
       chatId,
       messageId: published.messageId,
-      url: published.url,
+      url: hydratedRules.publishedUrl,
       publishedAt: publishedAt.toISOString(),
     });
   }
@@ -1639,6 +1647,70 @@ export class AdminService {
       publishedUrl: rules.publishedUrl,
       publishedAt: rules.publishedAt ? rules.publishedAt.toISOString() : null,
     });
+  }
+
+  private async hydratePublishedRulesUrl(
+    chatId: string,
+    rules: PersistedChatRules,
+  ): Promise<PersistedChatRules> {
+    const currentUrl = this.normalizePublishedRulesUrl(rules.publishedUrl);
+    if (currentUrl || !rules.publishedMessageId?.trim()) {
+      return {
+        ...rules,
+        publishedUrl: currentUrl,
+      };
+    }
+
+    let resolvedUrl: string | null = null;
+    try {
+      resolvedUrl = this.normalizePublishedRulesUrl(
+        await this.maxClient.resolveMessageLink(rules.publishedMessageId),
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          messageId: rules.publishedMessageId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to recover published chat rules url',
+      );
+      return rules;
+    }
+
+    if (!resolvedUrl) {
+      return rules;
+    }
+
+    await this.prisma.chatRules.update({
+      where: { chatId },
+      data: {
+        publishedUrl: resolvedUrl,
+      },
+    });
+    await this.chatContextCache.invalidate(chatId);
+
+    return {
+      ...rules,
+      publishedUrl: resolvedUrl,
+    };
+  }
+
+  private normalizePublishedRulesUrl(value: string | null | undefined): string | null {
+    const normalized = typeof value === 'string' ? value.trim() : '';
+    if (!normalized) {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(normalized);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return null;
+      }
+      return parsed.toString();
+    } catch {
+      return null;
+    }
   }
 
   async getLogsDashboard(

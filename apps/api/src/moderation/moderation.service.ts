@@ -331,7 +331,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const callbackPayload = this.extractCallbackPayload(update);
     if (callbackPayload === RULES_CALLBACK_PAYLOAD) {
-      await this.handleRulesCallback(chatId, this.extractCallbackId(update));
+      await this.handleRulesCallback(
+        chatId,
+        this.extractCallbackId(update),
+        update.message?.messageId ?? null,
+      );
       return;
     }
 
@@ -2623,11 +2627,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
 
-    return {
-      type: 'callback',
-      text: RULES_BOT_BUTTON_TEXT,
-      payload: RULES_CALLBACK_PAYLOAD,
-    };
+    return null;
   }
 
   private isLinkButton(button: MaxMessageButton): button is MaxLinkButton {
@@ -4166,37 +4166,53 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async handleRulesCallback(chatId: string, callbackId: string | null): Promise<void> {
+  private async handleRulesCallback(
+    chatId: string,
+    callbackId: string | null,
+    sourceMessageId: string | null,
+  ): Promise<void> {
     const publishedRules = await this.prisma.chatRules?.findUnique?.({
       where: { chatId },
       select: {
+        publishedUrl: true,
         publishedMessageId: true,
       },
     });
 
-    if (!publishedRules?.publishedMessageId) {
+    const resolvedUrl = await this.resolveRulesPublishedUrl(
+      chatId,
+      publishedRules?.publishedUrl ?? null,
+      publishedRules?.publishedMessageId ?? null,
+    );
+    if (!resolvedUrl) {
       if (callbackId) {
-        await this.answerCallbackSafe(callbackId, 'Правила ещё не опубликованы');
+        await this.answerCallbackSafe(callbackId, 'Ссылка на правила пока недоступна');
       }
       return;
     }
 
-    let notification = 'Правила закреплены сверху';
     try {
-      await this.maxClient.pinMessage(chatId, publishedRules.publishedMessageId, false);
+      if (sourceMessageId?.trim()) {
+        await this.maxClient.editMessageInlineKeyboard(chatId, sourceMessageId, null, {
+          button: {
+            text: RULES_BOT_BUTTON_TEXT,
+            url: resolvedUrl,
+          },
+        });
+      }
     } catch (error: unknown) {
-      notification = 'Правила уже опубликованы в чате';
       this.logger.warn(
         {
           chatId,
+          sourceMessageId,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
-        'Failed to pin published rules message',
+        'Failed to convert legacy rules callback button into direct link',
       );
     }
 
     if (callbackId) {
-      await this.answerCallbackSafe(callbackId, notification);
+      await this.answerCallbackSafe(callbackId, 'Кнопка обновлена. Нажмите ещё раз');
     }
   }
 
@@ -5573,11 +5589,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }> {
     if (this.chatContextCache) {
       const cached = await this.chatContextCache.getChatContext(chatId, chatTitle);
+      const resolvedRulesPublishedUrl = await this.resolveRulesPublishedUrl(
+        chatId,
+        cached.rulesPublishedUrl ?? null,
+        cached.rulesPublishedMessageId ?? null,
+      );
       return {
         settings: cached.settings,
         domainAllowlist: cached.domainAllowlist,
         adminUserIds: cached.adminUserIds,
-        rulesPublishedUrl: cached.rulesPublishedUrl ?? null,
+        rulesPublishedUrl: resolvedRulesPublishedUrl,
         rulesPublishedMessageId: cached.rulesPublishedMessageId ?? null,
       };
     }
@@ -5628,11 +5649,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       throw new Error(`Chat settings missing for chat ${chatId}`);
     }
 
+    const resolvedRulesPublishedUrl = await this.resolveRulesPublishedUrl(
+      chatId,
+      chat.rules?.publishedUrl ?? null,
+      chat.rules?.publishedMessageId ?? null,
+    );
+
     return {
       settings: chat.settings,
       domainAllowlist: (chat.domains ?? []).map((item) => item.domain),
       adminUserIds: (chat.admins ?? []).map((item) => item.userId),
-      rulesPublishedUrl: chat.rules?.publishedUrl ?? null,
+      rulesPublishedUrl: resolvedRulesPublishedUrl,
       rulesPublishedMessageId: chat.rules?.publishedMessageId ?? null,
     };
   }
@@ -5661,25 +5688,95 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    return new Map(
-      rows
-        .filter(
-          (
-            row,
-          ): row is {
-            chatId: string;
-            publishedUrl: string | null;
-            publishedMessageId: string | null;
-          } => Boolean(row.publishedUrl) || Boolean(row.publishedMessageId),
-        )
-        .map((row) => [
+    const hydratedRows = await Promise.all(
+      rows.map(async (row) => {
+        const resolvedUrl = await this.resolveRulesPublishedUrl(
+          row.chatId,
+          row.publishedUrl ?? null,
+          row.publishedMessageId ?? null,
+        );
+        if (!resolvedUrl) {
+          return null;
+        }
+
+        return [
           row.chatId,
           {
-            publishedUrl: row.publishedUrl ?? null,
+            publishedUrl: resolvedUrl,
             publishedMessageId: row.publishedMessageId ?? null,
           },
-        ]),
+        ] as const;
+      }),
     );
+    const entries: Array<[string, RulesButtonReference]> = [];
+    for (const row of hydratedRows) {
+      if (!row) {
+        continue;
+      }
+      entries.push([row[0], row[1]]);
+    }
+
+    return new Map(entries);
+  }
+
+  private async resolveRulesPublishedUrl(
+    chatId: string,
+    publishedUrl: string | null,
+    publishedMessageId: string | null,
+  ): Promise<string | null> {
+    const normalizedPublishedUrl = this.normalizeBotButtonUrl(publishedUrl ?? '');
+    if (normalizedPublishedUrl) {
+      return normalizedPublishedUrl;
+    }
+
+    const normalizedMessageId = publishedMessageId?.trim() ?? '';
+    if (!normalizedMessageId) {
+      return null;
+    }
+
+    let resolvedUrl: string | null = null;
+    try {
+      resolvedUrl = this.normalizeBotButtonUrl(
+        (await this.maxClient.resolveMessageLink(normalizedMessageId)) ?? '',
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          messageId: normalizedMessageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to recover published rules url',
+      );
+      return null;
+    }
+
+    if (!resolvedUrl) {
+      return null;
+    }
+
+    try {
+      if (this.prisma.chatRules?.update) {
+        await this.prisma.chatRules.update({
+          where: { chatId },
+          data: {
+            publishedUrl: resolvedUrl,
+          },
+        });
+      }
+      await this.chatContextCache?.invalidate(chatId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          messageId: normalizedMessageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to persist recovered published rules url',
+      );
+    }
+
+    return resolvedUrl;
   }
 
   private applyDegradeSettings(settings: ChatSettings, degradeMode: boolean): ChatSettings {
