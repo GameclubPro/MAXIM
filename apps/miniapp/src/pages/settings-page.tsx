@@ -5777,7 +5777,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           onChange={(event) => {
                             const enabled = event.target.checked;
                             setFieldValue('nightModeEnabled', enabled);
-                            if (!enabled) {
+                            if (enabled) {
+                              setFieldValue('nightModeBotMessageEnabled', true);
+                            } else {
                               setFieldValue('nightModeBotMessageEnabled', false);
                               setFieldValue('nightModeBotButtonEnabled', false);
                               setFieldValue('nightModeRulesButtonEnabled', false);
