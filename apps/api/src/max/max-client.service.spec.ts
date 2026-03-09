@@ -230,6 +230,13 @@ describe('MaxClientService inline keyboard guardrails', () => {
               ],
             },
           }),
+        )
+        .mockReturnValueOnce(
+          of({
+            data: {
+              mid: 'mid-rules-3',
+            },
+          }),
         ),
     };
     const service = createService(httpService);
@@ -240,6 +247,56 @@ describe('MaxClientService inline keyboard guardrails', () => {
       messageId: 'mid-rules-3',
       url: null,
     });
+
+    await service.onModuleDestroy();
+  });
+
+  it('recovers direct post link via GET /messages/{id} when batch lookup has no url', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              mid: 'mid-rules-4',
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            data: {
+              messages: [
+                {
+                  body: { mid: 'mid-rules-4' },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            data: {
+              mid: 'mid-rules-4',
+              url: 'https://max.ru/chats/chat-1/message/789',
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.sendMessageImmediateWithResolvedLink('chat-1', 'Правила чата');
+
+    expect(result).toEqual({
+      messageId: 'mid-rules-4',
+      url: 'https://max.ru/chats/chat-1/message/789',
+    });
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api.max.ru/messages/mid-rules-4',
+      }),
+    );
 
     await service.onModuleDestroy();
   });

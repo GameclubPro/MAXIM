@@ -280,7 +280,13 @@ export class MaxClientService implements OnModuleDestroy {
 
   async resolveMessageLink(messageId: string): Promise<string | null> {
     const sentMessage = await this.getMessageById(messageId);
-    return sentMessage ? this.parseChatLink(sentMessage) : null;
+    const batchLink = sentMessage ? this.parseChatLink(sentMessage) : null;
+    if (batchLink) {
+      return batchLink;
+    }
+
+    const detailedMessage = await this.getMessageByPath(messageId);
+    return detailedMessage ? this.parseChatLink(detailedMessage) : null;
   }
 
   async editMessageInlineKeyboard(
@@ -821,6 +827,19 @@ export class MaxClientService implements OnModuleDestroy {
     return firstMessage && typeof firstMessage === 'object' && !Array.isArray(firstMessage)
       ? (firstMessage as Record<string, unknown>)
       : null;
+  }
+
+  private async getMessageByPath(messageId: string): Promise<Record<string, unknown> | null> {
+    const normalizedMessageId = messageId.trim();
+    if (!normalizedMessageId) {
+      return null;
+    }
+
+    const data = await this.request<Record<string, unknown>>(
+      'get',
+      `/messages/${encodeURIComponent(normalizedMessageId)}`,
+    );
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : null;
   }
 
   private parseChatEntityType(row: Record<string, unknown>): 'chat' | 'channel' {
