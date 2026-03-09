@@ -1357,6 +1357,31 @@ describe('RuleEngineService', () => {
     expect(second.duplicateDecision).toBeUndefined();
   });
 
+  it('does not track duplicates for messages with only allowlisted exact links', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const text = 'https://ura.news/news/1053075490 Читайте на URA.RU';
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text,
+      settings: buildSettings(),
+      domainAllowlist: ['https://ura.news/news/1053075490'],
+    });
+
+    const second = await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text,
+      settings: buildSettings(),
+      domainAllowlist: ['https://ura.news/news/1053075490'],
+    });
+
+    expect(second.duplicateHit).toBeUndefined();
+    expect(second.duplicateDecision).toBeUndefined();
+    expect(second.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+  });
+
   it('does not track duplicates for short everyday phrases', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     let lastResult = await service.detect({

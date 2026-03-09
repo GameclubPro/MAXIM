@@ -1428,7 +1428,12 @@ export class RuleEngineService {
     }
 
     const compactText = normalized.replace(/\s+/g, ' ').trim();
-    const duplicateCandidate = this.shouldTrackDuplicate(compactText);
+    const hasOnlyAllowlistedLinks = this.hasOnlyAllowlistedLinks(
+      text,
+      settings.linkPolicy,
+      domainAllowlist,
+    );
+    const duplicateCandidate = !hasOnlyAllowlistedLinks && this.shouldTrackDuplicate(compactText);
     const duplicateState =
       settings.antiDuplicateEnabled && duplicateCandidate
         ? await this.detectDuplicateState({
@@ -1647,6 +1652,42 @@ export class RuleEngineService {
 
     const uniqueLongTokens = new Set(tokens.filter((token) => token.length >= 4)).size;
     return uniqueLongTokens >= DUPLICATE_MIN_UNIQUE_LONG_TOKENS;
+  }
+
+  private hasOnlyAllowlistedLinks(text: string, policy: LinkPolicy, allowlist: string[]): boolean {
+    if (policy !== LinkPolicy.ALLOWLIST_ONLY) {
+      return false;
+    }
+
+    const links = this.extractUrlsFromText(text);
+    if (links.length === 0) {
+      return false;
+    }
+
+    const normalizedAllowlist = new Set(
+      allowlist
+        .map((entry) => normalizeAllowlistLink(entry))
+        .filter((entry): entry is string => Boolean(entry)),
+    );
+
+    let checkedLinks = 0;
+    for (const link of links) {
+      if (!this.shouldCheckExactAllowlistLink(link)) {
+        continue;
+      }
+
+      const normalizedLink = normalizeAllowlistLink(link);
+      if (!normalizedLink) {
+        continue;
+      }
+
+      checkedLinks += 1;
+      if (!normalizedAllowlist.has(normalizedLink)) {
+        return false;
+      }
+    }
+
+    return checkedLinks > 0;
   }
 
   private hasBlockedLink(text: string, policy: LinkPolicy, allowlist: string[]): string | null {
