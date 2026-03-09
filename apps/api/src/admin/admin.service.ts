@@ -16,7 +16,6 @@ import {
   manualModerationActionRequestSchema,
   manualModerationActionResultSchema,
   publishChatRulesResultSchema,
-  updateChatRulesPublishedLinkRequestSchema,
   type ChannelDialogType,
   type ChannelStatsBucket,
   type ChannelStatsRange,
@@ -37,7 +36,6 @@ import {
   publishChannelEngagementRequestSchema,
   publishChannelEngagementResultSchema,
   type UpdateChatRulesRequest,
-  type UpdateChatRulesPublishedLinkRequest,
   updateChatRulesRequestSchema,
   type PublishChatRulesResult,
   type SendBroadcastResult,
@@ -803,48 +801,6 @@ export class AdminService {
       url: hydratedRules.publishedUrl,
       publishedAt: publishedAt.toISOString(),
     });
-  }
-
-  async updateRulesPublishedLink(
-    chatId: string,
-    user: AuthUser,
-    body: unknown,
-  ): Promise<ChatRules> {
-    await this.assertChatAdmin(chatId, user.userId, 'chat');
-    await this.ensureEntityType(chatId, user.userId, 'chat');
-
-    const parsed = updateChatRulesPublishedLinkRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-
-    const normalized = this.normalizePublishedRulesUrl(parsed.data.url) ?? '';
-    const rules = await this.prisma.chatRules.upsert({
-      where: { chatId },
-      create: {
-        chatId,
-        publishedUrl: normalized || null,
-      },
-      update: {
-        publishedUrl: normalized || null,
-      },
-    });
-
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: 'UPDATE_CHAT_RULES_PUBLISHED_LINK',
-        payload: {
-          hasPublishedUrl: Boolean(normalized),
-          publishedUrl: normalized || null,
-          source: 'miniapp',
-        },
-      },
-    });
-    await this.chatContextCache.invalidate(chatId);
-
-    return this.mapChatRules(rules);
   }
 
   async getChannelSettings(chatId: string, user: AuthUser): Promise<ChannelSettings> {

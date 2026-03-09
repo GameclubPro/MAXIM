@@ -53,6 +53,9 @@ export type MaxPublishedMessage = {
   url: string | null;
 };
 
+const MAX_CHAT_POST_LINK_BASE_URL = 'https://max.ru';
+const MAX_CHAT_POST_LINK_SEQ_XOR_MASK = 0x1fd2f00000n;
+
 export type MaxButtonIntent = 'default' | 'positive' | 'negative';
 
 export type MaxLinkButton = {
@@ -287,13 +290,13 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async resolveMessageLink(messageId: string): Promise<string | null> {
-    const sentMessage = await this.getMessageById(messageId);
+    const sentMessage = await this.getMessageByIdPrecise(messageId);
     const batchLink = sentMessage ? this.parseChatLink(sentMessage) : null;
     if (batchLink) {
       return batchLink;
     }
 
-    const detailedMessage = await this.getMessageByPath(messageId);
+    const detailedMessage = await this.getMessageByPathPrecise(messageId);
     return detailedMessage ? this.parseChatLink(detailedMessage) : null;
   }
 
@@ -839,6 +842,40 @@ export class MaxClientService implements OnModuleDestroy {
       : null;
   }
 
+  private async getMessageByIdPrecise(messageId: string): Promise<Record<string, unknown> | null> {
+    const normalizedMessageId = messageId.trim();
+    if (!normalizedMessageId) {
+      return null;
+    }
+
+    const data = await this.request<string | Record<string, unknown>>('get', '/messages', {
+      params: {
+        message_ids: normalizedMessageId,
+      },
+      responseType: 'text',
+      transformResponse: [(value: unknown) => value],
+    });
+
+    if (typeof data === 'string') {
+      const payload = this.parseJsonObject(data);
+      if (!payload) {
+        return null;
+      }
+      const messages = Array.isArray(payload.messages) ? payload.messages : [];
+      const firstMessage = messages[0];
+      if (!firstMessage || typeof firstMessage !== 'object' || Array.isArray(firstMessage)) {
+        return null;
+      }
+      return this.withExactMessageSequence(firstMessage as Record<string, unknown>, data);
+    }
+
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+    const firstMessage = messages[0];
+    return firstMessage && typeof firstMessage === 'object' && !Array.isArray(firstMessage)
+      ? (firstMessage as Record<string, unknown>)
+      : null;
+  }
+
   private async getMessageByPath(messageId: string): Promise<Record<string, unknown> | null> {
     const normalizedMessageId = messageId.trim();
     if (!normalizedMessageId) {
@@ -849,6 +886,29 @@ export class MaxClientService implements OnModuleDestroy {
       'get',
       `/messages/${encodeURIComponent(normalizedMessageId)}`,
     );
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : null;
+  }
+
+  private async getMessageByPathPrecise(messageId: string): Promise<Record<string, unknown> | null> {
+    const normalizedMessageId = messageId.trim();
+    if (!normalizedMessageId) {
+      return null;
+    }
+
+    const data = await this.request<string | Record<string, unknown>>(
+      'get',
+      `/messages/${encodeURIComponent(normalizedMessageId)}`,
+      {
+        responseType: 'text',
+        transformResponse: [(value: unknown) => value],
+      },
+    );
+
+    if (typeof data === 'string') {
+      const payload = this.parseJsonObject(data);
+      return payload ? this.withExactMessageSequence(payload, data) : null;
+    }
+
     return data && typeof data === 'object' && !Array.isArray(data) ? data : null;
   }
 
@@ -874,20 +934,23 @@ export class MaxClientService implements OnModuleDestroy {
 
   private parseChatLink(row: Record<string, unknown>): string | null {
     const rawLink = row.link ?? row.url ?? row.message_url ?? row.messageUrl;
-    if (typeof rawLink !== 'string') {
+    if (typeof rawLink === 'string') {
+      const normalizedLink = rawLink.trim();
+      if (!normalizedLink) {
+        return null;
+      }
+
+      if (normalizedLink.startsWith('http://') || normalizedLink.startsWith('https://')) {
+        return normalizedLink;
+      }
+    }
+
+    const inferredChatPostLink = this.inferChatPostLink(row);
+    if (!inferredChatPostLink) {
       return null;
     }
 
-    const normalizedLink = rawLink.trim();
-    if (!normalizedLink) {
-      return null;
-    }
-
-    if (normalizedLink.startsWith('http://') || normalizedLink.startsWith('https://')) {
-      return normalizedLink;
-    }
-
-    return null;
+    return inferredChatPostLink;
   }
 
   private buildWebhookUrl(
@@ -1769,6 +1832,17 @@ export class MaxClientService implements OnModuleDestroy {
       : null;
   }
 
+  private parseJsonObject(value: string): Record<string, unknown> | null {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
   private readTrimmedString(value: unknown): string | null {
     if (typeof value !== 'string') {
       return null;
@@ -1828,6 +1902,102 @@ export class MaxClientService implements OnModuleDestroy {
 
     const parsed = Number.parseInt(normalized, 10);
     return Number.isNaN(parsed) ? null : Math.max(0, parsed);
+  }
+
+  private readBigInt(value: unknown): bigint | null {
+    if (typeof value === 'bigint') {
+      return value >= 0n ? value : null;
+    }
+
+    if (typeof value === 'number') {
+      if (!Number.isSafeInteger(value) || value < 0) {
+        return null;
+      }
+      return BigInt(value);
+    }
+
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim();
+    if (!/^\d+$/u.test(normalized)) {
+      return null;
+    }
+
+    try {
+      return BigInt(normalized);
+    } catch {
+      return null;
+    }
+  }
+
+  private withExactMessageSequence(
+    row: Record<string, unknown>,
+    rawJson: string,
+  ): Record<string, unknown> {
+    const exactSequence = this.extractExactIntegerField(rawJson, 'seq');
+    if (!exactSequence) {
+      return row;
+    }
+
+    const body = this.asRecord(row.body);
+    if (!body) {
+      return row;
+    }
+
+    return {
+      ...row,
+      body: {
+        ...body,
+        seq: exactSequence,
+      },
+    };
+  }
+
+  private extractExactIntegerField(rawJson: string, fieldName: string): string | null {
+    const escapedFieldName = fieldName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    const match = new RegExp(`"${escapedFieldName}"\\s*:\\s*(-?\\d+)`, 'u').exec(rawJson);
+    return match?.[1] ?? null;
+  }
+
+  private inferChatPostLink(row: Record<string, unknown>): string | null {
+    const recipient = this.asRecord(row.recipient);
+    const chatType = this.readLowerString(
+      recipient?.chat_type ?? recipient?.chatType ?? row.chat_type ?? row.chatType,
+    );
+    if (chatType === 'channel') {
+      return null;
+    }
+
+    const chatIdValue = recipient?.chat_id ?? recipient?.chatId ?? row.chat_id ?? row.chatId;
+    const chatId =
+      typeof chatIdValue === 'number' || typeof chatIdValue === 'string'
+        ? String(chatIdValue).trim()
+        : '';
+    if (!chatId) {
+      return null;
+    }
+
+    const body = this.asRecord(row.body);
+    const sequence = this.readBigInt(body?.seq ?? row.seq ?? row.sequence);
+    if (sequence === null) {
+      return null;
+    }
+
+    const token = this.buildChatPostLinkToken(sequence);
+    return token ? `${MAX_CHAT_POST_LINK_BASE_URL}/c/${chatId}/${token}` : null;
+  }
+
+  private buildChatPostLinkToken(sequence: bigint): string | null {
+    if (sequence < 0n || sequence > 0xffff_ffff_ffff_ffffn) {
+      return null;
+    }
+
+    const encodedValue = sequence ^ MAX_CHAT_POST_LINK_SEQ_XOR_MASK;
+    const buffer = Buffer.alloc(8);
+    buffer.writeBigUInt64BE(encodedValue);
+    return buffer.toString('base64url');
   }
 
   private readIsoDateTime(value: unknown): string | null {

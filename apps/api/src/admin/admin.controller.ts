@@ -65,15 +65,6 @@ export class AdminController {
     return this.adminService.publishRules(chatId, user);
   }
 
-  @Put('chats/:chatId/rules/published-link')
-  updateRulesPublishedLink(
-    @Param('chatId') chatId: string,
-    @CurrentUser() user: AuthUser,
-    @Body() body: unknown,
-  ) {
-    return this.adminService.updateRulesPublishedLink(chatId, user, body);
-  }
-
   @Get('channels/:chatId/settings')
   getChannelSettings(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.adminService.getChannelSettings(chatId, user);

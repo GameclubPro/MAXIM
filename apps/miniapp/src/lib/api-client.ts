@@ -14,7 +14,6 @@ import {
   scheduleDomainRemovalRequestSchema,
   sendBroadcastRequestSchema,
   sendBroadcastResultSchema,
-  updateChatRulesPublishedLinkRequestSchema,
   moderationEventSchema,
   logsDashboardRangeSchema,
   logsDashboardResponseSchema,
@@ -140,15 +139,6 @@ export class ApiClient {
       method: 'POST',
     });
     return publishChatRulesResultSchema.parse(response);
-  }
-
-  async updateRulesPublishedLink(chatId: string, url: string): Promise<ChatRules> {
-    const requestBody = updateChatRulesPublishedLinkRequestSchema.parse({ url });
-    const response = await this.request(`/chats/${chatId}/rules/published-link`, {
-      method: 'PUT',
-      body: JSON.stringify(requestBody),
-    });
-    return chatRulesSchema.parse(response);
   }
 
   async getChannelSettings(chatId: string): Promise<ChannelSettings> {

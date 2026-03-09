@@ -1321,69 +1321,6 @@ describe('AdminService chat rules', () => {
       publishedAt: expect.any(String),
     });
   });
-
-  it('saves manually pasted published rules link', async () => {
-    const prisma = createPrismaMock();
-    prisma.chatRules.upsert.mockResolvedValue({
-      id: 'rules-1',
-      chatId: 'chat-1',
-      text: 'Правила без прямой ссылки.',
-      imageBase64: '',
-      imageMimeType: '',
-      imageFileName: '',
-      publishedMessageId: 'mid-rules-3',
-      publishedUrl: 'https://max.ru/chats/chat-1/message/321',
-      publishedAt: new Date('2026-03-09T09:00:00.000Z'),
-      createdAt: new Date('2026-03-09T09:00:00.000Z'),
-      updatedAt: new Date('2026-03-09T09:10:00.000Z'),
-    });
-
-    const maxClient = {
-      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-    };
-    const chatContextCache = {
-      invalidate: jest.fn(),
-    };
-
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock() as never,
-    );
-
-    const result = await service.updateRulesPublishedLink(
-      'chat-1',
-      {
-        userId: 'admin-1',
-        username: null,
-        displayName: null,
-        chatTitle: null,
-      },
-      {
-        url: 'https://max.ru/chats/chat-1/message/321',
-      },
-    );
-
-    expect(prisma.chatRules.upsert).toHaveBeenCalledWith({
-      where: { chatId: 'chat-1' },
-      create: {
-        chatId: 'chat-1',
-        publishedUrl: 'https://max.ru/chats/chat-1/message/321',
-      },
-      update: {
-        publishedUrl: 'https://max.ru/chats/chat-1/message/321',
-      },
-    });
-    expect(prisma.auditLog.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        chatId: 'chat-1',
-        action: 'UPDATE_CHAT_RULES_PUBLISHED_LINK',
-      }),
-    });
-    expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
-    expect(result.publishedUrl).toBe('https://max.ru/chats/chat-1/message/321');
-  });
 });
 
 describe('AdminService.publishChannelEngagementMessage', () => {

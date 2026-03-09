@@ -500,23 +500,6 @@ export const updateChatRulesRequestSchema = chatRulesObjectSchema.pick({
 });
 export type UpdateChatRulesRequest = z.infer<typeof updateChatRulesRequestSchema>;
 
-export const updateChatRulesPublishedLinkRequestSchema = z
-  .object({
-    url: z.string().trim().max(2_048).default(''),
-  })
-  .superRefine((value, ctx) => {
-    if (value.url && !isValidBotButtonUrl(value.url)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['url'],
-        message: 'Укажите корректную ссылку на опубликованный пост правил.',
-      });
-    }
-  });
-export type UpdateChatRulesPublishedLinkRequest = z.infer<
-  typeof updateChatRulesPublishedLinkRequestSchema
->;
-
 export const publishChatRulesResultSchema = z.object({
   chatId: z.string().trim().min(1),
   messageId: z.string().trim().min(1),

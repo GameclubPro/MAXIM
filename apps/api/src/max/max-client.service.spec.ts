@@ -301,6 +301,45 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('builds chat post link from exact seq when MAX omits direct url fields', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              mid: 'mid-rules-5',
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            data:
+              '{"messages":[{"recipient":{"chat_id":-71768670111751,"chat_type":"chat"},"body":{"mid":"mid-rules-5","seq":116200113669996648}}]}',
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.sendMessageImmediateWithResolvedLink('chat-1', 'Правила чата');
+
+    expect(result).toEqual({
+      messageId: 'mid-rules-5',
+      url: 'https://max.ru/c/-71768670111751/AZzTfJDZAGg',
+    });
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api.max.ru/messages',
+        params: { message_ids: 'mid-rules-5' },
+        responseType: 'text',
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('sends reply link payload when message link is provided', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(
