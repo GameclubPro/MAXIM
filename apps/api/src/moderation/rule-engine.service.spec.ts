@@ -173,6 +173,19 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
   });
 
+  it('ignores bare branded domains when exact allowlisted URL is present', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'https://ura.news/news/1053075490 Читайте на URA.RU',
+      settings: buildSettings(),
+      domainAllowlist: ['https://ura.news/news/1053075490'],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+  });
+
   it('does not detect PROFANITY when russian profanity filter is disabled', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({

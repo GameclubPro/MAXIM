@@ -1671,6 +1671,10 @@ export class RuleEngineService {
     );
 
     for (const link of links) {
+      if (policy === LinkPolicy.ALLOWLIST_ONLY && !this.shouldCheckExactAllowlistLink(link)) {
+        continue;
+      }
+
       const normalizedLink = normalizeAllowlistLink(link);
       if (!normalizedLink) {
         continue;
@@ -1693,6 +1697,19 @@ export class RuleEngineService {
     return [...value.matchAll(regex)]
       .map((match) => match[0].trim().replace(/[),.;!?]+$/, ''))
       .filter((url) => url.length > 0);
+  }
+
+  private shouldCheckExactAllowlistLink(value: string): boolean {
+    const normalized = value.trim();
+    if (!normalized) {
+      return false;
+    }
+
+    if (/^https?:\/\//i.test(normalized)) {
+      return true;
+    }
+
+    return /[/?#]/.test(normalized);
   }
 
   private detectCommercialAd(params: {
