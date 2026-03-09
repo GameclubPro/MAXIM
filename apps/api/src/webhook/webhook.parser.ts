@@ -498,51 +498,45 @@ export class WebhookParser {
     const supplementalTextSnippets = this.collectSupplementalTextSnippets(message);
     const supplementalLinkUrls = this.collectSupplementalLinkUrls(message);
 
-    if (!directText) {
-      const textOnly = this.mergeTextSnippets([], supplementalTextSnippets);
-      if (textOnly.length > 0) {
-        return textOnly.join(' ');
-      }
-
-      if (supplementalLinkUrls.length > 0) {
-        return supplementalLinkUrls.join(' ');
-      }
-
-      return '';
-    }
-
-    const knownDirectUrls = new Set(
-      this.extractUrlsFromString(directText).map((url) => this.normalizeUrlForCompare(url)),
-    );
     const filteredSupplementalSnippets: string[] = [];
-    for (const snippet of supplementalTextSnippets) {
-      const normalizedSnippet = snippet.replace(/\s+/g, ' ').trim();
-      if (!normalizedSnippet) {
-        continue;
-      }
-
-      const snippetUrls = this.extractUrlsFromString(normalizedSnippet);
-      const hasNewUrl = snippetUrls.some(
-        (url) => !knownDirectUrls.has(this.normalizeUrlForCompare(url)),
+    if (directText) {
+      const knownDirectUrls = new Set(
+        this.extractUrlsFromString(directText).map((url) => this.normalizeUrlForCompare(url)),
       );
-      const snippetWithoutUrls = this.stripUrlsFromText(normalizedSnippet).trim();
+      for (const snippet of supplementalTextSnippets) {
+        const normalizedSnippet = snippet.replace(/\s+/g, ' ').trim();
+        if (!normalizedSnippet) {
+          continue;
+        }
 
-      if (!hasNewUrl && snippetWithoutUrls.length === 0) {
-        continue;
-      }
+        const snippetUrls = this.extractUrlsFromString(normalizedSnippet);
+        const hasNewUrl = snippetUrls.some(
+          (url) => !knownDirectUrls.has(this.normalizeUrlForCompare(url)),
+        );
+        const snippetWithoutUrls = this.stripUrlsFromText(normalizedSnippet).trim();
 
-      if (!hasNewUrl && snippetWithoutUrls.length > 0) {
-        filteredSupplementalSnippets.push(snippetWithoutUrls);
-        continue;
-      }
+        if (!hasNewUrl && snippetWithoutUrls.length === 0) {
+          continue;
+        }
 
-      filteredSupplementalSnippets.push(normalizedSnippet);
-      for (const url of snippetUrls) {
-        knownDirectUrls.add(this.normalizeUrlForCompare(url));
+        if (!hasNewUrl && snippetWithoutUrls.length > 0) {
+          filteredSupplementalSnippets.push(snippetWithoutUrls);
+          continue;
+        }
+
+        filteredSupplementalSnippets.push(normalizedSnippet);
+        for (const url of snippetUrls) {
+          knownDirectUrls.add(this.normalizeUrlForCompare(url));
+        }
       }
+    } else {
+      filteredSupplementalSnippets.push(...supplementalTextSnippets);
     }
 
-    let composedText = this.mergeTextSnippets([directText], filteredSupplementalSnippets).join(' ');
+    let composedText = this.mergeTextSnippets(
+      directText ? [directText] : [],
+      filteredSupplementalSnippets,
+    ).join(' ');
     if (supplementalLinkUrls.length === 0) {
       return composedText;
     }

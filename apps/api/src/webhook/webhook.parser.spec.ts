@@ -164,6 +164,38 @@ describe('WebhookParser', () => {
     expect(parsed.message?.text).toContain('https://forward-link.example/news');
   });
 
+  it('appends hidden urls from MAX message.link markup when only anchor text is visible', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-4c-markup',
+        chat_id: 'chat-4c-markup',
+        sender_id: 'user-4c-markup',
+        created_at: '2026-03-09T09:11:10.174Z',
+        body: {
+          text: '',
+        },
+        link: {
+          type: 'forward',
+          message: {
+            text: 'Приглашаю в группы бесплатных объявлений. Краснодар и край',
+            markup: [
+              {
+                type: 'link',
+                from: 42,
+                length: 18,
+                url: 'https://max.ru/join/hidden-anchor-link',
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    expect(parsed.message?.text).toContain('Приглашаю в группы бесплатных объявлений');
+    expect(parsed.message?.text).toContain('https://max.ru/join/hidden-anchor-link');
+  });
+
   it('extracts url from nested structures when plain text is missing', () => {
     const parsed = parser.parse({
       update_type: 'message_created',
