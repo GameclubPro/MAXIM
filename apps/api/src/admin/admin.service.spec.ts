@@ -44,6 +44,22 @@ function createPrismaMock() {
     channelPostViewSnapshot: {
       create: jest.fn().mockResolvedValue(undefined),
     },
+    chatRules: {
+      upsert: jest.fn().mockResolvedValue({
+        id: 'rules-1',
+        chatId: 'chat-1',
+        text: '',
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        publishedMessageId: null,
+        publishedUrl: null,
+        publishedAt: null,
+        createdAt: new Date('2026-03-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-03-01T00:00:00.000Z'),
+      }),
+      update: jest.fn().mockResolvedValue(undefined),
+    },
     channelStatsSyncState: {
       findUnique: jest.fn().mockResolvedValue(null),
       upsert: jest.fn().mockResolvedValue(undefined),
@@ -921,6 +937,158 @@ describe('AdminService.sendBroadcast', () => {
     expect(result.sendAt).toBe('2026-03-03T11:00:00.000Z');
     expect(result.sentChats).toBe(1);
     expect(result.failedChats).toBe(0);
+  });
+});
+
+describe('AdminService chat rules', () => {
+  it('returns persisted chat rules draft with published metadata', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatRules.upsert.mockResolvedValue({
+      id: 'rules-1',
+      chatId: 'chat-1',
+      text: 'Пишите по теме.',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      publishedMessageId: 'mid-rules-1',
+      publishedUrl: 'https://max.ru/chats/chat-1/message/123',
+      publishedAt: new Date('2026-03-09T10:00:00.000Z'),
+      createdAt: new Date('2026-03-09T09:00:00.000Z'),
+      updatedAt: new Date('2026-03-09T10:00:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.getRules('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(result).toEqual({
+      text: 'Пишите по теме.',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      publishedMessageId: 'mid-rules-1',
+      publishedUrl: 'https://max.ru/chats/chat-1/message/123',
+      publishedAt: '2026-03-09T10:00:00.000Z',
+    });
+  });
+
+  it('saves draft and publishes new rules post with persisted link', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatRules.upsert
+      .mockResolvedValueOnce({
+        id: 'rules-1',
+        chatId: 'chat-1',
+        text: 'Опубликуйте только по теме.',
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        publishedMessageId: null,
+        publishedUrl: null,
+        publishedAt: null,
+        createdAt: new Date('2026-03-09T09:00:00.000Z'),
+        updatedAt: new Date('2026-03-09T09:00:00.000Z'),
+      })
+      .mockResolvedValueOnce({
+        id: 'rules-1',
+        chatId: 'chat-1',
+        text: 'Опубликуйте только по теме.',
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        publishedMessageId: null,
+        publishedUrl: null,
+        publishedAt: null,
+        createdAt: new Date('2026-03-09T09:00:00.000Z'),
+        updatedAt: new Date('2026-03-09T09:05:00.000Z'),
+      });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'mid-rules-2',
+        url: 'https://max.ru/chats/chat-1/message/456',
+      }),
+      uploadImage: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const savedDraft = await service.updateRules(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Опубликуйте только по теме.',
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+      },
+    );
+
+    expect(savedDraft.text).toBe('Опубликуйте только по теме.');
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        action: 'UPDATE_CHAT_RULES',
+      }),
+    });
+
+    const published = await service.publishRules('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'chat-1',
+      'Опубликуйте только по теме.',
+      undefined,
+    );
+    expect(prisma.chatRules.update).toHaveBeenCalledWith({
+      where: { chatId: 'chat-1' },
+      data: expect.objectContaining({
+        publishedMessageId: 'mid-rules-2',
+        publishedUrl: 'https://max.ru/chats/chat-1/message/456',
+        publishedAt: expect.any(Date),
+      }),
+    });
+    expect(published).toEqual({
+      chatId: 'chat-1',
+      messageId: 'mid-rules-2',
+      url: 'https://max.ru/chats/chat-1/message/456',
+      publishedAt: expect.any(String),
+    });
+    expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
   });
 });
 

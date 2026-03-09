@@ -48,6 +48,11 @@ export type MaxWebhookSubscription = {
   updateTypes: string[];
 };
 
+export type MaxPublishedMessage = {
+  messageId: string;
+  url: string;
+};
+
 export type MaxButtonIntent = 'default' | 'positive' | 'negative';
 
 export type MaxLinkButton = {
@@ -225,6 +230,46 @@ export class MaxClientService implements OnModuleDestroy {
       },
       dispatchOptions,
     );
+  }
+
+  async sendMessageImmediateWithResolvedLink(
+    chatId: string,
+    text: string,
+    options?: MaxSendMessageOptions,
+  ): Promise<MaxPublishedMessage> {
+    const attachments = this.buildMessageAttachments(options);
+    const sendResponse = await this.executeMutation(chatId, async () => {
+      return this.request<Record<string, unknown>>('post', '/messages', {
+        params: {
+          chat_id: chatId,
+        },
+        data: {
+          text,
+          ...(attachments.length > 0 ? { attachments } : {}),
+        },
+      });
+    });
+
+    const messageId = this.extractMessageIdFromSendResponse(sendResponse);
+    if (!messageId) {
+      throw new Error('MAX send response is missing message id');
+    }
+
+    const directUrl = this.parseChatLink(sendResponse);
+    if (directUrl) {
+      return { messageId, url: directUrl };
+    }
+
+    const sentMessage = await this.getMessageById(messageId);
+    const resolvedUrl = sentMessage ? this.parseChatLink(sentMessage) : null;
+    if (!resolvedUrl) {
+      throw new Error(`MAX published message ${messageId} has no resolvable link`);
+    }
+
+    return {
+      messageId,
+      url: resolvedUrl,
+    };
   }
 
   async editMessageInlineKeyboard(

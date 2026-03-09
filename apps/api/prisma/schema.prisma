@@ -71,6 +71,7 @@ model Chat {
   updatedAt  DateTime       @updatedAt @map("updated_at")
 
   settings                 ChatSettings?
+  rules                    ChatRules?
   channelSettings          ChannelSettings?
   admins                   ChatAdminAllowlist[]
   domains                  DomainAllowlist[]
@@ -104,6 +105,7 @@ model ChatSettings {
   greetingBotButtonEnabled         Boolean                  @default(false) @map("greeting_bot_button_enabled")
   greetingBotButtonUrl             String                   @default("") @map("greeting_bot_button_url")
   greetingBotButtonText            String                   @default("Открыть") @map("greeting_bot_button_text")
+  greetingRulesButtonEnabled       Boolean                  @default(false) @map("greeting_rules_button_enabled")
   deleteBotMessagesEnabled         Boolean                  @default(true) @map("delete_bot_messages_enabled")
   deleteBotMessagesDelayMinutes    Int                      @default(2) @map("delete_bot_messages_delay_minutes")
   removeBotsFromGroupEnabled       Boolean                  @default(false) @map("remove_bots_from_group_enabled")
@@ -145,6 +147,7 @@ model ChatSettings {
   textFiltersBotButtonEnabled      Boolean                  @default(false) @map("text_filters_bot_button_enabled")
   textFiltersBotButtonUrl          String                   @default("") @map("text_filters_bot_button_url")
   textFiltersBotButtonText         String                   @default("Открыть") @map("text_filters_bot_button_text")
+  textFiltersRulesButtonEnabled    Boolean                  @default(false) @map("text_filters_rules_button_enabled")
   thematicCodewordEnabled          Boolean                  @default(false) @map("thematic_codeword_enabled")
   thematicCodeword                 String                   @default("") @map("thematic_codeword")
   realEstateTopicFilterEnabled     Boolean                  @default(false) @map("real_estate_topic_filter_enabled")
@@ -156,6 +159,7 @@ model ChatSettings {
   thematicFiltersBotButtonEnabled  Boolean                  @default(false) @map("thematic_filters_bot_button_enabled")
   thematicFiltersBotButtonUrl      String                   @default("") @map("thematic_filters_bot_button_url")
   thematicFiltersBotButtonText     String                   @default("Открыть") @map("thematic_filters_bot_button_text")
+  thematicFiltersRulesButtonEnabled Boolean                 @default(false) @map("thematic_filters_rules_button_enabled")
   nightModeEnabled                 Boolean                  @default(false) @map("night_mode_enabled")
   nightModeStartTimeMinutes        Int                      @default(1380) @map("night_mode_start_time_minutes")
   nightModeEndTimeMinutes          Int                      @default(480) @map("night_mode_end_time_minutes")
@@ -165,6 +169,7 @@ model ChatSettings {
   nightModeBotButtonEnabled        Boolean                  @default(false) @map("night_mode_bot_button_enabled")
   nightModeBotButtonUrl            String                   @default("") @map("night_mode_bot_button_url")
   nightModeBotButtonText           String                   @default("Открыть") @map("night_mode_bot_button_text")
+  nightModeRulesButtonEnabled      Boolean                  @default(false) @map("night_mode_rules_button_enabled")
   linkBotMessageEnabled            Boolean                  @default(true) @map("link_bot_message_enabled")
   linkBotMessageText               String                   @default("") @map("link_bot_message_text")
   linkWarnEnabled                  Boolean                  @default(false) @map("link_warn_enabled")
@@ -174,11 +179,14 @@ model ChatSettings {
   linkBotButtonEnabled             Boolean                  @default(false) @map("link_bot_button_enabled")
   linkBotButtonUrl                 String                   @default("") @map("link_bot_button_url")
   linkBotButtonText                String                   @default("Открыть") @map("link_bot_button_text")
+  linkRulesButtonEnabled           Boolean                  @default(false) @map("link_rules_button_enabled")
   duplicateBotMessageEnabled       Boolean                  @default(false) @map("duplicate_bot_message_enabled")
   duplicateBotMessageText          String                   @default("") @map("duplicate_bot_message_text")
   duplicateBotButtonEnabled        Boolean                  @default(false) @map("duplicate_bot_button_enabled")
   duplicateBotButtonUrl            String                   @default("") @map("duplicate_bot_button_url")
   duplicateBotButtonText           String                   @default("Открыть") @map("duplicate_bot_button_text")
+  duplicateRulesButtonEnabled      Boolean                  @default(false) @map("duplicate_rules_button_enabled")
+  messageLimitsRulesButtonEnabled  Boolean                  @default(false) @map("message_limits_rules_button_enabled")
   banDurationHours                 Int                      @default(6) @map("ban_duration_hours")
   warnThreshold                    Int                      @default(3) @map("warn_threshold")
   createdAt                        DateTime                 @default(now()) @map("created_at")
@@ -187,6 +195,24 @@ model ChatSettings {
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 
   @@map("chat_settings")
+}
+
+model ChatRules {
+  id               String    @id @default(cuid())
+  chatId           String    @unique @map("chat_id")
+  text             String    @default("")
+  imageBase64      String    @default("") @map("image_base64")
+  imageMimeType    String    @default("") @map("image_mime_type")
+  imageFileName    String    @default("") @map("image_file_name")
+  publishedMessageId String? @map("published_message_id")
+  publishedUrl     String?   @map("published_url")
+  publishedAt      DateTime? @map("published_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  @@map("chat_rules")
 }
 
 model ChannelSettings {

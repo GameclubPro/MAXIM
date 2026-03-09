@@ -48,6 +48,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     greetingBotButtonEnabled: false,
     greetingBotButtonUrl: '',
     greetingBotButtonText: 'Открыть',
+    greetingRulesButtonEnabled: false,
     deleteBotMessagesEnabled: false,
     deleteBotMessagesDelayMinutes: 2,
     removeBotsFromGroupEnabled: false,
@@ -89,6 +90,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     textFiltersBotButtonEnabled: false,
     textFiltersBotButtonUrl: '',
     textFiltersBotButtonText: 'Открыть',
+    textFiltersRulesButtonEnabled: false,
     thematicCodewordEnabled: false,
     thematicCodeword: '',
     realEstateTopicFilterEnabled: false,
@@ -100,6 +102,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     thematicFiltersBotButtonEnabled: false,
     thematicFiltersBotButtonUrl: '',
     thematicFiltersBotButtonText: 'Открыть',
+    thematicFiltersRulesButtonEnabled: false,
     nightModeEnabled: false,
     nightModeStartTimeMinutes: 23 * 60,
     nightModeEndTimeMinutes: 8 * 60,
@@ -109,6 +112,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     nightModeBotButtonEnabled: false,
     nightModeBotButtonUrl: '',
     nightModeBotButtonText: 'Открыть',
+    nightModeRulesButtonEnabled: false,
     linkBotMessageEnabled: true,
     linkBotMessageText: '',
     linkWarnEnabled: false,
@@ -118,11 +122,14 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     linkBotButtonEnabled: false,
     linkBotButtonUrl: '',
     linkBotButtonText: 'Открыть',
+    linkRulesButtonEnabled: false,
     duplicateBotMessageEnabled: false,
     duplicateBotMessageText: '',
     duplicateBotButtonEnabled: false,
     duplicateBotButtonUrl: '',
     duplicateBotButtonText: 'Открыть',
+    duplicateRulesButtonEnabled: false,
+    messageLimitsRulesButtonEnabled: false,
     banDurationHours: 6,
     warnThreshold: 3,
     createdAt: new Date(),
@@ -1163,21 +1170,19 @@ describe('ModerationService', () => {
         ),
       },
       chatSettings: {
-        findFirst: jest
-          .fn()
-          .mockImplementation(
-            (args: {
-              where?: {
-                globalCrossChatSpamEnabled?: boolean;
-                globalUserBlacklistEnabled?: boolean;
-              };
-            }) => {
-              if (args.where?.globalCrossChatSpamEnabled) {
-                return Promise.resolve({ chatId: 'chat-global-toggle' });
-              }
-              return Promise.resolve(null);
-            },
-          ),
+        findFirst: jest.fn().mockImplementation(
+          (args: {
+            where?: {
+              globalCrossChatSpamEnabled?: boolean;
+              globalUserBlacklistEnabled?: boolean;
+            };
+          }) => {
+            if (args.where?.globalCrossChatSpamEnabled) {
+              return Promise.resolve({ chatId: 'chat-global-toggle' });
+            }
+            return Promise.resolve(null);
+          },
+        ),
       },
       violation: {
         create: jest.fn(),
@@ -4793,6 +4798,140 @@ describe('ModerationService', () => {
           url: 'https://max.ru/channel/rules',
         },
       },
+    );
+  });
+
+  it('adds both manual button and rules button when both toggles are enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            linkBotMessageEnabled: true,
+            linkWarnEnabled: true,
+            linkBotButtonEnabled: true,
+            linkBotButtonUrl: 'https://max.ru/channel/news',
+            linkBotButtonText: 'Канал',
+            linkRulesButtonEnabled: true,
+          }),
+          rules: {
+            publishedUrl: 'https://max.ru/chats/chat-1/message/999',
+          },
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+        count: jest.fn().mockResolvedValue(2),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Link detected' }],
+      }),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      'Пользователю "Алексей" вынесено предупреждение за ссылку. В этом чате нельзя отправлять ссылки.',
+      {
+        buttons: [
+          [
+            {
+              text: 'Канал',
+              url: 'https://max.ru/channel/news',
+            },
+            {
+              text: 'Правила',
+              url: 'https://max.ru/chats/chat-1/message/999',
+            },
+          ],
+        ],
+      },
+    );
+  });
+
+  it('skips rules button when toggle is enabled but rules post is not published yet', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            linkBotMessageEnabled: true,
+            linkWarnEnabled: true,
+            linkRulesButtonEnabled: true,
+          }),
+          rules: {
+            publishedUrl: null,
+          },
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+        count: jest.fn().mockResolvedValue(2),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Link detected' }],
+      }),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      'Пользователю "Алексей" вынесено предупреждение за ссылку. В этом чате нельзя отправлять ссылки.',
+      undefined,
     );
   });
 

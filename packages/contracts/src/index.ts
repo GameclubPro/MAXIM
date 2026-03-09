@@ -16,6 +16,10 @@ const botButtonUrlSchema = z.string().trim().max(2_048).default('');
 const botButtonTextSchema = z.string().trim().max(32).default('Открыть');
 const botMessageTextSchema = z.string().max(1_000).default('');
 const thematicCodewordSchema = z.string().trim().max(32).default('');
+const chatRulesTextSchema = z.string().max(2_000).default('');
+const chatRulesImageBase64Schema = z.string().trim().max(1_500_000).default('');
+const chatRulesImageMimeTypeSchema = z.string().trim().max(128).default('');
+const chatRulesImageFileNameSchema = z.string().trim().max(128).default('');
 
 function normalizeThematicCodewordCandidate(value: string): string | null {
   const normalized = value.trim().toLowerCase().replace(/ё/g, 'е');
@@ -103,6 +107,7 @@ export const chatSettingsSchema = z
     greetingBotButtonEnabled: z.boolean().default(false),
     greetingBotButtonUrl: botButtonUrlSchema,
     greetingBotButtonText: botButtonTextSchema,
+    greetingRulesButtonEnabled: z.boolean().default(false),
     deleteBotMessagesEnabled: z.boolean().default(true),
     deleteBotMessagesDelayMinutes: z.number().int().min(1).max(60).default(2),
     removeBotsFromGroupEnabled: z.boolean().default(false),
@@ -144,6 +149,7 @@ export const chatSettingsSchema = z
     textFiltersBotButtonEnabled: z.boolean().default(false),
     textFiltersBotButtonUrl: botButtonUrlSchema,
     textFiltersBotButtonText: botButtonTextSchema,
+    textFiltersRulesButtonEnabled: z.boolean().default(false),
     thematicCodewordEnabled: z.boolean().default(false),
     thematicCodeword: thematicCodewordSchema,
     realEstateTopicFilterEnabled: z.boolean().default(false),
@@ -155,6 +161,7 @@ export const chatSettingsSchema = z
     thematicFiltersBotButtonEnabled: z.boolean().default(false),
     thematicFiltersBotButtonUrl: botButtonUrlSchema,
     thematicFiltersBotButtonText: botButtonTextSchema,
+    thematicFiltersRulesButtonEnabled: z.boolean().default(false),
     nightModeEnabled: z.boolean().default(false),
     nightModeStartTimeMinutes: z
       .number()
@@ -174,6 +181,7 @@ export const chatSettingsSchema = z
     nightModeBotButtonEnabled: z.boolean().default(false),
     nightModeBotButtonUrl: botButtonUrlSchema,
     nightModeBotButtonText: botButtonTextSchema,
+    nightModeRulesButtonEnabled: z.boolean().default(false),
     linkBotMessageEnabled: z.boolean().default(true),
     linkBotMessageText: botMessageTextSchema,
     linkWarnEnabled: z.boolean().default(false),
@@ -183,11 +191,14 @@ export const chatSettingsSchema = z
     linkBotButtonEnabled: z.boolean().default(false),
     linkBotButtonUrl: botButtonUrlSchema,
     linkBotButtonText: botButtonTextSchema,
+    linkRulesButtonEnabled: z.boolean().default(false),
     duplicateBotMessageEnabled: z.boolean().default(false),
     duplicateBotMessageText: botMessageTextSchema,
     duplicateBotButtonEnabled: z.boolean().default(false),
     duplicateBotButtonUrl: botButtonUrlSchema,
     duplicateBotButtonText: botButtonTextSchema,
+    duplicateRulesButtonEnabled: z.boolean().default(false),
+    messageLimitsRulesButtonEnabled: z.boolean().default(false),
     banDurationHours: z.number().int().min(1).max(36).default(6),
     warnThreshold: z.number().int().min(1).max(10).default(3),
   })
@@ -394,7 +405,11 @@ export const chatSettingsSchema = z
         });
       } else {
         const normalizedCodeword = normalizeThematicCodewordCandidate(codeword);
-        if (!normalizedCodeword || normalizedCodeword.length < 2 || normalizedCodeword.length > 32) {
+        if (
+          !normalizedCodeword ||
+          normalizedCodeword.length < 2 ||
+          normalizedCodeword.length > 32
+        ) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['thematicCodeword'],
@@ -445,6 +460,60 @@ export const chatSettingsSchema = z
     }
   });
 export type ChatSettings = z.infer<typeof chatSettingsSchema>;
+
+const chatRulesObjectSchema = z.object({
+  text: chatRulesTextSchema,
+  imageBase64: chatRulesImageBase64Schema,
+  imageMimeType: chatRulesImageMimeTypeSchema,
+  imageFileName: chatRulesImageFileNameSchema,
+  publishedMessageId: z.string().trim().min(1).nullable().default(null),
+  publishedUrl: z.string().trim().max(2_048).nullable().default(null),
+  publishedAt: z.string().datetime().nullable().default(null),
+});
+
+export const chatRulesSchema = chatRulesObjectSchema.superRefine((value, ctx) => {
+  if (value.imageBase64) {
+    if (!value.imageMimeType.trim() || !value.imageMimeType.toLowerCase().startsWith('image/')) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['imageMimeType'],
+        message: 'Неверный формат фото.',
+      });
+    }
+  }
+
+  if (value.publishedUrl && !isValidBotButtonUrl(value.publishedUrl)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['publishedUrl'],
+      message: 'Сохранена некорректная ссылка на пост правил.',
+    });
+  }
+});
+export type ChatRules = z.infer<typeof chatRulesSchema>;
+
+export const updateChatRulesRequestSchema = chatRulesObjectSchema.pick({
+  text: true,
+  imageBase64: true,
+  imageMimeType: true,
+  imageFileName: true,
+});
+export type UpdateChatRulesRequest = z.infer<typeof updateChatRulesRequestSchema>;
+
+export const publishChatRulesResultSchema = z.object({
+  chatId: z.string().trim().min(1),
+  messageId: z.string().trim().min(1),
+  url: z
+    .string()
+    .trim()
+    .min(1)
+    .max(2_048)
+    .refine((value) => isValidBotButtonUrl(value), {
+      message: 'Укажите корректную ссылку на опубликованные правила.',
+    }),
+  publishedAt: z.string().datetime(),
+});
+export type PublishChatRulesResult = z.infer<typeof publishChatRulesResultSchema>;
 
 export const channelSettingsSchema = z
   .object({

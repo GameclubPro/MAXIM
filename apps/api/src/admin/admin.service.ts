@@ -2,6 +2,7 @@ import {
   addGlobalUserBlacklistRequestSchema,
   addDomainRequestSchema,
   addAdminRequestSchema,
+  chatRulesSchema,
   channelStatsQuerySchema,
   channelStatsResponseSchema,
   channelDialogResponseSchema,
@@ -14,12 +15,14 @@ import {
   logsDashboardResponseSchema,
   manualModerationActionRequestSchema,
   manualModerationActionResultSchema,
+  publishChatRulesResultSchema,
   type ChannelDialogType,
   type ChannelStatsBucket,
   type ChannelStatsRange,
   type ChannelStatsResponse,
   type ChannelOverview,
   type ChannelSettings,
+  type ChatRules,
   type ChatSettings,
   chatSettingsSchema,
   type DomainAllowlistEntry,
@@ -32,12 +35,22 @@ import {
   type ModerationEvent,
   publishChannelEngagementRequestSchema,
   publishChannelEngagementResultSchema,
+  type UpdateChatRulesRequest,
+  updateChatRulesRequestSchema,
+  type PublishChatRulesResult,
   type SendBroadcastResult,
   type ChatSummary,
   sendBroadcastRequestSchema,
   scheduleDomainRemovalRequestSchema,
 } from '@maxim/contracts';
-import { ChatEntityType, EventType, Operator, Prisma, SanctionAction } from '@prisma/client';
+import {
+  ChatEntityType,
+  EventType,
+  Operator,
+  Prisma,
+  SanctionAction,
+  type ChatRules as PersistedChatRules,
+} from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import {
   BadRequestException,
@@ -621,6 +634,151 @@ export class AdminService {
     await this.chatContextCache.invalidate(chatId);
 
     return parsed.data;
+  }
+
+  async getRules(chatId: string, user: AuthUser): Promise<ChatRules> {
+    await this.assertChatAdmin(chatId, user.userId, 'chat');
+    await this.ensureEntityType(chatId, user.userId, 'chat');
+
+    const rules = await this.upsertChatRules(chatId);
+    return this.mapChatRules(rules);
+  }
+
+  async updateRules(chatId: string, user: AuthUser, body: unknown): Promise<ChatRules> {
+    await this.assertChatAdmin(chatId, user.userId, 'chat');
+    await this.ensureEntityType(chatId, user.userId, 'chat');
+
+    const parsed = updateChatRulesRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const normalizedDraft = this.normalizeChatRulesDraft(parsed.data);
+    if (normalizedDraft.imageBase64) {
+      const imageBuffer = this.decodeRulesImageBase64(normalizedDraft.imageBase64);
+      if (imageBuffer.length > BROADCAST_IMAGE_MAX_BYTES) {
+        throw new BadRequestException('Фото правил слишком большое. Максимум 1 MB.');
+      }
+      if (!normalizedDraft.imageMimeType.toLowerCase().startsWith('image/')) {
+        throw new BadRequestException('Поддерживаются только изображения.');
+      }
+    }
+
+    const rules = await this.prisma.chatRules.upsert({
+      where: { chatId },
+      create: {
+        chatId,
+        ...normalizedDraft,
+      },
+      update: {
+        ...normalizedDraft,
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: 'UPDATE_CHAT_RULES',
+        payload: {
+          hasImage: Boolean(normalizedDraft.imageBase64),
+          textLength: normalizedDraft.text.length,
+          source: 'miniapp',
+        },
+      },
+    });
+    await this.chatContextCache?.invalidate(chatId);
+
+    return this.mapChatRules(rules);
+  }
+
+  async publishRules(chatId: string, user: AuthUser): Promise<PublishChatRulesResult> {
+    await this.assertChatAdmin(chatId, user.userId, 'chat');
+    await this.ensureEntityType(chatId, user.userId, 'chat');
+
+    const rules = await this.upsertChatRules(chatId);
+    const messageText = rules.text.trim();
+    if (!messageText) {
+      throw new BadRequestException('Сначала заполните текст правил.');
+    }
+
+    let imagePayload: Record<string, unknown> | undefined;
+    if (rules.imageBase64.trim()) {
+      const imageMimeType = rules.imageMimeType.trim().toLowerCase();
+      if (!imageMimeType.startsWith('image/')) {
+        throw new BadRequestException('Поддерживаются только изображения.');
+      }
+
+      const imageBuffer = this.decodeRulesImageBase64(rules.imageBase64);
+      if (imageBuffer.length > BROADCAST_IMAGE_MAX_BYTES) {
+        throw new BadRequestException('Фото правил слишком большое. Максимум 1 MB.');
+      }
+
+      try {
+        imagePayload = await this.maxClient.uploadImage(
+          imageBuffer,
+          this.resolveRulesImageFileName(rules.imageFileName, imageMimeType),
+          imageMimeType,
+        );
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            actorUserId: user.userId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Rules image upload failed',
+        );
+        throw new BadRequestException(
+          'Не удалось загрузить фото правил. Попробуйте другое изображение.',
+        );
+      }
+    }
+
+    let published: { messageId: string; url: string };
+    try {
+      published = await this.publishRulesMessageWithRetry(
+        chatId,
+        messageText,
+        imagePayload ? { imagePayload } : undefined,
+      );
+    } catch (error: unknown) {
+      const maxApiMessage = this.extractMaxApiErrorMessage(error);
+      throw new BadRequestException(maxApiMessage || 'Не удалось опубликовать правила.');
+    }
+
+    const publishedAt = new Date();
+    await this.prisma.chatRules.update({
+      where: { chatId },
+      data: {
+        publishedMessageId: published.messageId,
+        publishedUrl: published.url,
+        publishedAt,
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: 'PUBLISH_CHAT_RULES',
+        payload: {
+          messageId: published.messageId,
+          url: published.url,
+          publishedAt: publishedAt.toISOString(),
+          hasImage: Boolean(imagePayload),
+          source: 'miniapp',
+        },
+      },
+    });
+    await this.chatContextCache?.invalidate(chatId);
+
+    return publishChatRulesResultSchema.parse({
+      chatId,
+      messageId: published.messageId,
+      url: published.url,
+      publishedAt: publishedAt.toISOString(),
+    });
   }
 
   async getChannelSettings(chatId: string, user: AuthUser): Promise<ChannelSettings> {
@@ -1299,6 +1457,26 @@ export class AdminService {
     return imageBuffer;
   }
 
+  private decodeRulesImageBase64(value: string): Buffer {
+    const normalized = value.trim().replace(/^data:[^;]+;base64,/, '');
+    if (!normalized) {
+      throw new BadRequestException('Добавьте фото для правил.');
+    }
+
+    let imageBuffer: Buffer;
+    try {
+      imageBuffer = Buffer.from(normalized, 'base64');
+    } catch {
+      throw new BadRequestException('Не удалось прочитать фото правил.');
+    }
+
+    if (imageBuffer.length === 0) {
+      throw new BadRequestException('Не удалось прочитать фото правил.');
+    }
+
+    return imageBuffer;
+  }
+
   private resolveBroadcastImageFileName(fileName: string, mimeType: string): string {
     const trimmed = fileName.trim();
     if (trimmed) {
@@ -1316,6 +1494,98 @@ export class AdminService {
     }
 
     return 'broadcast-image.jpg';
+  }
+
+  private resolveRulesImageFileName(fileName: string, mimeType: string): string {
+    const trimmed = fileName.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+
+    if (mimeType === 'image/png') {
+      return 'chat-rules.png';
+    }
+    if (mimeType === 'image/webp') {
+      return 'chat-rules.webp';
+    }
+    if (mimeType === 'image/gif') {
+      return 'chat-rules.gif';
+    }
+
+    return 'chat-rules.jpg';
+  }
+
+  private async publishRulesMessageWithRetry(
+    chatId: string,
+    text: string,
+    options: Pick<MaxSendMessageOptions, 'imagePayload'> | undefined,
+  ): Promise<{ messageId: string; url: string }> {
+    let lastError: unknown = null;
+    const attempts = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length + 1;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await this.maxClient.sendMessageImmediateWithResolvedLink(chatId, text, options);
+      } catch (error: unknown) {
+        lastError = error;
+        if (
+          !options?.imagePayload ||
+          !this.isAttachmentNotReadyError(error) ||
+          attempt >= attempts
+        ) {
+          throw error;
+        }
+        const delayMs = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS[attempt - 1] ?? 1_500;
+        await this.sleep(delayMs);
+      }
+    }
+
+    if (lastError) {
+      throw lastError;
+    }
+
+    throw new Error('Rules publish failed without error details');
+  }
+
+  private normalizeChatRulesDraft(value: UpdateChatRulesRequest): UpdateChatRulesRequest {
+    const normalizedImageBase64 = value.imageBase64.trim();
+    if (!normalizedImageBase64) {
+      return {
+        text: value.text,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+      };
+    }
+
+    return {
+      text: value.text,
+      imageBase64: normalizedImageBase64,
+      imageMimeType: value.imageMimeType.trim(),
+      imageFileName: value.imageFileName.trim(),
+    };
+  }
+
+  private async upsertChatRules(chatId: string): Promise<PersistedChatRules> {
+    return this.prisma.chatRules.upsert({
+      where: { chatId },
+      create: {
+        chatId,
+      },
+      update: {},
+    });
+  }
+
+  private mapChatRules(rules: PersistedChatRules): ChatRules {
+    return chatRulesSchema.parse({
+      text: rules.text,
+      imageBase64: rules.imageBase64,
+      imageMimeType: rules.imageMimeType,
+      imageFileName: rules.imageFileName,
+      publishedMessageId: rules.publishedMessageId,
+      publishedUrl: rules.publishedUrl,
+      publishedAt: rules.publishedAt ? rules.publishedAt.toISOString() : null,
+    });
   }
 
   async getLogsDashboard(

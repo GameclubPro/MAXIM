@@ -4,6 +4,8 @@ import { of } from 'rxjs';
 jest.mock('ioredis', () => ({
   __esModule: true,
   default: jest.fn().mockImplementation(() => ({
+    incr: jest.fn().mockResolvedValue(1),
+    expire: jest.fn().mockResolvedValue(1),
     quit: jest.fn().mockResolvedValue(undefined),
   })),
 }));
@@ -126,6 +128,83 @@ describe('MaxClientService inline keyboard guardrails', () => {
         },
       ],
     ]);
+
+    await service.onModuleDestroy();
+  });
+
+  it('publishes message and resolves post link via follow-up message fetch', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              mid: 'mid-rules-1',
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            data: {
+              messages: [
+                {
+                  body: { mid: 'mid-rules-1' },
+                  message_url: 'https://max.ru/chats/chat-1/message/123',
+                },
+              ],
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.sendMessageImmediateWithResolvedLink('chat-1', 'Правила чата');
+
+    expect(result).toEqual({
+      messageId: 'mid-rules-1',
+      url: 'https://max.ru/chats/chat-1/message/123',
+    });
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api.max.ru/messages',
+        params: { chat_id: 'chat-1' },
+        data: { text: 'Правила чата' },
+      }),
+    );
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api.max.ru/messages',
+        params: { message_ids: 'mid-rules-1' },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('uses link returned directly by MAX send response when available', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          data: {
+            message_id: 'mid-rules-2',
+            url: 'https://max.ru/chats/chat-1/message/456',
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.sendMessageImmediateWithResolvedLink('chat-1', 'Правила');
+
+    expect(result).toEqual({
+      messageId: 'mid-rules-2',
+      url: 'https://max.ru/chats/chat-1/message/456',
+    });
+    expect(httpService.request).toHaveBeenCalledTimes(1);
 
     await service.onModuleDestroy();
   });

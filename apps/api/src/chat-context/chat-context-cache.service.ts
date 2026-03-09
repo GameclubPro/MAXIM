@@ -10,6 +10,7 @@ export type ChatContext = {
   settings: ChatSettings;
   domainAllowlist: string[];
   adminUserIds: string[];
+  rulesPublishedUrl: string | null;
 };
 
 @Injectable()
@@ -31,7 +32,7 @@ export class ChatContextCacheService implements OnModuleDestroy {
   }
 
   static cacheKey(chatId: string): string {
-    return `chat:context:v1:${chatId}`;
+    return `chat:context:v2:${chatId}`;
   }
 
   async getChatContext(chatId: string, chatTitle?: string | null): Promise<ChatContext> {
@@ -68,6 +69,11 @@ export class ChatContextCacheService implements OnModuleDestroy {
       where: { id: chatId },
       include: {
         settings: true,
+        rules: {
+          select: {
+            publishedUrl: true,
+          },
+        },
         domains: {
           where: {
             OR: [{ removeAfterAt: null }, { removeAfterAt: { gt: new Date() } }],
@@ -98,9 +104,15 @@ export class ChatContextCacheService implements OnModuleDestroy {
       settings: chat.settings,
       domainAllowlist: (chat.domains ?? []).map((item) => item.domain),
       adminUserIds: (chat.admins ?? []).map((item) => item.userId),
+      rulesPublishedUrl: chat.rules?.publishedUrl ?? null,
     };
 
-    await this.redis.set(ChatContextCacheService.cacheKey(chatId), JSON.stringify(value), 'EX', this.ttlSec);
+    await this.redis.set(
+      ChatContextCacheService.cacheKey(chatId),
+      JSON.stringify(value),
+      'EX',
+      this.ttlSec,
+    );
     return value;
   }
 

@@ -17,6 +17,7 @@ import { createHash, createHmac, randomUUID } from 'node:crypto';
 import {
   MaxClientService,
   type MaxActionDispatchOptions,
+  type MaxLinkButton,
   type MaxMessageButton,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
@@ -63,6 +64,7 @@ type ChannelDialogType = 'comments' | 'suggest';
 
 const DEFAULT_BAN_DURATION_HOURS = 6;
 const DEFAULT_BOT_BUTTON_TEXT = 'Открыть';
+const RULES_BOT_BUTTON_TEXT = 'Правила';
 const DEFAULT_BOT_MESSAGES_DELETE_DELAY_MINUTES = 2;
 const BOT_MESSAGES_DELETE_DELAY_MIN_MINUTES = 1;
 const BOT_MESSAGES_DELETE_DELAY_MAX_MINUTES = 60;
@@ -342,6 +344,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const degradeMode = mode.mode === 'degrade';
     const chat = await this.loadChatContext(chatId, chatTitle);
     const settings = this.applyDegradeSettings(chat.settings, degradeMode);
+    const rulesPublishedUrl = chat.rulesPublishedUrl;
     const globalUserBlacklistEnabled = await this.isGlobalUserBlacklistEnabled(
       settings.globalUserBlacklistEnabled,
     );
@@ -414,6 +417,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           greetingBotButtonEnabled: settings.greetingBotButtonEnabled,
           greetingBotButtonUrl: settings.greetingBotButtonUrl,
           greetingBotButtonText: settings.greetingBotButtonText,
+          greetingRulesButtonEnabled: settings.greetingRulesButtonEnabled,
+          rulesPublishedUrl,
           deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
           deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
           excludedUserIds: excludedGreetingUserIds,
@@ -581,6 +586,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         duplicateBotButtonEnabled: settings.duplicateBotButtonEnabled,
         duplicateBotButtonUrl: settings.duplicateBotButtonUrl,
         duplicateBotButtonText: settings.duplicateBotButtonText,
+        duplicateRulesButtonEnabled: settings.duplicateRulesButtonEnabled,
+        rulesPublishedUrl,
         deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
       });
@@ -601,6 +608,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         duplicateBotButtonEnabled: settings.duplicateBotButtonEnabled,
         duplicateBotButtonUrl: settings.duplicateBotButtonUrl,
         duplicateBotButtonText: settings.duplicateBotButtonText,
+        duplicateRulesButtonEnabled: settings.duplicateRulesButtonEnabled,
+        rulesPublishedUrl,
         deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
       });
@@ -672,6 +681,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             settings.linkBotButtonEnabled,
             settings.linkBotButtonUrl,
             settings.linkBotButtonText,
+            settings.linkRulesButtonEnabled,
+            rulesPublishedUrl,
           )
         : null;
     const linkViolationCount24h =
@@ -690,6 +701,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             settings.textFiltersBotButtonEnabled,
             settings.textFiltersBotButtonUrl,
             settings.textFiltersBotButtonText,
+            settings.textFiltersRulesButtonEnabled,
+            rulesPublishedUrl,
           )
         : null;
     const limitsMessageOptions = isMessageLimitsHit
@@ -697,6 +710,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           settings.messageLimitsBotButtonEnabled,
           settings.messageLimitsBotButtonUrl,
           settings.messageLimitsBotButtonText,
+          settings.messageLimitsRulesButtonEnabled,
+          rulesPublishedUrl,
         )
       : null;
     const topicMessageOptions = isTopicFilterHit
@@ -704,6 +719,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           settings.thematicFiltersBotButtonEnabled,
           settings.thematicFiltersBotButtonUrl,
           settings.thematicFiltersBotButtonText,
+          settings.thematicFiltersRulesButtonEnabled,
+          rulesPublishedUrl,
         )
       : null;
     const textFilterViolationCount24h = isTextFilterHit
@@ -960,9 +977,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             ? (linkMessageOptions ?? undefined)
             : isTopicFilterHit
               ? (topicMessageOptions ?? undefined)
-            : isMessageLimitsHit
-              ? (limitsMessageOptions ?? undefined)
-              : undefined,
+              : isMessageLimitsHit
+                ? (limitsMessageOptions ?? undefined)
+                : undefined,
         banNoticeText:
           isMessageLimitsHit && action === SanctionAction.BAN
             ? this.buildMessageLimitsBanExplanation(
@@ -1123,6 +1140,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     duplicateBotButtonEnabled: boolean;
     duplicateBotButtonUrl: string;
     duplicateBotButtonText: string;
+    duplicateRulesButtonEnabled: boolean;
+    rulesPublishedUrl: string | null;
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
   }) {
@@ -1140,6 +1159,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
       duplicateBotButtonText,
+      duplicateRulesButtonEnabled,
+      rulesPublishedUrl,
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
     } = params;
@@ -1190,6 +1211,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
       duplicateBotButtonText,
+      duplicateRulesButtonEnabled,
+      rulesPublishedUrl,
     );
 
     if (duplicateBotMessageEnabled && decision.action !== 'BAN') {
@@ -1267,6 +1290,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     duplicateBotButtonEnabled: boolean;
     duplicateBotButtonUrl: string;
     duplicateBotButtonText: string;
+    duplicateRulesButtonEnabled: boolean;
+    rulesPublishedUrl: string | null;
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
   }) {
@@ -1283,6 +1308,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
       duplicateBotButtonText,
+      duplicateRulesButtonEnabled,
+      rulesPublishedUrl,
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
     } = params;
@@ -1332,6 +1359,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
       duplicateBotButtonText,
+      duplicateRulesButtonEnabled,
+      rulesPublishedUrl,
     );
 
     if (duplicateBotMessageEnabled) {
@@ -2483,7 +2512,44 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     buttonEnabled: boolean,
     buttonUrl: string,
     buttonText: string,
+    rulesButtonEnabled = false,
+    rulesPublishedUrl: string | null = null,
   ): MaxSendMessageOptions | null {
+    const buttons: MaxLinkButton[] = [];
+    const primaryButton = this.buildLinkButton(buttonEnabled, buttonUrl, buttonText);
+    if (primaryButton) {
+      buttons.push(primaryButton);
+    }
+
+    const rulesButton = this.buildLinkButton(
+      rulesButtonEnabled,
+      rulesPublishedUrl ?? '',
+      RULES_BOT_BUTTON_TEXT,
+    );
+    if (rulesButton) {
+      buttons.push(rulesButton);
+    }
+
+    if (buttons.length === 0) {
+      return null;
+    }
+
+    if (buttons.length === 1) {
+      return {
+        button: buttons[0],
+      };
+    }
+
+    return {
+      buttons: [buttons],
+    };
+  }
+
+  private buildLinkButton(
+    buttonEnabled: boolean,
+    buttonUrl: string,
+    buttonText: string,
+  ): MaxLinkButton | null {
     if (!buttonEnabled) {
       return null;
     }
@@ -2493,13 +2559,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
 
-    const normalizedText = this.normalizeBotButtonText(buttonText);
-
     return {
-      button: {
-        text: normalizedText,
-        url: normalizedUrl,
-      },
+      text: this.normalizeBotButtonText(buttonText),
+      url: normalizedUrl,
     };
   }
 
@@ -2913,6 +2975,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     greetingBotButtonEnabled: boolean;
     greetingBotButtonUrl: string;
     greetingBotButtonText: string;
+    greetingRulesButtonEnabled: boolean;
+    rulesPublishedUrl: string | null;
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
     excludedUserIds: ReadonlySet<string>;
@@ -2926,6 +2990,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       greetingBotButtonEnabled,
       greetingBotButtonUrl,
       greetingBotButtonText,
+      greetingRulesButtonEnabled,
+      rulesPublishedUrl,
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
       excludedUserIds,
@@ -2944,6 +3010,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       greetingBotButtonEnabled,
       greetingBotButtonUrl,
       greetingBotButtonText,
+      greetingRulesButtonEnabled,
+      rulesPublishedUrl,
     );
 
     for (const member of joinedMembers) {
@@ -3655,8 +3723,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           nightModeBotButtonEnabled: true,
           nightModeBotButtonUrl: true,
           nightModeBotButtonText: true,
+          nightModeRulesButtonEnabled: true,
         },
       });
+      const rulesByChatId = await this.loadRulesPublishedUrlMap(
+        nightModeChats.map((item) => item.chatId),
+      );
 
       for (const settings of nightModeChats) {
         const startMinutes = this.normalizeDayMinutes(settings.nightModeStartTimeMinutes, 23 * 60);
@@ -3686,6 +3758,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           settings.nightModeBotButtonEnabled,
           settings.nightModeBotButtonUrl,
           settings.nightModeBotButtonText,
+          settings.nightModeRulesButtonEnabled,
+          rulesByChatId.get(settings.chatId) ?? null,
         );
 
         try {
@@ -5384,6 +5458,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     settings: ChatSettings;
     domainAllowlist: string[];
     adminUserIds: string[];
+    rulesPublishedUrl: string | null;
   }> {
     if (this.chatContextCache) {
       const cached = await this.chatContextCache.getChatContext(chatId, chatTitle);
@@ -5391,6 +5466,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         settings: cached.settings,
         domainAllowlist: cached.domainAllowlist,
         adminUserIds: cached.adminUserIds,
+        rulesPublishedUrl: cached.rulesPublishedUrl ?? null,
       };
     }
 
@@ -5414,6 +5490,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       },
       include: {
         settings: true,
+        rules: {
+          select: {
+            publishedUrl: true,
+          },
+        },
         domains: {
           where: {
             OR: [{ removeAfterAt: null }, { removeAfterAt: { gt: new Date() } }],
@@ -5438,7 +5519,38 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       settings: chat.settings,
       domainAllowlist: (chat.domains ?? []).map((item) => item.domain),
       adminUserIds: (chat.admins ?? []).map((item) => item.userId),
+      rulesPublishedUrl: chat.rules?.publishedUrl ?? null,
     };
+  }
+
+  private async loadRulesPublishedUrlMap(chatIds: readonly string[]): Promise<Map<string, string>> {
+    const normalizedChatIds = Array.from(
+      new Set(chatIds.map((item) => item.trim()).filter(Boolean)),
+    );
+    if (normalizedChatIds.length === 0 || !this.prisma.chatRules?.findMany) {
+      return new Map();
+    }
+
+    const rows = await this.prisma.chatRules.findMany({
+      where: {
+        chatId: {
+          in: normalizedChatIds,
+        },
+        publishedUrl: {
+          not: null,
+        },
+      },
+      select: {
+        chatId: true,
+        publishedUrl: true,
+      },
+    });
+
+    return new Map(
+      rows
+        .filter((row): row is { chatId: string; publishedUrl: string } => Boolean(row.publishedUrl))
+        .map((row) => [row.chatId, row.publishedUrl]),
+    );
   }
 
   private applyDegradeSettings(settings: ChatSettings, degradeMode: boolean): ChatSettings {

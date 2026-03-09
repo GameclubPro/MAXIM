@@ -1,5 +1,6 @@
 import {
   addGlobalUserBlacklistRequestSchema,
+  chatRulesSchema,
   channelStatsRangeSchema,
   channelStatsResponseSchema,
   channelDialogResponseSchema,
@@ -9,6 +10,7 @@ import {
   createChannelDialogMessageRequestSchema,
   createChannelDialogMessageResponseSchema,
   domainAllowlistEntrySchema,
+  publishChatRulesResultSchema,
   scheduleDomainRemovalRequestSchema,
   sendBroadcastRequestSchema,
   sendBroadcastResultSchema,
@@ -22,6 +24,7 @@ import {
   meSchema,
   type ChannelSettings,
   type ChatSettings,
+  type ChatRules,
   type ChatSummary,
   type DomainAllowlistEntry,
   type GlobalUserBlacklistEntry,
@@ -36,7 +39,9 @@ import {
   type LogsDashboardResponse,
   type ManualModerationActionRequest,
   type ManualModerationActionResult,
+  type PublishChatRulesResult,
   type SendBroadcastResult,
+  updateChatRulesRequestSchema,
 } from '@maxim/contracts';
 
 const API_BASE = '/api/v1';
@@ -67,6 +72,11 @@ export type CreateChannelDialogMessagePayload = {
   token: string;
   text: string;
 };
+
+export type UpdateChatRulesPayload = Pick<
+  ChatRules,
+  'text' | 'imageBase64' | 'imageMimeType' | 'imageFileName'
+>;
 
 export class ApiClient {
   constructor(private readonly initData: string) {}
@@ -108,6 +118,27 @@ export class ApiClient {
       body: JSON.stringify(data),
     });
     return chatSettingsSchema.parse(response);
+  }
+
+  async getRules(chatId: string): Promise<ChatRules> {
+    const response = await this.request(`/chats/${chatId}/rules`);
+    return chatRulesSchema.parse(response);
+  }
+
+  async updateRules(chatId: string, payload: UpdateChatRulesPayload): Promise<ChatRules> {
+    const requestBody = updateChatRulesRequestSchema.parse(payload);
+    const response = await this.request(`/chats/${chatId}/rules`, {
+      method: 'PUT',
+      body: JSON.stringify(requestBody),
+    });
+    return chatRulesSchema.parse(response);
+  }
+
+  async publishRules(chatId: string): Promise<PublishChatRulesResult> {
+    const response = await this.request(`/chats/${chatId}/rules/publish`, {
+      method: 'POST',
+    });
+    return publishChatRulesResultSchema.parse(response);
   }
 
   async getChannelSettings(chatId: string): Promise<ChannelSettings> {

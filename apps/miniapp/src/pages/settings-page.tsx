@@ -1,5 +1,7 @@
 import {
+  chatRulesSchema,
   chatSettingsSchema,
+  type ChatRules,
   type ChatSettings,
   type DomainAllowlistEntry,
   type GlobalUserBlacklistEntry,
@@ -12,7 +14,7 @@ import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import { cn } from '../lib/cn';
-import type { ApiClient, SendBroadcastPayload } from '../lib/api-client';
+import type { ApiClient, SendBroadcastPayload, UpdateChatRulesPayload } from '../lib/api-client';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { saveLastChatId, saveLastEntityType } from '../lib/last-chat';
 
@@ -39,6 +41,7 @@ const MAX_BROADCAST_TEXT_LENGTH = 1_000;
 const MAX_BROADCAST_SCHEDULE_DAYS = 14;
 const MAX_BROADCAST_CYCLE_COUNT = 14;
 const MAX_BROADCAST_IMAGE_SIZE_BYTES = 1_000_000;
+const MAX_CHAT_RULES_TEXT_LENGTH = 2_000;
 const BROADCAST_DAY_MS = 24 * 60 * 60 * 1_000;
 
 type DuplicateEnabledKey = 'duplicateWarnEnabled' | 'duplicateKickEnabled' | 'duplicateBanEnabled';
@@ -89,6 +92,7 @@ type BotMessageEditorKey =
 type WarnMessageEditorKey = 'linkWarn' | 'textFiltersWarn';
 type SettingsSectionKey =
   | 'links'
+  | 'rules'
   | 'greeting'
   | 'profanityFilter'
   | 'commercialFilter'
@@ -98,7 +102,7 @@ type SettingsSectionKey =
   | 'night'
   | 'mailing'
   | 'extra';
-type ApplySectionKey = Exclude<SettingsSectionKey, 'mailing'>;
+type ApplySectionKey = Exclude<SettingsSectionKey, 'mailing' | 'rules'>;
 
 const SECTION_LABELS: Record<ApplySectionKey, string> = {
   links: 'Модерация ссылок',
@@ -124,6 +128,7 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'linkBotButtonEnabled',
     'linkBotButtonUrl',
     'linkBotButtonText',
+    'linkRulesButtonEnabled',
   ],
   greeting: [
     'greetingEnabled',
@@ -132,6 +137,7 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'greetingBotButtonEnabled',
     'greetingBotButtonUrl',
     'greetingBotButtonText',
+    'greetingRulesButtonEnabled',
   ],
   profanityFilter: [
     'russianProfanityFilterEnabled',
@@ -154,6 +160,7 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'textFiltersBotButtonEnabled',
     'textFiltersBotButtonUrl',
     'textFiltersBotButtonText',
+    'textFiltersRulesButtonEnabled',
   ],
   thematicFilters: [
     'thematicCodewordEnabled',
@@ -165,6 +172,7 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'thematicFiltersBotButtonEnabled',
     'thematicFiltersBotButtonUrl',
     'thematicFiltersBotButtonText',
+    'thematicFiltersRulesButtonEnabled',
   ],
   duplicates: [
     'antiDuplicateEnabled',
@@ -182,6 +190,7 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'duplicateBotButtonEnabled',
     'duplicateBotButtonUrl',
     'duplicateBotButtonText',
+    'duplicateRulesButtonEnabled',
     'banDurationHours',
   ],
   limits: [
@@ -203,6 +212,7 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'messageLimitsBotButtonEnabled',
     'messageLimitsBotButtonUrl',
     'messageLimitsBotButtonText',
+    'messageLimitsRulesButtonEnabled',
     'banDurationHours',
   ],
   night: [
@@ -215,6 +225,7 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'nightModeBotButtonEnabled',
     'nightModeBotButtonUrl',
     'nightModeBotButtonText',
+    'nightModeRulesButtonEnabled',
   ],
   extra: [
     'globalCrossChatSpamEnabled',
@@ -844,7 +855,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [draft, setDraft] = useState<ChatSettings | null>(null);
+  const [rulesDraft, setRulesDraft] = useState<ChatRules | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
+  const [rulesTextError, setRulesTextError] = useState('');
+  const [rulesImageError, setRulesImageError] = useState('');
   const [domainInput, setDomainInput] = useState('');
   const [domainInputError, setDomainInputError] = useState('');
   const [scheduleDomain, setScheduleDomain] = useState<string | null>(null);
@@ -881,6 +895,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     Partial<Record<DuplicateWindowKey, string>>
   >({});
   const [failedSnapshot, setFailedSnapshot] = useState<string>('');
+  const [rulesFailedSnapshot, setRulesFailedSnapshot] = useState('');
   const [openSectionApplyConfirm, setOpenSectionApplyConfirm] = useState<ApplySectionKey | null>(
     null,
   );
@@ -889,6 +904,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [openWarnEditorKey, setOpenWarnEditorKey] = useState<WarnMessageEditorKey | null>(null);
   const [expandedSections, setExpandedSections] = useState<Record<SettingsSectionKey, boolean>>({
     links: false,
+    rules: false,
     greeting: false,
     profanityFilter: false,
     commercialFilter: false,
@@ -911,6 +927,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
   useEffect(() => {
     setOpenSectionApplyConfirm(null);
+    setRulesDraft(null);
+    setRulesTextError('');
+    setRulesImageError('');
+    setRulesFailedSnapshot('');
     setMailingApplyToAllChats(false);
     setMailingText('');
     setMailingButtonEnabled(false);
@@ -947,6 +967,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const settingsQuery = useQuery({
     queryKey: ['settings', chatId],
     queryFn: () => api.getSettings(chatId ?? ''),
+    enabled: Boolean(chatId),
+    refetchOnWindowFocus: false,
+  });
+
+  const rulesQuery = useQuery({
+    queryKey: ['rules', chatId],
+    queryFn: () => api.getRules(chatId ?? ''),
     enabled: Boolean(chatId),
     refetchOnWindowFocus: false,
   });
@@ -1020,6 +1047,16 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   }, [settingsQuery.data]);
 
   useEffect(() => {
+    if (!rulesQuery.data) {
+      return;
+    }
+
+    setRulesDraft(rulesQuery.data);
+    setRulesTextError('');
+    setRulesImageError('');
+  }, [rulesQuery.data]);
+
+  useEffect(() => {
     if (!scheduleDomain) {
       return;
     }
@@ -1032,13 +1069,46 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   }, [domainsQuery.data, scheduleDomain]);
 
   const draftSnapshot = useMemo(() => (draft ? JSON.stringify(draft) : ''), [draft]);
+  const rulesDraftSnapshot = useMemo(
+    () =>
+      rulesDraft
+        ? JSON.stringify({
+            text: rulesDraft.text,
+            imageBase64: rulesDraft.imageBase64,
+            imageMimeType: rulesDraft.imageMimeType,
+            imageFileName: rulesDraft.imageFileName,
+          })
+        : '',
+    [rulesDraft],
+  );
 
   const serverSnapshot = useMemo(
     () => (settingsQuery.data ? JSON.stringify(settingsQuery.data) : ''),
     [settingsQuery.data],
   );
+  const rulesServerSnapshot = useMemo(
+    () =>
+      rulesQuery.data
+        ? JSON.stringify({
+            text: rulesQuery.data.text,
+            imageBase64: rulesQuery.data.imageBase64,
+            imageMimeType: rulesQuery.data.imageMimeType,
+            imageFileName: rulesQuery.data.imageFileName,
+          })
+        : '',
+    [rulesQuery.data],
+  );
 
   const hasChanges = Boolean(draft && settingsQuery.data && draftSnapshot !== serverSnapshot);
+  const hasRulesChanges = Boolean(
+    rulesDraft && rulesQuery.data && rulesDraftSnapshot !== rulesServerSnapshot,
+  );
+  const rulesPublishedUrl = rulesDraft?.publishedUrl ?? rulesQuery.data?.publishedUrl ?? null;
+  const hasPublishedRules = Boolean(rulesPublishedUrl);
+  const rulesImagePreviewUrl =
+    rulesDraft?.imageBase64 && rulesDraft.imageMimeType
+      ? `data:${rulesDraft.imageMimeType};base64,${rulesDraft.imageBase64}`
+      : '';
 
   const saveMutation = useMutation({
     mutationFn: (payload: ChatSettings) => api.updateSettings(chatId ?? '', payload),
@@ -1059,6 +1129,55 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   });
   const isSavingSettings = saveMutation.isPending;
   const mutateSettings = saveMutation.mutate;
+
+  const saveRulesMutation = useMutation({
+    mutationFn: (payload: UpdateChatRulesPayload) => api.updateRules(chatId ?? '', payload),
+    onSuccess: (saved) => {
+      setRulesDraft(saved);
+      setRulesTextError('');
+      setRulesImageError('');
+      setRulesFailedSnapshot('');
+      queryClient.setQueryData(['rules', chatId], saved);
+    },
+    onError: (error, payload) => {
+      setRulesFailedSnapshot(JSON.stringify(payload));
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось сохранить черновик правил',
+        description: formatApiError(error),
+      });
+    },
+  });
+  const isSavingRules = saveRulesMutation.isPending;
+  const mutateRules = saveRulesMutation.mutate;
+  const mutateRulesAsync = saveRulesMutation.mutateAsync;
+
+  const publishRulesMutation = useMutation({
+    mutationFn: () => api.publishRules(chatId ?? ''),
+    onSuccess: (result) => {
+      const updated = chatRulesSchema.parse({
+        ...(rulesDraft ?? rulesQuery.data ?? {}),
+        publishedMessageId: result.messageId,
+        publishedUrl: result.url,
+        publishedAt: result.publishedAt,
+      });
+      setRulesDraft(updated);
+      queryClient.setQueryData(['rules', chatId], updated);
+      pushToast({
+        tone: 'success',
+        title: 'Правила опубликованы',
+        description: 'Ссылка на пост сохранена и доступна для кнопок в блоках.',
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось опубликовать правила',
+        description: formatApiError(error),
+      });
+    },
+  });
+  const isPublishingRules = publishRulesMutation.isPending;
 
   const applySectionToAllMutation = useMutation({
     mutationFn: async ({
@@ -1272,6 +1391,48 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     clearFieldError(key);
   }
 
+  function setRulesFieldValue<K extends keyof UpdateChatRulesPayload>(
+    key: K,
+    value: UpdateChatRulesPayload[K],
+  ) {
+    setRulesDraft((current) => {
+      if (!current) {
+        return current;
+      }
+
+      return chatRulesSchema.parse({
+        ...current,
+        [key]: value,
+      });
+    });
+
+    if (key === 'text' && rulesTextError) {
+      setRulesTextError('');
+    }
+    if (
+      (key === 'imageBase64' || key === 'imageMimeType' || key === 'imageFileName') &&
+      rulesImageError
+    ) {
+      setRulesImageError('');
+    }
+  }
+
+  function clearRulesImage() {
+    setRulesDraft((current) => {
+      if (!current) {
+        return current;
+      }
+
+      return chatRulesSchema.parse({
+        ...current,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+      });
+    });
+    setRulesImageError('');
+  }
+
   function validateDraft(value: ChatSettings): ChatSettings | null {
     const parsed = chatSettingsSchema.safeParse(value);
 
@@ -1291,6 +1452,45 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
     setFieldErrors(nextErrors);
     return null;
+  }
+
+  function validateRulesDraft(value: ChatRules): UpdateChatRulesPayload | null {
+    const normalizedText = value.text;
+    if (normalizedText.length > MAX_CHAT_RULES_TEXT_LENGTH) {
+      setRulesTextError(`Максимум ${MAX_CHAT_RULES_TEXT_LENGTH} символов.`);
+      return null;
+    }
+    setRulesTextError('');
+
+    if (value.imageBase64) {
+      if (!value.imageMimeType.toLowerCase().startsWith('image/')) {
+        setRulesImageError('Поддерживаются только изображения.');
+        return null;
+      }
+      setRulesImageError('');
+    } else {
+      setRulesImageError('');
+    }
+
+    return {
+      text: value.text,
+      imageBase64: value.imageBase64,
+      imageMimeType: value.imageMimeType,
+      imageFileName: value.imageFileName,
+    };
+  }
+
+  async function saveRulesDraftNow(): Promise<ChatRules | null> {
+    if (!rulesDraft) {
+      return null;
+    }
+
+    const payload = validateRulesDraft(rulesDraft);
+    if (!payload) {
+      return null;
+    }
+
+    return mutateRulesAsync(payload);
   }
 
   function secondsToHours(value: number): number {
@@ -1405,6 +1605,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   }, [draftSnapshot, failedSnapshot]);
 
   useEffect(() => {
+    if (!rulesFailedSnapshot || rulesFailedSnapshot === rulesDraftSnapshot) {
+      return;
+    }
+
+    setRulesFailedSnapshot('');
+  }, [rulesDraftSnapshot, rulesFailedSnapshot]);
+
+  useEffect(() => {
     if (!chatId || !draft || !hasChanges || isSavingSettings || isApplyingSectionToAll) {
       return;
     }
@@ -1434,6 +1642,38 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     isSavingSettings,
     isApplyingSectionToAll,
     mutateSettings,
+  ]);
+
+  useEffect(() => {
+    if (!chatId || !rulesDraft || !hasRulesChanges || isSavingRules || isPublishingRules) {
+      return;
+    }
+
+    if (rulesFailedSnapshot && rulesFailedSnapshot === rulesDraftSnapshot) {
+      return;
+    }
+
+    const parsed = validateRulesDraft(rulesDraft);
+    if (!parsed) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      mutateRules(parsed);
+    }, AUTO_SAVE_DELAY_MS);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [
+    chatId,
+    hasRulesChanges,
+    isPublishingRules,
+    isSavingRules,
+    mutateRules,
+    rulesDraft,
+    rulesDraftSnapshot,
+    rulesFailedSnapshot,
   ]);
 
   function handleAddDomain() {
@@ -1539,6 +1779,54 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
     setBlacklistInputError('');
     addGlobalBlacklistUserMutation.mutate(normalized);
+  }
+
+  async function handleRulesImageChange(file: File | null) {
+    if (!file) {
+      return;
+    }
+
+    if (file.size > MAX_BROADCAST_IMAGE_SIZE_BYTES) {
+      setRulesImageError('Фото правил слишком большое. Максимум 1 MB.');
+      return;
+    }
+
+    if (!file.type.toLowerCase().startsWith('image/')) {
+      setRulesImageError('Поддерживаются только изображения.');
+      return;
+    }
+
+    try {
+      const imageBase64 = await fileToBase64(file);
+      setRulesFieldValue('imageBase64', imageBase64);
+      setRulesFieldValue('imageMimeType', file.type);
+      setRulesFieldValue('imageFileName', file.name);
+    } catch (error) {
+      setRulesImageError(error instanceof Error ? error.message : 'Не удалось прочитать фото.');
+    }
+  }
+
+  async function handlePublishRules() {
+    if (!chatId || !rulesDraft) {
+      return;
+    }
+
+    if (!rulesDraft.text.trim()) {
+      setRulesTextError('Введите текст правил перед публикацией.');
+      return;
+    }
+
+    if (rulesDraft.text.length > MAX_CHAT_RULES_TEXT_LENGTH) {
+      setRulesTextError(`Максимум ${MAX_CHAT_RULES_TEXT_LENGTH} символов.`);
+      return;
+    }
+
+    const saved = hasRulesChanges ? await saveRulesDraftNow() : rulesDraft;
+    if (!saved) {
+      return;
+    }
+
+    publishRulesMutation.mutate();
   }
 
   function handleSendBroadcast() {
@@ -1705,6 +1993,48 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     setOpenSectionApplyConfirm((current) => (current === section ? null : section));
   }
 
+  function renderRulesAttachToggle(
+    fieldKey:
+      | 'linkRulesButtonEnabled'
+      | 'greetingRulesButtonEnabled'
+      | 'textFiltersRulesButtonEnabled'
+      | 'thematicFiltersRulesButtonEnabled'
+      | 'duplicateRulesButtonEnabled'
+      | 'messageLimitsRulesButtonEnabled'
+      | 'nightModeRulesButtonEnabled',
+    ariaLabel: string,
+  ) {
+    if (!draft) {
+      return null;
+    }
+
+    const checked = draft[fieldKey];
+    const disabled = !hasPublishedRules && !checked;
+
+    return (
+      <div className="settings-native-toggle settings-native-toggle--nested">
+        <div className="settings-native-toggle__row">
+          <span className="settings-native-toggle__title">Прикрепить правила</span>
+
+          <label className="settings-native-switch" aria-label={ariaLabel}>
+            <input
+              type="checkbox"
+              checked={checked}
+              disabled={disabled}
+              onChange={(event) => setFieldValue(fieldKey, event.target.checked)}
+            />
+            <span className="toggle-switch" aria-hidden>
+              <span className="toggle-switch__thumb" />
+            </span>
+          </label>
+        </div>
+        {disabled ? (
+          <p className="settings-native-toggle__hint">Сначала опубликуйте правила.</p>
+        ) : null}
+      </div>
+    );
+  }
+
   function handleApplySectionToAllChats(section: ApplySectionKey) {
     if (!chatId || !draft) {
       return;
@@ -1857,6 +2187,16 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       : draft?.linkPolicy === 'ALLOWLIST_ONLY'
         ? `Разрешено: ${allowlistDomains.length}`
         : `${linkStagesEnabledCount}/4 ступени включено`;
+  const rulesPublishedAtLabel = formatRemovalDateTime(
+    rulesDraft?.publishedAt ?? rulesQuery.data?.publishedAt ?? null,
+  );
+  const rulesHeaderSummary = rulesPublishedUrl
+    ? rulesPublishedAtLabel
+      ? `Пост опубликован · ${rulesPublishedAtLabel}`
+      : 'Пост опубликован'
+    : rulesDraft?.text.trim()
+      ? `Черновик · ${rulesDraft.text.trim().length}/${MAX_CHAT_RULES_TEXT_LENGTH}`
+      : 'Не настроено';
   const greetingHeaderSummary = draft?.greetingEnabled
     ? draft?.greetingBotMessageEnabled
       ? draft?.greetingBotButtonEnabled
@@ -2651,6 +2991,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                                 или профиль.
                               </p>
                             ) : null}
+
+                            {renderRulesAttachToggle(
+                              'linkRulesButtonEnabled',
+                              'Прикрепить правила к сообщению бота для модерации ссылок',
+                            )}
                           </div>
                         ) : null}
                       </>
@@ -2668,6 +3013,179 @@ export function SettingsPage({ api }: { api: ApiClient }) {
             <GlassCard
               className="settings-section stagger-in"
               style={{ animationDelay: '45ms' }}
+              aria-label="Правила чата"
+            >
+              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+                <button
+                  type="button"
+                  className="settings-section__toggle"
+                  aria-expanded={expandedSections.rules}
+                  aria-controls="settings-rules-content"
+                  onClick={() => toggleSection('rules')}
+                >
+                  <span className="settings-section__toggle-main">
+                    <h3>Правила</h3>
+                    <small>{rulesHeaderSummary}</small>
+                  </span>
+                  <SectionChevron isOpen={expandedSections.rules} />
+                </button>
+              </div>
+
+              <div
+                id="settings-rules-content"
+                className={cn('settings-section__collapse', expandedSections.rules && 'is-open')}
+              >
+                <div className="settings-section__collapse-inner">
+                  <p className="settings-native-toggle__hint">
+                    Бот публикует отдельный пост с правилами в этот чат и сохраняет ссылку на него
+                    для кнопок в других блоках.
+                  </p>
+
+                  {rulesQuery.isLoading ? (
+                    <p className="allowlist-empty">Загрузка правил...</p>
+                  ) : null}
+
+                  {rulesQuery.error ? (
+                    <p className="allowlist-empty allowlist-empty--error">
+                      Ошибка: {formatApiError(rulesQuery.error)}
+                    </p>
+                  ) : null}
+
+                  {!rulesQuery.isLoading && !rulesQuery.error && rulesDraft ? (
+                    <>
+                      <label
+                        className={cn(
+                          'field settings-text-field mailing-message-field',
+                          rulesTextError && 'field--error',
+                        )}
+                      >
+                        <div className="mailing-message-field__meta">
+                          <span className="field__label">Текст правил</span>
+                          <span className="chip">
+                            {rulesDraft.text.length}/{MAX_CHAT_RULES_TEXT_LENGTH}
+                          </span>
+                        </div>
+                        <textarea
+                          rows={6}
+                          value={rulesDraft.text}
+                          onChange={(event) => setRulesFieldValue('text', event.target.value)}
+                          placeholder="Напишите правила чата. Этот текст попадет в опубликованный пост."
+                        />
+                        {rulesTextError ? (
+                          <small className="field__hint">{rulesTextError}</small>
+                        ) : (
+                          <small className="field__hint">
+                            Текст обязателен при публикации. Черновик сохраняется автоматически.
+                          </small>
+                        )}
+                      </label>
+
+                      <div
+                        className={cn(
+                          'mailing-option-card',
+                          Boolean(rulesDraft.imageBase64) && 'is-enabled',
+                          rulesImageError && 'field--error',
+                        )}
+                      >
+                        <div className="mailing-option-card__head">
+                          <div className="mailing-option-card__title-wrap">
+                            <span className="mailing-option-card__title">Картинка</span>
+                            <small className="mailing-option-card__subtitle">
+                              Одна картинка до 1 MB. Необязательно.
+                            </small>
+                          </div>
+
+                          <div className="mailing-image-actions">
+                            <label className="mailing-image-picker">
+                              <input
+                                type="file"
+                                accept="image/*"
+                                onChange={(event) => {
+                                  void handleRulesImageChange(event.target.files?.[0] ?? null);
+                                  event.currentTarget.value = '';
+                                }}
+                              />
+                              {rulesDraft.imageBase64 ? 'Заменить' : 'Добавить'}
+                            </label>
+                            {rulesDraft.imageBase64 ? (
+                              <button
+                                type="button"
+                                className="mailing-image-remove"
+                                onClick={clearRulesImage}
+                              >
+                                Убрать
+                              </button>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        {rulesImageError ? (
+                          <small className="field__hint">{rulesImageError}</small>
+                        ) : null}
+
+                        {rulesImagePreviewUrl ? (
+                          <div className="mailing-option-card__body">
+                            <div className="mailing-image-preview">
+                              <img
+                                src={rulesImagePreviewUrl}
+                                alt="Предпросмотр картинки правил"
+                                className="broadcast-image-preview"
+                              />
+                              <small>Предпросмотр</small>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="mailing-option-card__hint">
+                            Добавьте картинку, если хотите выделить пост с правилами в ленте.
+                          </p>
+                        )}
+                      </div>
+
+                      <div className="mailing-action-bar">
+                        {rulesPublishedUrl ? (
+                          <div className="field__hint">
+                            Последний пост:{' '}
+                            <a href={rulesPublishedUrl} target="_blank" rel="noreferrer">
+                              открыть
+                            </a>
+                            {rulesDraft.publishedAt
+                              ? ` · ${formatRemovalDateTime(rulesDraft.publishedAt)}`
+                              : ''}
+                          </div>
+                        ) : (
+                          <div className="field__hint">
+                            После публикации ссылка автоматически сохранится и станет доступна для
+                            тумблеров «Прикрепить правила».
+                          </div>
+                        )}
+
+                        <button
+                          type="button"
+                          className="button button--accent mailing-action-bar__send"
+                          onClick={() => void handlePublishRules()}
+                          disabled={
+                            !rulesDraft.text.trim() ||
+                            isPublishingRules ||
+                            rulesQuery.isLoading ||
+                            Boolean(rulesQuery.error)
+                          }
+                        >
+                          {isPublishingRules
+                            ? 'Публикуем...'
+                            : isSavingRules && hasRulesChanges
+                              ? 'Сохраняем черновик...'
+                              : 'Опубликовать правила'}
+                        </button>
+                      </div>
+                    </>
+                  ) : null}
+                </div>
+              </div>
+            </GlassCard>
+
+            <GlassCard
+              className="settings-section stagger-in"
+              style={{ animationDelay: '60ms' }}
               aria-label="Приветствие новых участников"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
@@ -2924,6 +3442,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                               Добавляет кнопку в приветствие, например на правила чата.
                             </p>
                           ) : null}
+
+                          {renderRulesAttachToggle(
+                            'greetingRulesButtonEnabled',
+                            'Прикрепить правила к приветственному сообщению',
+                          )}
                         </div>
                       ) : null}
                     </>
@@ -3595,6 +4118,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                               Добавляет кнопку в сообщение бота о коммерческом нарушении.
                             </p>
                           ) : null}
+
+                          {renderRulesAttachToggle(
+                            'textFiltersRulesButtonEnabled',
+                            'Прикрепить правила к сообщению бота о коммерческих объявлениях',
+                          )}
                         </div>
                       ) : null}
                     </>
@@ -3641,7 +4169,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                   <div className="settings-native-toggle text-filter-card">
                     <div className="settings-native-toggle__row">
-                      <span className="settings-native-toggle__title">Фильтр по кодовому слову</span>
+                      <span className="settings-native-toggle__title">
+                        Фильтр по кодовому слову
+                      </span>
 
                       <label
                         className="settings-native-switch"
@@ -3816,6 +4346,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           </label>
                         </div>
                       ) : null}
+
+                      {renderRulesAttachToggle(
+                        'thematicFiltersRulesButtonEnabled',
+                        'Прикрепить правила к сообщению бота для тематического фильтра',
+                      )}
 
                       <div className="settings-native-toggle settings-native-toggle--nested">
                         <div className="settings-native-toggle__row">
@@ -4347,6 +4882,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           чат, канал или профиль.
                         </p>
                       ) : null}
+
+                      {renderRulesAttachToggle(
+                        'duplicateRulesButtonEnabled',
+                        'Прикрепить правила к сообщению бота о дублях',
+                      )}
                     </div>
                   ) : null}
                   {renderSectionApplyControl('duplicates')}
@@ -5027,6 +5567,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           Добавляет кнопку в сообщение бота с переходом на чат, канал или профиль.
                         </p>
                       ) : null}
+
+                      {renderRulesAttachToggle(
+                        'messageLimitsRulesButtonEnabled',
+                        'Прикрепить правила к сообщению бота для ограничений сообщений',
+                      )}
                     </div>
                   ) : null}
                   {renderSectionApplyControl('limits')}
@@ -5356,6 +5901,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           Добавляет кнопку в сообщение о закрытии чата на ночь.
                         </p>
                       ) : null}
+
+                      {renderRulesAttachToggle(
+                        'nightModeRulesButtonEnabled',
+                        'Прикрепить правила к сообщению бота о ночном режиме',
+                      )}
                     </div>
                   ) : null}
                   {renderSectionApplyControl('night')}

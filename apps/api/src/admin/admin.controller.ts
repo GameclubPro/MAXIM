@@ -46,6 +46,25 @@ export class AdminController {
     return this.adminService.updateSettings(chatId, user, body);
   }
 
+  @Get('chats/:chatId/rules')
+  getRules(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.adminService.getRules(chatId, user);
+  }
+
+  @Put('chats/:chatId/rules')
+  updateRules(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.updateRules(chatId, user, body);
+  }
+
+  @Post('chats/:chatId/rules/publish')
+  publishRules(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.adminService.publishRules(chatId, user);
+  }
+
   @Get('channels/:chatId/settings')
   getChannelSettings(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.adminService.getChannelSettings(chatId, user);
