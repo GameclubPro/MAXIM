@@ -1339,6 +1339,7 @@ export class RuleEngineService {
     }
 
     const topicMismatch = this.detectTopicFilterMismatch({
+      rawText: text,
       normalizedText: normalized,
       measuredLength,
       settings,
@@ -1800,14 +1801,15 @@ export class RuleEngineService {
   }
 
   private detectTopicFilterMismatch(params: {
+    rawText: string;
     normalizedText: string;
     measuredLength: number;
     settings: ChatSettings;
   }): TopicFilterDetection | null {
-    const { normalizedText, measuredLength, settings } = params;
+    const { rawText, normalizedText, measuredLength, settings } = params;
     const requiredCodeword = this.resolveRequiredThematicCodeword(settings);
     if (requiredCodeword) {
-      const messageFirstToken = this.extractFirstNormalizedToken(normalizedText);
+      const messageFirstToken = this.extractFirstThematicCodewordToken(rawText);
       if (messageFirstToken === requiredCodeword) {
         return null;
       }
@@ -1874,12 +1876,45 @@ export class RuleEngineService {
       return null;
     }
 
-    const normalized = this.normalizeForDetection(value).replace(/ё/g, 'е').trim();
-    if (!normalized || normalized.includes(' ')) {
+    const normalized = this.normalizeMixedWriting(value.toLowerCase()).replace(/ё/g, 'е').trim();
+    if (!normalized) {
       return null;
     }
 
-    return normalized;
+    const parts = normalized.split(/\s+/u).filter(Boolean);
+    if (parts.length !== 1) {
+      return null;
+    }
+
+    const canonical = this.canonicalizeThematicCodewordToken(parts[0]);
+    if (!canonical || canonical.length < 2 || canonical.length > 32) {
+      return null;
+    }
+
+    return canonical;
+  }
+
+  private extractFirstThematicCodewordToken(value: string): string | null {
+    if (!value) {
+      return null;
+    }
+
+    const normalized = this.normalizeMixedWriting(value.toLowerCase()).replace(/ё/g, 'е');
+    const match = normalized.match(/[\p{L}\p{N}]+(?:[_-][\p{L}\p{N}]+)*/u);
+    if (!match) {
+      return null;
+    }
+
+    return this.canonicalizeThematicCodewordToken(match[0]);
+  }
+
+  private canonicalizeThematicCodewordToken(value: string): string | null {
+    const fragments = value.match(/[\p{L}\p{N}]+/gu);
+    if (!fragments || fragments.length === 0) {
+      return null;
+    }
+
+    return fragments.join('');
   }
 
   private extractFirstNormalizedToken(normalizedText: string): string | null {

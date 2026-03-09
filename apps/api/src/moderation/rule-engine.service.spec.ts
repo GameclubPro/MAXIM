@@ -400,6 +400,38 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
   });
 
+  it('does not detect TOPIC_FILTER_MISMATCH for normalized codeword variants with punctuation and hash', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '#Недвижимость: продам квартиру у метро, собственник.',
+      settings: buildSettings({
+        thematicCodewordEnabled: true,
+        thematicCodeword: 'недвижимость',
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
+  it('does not detect TOPIC_FILTER_MISMATCH when configured codeword contains hash or separators', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '#авто_рынок: продам гранту, мотор шепчет.',
+      settings: buildSettings({
+        thematicCodewordEnabled: true,
+        thematicCodeword: '#Авто-рынок:',
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
   it('detects TOPIC_FILTER_MISMATCH when required codeword is not the first word', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({

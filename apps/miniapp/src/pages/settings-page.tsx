@@ -3665,7 +3665,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       </label>
                     </div>
                     <p className="settings-native-toggle__hint">
-                      Пример: <code>недвижимость продам квартиру...</code>
+                      Пример: <code>недвижимость продам квартиру...</code> или{' '}
+                      <code>#недвижимость: продам квартиру...</code>
                     </p>
                   </div>
 
@@ -3693,7 +3694,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           <small className="field__hint">{thematicCodewordError}</small>
                         ) : (
                           <small className="field__hint">
-                            Одно слово без пробелов. Регистр не важен.
+                            Одно слово без пробелов. Регистр, # и двоеточие не важны.
                           </small>
                         )}
                       </label>

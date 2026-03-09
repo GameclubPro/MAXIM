@@ -17,6 +17,25 @@ const botButtonTextSchema = z.string().trim().max(32).default('Открыть');
 const botMessageTextSchema = z.string().max(1_000).default('');
 const thematicCodewordSchema = z.string().trim().max(32).default('');
 
+function normalizeThematicCodewordCandidate(value: string): string | null {
+  const normalized = value.trim().toLowerCase().replace(/ё/g, 'е');
+  if (!normalized) {
+    return null;
+  }
+
+  const parts = normalized.split(/\s+/u).filter(Boolean);
+  if (parts.length !== 1) {
+    return null;
+  }
+
+  const fragments = parts[0].match(/[\p{L}\p{N}]+/gu);
+  if (!fragments || fragments.length === 0) {
+    return null;
+  }
+
+  return fragments.join('');
+}
+
 function isValidBotButtonUrl(value: string): boolean {
   const normalized = value.trim();
   if (!normalized) {
@@ -367,18 +386,21 @@ export const chatSettingsSchema = z
           path: ['thematicCodeword'],
           message: 'Укажите кодовое слово.',
         });
-      } else if (/\s/u.test(codeword)) {
+      } else if (codeword.split(/\s+/u).filter(Boolean).length > 1) {
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['thematicCodeword'],
           message: 'Кодовое слово должно быть одним словом без пробелов.',
         });
-      } else if (!/^[\p{L}\p{N}_-]{2,32}$/u.test(codeword)) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['thematicCodeword'],
-          message: 'Кодовое слово: 2-32 символа, буквы/цифры/дефис/_.',
-        });
+      } else {
+        const normalizedCodeword = normalizeThematicCodewordCandidate(codeword);
+        if (!normalizedCodeword || normalizedCodeword.length < 2 || normalizedCodeword.length > 32) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ['thematicCodeword'],
+            message: 'Кодовое слово должно содержать 2-32 буквы или цифры.',
+          });
+        }
       }
     }
 
