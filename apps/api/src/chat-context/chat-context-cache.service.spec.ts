@@ -92,7 +92,7 @@ function buildSettings(chatId: string): ChatSettings {
     nightModeStartTimeMinutes: 1380,
     nightModeEndTimeMinutes: 480,
     nightModeTimezone: 'Europe/Moscow',
-    nightModeBotMessageEnabled: true,
+    nightModeBotMessageEnabled: false,
     nightModeBotMessageText: '',
     nightModeBotButtonEnabled: false,
     nightModeBotButtonUrl: '',

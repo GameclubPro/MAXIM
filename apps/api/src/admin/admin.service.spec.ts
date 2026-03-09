@@ -17,6 +17,9 @@ function createPrismaMock() {
     channelSettings: {
       findMany: jest.fn().mockResolvedValue([]),
     },
+    chatSettings: {
+      update: jest.fn().mockResolvedValue(undefined),
+    },
     chatAdminAllowlist: {
       upsert: jest.fn().mockResolvedValue(undefined),
       findMany: jest.fn().mockResolvedValue([]),
@@ -115,6 +118,123 @@ function createConfigMock() {
 function decodeBase64UrlJson<T>(value: string): T {
   return JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as T;
 }
+
+describe('AdminService night mode settings normalization', () => {
+  it('forces night bot message toggles off when night mode is disabled on update', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.updateSettings(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        nightModeEnabled: false,
+        nightModeBotMessageEnabled: true,
+        nightModeBotButtonEnabled: true,
+        nightModeBotButtonUrl: 'https://max.ru/channel/rules',
+        nightModeBotButtonText: 'Правила',
+        nightModeRulesButtonEnabled: true,
+      },
+    );
+
+    expect(result.nightModeEnabled).toBe(false);
+    expect(result.nightModeBotMessageEnabled).toBe(false);
+    expect(result.nightModeBotButtonEnabled).toBe(false);
+    expect(result.nightModeRulesButtonEnabled).toBe(false);
+    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: {
+          settings: {
+            upsert: {
+              update: expect.objectContaining({
+                nightModeEnabled: false,
+                nightModeBotMessageEnabled: false,
+                nightModeBotButtonEnabled: false,
+                nightModeRulesButtonEnabled: false,
+              }),
+              create: expect.objectContaining({
+                nightModeEnabled: false,
+                nightModeBotMessageEnabled: false,
+                nightModeBotButtonEnabled: false,
+                nightModeRulesButtonEnabled: false,
+              }),
+            },
+          },
+        },
+      }),
+    );
+  });
+
+  it('normalizes stale night bot message toggles from stored settings', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      createdAt: new Date('2026-03-01T00:00:00.000Z'),
+      settings: {
+        nightModeEnabled: false,
+        nightModeBotMessageEnabled: true,
+        nightModeBotButtonEnabled: true,
+        nightModeBotButtonUrl: 'https://max.ru/channel/rules',
+        nightModeBotButtonText: 'Правила',
+        nightModeRulesButtonEnabled: true,
+      },
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.getSettings('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(result.nightModeEnabled).toBe(false);
+    expect(result.nightModeBotMessageEnabled).toBe(false);
+    expect(result.nightModeBotButtonEnabled).toBe(false);
+    expect(result.nightModeRulesButtonEnabled).toBe(false);
+    expect(prisma.chatSettings.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { chatId: 'chat-1' },
+        data: {
+          nightModeBotMessageEnabled: false,
+          nightModeBotButtonEnabled: false,
+          nightModeRulesButtonEnabled: false,
+        },
+      }),
+    );
+  });
+});
 
 describe('AdminService.getLogsDashboard', () => {
   afterEach(() => {

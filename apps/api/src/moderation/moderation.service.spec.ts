@@ -107,7 +107,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     nightModeStartTimeMinutes: 23 * 60,
     nightModeEndTimeMinutes: 8 * 60,
     nightModeTimezone: 'Europe/Moscow',
-    nightModeBotMessageEnabled: true,
+    nightModeBotMessageEnabled: false,
     nightModeBotMessageText: '',
     nightModeBotButtonEnabled: false,
     nightModeBotButtonUrl: '',

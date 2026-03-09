@@ -5777,8 +5777,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           onChange={(event) => {
                             const enabled = event.target.checked;
                             setFieldValue('nightModeEnabled', enabled);
-                            if (enabled) {
-                              setFieldValue('nightModeBotMessageEnabled', true);
+                            if (!enabled) {
+                              setFieldValue('nightModeBotMessageEnabled', false);
+                              setFieldValue('nightModeBotButtonEnabled', false);
+                              setFieldValue('nightModeRulesButtonEnabled', false);
+                              clearFieldError('nightModeBotButtonUrl');
+                              clearFieldError('nightModeBotButtonText');
                             }
                           }}
                         />
@@ -5862,190 +5866,195 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     </div>
                   ) : null}
 
-                  <div
-                    className="settings-subsection-divider"
-                    role="separator"
-                    aria-label="Блок действий бота для ночного режима"
-                  >
-                    <span>Действия бота</span>
-                  </div>
-
-                  <div className="settings-native-toggle">
-                    <div className="settings-native-toggle__row">
-                      <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">Сообщение от бота</span>
-                        <div className="settings-native-toggle__title-actions">
-                          <EditToggleButton
-                            label="Редактировать текст сообщения ночного режима"
-                            onClick={() => toggleBotMessageEditor('night')}
-                            disabled={!draft.nightModeBotMessageEnabled}
-                            isOpen={openBotEditorKey === 'night'}
-                          />
-                          <button
-                            type="button"
-                            className={cn(
-                              'settings-info-button',
-                              openHintKey === 'nightBotMessage' && 'is-open',
-                            )}
-                            aria-label="Пояснение для тумблера сообщений ночного режима"
-                            aria-controls="night-bot-message-hint"
-                            aria-expanded={openHintKey === 'nightBotMessage'}
-                            onClick={() => toggleHint('nightBotMessage')}
-                          >
-                            <span aria-hidden>i</span>
-                          </button>
-                        </div>
-                      </div>
-
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Включить сообщение от бота для ночного режима"
+                  {draft.nightModeEnabled ? (
+                    <>
+                      <div
+                        className="settings-subsection-divider"
+                        role="separator"
+                        aria-label="Блок действий бота для ночного режима"
                       >
-                        <input
-                          type="checkbox"
-                          checked={draft.nightModeBotMessageEnabled}
-                          onChange={(event) => {
-                            const enabled = event.target.checked;
-                            setFieldValue('nightModeBotMessageEnabled', enabled);
-                            if (!enabled) {
-                              setFieldValue('nightModeBotButtonEnabled', false);
-                              clearFieldError('nightModeBotButtonUrl');
-                              clearFieldError('nightModeBotButtonText');
-                            }
-                          }}
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
-                    </div>
-
-                    {openHintKey === 'nightBotMessage' ? (
-                      <p id="night-bot-message-hint" className="settings-native-toggle__hint">
-                        Бот пишет, что чат закрыт на ночь, и поясняет удаление сообщения.
-                      </p>
-                    ) : null}
-
-                    {draft.nightModeBotMessageEnabled && openBotEditorKey === 'night' ? (
-                      <BotMessageEditor
-                        editorKey="night"
-                        value={draft.nightModeBotMessageText}
-                        onChange={(nextValue) =>
-                          setFieldValue(
-                            'nightModeBotMessageText',
-                            nextValue as ChatSettings['nightModeBotMessageText'],
-                          )
-                        }
-                        onReset={() => setFieldValue('nightModeBotMessageText', '')}
-                      />
-                    ) : null}
-                  </div>
-
-                  {draft.nightModeBotMessageEnabled ? (
-                    <div
-                      className={cn(
-                        'settings-native-toggle',
-                        'settings-native-toggle--nested',
-                        hasNightBotButtonError && 'field--error',
-                      )}
-                    >
-                      <div className="settings-native-toggle__row">
-                        <div className="settings-native-toggle__title-wrap">
-                          <span className="settings-native-toggle__title">Добавить кнопку</span>
-                          <button
-                            type="button"
-                            className={cn(
-                              'settings-info-button',
-                              openHintKey === 'nightBotButton' && 'is-open',
-                            )}
-                            aria-label="Пояснение для кнопки в сообщении ночного режима"
-                            aria-controls="night-bot-button-hint"
-                            aria-expanded={openHintKey === 'nightBotButton'}
-                            onClick={() => toggleHint('nightBotButton')}
-                          >
-                            <span aria-hidden>i</span>
-                          </button>
-                        </div>
-
-                        <label
-                          className="settings-native-switch"
-                          aria-label="Добавить кнопку в сообщение бота для ночного режима"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={draft.nightModeBotButtonEnabled}
-                            onChange={(event) => {
-                              const enabled = event.target.checked;
-                              setFieldValue('nightModeBotButtonEnabled', enabled);
-                              if (!enabled) {
-                                clearFieldError('nightModeBotButtonUrl');
-                                clearFieldError('nightModeBotButtonText');
-                              }
-                            }}
-                          />
-                          <span className="toggle-switch" aria-hidden>
-                            <span className="toggle-switch__thumb" />
-                          </span>
-                        </label>
+                        <span>Действия бота</span>
                       </div>
 
-                      {draft.nightModeBotButtonEnabled ? (
-                        <div className="settings-button-fields">
-                          <label
-                            className={cn(
-                              'field settings-url-field',
-                              nightBotButtonUrlError && 'field--error',
-                            )}
-                          >
-                            <span className="field__label">Ссылка кнопки</span>
-                            <input
-                              type="url"
-                              inputMode="url"
-                              value={draft.nightModeBotButtonUrl}
-                              onChange={(event) =>
-                                setFieldValue('nightModeBotButtonUrl', event.target.value)
-                              }
-                              placeholder="https://max.ru/channel/..."
-                            />
-                            {nightBotButtonUrlError ? (
-                              <small className="field__hint">{nightBotButtonUrlError}</small>
-                            ) : null}
-                          </label>
+                      <div className="settings-native-toggle">
+                        <div className="settings-native-toggle__row">
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="settings-native-toggle__title">Сообщение от бота</span>
+                            <div className="settings-native-toggle__title-actions">
+                              <EditToggleButton
+                                label="Редактировать текст сообщения ночного режима"
+                                onClick={() => toggleBotMessageEditor('night')}
+                                disabled={!draft.nightModeBotMessageEnabled}
+                                isOpen={openBotEditorKey === 'night'}
+                              />
+                              <button
+                                type="button"
+                                className={cn(
+                                  'settings-info-button',
+                                  openHintKey === 'nightBotMessage' && 'is-open',
+                                )}
+                                aria-label="Пояснение для тумблера сообщений ночного режима"
+                                aria-controls="night-bot-message-hint"
+                                aria-expanded={openHintKey === 'nightBotMessage'}
+                                onClick={() => toggleHint('nightBotMessage')}
+                              >
+                                <span aria-hidden>i</span>
+                              </button>
+                            </div>
+                          </div>
 
                           <label
-                            className={cn(
-                              'field settings-text-field',
-                              nightBotButtonTextError && 'field--error',
-                            )}
+                            className="settings-native-switch"
+                            aria-label="Включить сообщение от бота для ночного режима"
                           >
-                            <span className="field__label">Название кнопки</span>
                             <input
-                              type="text"
-                              maxLength={32}
-                              value={draft.nightModeBotButtonText}
-                              onChange={(event) =>
-                                setFieldValue('nightModeBotButtonText', event.target.value)
-                              }
-                              placeholder="Правила чата"
+                              type="checkbox"
+                              checked={draft.nightModeBotMessageEnabled}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('nightModeBotMessageEnabled', enabled);
+                                if (!enabled) {
+                                  setFieldValue('nightModeBotButtonEnabled', false);
+                                  setFieldValue('nightModeRulesButtonEnabled', false);
+                                  clearFieldError('nightModeBotButtonUrl');
+                                  clearFieldError('nightModeBotButtonText');
+                                }
+                              }}
                             />
-                            {nightBotButtonTextError ? (
-                              <small className="field__hint">{nightBotButtonTextError}</small>
-                            ) : null}
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
                           </label>
                         </div>
-                      ) : null}
 
-                      {!hasNightBotButtonError && openHintKey === 'nightBotButton' ? (
-                        <p id="night-bot-button-hint" className="settings-native-toggle__hint">
-                          Добавляет кнопку в сообщение о закрытии чата на ночь.
-                        </p>
-                      ) : null}
+                        {openHintKey === 'nightBotMessage' ? (
+                          <p id="night-bot-message-hint" className="settings-native-toggle__hint">
+                            Бот пишет, что чат закрыт на ночь, и поясняет удаление сообщения.
+                          </p>
+                        ) : null}
 
-                      {renderRulesAttachToggle(
-                        'nightModeRulesButtonEnabled',
-                        'Прикрепить правила к сообщению бота о ночном режиме',
-                      )}
-                    </div>
+                        {draft.nightModeBotMessageEnabled && openBotEditorKey === 'night' ? (
+                          <BotMessageEditor
+                            editorKey="night"
+                            value={draft.nightModeBotMessageText}
+                            onChange={(nextValue) =>
+                              setFieldValue(
+                                'nightModeBotMessageText',
+                                nextValue as ChatSettings['nightModeBotMessageText'],
+                              )
+                            }
+                            onReset={() => setFieldValue('nightModeBotMessageText', '')}
+                          />
+                        ) : null}
+                      </div>
+
+                      {draft.nightModeBotMessageEnabled ? (
+                        <div
+                          className={cn(
+                            'settings-native-toggle',
+                            'settings-native-toggle--nested',
+                            hasNightBotButtonError && 'field--error',
+                          )}
+                        >
+                          <div className="settings-native-toggle__row">
+                            <div className="settings-native-toggle__title-wrap">
+                              <span className="settings-native-toggle__title">Добавить кнопку</span>
+                              <button
+                                type="button"
+                                className={cn(
+                                  'settings-info-button',
+                                  openHintKey === 'nightBotButton' && 'is-open',
+                                )}
+                                aria-label="Пояснение для кнопки в сообщении ночного режима"
+                                aria-controls="night-bot-button-hint"
+                                aria-expanded={openHintKey === 'nightBotButton'}
+                                onClick={() => toggleHint('nightBotButton')}
+                              >
+                                <span aria-hidden>i</span>
+                              </button>
+                            </div>
+
+                            <label
+                              className="settings-native-switch"
+                              aria-label="Добавить кнопку в сообщение бота для ночного режима"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={draft.nightModeBotButtonEnabled}
+                                onChange={(event) => {
+                                  const enabled = event.target.checked;
+                                  setFieldValue('nightModeBotButtonEnabled', enabled);
+                                  if (!enabled) {
+                                    clearFieldError('nightModeBotButtonUrl');
+                                    clearFieldError('nightModeBotButtonText');
+                                  }
+                                }}
+                              />
+                              <span className="toggle-switch" aria-hidden>
+                                <span className="toggle-switch__thumb" />
+                              </span>
+                            </label>
+                          </div>
+
+                          {draft.nightModeBotButtonEnabled ? (
+                            <div className="settings-button-fields">
+                              <label
+                                className={cn(
+                                  'field settings-url-field',
+                                  nightBotButtonUrlError && 'field--error',
+                                )}
+                              >
+                                <span className="field__label">Ссылка кнопки</span>
+                                <input
+                                  type="url"
+                                  inputMode="url"
+                                  value={draft.nightModeBotButtonUrl}
+                                  onChange={(event) =>
+                                    setFieldValue('nightModeBotButtonUrl', event.target.value)
+                                  }
+                                  placeholder="https://max.ru/channel/..."
+                                />
+                                {nightBotButtonUrlError ? (
+                                  <small className="field__hint">{nightBotButtonUrlError}</small>
+                                ) : null}
+                              </label>
+
+                              <label
+                                className={cn(
+                                  'field settings-text-field',
+                                  nightBotButtonTextError && 'field--error',
+                                )}
+                              >
+                                <span className="field__label">Название кнопки</span>
+                                <input
+                                  type="text"
+                                  maxLength={32}
+                                  value={draft.nightModeBotButtonText}
+                                  onChange={(event) =>
+                                    setFieldValue('nightModeBotButtonText', event.target.value)
+                                  }
+                                  placeholder="Правила чата"
+                                />
+                                {nightBotButtonTextError ? (
+                                  <small className="field__hint">{nightBotButtonTextError}</small>
+                                ) : null}
+                              </label>
+                            </div>
+                          ) : null}
+
+                          {!hasNightBotButtonError && openHintKey === 'nightBotButton' ? (
+                            <p id="night-bot-button-hint" className="settings-native-toggle__hint">
+                              Добавляет кнопку в сообщение о закрытии чата на ночь.
+                            </p>
+                          ) : null}
+
+                          {renderRulesAttachToggle(
+                            'nightModeRulesButtonEnabled',
+                            'Прикрепить правила к сообщению бота о ночном режиме',
+                          )}
+                        </div>
+                      ) : null}
+                    </>
                   ) : null}
                   {renderSectionApplyControl('night')}
                 </div>

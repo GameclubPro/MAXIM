@@ -164,7 +164,7 @@ model ChatSettings {
   nightModeStartTimeMinutes        Int                      @default(1380) @map("night_mode_start_time_minutes")
   nightModeEndTimeMinutes          Int                      @default(480) @map("night_mode_end_time_minutes")
   nightModeTimezone                String                   @default("Europe/Moscow") @map("night_mode_timezone")
-  nightModeBotMessageEnabled       Boolean                  @default(true) @map("night_mode_bot_message_enabled")
+  nightModeBotMessageEnabled       Boolean                  @default(false) @map("night_mode_bot_message_enabled")
   nightModeBotMessageText          String                   @default("") @map("night_mode_bot_message_text")
   nightModeBotButtonEnabled        Boolean                  @default(false) @map("night_mode_bot_button_enabled")
   nightModeBotButtonUrl            String                   @default("") @map("night_mode_bot_button_url")

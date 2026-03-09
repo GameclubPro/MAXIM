@@ -176,7 +176,7 @@ export const chatSettingsSchema = z
       .max(1_439)
       .default(8 * 60),
     nightModeTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
-    nightModeBotMessageEnabled: z.boolean().default(true),
+    nightModeBotMessageEnabled: z.boolean().default(false),
     nightModeBotMessageText: botMessageTextSchema,
     nightModeBotButtonEnabled: z.boolean().default(false),
     nightModeBotButtonUrl: botButtonUrlSchema,

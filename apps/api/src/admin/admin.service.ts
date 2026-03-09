@@ -555,7 +555,20 @@ export class AdminService {
 
     const parsed = chatSettingsSchema.safeParse(chat.settings);
     if (parsed.success) {
-      return parsed.data;
+      const normalizedSettings = this.normalizeNightModeSettings(parsed.data);
+      if (this.hasNightModeNormalizationChanges(parsed.data, normalizedSettings)) {
+        await this.prisma.chatSettings.update({
+          where: { chatId },
+          data: {
+            nightModeBotMessageEnabled: normalizedSettings.nightModeBotMessageEnabled,
+            nightModeBotButtonEnabled: normalizedSettings.nightModeBotButtonEnabled,
+            nightModeRulesButtonEnabled: normalizedSettings.nightModeRulesButtonEnabled,
+          },
+        });
+        await this.chatContextCache.invalidate(chatId);
+      }
+
+      return normalizedSettings;
     }
 
     this.logger.warn(
@@ -593,6 +606,7 @@ export class AdminService {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
+    const normalizedSettings = this.normalizeNightModeSettings(parsed.data);
 
     await this.prisma.chat.upsert({
       where: { id: chatId },
@@ -602,7 +616,7 @@ export class AdminService {
         entityType: ChatEntityType.CHAT,
         settings: {
           create: {
-            ...parsed.data,
+            ...normalizedSettings,
           },
         },
       },
@@ -610,10 +624,10 @@ export class AdminService {
         settings: {
           upsert: {
             update: {
-              ...parsed.data,
+              ...normalizedSettings,
             },
             create: {
-              ...parsed.data,
+              ...normalizedSettings,
             },
           },
         },
@@ -626,14 +640,14 @@ export class AdminService {
         actorUserId: user.userId,
         action: 'UPDATE_SETTINGS',
         payload: {
-          ...parsed.data,
+          ...normalizedSettings,
           source,
         },
       },
     });
     await this.chatContextCache.invalidate(chatId);
 
-    return parsed.data;
+    return normalizedSettings;
   }
 
   async getRules(chatId: string, user: AuthUser): Promise<ChatRules> {
@@ -1105,6 +1119,7 @@ export class AdminService {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
+    const normalizedSettings = this.normalizeNightModeSettings(parsed.data);
 
     const availableChats = await this.listChats(user);
     const appliedChatIds = Array.from(
@@ -1112,17 +1127,17 @@ export class AdminService {
     );
     const filteredSettingKeys = Array.isArray(settingKeys)
       ? Array.from(new Set(settingKeys)).filter(
-          (key): key is keyof ChatSettings => typeof key === 'string' && key in parsed.data,
+          (key): key is keyof ChatSettings => typeof key === 'string' && key in normalizedSettings,
         )
       : [];
     const settingsUpdatePayload: Partial<ChatSettings> =
       filteredSettingKeys.length > 0
         ? filteredSettingKeys.reduce<Partial<ChatSettings>>((acc, key) => {
             (acc as Record<keyof ChatSettings, ChatSettings[keyof ChatSettings]>)[key] =
-              parsed.data[key];
+              normalizedSettings[key];
             return acc;
           }, {})
-        : parsed.data;
+        : normalizedSettings;
 
     for (const chatId of appliedChatIds) {
       await this.prisma.chat.upsert({
@@ -1133,7 +1148,7 @@ export class AdminService {
           entityType: ChatEntityType.CHAT,
           settings: {
             create: {
-              ...parsed.data,
+              ...normalizedSettings,
             },
           },
         },
@@ -1144,7 +1159,7 @@ export class AdminService {
                 ...settingsUpdatePayload,
               },
               create: {
-                ...parsed.data,
+                ...normalizedSettings,
               },
             },
           },
@@ -1187,6 +1202,44 @@ export class AdminService {
       updatedChats: appliedChatIds.length,
       appliedChatIds,
     };
+  }
+
+  private normalizeNightModeSettings(settings: ChatSettings): ChatSettings {
+    if (!settings.nightModeEnabled) {
+      return {
+        ...settings,
+        nightModeBotMessageEnabled: false,
+        nightModeBotButtonEnabled: false,
+        nightModeRulesButtonEnabled: false,
+      };
+    }
+
+    if (!settings.nightModeBotMessageEnabled) {
+      return {
+        ...settings,
+        nightModeBotButtonEnabled: false,
+        nightModeRulesButtonEnabled: false,
+      };
+    }
+
+    return settings;
+  }
+
+  private hasNightModeNormalizationChanges(
+    current: Pick<
+      ChatSettings,
+      'nightModeBotMessageEnabled' | 'nightModeBotButtonEnabled' | 'nightModeRulesButtonEnabled'
+    >,
+    normalized: Pick<
+      ChatSettings,
+      'nightModeBotMessageEnabled' | 'nightModeBotButtonEnabled' | 'nightModeRulesButtonEnabled'
+    >,
+  ): boolean {
+    return (
+      current.nightModeBotMessageEnabled !== normalized.nightModeBotMessageEnabled ||
+      current.nightModeBotButtonEnabled !== normalized.nightModeBotButtonEnabled ||
+      current.nightModeRulesButtonEnabled !== normalized.nightModeRulesButtonEnabled
+    );
   }
 
   async sendBroadcast(
