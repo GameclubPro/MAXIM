@@ -301,6 +301,48 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('sends reply link payload when message link is provided', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          data: {
+            mid: 'mid-rules-link-1',
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await service.sendMessage(
+      'chat-1',
+      'Нарушение',
+      {
+        messageLink: {
+          type: 'reply',
+          mid: 'mid-rules-1',
+        },
+      },
+      { immediate: true },
+    );
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api.max.ru/messages',
+        params: { chat_id: 'chat-1' },
+        data: {
+          text: 'Нарушение',
+          link: {
+            type: 'reply',
+            mid: 'mid-rules-1',
+          },
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('pins a message in chat without system notify when requested', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(

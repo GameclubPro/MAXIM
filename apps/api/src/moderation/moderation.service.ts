@@ -2554,6 +2554,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     rulesPublishedMessageId: string | null = null,
   ): MaxSendMessageOptions | null {
     const buttons: MaxMessageButton[] = [];
+    const rulesMessageLink = this.buildRulesMessageLink(
+      rulesButtonEnabled,
+      rulesPublishedUrl,
+      rulesPublishedMessageId,
+    );
     const primaryButton = this.buildLinkButton(buttonEnabled, buttonUrl, buttonText);
     if (primaryButton) {
       buttons.push(primaryButton);
@@ -2569,19 +2574,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       buttons.push(rulesButton);
     }
 
-    if (buttons.length === 0) {
+    if (buttons.length === 0 && !rulesMessageLink) {
       return null;
     }
 
     if (buttons.length === 1 && this.isLinkButton(buttons[0])) {
       return {
         button: buttons[0],
+        ...(rulesMessageLink ? { messageLink: rulesMessageLink } : {}),
       };
     }
 
-    return {
-      buttons: [buttons],
-    };
+    return buttons.length > 0
+      ? {
+          buttons: [buttons],
+          ...(rulesMessageLink ? { messageLink: rulesMessageLink } : {}),
+        }
+      : {
+          messageLink: rulesMessageLink,
+        };
   }
 
   private buildLinkButton(
@@ -2628,6 +2639,26 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return null;
+  }
+
+  private buildRulesMessageLink(
+    buttonEnabled: boolean,
+    publishedUrl: string | null,
+    publishedMessageId: string | null,
+  ): { type: 'reply'; mid: string } | null {
+    if (!buttonEnabled || this.normalizeBotButtonUrl(publishedUrl ?? '')) {
+      return null;
+    }
+
+    const normalizedMessageId = publishedMessageId?.trim() ?? '';
+    if (!normalizedMessageId) {
+      return null;
+    }
+
+    return {
+      type: 'reply',
+      mid: normalizedMessageId,
+    };
   }
 
   private isLinkButton(button: MaxMessageButton): button is MaxLinkButton {

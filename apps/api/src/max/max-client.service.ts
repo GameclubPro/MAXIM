@@ -95,6 +95,11 @@ export type MaxChatButton = {
   uuid?: string | null;
 };
 
+export type MaxReplyMessageLink = {
+  type: 'reply';
+  mid: string;
+};
+
 export type MaxMessageButton =
   | MaxLinkButton
   | MaxCallbackButton
@@ -107,6 +112,7 @@ export type MaxSendMessageOptions = {
   button?: MaxLinkButton;
   buttons?: MaxMessageButton[][];
   imagePayload?: Record<string, unknown>;
+  messageLink?: MaxReplyMessageLink | null;
   debugContext?: {
     screen?: string;
     action?: string;
@@ -249,6 +255,7 @@ export class MaxClientService implements OnModuleDestroy {
     options?: MaxSendMessageOptions,
   ): Promise<MaxPublishedMessage> {
     const attachments = this.buildMessageAttachments(options);
+    const messageLink = this.buildMessageLinkData(options?.messageLink);
     const sendResponse = await this.executeMutation(chatId, async () => {
       return this.request<Record<string, unknown>>('post', '/messages', {
         params: {
@@ -256,6 +263,7 @@ export class MaxClientService implements OnModuleDestroy {
         },
         data: {
           text,
+          ...(messageLink ? { link: messageLink } : {}),
           ...(attachments.length > 0 ? { attachments } : {}),
         },
       });
@@ -593,12 +601,14 @@ export class MaxClientService implements OnModuleDestroy {
         }
         const attachments = this.buildMessageAttachments(action.options);
         const sendResponse = await this.executeMutation(action.chatId, async () => {
+          const messageLink = this.buildMessageLinkData(action.options?.messageLink);
           return this.request<Record<string, unknown>>('post', '/messages', {
             params: {
               chat_id: action.chatId,
             },
             data: {
               text: action.text,
+              ...(messageLink ? { link: messageLink } : {}),
               ...(attachments.length > 0 ? { attachments } : {}),
             },
           });
@@ -1304,6 +1314,22 @@ export class MaxClientService implements OnModuleDestroy {
     return {
       type: 'image',
       payload: imagePayload,
+    };
+  }
+
+  private buildMessageLinkData(link?: MaxReplyMessageLink | null): Record<string, unknown> | null {
+    if (!link || link.type !== 'reply') {
+      return null;
+    }
+
+    const mid = typeof link.mid === 'string' ? link.mid.trim() : '';
+    if (!mid) {
+      return null;
+    }
+
+    return {
+      type: 'reply',
+      mid,
     };
   }
 

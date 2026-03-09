@@ -5033,6 +5033,76 @@ describe('ModerationService', () => {
     );
   });
 
+  it('falls back to reply link on rules post when published url is still unavailable', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            linkBotMessageEnabled: true,
+            linkWarnEnabled: true,
+            linkRulesButtonEnabled: true,
+          }),
+          rules: {
+            publishedMessageId: 'mid-rules-2',
+            publishedUrl: null,
+          },
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+        count: jest.fn().mockResolvedValue(2),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      chatRules: {
+        update: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Link detected' }],
+      }),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+      resolveMessageLink: jest.fn().mockResolvedValue(null),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      'Пользователю "Алексей" вынесено предупреждение за ссылку. В этом чате нельзя отправлять ссылки.',
+      {
+        messageLink: {
+          type: 'reply',
+          mid: 'mid-rules-2',
+        },
+      },
+    );
+  });
+
   it('upgrades legacy callback rules button to direct link when pressed', async () => {
     const prisma = {
       chatRules: {
