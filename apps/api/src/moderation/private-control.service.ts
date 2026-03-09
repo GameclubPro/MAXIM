@@ -339,14 +339,14 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
   ],
   thematicFilters: [
     {
-      key: 'realEstateTopicFilterEnabled',
-      label: 'Тема: недвижимость',
+      key: 'thematicCodewordEnabled',
+      label: 'Фильтр по кодовому слову',
       type: 'boolean',
     },
     {
-      key: 'autoMarketTopicFilterEnabled',
-      label: 'Тема: авторынок',
-      type: 'boolean',
+      key: 'thematicCodeword',
+      label: 'Кодовое слово',
+      type: 'text',
     },
     {
       key: 'thematicFiltersBotMessageEnabled',
@@ -606,8 +606,8 @@ const SECTION_CARD_FIELDS: Record<
   },
   thematicFilters: {
     basic: [
-      'realEstateTopicFilterEnabled',
-      'autoMarketTopicFilterEnabled',
+      'thematicCodewordEnabled',
+      'thematicCodeword',
       'thematicFiltersBotMessageEnabled',
       'thematicFiltersWarnEnabled',
       'thematicFiltersBanEnabled',
@@ -3647,7 +3647,7 @@ export class PrivateControlService {
       greeting: ['приветствие', 'новичок'],
       profanity: ['мат', 'оскорб'],
       commercial: ['реклама', 'коммерция'],
-      thematic: ['тема', 'тематика', 'недвижимость', 'авторынок', 'авто'],
+      thematic: ['тема', 'тематика', 'кодовое слово', 'кодслово', 'слово'],
       duplicate: ['дубль', 'повтор'],
       spam: ['спам'],
       night: ['ночной', 'тишина'],

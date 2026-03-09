@@ -80,11 +80,14 @@ type TopicDictionary = {
 };
 
 type TopicFilterDetection = {
+  mode: 'CODEWORD' | 'TOPIC';
   activeTopics: TopicFilterTopic[];
   matchedTopics: TopicFilterTopic[];
   messageLength: number;
-  genericOffTopicMinLengthExclusive: number;
+  genericOffTopicMinLengthExclusive: number | null;
   detectedOffTopicTopics: TopicFilterTopic[];
+  requiredCodeword: string | null;
+  messageFirstToken: string | null;
 };
 
 type TopicEvidence = {
@@ -1346,11 +1349,14 @@ export class RuleEngineService {
         score: 0.84,
         reason: 'Message without required thematic markers',
         metadata: {
+          mode: topicMismatch.mode,
           activeTopics: topicMismatch.activeTopics,
           matchedTopics: topicMismatch.matchedTopics,
           messageLength: topicMismatch.messageLength,
           genericOffTopicMinLengthExclusive: topicMismatch.genericOffTopicMinLengthExclusive,
           detectedOffTopicTopics: topicMismatch.detectedOffTopicTopics,
+          requiredCodeword: topicMismatch.requiredCodeword,
+          messageFirstToken: topicMismatch.messageFirstToken,
         },
       });
     }
@@ -1799,6 +1805,25 @@ export class RuleEngineService {
     settings: ChatSettings;
   }): TopicFilterDetection | null {
     const { normalizedText, measuredLength, settings } = params;
+    const requiredCodeword = this.resolveRequiredThematicCodeword(settings);
+    if (requiredCodeword) {
+      const messageFirstToken = this.extractFirstNormalizedToken(normalizedText);
+      if (messageFirstToken === requiredCodeword) {
+        return null;
+      }
+
+      return {
+        mode: 'CODEWORD',
+        activeTopics: [],
+        matchedTopics: [],
+        messageLength: measuredLength,
+        genericOffTopicMinLengthExclusive: null,
+        detectedOffTopicTopics: [],
+        requiredCodeword,
+        messageFirstToken,
+      };
+    }
+
     const activeTopics = this.getActiveTopics(settings);
     if (activeTopics.length === 0) {
       return null;
@@ -1825,12 +1850,45 @@ export class RuleEngineService {
     }
 
     return {
+      mode: 'TOPIC',
       activeTopics,
       matchedTopics,
       messageLength: measuredLength,
       genericOffTopicMinLengthExclusive: TOPIC_FILTER_GENERIC_OFFTOPIC_MIN_LENGTH,
       detectedOffTopicTopics,
+      requiredCodeword: null,
+      messageFirstToken: this.extractFirstNormalizedToken(normalizedText),
     };
+  }
+
+  private resolveRequiredThematicCodeword(settings: ChatSettings): string | null {
+    if (!settings.thematicCodewordEnabled) {
+      return null;
+    }
+
+    return this.normalizeThematicCodeword(settings.thematicCodeword);
+  }
+
+  private normalizeThematicCodeword(value: string | null | undefined): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = this.normalizeForDetection(value).replace(/ё/g, 'е').trim();
+    if (!normalized || normalized.includes(' ')) {
+      return null;
+    }
+
+    return normalized;
+  }
+
+  private extractFirstNormalizedToken(normalizedText: string): string | null {
+    const [firstToken] = this.extractTokens(normalizedText);
+    if (!firstToken) {
+      return null;
+    }
+
+    return firstToken.replace(/ё/g, 'е');
   }
 
   private getActiveTopics(settings: ChatSettings): TopicFilterTopic[] {

@@ -156,8 +156,8 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'textFiltersBotButtonText',
   ],
   thematicFilters: [
-    'realEstateTopicFilterEnabled',
-    'autoMarketTopicFilterEnabled',
+    'thematicCodewordEnabled',
+    'thematicCodeword',
     'thematicFiltersBotMessageEnabled',
     'thematicFiltersWarnEnabled',
     'thematicFiltersBanEnabled',
@@ -1831,6 +1831,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const hasThematicBotButtonError = Boolean(
     thematicBotButtonUrlError || thematicBotButtonTextError,
   );
+  const thematicCodewordError = draft?.thematicCodewordEnabled
+    ? fieldErrors.thematicCodeword
+    : undefined;
   const showNightBotButtonErrors = Boolean(
     draft?.nightModeBotMessageEnabled && draft?.nightModeBotButtonEnabled,
   );
@@ -1885,10 +1888,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         draft?.textFiltersKickEnabled,
       ].filter(Boolean).length
     : 0;
-  const thematicFiltersEnabledCount = [
-    draft?.realEstateTopicFilterEnabled,
-    draft?.autoMarketTopicFilterEnabled,
-  ].filter(Boolean).length;
+  const thematicFiltersEnabledCount = draft?.thematicCodewordEnabled ? 1 : 0;
   const thematicFiltersStagesEnabledCount = thematicFiltersEnabledCount
     ? [
         draft?.thematicFiltersBotMessageEnabled,
@@ -1927,7 +1927,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     ? `${textFiltersStagesEnabledCount}/4 ступени · ${commercialSensitivityLabel.toLowerCase()}`
     : 'Выключено';
   const thematicFiltersHeaderSummary = thematicFiltersEnabledCount
-    ? `${thematicFiltersEnabledCount} тем · ${thematicFiltersStagesEnabledCount}/4 ступени`
+    ? `код: ${draft?.thematicCodeword?.trim() || 'не задан'} · ${thematicFiltersStagesEnabledCount}/4 ступени`
     : 'Выключено';
   const extraEnabledCount = [
     draft?.globalCrossChatSpamEnabled,
@@ -3634,26 +3634,28 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               >
                 <div className="settings-section__collapse-inner">
                   <p className="settings-native-toggle__hint">
-                    Сообщения должны относиться к выбранной теме. Если включены обе темы,
-                    достаточно совпадения хотя бы с одной.
+                    Бот проверяет первое слово сообщения. Если оно не совпадает с кодовым словом,
+                    сообщение удаляется и дальше работают ступени санкций.
                   </p>
 
                   <div className="settings-native-toggle text-filter-card">
                     <div className="settings-native-toggle__row">
-                      <span className="settings-native-toggle__title">Недвижимость</span>
+                      <span className="settings-native-toggle__title">Фильтр по кодовому слову</span>
 
                       <label
                         className="settings-native-switch"
-                        aria-label="Включить фильтр по теме недвижимости"
+                        aria-label="Включить фильтр по кодовому слову"
                       >
                         <input
                           type="checkbox"
-                          checked={draft.realEstateTopicFilterEnabled}
+                          checked={draft.thematicCodewordEnabled}
                           onChange={(event) => {
                             const enabled = event.target.checked;
-                            setFieldValue('realEstateTopicFilterEnabled', enabled);
+                            setFieldValue('thematicCodewordEnabled', enabled);
                             if (enabled) {
                               setFieldValue('thematicFiltersBotMessageEnabled', true);
+                            } else {
+                              clearFieldError('thematicCodeword');
                             }
                           }}
                         />
@@ -3662,36 +3664,40 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         </span>
                       </label>
                     </div>
+                    <p className="settings-native-toggle__hint">
+                      Пример: <code>недвижимость продам квартиру...</code>
+                    </p>
                   </div>
 
-                  <div className="settings-native-toggle text-filter-card">
-                    <div className="settings-native-toggle__row">
-                      <span className="settings-native-toggle__title">Авторынок</span>
-
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Включить фильтр по теме авторынка"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={draft.autoMarketTopicFilterEnabled}
-                          onChange={(event) => {
-                            const enabled = event.target.checked;
-                            setFieldValue('autoMarketTopicFilterEnabled', enabled);
-                            if (enabled) {
-                              setFieldValue('thematicFiltersBotMessageEnabled', true);
-                            }
-                          }}
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
-                    </div>
-                  </div>
-
-                  {thematicFiltersEnabledCount ? (
+                  {draft.thematicCodewordEnabled ? (
                     <>
+                      <label
+                        className={cn(
+                          'field settings-text-field',
+                          thematicCodewordError && 'field--error',
+                        )}
+                      >
+                        <span className="field__label">Кодовое слово</span>
+                        <input
+                          type="text"
+                          value={draft.thematicCodeword}
+                          onChange={(event) =>
+                            setFieldValue('thematicCodeword', event.target.value)
+                          }
+                          placeholder="недвижимость"
+                          maxLength={32}
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                        />
+                        {thematicCodewordError ? (
+                          <small className="field__hint">{thematicCodewordError}</small>
+                        ) : (
+                          <small className="field__hint">
+                            Одно слово без пробелов. Регистр не важен.
+                          </small>
+                        )}
+                      </label>
+
                       <div
                         className="settings-subsection-divider"
                         role="separator"

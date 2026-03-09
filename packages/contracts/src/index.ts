@@ -15,6 +15,7 @@ const duplicateMaxCountSchema = z.number().int().min(2).max(20);
 const botButtonUrlSchema = z.string().trim().max(2_048).default('');
 const botButtonTextSchema = z.string().trim().max(32).default('Открыть');
 const botMessageTextSchema = z.string().max(1_000).default('');
+const thematicCodewordSchema = z.string().trim().max(32).default('');
 
 function isValidBotButtonUrl(value: string): boolean {
   const normalized = value.trim();
@@ -124,6 +125,8 @@ export const chatSettingsSchema = z
     textFiltersBotButtonEnabled: z.boolean().default(false),
     textFiltersBotButtonUrl: botButtonUrlSchema,
     textFiltersBotButtonText: botButtonTextSchema,
+    thematicCodewordEnabled: z.boolean().default(false),
+    thematicCodeword: thematicCodewordSchema,
     realEstateTopicFilterEnabled: z.boolean().default(false),
     autoMarketTopicFilterEnabled: z.boolean().default(false),
     thematicFiltersBotMessageEnabled: z.boolean().default(false),
@@ -354,6 +357,29 @@ export const chatSettingsSchema = z
         path: ['thematicFiltersBotButtonText'],
         message: 'Введите название кнопки.',
       });
+    }
+
+    if (value.thematicCodewordEnabled) {
+      const codeword = value.thematicCodeword.trim();
+      if (!codeword) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['thematicCodeword'],
+          message: 'Укажите кодовое слово.',
+        });
+      } else if (/\s/u.test(codeword)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['thematicCodeword'],
+          message: 'Кодовое слово должно быть одним словом без пробелов.',
+        });
+      } else if (!/^[\p{L}\p{N}_-]{2,32}$/u.test(codeword)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['thematicCodeword'],
+          message: 'Кодовое слово: 2-32 символа, буквы/цифры/дефис/_.',
+        });
+      }
     }
 
     if (!isValidIanaTimeZone(value.nightModeTimezone)) {

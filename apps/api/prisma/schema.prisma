@@ -145,6 +145,8 @@ model ChatSettings {
   textFiltersBotButtonEnabled      Boolean                  @default(false) @map("text_filters_bot_button_enabled")
   textFiltersBotButtonUrl          String                   @default("") @map("text_filters_bot_button_url")
   textFiltersBotButtonText         String                   @default("Открыть") @map("text_filters_bot_button_text")
+  thematicCodewordEnabled          Boolean                  @default(false) @map("thematic_codeword_enabled")
+  thematicCodeword                 String                   @default("") @map("thematic_codeword")
   realEstateTopicFilterEnabled     Boolean                  @default(false) @map("real_estate_topic_filter_enabled")
   autoMarketTopicFilterEnabled     Boolean                  @default(false) @map("auto_market_topic_filter_enabled")
   thematicFiltersBotMessageEnabled Boolean                  @default(false) @map("thematic_filters_bot_message_enabled")

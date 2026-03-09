@@ -73,6 +73,8 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     textFiltersBotButtonEnabled: false,
     textFiltersBotButtonUrl: '',
     textFiltersBotButtonText: 'Открыть',
+    thematicCodewordEnabled: false,
+    thematicCodeword: '',
     realEstateTopicFilterEnabled: false,
     autoMarketTopicFilterEnabled: false,
     thematicFiltersBotMessageEnabled: false,
@@ -380,6 +382,63 @@ describe('RuleEngineService', () => {
     });
 
     expect(result.violations.some((item) => item.ruleCode === 'COMMERCIAL_AD')).toBe(true);
+  });
+
+  it('does not detect TOPIC_FILTER_MISMATCH when message starts with required codeword', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Недвижимость продам квартиру у метро, собственник, без комиссии.',
+      settings: buildSettings({
+        thematicCodewordEnabled: true,
+        thematicCodeword: 'недвижимость',
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
+  it('detects TOPIC_FILTER_MISMATCH when required codeword is not the first word', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продам квартиру, недвижимость, метро рядом, собственник.',
+      settings: buildSettings({
+        thematicCodewordEnabled: true,
+        thematicCodeword: 'недвижимость',
+      }),
+      domainAllowlist: [],
+    });
+
+    const violation = result.violations.find((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH');
+    expect(violation).toBeDefined();
+    expect(violation?.metadata).toEqual(
+      expect.objectContaining({
+        mode: 'CODEWORD',
+        requiredCodeword: 'недвижимость',
+        messageFirstToken: 'продам',
+      }),
+    );
+  });
+
+  it('detects TOPIC_FILTER_MISMATCH for attachment-only message when codeword filter is enabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: '👍',
+      settings: buildSettings({
+        thematicCodewordEnabled: true,
+        thematicCodeword: 'авторынок',
+      }),
+      domainAllowlist: [],
+      hasPhotoAttachment: true,
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
   });
 
   it('detects TOPIC_FILTER_MISMATCH for long off-topic message when real estate filter is enabled', async () => {

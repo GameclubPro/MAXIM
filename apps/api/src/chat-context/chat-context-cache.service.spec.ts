@@ -74,6 +74,8 @@ function buildSettings(chatId: string): ChatSettings {
     textFiltersBotButtonEnabled: false,
     textFiltersBotButtonUrl: '',
     textFiltersBotButtonText: 'Открыть',
+    thematicCodewordEnabled: false,
+    thematicCodeword: '',
     realEstateTopicFilterEnabled: false,
     autoMarketTopicFilterEnabled: false,
     thematicFiltersBotMessageEnabled: false,

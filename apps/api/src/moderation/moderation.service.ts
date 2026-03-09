@@ -803,6 +803,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           this.buildTopicFilterExplanation(
             userLabel,
             canDeleteMessage,
+            this.extractTopicFilterRequiredCodeword(topViolation.metadata),
             this.extractTopicFilterTopics(topViolation.metadata),
           ),
           topicMessageOptions ?? undefined,
@@ -894,6 +895,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           await sendChatBotMessage(
             this.buildTopicFilterWarnExplanation(
               userLabel,
+              this.extractTopicFilterRequiredCodeword(topViolation.metadata),
               this.extractTopicFilterTopics(topViolation.metadata),
             ),
             topicMessageOptions ?? undefined,
@@ -971,6 +973,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             : isTopicFilterHit && action === SanctionAction.BAN
               ? this.buildTopicFilterBanExplanation(
                   userLabel,
+                  this.extractTopicFilterRequiredCodeword(topViolation.metadata),
                   this.extractTopicFilterTopics(topViolation.metadata),
                   actionBanDurationHours,
                 )
@@ -1019,6 +1022,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           await sendChatBotMessage(
             this.buildTopicFilterKickExplanation(
               userLabel,
+              this.extractTopicFilterRequiredCodeword(topViolation.metadata),
               this.extractTopicFilterTopics(topViolation.metadata),
             ),
             topicMessageOptions ?? undefined,
@@ -1431,32 +1435,73 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private buildTopicFilterExplanation(
     userLabel: string,
     canDeleteMessage: boolean,
+    requiredCodeword: string | null,
     topics: TopicFilterTopic[],
   ): string {
-    const topicLabel = this.resolveTopicFilterLabel(topics);
+    if (requiredCodeword) {
+      const fallback = canDeleteMessage
+        ? `Сообщение пользователя ${userLabel} удалено: сообщения должны начинаться с кодового слова "${requiredCodeword}".`
+        : `Сообщение пользователя ${userLabel} нарушает правило: сообщения должны начинаться с кодового слова "${requiredCodeword}".`;
+      return fallback;
+    }
+
+    const requirement = this.resolveTopicFilterRequirementLabel(requiredCodeword, topics);
     const fallback = canDeleteMessage
-      ? `Сообщение пользователя ${userLabel} удалено: сообщения должны относиться к теме ${topicLabel}.`
-      : `Сообщение пользователя ${userLabel} нарушает правило: сообщения должны относиться к теме ${topicLabel}.`;
+      ? `Сообщение пользователя ${userLabel} удалено: ${requirement}.`
+      : `Сообщение пользователя ${userLabel} нарушает правило: ${requirement}.`;
     return fallback;
   }
 
-  private buildTopicFilterWarnExplanation(userLabel: string, topics: TopicFilterTopic[]): string {
-    const topicLabel = this.resolveTopicFilterLabel(topics);
-    return `Пользователю ${userLabel} вынесено предупреждение: сообщения должны относиться к теме ${topicLabel}.`;
+  private buildTopicFilterWarnExplanation(
+    userLabel: string,
+    requiredCodeword: string | null,
+    topics: TopicFilterTopic[],
+  ): string {
+    if (requiredCodeword) {
+      return `Пользователю ${userLabel} вынесено предупреждение: сообщения должны начинаться с кодового слова "${requiredCodeword}".`;
+    }
+
+    const requirement = this.resolveTopicFilterRequirementLabel(requiredCodeword, topics);
+    return `Пользователю ${userLabel} вынесено предупреждение: ${requirement}.`;
   }
 
-  private buildTopicFilterKickExplanation(userLabel: string, topics: TopicFilterTopic[]): string {
+  private buildTopicFilterKickExplanation(
+    userLabel: string,
+    requiredCodeword: string | null,
+    topics: TopicFilterTopic[],
+  ): string {
+    if (requiredCodeword) {
+      return `Пользователь ${userLabel} удален из чата за повторные нарушения: сообщения должны начинаться с кодового слова "${requiredCodeword}".`;
+    }
+
     const topicLabel = this.resolveTopicFilterLabel(topics);
     return `Пользователь ${userLabel} удален из чата за повторные сообщения не по теме ${topicLabel}.`;
   }
 
   private buildTopicFilterBanExplanation(
     userLabel: string,
+    requiredCodeword: string | null,
     topics: TopicFilterTopic[],
     banDurationHours: number,
   ): string {
+    if (requiredCodeword) {
+      return `Пользователю ${userLabel} выдан временный бан на ${this.formatBanDurationLabel(banDurationHours)} за повторные нарушения: сообщения должны начинаться с кодового слова "${requiredCodeword}".`;
+    }
+
     const topicLabel = this.resolveTopicFilterLabel(topics);
     return `Пользователю ${userLabel} выдан временный бан на ${this.formatBanDurationLabel(banDurationHours)} за повторные сообщения не по теме ${topicLabel}.`;
+  }
+
+  private resolveTopicFilterRequirementLabel(
+    requiredCodeword: string | null,
+    topics: TopicFilterTopic[],
+  ): string {
+    if (requiredCodeword) {
+      return `сообщения должны начинаться с кодового слова "${requiredCodeword}"`;
+    }
+
+    const topicLabel = this.resolveTopicFilterLabel(topics);
+    return `сообщения должны относиться к теме ${topicLabel}`;
   }
 
   private resolveTopicFilterLabel(topics: TopicFilterTopic[]): string {
@@ -1474,6 +1519,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return 'недвижимости';
+  }
+
+  private extractTopicFilterRequiredCodeword(metadata?: Record<string, unknown>): string | null {
+    const rawCodeword = metadata?.requiredCodeword;
+    return typeof rawCodeword === 'string' && rawCodeword.trim().length > 0
+      ? rawCodeword.trim()
+      : null;
   }
 
   private extractTopicFilterTopics(metadata?: Record<string, unknown>): TopicFilterTopic[] {
@@ -5398,6 +5450,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       ...settings,
       commercialAdsFilterEnabled: false,
       russianProfanityFilterEnabled: false,
+      thematicCodewordEnabled: false,
       realEstateTopicFilterEnabled: false,
       autoMarketTopicFilterEnabled: false,
     };
