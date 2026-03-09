@@ -2661,40 +2661,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return normalized.slice(0, 32);
   }
 
-  private decodeRulesImageBase64(value: string): Buffer {
-    const normalized = value.trim().replace(/^data:[^;]+;base64,/, '');
-    if (!normalized) {
-      throw new Error('Rules image is empty');
-    }
-
-    const imageBuffer = Buffer.from(normalized, 'base64');
-    if (imageBuffer.length === 0) {
-      throw new Error('Rules image is empty');
-    }
-
-    return imageBuffer;
-  }
-
-  private resolveRulesImageFileName(fileName: string, mimeType: string): string {
-    const trimmed = fileName.trim();
-    if (trimmed) {
-      return trimmed;
-    }
-
-    const normalizedMimeType = mimeType.trim().toLowerCase();
-    if (normalizedMimeType === 'image/png') {
-      return 'chat-rules.png';
-    }
-    if (normalizedMimeType === 'image/webp') {
-      return 'chat-rules.webp';
-    }
-    if (normalizedMimeType === 'image/gif') {
-      return 'chat-rules.gif';
-    }
-
-    return 'chat-rules.jpg';
-  }
-
   private async countRecentLinkViolations(chatId: string, userId: string): Promise<number> {
     const violationModel = this.prisma.violation as unknown as {
       count?: (args: {
@@ -4204,53 +4170,34 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const publishedRules = await this.prisma.chatRules?.findUnique?.({
       where: { chatId },
       select: {
-        text: true,
-        imageBase64: true,
-        imageMimeType: true,
-        imageFileName: true,
         publishedMessageId: true,
       },
     });
 
-    if (!publishedRules?.publishedMessageId || !publishedRules.text.trim()) {
+    if (!publishedRules?.publishedMessageId) {
       if (callbackId) {
         await this.answerCallbackSafe(callbackId, 'Правила ещё не опубликованы');
       }
       return;
     }
 
+    let notification = 'Правила закреплены сверху';
+    try {
+      await this.maxClient.pinMessage(chatId, publishedRules.publishedMessageId, false);
+    } catch (error: unknown) {
+      notification = 'Правила уже опубликованы в чате';
+      this.logger.warn(
+        {
+          chatId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to pin published rules message',
+      );
+    }
+
     if (callbackId) {
-      await this.answerCallbackSafe(callbackId, 'Показываю правила');
+      await this.answerCallbackSafe(callbackId, notification);
     }
-
-    let imagePayload: Record<string, unknown> | undefined;
-    if (publishedRules.imageBase64.trim() && publishedRules.imageMimeType.trim()) {
-      try {
-        imagePayload = await this.maxClient.uploadImage(
-          this.decodeRulesImageBase64(publishedRules.imageBase64),
-          this.resolveRulesImageFileName(
-            publishedRules.imageFileName,
-            publishedRules.imageMimeType,
-          ),
-          publishedRules.imageMimeType.trim(),
-        );
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            chatId,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Failed to upload rules image for callback delivery',
-        );
-      }
-    }
-
-    await this.maxClient.sendMessage(
-      chatId,
-      publishedRules.text.trim(),
-      imagePayload ? { imagePayload } : undefined,
-      { immediate: true },
-    );
   }
 
   private extractCallbackNode(update: MaxUpdate): Record<string, unknown> | null {

@@ -244,6 +244,34 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('pins a message in chat without system notify when requested', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          data: {
+            success: true,
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await service.pinMessage('chat-1', 'mid-rules-3', false);
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'put',
+        url: 'https://platform-api.max.ru/chats/chat-1/pin',
+        data: {
+          message_id: 'mid-rules-3',
+          notify: false,
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('parses official message snapshots with views and deduplicates pages', async () => {
     const latestTs = Date.parse('2026-03-07T09:00:00.000Z');
     const previousTs = Date.parse('2026-03-06T09:00:00.000Z');

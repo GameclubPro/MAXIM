@@ -5041,18 +5041,13 @@ describe('ModerationService', () => {
     const prisma = {
       chatRules: {
         findUnique: jest.fn().mockResolvedValue({
-          text: '1. Без спама.\n2. Без ссылок.',
-          imageBase64: '',
-          imageMimeType: '',
-          imageFileName: '',
           publishedMessageId: 'mid-rules-1',
         }),
       },
     };
     const maxClient = {
       answerCallback: jest.fn(),
-      sendMessage: jest.fn(),
-      uploadImage: jest.fn(),
+      pinMessage: jest.fn().mockResolvedValue(undefined),
     };
 
     const service = new ModerationService(
@@ -5064,12 +5059,10 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createGroupRulesCallbackUpdate());
 
-    expect(maxClient.answerCallback).toHaveBeenCalledWith('callback-rules-1', 'Показываю правила');
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
-      'chat-1',
-      '1. Без спама.\n2. Без ссылок.',
-      undefined,
-      { immediate: true },
+    expect(maxClient.pinMessage).toHaveBeenCalledWith('chat-1', 'mid-rules-1', false);
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-rules-1',
+      'Правила закреплены сверху',
     );
   });
 

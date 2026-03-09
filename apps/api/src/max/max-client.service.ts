@@ -215,6 +215,17 @@ export class MaxClientService implements OnModuleDestroy {
     );
   }
 
+  async pinMessage(chatId: string, messageId: string, notify = false): Promise<void> {
+    await this.executeMutation(chatId, async () => {
+      await this.request('put', `/chats/${chatId}/pin`, {
+        data: {
+          message_id: messageId,
+          notify,
+        },
+      });
+    });
+  }
+
   async sendMessage(
     chatId: string,
     text: string,
