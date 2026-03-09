@@ -4071,7 +4071,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Сообщение пользователя "Алексей" удалено: сообщения должны начинаться с кодового слова "недвижимость".',
+      'Объявление пользователя "Алексей" удалено: объявления должны начинаться с кодового слова "недвижимость".',
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
       data: expect.objectContaining({
@@ -4227,7 +4227,7 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" вынесено предупреждение: сообщения должны начинаться с кодового слова "авторынок".',
+      'Пользователю "Алексей" вынесено предупреждение: объявления должны начинаться с кодового слова "авторынок".',
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({

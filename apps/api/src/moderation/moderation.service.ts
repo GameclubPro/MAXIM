@@ -1440,8 +1440,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   ): string {
     if (requiredCodeword) {
       const fallback = canDeleteMessage
-        ? `Сообщение пользователя ${userLabel} удалено: сообщения должны начинаться с кодового слова "${requiredCodeword}".`
-        : `Сообщение пользователя ${userLabel} нарушает правило: сообщения должны начинаться с кодового слова "${requiredCodeword}".`;
+        ? `Объявление пользователя ${userLabel} удалено: объявления должны начинаться с кодового слова "${requiredCodeword}".`
+        : `Объявление пользователя ${userLabel} нарушает правило: объявления должны начинаться с кодового слова "${requiredCodeword}".`;
       return fallback;
     }
 
@@ -1458,7 +1458,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     topics: TopicFilterTopic[],
   ): string {
     if (requiredCodeword) {
-      return `Пользователю ${userLabel} вынесено предупреждение: сообщения должны начинаться с кодового слова "${requiredCodeword}".`;
+      return `Пользователю ${userLabel} вынесено предупреждение: объявления должны начинаться с кодового слова "${requiredCodeword}".`;
     }
 
     const requirement = this.resolveTopicFilterRequirementLabel(requiredCodeword, topics);
@@ -1471,7 +1471,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     topics: TopicFilterTopic[],
   ): string {
     if (requiredCodeword) {
-      return `Пользователь ${userLabel} удален из чата за повторные нарушения: сообщения должны начинаться с кодового слова "${requiredCodeword}".`;
+      return `Пользователь ${userLabel} удален из чата за повторные нарушения: объявления должны начинаться с кодового слова "${requiredCodeword}".`;
     }
 
     const topicLabel = this.resolveTopicFilterLabel(topics);
@@ -1485,7 +1485,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     banDurationHours: number,
   ): string {
     if (requiredCodeword) {
-      return `Пользователю ${userLabel} выдан временный бан на ${this.formatBanDurationLabel(banDurationHours)} за повторные нарушения: сообщения должны начинаться с кодового слова "${requiredCodeword}".`;
+      return `Пользователю ${userLabel} выдан временный бан на ${this.formatBanDurationLabel(banDurationHours)} за повторные нарушения: объявления должны начинаться с кодового слова "${requiredCodeword}".`;
     }
 
     const topicLabel = this.resolveTopicFilterLabel(topics);
@@ -1497,7 +1497,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     topics: TopicFilterTopic[],
   ): string {
     if (requiredCodeword) {
-      return `сообщения должны начинаться с кодового слова "${requiredCodeword}"`;
+      return `объявления должны начинаться с кодового слова "${requiredCodeword}"`;
     }
 
     const topicLabel = this.resolveTopicFilterLabel(topics);

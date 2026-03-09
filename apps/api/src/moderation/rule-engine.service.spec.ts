@@ -389,7 +389,7 @@ describe('RuleEngineService', () => {
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'Недвижимость продам квартиру у метро, собственник, без комиссии.',
+      text: 'Недвижимость продам квартиру у метро, собственник, без комиссии, свежий ремонт, никто не прописан, документы готовы к сделке.',
       settings: buildSettings({
         thematicCodewordEnabled: true,
         thematicCodeword: 'недвижимость',
@@ -405,7 +405,7 @@ describe('RuleEngineService', () => {
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: '#Недвижимость: продам квартиру у метро, собственник.',
+      text: '#Недвижимость: продам квартиру у метро, собственник, без комиссии, хороший ремонт, быстрый выход на сделку.',
       settings: buildSettings({
         thematicCodewordEnabled: true,
         thematicCodeword: 'недвижимость',
@@ -421,7 +421,7 @@ describe('RuleEngineService', () => {
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: '#авто_рынок: продам гранту, мотор шепчет.',
+      text: '#авто_рынок: продам гранту, мотор шепчет, два ключа, без штрафов и запретов, кузов живой, сел и поехал.',
       settings: buildSettings({
         thematicCodewordEnabled: true,
         thematicCodeword: '#Авто-рынок:',
@@ -437,7 +437,7 @@ describe('RuleEngineService', () => {
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'Продам квартиру, недвижимость, метро рядом, собственник.',
+      text: 'Продам квартиру, недвижимость, метро рядом, собственник, хороший ремонт, свободная продажа, документы готовы, без комиссии.',
       settings: buildSettings({
         thematicCodewordEnabled: true,
         thematicCodeword: 'недвижимость',
@@ -456,7 +456,23 @@ describe('RuleEngineService', () => {
     );
   });
 
-  it('detects TOPIC_FILTER_MISMATCH for attachment-only message when codeword filter is enabled', async () => {
+  it('does not detect TOPIC_FILTER_MISMATCH for short message when codeword filter is enabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Продам квартиру у метро, собственник, без комиссии.',
+      settings: buildSettings({
+        thematicCodewordEnabled: true,
+        thematicCodeword: 'недвижимость',
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
+  });
+
+  it('does not detect TOPIC_FILTER_MISMATCH for attachment-only message when codeword filter is enabled and text is shorter than 90 chars', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
@@ -470,7 +486,7 @@ describe('RuleEngineService', () => {
       hasPhotoAttachment: true,
     });
 
-    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(true);
+    expect(result.violations.some((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH')).toBe(false);
   });
 
   it('detects TOPIC_FILTER_MISMATCH for long off-topic message when real estate filter is enabled', async () => {

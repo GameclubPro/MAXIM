@@ -198,6 +198,7 @@ const ADS_TRANSACTIONAL_PATTERN = /\b(цена|стоимость|оплата|�
 const ADS_URGENCY_PATTERN = /\b(срочно|только сегодня|до конца дня|осталось\s+\d+)\b/iu;
 const ADS_QUANTITY_PATTERN = /\b(шт|штук|шт\.|пачк|упак|остатк|места)\b/iu;
 const ADS_PHONE_PATTERN = /\b(?:\+7|8)\s*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b/u;
+const THEMATIC_CODEWORD_MIN_LENGTH = 90;
 const TOPIC_FILTER_GENERIC_OFFTOPIC_MIN_LENGTH = 70;
 const TOPIC_FILTER_TOPICS: readonly TopicFilterTopic[] = ['REAL_ESTATE', 'AUTO_MARKET'];
 const TOPIC_PHRASE_SCORE = 5;
@@ -1809,6 +1810,10 @@ export class RuleEngineService {
     const { rawText, normalizedText, measuredLength, settings } = params;
     const requiredCodeword = this.resolveRequiredThematicCodeword(settings);
     if (requiredCodeword) {
+      if (measuredLength < THEMATIC_CODEWORD_MIN_LENGTH) {
+        return null;
+      }
+
       const messageFirstToken = this.extractFirstThematicCodewordToken(rawText);
       if (messageFirstToken === requiredCodeword) {
         return null;

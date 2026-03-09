@@ -3634,8 +3634,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               >
                 <div className="settings-section__collapse-inner">
                   <p className="settings-native-toggle__hint">
-                    Бот проверяет первое слово сообщения. Если оно не совпадает с кодовым словом,
-                    сообщение удаляется и дальше работают ступени санкций.
+                    Бот проверяет первое слово объявления длиной от 90 символов. Если оно не
+                    совпадает с кодовым словом, объявление удаляется и дальше работают ступени
+                    санкций.
                   </p>
 
                   <div className="settings-native-toggle text-filter-card">
@@ -3694,7 +3695,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           <small className="field__hint">{thematicCodewordError}</small>
                         ) : (
                           <small className="field__hint">
-                            Одно слово без пробелов. Регистр, # и двоеточие не важны.
+                            Одно слово без пробелов. Регистр, # и двоеточие не важны. Короткие
+                            сообщения до 89 символов не проверяются.
                           </small>
                         )}
                       </label>
