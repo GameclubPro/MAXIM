@@ -1103,12 +1103,23 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const hasRulesChanges = Boolean(
     rulesDraft && rulesQuery.data && rulesDraftSnapshot !== rulesServerSnapshot,
   );
+  const rulesPublishedMessageId =
+    rulesDraft?.publishedMessageId ?? rulesQuery.data?.publishedMessageId ?? null;
   const rulesPublishedUrl = rulesDraft?.publishedUrl ?? rulesQuery.data?.publishedUrl ?? null;
-  const hasPublishedRules = Boolean(rulesPublishedUrl);
+  const hasPublishedRules = Boolean(rulesPublishedMessageId || rulesPublishedUrl);
+  const hasPublishedRulesLink = Boolean(rulesPublishedUrl);
   const rulesImagePreviewUrl =
     rulesDraft?.imageBase64 && rulesDraft.imageMimeType
       ? `data:${rulesDraft.imageMimeType};base64,${rulesDraft.imageBase64}`
       : '';
+  const rulesPreviewText = useMemo(() => {
+    const source = rulesDraft?.text.trim() ?? '';
+    if (!source) {
+      return 'Опишите, что можно публиковать в этом чате, как оформлять объявления и что бот будет удалять.';
+    }
+
+    return source.length > 180 ? `${source.slice(0, 180).trimEnd()}…` : source;
+  }, [rulesDraft?.text]);
 
   const saveMutation = useMutation({
     mutationFn: (payload: ChatSettings) => api.updateSettings(chatId ?? '', payload),
@@ -1166,7 +1177,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       pushToast({
         tone: 'success',
         title: 'Правила опубликованы',
-        description: 'Ссылка на пост сохранена и доступна для кнопок в блоках.',
+        description: result.url
+          ? 'Ссылка на пост сохранена и доступна для кнопок в блоках.'
+          : 'Пост отправлен в чат. Если MAX не дал прямую ссылку, кнопка «Правила» всё равно будет работать внутри чата.',
       });
     },
     onError: (error) => {
@@ -2190,10 +2203,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const rulesPublishedAtLabel = formatRemovalDateTime(
     rulesDraft?.publishedAt ?? rulesQuery.data?.publishedAt ?? null,
   );
-  const rulesHeaderSummary = rulesPublishedUrl
+  const rulesHeaderSummary = hasPublishedRules
     ? rulesPublishedAtLabel
-      ? `Пост опубликован · ${rulesPublishedAtLabel}`
-      : 'Пост опубликован'
+      ? `Опубликовано · ${rulesPublishedAtLabel}`
+      : 'Опубликовано'
     : rulesDraft?.text.trim()
       ? `Черновик · ${rulesDraft.text.trim().length}/${MAX_CHAT_RULES_TEXT_LENGTH}`
       : 'Не настроено';
@@ -3036,149 +3049,275 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 className={cn('settings-section__collapse', expandedSections.rules && 'is-open')}
               >
                 <div className="settings-section__collapse-inner">
-                  <p className="settings-native-toggle__hint">
-                    Бот публикует отдельный пост с правилами в этот чат и сохраняет ссылку на него
-                    для кнопок в других блоках.
-                  </p>
+                  <div className="rules-studio">
+                    <div className="rules-studio__hero">
+                      <div className="rules-studio__eyebrow">Rules Studio</div>
+                      <h4>Соберите отдельный пост с правилами для этого чата</h4>
+                      <p>
+                        Подготовьте текст, добавьте одну картинку и опубликуйте пост. После этого
+                        кнопку «Правила» можно прикреплять к ответам бота в других блоках.
+                      </p>
 
-                  {rulesQuery.isLoading ? (
-                    <p className="allowlist-empty">Загрузка правил...</p>
-                  ) : null}
+                      <div className="rules-studio__meta">
+                        <span
+                          className={cn(
+                            'chip',
+                            hasPublishedRules
+                              ? 'chip--success'
+                              : rulesDraft?.text.trim()
+                                ? 'chip--warning'
+                                : undefined,
+                          )}
+                        >
+                          {hasPublishedRules
+                            ? 'Опубликовано'
+                            : rulesDraft?.text.trim()
+                              ? 'Черновик'
+                              : 'Пусто'}
+                        </span>
+                        <span className="chip">
+                          {rulesDraft?.text.length ?? 0}/{MAX_CHAT_RULES_TEXT_LENGTH}
+                        </span>
+                        <span className="chip">
+                          {hasPublishedRulesLink
+                            ? 'Кнопка с ссылкой'
+                            : hasPublishedRules
+                              ? 'Кнопка в чате'
+                              : 'Кнопка заблокирована'}
+                        </span>
+                      </div>
+                    </div>
 
-                  {rulesQuery.error ? (
-                    <p className="allowlist-empty allowlist-empty--error">
-                      Ошибка: {formatApiError(rulesQuery.error)}
-                    </p>
-                  ) : null}
+                    {rulesQuery.isLoading ? (
+                      <p className="allowlist-empty">Загрузка правил...</p>
+                    ) : null}
 
-                  {!rulesQuery.isLoading && !rulesQuery.error && rulesDraft ? (
-                    <>
-                      <label
-                        className={cn(
-                          'field settings-text-field mailing-message-field',
-                          rulesTextError && 'field--error',
-                        )}
-                      >
-                        <div className="mailing-message-field__meta">
-                          <span className="field__label">Текст правил</span>
-                          <span className="chip">
-                            {rulesDraft.text.length}/{MAX_CHAT_RULES_TEXT_LENGTH}
-                          </span>
-                        </div>
-                        <textarea
-                          rows={6}
-                          value={rulesDraft.text}
-                          onChange={(event) => setRulesFieldValue('text', event.target.value)}
-                          placeholder="Напишите правила чата. Этот текст попадет в опубликованный пост."
-                        />
-                        {rulesTextError ? (
-                          <small className="field__hint">{rulesTextError}</small>
-                        ) : (
-                          <small className="field__hint">
-                            Текст обязателен при публикации. Черновик сохраняется автоматически.
-                          </small>
-                        )}
-                      </label>
+                    {rulesQuery.error ? (
+                      <p className="allowlist-empty allowlist-empty--error">
+                        Ошибка: {formatApiError(rulesQuery.error)}
+                      </p>
+                    ) : null}
 
-                      <div
-                        className={cn(
-                          'mailing-option-card',
-                          Boolean(rulesDraft.imageBase64) && 'is-enabled',
-                          rulesImageError && 'field--error',
-                        )}
-                      >
-                        <div className="mailing-option-card__head">
-                          <div className="mailing-option-card__title-wrap">
-                            <span className="mailing-option-card__title">Картинка</span>
-                            <small className="mailing-option-card__subtitle">
-                              Одна картинка до 1 MB. Необязательно.
-                            </small>
-                          </div>
-
-                          <div className="mailing-image-actions">
-                            <label className="mailing-image-picker">
-                              <input
-                                type="file"
-                                accept="image/*"
-                                onChange={(event) => {
-                                  void handleRulesImageChange(event.target.files?.[0] ?? null);
-                                  event.currentTarget.value = '';
-                                }}
-                              />
-                              {rulesDraft.imageBase64 ? 'Заменить' : 'Добавить'}
-                            </label>
-                            {rulesDraft.imageBase64 ? (
-                              <button
-                                type="button"
-                                className="mailing-image-remove"
-                                onClick={clearRulesImage}
+                    {!rulesQuery.isLoading && !rulesQuery.error && rulesDraft ? (
+                      <>
+                        <StatusState
+                          tone={
+                            hasPublishedRules
+                              ? 'success'
+                              : rulesDraft.text.trim()
+                                ? 'warning'
+                                : 'neutral'
+                          }
+                          title={
+                            hasPublishedRules
+                              ? 'Пост с правилами готов'
+                              : 'Сначала подготовьте черновик правил'
+                          }
+                          description={
+                            hasPublishedRulesLink
+                              ? rulesPublishedAtLabel
+                                ? `Последняя публикация: ${rulesPublishedAtLabel}. Ссылка на пост сохранена.`
+                                : 'Пост опубликован, ссылка на него сохранена.'
+                              : hasPublishedRules
+                                ? 'Пост уже отправлен в чат. Если MAX не даёт прямую ссылку на сообщение, кнопка «Правила» будет работать прямо внутри чата.'
+                                : 'Черновик сохраняется автоматически. Опубликовать можно в любой момент отдельной кнопкой.'
+                          }
+                          action={
+                            rulesPublishedUrl ? (
+                              <a
+                                href={rulesPublishedUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="rules-status-link"
                               >
-                                Убрать
-                              </button>
-                            ) : null}
-                          </div>
-                        </div>
+                                Открыть пост
+                              </a>
+                            ) : null
+                          }
+                        />
 
-                        {rulesImageError ? (
-                          <small className="field__hint">{rulesImageError}</small>
-                        ) : null}
-
-                        {rulesImagePreviewUrl ? (
-                          <div className="mailing-option-card__body">
-                            <div className="mailing-image-preview">
-                              <img
-                                src={rulesImagePreviewUrl}
-                                alt="Предпросмотр картинки правил"
-                                className="broadcast-image-preview"
+                        <div className="rules-studio__layout">
+                          <div className="rules-studio__editor">
+                            <label
+                              className={cn(
+                                'field settings-text-field mailing-message-field',
+                                'rules-editor-field',
+                                rulesTextError && 'field--error',
+                              )}
+                            >
+                              <div className="mailing-message-field__meta">
+                                <span className="field__label">Текст правил</span>
+                                <span className="chip">
+                                  {rulesDraft.text.length}/{MAX_CHAT_RULES_TEXT_LENGTH}
+                                </span>
+                              </div>
+                              <textarea
+                                rows={7}
+                                value={rulesDraft.text}
+                                onChange={(event) => setRulesFieldValue('text', event.target.value)}
+                                placeholder="Напишите правила чата. Этот текст попадет в опубликованный пост."
                               />
-                              <small>Предпросмотр</small>
+                              {rulesTextError ? (
+                                <small className="field__hint">{rulesTextError}</small>
+                              ) : (
+                                <small className="field__hint">
+                                  Текст обязателен при публикации. Черновик сохраняется
+                                  автоматически.
+                                </small>
+                              )}
+                            </label>
+
+                            <div
+                              className={cn(
+                                'rules-media-card',
+                                Boolean(rulesDraft.imageBase64) && 'is-enabled',
+                                rulesImageError && 'field--error',
+                              )}
+                            >
+                              <div className="rules-media-card__head">
+                                <div className="rules-media-card__title-wrap">
+                                  <span className="rules-media-card__title">Обложка поста</span>
+                                  <small className="rules-media-card__subtitle">
+                                    Одна картинка до 1 MB. Можно публиковать и без неё.
+                                  </small>
+                                </div>
+
+                                <div className="rules-media-card__actions">
+                                  <label className="rules-upload-button">
+                                    <input
+                                      type="file"
+                                      accept="image/*"
+                                      onChange={(event) => {
+                                        void handleRulesImageChange(
+                                          event.target.files?.[0] ?? null,
+                                        );
+                                        event.currentTarget.value = '';
+                                      }}
+                                    />
+                                    {rulesDraft.imageBase64 ? 'Заменить фото' : 'Добавить фото'}
+                                  </label>
+                                  {rulesDraft.imageBase64 ? (
+                                    <button
+                                      type="button"
+                                      className="rules-remove-button"
+                                      onClick={clearRulesImage}
+                                    >
+                                      Убрать
+                                    </button>
+                                  ) : null}
+                                </div>
+                              </div>
+
+                              {rulesImageError ? (
+                                <small className="field__hint">{rulesImageError}</small>
+                              ) : null}
+
+                              {rulesImagePreviewUrl ? (
+                                <div className="rules-media-card__preview">
+                                  <img
+                                    src={rulesImagePreviewUrl}
+                                    alt="Предпросмотр картинки правил"
+                                    className="broadcast-image-preview"
+                                  />
+                                  <small>
+                                    Бот отправит этот пост как отдельную карточку в чат.
+                                  </small>
+                                </div>
+                              ) : (
+                                <p className="rules-media-card__hint">
+                                  Фото помогает выделить правила в ленте и делает кнопку «Правила»
+                                  заметнее для новых участников.
+                                </p>
+                              )}
                             </div>
                           </div>
-                        ) : (
-                          <p className="mailing-option-card__hint">
-                            Добавьте картинку, если хотите выделить пост с правилами в ленте.
-                          </p>
-                        )}
-                      </div>
 
-                      <div className="mailing-action-bar">
-                        {rulesPublishedUrl ? (
-                          <div className="field__hint">
-                            Последний пост:{' '}
-                            <a href={rulesPublishedUrl} target="_blank" rel="noreferrer">
-                              открыть
-                            </a>
-                            {rulesDraft.publishedAt
-                              ? ` · ${formatRemovalDateTime(rulesDraft.publishedAt)}`
-                              : ''}
+                          <div className="rules-preview-card">
+                            <div className="rules-preview-card__eyebrow">Как это выглядит</div>
+                            <div className="rules-preview-card__shell">
+                              <div className="rules-preview-card__message">
+                                <div className="rules-preview-card__message-head">
+                                  <span className="rules-preview-card__author">Майор Максимов</span>
+                                  <span className="rules-preview-card__badge">Правила</span>
+                                </div>
+                                <p>{rulesPreviewText}</p>
+                                {rulesImagePreviewUrl ? (
+                                  <img
+                                    src={rulesImagePreviewUrl}
+                                    alt="Макет поста с правилами"
+                                    className="rules-preview-card__image"
+                                  />
+                                ) : (
+                                  <div className="rules-preview-card__image-placeholder">
+                                    Картинка не добавлена
+                                  </div>
+                                )}
+                              </div>
+                              <div className="rules-preview-card__button">Правила</div>
+                            </div>
+                            <p className="rules-preview-card__hint">
+                              После публикации бот сможет прикреплять кнопку «Правила» к своим
+                              ответам в выбранных блоках.
+                            </p>
                           </div>
-                        ) : (
-                          <div className="field__hint">
-                            После публикации ссылка автоматически сохранится и станет доступна для
-                            тумблеров «Прикрепить правила».
-                          </div>
-                        )}
+                        </div>
 
-                        <button
-                          type="button"
-                          className="button button--accent mailing-action-bar__send"
-                          onClick={() => void handlePublishRules()}
-                          disabled={
-                            !rulesDraft.text.trim() ||
-                            isPublishingRules ||
-                            rulesQuery.isLoading ||
-                            Boolean(rulesQuery.error)
-                          }
-                        >
-                          {isPublishingRules
-                            ? 'Публикуем...'
-                            : isSavingRules && hasRulesChanges
-                              ? 'Сохраняем черновик...'
-                              : 'Опубликовать правила'}
-                        </button>
-                      </div>
-                    </>
-                  ) : null}
+                        <div className="rules-action-panel">
+                          <div className="rules-action-panel__content">
+                            {rulesPublishedUrl ? (
+                              <div className="rules-link-row">
+                                <span>Последний пост доступен по ссылке.</span>
+                                <a
+                                  href={rulesPublishedUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="rules-published-link"
+                                >
+                                  Открыть
+                                </a>
+                              </div>
+                            ) : hasPublishedRules ? (
+                              <div className="rules-link-row">
+                                MAX не дал прямую ссылку на сообщение, поэтому кнопка «Правила»
+                                будет открывать правила прямо внутри чата.
+                              </div>
+                            ) : (
+                              <div className="rules-link-row">
+                                После публикации тумблеры «Прикрепить правила» в других блоках
+                                станут активными.
+                              </div>
+                            )}
+
+                            {hasRulesChanges ? (
+                              <div className="rules-action-panel__draft-chip">
+                                <span className="chip chip--warning">
+                                  {isSavingRules ? 'Сохраняем черновик...' : 'Черновик обновлён'}
+                                </span>
+                              </div>
+                            ) : null}
+                          </div>
+
+                          <button
+                            type="button"
+                            className="button button--accent rules-action-panel__publish"
+                            onClick={() => void handlePublishRules()}
+                            disabled={
+                              !rulesDraft.text.trim() ||
+                              isPublishingRules ||
+                              rulesQuery.isLoading ||
+                              Boolean(rulesQuery.error)
+                            }
+                          >
+                            {isPublishingRules
+                              ? 'Публикуем...'
+                              : isSavingRules && hasRulesChanges
+                                ? 'Сохраняем черновик...'
+                                : 'Опубликовать правила'}
+                          </button>
+                        </div>
+                      </>
+                    ) : null}
+                  </div>
                 </div>
               </div>
             </GlassCard>

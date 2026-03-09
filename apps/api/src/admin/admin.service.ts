@@ -735,7 +735,7 @@ export class AdminService {
       }
     }
 
-    let published: { messageId: string; url: string };
+    let published: { messageId: string; url: string | null };
     try {
       published = await this.publishRulesMessageWithRetry(
         chatId,
@@ -1519,7 +1519,7 @@ export class AdminService {
     chatId: string,
     text: string,
     options: Pick<MaxSendMessageOptions, 'imagePayload'> | undefined,
-  ): Promise<{ messageId: string; url: string }> {
+  ): Promise<{ messageId: string; url: string | null }> {
     let lastError: unknown = null;
     const attempts = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length + 1;
 

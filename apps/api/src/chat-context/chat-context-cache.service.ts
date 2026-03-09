@@ -11,6 +11,7 @@ export type ChatContext = {
   domainAllowlist: string[];
   adminUserIds: string[];
   rulesPublishedUrl: string | null;
+  rulesPublishedMessageId: string | null;
 };
 
 @Injectable()
@@ -32,7 +33,7 @@ export class ChatContextCacheService implements OnModuleDestroy {
   }
 
   static cacheKey(chatId: string): string {
-    return `chat:context:v2:${chatId}`;
+    return `chat:context:v3:${chatId}`;
   }
 
   async getChatContext(chatId: string, chatTitle?: string | null): Promise<ChatContext> {
@@ -72,6 +73,7 @@ export class ChatContextCacheService implements OnModuleDestroy {
         rules: {
           select: {
             publishedUrl: true,
+            publishedMessageId: true,
           },
         },
         domains: {
@@ -105,6 +107,7 @@ export class ChatContextCacheService implements OnModuleDestroy {
       domainAllowlist: (chat.domains ?? []).map((item) => item.domain),
       adminUserIds: (chat.admins ?? []).map((item) => item.userId),
       rulesPublishedUrl: chat.rules?.publishedUrl ?? null,
+      rulesPublishedMessageId: chat.rules?.publishedMessageId ?? null,
     };
 
     await this.redis.set(

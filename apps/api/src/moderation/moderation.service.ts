@@ -60,11 +60,17 @@ type ManagedChannelContext = {
   adminUserIds: string[];
 };
 
+type RulesButtonReference = {
+  publishedUrl: string | null;
+  publishedMessageId: string | null;
+};
+
 type ChannelDialogType = 'comments' | 'suggest';
 
 const DEFAULT_BAN_DURATION_HOURS = 6;
 const DEFAULT_BOT_BUTTON_TEXT = 'Открыть';
 const RULES_BOT_BUTTON_TEXT = 'Правила';
+const RULES_CALLBACK_PAYLOAD = 'rules:open';
 const DEFAULT_BOT_MESSAGES_DELETE_DELAY_MINUTES = 2;
 const BOT_MESSAGES_DELETE_DELAY_MIN_MINUTES = 1;
 const BOT_MESSAGES_DELETE_DELAY_MAX_MINUTES = 60;
@@ -323,6 +329,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const callbackPayload = this.extractCallbackPayload(update);
+    if (callbackPayload === RULES_CALLBACK_PAYLOAD) {
+      await this.handleRulesCallback(chatId, this.extractCallbackId(update));
+      return;
+    }
+
     const userLabel = this.formatUserLabel(senderName);
     const mode = this.systemModeService?.getSnapshot() ?? {
       mode: 'normal',
@@ -345,6 +357,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const chat = await this.loadChatContext(chatId, chatTitle);
     const settings = this.applyDegradeSettings(chat.settings, degradeMode);
     const rulesPublishedUrl = chat.rulesPublishedUrl;
+    const rulesPublishedMessageId = chat.rulesPublishedMessageId;
     const globalUserBlacklistEnabled = await this.isGlobalUserBlacklistEnabled(
       settings.globalUserBlacklistEnabled,
     );
@@ -419,6 +432,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           greetingBotButtonText: settings.greetingBotButtonText,
           greetingRulesButtonEnabled: settings.greetingRulesButtonEnabled,
           rulesPublishedUrl,
+          rulesPublishedMessageId,
           deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
           deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
           excludedUserIds: excludedGreetingUserIds,
@@ -588,6 +602,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         duplicateBotButtonText: settings.duplicateBotButtonText,
         duplicateRulesButtonEnabled: settings.duplicateRulesButtonEnabled,
         rulesPublishedUrl,
+        rulesPublishedMessageId,
         deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
       });
@@ -610,6 +625,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         duplicateBotButtonText: settings.duplicateBotButtonText,
         duplicateRulesButtonEnabled: settings.duplicateRulesButtonEnabled,
         rulesPublishedUrl,
+        rulesPublishedMessageId,
         deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
       });
@@ -678,11 +694,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const linkMessageOptions =
       topViolation.ruleCode === 'LINK_BLOCKED'
         ? this.buildBotMessageOptions(
+            chatId,
             settings.linkBotButtonEnabled,
             settings.linkBotButtonUrl,
             settings.linkBotButtonText,
             settings.linkRulesButtonEnabled,
             rulesPublishedUrl,
+            rulesPublishedMessageId,
           )
         : null;
     const linkViolationCount24h =
@@ -698,29 +716,35 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const textFilterMessageOptions =
       topViolation.ruleCode === 'COMMERCIAL_AD'
         ? this.buildBotMessageOptions(
+            chatId,
             settings.textFiltersBotButtonEnabled,
             settings.textFiltersBotButtonUrl,
             settings.textFiltersBotButtonText,
             settings.textFiltersRulesButtonEnabled,
             rulesPublishedUrl,
+            rulesPublishedMessageId,
           )
         : null;
     const limitsMessageOptions = isMessageLimitsHit
       ? this.buildBotMessageOptions(
+          chatId,
           settings.messageLimitsBotButtonEnabled,
           settings.messageLimitsBotButtonUrl,
           settings.messageLimitsBotButtonText,
           settings.messageLimitsRulesButtonEnabled,
           rulesPublishedUrl,
+          rulesPublishedMessageId,
         )
       : null;
     const topicMessageOptions = isTopicFilterHit
       ? this.buildBotMessageOptions(
+          chatId,
           settings.thematicFiltersBotButtonEnabled,
           settings.thematicFiltersBotButtonUrl,
           settings.thematicFiltersBotButtonText,
           settings.thematicFiltersRulesButtonEnabled,
           rulesPublishedUrl,
+          rulesPublishedMessageId,
         )
       : null;
     const textFilterViolationCount24h = isTextFilterHit
@@ -1142,6 +1166,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     duplicateBotButtonText: string;
     duplicateRulesButtonEnabled: boolean;
     rulesPublishedUrl: string | null;
+    rulesPublishedMessageId: string | null;
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
   }) {
@@ -1161,6 +1186,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       duplicateBotButtonText,
       duplicateRulesButtonEnabled,
       rulesPublishedUrl,
+      rulesPublishedMessageId,
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
     } = params;
@@ -1208,11 +1234,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const duplicateMessageOptions = this.buildBotMessageOptions(
+      chatId,
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
       duplicateBotButtonText,
       duplicateRulesButtonEnabled,
       rulesPublishedUrl,
+      rulesPublishedMessageId,
     );
 
     if (duplicateBotMessageEnabled && decision.action !== 'BAN') {
@@ -1292,6 +1320,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     duplicateBotButtonText: string;
     duplicateRulesButtonEnabled: boolean;
     rulesPublishedUrl: string | null;
+    rulesPublishedMessageId: string | null;
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
   }) {
@@ -1310,6 +1339,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       duplicateBotButtonText,
       duplicateRulesButtonEnabled,
       rulesPublishedUrl,
+      rulesPublishedMessageId,
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
     } = params;
@@ -1356,11 +1386,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const duplicateMessageOptions = this.buildBotMessageOptions(
+      chatId,
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
       duplicateBotButtonText,
       duplicateRulesButtonEnabled,
       rulesPublishedUrl,
+      rulesPublishedMessageId,
     );
 
     if (duplicateBotMessageEnabled) {
@@ -2509,22 +2541,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private buildBotMessageOptions(
+    chatId: string,
     buttonEnabled: boolean,
     buttonUrl: string,
     buttonText: string,
     rulesButtonEnabled = false,
     rulesPublishedUrl: string | null = null,
+    rulesPublishedMessageId: string | null = null,
   ): MaxSendMessageOptions | null {
-    const buttons: MaxLinkButton[] = [];
+    const buttons: MaxMessageButton[] = [];
     const primaryButton = this.buildLinkButton(buttonEnabled, buttonUrl, buttonText);
     if (primaryButton) {
       buttons.push(primaryButton);
     }
 
-    const rulesButton = this.buildLinkButton(
+    const rulesButton = this.buildRulesButton(
+      chatId,
       rulesButtonEnabled,
-      rulesPublishedUrl ?? '',
-      RULES_BOT_BUTTON_TEXT,
+      rulesPublishedUrl,
+      rulesPublishedMessageId,
     );
     if (rulesButton) {
       buttons.push(rulesButton);
@@ -2534,7 +2569,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
 
-    if (buttons.length === 1) {
+    if (buttons.length === 1 && this.isLinkButton(buttons[0])) {
       return {
         button: buttons[0],
       };
@@ -2565,6 +2600,40 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  private buildRulesButton(
+    chatId: string,
+    buttonEnabled: boolean,
+    publishedUrl: string | null,
+    publishedMessageId: string | null,
+  ): MaxMessageButton | null {
+    if (!buttonEnabled) {
+      return null;
+    }
+
+    const directLinkButton = this.buildLinkButton(
+      Boolean(publishedUrl),
+      publishedUrl ?? '',
+      RULES_BOT_BUTTON_TEXT,
+    );
+    if (directLinkButton) {
+      return directLinkButton;
+    }
+
+    if (!chatId.trim() || !publishedMessageId?.trim()) {
+      return null;
+    }
+
+    return {
+      type: 'callback',
+      text: RULES_BOT_BUTTON_TEXT,
+      payload: RULES_CALLBACK_PAYLOAD,
+    };
+  }
+
+  private isLinkButton(button: MaxMessageButton): button is MaxLinkButton {
+    return !('type' in button) || button.type === 'link';
+  }
+
   private normalizeBotButtonUrl(value: string): string | null {
     const normalized = typeof value === 'string' ? value.trim() : '';
     if (!normalized) {
@@ -2590,6 +2659,40 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return normalized.slice(0, 32);
+  }
+
+  private decodeRulesImageBase64(value: string): Buffer {
+    const normalized = value.trim().replace(/^data:[^;]+;base64,/, '');
+    if (!normalized) {
+      throw new Error('Rules image is empty');
+    }
+
+    const imageBuffer = Buffer.from(normalized, 'base64');
+    if (imageBuffer.length === 0) {
+      throw new Error('Rules image is empty');
+    }
+
+    return imageBuffer;
+  }
+
+  private resolveRulesImageFileName(fileName: string, mimeType: string): string {
+    const trimmed = fileName.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+
+    const normalizedMimeType = mimeType.trim().toLowerCase();
+    if (normalizedMimeType === 'image/png') {
+      return 'chat-rules.png';
+    }
+    if (normalizedMimeType === 'image/webp') {
+      return 'chat-rules.webp';
+    }
+    if (normalizedMimeType === 'image/gif') {
+      return 'chat-rules.gif';
+    }
+
+    return 'chat-rules.jpg';
   }
 
   private async countRecentLinkViolations(chatId: string, userId: string): Promise<number> {
@@ -2977,6 +3080,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     greetingBotButtonText: string;
     greetingRulesButtonEnabled: boolean;
     rulesPublishedUrl: string | null;
+    rulesPublishedMessageId: string | null;
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
     excludedUserIds: ReadonlySet<string>;
@@ -2992,6 +3096,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       greetingBotButtonText,
       greetingRulesButtonEnabled,
       rulesPublishedUrl,
+      rulesPublishedMessageId,
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
       excludedUserIds,
@@ -3007,11 +3112,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const greetingMessageOptions = this.buildBotMessageOptions(
+      chatId,
       greetingBotButtonEnabled,
       greetingBotButtonUrl,
       greetingBotButtonText,
       greetingRulesButtonEnabled,
       rulesPublishedUrl,
+      rulesPublishedMessageId,
     );
 
     for (const member of joinedMembers) {
@@ -3726,7 +3833,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           nightModeRulesButtonEnabled: true,
         },
       });
-      const rulesByChatId = await this.loadRulesPublishedUrlMap(
+      const rulesByChatId = await this.loadRulesButtonReferenceMap(
         nightModeChats.map((item) => item.chatId),
       );
 
@@ -3754,12 +3861,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           timezone,
           settings.nightModeBotMessageText,
         );
+        const nightModeRulesReference = rulesByChatId.get(settings.chatId);
         const nightModeMessageOptions = this.buildBotMessageOptions(
+          settings.chatId,
           settings.nightModeBotButtonEnabled,
           settings.nightModeBotButtonUrl,
           settings.nightModeBotButtonText,
           settings.nightModeRulesButtonEnabled,
-          rulesByChatId.get(settings.chatId) ?? null,
+          nightModeRulesReference?.publishedUrl ?? null,
+          nightModeRulesReference?.publishedMessageId ?? null,
         );
 
         try {
@@ -4088,6 +4198,59 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         'Failed to answer callback',
       );
     }
+  }
+
+  private async handleRulesCallback(chatId: string, callbackId: string | null): Promise<void> {
+    const publishedRules = await this.prisma.chatRules?.findUnique?.({
+      where: { chatId },
+      select: {
+        text: true,
+        imageBase64: true,
+        imageMimeType: true,
+        imageFileName: true,
+        publishedMessageId: true,
+      },
+    });
+
+    if (!publishedRules?.publishedMessageId || !publishedRules.text.trim()) {
+      if (callbackId) {
+        await this.answerCallbackSafe(callbackId, 'Правила ещё не опубликованы');
+      }
+      return;
+    }
+
+    if (callbackId) {
+      await this.answerCallbackSafe(callbackId, 'Показываю правила');
+    }
+
+    let imagePayload: Record<string, unknown> | undefined;
+    if (publishedRules.imageBase64.trim() && publishedRules.imageMimeType.trim()) {
+      try {
+        imagePayload = await this.maxClient.uploadImage(
+          this.decodeRulesImageBase64(publishedRules.imageBase64),
+          this.resolveRulesImageFileName(
+            publishedRules.imageFileName,
+            publishedRules.imageMimeType,
+          ),
+          publishedRules.imageMimeType.trim(),
+        );
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to upload rules image for callback delivery',
+        );
+      }
+    }
+
+    await this.maxClient.sendMessage(
+      chatId,
+      publishedRules.text.trim(),
+      imagePayload ? { imagePayload } : undefined,
+      { immediate: true },
+    );
   }
 
   private extractCallbackNode(update: MaxUpdate): Record<string, unknown> | null {
@@ -5459,6 +5622,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     domainAllowlist: string[];
     adminUserIds: string[];
     rulesPublishedUrl: string | null;
+    rulesPublishedMessageId: string | null;
   }> {
     if (this.chatContextCache) {
       const cached = await this.chatContextCache.getChatContext(chatId, chatTitle);
@@ -5467,6 +5631,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         domainAllowlist: cached.domainAllowlist,
         adminUserIds: cached.adminUserIds,
         rulesPublishedUrl: cached.rulesPublishedUrl ?? null,
+        rulesPublishedMessageId: cached.rulesPublishedMessageId ?? null,
       };
     }
 
@@ -5493,6 +5658,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         rules: {
           select: {
             publishedUrl: true,
+            publishedMessageId: true,
           },
         },
         domains: {
@@ -5520,10 +5686,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       domainAllowlist: (chat.domains ?? []).map((item) => item.domain),
       adminUserIds: (chat.admins ?? []).map((item) => item.userId),
       rulesPublishedUrl: chat.rules?.publishedUrl ?? null,
+      rulesPublishedMessageId: chat.rules?.publishedMessageId ?? null,
     };
   }
 
-  private async loadRulesPublishedUrlMap(chatIds: readonly string[]): Promise<Map<string, string>> {
+  private async loadRulesButtonReferenceMap(
+    chatIds: readonly string[],
+  ): Promise<Map<string, RulesButtonReference>> {
     const normalizedChatIds = Array.from(
       new Set(chatIds.map((item) => item.trim()).filter(Boolean)),
     );
@@ -5536,20 +5705,33 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId: {
           in: normalizedChatIds,
         },
-        publishedUrl: {
-          not: null,
-        },
+        OR: [{ publishedUrl: { not: null } }, { publishedMessageId: { not: null } }],
       },
       select: {
         chatId: true,
         publishedUrl: true,
+        publishedMessageId: true,
       },
     });
 
     return new Map(
       rows
-        .filter((row): row is { chatId: string; publishedUrl: string } => Boolean(row.publishedUrl))
-        .map((row) => [row.chatId, row.publishedUrl]),
+        .filter(
+          (
+            row,
+          ): row is {
+            chatId: string;
+            publishedUrl: string | null;
+            publishedMessageId: string | null;
+          } => Boolean(row.publishedUrl) || Boolean(row.publishedMessageId),
+        )
+        .map((row) => [
+          row.chatId,
+          {
+            publishedUrl: row.publishedUrl ?? null,
+            publishedMessageId: row.publishedMessageId ?? null,
+          },
+        ]),
     );
   }
 

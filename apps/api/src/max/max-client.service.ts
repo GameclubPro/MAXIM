@@ -50,7 +50,7 @@ export type MaxWebhookSubscription = {
 
 export type MaxPublishedMessage = {
   messageId: string;
-  url: string;
+  url: string | null;
 };
 
 export type MaxButtonIntent = 'default' | 'positive' | 'negative';
@@ -262,13 +262,9 @@ export class MaxClientService implements OnModuleDestroy {
 
     const sentMessage = await this.getMessageById(messageId);
     const resolvedUrl = sentMessage ? this.parseChatLink(sentMessage) : null;
-    if (!resolvedUrl) {
-      throw new Error(`MAX published message ${messageId} has no resolvable link`);
-    }
-
     return {
       messageId,
-      url: resolvedUrl,
+      url: resolvedUrl ?? null,
     };
   }
 

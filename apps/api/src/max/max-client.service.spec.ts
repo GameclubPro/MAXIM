@@ -209,6 +209,41 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('does not fail when MAX omits a direct message url for chat posts', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              mid: 'mid-rules-3',
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            data: {
+              messages: [
+                {
+                  body: { mid: 'mid-rules-3' },
+                },
+              ],
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.sendMessageImmediateWithResolvedLink('chat-1', 'Правила чата');
+
+    expect(result).toEqual({
+      messageId: 'mid-rules-3',
+      url: null,
+    });
+
+    await service.onModuleDestroy();
+  });
+
   it('parses official message snapshots with views and deduplicates pages', async () => {
     const latestTs = Date.parse('2026-03-07T09:00:00.000Z');
     const previousTs = Date.parse('2026-03-06T09:00:00.000Z');

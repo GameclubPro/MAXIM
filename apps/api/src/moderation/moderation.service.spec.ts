@@ -520,6 +520,36 @@ function createPrivateCallbackUpdate(payload: string): MaxUpdate {
   };
 }
 
+function createGroupRulesCallbackUpdate(): MaxUpdate {
+  return {
+    updateId: 'upd-group-rules-callback-1',
+    type: 'message_callback',
+    message: {
+      messageId: 'msg-group-rules-callback-1',
+      chatId: 'chat-1',
+      senderId: 'user-1',
+      senderName: 'Алексей',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'message_callback',
+      callback: {
+        callback_id: 'callback-rules-1',
+        payload: 'rules:open',
+        user: {
+          user_id: 'user-1',
+        },
+      },
+      message: {
+        recipient: {
+          chat_id: 'chat-1',
+        },
+      },
+    },
+  };
+}
+
 function createOldUpdate(): MaxUpdate {
   return {
     updateId: 'upd-old-1',
@@ -4888,6 +4918,7 @@ describe('ModerationService', () => {
             linkRulesButtonEnabled: true,
           }),
           rules: {
+            publishedMessageId: null,
             publishedUrl: null,
           },
           domains: [],
@@ -4932,6 +4963,113 @@ describe('ModerationService', () => {
       'chat-1',
       'Пользователю "Алексей" вынесено предупреждение за ссылку. В этом чате нельзя отправлять ссылки.',
       undefined,
+    );
+  });
+
+  it('uses callback rules button when the rules post has no public url', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            linkBotMessageEnabled: true,
+            linkWarnEnabled: true,
+            linkRulesButtonEnabled: true,
+          }),
+          rules: {
+            publishedMessageId: 'mid-rules-1',
+            publishedUrl: null,
+          },
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+        count: jest.fn().mockResolvedValue(2),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Link detected' }],
+      }),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      'Пользователю "Алексей" вынесено предупреждение за ссылку. В этом чате нельзя отправлять ссылки.',
+      {
+        buttons: [
+          [
+            {
+              type: 'callback',
+              text: 'Правила',
+              payload: 'rules:open',
+            },
+          ],
+        ],
+      },
+    );
+  });
+
+  it('sends published rules to chat when the rules callback button is pressed', async () => {
+    const prisma = {
+      chatRules: {
+        findUnique: jest.fn().mockResolvedValue({
+          text: '1. Без спама.\n2. Без ссылок.',
+          imageBase64: '',
+          imageMimeType: '',
+          imageFileName: '',
+          publishedMessageId: 'mid-rules-1',
+        }),
+      },
+    };
+    const maxClient = {
+      answerCallback: jest.fn(),
+      sendMessage: jest.fn(),
+      uploadImage: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createGroupRulesCallbackUpdate());
+
+    expect(maxClient.answerCallback).toHaveBeenCalledWith('callback-rules-1', 'Показываю правила');
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      '1. Без спама.\n2. Без ссылок.',
+      undefined,
+      { immediate: true },
     );
   });
 

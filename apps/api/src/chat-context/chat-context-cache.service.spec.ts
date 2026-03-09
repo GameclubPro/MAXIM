@@ -171,6 +171,7 @@ describe('ChatContextCacheService', () => {
       domainAllowlist: ['example.com'],
       adminUserIds: ['user-1'],
       rulesPublishedUrl: null,
+      rulesPublishedMessageId: null,
     });
     expect(redisInstance.set).toHaveBeenCalledTimes(1);
   });

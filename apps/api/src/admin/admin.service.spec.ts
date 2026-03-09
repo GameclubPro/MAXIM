@@ -58,6 +58,7 @@ function createPrismaMock() {
         createdAt: new Date('2026-03-01T00:00:00.000Z'),
         updatedAt: new Date('2026-03-01T00:00:00.000Z'),
       }),
+      findUnique: jest.fn().mockResolvedValue(null),
       update: jest.fn().mockResolvedValue(undefined),
     },
     channelStatsSyncState: {
@@ -1089,6 +1090,64 @@ describe('AdminService chat rules', () => {
       publishedAt: expect.any(String),
     });
     expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
+  });
+
+  it('publishes rules even when MAX does not return a direct post link', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatRules.upsert.mockResolvedValue({
+      id: 'rules-1',
+      chatId: 'chat-1',
+      text: 'Правила без прямой ссылки.',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      publishedMessageId: null,
+      publishedUrl: null,
+      publishedAt: null,
+      createdAt: new Date('2026-03-09T09:00:00.000Z'),
+      updatedAt: new Date('2026-03-09T09:05:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'mid-rules-3',
+        url: null,
+      }),
+      uploadImage: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const published = await service.publishRules('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(prisma.chatRules.update).toHaveBeenCalledWith({
+      where: { chatId: 'chat-1' },
+      data: expect.objectContaining({
+        publishedMessageId: 'mid-rules-3',
+        publishedUrl: null,
+        publishedAt: expect.any(Date),
+      }),
+    });
+    expect(published).toEqual({
+      chatId: 'chat-1',
+      messageId: 'mid-rules-3',
+      url: null,
+      publishedAt: expect.any(String),
+    });
   });
 });
 

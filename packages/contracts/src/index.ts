@@ -510,7 +510,8 @@ export const publishChatRulesResultSchema = z.object({
     .max(2_048)
     .refine((value) => isValidBotButtonUrl(value), {
       message: 'Укажите корректную ссылку на опубликованные правила.',
-    }),
+    })
+    .nullable(),
   publishedAt: z.string().datetime(),
 });
 export type PublishChatRulesResult = z.infer<typeof publishChatRulesResultSchema>;
