@@ -859,6 +859,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [rulesTextError, setRulesTextError] = useState('');
   const [rulesImageError, setRulesImageError] = useState('');
+  const [rulesPublishedUrlInput, setRulesPublishedUrlInput] = useState('');
+  const [rulesPublishedUrlError, setRulesPublishedUrlError] = useState('');
   const [domainInput, setDomainInput] = useState('');
   const [domainInputError, setDomainInputError] = useState('');
   const [scheduleDomain, setScheduleDomain] = useState<string | null>(null);
@@ -1054,6 +1056,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     setRulesDraft(rulesQuery.data);
     setRulesTextError('');
     setRulesImageError('');
+    setRulesPublishedUrlInput(rulesQuery.data.publishedUrl ?? '');
+    setRulesPublishedUrlError('');
   }, [rulesQuery.data]);
 
   useEffect(() => {
@@ -1154,6 +1158,28 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const mutateRules = saveRulesMutation.mutate;
   const mutateRulesAsync = saveRulesMutation.mutateAsync;
 
+  const saveRulesPublishedLinkMutation = useMutation({
+    mutationFn: (url: string) => api.updateRulesPublishedLink(chatId ?? '', url),
+    onSuccess: (saved) => {
+      setRulesDraft(saved);
+      setRulesPublishedUrlInput(saved.publishedUrl ?? '');
+      setRulesPublishedUrlError('');
+      queryClient.setQueryData(['rules', chatId], saved);
+      pushToast({
+        tone: 'success',
+        title: 'Ссылка на пост сохранена',
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось сохранить ссылку на пост',
+        description: formatApiError(error),
+      });
+    },
+  });
+  const isSavingRulesPublishedLink = saveRulesPublishedLinkMutation.isPending;
+
   const publishRulesMutation = useMutation({
     mutationFn: () => api.publishRules(chatId ?? ''),
     onSuccess: (result) => {
@@ -1164,6 +1190,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         publishedAt: result.publishedAt,
       });
       setRulesDraft(updated);
+      setRulesPublishedUrlInput(result.url ?? '');
+      setRulesPublishedUrlError('');
       queryClient.setQueryData(['rules', chatId], updated);
       pushToast({
         tone: 'success',
@@ -1433,6 +1461,23 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       });
     });
     setRulesImageError('');
+  }
+
+  function normalizePublishedPostLink(value: string): string | null {
+    const normalized = value.trim();
+    if (!normalized) {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(normalized);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return null;
+      }
+      return parsed.toString();
+    } catch {
+      return null;
+    }
   }
 
   function validateDraft(value: ChatSettings): ChatSettings | null {
@@ -1829,6 +1874,38 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     }
 
     publishRulesMutation.mutate();
+  }
+
+  async function handlePasteRulesPublishedUrl() {
+    if (!navigator.clipboard?.readText) {
+      setRulesPublishedUrlError('Буфер обмена недоступен. Вставьте ссылку вручную.');
+      return;
+    }
+
+    try {
+      const text = await navigator.clipboard.readText();
+      setRulesPublishedUrlInput(text.trim());
+      setRulesPublishedUrlError('');
+    } catch (error) {
+      setRulesPublishedUrlError(
+        error instanceof Error ? error.message : 'Не удалось прочитать ссылку из буфера.',
+      );
+    }
+  }
+
+  function handleSaveRulesPublishedUrl() {
+    if (!chatId || !hasPublishedRules) {
+      return;
+    }
+
+    const normalized = normalizePublishedPostLink(rulesPublishedUrlInput);
+    if (!normalized) {
+      setRulesPublishedUrlError('Вставьте корректную ссылку на опубликованный пост.');
+      return;
+    }
+
+    setRulesPublishedUrlError('');
+    saveRulesPublishedLinkMutation.mutate(normalized);
   }
 
   function handleSendBroadcast() {
@@ -3096,6 +3173,68 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             </a>
                           ) : null}
                         </div>
+
+                        {hasPublishedRules ? (
+                          <div className="settings-grid settings-grid--single">
+                            <label
+                              className={cn(
+                                'field settings-url-field',
+                                rulesPublishedUrlError && 'field--error',
+                              )}
+                            >
+                              <span className="field__label">Ссылка на опубликованный пост</span>
+                              <input
+                                type="url"
+                                inputMode="url"
+                                value={rulesPublishedUrlInput}
+                                onChange={(event) => {
+                                  setRulesPublishedUrlInput(event.target.value);
+                                  if (rulesPublishedUrlError) {
+                                    setRulesPublishedUrlError('');
+                                  }
+                                }}
+                                placeholder="https://max.ru/..."
+                              />
+                              {rulesPublishedUrlError ? (
+                                <small className="field__hint">{rulesPublishedUrlError}</small>
+                              ) : (
+                                <small className="field__hint">
+                                  Если MAX не отдал ссылку автоматически, откройте пост правил,
+                                  скопируйте ссылку и сохраните её здесь один раз.
+                                </small>
+                              )}
+                            </label>
+
+                            <div className="rules-action-panel">
+                              <div className="rules-action-panel__content">
+                                <span className="field__hint">
+                                  Эта ссылка используется в кнопке «Правила» у сообщений бота.
+                                </span>
+                              </div>
+
+                              <div className="settings-section-apply__confirm-actions">
+                                <button
+                                  type="button"
+                                  className="button button--ghost"
+                                  onClick={() => void handlePasteRulesPublishedUrl()}
+                                  disabled={isSavingRulesPublishedLink}
+                                >
+                                  Вставить из буфера
+                                </button>
+                                <button
+                                  type="button"
+                                  className="button button--accent"
+                                  onClick={handleSaveRulesPublishedUrl}
+                                  disabled={
+                                    isSavingRulesPublishedLink || !rulesPublishedUrlInput.trim()
+                                  }
+                                >
+                                  {isSavingRulesPublishedLink ? 'Сохраняем...' : 'Сохранить ссылку'}
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
 
                         <label
                           className={cn(
