@@ -54,19 +54,44 @@ function isValidBotButtonUrl(value: string): boolean {
   }
 }
 
-function isValidAllowlistLink(value: string): boolean {
+export function normalizeAllowlistLink(value: string): string | null {
   const raw = value.trim();
   if (!raw) {
-    return false;
+    return null;
   }
 
   const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  let parsed: URL;
   try {
-    const parsed = new URL(withScheme);
-    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+    parsed = new URL(withScheme);
   } catch {
-    return false;
+    return null;
   }
+
+  const protocol = parsed.protocol.toLowerCase();
+  if (protocol !== 'https:' && protocol !== 'http:') {
+    return null;
+  }
+
+  const hostname = parsed.hostname.toLowerCase();
+  if (!hostname) {
+    return null;
+  }
+
+  const shouldKeepPort =
+    parsed.port.length > 0 &&
+    !(
+      (protocol === 'https:' && parsed.port === '443') ||
+      (protocol === 'http:' && parsed.port === '80')
+    );
+  const port = shouldKeepPort ? `:${parsed.port}` : '';
+  const pathname = parsed.pathname === '/' ? '' : parsed.pathname;
+
+  return `${protocol}//${hostname}${port}${pathname}${parsed.search}${parsed.hash}`;
+}
+
+function isValidAllowlistLink(value: string): boolean {
+  return normalizeAllowlistLink(value) !== null;
 }
 
 function isValidBotButtonText(value: string): boolean {

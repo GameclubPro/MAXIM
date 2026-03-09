@@ -40,6 +40,7 @@ import {
   type PublishChatRulesResult,
   type SendBroadcastResult,
   type ChatSummary,
+  normalizeAllowlistLink,
   sendBroadcastRequestSchema,
   scheduleDomainRemovalRequestSchema,
 } from '@maxim/contracts';
@@ -2152,7 +2153,7 @@ export class AdminService {
     return Array.from(
       new Set(
         rows
-          .map((row: { domain: string }) => this.normalizeAllowlistLink(row.domain))
+          .map((row: { domain: string }) => normalizeAllowlistLink(row.domain))
           .filter((value): value is string => Boolean(value)),
       ),
     ).sort((left, right) => left.localeCompare(right));
@@ -2172,7 +2173,7 @@ export class AdminService {
 
     const byDomain = new Map<string, Date | null>();
     for (const row of rows) {
-      const normalizedDomain = this.normalizeAllowlistLink(row.domain);
+      const normalizedDomain = normalizeAllowlistLink(row.domain);
       if (!normalizedDomain) {
         continue;
       }
@@ -2228,9 +2229,9 @@ export class AdminService {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const normalized = this.normalizeAllowlistLink(parsed.data.domain);
+    const normalized = normalizeAllowlistLink(parsed.data.domain);
     if (!normalized) {
-      throw new BadRequestException('Invalid allowlist domain');
+      throw new BadRequestException('Invalid allowlist link');
     }
 
     await this.upsertNormalizedAllowlistDomain(chatId, normalized);
@@ -2258,14 +2259,14 @@ export class AdminService {
     source: AdminActionSource = 'miniapp',
   ) {
     await this.assertChatAdmin(chatId, user.userId);
-    const normalized = this.normalizeAllowlistLink(this.decodePathParam(domain));
+    const normalized = normalizeAllowlistLink(this.decodePathParam(domain));
     if (!normalized) {
-      throw new BadRequestException('Invalid allowlist domain');
+      throw new BadRequestException('Invalid allowlist link');
     }
 
     const matchingDomains = await this.findStoredAllowlistDomains(chatId, normalized);
     if (matchingDomains.length === 0) {
-      throw new BadRequestException('Domain not found in allowlist');
+      throw new BadRequestException('Link not found in allowlist');
     }
 
     await this.prisma.domainAllowlist.deleteMany({
@@ -2301,9 +2302,9 @@ export class AdminService {
     source: AdminActionSource = 'miniapp',
   ) {
     await this.assertChatAdmin(chatId, user.userId);
-    const normalizedDomain = this.normalizeAllowlistLink(this.decodePathParam(domain));
+    const normalizedDomain = normalizeAllowlistLink(this.decodePathParam(domain));
     if (!normalizedDomain) {
-      throw new BadRequestException('Invalid allowlist domain');
+      throw new BadRequestException('Invalid allowlist link');
     }
     const parsed = scheduleDomainRemovalRequestSchema.safeParse(body);
 
@@ -2327,7 +2328,7 @@ export class AdminService {
 
     const matchingDomains = await this.findStoredAllowlistDomains(chatId, normalizedDomain);
     if (matchingDomains.length === 0) {
-      throw new BadRequestException('Domain not found in allowlist');
+      throw new BadRequestException('Link not found in allowlist');
     }
 
     await this.prisma.domainAllowlist.updateMany({
@@ -2772,41 +2773,6 @@ export class AdminService {
     }
   }
 
-  private normalizeAllowlistLink(value: string): string | null {
-    const raw = value.trim();
-    if (!raw) {
-      return null;
-    }
-
-    const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
-    let parsed: URL;
-    try {
-      parsed = new URL(withScheme);
-    } catch {
-      return null;
-    }
-
-    const protocol = parsed.protocol.toLowerCase();
-    if (protocol !== 'http:' && protocol !== 'https:') {
-      return null;
-    }
-
-    const hostname = parsed.hostname.toLowerCase();
-    if (!hostname) {
-      return null;
-    }
-
-    const shouldKeepPort =
-      parsed.port.length > 0 &&
-      !(
-        (protocol === 'https:' && parsed.port === '443') ||
-        (protocol === 'http:' && parsed.port === '80')
-      );
-    const port = shouldKeepPort ? `:${parsed.port}` : '';
-
-    return `${hostname}${port}`.toLowerCase();
-  }
-
   private async upsertNormalizedAllowlistDomain(chatId: string, normalizedDomain: string) {
     const rows = await this.prisma.domainAllowlist.findMany({
       where: {
@@ -2822,7 +2788,7 @@ export class AdminService {
       .filter(
         (storedDomain) =>
           storedDomain !== normalizedDomain &&
-          this.normalizeAllowlistLink(storedDomain) === normalizedDomain,
+          normalizeAllowlistLink(storedDomain) === normalizedDomain,
       );
 
     await this.prisma.domainAllowlist.upsert({
@@ -2870,7 +2836,7 @@ export class AdminService {
 
     return rows
       .map((row: { domain: string }) => row.domain)
-      .filter((storedDomain) => this.normalizeAllowlistLink(storedDomain) === normalizedDomain);
+      .filter((storedDomain) => normalizeAllowlistLink(storedDomain) === normalizedDomain);
   }
 
   private mapChannelDialogAuditLog(

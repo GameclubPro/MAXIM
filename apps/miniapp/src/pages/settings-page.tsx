@@ -1,6 +1,7 @@
 import {
   chatRulesSchema,
   chatSettingsSchema,
+  normalizeAllowlistLink,
   type ChatRules,
   type ChatSettings,
   type DomainAllowlistEntry,
@@ -426,39 +427,6 @@ function formatApiError(error: unknown): string {
   }
 
   return rawMessage.trim() ? 'Не удалось выполнить запрос.' : 'Неизвестная ошибка.';
-}
-
-function normalizeAllowlistLink(value: string): string {
-  const raw = value.trim();
-  if (!raw) {
-    return '';
-  }
-
-  const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
-
-  try {
-    const parsed = new URL(withScheme);
-    const protocol = parsed.protocol.toLowerCase();
-    if (protocol !== 'http:' && protocol !== 'https:') {
-      return '';
-    }
-
-    const hostname = parsed.hostname.toLowerCase();
-    if (!hostname) {
-      return '';
-    }
-
-    const shouldKeepPort =
-      parsed.port.length > 0 &&
-      !(
-        (protocol === 'https:' && parsed.port === '443') ||
-        (protocol === 'http:' && parsed.port === '80')
-      );
-    const port = shouldKeepPort ? `:${parsed.port}` : '';
-    return `${hostname}${port}`.toLowerCase();
-  } catch {
-    return '';
-  }
 }
 
 function isValidHttpUrl(value: string): boolean {

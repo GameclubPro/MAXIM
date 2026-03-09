@@ -132,40 +132,40 @@ describe('RuleEngineService', () => {
       userId: 'u-1',
       text: 'ты блять иди на http://bad.com',
       settings: buildSettings(),
-      domainAllowlist: ['example.com'],
+      domainAllowlist: ['https://example.com'],
     });
 
     expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
     expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
   });
 
-  it('allows links from the same domain in ALLOWLIST_ONLY mode', async () => {
+  it('allows only exact allowlisted links in ALLOWLIST_ONLY mode', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const allowed = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'смотри https://max.ru/channel/news',
       settings: buildSettings(),
-      domainAllowlist: ['max.ru'],
+      domainAllowlist: ['https://max.ru/channel/news'],
     });
     const blocked = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'смотри https://example.org/channel/another',
+      text: 'смотри https://max.ru/channel/another',
       settings: buildSettings(),
-      domainAllowlist: ['max.ru'],
+      domainAllowlist: ['https://max.ru/channel/news'],
     });
 
     expect(allowed.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
     expect(blocked.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
   });
 
-  it('normalizes legacy allowlist entries with path to domain-only matching', async () => {
+  it('normalizes legacy allowlist entries to canonical full-link matching', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: 'смотри https://max.ru/another/path',
+      text: 'смотри https://max.ru/old/path?x=1',
       settings: buildSettings(),
       domainAllowlist: ['max.ru/old/path?x=1'],
     });
@@ -1378,7 +1378,7 @@ describe('RuleEngineService', () => {
         ...buildSettings(),
         linkPolicy: LinkPolicy.BLOCKLIST_ONLY,
       },
-      domainAllowlist: ['example.com'],
+      domainAllowlist: ['https://example.com/news'],
     });
 
     expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);

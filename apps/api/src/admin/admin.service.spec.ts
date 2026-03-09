@@ -861,13 +861,14 @@ describe('AdminService.getChannelStats', () => {
   });
 });
 
-describe('AdminService domain allowlist normalization', () => {
-  it('returns deduplicated domain-only allowlist', async () => {
+describe('AdminService allowlist normalization', () => {
+  it('returns deduplicated canonical links', async () => {
     const prisma = createPrismaMock();
     prisma.domainAllowlist.findMany.mockResolvedValue([
       { domain: 'max.ru/news', removeAfterAt: null },
-      { domain: 'https://max.ru/another?x=1', removeAfterAt: null },
+      { domain: 'https://max.ru/news', removeAfterAt: null },
       { domain: 'example.org', removeAfterAt: null },
+      { domain: 'https://EXAMPLE.org/', removeAfterAt: null },
     ]);
 
     const maxClient = {
@@ -891,13 +892,13 @@ describe('AdminService domain allowlist normalization', () => {
       chatTitle: null,
     });
 
-    expect(result).toEqual(['example.org', 'max.ru']);
+    expect(result).toEqual(['https://example.org', 'https://max.ru/news']);
   });
 
-  it('canonicalizes legacy domain rows with path when adding domain', async () => {
+  it('canonicalizes legacy link rows when adding a link', async () => {
     const prisma = createPrismaMock();
     prisma.domainAllowlist.findMany.mockResolvedValueOnce([
-      { domain: 'max.ru/old/path' },
+      { domain: 'max.ru/news' },
       { domain: 'another.org' },
     ]);
 
@@ -924,7 +925,7 @@ describe('AdminService domain allowlist normalization', () => {
         chatTitle: null,
       },
       {
-        domain: 'https://max.ru/new/path',
+        domain: 'https://max.ru/news',
       },
     );
 
@@ -932,12 +933,12 @@ describe('AdminService domain allowlist normalization', () => {
       where: {
         chatId_domain: {
           chatId: 'chat-1',
-          domain: 'max.ru',
+          domain: 'https://max.ru/news',
         },
       },
       create: {
         chatId: 'chat-1',
-        domain: 'max.ru',
+        domain: 'https://max.ru/news',
       },
       update: {
         removeAfterAt: null,
@@ -947,17 +948,17 @@ describe('AdminService domain allowlist normalization', () => {
       where: {
         chatId: 'chat-1',
         domain: {
-          in: ['max.ru/old/path'],
+          in: ['max.ru/news'],
         },
       },
     });
   });
 
-  it('removes canonical and legacy rows by normalized domain', async () => {
+  it('removes canonical and legacy rows by normalized link', async () => {
     const prisma = createPrismaMock();
     prisma.domainAllowlist.findMany.mockResolvedValue([
-      { domain: 'https://max.ru/news' },
-      { domain: 'max.ru' },
+      { domain: 'https://max.ru/news?x=1' },
+      { domain: 'max.ru/news?x=1' },
       { domain: 'example.org' },
     ]);
 
@@ -983,14 +984,14 @@ describe('AdminService domain allowlist normalization', () => {
         displayName: null,
         chatTitle: null,
       },
-      'https://max.ru/another/path?x=1',
+      'https://max.ru/news?x=1',
     );
 
     expect(prisma.domainAllowlist.deleteMany).toHaveBeenCalledWith({
       where: {
         chatId: 'chat-1',
         domain: {
-          in: ['https://max.ru/news', 'max.ru'],
+          in: ['https://max.ru/news?x=1', 'max.ru/news?x=1'],
         },
       },
     });

@@ -1,4 +1,5 @@
 import { Injectable } from '@nestjs/common';
+import { normalizeAllowlistLink } from '@maxim/contracts';
 import { CommercialAdsSensitivity, LinkPolicy, type ChatSettings } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { RedisCounterService } from './redis-counter.service';
@@ -1665,12 +1666,12 @@ export class RuleEngineService {
 
     const normalizedAllowlist = new Set(
       allowlist
-        .map((entry) => this.normalizeAllowlistLink(entry))
+        .map((entry) => normalizeAllowlistLink(entry))
         .filter((entry): entry is string => Boolean(entry)),
     );
 
     for (const link of links) {
-      const normalizedLink = this.normalizeAllowlistLink(link);
+      const normalizedLink = normalizeAllowlistLink(link);
       if (!normalizedLink) {
         continue;
       }
@@ -1692,40 +1693,6 @@ export class RuleEngineService {
     return [...value.matchAll(regex)]
       .map((match) => match[0].trim().replace(/[),.;!?]+$/, ''))
       .filter((url) => url.length > 0);
-  }
-
-  private normalizeAllowlistLink(value: string): string | null {
-    const raw = value.trim();
-    if (!raw) {
-      return null;
-    }
-
-    const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
-    let parsed: URL;
-    try {
-      parsed = new URL(withScheme);
-    } catch {
-      return null;
-    }
-
-    const protocol = parsed.protocol.toLowerCase();
-    if (protocol !== 'http:' && protocol !== 'https:') {
-      return null;
-    }
-
-    const hostname = parsed.hostname.toLowerCase();
-    if (!hostname) {
-      return null;
-    }
-
-    const shouldKeepPort =
-      parsed.port.length > 0 &&
-      !(
-        (protocol === 'https:' && parsed.port === '443') ||
-        (protocol === 'http:' && parsed.port === '80')
-      );
-    const port = shouldKeepPort ? `:${parsed.port}` : '';
-    return `${hostname}${port}`.toLowerCase();
   }
 
   private detectCommercialAd(params: {
