@@ -54,7 +54,6 @@ export type MaxPublishedMessage = {
 };
 
 const MAX_CHAT_POST_LINK_BASE_URL = 'https://max.ru';
-const MAX_CHAT_POST_LINK_SEQ_XOR_MASK = 0x1fd2f00000n;
 
 export type MaxButtonIntent = 'default' | 'positive' | 'negative';
 
@@ -290,13 +289,13 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async resolveMessageLink(messageId: string): Promise<string | null> {
-    const sentMessage = await this.getMessageByIdPrecise(messageId);
+    const sentMessage = await this.getMessageById(messageId);
     const batchLink = sentMessage ? this.parseChatLink(sentMessage) : null;
     if (batchLink) {
       return batchLink;
     }
 
-    const detailedMessage = await this.getMessageByPathPrecise(messageId);
+    const detailedMessage = await this.getMessageByPath(messageId);
     return detailedMessage ? this.parseChatLink(detailedMessage) : null;
   }
 
@@ -842,40 +841,6 @@ export class MaxClientService implements OnModuleDestroy {
       : null;
   }
 
-  private async getMessageByIdPrecise(messageId: string): Promise<Record<string, unknown> | null> {
-    const normalizedMessageId = messageId.trim();
-    if (!normalizedMessageId) {
-      return null;
-    }
-
-    const data = await this.request<string | Record<string, unknown>>('get', '/messages', {
-      params: {
-        message_ids: normalizedMessageId,
-      },
-      responseType: 'text',
-      transformResponse: [(value: unknown) => value],
-    });
-
-    if (typeof data === 'string') {
-      const payload = this.parseJsonObject(data);
-      if (!payload) {
-        return null;
-      }
-      const messages = Array.isArray(payload.messages) ? payload.messages : [];
-      const firstMessage = messages[0];
-      if (!firstMessage || typeof firstMessage !== 'object' || Array.isArray(firstMessage)) {
-        return null;
-      }
-      return this.withExactMessageSequence(firstMessage as Record<string, unknown>, data);
-    }
-
-    const messages = Array.isArray(data.messages) ? data.messages : [];
-    const firstMessage = messages[0];
-    return firstMessage && typeof firstMessage === 'object' && !Array.isArray(firstMessage)
-      ? (firstMessage as Record<string, unknown>)
-      : null;
-  }
-
   private async getMessageByPath(messageId: string): Promise<Record<string, unknown> | null> {
     const normalizedMessageId = messageId.trim();
     if (!normalizedMessageId) {
@@ -886,29 +851,6 @@ export class MaxClientService implements OnModuleDestroy {
       'get',
       `/messages/${encodeURIComponent(normalizedMessageId)}`,
     );
-    return data && typeof data === 'object' && !Array.isArray(data) ? data : null;
-  }
-
-  private async getMessageByPathPrecise(messageId: string): Promise<Record<string, unknown> | null> {
-    const normalizedMessageId = messageId.trim();
-    if (!normalizedMessageId) {
-      return null;
-    }
-
-    const data = await this.request<string | Record<string, unknown>>(
-      'get',
-      `/messages/${encodeURIComponent(normalizedMessageId)}`,
-      {
-        responseType: 'text',
-        transformResponse: [(value: unknown) => value],
-      },
-    );
-
-    if (typeof data === 'string') {
-      const payload = this.parseJsonObject(data);
-      return payload ? this.withExactMessageSequence(payload, data) : null;
-    }
-
     return data && typeof data === 'object' && !Array.isArray(data) ? data : null;
   }
 
@@ -1832,17 +1774,6 @@ export class MaxClientService implements OnModuleDestroy {
       : null;
   }
 
-  private parseJsonObject(value: string): Record<string, unknown> | null {
-    try {
-      const parsed = JSON.parse(value);
-      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-        ? (parsed as Record<string, unknown>)
-        : null;
-    } catch {
-      return null;
-    }
-  }
-
   private readTrimmedString(value: unknown): string | null {
     if (typeof value !== 'string') {
       return null;
@@ -1932,35 +1863,6 @@ export class MaxClientService implements OnModuleDestroy {
     }
   }
 
-  private withExactMessageSequence(
-    row: Record<string, unknown>,
-    rawJson: string,
-  ): Record<string, unknown> {
-    const exactSequence = this.extractExactIntegerField(rawJson, 'seq');
-    if (!exactSequence) {
-      return row;
-    }
-
-    const body = this.asRecord(row.body);
-    if (!body) {
-      return row;
-    }
-
-    return {
-      ...row,
-      body: {
-        ...body,
-        seq: exactSequence,
-      },
-    };
-  }
-
-  private extractExactIntegerField(rawJson: string, fieldName: string): string | null {
-    const escapedFieldName = fieldName.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
-    const match = new RegExp(`"${escapedFieldName}"\\s*:\\s*(-?\\d+)`, 'u').exec(rawJson);
-    return match?.[1] ?? null;
-  }
-
   private inferChatPostLink(row: Record<string, unknown>): string | null {
     const recipient = this.asRecord(row.recipient);
     const chatType = this.readLowerString(
@@ -1980,23 +1882,40 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     const body = this.asRecord(row.body);
-    const sequence = this.readBigInt(body?.seq ?? row.seq ?? row.sequence);
-    if (sequence === null) {
-      return null;
+    const messageId = this.readTrimmedString(
+      body?.mid ?? row.message_id ?? row.messageId ?? row.mid ?? row.id,
+    );
+    const tokenFromMessageId = this.buildChatPostLinkTokenFromMessageId(messageId);
+    if (tokenFromMessageId) {
+      return `${MAX_CHAT_POST_LINK_BASE_URL}/c/${chatId}/${tokenFromMessageId}`;
     }
 
-    const token = this.buildChatPostLinkToken(sequence);
-    return token ? `${MAX_CHAT_POST_LINK_BASE_URL}/c/${chatId}/${token}` : null;
+    const tokenFromSequence = this.buildChatPostLinkTokenFromSequence(
+      this.readBigInt(body?.seq ?? row.seq ?? row.sequence),
+    );
+    return tokenFromSequence ? `${MAX_CHAT_POST_LINK_BASE_URL}/c/${chatId}/${tokenFromSequence}` : null;
   }
 
-  private buildChatPostLinkToken(sequence: bigint): string | null {
-    if (sequence < 0n || sequence > 0xffff_ffff_ffff_ffffn) {
+  private buildChatPostLinkTokenFromMessageId(messageId: string | null): string | null {
+    if (!messageId) {
       return null;
     }
 
-    const encodedValue = sequence ^ MAX_CHAT_POST_LINK_SEQ_XOR_MASK;
+    const hexTail = messageId.split('.').pop()?.trim().toLowerCase() ?? '';
+    if (!/^[0-9a-f]{16,}$/u.test(hexTail)) {
+      return null;
+    }
+
+    return Buffer.from(hexTail.slice(-16), 'hex').toString('base64url');
+  }
+
+  private buildChatPostLinkTokenFromSequence(sequence: bigint | null): string | null {
+    if (sequence === null || sequence < 0n || sequence > 0xffff_ffff_ffff_ffffn) {
+      return null;
+    }
+
     const buffer = Buffer.alloc(8);
-    buffer.writeBigUInt64BE(encodedValue);
+    buffer.writeBigUInt64BE(sequence);
     return buffer.toString('base64url');
   }
 

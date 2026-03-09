@@ -301,7 +301,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('builds chat post link from exact seq when MAX omits direct url fields', async () => {
+  it('builds chat post link from message id tail when MAX omits direct url fields', async () => {
     const httpService = {
       request: jest
         .fn()
@@ -314,8 +314,20 @@ describe('MaxClientService inline keyboard guardrails', () => {
         )
         .mockReturnValueOnce(
           of({
-            data:
-              '{"messages":[{"recipient":{"chat_id":-71768670111751,"chat_type":"chat"},"body":{"mid":"mid-rules-5","seq":116200113669996648}}]}',
+            data: {
+              messages: [
+                {
+                  recipient: {
+                    chat_id: -71768670111751,
+                    chat_type: 'chat',
+                  },
+                  body: {
+                    mid: 'mid.ffffbeba0de977f9019cd37c90d90068',
+                    seq: 116200222364336232,
+                  },
+                },
+              ],
+            },
           }),
         ),
     };
@@ -333,7 +345,6 @@ describe('MaxClientService inline keyboard guardrails', () => {
         method: 'get',
         url: 'https://platform-api.max.ru/messages',
         params: { message_ids: 'mid-rules-5' },
-        responseType: 'text',
       }),
     );
 
