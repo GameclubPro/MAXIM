@@ -1,20 +1,30 @@
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import addBotToChatImage from '../assets/onboarding/add-bot-to-chat.jpg';
 import grantBotAdminRightsImage from '../assets/onboarding/grant-bot-admin-rights.jpg';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import type { ApiClient } from '../lib/api-client';
+import { cn } from '../lib/cn';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
-import { saveLastChatId, saveLastEntityType } from '../lib/last-chat';
+import {
+  normalizeEntityType,
+  readLastEntityType,
+  saveLastEntityId,
+  saveLastEntityType,
+} from '../lib/last-chat';
 
 type ManagedTab = 'chat' | 'channel';
 
 export function ChatsPage({ api }: { api: ApiClient }) {
+  const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
-  const [activeTab, setActiveTab] = useState<ManagedTab>('chat');
+  const activeTab = normalizeEntityType(
+    searchParams.get('view'),
+    readLastEntityType(),
+  ) as ManagedTab;
 
   const entitiesQuery = useQuery({
     queryKey: ['managed-entities'],
@@ -60,14 +70,31 @@ export function ChatsPage({ api }: { api: ApiClient }) {
     saveChatTitles([...entitiesQuery.data.chats, ...entitiesQuery.data.channels]);
   }, [entitiesQuery.data]);
 
+  useEffect(() => {
+    saveLastEntityType(activeTab);
+  }, [activeTab]);
+
   const tabLabel = activeTab === 'chat' ? 'Чаты' : 'Каналы';
 
   return (
     <div className="page-stack page-enter">
       {!isNoEntitiesForTab ? (
-        <GlassCard className="chats-search-card" padding="sm" elevated>
+        <GlassCard
+          className={cn(
+            'chats-search-card',
+            activeTab === 'channel' && 'chats-search-card--channel',
+          )}
+          padding="sm"
+          elevated
+        >
           <div className="chats-search-card__head">
             <div className="chats-search-card__title">
+              <div className="chats-search-card__eyebrow">
+                <span className="chats-search-card__pill">
+                  {activeTab === 'chat' ? 'Чаты MAX' : 'Каналы MAX'}
+                </span>
+                <span className="chats-search-card__hint">Переключение разделов внизу</span>
+              </div>
               <h1>{tabLabel}</h1>
               <p>
                 {activeTab === 'chat'
@@ -77,29 +104,8 @@ export function ChatsPage({ api }: { api: ApiClient }) {
             </div>
             <div className="chats-search-card__meta" aria-live="polite">
               <strong>{filteredEntities.length}</strong>
-              <small>найдено</small>
+              <small>{activeTab === 'chat' ? 'чатов в работе' : 'каналов в работе'}</small>
             </div>
-          </div>
-
-          <div className="chat-card__actions" role="tablist" aria-label="Тип сущности">
-            <button
-              type="button"
-              className={activeTab === 'chat' ? 'button button--accent' : 'button button--ghost'}
-              onClick={() => setActiveTab('chat')}
-              role="tab"
-              aria-selected={activeTab === 'chat'}
-            >
-              Чаты
-            </button>
-            <button
-              type="button"
-              className={activeTab === 'channel' ? 'button button--accent' : 'button button--ghost'}
-              onClick={() => setActiveTab('channel')}
-              role="tab"
-              aria-selected={activeTab === 'channel'}
-            >
-              Каналы
-            </button>
           </div>
 
           <label className="field field--search chats-search-card__field" htmlFor="chat-search">
@@ -285,8 +291,7 @@ export function ChatsPage({ api }: { api: ApiClient }) {
                     className="button button--accent"
                     state={{ chatTitle: entity.title }}
                     onClick={() => {
-                      saveLastChatId(entity.id);
-                      saveLastEntityType('chat');
+                      saveLastEntityId('chat', entity.id);
                       saveChatTitle(entity.id, entity.title);
                     }}
                   >
@@ -297,8 +302,7 @@ export function ChatsPage({ api }: { api: ApiClient }) {
                     className="button button--ghost"
                     state={{ chatTitle: entity.title }}
                     onClick={() => {
-                      saveLastChatId(entity.id);
-                      saveLastEntityType('chat');
+                      saveLastEntityId('chat', entity.id);
                       saveChatTitle(entity.id, entity.title);
                     }}
                   >
@@ -312,8 +316,7 @@ export function ChatsPage({ api }: { api: ApiClient }) {
                     className="button button--ghost"
                     state={{ chatTitle: entity.title }}
                     onClick={() => {
-                      saveLastChatId(entity.id);
-                      saveLastEntityType('channel');
+                      saveLastEntityId('channel', entity.id);
                       saveChatTitle(entity.id, entity.title);
                     }}
                   >
@@ -325,8 +328,7 @@ export function ChatsPage({ api }: { api: ApiClient }) {
                     className="button button--accent"
                     state={{ chatTitle: entity.title, chatLink: entity.link ?? '' }}
                     onClick={() => {
-                      saveLastChatId(entity.id);
-                      saveLastEntityType('channel');
+                      saveLastEntityId('channel', entity.id);
                       saveChatTitle(entity.id, entity.title);
                     }}
                   >

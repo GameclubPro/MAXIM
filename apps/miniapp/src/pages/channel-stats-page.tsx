@@ -9,7 +9,7 @@ import { StatusState } from '../components/ui/status-state';
 import { cn } from '../lib/cn';
 import type { ApiClient } from '../lib/api-client';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
-import { saveLastChatId, saveLastEntityType } from '../lib/last-chat';
+import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 
 type ChannelStatsRouteState = {
   chatTitle: string;
@@ -441,8 +441,7 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
       return;
     }
 
-    saveLastChatId(chatId);
-    saveLastEntityType('channel');
+    saveLastEntityId('channel', chatId);
   }, [chatId]);
 
   const resolvedTitle = useMemo(() => {
@@ -474,7 +473,7 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
             title="Канал не выбран"
             description="Откройте канал из списка на главном экране."
             action={
-              <Link to="/" className="button button--accent">
+              <Link to={buildManagedEntitiesRoute('channel')} className="button button--accent">
                 К списку
               </Link>
             }
@@ -531,7 +530,10 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
     <div className="channel-stats-screen page-enter">
       <GlassCard className="channel-stats-hero" elevated>
         <div className="channel-stats-hero__top">
-          <Link to="/" className="button button--ghost channel-stats-hero__back">
+          <Link
+            to={buildManagedEntitiesRoute('channel')}
+            className="button button--ghost channel-stats-hero__back"
+          >
             Назад
           </Link>
           {statsQuery.isFetching ? (

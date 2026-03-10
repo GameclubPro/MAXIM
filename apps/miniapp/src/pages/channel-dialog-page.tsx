@@ -7,6 +7,7 @@ import { useToast } from '../components/ui/toast';
 import { cn } from '../lib/cn';
 import type { ApiClient } from '../lib/api-client';
 import { readChatTitle } from '../lib/chat-titles';
+import { buildManagedEntitiesRoute } from '../lib/last-chat';
 
 function normalizeApiError(error: unknown): string {
   if (!(error instanceof Error)) {
@@ -182,7 +183,7 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
             title="Канал не найден"
             description="Откройте диалог заново из сообщения канала."
             action={
-              <Link to="/" className="button button--accent">
+              <Link to={buildManagedEntitiesRoute('channel')} className="button button--accent">
                 К списку
               </Link>
             }
@@ -201,7 +202,7 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
             title="Кнопка устарела"
             description="Откройте сообщение в канале и нажмите кнопку ещё раз."
             action={
-              <Link to="/" className="button button--accent">
+              <Link to={buildManagedEntitiesRoute('channel')} className="button button--accent">
                 К списку
               </Link>
             }
@@ -224,7 +225,7 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
               <h1>{view.title}</h1>
               <span>{chatTitle || chatId}</span>
             </div>
-            <Link to="/" className="channel-dialog-close">
+            <Link to={buildManagedEntitiesRoute('channel')} className="channel-dialog-close">
               Закрыть
             </Link>
           </header>

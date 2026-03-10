@@ -3,9 +3,11 @@ import { Link, NavLink, Outlet, useLocation, useParams } from 'react-router-dom'
 import { cn } from '../lib/cn';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import {
-  readLastChatId,
+  buildManagedEntitiesRoute,
+  normalizeEntityType,
+  readLastEntityId,
   readLastEntityType,
-  saveLastChatId,
+  saveLastEntityId,
   saveLastEntityType,
   type LastEntityType,
 } from '../lib/last-chat';
@@ -15,7 +17,7 @@ type ScreenInfo = {
   subtitle: string;
 };
 
-type BottomNavIconName = 'chats' | 'settings' | 'events';
+type BottomNavIconName = 'chats' | 'channels' | 'settings' | 'events';
 
 function BottomNavIcon({ name }: { name: BottomNavIconName }) {
   if (name === 'chats') {
@@ -54,6 +56,25 @@ function BottomNavIcon({ name }: { name: BottomNavIconName }) {
         <circle cx="15.1" cy="12" r="2" />
         <path d="M4.5 17h5M13.5 17h6" />
         <circle cx="11.5" cy="17" r="2" />
+      </svg>
+    );
+  }
+
+  if (name === 'channels') {
+    return (
+      <svg
+        viewBox="0 0 24 24"
+        className="bottom-nav__icon-svg"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.85"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden
+      >
+        <rect x="4.5" y="5.5" width="15" height="4.4" rx="2.2" />
+        <rect x="4.5" y="14.1" width="15" height="4.4" rx="2.2" />
+        <path d="M8 7.7h3.8M8 16.3h5.7" />
       </svg>
     );
   }
@@ -128,9 +149,18 @@ function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
 export function Shell() {
   const { chatId = '' } = useParams();
   const location = useLocation();
-  const [lastChatId, setLastChatId] = useState<string>(() => readLastChatId());
+  const [lastEntityIds, setLastEntityIds] = useState<Record<LastEntityType, string>>(() => ({
+    chat: readLastEntityId('chat'),
+    channel: readLastEntityId('channel'),
+  }));
   const [lastEntityType, setLastEntityType] = useState<LastEntityType>(() => readLastEntityType());
   const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
+  const isChatsRoute = location.pathname === '/';
+  const selectedRootEntityType = useMemo(
+    () =>
+      normalizeEntityType(new URLSearchParams(location.search).get('view'), lastEntityType),
+    [lastEntityType, location.search],
+  );
   const routeEntityType: LastEntityType = location.pathname.includes('/channel/')
     ? 'channel'
     : 'chat';
@@ -147,10 +177,11 @@ export function Shell() {
       return;
     }
 
-    saveLastChatId(chatId);
-    saveLastEntityType(routeEntityType);
-    setLastChatId(chatId);
+    saveLastEntityId(routeEntityType, chatId);
     setLastEntityType(routeEntityType);
+    setLastEntityIds((current) =>
+      current[routeEntityType] === chatId ? current : { ...current, [routeEntityType]: chatId },
+    );
 
     if (!routeChatTitle) {
       return;
@@ -159,8 +190,18 @@ export function Shell() {
     saveChatTitle(chatId, routeChatTitle);
   }, [chatId, routeChatTitle, routeEntityType]);
 
-  const resolvedChatId = chatId || lastChatId;
-  const resolvedEntityType: LastEntityType = chatId ? routeEntityType : lastEntityType;
+  useEffect(() => {
+    if (!isChatsRoute) {
+      return;
+    }
+
+    saveLastEntityType(selectedRootEntityType);
+    setLastEntityType(selectedRootEntityType);
+  }, [isChatsRoute, selectedRootEntityType]);
+
+  const resolvedEntityType: LastEntityType = isChatsRoute ? selectedRootEntityType : routeEntityType;
+  const resolvedChatId = chatId || lastEntityIds[resolvedEntityType];
+  const homeRoute = buildManagedEntitiesRoute(resolvedEntityType);
 
   const resolvedChatTitle = useMemo(() => {
     if (!resolvedChatId) {
@@ -173,8 +214,18 @@ export function Shell() {
 
     return readChatTitle(resolvedChatId);
   }, [chatId, resolvedChatId, routeChatTitle]);
-  const isChatsRoute = location.pathname === '/';
-  const isChannelRoute = resolvedEntityType === 'channel';
+  const settingsRoute = resolvedChatId
+    ? resolvedEntityType === 'channel'
+      ? `/channel/${resolvedChatId}/settings`
+      : `/chat/${resolvedChatId}/settings`
+    : '';
+  const activityRoute = resolvedChatId
+    ? resolvedEntityType === 'channel'
+      ? `/channel/${resolvedChatId}/stats`
+      : `/chat/${resolvedChatId}/events`
+    : '';
+  const isChatsListRoute = isChatsRoute && selectedRootEntityType === 'chat';
+  const isChannelsListRoute = isChatsRoute && selectedRootEntityType === 'channel';
   const isDialogRoute =
     location.pathname.includes('/channel/') && location.pathname.includes('/dialog/');
   const isSettingsRoute = location.pathname.includes('/settings');
@@ -242,7 +293,7 @@ export function Shell() {
       {hasTopbar ? (
         <header className="shell-topbar glass-card glass-card--sm">
           <div className="shell-topbar__brand-row">
-            <Link to="/" className="shell-brand">
+            <Link to={homeRoute} className="shell-brand">
               Майор Максимов
             </Link>
             <span className="shell-chip">Панель</span>
@@ -263,24 +314,29 @@ export function Shell() {
           className={cn('bottom-nav glass-card', isKeyboardOpen && 'is-keyboard-open')}
           aria-label="Навигация приложения"
         >
-          <NavLink
-            to="/"
-            end
-            className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
+          <Link
+            to={buildManagedEntitiesRoute('chat')}
+            className={cn('bottom-nav__item', isChatsListRoute && 'is-active')}
           >
             <span className="bottom-nav__icon" aria-hidden>
               <BottomNavIcon name="chats" />
             </span>
             <span className="bottom-nav__label">Чаты</span>
-          </NavLink>
+          </Link>
+
+          <Link
+            to={buildManagedEntitiesRoute('channel')}
+            className={cn('bottom-nav__item', isChannelsListRoute && 'is-active')}
+          >
+            <span className="bottom-nav__icon" aria-hidden>
+              <BottomNavIcon name="channels" />
+            </span>
+            <span className="bottom-nav__label">Каналы</span>
+          </Link>
 
           {resolvedChatId ? (
             <NavLink
-              to={
-                isChannelRoute
-                  ? `/channel/${resolvedChatId}/settings`
-                  : `/chat/${resolvedChatId}/settings`
-              }
+              to={settingsRoute}
               className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
             >
               <span className="bottom-nav__icon" aria-hidden>
@@ -297,25 +353,17 @@ export function Shell() {
             </span>
           )}
 
-          {resolvedChatId && resolvedEntityType === 'chat' ? (
+          {resolvedChatId ? (
             <NavLink
-              to={`/chat/${resolvedChatId}/events`}
+              to={activityRoute}
               className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
             >
               <span className="bottom-nav__icon" aria-hidden>
                 <BottomNavIcon name="events" />
               </span>
-              <span className="bottom-nav__label">События</span>
-            </NavLink>
-          ) : resolvedChatId && resolvedEntityType === 'channel' ? (
-            <NavLink
-              to={`/channel/${resolvedChatId}/stats`}
-              className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
-            >
-              <span className="bottom-nav__icon" aria-hidden>
-                <BottomNavIcon name="events" />
+              <span className="bottom-nav__label">
+                {resolvedEntityType === 'channel' ? 'Статистика' : 'События'}
               </span>
-              <span className="bottom-nav__label">Статистика</span>
             </NavLink>
           ) : (
             <span className="bottom-nav__item is-disabled" aria-disabled>

@@ -12,7 +12,7 @@ import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import type { ApiClient } from '../lib/api-client';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
-import { saveLastChatId, saveLastEntityType } from '../lib/last-chat';
+import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 
 type ViolationAction = LogsDashboardResponse['violations'][number]['action'];
 type ViolationItem = LogsDashboardResponse['violations'][number];
@@ -391,8 +391,7 @@ export function EventsPage({ api }: { api: ApiClient }) {
 
   useEffect(() => {
     if (chatId) {
-      saveLastChatId(chatId);
-      saveLastEntityType('chat');
+      saveLastEntityId('chat', chatId);
     }
   }, [chatId]);
 
@@ -455,7 +454,7 @@ export function EventsPage({ api }: { api: ApiClient }) {
           title="Чат не выбран"
           description="Выберите чат в разделе «Чаты»."
           action={
-            <Link to="/" className="button button--accent">
+            <Link to={buildManagedEntitiesRoute('chat')} className="button button--accent">
               К списку чатов
             </Link>
           }

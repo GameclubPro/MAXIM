@@ -17,7 +17,7 @@ import { useToast } from '../components/ui/toast';
 import { cn } from '../lib/cn';
 import type { ApiClient, SendBroadcastPayload, UpdateChatRulesPayload } from '../lib/api-client';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
-import { saveLastChatId, saveLastEntityType } from '../lib/last-chat';
+import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 
 type FieldErrors = Partial<Record<keyof ChatSettings, string>>;
 
@@ -931,8 +931,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
   useEffect(() => {
     if (chatId) {
-      saveLastChatId(chatId);
-      saveLastEntityType('chat');
+      saveLastEntityId('chat', chatId);
     }
   }, [chatId]);
 
@@ -2069,7 +2068,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
           title="Чат не выбран"
           description="Откройте экран настроек из карточки чата."
           action={
-            <Link to="/" className="button button--accent">
+            <Link to={buildManagedEntitiesRoute('chat')} className="button button--accent">
               К списку чатов
             </Link>
           }
