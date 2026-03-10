@@ -16,6 +16,8 @@ type ChannelRouteState = {
   chatLink: string;
 };
 
+type ChannelSettingsSectionKey = 'comments' | 'postSuggestions';
+
 const AUTOSAVE_DELAY_MS = 700;
 const AUTOSAVE_SAVED_HIDE_MS = 1600;
 
@@ -104,20 +106,24 @@ function normalizeApiError(error: unknown): string {
   return text;
 }
 
-function ChannelSettingsSectionHead({
-  title,
-  description,
-}: {
-  title: string;
-  description?: string;
-}) {
+function SectionChevron({ isOpen }: { isOpen: boolean }) {
   return (
-    <div className="channel-settings-section-head">
-      <div className="channel-settings-section-head__copy">
-        <h2>{title}</h2>
-        {description ? <p>{description}</p> : null}
-      </div>
-    </div>
+    <span className={cn('settings-section__chevron', isOpen && 'is-open')} aria-hidden>
+      <svg
+        className="settings-section__chevron-icon"
+        viewBox="0 0 20 20"
+        fill="none"
+        focusable="false"
+      >
+        <path
+          d="M5.5 7.75L10 12.25L14.5 7.75"
+          stroke="currentColor"
+          strokeWidth="2.2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </span>
   );
 }
 
@@ -195,6 +201,12 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   const latestNormalizedDraftRef = useRef<ChannelSettings | null>(null);
   const latestDraftKeyRef = useRef('');
   const isDirtyRef = useRef(false);
+  const [expandedSections, setExpandedSections] = useState<
+    Record<ChannelSettingsSectionKey, boolean>
+  >({
+    comments: false,
+    postSuggestions: false,
+  });
 
   const settingsQuery = useQuery({
     queryKey: ['channel-settings', chatId],
@@ -265,6 +277,13 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
 
     return '';
   }, [channelHeaderQuery.data?.link, routeChatLink]);
+
+  function toggleSection(section: ChannelSettingsSectionKey) {
+    setExpandedSections((current) => ({
+      ...current,
+      [section]: !current[section],
+    }));
+  }
 
   const normalizedDraft = useMemo(
     () => (draft ? normalizeChannelSettingsDraft(draft, resolvedChannelLink) : null),
@@ -573,101 +592,140 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
       </GlassCard>
 
       <GlassCard className="channel-settings-card" elevated>
-        <ChannelSettingsSectionHead
-          title="Комментарии"
-          description="Диалог под постом и базовые ограничения для обсуждения."
-        />
+        <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+          <button
+            type="button"
+            className="settings-section__toggle"
+            onClick={() => toggleSection('comments')}
+            aria-expanded={expandedSections.comments}
+            aria-controls="channel-settings-comments"
+          >
+            <span className="settings-section__toggle-main">
+              <h3>Комментарии</h3>
+              <small>{draft.commentsEnabled ? 'ОБСУЖДЕНИЕ ВКЛЮЧЕНО' : 'ОБСУЖДЕНИЕ ВЫКЛЮЧЕНО'}</small>
+            </span>
+            <SectionChevron isOpen={expandedSections.comments} />
+          </button>
+        </div>
 
-        <ChannelSettingsToggleCard
-          title="Включить комментарии"
-          description="Открывает обсуждение под постами канала."
-          checked={draft.commentsEnabled}
-          onChange={(nextValue) => patchDraft('commentsEnabled', nextValue)}
-        />
-
-        {draft.commentsEnabled ? (
-          <div className="channel-settings-stack">
+        <div
+          id="channel-settings-comments"
+          className={cn('settings-section__collapse', expandedSections.comments && 'is-open')}
+        >
+          <div className="settings-section__collapse-inner">
             <ChannelSettingsToggleCard
-              title="Модерация"
-              description="Бот следит за сообщениями в комментариях."
-              checked={draft.commentsModerationEnabled}
-              onChange={(nextValue) => patchDraft('commentsModerationEnabled', nextValue)}
+              title="Включить комментарии"
+              description="Открывает обсуждение под постами канала."
+              checked={draft.commentsEnabled}
+              onChange={(nextValue) => patchDraft('commentsEnabled', nextValue)}
             />
 
-            <div className="channel-settings-inline-fields channel-settings-inline-fields--narrow">
-              <label className="field">
-                <span>Пауза между сообщениями, сек</span>
-                <input
-                  type="number"
-                  min={0}
-                  max={3600}
-                  value={draft.commentsSlowModeSeconds}
-                  onChange={(event) =>
-                    patchDraft(
-                      'commentsSlowModeSeconds',
-                      Number.isFinite(Number(event.target.value))
-                        ? Math.max(
-                            0,
-                            Math.min(3600, Number.parseInt(event.target.value || '0', 10)),
-                          )
-                        : 0,
-                    )
-                  }
+            {draft.commentsEnabled ? (
+              <div className="channel-settings-stack">
+                <ChannelSettingsToggleCard
+                  title="Модерация"
+                  description="Бот следит за сообщениями в комментариях."
+                  checked={draft.commentsModerationEnabled}
+                  onChange={(nextValue) => patchDraft('commentsModerationEnabled', nextValue)}
                 />
-                <small className="field__hint">0 = без паузы</small>
-              </label>
-            </div>
 
-            <label className="field">
-              <span>Текст</span>
-              <textarea
-                rows={3}
-                value={draft.commentsMessageText}
-                onChange={(event) => patchDraft('commentsMessageText', event.target.value)}
-                placeholder="Например: обсуждаем посты спокойно, без рекламы и оскорблений."
-              />
-            </label>
+                <div className="channel-settings-inline-fields channel-settings-inline-fields--narrow">
+                  <label className="field">
+                    <span>Пауза между сообщениями, сек</span>
+                    <input
+                      type="number"
+                      min={0}
+                      max={3600}
+                      value={draft.commentsSlowModeSeconds}
+                      onChange={(event) =>
+                        patchDraft(
+                          'commentsSlowModeSeconds',
+                          Number.isFinite(Number(event.target.value))
+                            ? Math.max(
+                                0,
+                                Math.min(3600, Number.parseInt(event.target.value || '0', 10)),
+                              )
+                            : 0,
+                        )
+                      }
+                    />
+                    <small className="field__hint">0 = без паузы</small>
+                  </label>
+                </div>
+
+                <label className="field">
+                  <span>Текст</span>
+                  <textarea
+                    rows={3}
+                    value={draft.commentsMessageText}
+                    onChange={(event) => patchDraft('commentsMessageText', event.target.value)}
+                    placeholder="Например: обсуждаем посты спокойно, без рекламы и оскорблений."
+                  />
+                </label>
+              </div>
+            ) : null}
           </div>
-        ) : null}
+        </div>
       </GlassCard>
 
       <GlassCard className="channel-settings-card" elevated>
-        <ChannelSettingsSectionHead
-          title="Предложить пост"
-          description="Подписчики отправляют идеи через кнопку под постом."
-        />
+        <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+          <button
+            type="button"
+            className="settings-section__toggle"
+            onClick={() => toggleSection('postSuggestions')}
+            aria-expanded={expandedSections.postSuggestions}
+            aria-controls="channel-settings-post-suggestions"
+          >
+            <span className="settings-section__toggle-main">
+              <h3>Предложить пост</h3>
+              <small>{draft.postSuggestionsEnabled ? 'КНОПКА ВКЛЮЧЕНА' : 'КНОПКА ВЫКЛЮЧЕНА'}</small>
+            </span>
+            <SectionChevron isOpen={expandedSections.postSuggestions} />
+          </button>
+        </div>
 
-        <ChannelSettingsToggleCard
-          title="Разрешить предложения"
-          description="Показывает кнопку для отправки идей в канал."
-          checked={draft.postSuggestionsEnabled}
-          onChange={(nextValue) => patchDraft('postSuggestionsEnabled', nextValue)}
-        />
+        <div
+          id="channel-settings-post-suggestions"
+          className={cn(
+            'settings-section__collapse',
+            expandedSections.postSuggestions && 'is-open',
+          )}
+        >
+          <div className="settings-section__collapse-inner">
+            <ChannelSettingsToggleCard
+              title="Разрешить предложения"
+              description="Показывает кнопку для отправки идей в канал."
+              checked={draft.postSuggestionsEnabled}
+              onChange={(nextValue) => patchDraft('postSuggestionsEnabled', nextValue)}
+            />
 
-        {draft.postSuggestionsEnabled ? (
-          <div className="channel-settings-stack">
-            <label className="field">
-              <span>Название кнопки</span>
-              <input
-                type="text"
-                value={draft.postSuggestionsButtonText}
-                onChange={(event) => patchDraft('postSuggestionsButtonText', event.target.value)}
-                placeholder="Предложить пост"
-                maxLength={32}
-              />
-            </label>
+            {draft.postSuggestionsEnabled ? (
+              <div className="channel-settings-stack">
+                <label className="field">
+                  <span>Название кнопки</span>
+                  <input
+                    type="text"
+                    value={draft.postSuggestionsButtonText}
+                    onChange={(event) => patchDraft('postSuggestionsButtonText', event.target.value)}
+                    placeholder="Предложить пост"
+                    maxLength={32}
+                  />
+                </label>
 
-            <label className="field">
-              <span>Текст</span>
-              <textarea
-                rows={3}
-                value={draft.postSuggestionsText}
-                onChange={(event) => patchDraft('postSuggestionsText', event.target.value)}
-                placeholder="Коротко объясните, что отправлять."
-              />
-            </label>
+                <label className="field">
+                  <span>Текст</span>
+                  <textarea
+                    rows={3}
+                    value={draft.postSuggestionsText}
+                    onChange={(event) => patchDraft('postSuggestionsText', event.target.value)}
+                    placeholder="Коротко объясните, что отправлять."
+                  />
+                </label>
+              </div>
+            ) : null}
           </div>
-        ) : null}
+        </div>
       </GlassCard>
     </div>
   );
