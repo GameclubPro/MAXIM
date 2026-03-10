@@ -629,39 +629,60 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                   onChange={(nextValue) => patchDraft('commentsModerationEnabled', nextValue)}
                 />
 
-                <div className="channel-settings-inline-fields channel-settings-inline-fields--narrow">
-                  <label className="field">
-                    <span>Пауза между сообщениями, сек</span>
-                    <input
-                      type="number"
-                      min={0}
-                      max={3600}
-                      value={draft.commentsSlowModeSeconds}
-                      onChange={(event) =>
-                        patchDraft(
-                          'commentsSlowModeSeconds',
-                          Number.isFinite(Number(event.target.value))
-                            ? Math.max(
-                                0,
-                                Math.min(3600, Number.parseInt(event.target.value || '0', 10)),
+                {draft.commentsModerationEnabled ? (
+                  <div className="channel-settings-stack">
+                    <ChannelSettingsToggleCard
+                      title="Запретить ссылки"
+                      description="Комментарий со ссылкой сразу отклоняется."
+                      checked={draft.commentsBlockLinksEnabled}
+                      onChange={(nextValue) => patchDraft('commentsBlockLinksEnabled', nextValue)}
+                    />
+
+                    <ChannelSettingsToggleCard
+                      title="Антиспам"
+                      description="Блокирует частые и повторяющиеся комментарии."
+                      checked={draft.commentsAntiSpamEnabled}
+                      onChange={(nextValue) => patchDraft('commentsAntiSpamEnabled', nextValue)}
+                    />
+
+                    {draft.commentsAntiSpamEnabled ? (
+                      <div className="channel-settings-inline-fields channel-settings-inline-fields--narrow">
+                        <label className="field">
+                          <span>Пауза между комментариями, сек</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={3600}
+                            value={draft.commentsSlowModeSeconds}
+                            onChange={(event) =>
+                              patchDraft(
+                                'commentsSlowModeSeconds',
+                                Number.isFinite(Number(event.target.value))
+                                  ? Math.max(
+                                      0,
+                                      Math.min(3600, Number.parseInt(event.target.value || '0', 10)),
+                                    )
+                                  : 0,
                               )
-                            : 0,
-                        )
+                            }
+                          />
+                          <small className="field__hint">
+                            0 = без таймера, но повторы всё равно режутся
+                          </small>
+                        </label>
+                      </div>
+                    ) : null}
+
+                    <ChannelSettingsToggleCard
+                      title="Не больше двух подряд"
+                      description="Третий комментарий подряд от одного автора отклоняется."
+                      checked={draft.commentsLimitTwoInRowEnabled}
+                      onChange={(nextValue) =>
+                        patchDraft('commentsLimitTwoInRowEnabled', nextValue)
                       }
                     />
-                    <small className="field__hint">0 = без паузы</small>
-                  </label>
-                </div>
-
-                <label className="field">
-                  <span>Текст</span>
-                  <textarea
-                    rows={3}
-                    value={draft.commentsMessageText}
-                    onChange={(event) => patchDraft('commentsMessageText', event.target.value)}
-                    placeholder="Например: обсуждаем посты спокойно, без рекламы и оскорблений."
-                  />
-                </label>
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>

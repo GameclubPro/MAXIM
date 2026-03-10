@@ -552,6 +552,9 @@ export const channelSettingsSchema = z
     postSuggestionsButtonUrl: botButtonUrlSchema,
     commentsEnabled: z.boolean().default(true),
     commentsModerationEnabled: z.boolean().default(false),
+    commentsBlockLinksEnabled: z.boolean().default(true),
+    commentsAntiSpamEnabled: z.boolean().default(true),
+    commentsLimitTwoInRowEnabled: z.boolean().default(true),
     commentsSlowModeSeconds: z.number().int().min(0).max(3600).default(0),
     commentsMessageText: botMessageTextSchema,
   })

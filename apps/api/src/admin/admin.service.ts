@@ -110,6 +110,9 @@ const CHANNEL_STATS_ACTIVITY_ACTIONS = [
 ] as const;
 const CHANNEL_STATS_MISSING_METRICS = ['reach', 'uniqueViews'] as const;
 const CHANNEL_STATS_REFRESH_STALE_MS = 2 * 60 * 60 * 1000;
+const CHANNEL_COMMENT_DUPLICATE_WINDOW_MS = 10 * 60 * 1000;
+const CHANNEL_COMMENT_MAX_CONSECUTIVE = 2;
+const CHANNEL_COMMENT_LINK_PATTERN = /((https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,})(\/\S*)?/giu;
 
 type ChannelDialogTokenPayload = {
   v: 1;
@@ -1076,6 +1079,25 @@ export class AdminService {
     const threadId = this.resolveChannelDialogThreadId(chatId, dialogType, parsed.data.token);
     const text = parsed.data.text.trim();
     const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
+    const channelSettings = await this.getPublicChannelSettings(chatId);
+
+    if (dialogType === 'comments' && !channelSettings.commentsEnabled) {
+      throw new BadRequestException('Комментарии для этого канала сейчас закрыты.');
+    }
+
+    if (dialogType === 'suggest' && !channelSettings.postSuggestionsEnabled) {
+      throw new BadRequestException('Предложить пост для этого канала сейчас нельзя.');
+    }
+
+    if (dialogType === 'comments' && channelSettings.commentsModerationEnabled) {
+      await this.assertChannelCommentAllowed({
+        chatId,
+        threadId,
+        authorUserId: user.userId,
+        text,
+        settings: channelSettings,
+      });
+    }
 
     let delivered = true;
     let deliveredToUserId: string | null = null;
@@ -2848,6 +2870,112 @@ export class AdminService {
       .filter((storedDomain) => normalizeAllowlistLink(storedDomain) === normalizedDomain);
   }
 
+  private async getPublicChannelSettings(chatId: string): Promise<ChannelSettings> {
+    const settings = await this.prisma.channelSettings.findUnique({
+      where: { chatId },
+    });
+
+    if (!settings) {
+      return DEFAULT_CHANNEL_SETTINGS;
+    }
+
+    const parsed = channelSettingsSchema.safeParse(settings);
+    return parsed.success ? parsed.data : DEFAULT_CHANNEL_SETTINGS;
+  }
+
+  private async assertChannelCommentAllowed(params: {
+    chatId: string;
+    threadId: string | null;
+    authorUserId: string;
+    text: string;
+    settings: ChannelSettings;
+  }): Promise<void> {
+    const { chatId, threadId, authorUserId, text, settings } = params;
+
+    if (settings.commentsBlockLinksEnabled && this.channelCommentContainsLink(text)) {
+      throw new BadRequestException('Ссылки в комментариях отключены.');
+    }
+
+    const threadFilter = threadId
+      ? {
+          payload: {
+            path: ['threadId'],
+            equals: threadId,
+          } satisfies Prisma.JsonFilter,
+        }
+      : {};
+
+    const [recentThreadComments, recentOwnComments] = await Promise.all([
+      this.prisma.auditLog.findMany({
+        where: {
+          chatId,
+          action: CHANNEL_DIALOG_ACTION_COMMENT,
+          ...threadFilter,
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+        take: CHANNEL_COMMENT_MAX_CONSECUTIVE,
+      }),
+      this.prisma.auditLog.findMany({
+        where: {
+          chatId,
+          action: CHANNEL_DIALOG_ACTION_COMMENT,
+          actorUserId: authorUserId,
+          ...threadFilter,
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+        take: 8,
+      }),
+    ]);
+
+    if (
+      settings.commentsLimitTwoInRowEnabled &&
+      recentThreadComments.length >= CHANNEL_COMMENT_MAX_CONSECUTIVE &&
+      recentThreadComments.every((row) => row.actorUserId === authorUserId)
+    ) {
+      throw new BadRequestException(
+        'Нельзя оставлять больше двух комментариев подряд. Дайте другим ответить.',
+      );
+    }
+
+    if (!settings.commentsAntiSpamEnabled) {
+      return;
+    }
+
+    const latestOwnComment = recentOwnComments[0];
+    if (latestOwnComment && settings.commentsSlowModeSeconds > 0) {
+      const elapsedMs = Date.now() - latestOwnComment.createdAt.getTime();
+      const remainingSeconds = settings.commentsSlowModeSeconds - Math.floor(elapsedMs / 1000);
+      if (remainingSeconds > 0) {
+        throw new BadRequestException(
+          `Слишком часто. Подождите ещё ${remainingSeconds} сек. перед следующим комментарием.`,
+        );
+      }
+    }
+
+    const normalizedCurrentText = this.normalizeChannelCommentText(text);
+    const hasRecentDuplicate = recentOwnComments.some((row) => {
+      if (Date.now() - row.createdAt.getTime() > CHANNEL_COMMENT_DUPLICATE_WINDOW_MS) {
+        return false;
+      }
+
+      const payload = this.readObjectPayload(row.payload);
+      const previousText = this.readTrimmedString(payload.text);
+      return previousText
+        ? this.normalizeChannelCommentText(previousText) === normalizedCurrentText
+        : false;
+    });
+
+    if (hasRecentDuplicate) {
+      throw new BadRequestException(
+        'Одинаковые комментарии подряд отправлять нельзя. Напишите один комментарий без повтора.',
+      );
+    }
+  }
+
   private mapChannelDialogAuditLog(
     row: { id: string; actorUserId: string; payload: Prisma.JsonValue; createdAt: Date },
     fallbackType: ChannelDialogType,
@@ -2870,6 +2998,15 @@ export class AdminService {
       createdAt: row.createdAt.toISOString(),
       ...(type === 'suggest' ? { delivered, deliveredToUserId: deliveredToUserId ?? null } : {}),
     };
+  }
+
+  private channelCommentContainsLink(value: string): boolean {
+    CHANNEL_COMMENT_LINK_PATTERN.lastIndex = 0;
+    return CHANNEL_COMMENT_LINK_PATTERN.test(value);
+  }
+
+  private normalizeChannelCommentText(value: string): string {
+    return value.trim().toLowerCase().replace(/\s+/gu, ' ');
   }
 
   private readObjectPayload(value: Prisma.JsonValue): Record<string, unknown> {
