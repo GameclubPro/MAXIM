@@ -27,7 +27,10 @@ type ChannelSettingsHintKey =
   | 'commentsLimitTwoInRowEnabled'
   | 'postSuggestionsEnabled'
   | 'engagementMessageText'
-  | 'publishEngagement';
+  | 'publishEngagement'
+  | 'broadcastText'
+  | 'broadcastImage'
+  | 'broadcastButton';
 
 const AUTOSAVE_DELAY_MS = 700;
 const AUTOSAVE_SAVED_HIDE_MS = 1600;
@@ -1179,26 +1182,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
         >
           <div className="settings-section__collapse-inner">
             <div className="channel-broadcast-studio">
-              <div className="channel-broadcast-hero">
-                <span className="channel-broadcast-hero__eyebrow">Пост в канал</span>
-                <h4>Соберите сообщение один раз и отправьте его прямо в ленту канала.</h4>
-                <p>
-                  Поддерживаются текст, фото и кнопка со ссылкой. Ниже сразу видно, как будет
-                  выглядеть публикация.
-                </p>
-                <div className="channel-broadcast-hero__chips">
-                  <span className="channel-broadcast-chip">
-                    {resolvedTitle ? `Канал: ${resolvedTitle}` : 'Текущий канал'}
-                  </span>
-                  <span className="channel-broadcast-chip">
-                    {broadcastHasImage ? 'Фото подключено' : 'Фото опционально'}
-                  </span>
-                  <span className="channel-broadcast-chip">
-                    {broadcastButtonEnabled ? 'CTA включён' : 'CTA выключен'}
-                  </span>
-                </div>
-              </div>
-
               <label
                 className={cn(
                   'field',
@@ -1206,7 +1189,17 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                   broadcastTextError && 'field--error',
                 )}
               >
-                <span className="field__label">Текст сообщения</span>
+                <div className="channel-settings-field-label">
+                  <span className="field__label">Текст сообщения</span>
+                  <ChannelSettingsHintAnchor
+                    hintKey="broadcastText"
+                    openHintKey={openHintKey}
+                    onToggleHint={toggleHint}
+                    label="Пояснение для текста рассылки"
+                  >
+                    Короткий lead и понятный призыв к действию обычно дают лучший переход в канал.
+                  </ChannelSettingsHintAnchor>
+                </div>
                 <textarea
                   value={broadcastText}
                   onChange={(event) => {
@@ -1220,13 +1213,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                   placeholder="Например: Новый пост уже в канале. Откройте выпуск по кнопке ниже."
                 />
                 <div className="mailing-message-field__meta">
-                  {broadcastTextError ? (
-                    <small className="field__hint">{broadcastTextError}</small>
-                  ) : (
-                    <small className="field__hint">
-                      Короткий lead + CTA обычно дают лучший переход в канал.
-                    </small>
-                  )}
+                  {broadcastTextError ? <small className="field__hint">{broadcastTextError}</small> : <span />}
                   <small
                     className={cn(
                       'mailing-message-field__counter',
@@ -1248,11 +1235,19 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                 >
                   <div className="mailing-option-card__head">
                     <div className="mailing-option-card__title-wrap">
-                      <span className="mailing-option-card__title">Фото</span>
+                      <div className="channel-settings-field-label">
+                        <span className="mailing-option-card__title">Фото</span>
+                        <ChannelSettingsHintAnchor
+                          hintKey="broadcastImage"
+                          openHintKey={openHintKey}
+                          onToggleHint={toggleHint}
+                          label="Пояснение для фото в рассылке"
+                        >
+                          Используйте обложку или ключевой кадр. Поддерживаются изображения до 1 MB.
+                        </ChannelSettingsHintAnchor>
+                      </div>
                       <small className="mailing-option-card__subtitle">
-                        {broadcastHasImage
-                          ? 'Изображение уйдёт вместе с постом.'
-                          : 'Опционально, до 1 MB.'}
+                        {broadcastHasImage ? 'Изображение будет отправлено с постом.' : 'Необязательно'}
                       </small>
                     </div>
 
@@ -1340,16 +1335,10 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                           <small className="field__hint">{broadcastImageError}</small>
                         ) : broadcastImageFileName ? (
                           <small className="field__hint">{broadcastImageFileName}</small>
-                        ) : (
-                          <small className="field__hint">PNG/JPG/WEBP, до 1 MB.</small>
-                        )}
+                        ) : null}
                       </label>
                     </div>
-                  ) : (
-                    <p className="mailing-option-card__hint">
-                      Хорошо работает для анонсов, выпусков и важных постов с обложкой.
-                    </p>
-                  )}
+                  ) : null}
                 </div>
 
                 <div
@@ -1361,11 +1350,19 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                 >
                   <div className="mailing-option-card__head">
                     <div className="mailing-option-card__title-wrap">
-                      <span className="mailing-option-card__title">Кнопка</span>
+                      <div className="channel-settings-field-label">
+                        <span className="mailing-option-card__title">Кнопка</span>
+                        <ChannelSettingsHintAnchor
+                          hintKey="broadcastButton"
+                          openHintKey={openHintKey}
+                          onToggleHint={toggleHint}
+                          label="Пояснение для кнопки в рассылке"
+                        >
+                          Добавляйте CTA, когда нужно перевести пользователя в канал, пост или на внешнюю страницу одним нажатием.
+                        </ChannelSettingsHintAnchor>
+                      </div>
                       <small className="mailing-option-card__subtitle">
-                        {broadcastButtonEnabled
-                          ? 'Укажите ссылку и подпись CTA.'
-                          : 'Опционально: переход в канал, пост или лендинг.'}
+                        {broadcastButtonEnabled ? 'CTA включён' : 'Необязательно'}
                       </small>
                     </div>
 
@@ -1438,16 +1435,10 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                         />
                         {broadcastButtonTextError ? (
                           <small className="field__hint">{broadcastButtonTextError}</small>
-                        ) : (
-                          <small className="field__hint">До 32 символов.</small>
-                        )}
+                        ) : null}
                       </label>
                     </div>
-                  ) : (
-                    <p className="mailing-option-card__hint">
-                      Добавьте CTA, если нужно дотянуть пользователя до нужной ссылки одним тапом.
-                    </p>
-                  )}
+                  ) : null}
                 </div>
               </div>
 
