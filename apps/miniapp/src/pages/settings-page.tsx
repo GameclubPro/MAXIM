@@ -876,6 +876,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const { pushToast } = useToast();
   const [draft, setDraft] = useState<ChatSettings | null>(null);
   const [rulesDraft, setRulesDraft] = useState<ChatRules | null>(null);
+  const [rulesAutoFillEnabled, setRulesAutoFillEnabled] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [rulesTextError, setRulesTextError] = useState('');
   const [rulesImageError, setRulesImageError] = useState('');
@@ -947,6 +948,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   useEffect(() => {
     setOpenSectionApplyConfirm(null);
     setRulesDraft(null);
+    setRulesAutoFillEnabled(false);
     setRulesTextError('');
     setRulesImageError('');
     setRulesFailedSnapshot('');
@@ -1088,37 +1090,15 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       return;
     }
 
-    setRulesDraft((current) => {
-      const shouldEnableAutoText =
-        rulesQuery.data.autoTextEnabled || (!rulesQuery.data.text.trim() && !current);
-
-      return chatRulesSchema.parse({
+    setRulesDraft(
+      chatRulesSchema.parse({
         ...rulesQuery.data,
-        autoTextEnabled: shouldEnableAutoText,
-        text: shouldEnableAutoText && autoRulesText ? autoRulesText : rulesQuery.data.text,
-      });
-    });
+        autoTextEnabled: false,
+      }),
+    );
     setRulesTextError('');
     setRulesImageError('');
   }, [rulesQuery.data]);
-
-  useEffect(() => {
-    if (!autoRulesText) {
-      return;
-    }
-
-    setRulesDraft((current) => {
-      if (!current?.autoTextEnabled || current.text === autoRulesText) {
-        return current;
-      }
-
-      return chatRulesSchema.parse({
-        ...current,
-        text: autoRulesText,
-      });
-    });
-    setRulesTextError('');
-  }, [autoRulesText]);
 
   useEffect(() => {
     if (!scheduleDomain) {
@@ -1137,7 +1117,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     () =>
       rulesDraft
         ? JSON.stringify({
-            autoTextEnabled: rulesDraft.autoTextEnabled,
             text: rulesDraft.text,
             imageBase64: rulesDraft.imageBase64,
             imageMimeType: rulesDraft.imageMimeType,
@@ -1155,7 +1134,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     () =>
       rulesQuery.data
         ? JSON.stringify({
-            autoTextEnabled: rulesQuery.data.autoTextEnabled,
             text: rulesQuery.data.text,
             imageBase64: rulesQuery.data.imageBase64,
             imageMimeType: rulesQuery.data.imageMimeType,
@@ -1526,6 +1504,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   }
 
   function handleRulesAutoTextToggle(enabled: boolean) {
+    setRulesAutoFillEnabled(enabled);
+
+    if (!enabled || !autoRulesText) {
+      return;
+    }
+
     setRulesDraft((current) => {
       if (!current) {
         return current;
@@ -1533,8 +1517,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
       return chatRulesSchema.parse({
         ...current,
-        autoTextEnabled: enabled,
-        text: enabled && autoRulesText ? autoRulesText : current.text,
+        autoTextEnabled: false,
+        text: autoRulesText,
       });
     });
     setRulesTextError('');
@@ -1596,7 +1580,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     }
 
     return {
-      autoTextEnabled: value.autoTextEnabled,
+      autoTextEnabled: false,
       text: value.text,
       imageBase64: value.imageBase64,
       imageMimeType: value.imageMimeType,
@@ -2292,7 +2276,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       ? `Опубликовано · ${rulesPublishedAtLabel}`
       : 'Опубликовано'
     : rulesDraft?.text.trim()
-      ? `${rulesDraft.autoTextEnabled ? 'Автотекст' : 'Черновик'} · ${rulesDraft.text.trim().length}/${MAX_CHAT_RULES_TEXT_LENGTH}`
+      ? `Черновик · ${rulesDraft.text.trim().length}/${MAX_CHAT_RULES_TEXT_LENGTH}`
       : 'Не настроено';
   const greetingHeaderSummary = draft?.greetingEnabled
     ? draft?.greetingBotMessageEnabled
@@ -3187,9 +3171,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             {hasPublishedRules
                               ? 'Опубликовано'
                               : rulesDraft.text.trim()
-                                ? rulesDraft.autoTextEnabled
-                                  ? 'Автотекст'
-                                  : 'Черновик'
+                                ? 'Черновик'
                                 : 'Пусто'}
                           </span>
                         </div>
@@ -3272,15 +3254,15 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             <div className="rules-editor-field__meta-actions">
                               <label className="rules-inline-toggle">
                                 <span className="rules-inline-toggle__label">
-                                  Заполнять автоматически
+                                  Заполнить по настройкам
                                 </span>
                                 <span
                                   className="settings-native-switch"
-                                  aria-label="Заполнять текст правил автоматически"
+                                  aria-label="Заполнить текст правил по настройкам"
                                 >
                                   <input
                                     type="checkbox"
-                                    checked={rulesDraft.autoTextEnabled}
+                                    checked={rulesAutoFillEnabled}
                                     onChange={(event) =>
                                       handleRulesAutoTextToggle(event.target.checked)
                                     }
@@ -3298,16 +3280,15 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           <textarea
                             rows={7}
                             value={rulesDraft.text}
-                            readOnly={rulesDraft.autoTextEnabled}
                             onChange={(event) => setRulesFieldValue('text', event.target.value)}
                             placeholder="Правила чата"
                           />
                           {rulesTextError ? (
                             <small className="field__hint">{rulesTextError}</small>
-                          ) : rulesDraft.autoTextEnabled ? (
+                          ) : rulesAutoFillEnabled ? (
                             <small className="field__hint rules-editor-field__hint">
-                              Текст собирается из текущих настроек чата. Выключите тумблер, если
-                              нужен свой текст.
+                              Текст уже подставлен по текущим настройкам. Дальше его можно
+                              редактировать вручную.
                             </small>
                           ) : null}
                         </label>
