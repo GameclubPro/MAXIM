@@ -472,10 +472,8 @@
   margin: 0;
   padding: 10px 12px;
   border-radius: 14px;
-  border: 1px solid rgba(20, 54, 82, 0.18);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.985), rgba(244, 249, 253, 0.98)),
-    rgba(255, 255, 255, 0.985);
+  border: 1px solid #c7d6e2;
+  background: #f7fbff;
   color: #173345;
   font-size: 0.8rem;
   line-height: 1.45;
