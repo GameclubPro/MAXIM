@@ -66,6 +66,21 @@ function createPrivateCallbackUpdate(payload: string): MaxUpdate {
 
 describe('PrivateControlService', () => {
   const defaultSettings = chatSettingsSchema.parse({});
+  const defaultPoll = {
+    question: '',
+    options: ['', ''],
+    status: 'DRAFT' as const,
+    activeVersion: 0,
+    publishedMessageId: null,
+    publishedUrl: null,
+    publishedAt: null,
+    closedAt: null,
+    totalVotes: 0,
+    optionResults: [
+      { option: '', votes: 0, percent: 0 },
+      { option: '', votes: 0, percent: 0 },
+    ],
+  };
 
   it('renders chat selection for /menu in private dialog', async () => {
     const maxClient = {
@@ -303,6 +318,107 @@ describe('PrivateControlService', () => {
       expect.stringContaining('Кнопки устарели'),
       expect.objectContaining({
         text: expect.any(String),
+      }),
+    );
+  });
+
+  it('opens the poll screen and publishes a poll from private control', async () => {
+    const maxClient = {
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+      answerCallback: jest.fn().mockResolvedValue(undefined),
+    };
+    const adminService = {
+      listManagedEntities: jest.fn().mockResolvedValue([
+        {
+          id: '-70000000000001',
+          title: 'Тестовый чат 1',
+          createdAt: new Date().toISOString(),
+          entityType: 'chat',
+        },
+      ]),
+      listChats: jest.fn().mockResolvedValue([
+        {
+          id: '-70000000000001',
+          title: 'Тестовый чат 1',
+          createdAt: new Date().toISOString(),
+          entityType: 'chat',
+        },
+      ]),
+      getSettings: jest.fn().mockResolvedValue(defaultSettings),
+      updateSettings: jest.fn(),
+      applySettingsToAllChats: jest.fn(),
+      getDomainAllowlistDetails: jest.fn(),
+      addDomain: jest.fn(),
+      removeDomain: jest.fn(),
+      scheduleDomainRemoval: jest.fn(),
+      getGlobalUserBlacklist: jest.fn(),
+      addGlobalUserBlacklistUser: jest.fn(),
+      removeGlobalUserBlacklistUser: jest.fn(),
+      sendBroadcast: jest.fn(),
+      getEvents: jest.fn(),
+      getLogsDashboard: jest.fn().mockResolvedValue({
+        membership: { joinedUsers: 0, leftUsers: 0 },
+        violationsSummary: { warn: 0, deleteMessage: 0, kick: 0, ban: 0, total: 0 },
+        violations: [],
+      }),
+      applyManualModerationAction: jest.fn(),
+      getChatPoll: jest.fn().mockResolvedValue(defaultPoll),
+      updateChatPoll: jest.fn().mockResolvedValue({
+        ...defaultPoll,
+        question: 'Выбираем режим?',
+      }),
+      publishChatPoll: jest.fn().mockResolvedValue({
+        ...defaultPoll,
+        question: 'Выбираем режим?',
+        status: 'ACTIVE',
+        activeVersion: 1,
+        publishedMessageId: 'mid-poll-1',
+        publishedUrl: 'https://max.ru/chats/chat-1/message/1',
+        publishedAt: new Date('2026-03-10T10:00:00.000Z').toISOString(),
+        optionResults: [
+          { option: '', votes: 0, percent: 0 },
+          { option: '', votes: 0, percent: 0 },
+        ],
+      }),
+      closeChatPoll: jest.fn(),
+    };
+
+    const service = new PrivateControlService(
+      maxClient as never,
+      adminService as never,
+      undefined,
+      undefined,
+    );
+
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|chat_select|-70000000000001'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_poll'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|poll_input_prompt|question'));
+    await service.handleUpdate(createPrivateTextUpdate('Выбираем режим?'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|poll_publish'));
+
+    expect(adminService.getChatPoll).toHaveBeenCalledWith(
+      '-70000000000001',
+      expect.objectContaining({ userId: 'user-1' }),
+    );
+    expect(adminService.updateChatPoll).toHaveBeenCalledWith(
+      '-70000000000001',
+      expect.objectContaining({ userId: 'user-1' }),
+      {
+        question: 'Выбираем режим?',
+        options: ['', ''],
+      },
+      'private_bot',
+    );
+    expect(adminService.publishChatPoll).toHaveBeenCalledWith(
+      '-70000000000001',
+      expect.objectContaining({ userId: 'user-1' }),
+      'private_bot',
+    );
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-1',
+      'Опрос опубликован',
+      expect.objectContaining({
+        text: expect.stringContaining('Статус: Активен'),
       }),
     );
   });

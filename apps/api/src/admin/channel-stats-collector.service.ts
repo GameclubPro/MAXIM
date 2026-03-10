@@ -15,6 +15,7 @@ const CHANNEL_STATS_CHAT_LOCK_TTL_MS = 10 * 60 * 1000;
 const CHANNEL_STATS_SUBSCRIPTIONS_LOCK_TTL_MS = 60 * 1000;
 const CHANNEL_STATS_REQUIRED_UPDATE_TYPES = [
   'message_created',
+  'message_callback',
   'user_added',
   'user_removed',
   'bot_added',

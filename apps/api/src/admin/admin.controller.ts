@@ -80,6 +80,30 @@ export class AdminController {
     return this.adminService.resetPublishedRules(chatId, user);
   }
 
+  @Get('chats/:chatId/poll')
+  getChatPoll(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.adminService.getChatPoll(chatId, user);
+  }
+
+  @Put('chats/:chatId/poll')
+  updateChatPoll(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.updateChatPoll(chatId, user, body);
+  }
+
+  @Post('chats/:chatId/poll/publish')
+  publishChatPoll(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.adminService.publishChatPoll(chatId, user);
+  }
+
+  @Post('chats/:chatId/poll/close')
+  closeChatPoll(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.adminService.closeChatPoll(chatId, user);
+  }
+
   @Get('channels/:chatId/settings')
   getChannelSettings(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.adminService.getChannelSettings(chatId, user);
@@ -101,6 +125,30 @@ export class AdminController {
     @Body() body: unknown,
   ) {
     return this.adminService.publishChannelEngagementMessage(chatId, user, body);
+  }
+
+  @Get('channels/:chatId/poll')
+  getChannelPoll(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.adminService.getChannelPoll(chatId, user);
+  }
+
+  @Put('channels/:chatId/poll')
+  updateChannelPoll(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.updateChannelPoll(chatId, user, body);
+  }
+
+  @Post('channels/:chatId/poll/publish')
+  publishChannelPoll(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.adminService.publishChannelPoll(chatId, user);
+  }
+
+  @Post('channels/:chatId/poll/close')
+  closeChannelPoll(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.adminService.closeChannelPoll(chatId, user);
   }
 
   @Get('channels/:chatId/dialog/:dialogType')

@@ -551,6 +551,41 @@ function createGroupRulesCallbackUpdate(): MaxUpdate {
   };
 }
 
+function createManagedPollCallbackUpdate(
+  payload: string,
+  overrides: Partial<MaxUpdate['message']> = {},
+): MaxUpdate {
+  return {
+    updateId: 'upd-managed-poll-callback-1',
+    type: 'message_callback',
+    message: {
+      messageId: 'mid-poll-1',
+      chatId: 'channel-1',
+      senderId: 'user-1',
+      senderName: 'Алексей',
+      text: '',
+      createdAt: new Date().toISOString(),
+      ...overrides,
+    },
+    raw: {
+      update_type: 'message_callback',
+      callback: {
+        callback_id: 'callback-poll-1',
+        payload,
+        user: {
+          user_id: 'user-1',
+        },
+      },
+      message: {
+        recipient: {
+          chat_id: 'channel-1',
+          chat_type: 'channel',
+        },
+      },
+    },
+  };
+}
+
 function createOldUpdate(): MaxUpdate {
   return {
     updateId: 'upd-old-1',
@@ -6443,5 +6478,217 @@ describe('ModerationService', () => {
       },
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+  });
+
+  it('records the first managed poll vote and updates the published message', async () => {
+    const prisma = {
+      managedPoll: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'poll-1',
+          chatId: 'channel-1',
+          question: 'Какой режим выбираем?',
+          options: ['Соло', 'Сквад'],
+          status: 'ACTIVE',
+          activeVersion: 1,
+          publishedMessageId: 'mid-poll-1',
+        }),
+      },
+      managedPollVote: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        upsert: jest.fn().mockResolvedValue(undefined),
+        findMany: jest.fn().mockResolvedValue([{ optionIndex: 0 }]),
+      },
+      chat: {
+        upsert: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn(),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalUserBlacklist: {
+        upsert: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      answerCallback: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createManagedPollCallbackUpdate('poll|poll-1|1|0'));
+
+    expect(prisma.managedPollVote.upsert).toHaveBeenCalledWith({
+      where: {
+        pollId_pollVersion_userId: {
+          pollId: 'poll-1',
+          pollVersion: 1,
+          userId: 'user-1',
+        },
+      },
+      create: {
+        pollId: 'poll-1',
+        pollVersion: 1,
+        userId: 'user-1',
+        optionIndex: 0,
+      },
+      update: {
+        optionIndex: 0,
+      },
+    });
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-poll-1',
+      expect.stringContaining('Всего голосов: 1'),
+      expect.objectContaining({
+        buttons: expect.any(Array),
+      }),
+    );
+    expect(maxClient.answerCallback).toHaveBeenCalledWith('callback-poll-1', 'Голос учтён');
+  });
+
+  it('does not rewrite the vote when the same option is pressed again', async () => {
+    const prisma = {
+      managedPoll: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'poll-1',
+          chatId: 'channel-1',
+          question: 'Какой режим выбираем?',
+          options: ['Соло', 'Сквад'],
+          status: 'ACTIVE',
+          activeVersion: 1,
+          publishedMessageId: 'mid-poll-1',
+        }),
+      },
+      managedPollVote: {
+        findUnique: jest.fn().mockResolvedValue({ optionIndex: 0 }),
+        upsert: jest.fn(),
+        findMany: jest.fn().mockResolvedValue([{ optionIndex: 0 }]),
+      },
+      chat: {
+        upsert: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn(),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalUserBlacklist: {
+        upsert: jest.fn(),
+      },
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      answerCallback: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createManagedPollCallbackUpdate('poll|poll-1|1|0'));
+
+    expect(prisma.managedPollVote.upsert).not.toHaveBeenCalled();
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-poll-1',
+      'Вы уже выбрали этот вариант',
+    );
+  });
+
+  it('rejects callbacks for a closed managed poll', async () => {
+    const prisma = {
+      managedPoll: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'poll-1',
+          chatId: 'channel-1',
+          question: 'Какой режим выбираем?',
+          options: ['Соло', 'Сквад'],
+          status: 'CLOSED',
+          activeVersion: 1,
+          publishedMessageId: 'mid-poll-1',
+        }),
+      },
+      managedPollVote: {
+        findUnique: jest.fn(),
+        upsert: jest.fn(),
+        findMany: jest.fn(),
+      },
+      chat: {
+        upsert: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn(),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalUserBlacklist: {
+        upsert: jest.fn(),
+      },
+    };
+    const maxClient = {
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      answerCallback: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createManagedPollCallbackUpdate('poll|poll-1|1|0'));
+
+    expect(prisma.managedPollVote.upsert).not.toHaveBeenCalled();
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.answerCallback).toHaveBeenCalledWith('callback-poll-1', 'Опрос закрыт');
   });
 });

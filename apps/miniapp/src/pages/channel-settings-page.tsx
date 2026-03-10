@@ -3,6 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { BackChevronIcon, ParticipantsIcon } from '../components/ui/entity-header-icons';
+import { ManagedPollCard } from '../components/managed-poll-card';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
@@ -986,6 +987,8 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
           </div>
         </div>
       </GlassCard>
+
+      {chatId ? <ManagedPollCard api={api} entityType="channel" entityId={chatId} /> : null}
     </div>
   );
 }

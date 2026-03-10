@@ -41,6 +41,9 @@ import {
   type SendBroadcastResult,
   type ChatSummary,
   type ManagedEntityHeader,
+  managedPollSchema,
+  updateManagedPollRequestSchema,
+  type ManagedPoll,
   normalizeAllowlistLink,
   sendBroadcastRequestSchema,
   scheduleDomainRemovalRequestSchema,
@@ -48,10 +51,12 @@ import {
 import {
   ChatEntityType,
   EventType,
+  ManagedPollStatus as PrismaManagedPollStatus,
   Operator,
   Prisma,
   SanctionAction,
   type ChatRules as PersistedChatRules,
+  type ManagedPoll as PersistedManagedPoll,
 } from '@prisma/client';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -69,6 +74,13 @@ import {
   type MaxMessageButton,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
+import {
+  buildManagedPollButtons,
+  buildManagedPollMessageText,
+  buildManagedPollOptionSummaries,
+  normalizeManagedPollDraft,
+  validateManagedPollForPublish,
+} from '../common/managed-poll.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 
@@ -96,6 +108,9 @@ const CHANNEL_DIALOG_ACTION_COMMENT = 'CHANNEL_DIALOG_COMMENT';
 const CHANNEL_DIALOG_ACTION_SUGGEST = 'CHANNEL_DIALOG_SUGGESTION';
 const CHANNEL_DIALOG_ACTION_PUBLISH = 'PUBLISH_CHANNEL_ENGAGEMENT';
 const CHANNEL_DIALOG_ACTION_AUTO_ATTACH = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
+const MANAGED_POLL_ACTION_UPDATE = 'UPDATE_MANAGED_POLL';
+const MANAGED_POLL_ACTION_PUBLISH = 'PUBLISH_MANAGED_POLL';
+const MANAGED_POLL_ACTION_CLOSE = 'CLOSE_MANAGED_POLL';
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
 const DEFAULT_CHANNEL_SETTINGS = channelSettingsSchema.parse({});
@@ -861,6 +876,64 @@ export class AdminService {
     await this.chatContextCache?.invalidate(chatId);
 
     return this.mapChatRules(updatedRules);
+  }
+
+  async getChatPoll(chatId: string, user: AuthUser): Promise<ManagedPoll> {
+    return this.getManagedPoll(chatId, user, 'chat');
+  }
+
+  async updateChatPoll(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ManagedPoll> {
+    return this.updateManagedPoll(chatId, user, 'chat', body, source);
+  }
+
+  async publishChatPoll(
+    chatId: string,
+    user: AuthUser,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ManagedPoll> {
+    return this.publishManagedPoll(chatId, user, 'chat', source);
+  }
+
+  async closeChatPoll(
+    chatId: string,
+    user: AuthUser,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ManagedPoll> {
+    return this.closeManagedPoll(chatId, user, 'chat', source);
+  }
+
+  async getChannelPoll(chatId: string, user: AuthUser): Promise<ManagedPoll> {
+    return this.getManagedPoll(chatId, user, 'channel');
+  }
+
+  async updateChannelPoll(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ManagedPoll> {
+    return this.updateManagedPoll(chatId, user, 'channel', body, source);
+  }
+
+  async publishChannelPoll(
+    chatId: string,
+    user: AuthUser,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ManagedPoll> {
+    return this.publishManagedPoll(chatId, user, 'channel', source);
+  }
+
+  async closeChannelPoll(
+    chatId: string,
+    user: AuthUser,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ManagedPoll> {
+    return this.closeManagedPoll(chatId, user, 'channel', source);
   }
 
   async getChannelSettings(chatId: string, user: AuthUser): Promise<ChannelSettings> {
@@ -1869,6 +1942,354 @@ export class AdminService {
     } catch {
       return null;
     }
+  }
+
+  private async getManagedPoll(
+    chatId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType,
+  ): Promise<ManagedPoll> {
+    await this.assertChatAdmin(chatId, user.userId, entityType);
+    await this.ensureEntityType(chatId, user.userId, entityType);
+
+    const poll = await this.upsertManagedPoll(chatId);
+    const hydrated = await this.hydrateManagedPollPublishedUrl(chatId, poll);
+    return this.mapManagedPoll(hydrated);
+  }
+
+  private async updateManagedPoll(
+    chatId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType,
+    body: unknown,
+    source: AdminActionSource,
+  ): Promise<ManagedPoll> {
+    await this.assertChatAdmin(chatId, user.userId, entityType);
+    await this.ensureEntityType(chatId, user.userId, entityType);
+
+    const parsed = updateManagedPollRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const current = await this.upsertManagedPoll(chatId);
+    if (current.status === PrismaManagedPollStatus.ACTIVE) {
+      throw new BadRequestException('Сначала закройте активный опрос.');
+    }
+
+    const normalizedDraft = normalizeManagedPollDraft(parsed.data.question, parsed.data.options);
+    const currentDraft = normalizeManagedPollDraft(
+      current.question,
+      this.readManagedPollOptions(current.options),
+    );
+    const hasChanges =
+      normalizedDraft.question !== currentDraft.question ||
+      normalizedDraft.options.length !== currentDraft.options.length ||
+      normalizedDraft.options.some((option, index) => option !== currentDraft.options[index]);
+
+    const updated = await this.prisma.managedPoll.update({
+      where: { chatId },
+      data: {
+        question: normalizedDraft.question,
+        options: normalizedDraft.options as Prisma.InputJsonValue,
+        ...(current.status === PrismaManagedPollStatus.CLOSED && hasChanges
+          ? {
+              status: PrismaManagedPollStatus.DRAFT,
+              publishedMessageId: null,
+              publishedUrl: null,
+              publishedAt: null,
+              closedAt: null,
+            }
+          : {}),
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: MANAGED_POLL_ACTION_UPDATE,
+        payload: {
+          entityType,
+          questionLength: normalizedDraft.question.length,
+          optionsCount: normalizedDraft.options.length,
+          statusBefore: current.status,
+          statusAfter:
+            current.status === PrismaManagedPollStatus.CLOSED && hasChanges
+              ? PrismaManagedPollStatus.DRAFT
+              : current.status,
+          source,
+        },
+      },
+    });
+    await this.chatContextCache.invalidate(chatId);
+
+    return this.mapManagedPoll(updated);
+  }
+
+  private async publishManagedPoll(
+    chatId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType,
+    source: AdminActionSource,
+  ): Promise<ManagedPoll> {
+    await this.assertChatAdmin(chatId, user.userId, entityType);
+    await this.ensureEntityType(chatId, user.userId, entityType);
+
+    const current = await this.upsertManagedPoll(chatId);
+    if (current.status === PrismaManagedPollStatus.ACTIVE && current.publishedMessageId?.trim()) {
+      throw new BadRequestException('Сначала закройте активный опрос.');
+    }
+
+    let normalizedDraft: { question: string; options: string[] };
+    try {
+      normalizedDraft = validateManagedPollForPublish(
+        current.question,
+        this.readManagedPollOptions(current.options),
+      );
+    } catch (error: unknown) {
+      throw new BadRequestException(error instanceof Error ? error.message : 'Опрос заполнен некорректно.');
+    }
+
+    const nextVersion = Math.max(0, current.activeVersion) + 1;
+    const zeroResults = buildManagedPollOptionSummaries(
+      normalizedDraft.options,
+      normalizedDraft.options.map(() => 0),
+    );
+    const buttons = buildManagedPollButtons(current.id, nextVersion, normalizedDraft.options);
+    const messageText = buildManagedPollMessageText(
+      normalizedDraft.question,
+      zeroResults.optionResults,
+      'ACTIVE',
+    );
+
+    let published: { messageId: string; url: string | null };
+    try {
+      published = await this.maxClient.sendMessageImmediateWithResolvedLink(chatId, messageText, {
+        buttons,
+      });
+    } catch (error: unknown) {
+      const maxApiMessage = this.extractMaxApiErrorMessage(error);
+      throw new BadRequestException(maxApiMessage || 'Не удалось опубликовать опрос.');
+    }
+
+    const publishedAt = new Date();
+    const updated = await this.prisma.managedPoll.update({
+      where: { chatId },
+      data: {
+        question: normalizedDraft.question,
+        options: normalizedDraft.options as Prisma.InputJsonValue,
+        status: PrismaManagedPollStatus.ACTIVE,
+        activeVersion: nextVersion,
+        publishedMessageId: published.messageId,
+        publishedUrl: this.normalizePublishedRulesUrl(published.url),
+        publishedAt,
+        closedAt: null,
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: MANAGED_POLL_ACTION_PUBLISH,
+        payload: {
+          entityType,
+          messageId: published.messageId,
+          url: published.url,
+          questionLength: normalizedDraft.question.length,
+          optionsCount: normalizedDraft.options.length,
+          activeVersion: nextVersion,
+          source,
+        },
+      },
+    });
+    await this.chatContextCache.invalidate(chatId);
+
+    return this.mapManagedPoll(updated);
+  }
+
+  private async closeManagedPoll(
+    chatId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType,
+    source: AdminActionSource,
+  ): Promise<ManagedPoll> {
+    await this.assertChatAdmin(chatId, user.userId, entityType);
+    await this.ensureEntityType(chatId, user.userId, entityType);
+
+    const current = await this.upsertManagedPoll(chatId);
+    const publishedMessageId = current.publishedMessageId?.trim() ?? '';
+    if (current.status !== PrismaManagedPollStatus.ACTIVE || !publishedMessageId) {
+      throw new BadRequestException('Активного опроса нет.');
+    }
+
+    const normalizedDraft = normalizeManagedPollDraft(
+      current.question,
+      this.readManagedPollOptions(current.options),
+    );
+    const voteCounts = await this.loadManagedPollVoteCounts(
+      current.id,
+      current.activeVersion,
+      normalizedDraft.options.length,
+    );
+    const summary = buildManagedPollOptionSummaries(normalizedDraft.options, voteCounts);
+    const messageText = buildManagedPollMessageText(
+      normalizedDraft.question,
+      summary.optionResults,
+      'CLOSED',
+    );
+
+    try {
+      await this.maxClient.editMessageInlineKeyboard(chatId, publishedMessageId, messageText);
+    } catch (error: unknown) {
+      if (!this.isMaxMessageMissingError(error)) {
+        const maxApiMessage = this.extractMaxApiErrorMessage(error);
+        throw new BadRequestException(maxApiMessage || 'Не удалось закрыть опрос.');
+      }
+    }
+
+    const closedAt = new Date();
+    const updated = await this.prisma.managedPoll.update({
+      where: { chatId },
+      data: {
+        status: PrismaManagedPollStatus.CLOSED,
+        closedAt,
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: MANAGED_POLL_ACTION_CLOSE,
+        payload: {
+          entityType,
+          messageId: publishedMessageId,
+          activeVersion: current.activeVersion,
+          totalVotes: summary.totalVotes,
+          source,
+        },
+      },
+    });
+    await this.chatContextCache.invalidate(chatId);
+
+    return this.mapManagedPoll(updated);
+  }
+
+  private async upsertManagedPoll(chatId: string): Promise<PersistedManagedPoll> {
+    return this.prisma.managedPoll.upsert({
+      where: { chatId },
+      create: {
+        chatId,
+      },
+      update: {},
+    });
+  }
+
+  private async mapManagedPoll(poll: PersistedManagedPoll): Promise<ManagedPoll> {
+    const normalizedDraft = normalizeManagedPollDraft(
+      poll.question,
+      this.readManagedPollOptions(poll.options),
+    );
+    const voteCounts =
+      poll.status === PrismaManagedPollStatus.ACTIVE || poll.status === PrismaManagedPollStatus.CLOSED
+        ? await this.loadManagedPollVoteCounts(poll.id, poll.activeVersion, normalizedDraft.options.length)
+        : normalizedDraft.options.map(() => 0);
+    const summary = buildManagedPollOptionSummaries(normalizedDraft.options, voteCounts);
+
+    return managedPollSchema.parse({
+      question: normalizedDraft.question,
+      options: normalizedDraft.options,
+      status: poll.status,
+      activeVersion: poll.activeVersion,
+      publishedMessageId: poll.publishedMessageId?.trim() || null,
+      publishedUrl: this.normalizePublishedRulesUrl(poll.publishedUrl),
+      publishedAt: poll.publishedAt ? poll.publishedAt.toISOString() : null,
+      closedAt: poll.closedAt ? poll.closedAt.toISOString() : null,
+      totalVotes: summary.totalVotes,
+      optionResults: summary.optionResults,
+    });
+  }
+
+  private async hydrateManagedPollPublishedUrl(
+    chatId: string,
+    poll: PersistedManagedPoll,
+  ): Promise<PersistedManagedPoll> {
+    const currentUrl = this.normalizePublishedRulesUrl(poll.publishedUrl);
+    if (currentUrl || !poll.publishedMessageId?.trim()) {
+      return {
+        ...poll,
+        publishedUrl: currentUrl,
+      };
+    }
+
+    let resolvedUrl: string | null = null;
+    try {
+      resolvedUrl = this.normalizePublishedRulesUrl(
+        await this.maxClient.resolveMessageLink(poll.publishedMessageId),
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          messageId: poll.publishedMessageId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to recover published managed poll url',
+      );
+      return poll;
+    }
+
+    if (!resolvedUrl) {
+      return poll;
+    }
+
+    await this.prisma.managedPoll.update({
+      where: { chatId },
+      data: {
+        publishedUrl: resolvedUrl,
+      },
+    });
+    await this.chatContextCache.invalidate(chatId);
+
+    return {
+      ...poll,
+      publishedUrl: resolvedUrl,
+    };
+  }
+
+  private readManagedPollOptions(value: Prisma.JsonValue): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value.filter((item): item is string => typeof item === 'string');
+  }
+
+  private async loadManagedPollVoteCounts(
+    pollId: string,
+    pollVersion: number,
+    optionCount: number,
+  ): Promise<number[]> {
+    const counts = Array.from({ length: optionCount }, () => 0);
+    const votes = await this.prisma.managedPollVote.findMany({
+      where: {
+        pollId,
+        pollVersion,
+      },
+      select: {
+        optionIndex: true,
+      },
+    });
+
+    for (const vote of votes) {
+      if (vote.optionIndex >= 0 && vote.optionIndex < counts.length) {
+        counts[vote.optionIndex] += 1;
+      }
+    }
+
+    return counts;
   }
 
   private resolveChannelDialogIntroText(

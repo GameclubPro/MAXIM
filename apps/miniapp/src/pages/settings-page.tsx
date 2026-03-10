@@ -10,6 +10,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { ManagedPollCard } from '../components/managed-poll-card';
 import { GlassCard } from '../components/ui/glass-card';
 import { BackChevronIcon, ParticipantsIcon } from '../components/ui/entity-header-icons';
 import { SkeletonCard } from '../components/ui/skeleton';
@@ -3414,6 +3415,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 </div>
               </div>
             </GlassCard>
+
+            {chatId ? <ManagedPollCard api={api} entityType="chat" entityId={chatId} /> : null}
 
             <GlassCard
               className="settings-section stagger-in"

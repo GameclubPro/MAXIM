@@ -1,17 +1,34 @@
 import { AdminService } from './admin.service';
 
 function createPrismaMock() {
+  const defaultManagedPoll = {
+    id: 'poll-1',
+    chatId: 'chat-1',
+    question: '',
+    options: ['', ''],
+    status: 'DRAFT',
+    activeVersion: 0,
+    publishedMessageId: null,
+    publishedUrl: null,
+    publishedAt: null,
+    closedAt: null,
+    createdAt: new Date('2026-03-01T00:00:00.000Z'),
+    updatedAt: new Date('2026-03-01T00:00:00.000Z'),
+  };
+
   return {
     chat: {
       upsert: jest.fn().mockResolvedValue({
         id: 'chat-1',
         title: 'Команда MAX',
+        entityType: 'CHAT',
         createdAt: new Date('2026-03-01T00:00:00.000Z'),
       }),
       update: jest.fn().mockResolvedValue(undefined),
       findUnique: jest.fn().mockResolvedValue({
         id: 'chat-1',
         title: 'Команда MAX',
+        entityType: 'CHAT',
       }),
     },
     channelSettings: {
@@ -72,6 +89,19 @@ function createPrismaMock() {
       }),
       findUnique: jest.fn().mockResolvedValue(null),
       update: jest.fn().mockResolvedValue(undefined),
+    },
+    managedPoll: {
+      upsert: jest.fn().mockResolvedValue(defaultManagedPoll),
+      update: jest.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({
+        ...defaultManagedPoll,
+        ...data,
+      })),
+      findUnique: jest.fn().mockResolvedValue(defaultManagedPoll),
+    },
+    managedPollVote: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findUnique: jest.fn().mockResolvedValue(null),
+      upsert: jest.fn().mockResolvedValue(undefined),
     },
     channelStatsSyncState: {
       findUnique: jest.fn().mockResolvedValue(null),
@@ -296,6 +326,199 @@ describe('AdminService night mode settings normalization', () => {
         },
       }),
     );
+  });
+});
+
+describe('AdminService managed polls', () => {
+  it('publishes and closes a chat poll', async () => {
+    const prisma = createPrismaMock();
+    const draftPoll = {
+      id: 'poll-chat-1',
+      chatId: 'chat-1',
+      question: 'Ваш любимый режим?',
+      options: ['Соло', 'Сквад'],
+      status: 'DRAFT',
+      activeVersion: 0,
+      publishedMessageId: null,
+      publishedUrl: null,
+      publishedAt: null,
+      closedAt: null,
+      createdAt: new Date('2026-03-10T09:00:00.000Z'),
+      updatedAt: new Date('2026-03-10T09:00:00.000Z'),
+    };
+    const activePoll = {
+      ...draftPoll,
+      status: 'ACTIVE',
+      activeVersion: 1,
+      publishedMessageId: 'mid-poll-1',
+      publishedUrl: 'https://max.ru/chats/chat-1/message/999',
+      publishedAt: new Date('2026-03-10T09:05:00.000Z'),
+    };
+    const closedPoll = {
+      ...activePoll,
+      status: 'CLOSED',
+      closedAt: new Date('2026-03-10T09:15:00.000Z'),
+    };
+
+    prisma.managedPoll.upsert
+      .mockResolvedValueOnce(draftPoll)
+      .mockResolvedValueOnce(activePoll);
+    prisma.managedPoll.update
+      .mockResolvedValueOnce(activePoll)
+      .mockResolvedValueOnce(closedPoll);
+    prisma.managedPollVote.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ optionIndex: 0 }, { optionIndex: 0 }, { optionIndex: 1 }])
+      .mockResolvedValueOnce([{ optionIndex: 0 }, { optionIndex: 0 }, { optionIndex: 1 }]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'mid-poll-1',
+        url: 'https://max.ru/chats/chat-1/message/999',
+      }),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      resolveMessageLink: jest.fn().mockResolvedValue(null),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    const actor = {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    };
+
+    const published = await service.publishChatPoll('chat-1', actor);
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'chat-1',
+      expect.stringContaining('Ваш любимый режим?'),
+      expect.objectContaining({
+        buttons: expect.any(Array),
+      }),
+    );
+    expect(published.status).toBe('ACTIVE');
+    expect(published.publishedMessageId).toBe('mid-poll-1');
+    expect(published.totalVotes).toBe(0);
+
+    const closed = await service.closeChatPoll('chat-1', actor);
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'chat-1',
+      'mid-poll-1',
+      expect.stringContaining('Статус: Закрыт'),
+    );
+    expect(closed.status).toBe('CLOSED');
+    expect(closed.totalVotes).toBe(3);
+    expect(closed.optionResults).toEqual([
+      expect.objectContaining({ option: 'Соло', votes: 2, percent: 67 }),
+      expect.objectContaining({ option: 'Сквад', votes: 1, percent: 33 }),
+    ]);
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        action: 'PUBLISH_MANAGED_POLL',
+      }),
+    });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        action: 'CLOSE_MANAGED_POLL',
+      }),
+    });
+  });
+
+  it('resets a closed channel poll back to draft when content changes', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Канал MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.managedPoll.upsert.mockResolvedValue({
+      id: 'poll-channel-1',
+      chatId: 'channel-1',
+      question: 'Старый вопрос',
+      options: ['Да', 'Нет'],
+      status: 'CLOSED',
+      activeVersion: 3,
+      publishedMessageId: 'mid-old-poll',
+      publishedUrl: 'https://max.ru/chats/channel-1/message/1',
+      publishedAt: new Date('2026-03-10T08:00:00.000Z'),
+      closedAt: new Date('2026-03-10T08:05:00.000Z'),
+      createdAt: new Date('2026-03-10T08:00:00.000Z'),
+      updatedAt: new Date('2026-03-10T08:05:00.000Z'),
+    });
+    prisma.managedPoll.update.mockResolvedValue({
+      id: 'poll-channel-1',
+      chatId: 'channel-1',
+      question: 'Новый вопрос',
+      options: ['Первый', 'Второй'],
+      status: 'DRAFT',
+      activeVersion: 3,
+      publishedMessageId: null,
+      publishedUrl: null,
+      publishedAt: null,
+      closedAt: null,
+      createdAt: new Date('2026-03-10T08:00:00.000Z'),
+      updatedAt: new Date('2026-03-10T08:10:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      listBotChats: jest.fn().mockResolvedValue([]),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.updateChannelPoll(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        question: ' Новый вопрос ',
+        options: [' Первый ', ' Второй '],
+      },
+    );
+
+    expect(result.status).toBe('DRAFT');
+    expect(result.question).toBe('Новый вопрос');
+    expect(result.options).toEqual(['Первый', 'Второй']);
+    expect(result.publishedMessageId).toBeNull();
+    expect(result.publishedUrl).toBeNull();
+    expect(prisma.managedPoll.update).toHaveBeenCalledWith({
+      where: { chatId: 'channel-1' },
+      data: expect.objectContaining({
+        question: 'Новый вопрос',
+        options: ['Первый', 'Второй'],
+        status: 'DRAFT',
+        publishedMessageId: null,
+        publishedUrl: null,
+        publishedAt: null,
+        closedAt: null,
+      }),
+    });
   });
 });
 

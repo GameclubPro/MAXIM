@@ -7,8 +7,15 @@ export const linkPolicySchema = z.enum(['ALLOWLIST_ONLY', 'BLOCKLIST_ONLY', 'ALE
 export const commercialAdsSensitivitySchema = z.enum(['BALANCED', 'STRICT']);
 export const managedEntityTypeSchema = z.enum(['chat', 'channel']);
 export const channelAutoPostButtonsModeSchema = z.enum(['OFF', 'COMMENTS', 'SUGGEST', 'BOTH']);
+export const managedPollStatusSchema = z.enum(['DRAFT', 'ACTIVE', 'CLOSED']);
 export type ManagedEntityType = z.infer<typeof managedEntityTypeSchema>;
 export type ChannelAutoPostButtonsMode = z.infer<typeof channelAutoPostButtonsModeSchema>;
+export type ManagedPollStatus = z.infer<typeof managedPollStatusSchema>;
+
+export const MANAGED_POLL_MIN_OPTIONS = 2;
+export const MANAGED_POLL_MAX_OPTIONS = 6;
+export const MANAGED_POLL_QUESTION_MAX_LENGTH = 280;
+export const MANAGED_POLL_OPTION_MAX_LENGTH = 80;
 
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
 const duplicateMaxCountSchema = z.number().int().min(2).max(20);
@@ -20,6 +27,13 @@ const chatRulesTextSchema = z.string().max(2_000).default('');
 const chatRulesImageBase64Schema = z.string().trim().max(1_500_000).default('');
 const chatRulesImageMimeTypeSchema = z.string().trim().max(128).default('');
 const chatRulesImageFileNameSchema = z.string().trim().max(128).default('');
+const managedPollQuestionSchema = z.string().max(MANAGED_POLL_QUESTION_MAX_LENGTH).default('');
+const managedPollOptionDraftSchema = z.string().max(MANAGED_POLL_OPTION_MAX_LENGTH).default('');
+const managedPollOptionsDraftSchema = z
+  .array(managedPollOptionDraftSchema)
+  .min(MANAGED_POLL_MIN_OPTIONS)
+  .max(MANAGED_POLL_MAX_OPTIONS)
+  .default(['', '']);
 
 function normalizeThematicCodewordCandidate(value: string): string | null {
   const normalized = value.trim().toLowerCase().replace(/ё/g, 'е');
@@ -54,8 +68,49 @@ function isValidBotButtonUrl(value: string): boolean {
   }
 }
 
+const ALLOWLIST_URL_CANDIDATE_PATTERN =
+  /(?:https?:\/\/|(?:[a-z0-9-]+\.)+[a-z]{2,})[^\s<>"'()[\]{}]*/i;
+const ENCODED_WHITESPACE_PATTERN = /%(?:09|0a|0d|20)/i;
+
+function tryDecodeUriComponent(value: string): string | null {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return null;
+  }
+}
+
+function extractAllowlistUrlCandidate(value: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  const decoded = tryDecodeUriComponent(trimmed);
+  const candidates =
+    decoded && decoded !== trimmed && ENCODED_WHITESPACE_PATTERN.test(trimmed)
+      ? [decoded, trimmed]
+      : decoded && decoded !== trimmed
+        ? [trimmed, decoded]
+        : [trimmed];
+
+  for (const candidate of candidates) {
+    const match = candidate.match(ALLOWLIST_URL_CANDIDATE_PATTERN);
+    if (!match) {
+      continue;
+    }
+
+    const extracted = match[0].replace(/[),.;!?]+$/u, '');
+    if (extracted) {
+      return extracted;
+    }
+  }
+
+  return null;
+}
+
 export function normalizeAllowlistLink(value: string): string | null {
-  const raw = value.trim();
+  const raw = extractAllowlistUrlCandidate(value);
   if (!raw) {
     return null;
   }
@@ -588,6 +643,33 @@ export const channelSettingsSchema = z
     }
   });
 export type ChannelSettings = z.infer<typeof channelSettingsSchema>;
+
+export const updateManagedPollRequestSchema = z.object({
+  question: managedPollQuestionSchema,
+  options: managedPollOptionsDraftSchema,
+});
+export type UpdateManagedPollRequest = z.infer<typeof updateManagedPollRequestSchema>;
+
+export const managedPollOptionResultSchema = z.object({
+  option: managedPollOptionDraftSchema,
+  votes: z.number().int().min(0).default(0),
+  percent: z.number().int().min(0).max(100).default(0),
+});
+export type ManagedPollOptionResult = z.infer<typeof managedPollOptionResultSchema>;
+
+export const managedPollSchema = z.object({
+  question: managedPollQuestionSchema,
+  options: managedPollOptionsDraftSchema,
+  status: managedPollStatusSchema.default('DRAFT'),
+  activeVersion: z.number().int().min(0).default(0),
+  publishedMessageId: z.string().nullable().optional().default(null),
+  publishedUrl: z.string().nullable().optional().default(null),
+  publishedAt: z.string().datetime().nullable().optional().default(null),
+  closedAt: z.string().datetime().nullable().optional().default(null),
+  totalVotes: z.number().int().min(0).default(0),
+  optionResults: z.array(managedPollOptionResultSchema).default([]),
+});
+export type ManagedPoll = z.infer<typeof managedPollSchema>;
 
 export const moderationEventSchema = z.object({
   id: z.string(),

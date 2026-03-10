@@ -40,6 +40,7 @@ import {
   type CreateChannelDialogMessageResponse,
   type LogsDashboardRange,
   type LogsDashboardResponse,
+  type ManagedPoll,
   type ManagedEntityHeader,
   type ManualModerationActionRequest,
   type ManualModerationActionResult,
@@ -48,6 +49,8 @@ import {
   type PublishChatRulesResult,
   type SendBroadcastResult,
   updateChatRulesRequestSchema,
+  managedPollSchema,
+  updateManagedPollRequestSchema,
 } from '@maxim/contracts';
 
 const API_BASE = '/api/v1';
@@ -164,6 +167,34 @@ export class ApiClient {
     return chatRulesSchema.parse(response);
   }
 
+  async getChatPoll(chatId: string): Promise<ManagedPoll> {
+    const response = await this.request(`/chats/${chatId}/poll`);
+    return managedPollSchema.parse(response);
+  }
+
+  async updateChatPoll(chatId: string, payload: { question: string; options: string[] }): Promise<ManagedPoll> {
+    const requestBody = updateManagedPollRequestSchema.parse(payload);
+    const response = await this.request(`/chats/${chatId}/poll`, {
+      method: 'PUT',
+      body: JSON.stringify(requestBody),
+    });
+    return managedPollSchema.parse(response);
+  }
+
+  async publishChatPoll(chatId: string): Promise<ManagedPoll> {
+    const response = await this.request(`/chats/${chatId}/poll/publish`, {
+      method: 'POST',
+    });
+    return managedPollSchema.parse(response);
+  }
+
+  async closeChatPoll(chatId: string): Promise<ManagedPoll> {
+    const response = await this.request(`/chats/${chatId}/poll/close`, {
+      method: 'POST',
+    });
+    return managedPollSchema.parse(response);
+  }
+
   async getChannelSettings(chatId: string): Promise<ChannelSettings> {
     const response = await this.request(`/channels/${chatId}/settings`);
     return channelSettingsSchema.parse(response);
@@ -187,6 +218,37 @@ export class ApiClient {
       body: JSON.stringify(requestBody),
     });
     return publishChannelEngagementResultSchema.parse(response);
+  }
+
+  async getChannelPoll(chatId: string): Promise<ManagedPoll> {
+    const response = await this.request(`/channels/${chatId}/poll`);
+    return managedPollSchema.parse(response);
+  }
+
+  async updateChannelPoll(
+    chatId: string,
+    payload: { question: string; options: string[] },
+  ): Promise<ManagedPoll> {
+    const requestBody = updateManagedPollRequestSchema.parse(payload);
+    const response = await this.request(`/channels/${chatId}/poll`, {
+      method: 'PUT',
+      body: JSON.stringify(requestBody),
+    });
+    return managedPollSchema.parse(response);
+  }
+
+  async publishChannelPoll(chatId: string): Promise<ManagedPoll> {
+    const response = await this.request(`/channels/${chatId}/poll/publish`, {
+      method: 'POST',
+    });
+    return managedPollSchema.parse(response);
+  }
+
+  async closeChannelPoll(chatId: string): Promise<ManagedPoll> {
+    const response = await this.request(`/channels/${chatId}/poll/close`, {
+      method: 'POST',
+    });
+    return managedPollSchema.parse(response);
   }
 
   async getChannelDialog(

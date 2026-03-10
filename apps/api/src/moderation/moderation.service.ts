@@ -5,6 +5,7 @@ import type { MaxUpdate } from '@maxim/contracts';
 import {
   ChatEntityType,
   EventType,
+  ManagedPollStatus as PrismaManagedPollStatus,
   Operator,
   Prisma,
   SanctionAction,
@@ -36,6 +37,13 @@ import type {
 import { RuleEngineService } from './rule-engine.service';
 import { SanctionService } from './sanction.service';
 import { maskText } from './text-mask.util';
+import {
+  buildManagedPollButtons,
+  buildManagedPollMessageText,
+  buildManagedPollOptionSummaries,
+  normalizeManagedPollDraft,
+  parseManagedPollCallbackPayload,
+} from '../common/managed-poll.util';
 
 type ProcessWebhookJob = {
   webhookEventId: string;
@@ -326,6 +334,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const callbackId = this.extractCallbackId(update);
+    const callbackPayload = this.extractCallbackPayload(update);
+    const pollCallback = parseManagedPollCallbackPayload(callbackPayload);
+    if (pollCallback) {
+      await this.handleManagedPollCallback(update, pollCallback, callbackId);
+      return;
+    }
+
     const channelMessage = this.isChannelMessage(update);
     const managedChannel = channelMessage
       ? await this.loadManagedChannelContext(chatId, chatTitle)
@@ -335,11 +351,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const callbackPayload = this.extractCallbackPayload(update);
     if (callbackPayload === RULES_CALLBACK_PAYLOAD) {
       await this.handleRulesCallback(
         chatId,
-        this.extractCallbackId(update),
+        callbackId,
         update.message?.messageId ?? null,
       );
       return;
@@ -4365,6 +4380,142 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async handleManagedPollCallback(
+    update: MaxUpdate,
+    pollCallback: {
+      pollId: string;
+      version: number;
+      optionIndex: number;
+    },
+    callbackId: string | null,
+  ): Promise<void> {
+    const message = update.message;
+    const chatId = message?.chatId?.trim() ?? '';
+    const sourceMessageId = message?.messageId?.trim() ?? '';
+    const voterUserId = this.extractCallbackUserId(update);
+    if (!chatId || !sourceMessageId || !voterUserId) {
+      if (callbackId) {
+        await this.answerCallbackSafe(callbackId, 'Опрос уже неактуален');
+      }
+      return;
+    }
+
+    const poll = await this.prisma.managedPoll.findUnique({
+      where: { id: pollCallback.pollId },
+      select: {
+        id: true,
+        chatId: true,
+        question: true,
+        options: true,
+        status: true,
+        activeVersion: true,
+        publishedMessageId: true,
+      },
+    });
+
+    if (!poll || poll.chatId !== chatId) {
+      if (callbackId) {
+        await this.answerCallbackSafe(callbackId, 'Опрос уже неактуален');
+      }
+      return;
+    }
+
+    if (poll.status !== PrismaManagedPollStatus.ACTIVE) {
+      if (callbackId) {
+        await this.answerCallbackSafe(callbackId, 'Опрос закрыт');
+      }
+      return;
+    }
+
+    if (
+      poll.activeVersion !== pollCallback.version ||
+      (poll.publishedMessageId?.trim() ?? '') !== sourceMessageId
+    ) {
+      if (callbackId) {
+        await this.answerCallbackSafe(callbackId, 'Опрос уже неактуален');
+      }
+      return;
+    }
+
+    const normalizedDraft = normalizeManagedPollDraft(
+      poll.question,
+      this.readManagedPollOptions(poll.options),
+    );
+    if (
+      pollCallback.optionIndex < 0 ||
+      pollCallback.optionIndex >= normalizedDraft.options.length ||
+      !normalizedDraft.options[pollCallback.optionIndex]
+    ) {
+      if (callbackId) {
+        await this.answerCallbackSafe(callbackId, 'Опрос уже неактуален');
+      }
+      return;
+    }
+
+    const existingVote = await this.prisma.managedPollVote.findUnique({
+      where: {
+        pollId_pollVersion_userId: {
+          pollId: poll.id,
+          pollVersion: poll.activeVersion,
+          userId: voterUserId,
+        },
+      },
+      select: {
+        optionIndex: true,
+      },
+    });
+
+    const notification =
+      existingVote && existingVote.optionIndex === pollCallback.optionIndex
+        ? 'Вы уже выбрали этот вариант'
+        : 'Голос учтён';
+
+    if (!existingVote || existingVote.optionIndex !== pollCallback.optionIndex) {
+      await this.prisma.managedPollVote.upsert({
+        where: {
+          pollId_pollVersion_userId: {
+            pollId: poll.id,
+            pollVersion: poll.activeVersion,
+            userId: voterUserId,
+          },
+        },
+        create: {
+          pollId: poll.id,
+          pollVersion: poll.activeVersion,
+          userId: voterUserId,
+          optionIndex: pollCallback.optionIndex,
+        },
+        update: {
+          optionIndex: pollCallback.optionIndex,
+        },
+      });
+    }
+
+    const voteCounts = await this.loadManagedPollVoteCounts(
+      poll.id,
+      poll.activeVersion,
+      normalizedDraft.options.length,
+    );
+    const summary = buildManagedPollOptionSummaries(normalizedDraft.options, voteCounts);
+    const text = buildManagedPollMessageText(
+      normalizedDraft.question,
+      summary.optionResults,
+      'ACTIVE',
+    );
+
+    await this.maxClient.editMessageInlineKeyboard(chatId, sourceMessageId, text, {
+      buttons: buildManagedPollButtons(poll.id, poll.activeVersion, normalizedDraft.options),
+      debugContext: {
+        screen: 'managed-poll',
+        action: 'vote',
+      },
+    });
+
+    if (callbackId) {
+      await this.answerCallbackSafe(callbackId, notification);
+    }
+  }
+
   private extractCallbackNode(update: MaxUpdate): Record<string, unknown> | null {
     const raw = this.asRecord(update.raw);
     if (!raw) {
@@ -4432,6 +4583,55 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const normalized = value.trim().toLowerCase();
     return normalized.length > 0 ? normalized : null;
+  }
+
+  private extractCallbackUserId(update: MaxUpdate): string | null {
+    const callback = this.extractCallbackNode(update);
+    if (!callback) {
+      return null;
+    }
+
+    const user = this.asRecord(callback.user);
+    const value = user?.user_id ?? user?.userId ?? user?.id;
+    if (typeof value === 'string' || typeof value === 'number') {
+      const normalized = String(value).trim();
+      return normalized.length > 0 ? normalized : null;
+    }
+
+    return null;
+  }
+
+  private readManagedPollOptions(value: Prisma.JsonValue): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value.filter((item): item is string => typeof item === 'string');
+  }
+
+  private async loadManagedPollVoteCounts(
+    pollId: string,
+    pollVersion: number,
+    optionCount: number,
+  ): Promise<number[]> {
+    const counts = Array.from({ length: optionCount }, () => 0);
+    const votes = await this.prisma.managedPollVote.findMany({
+      where: {
+        pollId,
+        pollVersion,
+      },
+      select: {
+        optionIndex: true,
+      },
+    });
+
+    for (const vote of votes) {
+      if (vote.optionIndex >= 0 && vote.optionIndex < counts.length) {
+        counts[vote.optionIndex] += 1;
+      }
+    }
+
+    return counts;
   }
 
   private resolvePrivateCallbackCommand(payload: string | null): PrivateControlCommand | null {
