@@ -5455,6 +5455,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               },
             },
             {
+              commentsEnabled: true,
+            },
+            {
               postSuggestionsEnabled: true,
             },
           ],
@@ -5733,11 +5736,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private resolveChannelAutoPostButtons(
-    settings: Pick<PersistedChannelSettings, 'autoPostButtonsMode' | 'postSuggestionsEnabled'>,
+    settings: Pick<
+      PersistedChannelSettings,
+      'autoPostButtonsMode' | 'postSuggestionsEnabled' | 'commentsEnabled'
+    >,
   ) {
     return {
       includeCommentsButton:
-        settings.autoPostButtonsMode === 'COMMENTS' || settings.autoPostButtonsMode === 'BOTH',
+        settings.autoPostButtonsMode === 'COMMENTS' || settings.autoPostButtonsMode === 'BOTH'
+          ? true
+          : settings.autoPostButtonsMode === 'OFF'
+            ? settings.commentsEnabled
+            : false,
       includeSuggestButton: settings.postSuggestionsEnabled,
     };
   }

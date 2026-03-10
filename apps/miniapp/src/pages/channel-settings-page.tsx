@@ -81,7 +81,11 @@ function resolveManualPublishButtons(settings: ChannelSettings) {
 function resolveBroadcastSystemButtons(settings: ChannelSettings) {
   return {
     includeCommentsButton:
-      settings.autoPostButtonsMode === 'COMMENTS' || settings.autoPostButtonsMode === 'BOTH',
+      settings.autoPostButtonsMode === 'COMMENTS' || settings.autoPostButtonsMode === 'BOTH'
+        ? true
+        : settings.autoPostButtonsMode === 'OFF'
+          ? settings.commentsEnabled
+          : false,
     includeSuggestButton: settings.postSuggestionsEnabled,
   };
 }

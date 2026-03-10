@@ -60,6 +60,7 @@ describe('ModerationService channel auto post buttons', () => {
             autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
+            commentsEnabled: true,
           },
           admins: [],
         }),
@@ -131,7 +132,7 @@ describe('ModerationService channel auto post buttons', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
   });
 
-  it('does not auto-attach when the channel mode is off', async () => {
+  it('does not auto-attach when the channel mode is off and comments are disabled', async () => {
     const prisma = {
       chat: {
         findUnique: jest.fn().mockResolvedValue({
@@ -142,6 +143,7 @@ describe('ModerationService channel auto post buttons', () => {
             autoPostButtonsMode: 'OFF',
             postSuggestionsEnabled: false,
             postSuggestionsButtonText: '📰 Предложить пост',
+            commentsEnabled: false,
           },
           admins: [],
         }),
@@ -184,6 +186,65 @@ describe('ModerationService channel auto post buttons', () => {
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
+  it('auto-attaches the comments button when comments are enabled and the mode is off', async () => {
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'channel-1',
+          title: 'Ищу модель | Ростов',
+          entityType: 'CHANNEL',
+          channelSettings: {
+            autoPostButtonsMode: 'OFF',
+            postSuggestionsEnabled: false,
+            postSuggestionsButtonText: '📰 Предложить пост',
+            commentsEnabled: true,
+          },
+          admins: [],
+        }),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+    );
+
+    await service.handleUpdate(createChannelPostUpdate());
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-1',
+      'Новый пост в канале',
+      expect.objectContaining({
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии' })]],
+      }),
+    );
+  });
+
   it('auto-attaches the suggestion button when suggestions are enabled even if the legacy mode is off', async () => {
     const prisma = {
       chat: {
@@ -195,6 +256,7 @@ describe('ModerationService channel auto post buttons', () => {
             autoPostButtonsMode: 'OFF',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
+            commentsEnabled: false,
           },
           admins: [],
         }),
@@ -251,6 +313,7 @@ describe('ModerationService channel auto post buttons', () => {
             autoPostButtonsMode: 'BOTH',
             postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
+            commentsEnabled: true,
             updatedAt: new Date('2026-03-06T15:00:00.000Z'),
             chat: {
               admins: [],
@@ -308,6 +371,9 @@ describe('ModerationService channel auto post buttons', () => {
             autoPostButtonsMode: {
               in: ['COMMENTS', 'BOTH'],
             },
+          },
+          {
+            commentsEnabled: true,
           },
           {
             postSuggestionsEnabled: true,

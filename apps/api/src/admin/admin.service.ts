@@ -1900,13 +1900,15 @@ export class AdminService {
         autoPostButtonsMode: true,
         postSuggestionsEnabled: true,
         postSuggestionsButtonText: true,
+        commentsEnabled: true,
       },
     });
     const threadId = randomUUID();
 
     if (
       channelSettings.autoPostButtonsMode === 'COMMENTS' ||
-      channelSettings.autoPostButtonsMode === 'BOTH'
+      channelSettings.autoPostButtonsMode === 'BOTH' ||
+      (channelSettings.autoPostButtonsMode === 'OFF' && channelSettings.commentsEnabled)
     ) {
       rows.push([this.buildChannelDialogButton(chatId, 'comments', threadId, '💬 Комментарии')]);
     }
