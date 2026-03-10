@@ -5,11 +5,12 @@
 - Ответы и инструкции давать коротко и по делу, без воды.
 
 ## Проект и окружения
-- Локальный путь проекта: `/home/yourname/projects/MAXIM`.
+- Локальный путь проекта: `/home/alex/projects/MAXIM`.
 - VPS путь проекта: `/var/www/Chat_bot`.
 - GitHub репозиторий: `https://github.com/GameclubPro/MAXIM.git`.
 - Прод-домен: `https://maxim.play-team.ru`.
-- Локальная машина пользователя (`yourname@sex`) на текущий момент без Docker CLI (`docker: command not found`).
+- SSH alias для VPS: `ssh maxim-vps`.
+- На локальной машине пользователя по-прежнему нет Docker CLI (`docker: command not found`).
 
 ## Правило исполнения изменений (обязательно)
 - Для задач, где агент вносит изменения в код, работа считается завершённой только после подключения к VPS и применения изменений в прод-контуре (`/var/www/Chat_bot`), если пользователь явно не попросил ограничиться локальными правками.
@@ -52,13 +53,23 @@
 - Модерация дублей обновлена: при включённом `duplicateBotMessageEnabled` первый дубль удаляется и бот отправляет объяснение; предупреждение начинается со следующего повтора, дальше `KICK/BAN` по ступеням настроек.
 - Модерация игнорирует сообщения, отправленные ботом/сервисом (`sender.type=bot/service` или `is_bot=true`), чтобы бот не удалял собственные служебные сообщения.
 - Экран `Настройки` в miniapp обновлён:
-  - убран верхний блок в `Settings`,
+  - верхние блоки в настройках чатов и каналов теперь компактные, с back-иконкой и статусом только в состояниях `Сохраняем/Черновик/Ошибка`,
+  - в правом нижнем углу верхнего блока в чатах и каналах показывается число участников с иконкой,
   - удалены заглушки (оставлена только рабочая логика по ссылкам),
   - в режиме `ALLOWLIST_ONLY` есть реальный ввод/список разрешённых доменов,
   - в `Настройках` показывается название чата, а не только `chat_id`.
 - В API добавлен endpoint чтения allowlist доменов:
   - `GET /api/v1/chats/:chatId/domain-allowlist` -> `string[]`.
+- В API добавлены header-endpoint'ы для miniapp:
+  - `GET /api/v1/chats/:chatId/header`
+  - `GET /api/v1/channels/:chatId/header`
+  - используются для compact-header и счётчика участников (`title/link/participantsCount`).
 - После `docker compose ... up -d --no-deps --force-recreate ...` возможен кратковременный `502` до старта upstream; это может быть нормой на коротком интервале.
+- `ChannelStatsCollectorService` на старом коде мог уронить `api` на старте из-за необработанного `429 too manyrequests` от MAX в background sync; актуальное поведение: ошибка логируется, но `api` не должен падать.
+- Возможен кейс stale `QUEUED` webhook-события при уже failed Bull job:
+  - симптом: `api/health/ready = 503`, `queueLag.ok=false`, в Redis `bull:moderation:wait/active = 0`,
+  - типичный failedReason у job: `job stalled more than allowable limit`,
+  - если payload события пустой/битый, его нужно карантинить в `FAILED`, а не гонять бесконечный retry.
 - Актуализированы deploy-скрипты:
   - `infra/scripts/local-commit-push.sh` проверяет, что при изменении `apps/api/prisma/schema.prisma` в commit добавлена migration (`apps/api/prisma/migrations/*/migration.sql`).
   - `infra/scripts/vps-pull-build-up.sh` поднимает `postgres/redis`, ждёт готовность Postgres через `pg_isready`, применяет миграции и только потом пересоздаёт `api/miniapp-static`.
@@ -181,7 +192,7 @@
 
 ## Рекомендуемый короткий сценарий деплоя (основной)
 - Локально:
-  - `cd /home/yourname/projects/MAXIM && ./infra/scripts/local-commit-push.sh "<COMMIT_MESSAGE>" main`
+  - `cd /home/alex/projects/MAXIM && ./infra/scripts/local-commit-push.sh "<COMMIT_MESSAGE>" main`
 - VPS:
   - `cd /var/www/Chat_bot && git pull origin main && ./infra/scripts/vps-pull-build-up.sh main`
 
@@ -189,7 +200,7 @@
 
 ### Локально commit/push + VPS pull/deploy (основной сценарий)
 - Локально:
-  - `cd /home/yourname/projects/MAXIM`
+  - `cd /home/alex/projects/MAXIM`
   - `./infra/scripts/local-commit-push.sh "<COMMIT_MESSAGE>" main`
 - VPS:
   - `cd /var/www/Chat_bot`
@@ -198,7 +209,7 @@
 
 ### Пересборка только API
 - Локально:
-  - `cd /home/yourname/projects/MAXIM`
+  - `cd /home/alex/projects/MAXIM`
   - `docker compose -f infra/docker-compose.yml build api`
   - `docker compose -f infra/docker-compose.yml up -d --no-deps api`
 - VPS:
@@ -208,7 +219,7 @@
 
 ### Пересборка только miniapp
 - Локально:
-  - `cd /home/yourname/projects/MAXIM`
+  - `cd /home/alex/projects/MAXIM`
   - `docker compose -f infra/docker-compose.yml build miniapp-static`
   - `docker compose -f infra/docker-compose.yml up -d --no-deps miniapp-static`
 - VPS:
@@ -218,7 +229,7 @@
 
 ### Логи API
 - Локально:
-  - `cd /home/yourname/projects/MAXIM`
+  - `cd /home/alex/projects/MAXIM`
   - `docker compose -f infra/docker-compose.yml logs -f api`
 - VPS:
   - `cd /var/www/Chat_bot`
@@ -227,7 +238,7 @@
 
 ### Проверка webhook subscriptions MAX (вступления/приветствия)
 - Локально:
-  - `cd /home/yourname/projects/MAXIM`
+  - `cd /home/alex/projects/MAXIM`
   - `set -a; source .env; set +a`
   - `curl -sS -H "Authorization: ${MAX_BOT_TOKEN}" "https://platform-api.max.ru/subscriptions"`
   - `BASE_URL="${APP_BASE_URL%/}"; WEBHOOK_URL="${BASE_URL}/api/webhook/max/${MAX_BOT_ID}/${MAX_WEBHOOK_SECRET_PATH}"; curl -sS -X POST "https://platform-api.max.ru/subscriptions" -H "Authorization: ${MAX_BOT_TOKEN}" -H "Content-Type: application/json" -d "{\"url\":\"${WEBHOOK_URL}\",\"update_types\":[\"message_created\",\"user_added\",\"bot_added\",\"bot_started\"],\"secret\":\"${MAX_WEBHOOK_HEADER_SECRET}\"}"`
@@ -239,7 +250,7 @@
 
 ### Prisma миграции
 - Локально:
-  - `cd /home/yourname/projects/MAXIM`
+  - `cd /home/alex/projects/MAXIM`
   - `npm run prisma:migrate:deploy --workspace @maxim/api`
 - VPS:
   - `cd /var/www/Chat_bot`
@@ -247,7 +258,7 @@
 
 ### Полный порядок деплоя (после `git pull`)
 - Локально:
-  - `cd /home/yourname/projects/MAXIM`
+  - `cd /home/alex/projects/MAXIM`
   - `npm run prisma:migrate:deploy --workspace @maxim/api`
   - `docker compose -f infra/docker-compose.yml -f infra/docker-compose.local.yml build api miniapp-static`
   - `docker compose -f infra/docker-compose.yml -f infra/docker-compose.local.yml up -d --no-deps api miniapp-static`
@@ -293,6 +304,8 @@
 
 ## Чеклист после деплоя
 - `api/health/live` отвечает `200` локально и через домен.
+- `api/health/ready` отвечает `200` локально и через домен.
+- `queueLag.ok=true`.
 - В логах webhook для MAX: `POST /api/webhook/max/...` возвращает `201`.
 - Запросы miniapp к `/api/v1/chats` не возвращают `401`.
 - Для новых чатов экран `Настройки` не возвращает `404`.
@@ -318,8 +331,12 @@
 - `rg: command not found` на VPS: использовать `grep -En` или установить `ripgrep` (`apt install -y ripgrep`).
 - `502 Bad Gateway` сразу после recreate: часто кратковременно до старта `api`/`miniapp-static`; сначала проверять `curl http://127.0.0.1:3001/api/health/live`, потом домен.
 - `curl: (56) Recv failure: Connection reset by peer` на `127.0.0.1:3001`: обычно `api` падает/рестартит, смотреть `docker compose ... logs api` и обязательные ENV.
+- `Request failed with status code 429` от MAX может временно приводить к `403` на `/api/v1/chats`, `/api/v1/channels`, `/api/v1/chats/:chatId/settings`, `/api/v1/channels/:chatId/settings`, `/api/v1/*/header`: в логах это обычно видно как `Chat hidden: failed to validate bot/user admin access`.
+- `api` падает на старте с `429 too manyrequests` от MAX: обычно это старый код без catch в `ChannelStatsCollectorService.syncAllChannels`; нужен rebuild/redeploy актуального `api`.
 - `Bind for 0.0.0.0:3001 failed: port is already allocated`: обычно одновременно запущены base и scale контуры; остановить один из них (`down --remove-orphans`) и поднять только нужный.
 - `api/health/ready = 503` с `queueLag.ok=false`: накопился старый backlog (`RECEIVED/QUEUED`), часто после нагрузочных прогонов; проверить `webhook_events` и очистить/закрыть stale-события по операционной процедуре.
+- `api/health/ready = 503`, `QUEUED > 0`, но в Redis у `bull:moderation` пусто по `wait/active`: это может быть stale `QUEUED` запись при уже failed Bull job. Проверить `redis-cli hgetall bull:moderation:<EVENT_ID>` и `failedReason`.
+- `job stalled more than allowable limit` у Bull job + пустой payload webhook-события (`raw_payload = {}`): безопаснее карантинить событие в `FAILED` с `next_enqueue_at = null`, чем бесконечно переenqueue-ить.
 - `api-enqueue` с `P1017`/`connection pool timeout`: на слабом VPS уменьшить prisma pool (`connection_limit`) и проверить стабильность Postgres.
 - `greetingEnabled=true`, но приветствий нет: почти всегда в subscriptions отсутствуют `user_added`/`bot_added`; проверить `GET /subscriptions` и убедиться, что эти `update_types` реально подписаны.
 - `POST /api/v1/chats/:chatId/broadcast` возвращает `201`, но сообщение не приходит: вероятно на VPS запущен старый `api` без синхронной отправки/ретраев; обновить контейнер `api` и повторить тест.
@@ -329,7 +346,7 @@
 ## Rollback
 ### Откат на предыдущий коммит
 - Локально:
-  - `cd /home/yourname/projects/MAXIM`
+  - `cd /home/alex/projects/MAXIM`
   - `git log --oneline -n 5`
   - `git checkout <COMMIT_SHA>`
   - `docker compose -f infra/docker-compose.yml build api`
