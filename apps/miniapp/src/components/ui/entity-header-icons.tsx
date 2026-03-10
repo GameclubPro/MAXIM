@@ -36,26 +36,16 @@ export function ChatEntityIcon() {
 export function ChannelEntityIcon() {
   return (
     <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
-      <rect
-        x="4.5"
-        y="5.5"
-        width="15"
-        height="4.4"
-        rx="2.2"
+      <rect x="4.5" y="5" width="15" height="14" rx="3.4" stroke="currentColor" strokeWidth="1.85" />
+      <path
+        d="M7.7 9h8.6M7.7 12h5.4M7.7 15h8.6"
         stroke="currentColor"
         strokeWidth="1.85"
-      />
-      <rect
-        x="4.5"
-        y="14.1"
-        width="15"
-        height="4.4"
-        rx="2.2"
-        stroke="currentColor"
-        strokeWidth="1.85"
+        strokeLinecap="round"
+        strokeLinejoin="round"
       />
       <path
-        d="M8 7.7h3.8M8 16.3h5.7"
+        d="M7.2 5v14"
         stroke="currentColor"
         strokeWidth="1.85"
         strokeLinecap="round"
