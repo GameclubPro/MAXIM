@@ -1484,17 +1484,61 @@ export class AdminService {
     body: unknown,
     source: AdminActionSource = 'miniapp',
   ): Promise<SendBroadcastResult> {
-    await this.assertChatAdmin(sourceChatId, user.userId, 'chat');
-    await this.ensureEntityType(sourceChatId, user.userId, 'chat');
+    return this.sendManagedBroadcast(sourceChatId, user, body, {
+      entityType: 'chat',
+      source,
+      resolveTargets: (actor) => this.listChats(actor),
+    });
+  }
+
+  async sendChannelBroadcast(
+    sourceChatId: string,
+    user: AuthUser,
+    body: unknown,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<SendBroadcastResult> {
+    return this.sendManagedBroadcast(sourceChatId, user, body, {
+      entityType: 'channel',
+      source,
+    });
+  }
+
+  private async sendManagedBroadcast(
+    sourceChatId: string,
+    user: AuthUser,
+    body: unknown,
+    options: {
+      entityType: ManagedEntityType;
+      source: AdminActionSource;
+      resolveTargets?: (user: AuthUser) => Promise<ChatSummary[]>;
+    },
+  ): Promise<SendBroadcastResult> {
+    const { entityType, source, resolveTargets } = options;
+
+    await this.assertChatAdmin(sourceChatId, user.userId, entityType);
+    await this.ensureEntityType(sourceChatId, user.userId, entityType);
     const parsed = sendBroadcastRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const availableChats = parsed.data.applyToAllChats ? await this.listChats(user) : [];
-    const targetChatIds = parsed.data.applyToAllChats
-      ? Array.from(new Set([sourceChatId, ...availableChats.map((chat) => chat.id)]))
-      : [sourceChatId];
+    let targetChatIds = [sourceChatId];
+    if (parsed.data.applyToAllChats) {
+      if (!resolveTargets) {
+        throw new BadRequestException('Массовая рассылка по каналам пока недоступна.');
+      }
+
+      const availableTargets = await resolveTargets(user);
+      targetChatIds = Array.from(
+        new Set([
+          sourceChatId,
+          ...availableTargets
+            .filter((chat) => chat.entityType === entityType)
+            .map((chat) => chat.id),
+        ]),
+      );
+    }
+
     const messageText = parsed.data.text.trim() || (parsed.data.imageEnabled ? ' ' : '');
 
     let delayMs = 0;
@@ -1546,6 +1590,7 @@ export class AdminService {
       } catch (error: unknown) {
         this.logger.warn(
           {
+            entityType,
             sourceChatId,
             actorUserId: user.userId,
             err: error instanceof Error ? error.message : String(error),
@@ -1597,6 +1642,7 @@ export class AdminService {
           chatFailed = true;
           this.logger.warn(
             {
+              entityType,
               sourceChatId,
               targetChatId: chatId,
               actorUserId: user.userId,
@@ -1633,6 +1679,7 @@ export class AdminService {
         actorUserId: user.userId,
         action: 'SEND_BROADCAST',
         payload: {
+          entityType,
           applyToAllChats: parsed.data.applyToAllChats,
           targetChats: targetChatIds.length,
           sentChats: sentChatIds.length,

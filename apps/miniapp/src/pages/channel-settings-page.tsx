@@ -9,7 +9,7 @@ import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import { cn } from '../lib/cn';
-import type { ApiClient } from '../lib/api-client';
+import type { ApiClient, SendBroadcastPayload } from '../lib/api-client';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 
@@ -18,7 +18,7 @@ type ChannelRouteState = {
   chatLink: string;
 };
 
-type ChannelSettingsSectionKey = 'comments' | 'postSuggestions' | 'poll';
+type ChannelSettingsSectionKey = 'comments' | 'postSuggestions' | 'broadcast' | 'poll';
 type ChannelSettingsHintKey =
   | 'commentsEnabled'
   | 'commentsModerationEnabled'
@@ -31,6 +31,8 @@ type ChannelSettingsHintKey =
 
 const AUTOSAVE_DELAY_MS = 700;
 const AUTOSAVE_SAVED_HIDE_MS = 1600;
+const MAX_BROADCAST_TEXT_LENGTH = 1_000;
+const MAX_BROADCAST_IMAGE_SIZE_BYTES = 1_000_000;
 
 function buildAutoPostButtonsMode(
   includeComments: boolean,
@@ -120,6 +122,24 @@ function normalizeApiError(error: unknown): string {
   }
 
   return text;
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = typeof reader.result === 'string' ? reader.result : '';
+      const payload = result.includes(',') ? result.split(',')[1] : '';
+      if (!payload) {
+        reject(new Error('Не удалось прочитать файл.'));
+        return;
+      }
+
+      resolve(payload);
+    };
+    reader.onerror = () => reject(new Error('Не удалось прочитать файл.'));
+    reader.readAsDataURL(file);
+  });
 }
 
 function SectionChevron({ isOpen }: { isOpen: boolean }) {
@@ -345,10 +365,24 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   >({
     comments: false,
     postSuggestions: false,
+    broadcast: false,
     poll: false,
   });
   const [openHintKey, setOpenHintKey] = useState<ChannelSettingsHintKey | null>(null);
   const { pushToast } = useToast();
+  const [broadcastText, setBroadcastText] = useState('');
+  const [broadcastTextError, setBroadcastTextError] = useState('');
+  const [broadcastButtonEnabled, setBroadcastButtonEnabled] = useState(false);
+  const [broadcastButtonUrl, setBroadcastButtonUrl] = useState('');
+  const [broadcastButtonText, setBroadcastButtonText] = useState('Открыть');
+  const [broadcastButtonUrlError, setBroadcastButtonUrlError] = useState('');
+  const [broadcastButtonTextError, setBroadcastButtonTextError] = useState('');
+  const [broadcastImageEnabled, setBroadcastImageEnabled] = useState(false);
+  const [broadcastImageBase64, setBroadcastImageBase64] = useState('');
+  const [broadcastImageMimeType, setBroadcastImageMimeType] = useState('');
+  const [broadcastImageFileName, setBroadcastImageFileName] = useState('');
+  const [broadcastImagePreviewUrl, setBroadcastImagePreviewUrl] = useState('');
+  const [broadcastImageError, setBroadcastImageError] = useState('');
 
   const settingsQuery = useQuery({
     queryKey: ['channel-settings', chatId],
@@ -374,6 +408,30 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     setAutosaveState('idle');
     lastFailedDraftKeyRef.current = null;
   }, [settingsQuery.data]);
+
+  useEffect(() => {
+    setBroadcastText('');
+    setBroadcastTextError('');
+    setBroadcastButtonEnabled(false);
+    setBroadcastButtonUrl('');
+    setBroadcastButtonText('Открыть');
+    setBroadcastButtonUrlError('');
+    setBroadcastButtonTextError('');
+    setBroadcastImageEnabled(false);
+    setBroadcastImageBase64('');
+    setBroadcastImageMimeType('');
+    setBroadcastImageFileName('');
+    setBroadcastImagePreviewUrl('');
+    setBroadcastImageError('');
+  }, [chatId]);
+
+  useEffect(() => {
+    return () => {
+      if (broadcastImagePreviewUrl) {
+        URL.revokeObjectURL(broadcastImagePreviewUrl);
+      }
+    };
+  }, [broadcastImagePreviewUrl]);
 
   useEffect(() => {
     if (!chatId) {
@@ -593,6 +651,24 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     return clearAutosaveTimer;
   }, [chatId, isDirty, normalizedDraft, normalizedDraftKey, normalizedSavedSnapshot]);
 
+  const sendBroadcastMutation = useMutation({
+    mutationFn: (payload: SendBroadcastPayload) => api.sendChannelBroadcast(chatId, payload),
+    onSuccess: () => {
+      pushToast({
+        tone: 'success',
+        title: 'Пост отправлен',
+        description: 'Сообщение опубликовано в канал.',
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось отправить пост',
+        description: normalizeApiError(error),
+      });
+    },
+  });
+
   const publishMutation = useMutation({
     mutationFn: async () => {
       if (!chatId) {
@@ -733,6 +809,97 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
       : publishButtons.includeCommentsButton
         ? 'Автопредложка выключена. Кнопка «Предложить пост» появится только под этим сообщением, вместе с кнопкой «Комментарии».'
         : 'Автопредложка выключена. Кнопка «Предложить пост» появится только под этим сообщением.';
+  const broadcastHasImage = broadcastImageEnabled && Boolean(broadcastImageBase64);
+  const broadcastHasButton = broadcastButtonEnabled && Boolean(broadcastButtonText.trim());
+  const broadcastCanSend = Boolean(broadcastText.trim()) || broadcastHasImage;
+  const broadcastHeaderSummary = broadcastCanSend
+    ? broadcastHasImage && broadcastHasButton
+      ? 'ТЕКСТ, ФОТО И CTA ГОТОВЫ'
+      : broadcastHasImage
+        ? 'ПОСТ С ФОТО ГОТОВ'
+        : broadcastHasButton
+          ? 'ПОСТ С CTA ГОТОВ'
+          : 'ПОСТ ГОТОВ К ОТПРАВКЕ'
+    : 'ТЕКСТ, ФОТО И КНОПКА';
+  const broadcastPreviewButtonEnabled =
+    broadcastButtonEnabled &&
+    Boolean(broadcastButtonText.trim()) &&
+    isHttpUrl(broadcastButtonUrl.trim());
+
+  function resetBroadcastComposer() {
+    setBroadcastText('');
+    setBroadcastTextError('');
+    setBroadcastButtonEnabled(false);
+    setBroadcastButtonUrl('');
+    setBroadcastButtonText('Открыть');
+    setBroadcastButtonUrlError('');
+    setBroadcastButtonTextError('');
+    setBroadcastImageEnabled(false);
+    setBroadcastImageBase64('');
+    setBroadcastImageMimeType('');
+    setBroadcastImageFileName('');
+    setBroadcastImagePreviewUrl('');
+    setBroadcastImageError('');
+  }
+
+  function handleSendChannelBroadcast() {
+    const normalizedText = broadcastText.trim();
+    const normalizedButtonUrl = broadcastButtonUrl.trim();
+    const normalizedButtonText = broadcastButtonText.trim() || 'Открыть';
+
+    setBroadcastTextError('');
+    setBroadcastButtonUrlError('');
+    setBroadcastButtonTextError('');
+    setBroadcastImageError('');
+
+    let hasError = false;
+
+    if (!normalizedText && !broadcastHasImage) {
+      setBroadcastTextError('Введите текст или добавьте фото.');
+      hasError = true;
+    } else if (normalizedText.length > MAX_BROADCAST_TEXT_LENGTH) {
+      setBroadcastTextError(`Максимум ${MAX_BROADCAST_TEXT_LENGTH} символов.`);
+      hasError = true;
+    }
+
+    if (broadcastButtonEnabled) {
+      if (!isHttpUrl(normalizedButtonUrl)) {
+        setBroadcastButtonUrlError('Укажите корректную ссылку (http/https).');
+        hasError = true;
+      }
+      if (!normalizedButtonText || normalizedButtonText.length > 32) {
+        setBroadcastButtonTextError('Введите название кнопки до 32 символов.');
+        hasError = true;
+      }
+    }
+
+    if (broadcastImageEnabled) {
+      if (!broadcastImageBase64 || !broadcastImageMimeType) {
+        setBroadcastImageError('Загрузите фото.');
+        hasError = true;
+      }
+    }
+
+    if (hasError) {
+      return;
+    }
+
+    sendBroadcastMutation.mutate({
+      text: normalizedText,
+      applyToAllChats: false,
+      buttonEnabled: broadcastButtonEnabled,
+      buttonUrl: normalizedButtonUrl,
+      buttonText: normalizedButtonText,
+      imageEnabled: broadcastHasImage,
+      imageBase64: broadcastHasImage ? broadcastImageBase64 : '',
+      imageMimeType: broadcastHasImage ? broadcastImageMimeType : '',
+      imageFileName: broadcastHasImage ? broadcastImageFileName : '',
+      sendAt: null,
+      cycleEnabled: false,
+      cycleEveryDays: 1,
+      cycleCount: 1,
+    });
+  }
 
   return (
     <div className="channel-settings-screen page-enter">
@@ -982,6 +1149,373 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                   disabled={!canPublishEngagement || publishMutation.isPending}
                 >
                   {publishMutation.isPending ? 'Публикуем…' : 'Опубликовать или обновить'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </GlassCard>
+
+      <GlassCard className="channel-settings-card" elevated>
+        <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+          <button
+            type="button"
+            className="settings-section__toggle"
+            onClick={() => toggleSection('broadcast')}
+            aria-expanded={expandedSections.broadcast}
+            aria-controls="channel-settings-broadcast"
+          >
+            <span className="settings-section__toggle-main">
+              <h3>Рассылка</h3>
+              <small>{broadcastHeaderSummary}</small>
+            </span>
+            <SectionChevron isOpen={expandedSections.broadcast} />
+          </button>
+        </div>
+
+        <div
+          id="channel-settings-broadcast"
+          className={cn('settings-section__collapse', expandedSections.broadcast && 'is-open')}
+        >
+          <div className="settings-section__collapse-inner">
+            <div className="channel-broadcast-studio">
+              <div className="channel-broadcast-hero">
+                <span className="channel-broadcast-hero__eyebrow">Пост в канал</span>
+                <h4>Соберите сообщение один раз и отправьте его прямо в ленту канала.</h4>
+                <p>
+                  Поддерживаются текст, фото и кнопка со ссылкой. Ниже сразу видно, как будет
+                  выглядеть публикация.
+                </p>
+                <div className="channel-broadcast-hero__chips">
+                  <span className="channel-broadcast-chip">
+                    {resolvedTitle ? `Канал: ${resolvedTitle}` : 'Текущий канал'}
+                  </span>
+                  <span className="channel-broadcast-chip">
+                    {broadcastHasImage ? 'Фото подключено' : 'Фото опционально'}
+                  </span>
+                  <span className="channel-broadcast-chip">
+                    {broadcastButtonEnabled ? 'CTA включён' : 'CTA выключен'}
+                  </span>
+                </div>
+              </div>
+
+              <label
+                className={cn(
+                  'field',
+                  'mailing-message-field',
+                  broadcastTextError && 'field--error',
+                )}
+              >
+                <span className="field__label">Текст сообщения</span>
+                <textarea
+                  value={broadcastText}
+                  onChange={(event) => {
+                    setBroadcastText(event.target.value);
+                    if (broadcastTextError) {
+                      setBroadcastTextError('');
+                    }
+                  }}
+                  rows={5}
+                  maxLength={MAX_BROADCAST_TEXT_LENGTH}
+                  placeholder="Например: Новый пост уже в канале. Откройте выпуск по кнопке ниже."
+                />
+                <div className="mailing-message-field__meta">
+                  {broadcastTextError ? (
+                    <small className="field__hint">{broadcastTextError}</small>
+                  ) : (
+                    <small className="field__hint">
+                      Короткий lead + CTA обычно дают лучший переход в канал.
+                    </small>
+                  )}
+                  <small
+                    className={cn(
+                      'mailing-message-field__counter',
+                      broadcastText.length >= MAX_BROADCAST_TEXT_LENGTH && 'is-limit',
+                    )}
+                  >
+                    {broadcastText.length}/{MAX_BROADCAST_TEXT_LENGTH}
+                  </small>
+                </div>
+              </label>
+
+              <div className="mailing-options-grid">
+                <div
+                  className={cn(
+                    'mailing-option-card',
+                    broadcastImageEnabled && 'is-enabled',
+                    broadcastImageError && 'field--error',
+                  )}
+                >
+                  <div className="mailing-option-card__head">
+                    <div className="mailing-option-card__title-wrap">
+                      <span className="mailing-option-card__title">Фото</span>
+                      <small className="mailing-option-card__subtitle">
+                        {broadcastHasImage
+                          ? 'Изображение уйдёт вместе с постом.'
+                          : 'Опционально, до 1 MB.'}
+                      </small>
+                    </div>
+
+                    <label className="settings-native-switch" aria-label="Добавить фото в пост">
+                      <input
+                        type="checkbox"
+                        checked={broadcastImageEnabled}
+                        onChange={(event) => {
+                          const enabled = event.target.checked;
+                          setBroadcastImageEnabled(enabled);
+                          if (!enabled) {
+                            setBroadcastImageBase64('');
+                            setBroadcastImageMimeType('');
+                            setBroadcastImageFileName('');
+                            setBroadcastImagePreviewUrl('');
+                            setBroadcastImageError('');
+                          }
+                        }}
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                    </label>
+                  </div>
+
+                  {broadcastImageEnabled ? (
+                    <div className="mailing-option-card__body">
+                      <label
+                        className={cn(
+                          'field',
+                          'mailing-upload-field',
+                          broadcastImageError && 'field--error',
+                        )}
+                      >
+                        <span className="field__label">Файл изображения</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={async (event) => {
+                            const file = event.target.files?.[0];
+                            if (!file) {
+                              setBroadcastImageBase64('');
+                              setBroadcastImageMimeType('');
+                              setBroadcastImageFileName('');
+                              setBroadcastImagePreviewUrl('');
+                              setBroadcastImageError('Выберите фото.');
+                              return;
+                            }
+
+                            if (!file.type.toLowerCase().startsWith('image/')) {
+                              setBroadcastImageBase64('');
+                              setBroadcastImageMimeType('');
+                              setBroadcastImageFileName('');
+                              setBroadcastImagePreviewUrl('');
+                              setBroadcastImageError('Нужен файл изображения.');
+                              return;
+                            }
+
+                            if (file.size > MAX_BROADCAST_IMAGE_SIZE_BYTES) {
+                              setBroadcastImageBase64('');
+                              setBroadcastImageMimeType('');
+                              setBroadcastImageFileName('');
+                              setBroadcastImagePreviewUrl('');
+                              setBroadcastImageError('Фото слишком большое. Максимум 1 MB.');
+                              return;
+                            }
+
+                            try {
+                              const imageBase64 = await fileToBase64(file);
+                              setBroadcastImageBase64(imageBase64);
+                              setBroadcastImageMimeType(file.type);
+                              setBroadcastImageFileName(file.name);
+                              setBroadcastImagePreviewUrl(URL.createObjectURL(file));
+                              setBroadcastImageError('');
+                            } catch {
+                              setBroadcastImageBase64('');
+                              setBroadcastImageMimeType('');
+                              setBroadcastImageFileName('');
+                              setBroadcastImagePreviewUrl('');
+                              setBroadcastImageError('Не удалось прочитать фото.');
+                            }
+                          }}
+                        />
+                        {broadcastImageError ? (
+                          <small className="field__hint">{broadcastImageError}</small>
+                        ) : broadcastImageFileName ? (
+                          <small className="field__hint">{broadcastImageFileName}</small>
+                        ) : (
+                          <small className="field__hint">PNG/JPG/WEBP, до 1 MB.</small>
+                        )}
+                      </label>
+                    </div>
+                  ) : (
+                    <p className="mailing-option-card__hint">
+                      Хорошо работает для анонсов, выпусков и важных постов с обложкой.
+                    </p>
+                  )}
+                </div>
+
+                <div
+                  className={cn(
+                    'mailing-option-card',
+                    broadcastButtonEnabled && 'is-enabled',
+                    (broadcastButtonUrlError || broadcastButtonTextError) && 'field--error',
+                  )}
+                >
+                  <div className="mailing-option-card__head">
+                    <div className="mailing-option-card__title-wrap">
+                      <span className="mailing-option-card__title">Кнопка</span>
+                      <small className="mailing-option-card__subtitle">
+                        {broadcastButtonEnabled
+                          ? 'Укажите ссылку и подпись CTA.'
+                          : 'Опционально: переход в канал, пост или лендинг.'}
+                      </small>
+                    </div>
+
+                    <label
+                      className="settings-native-switch"
+                      aria-label="Добавить кнопку в пост канала"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={broadcastButtonEnabled}
+                        onChange={(event) => {
+                          const enabled = event.target.checked;
+                          setBroadcastButtonEnabled(enabled);
+                          if (!enabled) {
+                            setBroadcastButtonUrlError('');
+                            setBroadcastButtonTextError('');
+                          }
+                        }}
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                    </label>
+                  </div>
+
+                  {broadcastButtonEnabled ? (
+                    <div className="mailing-option-card__body">
+                      <label
+                        className={cn(
+                          'field settings-url-field',
+                          broadcastButtonUrlError && 'field--error',
+                        )}
+                      >
+                        <span className="field__label">Ссылка кнопки</span>
+                        <input
+                          type="url"
+                          inputMode="url"
+                          value={broadcastButtonUrl}
+                          onChange={(event) => {
+                            setBroadcastButtonUrl(event.target.value);
+                            if (broadcastButtonUrlError) {
+                              setBroadcastButtonUrlError('');
+                            }
+                          }}
+                          placeholder="https://max.ru/channel/..."
+                        />
+                        {broadcastButtonUrlError ? (
+                          <small className="field__hint">{broadcastButtonUrlError}</small>
+                        ) : null}
+                      </label>
+
+                      <label
+                        className={cn(
+                          'field settings-text-field',
+                          broadcastButtonTextError && 'field--error',
+                        )}
+                      >
+                        <span className="field__label">Название кнопки</span>
+                        <input
+                          type="text"
+                          maxLength={32}
+                          value={broadcastButtonText}
+                          onChange={(event) => {
+                            setBroadcastButtonText(event.target.value);
+                            if (broadcastButtonTextError) {
+                              setBroadcastButtonTextError('');
+                            }
+                          }}
+                          placeholder="Открыть"
+                        />
+                        {broadcastButtonTextError ? (
+                          <small className="field__hint">{broadcastButtonTextError}</small>
+                        ) : (
+                          <small className="field__hint">До 32 символов.</small>
+                        )}
+                      </label>
+                    </div>
+                  ) : (
+                    <p className="mailing-option-card__hint">
+                      Добавьте CTA, если нужно дотянуть пользователя до нужной ссылки одним тапом.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="channel-broadcast-preview">
+                <div className="channel-broadcast-preview__head">
+                  <div className="channel-broadcast-preview__title-wrap">
+                    <span className="channel-broadcast-preview__eyebrow">Предпросмотр</span>
+                    <strong>{resolvedTitle || 'Выбранный канал'}</strong>
+                  </div>
+                  <small className="channel-broadcast-preview__meta">
+                    Сообщение уйдёт сразу после отправки.
+                  </small>
+                </div>
+
+                <div className="channel-broadcast-preview__message">
+                  {broadcastImageEnabled ? (
+                    broadcastImagePreviewUrl ? (
+                      <img
+                        src={broadcastImagePreviewUrl}
+                        alt="Предпросмотр фото для поста канала"
+                        className="broadcast-image-preview"
+                      />
+                    ) : (
+                      <div className="channel-broadcast-preview__image-placeholder">
+                        Фото появится здесь после загрузки
+                      </div>
+                    )
+                  ) : null}
+
+                  <p>
+                    {broadcastText.trim() ||
+                      'Здесь будет текст поста. Можно отправить и только фото, но короткий lead обычно работает лучше.'}
+                  </p>
+
+                  {broadcastButtonEnabled ? (
+                    <div
+                      className={cn(
+                        'channel-broadcast-preview__button',
+                        !broadcastPreviewButtonEnabled && 'is-disabled',
+                      )}
+                    >
+                      <span>{broadcastButtonText.trim() || 'Название кнопки'}</span>
+                      <small>
+                        {broadcastPreviewButtonEnabled
+                          ? broadcastButtonUrl.trim()
+                          : 'Добавьте корректную ссылку http/https'}
+                      </small>
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="mailing-action-bar">
+                <button
+                  type="button"
+                  className="button button--accent mailing-action-bar__send"
+                  onClick={handleSendChannelBroadcast}
+                  disabled={sendBroadcastMutation.isPending || !broadcastCanSend}
+                >
+                  {sendBroadcastMutation.isPending ? 'Отправляем...' : 'Опубликовать в канал'}
+                </button>
+                <button
+                  type="button"
+                  className="button button--ghost mailing-action-bar__clear"
+                  onClick={resetBroadcastComposer}
+                  disabled={sendBroadcastMutation.isPending}
+                >
+                  Очистить
                 </button>
               </div>
             </div>

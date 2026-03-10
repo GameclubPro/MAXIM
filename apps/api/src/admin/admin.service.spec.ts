@@ -1495,6 +1495,92 @@ describe('AdminService.sendBroadcast', () => {
   });
 });
 
+describe('AdminService.sendChannelBroadcast', () => {
+  it('sends immediate broadcast to channel with button and image', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+      createdAt: new Date('2026-03-01T00:00:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-channel-1' }),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.sendChannelBroadcast(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Новый выпуск уже в канале.',
+        applyToAllChats: false,
+        buttonEnabled: true,
+        buttonUrl: 'https://max.ru/channel/maxim',
+        buttonText: 'Открыть выпуск',
+        imageEnabled: true,
+        imageBase64: Buffer.from('channel-image').toString('base64'),
+        imageMimeType: 'image/jpeg',
+        imageFileName: 'cover.jpg',
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryDays: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(maxClient.uploadImage).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'channel-1',
+      'Новый выпуск уже в канале.',
+      {
+        button: {
+          text: 'Открыть выпуск',
+          url: 'https://max.ru/channel/maxim',
+        },
+        imagePayload: { token: 'upload-token-channel-1' },
+      },
+      { immediate: true },
+    );
+    expect(result.sentChats).toBe(1);
+    expect(result.failedChats).toBe(0);
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'channel-1',
+        actorUserId: 'admin-1',
+        action: 'SEND_BROADCAST',
+        payload: expect.objectContaining({
+          entityType: 'channel',
+          applyToAllChats: false,
+          sentChats: 1,
+        }),
+      }),
+    });
+  });
+});
+
 describe('AdminService chat rules', () => {
   it('returns persisted chat rules draft with published metadata', async () => {
     const prisma = createPrismaMock();

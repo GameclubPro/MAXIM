@@ -127,6 +127,15 @@ export class AdminController {
     return this.adminService.publishChannelEngagementMessage(chatId, user, body);
   }
 
+  @Post('channels/:chatId/broadcast')
+  sendChannelBroadcast(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.sendChannelBroadcast(chatId, user, body);
+  }
+
   @Get('channels/:chatId/poll')
   getChannelPoll(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.adminService.getChannelPoll(chatId, user);

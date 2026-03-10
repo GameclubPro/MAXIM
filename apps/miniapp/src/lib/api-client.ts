@@ -311,6 +311,18 @@ export class ApiClient {
     return sendBroadcastResultSchema.parse(response);
   }
 
+  async sendChannelBroadcast(
+    chatId: string,
+    payload: SendBroadcastPayload,
+  ): Promise<SendBroadcastResult> {
+    const requestBody = sendBroadcastRequestSchema.parse(payload);
+    const response = await this.request(`/channels/${chatId}/broadcast`, {
+      method: 'POST',
+      body: JSON.stringify(requestBody),
+    });
+    return sendBroadcastResultSchema.parse(response);
+  }
+
   async getDomainAllowlist(chatId: string): Promise<string[]> {
     const response = await this.request(`/chats/${chatId}/domain-allowlist`);
 
