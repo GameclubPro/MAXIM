@@ -334,46 +334,86 @@ export function Shell() {
             <span className="bottom-nav__label">Каналы</span>
           </Link>
 
-          {resolvedChatId ? (
-            <NavLink
-              to={settingsRoute}
-              className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
-            >
-              <span className="bottom-nav__icon" aria-hidden>
-                <BottomNavIcon name="settings" />
-              </span>
-              <span className="bottom-nav__label">Настройки</span>
-            </NavLink>
-          ) : (
-            <span className="bottom-nav__item is-disabled" aria-disabled>
-              <span className="bottom-nav__icon" aria-hidden>
-                <BottomNavIcon name="settings" />
-              </span>
-              <span className="bottom-nav__label">Настройки</span>
-            </span>
-          )}
+          {resolvedEntityType === 'channel' ? (
+            <>
+              {resolvedChatId ? (
+                <NavLink
+                  to={activityRoute}
+                  className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
+                >
+                  <span className="bottom-nav__icon" aria-hidden>
+                    <BottomNavIcon name="events" />
+                  </span>
+                  <span className="bottom-nav__label">Статистика</span>
+                </NavLink>
+              ) : (
+                <span className="bottom-nav__item is-disabled" aria-disabled>
+                  <span className="bottom-nav__icon" aria-hidden>
+                    <BottomNavIcon name="events" />
+                  </span>
+                  <span className="bottom-nav__label">Статистика</span>
+                </span>
+              )}
 
-          {resolvedChatId ? (
-            <NavLink
-              to={activityRoute}
-              className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
-            >
-              <span className="bottom-nav__icon" aria-hidden>
-                <BottomNavIcon name="events" />
-              </span>
-              <span className="bottom-nav__label">
-                {resolvedEntityType === 'channel' ? 'Статистика' : 'События'}
-              </span>
-            </NavLink>
+              {resolvedChatId ? (
+                <NavLink
+                  to={settingsRoute}
+                  className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
+                >
+                  <span className="bottom-nav__icon" aria-hidden>
+                    <BottomNavIcon name="settings" />
+                  </span>
+                  <span className="bottom-nav__label">Настройки</span>
+                </NavLink>
+              ) : (
+                <span className="bottom-nav__item is-disabled" aria-disabled>
+                  <span className="bottom-nav__icon" aria-hidden>
+                    <BottomNavIcon name="settings" />
+                  </span>
+                  <span className="bottom-nav__label">Настройки</span>
+                </span>
+              )}
+            </>
           ) : (
-            <span className="bottom-nav__item is-disabled" aria-disabled>
-              <span className="bottom-nav__icon" aria-hidden>
-                <BottomNavIcon name="events" />
-              </span>
-              <span className="bottom-nav__label">
-                {isChannelStatsRoute || resolvedEntityType === 'channel' ? 'Статистика' : 'События'}
-              </span>
-            </span>
+            <>
+              {resolvedChatId ? (
+                <NavLink
+                  to={settingsRoute}
+                  className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
+                >
+                  <span className="bottom-nav__icon" aria-hidden>
+                    <BottomNavIcon name="settings" />
+                  </span>
+                  <span className="bottom-nav__label">Настройки</span>
+                </NavLink>
+              ) : (
+                <span className="bottom-nav__item is-disabled" aria-disabled>
+                  <span className="bottom-nav__icon" aria-hidden>
+                    <BottomNavIcon name="settings" />
+                  </span>
+                  <span className="bottom-nav__label">Настройки</span>
+                </span>
+              )}
+
+              {resolvedChatId ? (
+                <NavLink
+                  to={activityRoute}
+                  className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
+                >
+                  <span className="bottom-nav__icon" aria-hidden>
+                    <BottomNavIcon name="events" />
+                  </span>
+                  <span className="bottom-nav__label">События</span>
+                </NavLink>
+              ) : (
+                <span className="bottom-nav__item is-disabled" aria-disabled>
+                  <span className="bottom-nav__icon" aria-hidden>
+                    <BottomNavIcon name="events" />
+                  </span>
+                  <span className="bottom-nav__label">События</span>
+                </span>
+              )}
+            </>
           )}
         </nav>
       ) : null}

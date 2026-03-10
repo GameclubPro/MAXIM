@@ -2,6 +2,7 @@ import type { ChannelAutoPostButtonsMode, ChannelSettings } from '@maxim/contrac
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
+import { BackChevronIcon, ChannelEntityIcon } from '../components/ui/entity-header-icons';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
@@ -536,9 +537,10 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
         <div className="channel-settings-header__top">
           <Link
             to={buildManagedEntitiesRoute('channel')}
-            className="button button--ghost channel-settings-header__back"
+            className="channel-settings-header__back"
+            aria-label="Назад к каналам"
           >
-            Назад
+            <BackChevronIcon />
           </Link>
           <div className="channel-settings-header__actions">
             <span
@@ -562,9 +564,15 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
           </div>
         </div>
 
-        <div className="channel-settings-header__main">
-          <h1>{resolvedTitle || 'Настройки'}</h1>
-          <p>{channelMetaLabel}</p>
+        <div className="channel-settings-header__hero">
+          <div className="channel-settings-header__icon" aria-hidden>
+            <ChannelEntityIcon />
+          </div>
+          <div className="channel-settings-header__main">
+            <span className="channel-settings-header__chip">Канал</span>
+            <h1>{resolvedTitle || 'Настройки'}</h1>
+            <p>{channelMetaLabel}</p>
+          </div>
         </div>
       </GlassCard>
 

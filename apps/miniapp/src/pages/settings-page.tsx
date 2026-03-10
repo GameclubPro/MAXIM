@@ -11,6 +11,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { GlassCard } from '../components/ui/glass-card';
+import { BackChevronIcon, ChatEntityIcon } from '../components/ui/entity-header-icons';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
@@ -2401,9 +2402,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
             <div className="settings-page-header__top">
               <Link
                 to={buildManagedEntitiesRoute('chat')}
-                className="button button--ghost settings-page-header__back"
+                className="settings-page-header__back"
+                aria-label="Назад к чатам"
               >
-                Назад
+                <BackChevronIcon />
               </Link>
               <span
                 className={cn(
@@ -2419,9 +2421,15 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 {headerStatusLabel}
               </span>
             </div>
-            <div className="settings-page-header__identity">
-              <h2 className="settings-page-header__title">{chatTitle || chatId}</h2>
-              <p className="settings-page-header__meta">{chatMetaLabel}</p>
+            <div className="settings-page-header__hero">
+              <div className="settings-page-header__icon" aria-hidden>
+                <ChatEntityIcon />
+              </div>
+              <div className="settings-page-header__identity">
+                <span className="settings-page-header__chip">Чат</span>
+                <h2 className="settings-page-header__title">{chatTitle || chatId}</h2>
+                <p className="settings-page-header__meta">{chatMetaLabel}</p>
+              </div>
             </div>
           </header>
 
