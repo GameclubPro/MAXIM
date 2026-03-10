@@ -18,7 +18,7 @@ type ChannelRouteState = {
   chatLink: string;
 };
 
-type ChannelSettingsSectionKey = 'comments' | 'postSuggestions';
+type ChannelSettingsSectionKey = 'comments' | 'postSuggestions' | 'poll';
 type ChannelSettingsHintKey =
   | 'commentsEnabled'
   | 'commentsModerationEnabled'
@@ -345,6 +345,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   >({
     comments: false,
     postSuggestions: false,
+    poll: false,
   });
   const [openHintKey, setOpenHintKey] = useState<ChannelSettingsHintKey | null>(null);
   const { pushToast } = useToast();
@@ -988,7 +989,34 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
         </div>
       </GlassCard>
 
-      {chatId ? <ManagedPollCard api={api} entityType="channel" entityId={chatId} /> : null}
+      {chatId ? (
+        <GlassCard className="channel-settings-card" elevated>
+          <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+            <button
+              type="button"
+              className="settings-section__toggle"
+              onClick={() => toggleSection('poll')}
+              aria-expanded={expandedSections.poll}
+              aria-controls="channel-settings-poll"
+            >
+              <span className="settings-section__toggle-main">
+                <h3>Опрос</h3>
+                <small>ГОЛОСОВАНИЕ В ОТДЕЛЬНОМ ПОСТЕ</small>
+              </span>
+              <SectionChevron isOpen={expandedSections.poll} />
+            </button>
+          </div>
+
+          <div
+            id="channel-settings-poll"
+            className={cn('settings-section__collapse', expandedSections.poll && 'is-open')}
+          >
+            <div className="settings-section__collapse-inner">
+              <ManagedPollCard api={api} entityType="channel" entityId={chatId} />
+            </div>
+          </div>
+        </GlassCard>
+      ) : null}
     </div>
   );
 }

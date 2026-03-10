@@ -104,6 +104,7 @@ type WarnMessageEditorKey = 'linkWarn' | 'textFiltersWarn';
 type SettingsSectionKey =
   | 'links'
   | 'rules'
+  | 'poll'
   | 'greeting'
   | 'profanityFilter'
   | 'commercialFilter'
@@ -113,7 +114,7 @@ type SettingsSectionKey =
   | 'night'
   | 'mailing'
   | 'extra';
-type ApplySectionKey = Exclude<SettingsSectionKey, 'mailing' | 'rules'>;
+type ApplySectionKey = Exclude<SettingsSectionKey, 'mailing' | 'rules' | 'poll'>;
 
 const SECTION_LABELS: Record<ApplySectionKey, string> = {
   links: 'Модерация ссылок',
@@ -928,6 +929,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [expandedSections, setExpandedSections] = useState<Record<SettingsSectionKey, boolean>>({
     links: false,
     rules: false,
+    poll: false,
     greeting: false,
     profanityFilter: false,
     commercialFilter: false,
@@ -3416,7 +3418,38 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               </div>
             </GlassCard>
 
-            {chatId ? <ManagedPollCard api={api} entityType="chat" entityId={chatId} /> : null}
+            {chatId ? (
+              <GlassCard
+                className="settings-section stagger-in"
+                style={{ animationDelay: '52ms' }}
+                aria-label="Опрос чата"
+              >
+                <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+                  <button
+                    type="button"
+                    className="settings-section__toggle"
+                    aria-expanded={expandedSections.poll}
+                    aria-controls="settings-poll-content"
+                    onClick={() => toggleSection('poll')}
+                  >
+                    <span className="settings-section__toggle-main">
+                      <h3>Опрос</h3>
+                      <small>Голосование в отдельном посте</small>
+                    </span>
+                    <SectionChevron isOpen={expandedSections.poll} />
+                  </button>
+                </div>
+
+                <div
+                  id="settings-poll-content"
+                  className={cn('settings-section__collapse', expandedSections.poll && 'is-open')}
+                >
+                  <div className="settings-section__collapse-inner">
+                    <ManagedPollCard api={api} entityType="chat" entityId={chatId} />
+                  </div>
+                </div>
+              </GlassCard>
+            ) : null}
 
             <GlassCard
               className="settings-section stagger-in"
