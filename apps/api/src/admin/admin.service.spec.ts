@@ -459,7 +459,6 @@ describe('AdminService.listChannels', () => {
         commentsEnabled: true,
         postSuggestionsEnabled: true,
         commentsModerationEnabled: true,
-        commentsSlowModeSeconds: 45,
       },
     ]);
 
@@ -512,7 +511,6 @@ describe('AdminService.listChannels', () => {
           commentsEnabled: true,
           postSuggestionsEnabled: true,
           commentsModerationEnabled: true,
-          commentsSlowModeSeconds: 45,
         },
       },
       {
@@ -526,7 +524,6 @@ describe('AdminService.listChannels', () => {
           commentsEnabled: true,
           postSuggestionsEnabled: false,
           commentsModerationEnabled: false,
-          commentsSlowModeSeconds: 0,
         },
       },
     ]);
@@ -541,7 +538,6 @@ describe('AdminService.listChannels', () => {
         commentsEnabled: true,
         postSuggestionsEnabled: true,
         commentsModerationEnabled: true,
-        commentsSlowModeSeconds: true,
       },
     });
   });
@@ -2009,70 +2005,6 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         },
       ),
     ).rejects.toThrow('Ссылки в комментариях отключены.');
-
-    expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
-  });
-
-  it('rejects rapid channel comments when anti-spam is enabled', async () => {
-    const prisma = createPrismaMock();
-    prisma.chat.findUnique.mockResolvedValue({
-      entityType: 'CHANNEL',
-    });
-    prisma.channelSettings.findUnique.mockResolvedValue({
-      commentsEnabled: true,
-      commentsModerationEnabled: true,
-      commentsBlockLinksEnabled: false,
-      commentsAntiSpamEnabled: true,
-      commentsLimitTwoInRowEnabled: false,
-      commentsSlowModeSeconds: 60,
-    });
-    prisma.auditLog.create.mockResolvedValueOnce(undefined);
-    prisma.auditLog.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([
-      {
-        id: 'comment-1',
-        actorUserId: 'user-1',
-        payload: {
-          text: 'Первый комментарий',
-        },
-        createdAt: new Date(),
-      },
-    ]);
-
-    const maxClient = {
-      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      sendMessageImmediateWithResolvedLink: jest
-        .fn()
-        .mockResolvedValue({ messageId: 'mid-channel-engagement-6', url: null }),
-    };
-    const chatContextCache = {
-      invalidate: jest.fn(),
-    };
-
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock() as never,
-    );
-
-    const commentsToken = await publishCommentsDialogToken(service, maxClient);
-
-    await expect(
-      service.createChannelDialogMessage(
-        'channel-1',
-        {
-          userId: 'user-1',
-          username: 'user1',
-          displayName: 'Пользователь',
-          chatTitle: null,
-        },
-        'comments',
-        {
-          token: commentsToken,
-          text: 'Второй комментарий',
-        },
-      ),
-    ).rejects.toThrow('Слишком часто.');
 
     expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
   });

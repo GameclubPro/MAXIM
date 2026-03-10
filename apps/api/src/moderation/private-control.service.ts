@@ -262,13 +262,6 @@ const CHANNEL_SECTION_FIELDS: Record<
   comments: [
     { key: 'commentsEnabled', label: 'Сценарий обсуждения через бота/чат', type: 'boolean' },
     { key: 'commentsModerationEnabled', label: 'Модерация обсуждений ботом', type: 'boolean' },
-    {
-      key: 'commentsSlowModeSeconds',
-      label: 'Пауза между сообщениями (сек)',
-      type: 'number',
-      min: 0,
-      max: 3600,
-    },
     { key: 'commentsMessageText', label: 'Текст-подсказка для участников', type: 'text' },
   ],
 };
@@ -2158,7 +2151,7 @@ export class PrivateControlService {
           session.selectedChatId!,
           context.actor,
           pendingInput.key,
-          parsedValue,
+          parsedValue as ChannelSettings[keyof ChannelSettings],
         );
 
         session.pendingInput = null;

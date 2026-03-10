@@ -3150,17 +3150,6 @@ export class AdminService {
       return;
     }
 
-    const latestOwnComment = recentOwnComments[0];
-    if (latestOwnComment && settings.commentsSlowModeSeconds > 0) {
-      const elapsedMs = Date.now() - latestOwnComment.createdAt.getTime();
-      const remainingSeconds = settings.commentsSlowModeSeconds - Math.floor(elapsedMs / 1000);
-      if (remainingSeconds > 0) {
-        throw new BadRequestException(
-          `Слишком часто. Подождите ещё ${remainingSeconds} сек. перед следующим комментарием.`,
-        );
-      }
-    }
-
     const normalizedCurrentText = this.normalizeChannelCommentText(text);
     const hasRecentDuplicate = recentOwnComments.some((row) => {
       if (Date.now() - row.createdAt.getTime() > CHANNEL_COMMENT_DUPLICATE_WINDOW_MS) {
@@ -3677,7 +3666,6 @@ export class AdminService {
           commentsEnabled: true,
           postSuggestionsEnabled: true,
           commentsModerationEnabled: true,
-          commentsSlowModeSeconds: true,
         },
       });
 
@@ -3688,7 +3676,6 @@ export class AdminService {
             commentsEnabled: row.commentsEnabled,
             postSuggestionsEnabled: row.postSuggestionsEnabled,
             commentsModerationEnabled: row.commentsModerationEnabled,
-            commentsSlowModeSeconds: row.commentsSlowModeSeconds,
           },
         ]),
       );
@@ -3911,10 +3898,7 @@ export class AdminService {
   private buildChannelOverview(
     settings: Pick<
       ChannelSettings,
-      | 'commentsEnabled'
-      | 'postSuggestionsEnabled'
-      | 'commentsModerationEnabled'
-      | 'commentsSlowModeSeconds'
+      'commentsEnabled' | 'postSuggestionsEnabled' | 'commentsModerationEnabled'
     >,
   ): ChannelOverview {
     const enabledScenariosCount =
@@ -3925,7 +3909,6 @@ export class AdminService {
       commentsEnabled: settings.commentsEnabled,
       postSuggestionsEnabled: settings.postSuggestionsEnabled,
       commentsModerationEnabled: settings.commentsEnabled && settings.commentsModerationEnabled,
-      commentsSlowModeSeconds: settings.commentsEnabled ? settings.commentsSlowModeSeconds : 0,
     };
   }
 }

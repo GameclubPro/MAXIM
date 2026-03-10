@@ -560,7 +560,6 @@ export const channelSettingsSchema = z
     commentsBlockLinksEnabled: z.boolean().default(true),
     commentsAntiSpamEnabled: z.boolean().default(true),
     commentsLimitTwoInRowEnabled: z.boolean().default(true),
-    commentsSlowModeSeconds: z.number().int().min(0).max(3600).default(0),
     commentsMessageText: botMessageTextSchema,
   })
   .superRefine((value, ctx) => {
@@ -610,7 +609,6 @@ export const channelOverviewSchema = z.object({
   commentsEnabled: z.boolean(),
   postSuggestionsEnabled: z.boolean(),
   commentsModerationEnabled: z.boolean(),
-  commentsSlowModeSeconds: z.number().int().min(0).max(3600),
 });
 export type ChannelOverview = z.infer<typeof channelOverviewSchema>;
 

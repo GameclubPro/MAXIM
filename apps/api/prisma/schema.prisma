@@ -232,7 +232,6 @@ model ChannelSettings {
   commentsBlockLinksEnabled    Boolean                    @default(true) @map("comments_block_links_enabled")
   commentsAntiSpamEnabled      Boolean                    @default(true) @map("comments_anti_spam_enabled")
   commentsLimitTwoInRowEnabled Boolean                    @default(true) @map("comments_limit_two_in_row_enabled")
-  commentsSlowModeSeconds      Int                        @default(0) @map("comments_slow_mode_seconds")
   commentsMessageText          String                     @default("") @map("comments_message_text")
   engagementPublishedMessageId String?                    @map("engagement_published_message_id")
   engagementPublishedThreadId  String?                    @map("engagement_published_thread_id")

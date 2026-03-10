@@ -23,7 +23,6 @@ type ChannelSettingsHintKey =
   | 'commentsModerationEnabled'
   | 'commentsBlockLinksEnabled'
   | 'commentsAntiSpamEnabled'
-  | 'commentsSlowModeSeconds'
   | 'commentsLimitTwoInRowEnabled'
   | 'postSuggestionsEnabled'
   | 'engagementMessageText'
@@ -857,44 +856,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                       checked={draft.commentsAntiSpamEnabled}
                       onChange={(nextValue) => patchDraft('commentsAntiSpamEnabled', nextValue)}
                     />
-
-                    {draft.commentsAntiSpamEnabled ? (
-                      <div className="channel-settings-inline-fields channel-settings-inline-fields--narrow">
-                        <label className="field">
-                          <div className="channel-settings-field-label">
-                            <span>Пауза между комментариями, сек</span>
-                            <ChannelSettingsHintAnchor
-                              hintKey="commentsSlowModeSeconds"
-                              openHintKey={openHintKey}
-                              onToggleHint={toggleHint}
-                              label="Пояснение для паузы между комментариями"
-                            >
-                              0 = без таймера, но повторы всё равно режутся
-                            </ChannelSettingsHintAnchor>
-                          </div>
-                          <input
-                            type="number"
-                            min={0}
-                            max={3600}
-                            value={draft.commentsSlowModeSeconds}
-                            onChange={(event) =>
-                              patchDraft(
-                                'commentsSlowModeSeconds',
-                                Number.isFinite(Number(event.target.value))
-                                  ? Math.max(
-                                      0,
-                                      Math.min(
-                                        3600,
-                                        Number.parseInt(event.target.value || '0', 10),
-                                      ),
-                                    )
-                                  : 0,
-                              )
-                            }
-                          />
-                        </label>
-                      </div>
-                    ) : null}
 
                     <ChannelSettingsToggleCard
                       title="Не больше двух подряд"
