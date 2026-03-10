@@ -694,6 +694,11 @@ export class WebhookParser {
       return;
     }
 
+    const entityType = this.readLowerString(row.type ?? row.kind ?? row.entity_type ?? row.entityType);
+    if (entityType === 'share') {
+      return;
+    }
+
     for (const [key, value] of Object.entries(row)) {
       this.collectTextSnippetsFromNode(value, acc, key, depth + 1);
     }
