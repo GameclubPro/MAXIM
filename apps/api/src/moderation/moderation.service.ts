@@ -443,9 +443,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           greetingBotButtonEnabled: settings.greetingBotButtonEnabled,
           greetingBotButtonUrl: settings.greetingBotButtonUrl,
           greetingBotButtonText: settings.greetingBotButtonText,
-          greetingRulesButtonEnabled: settings.greetingRulesButtonEnabled,
-          rulesPublishedUrl,
-          rulesPublishedMessageId,
           deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
           deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
           excludedUserIds: excludedGreetingUserIds,
@@ -614,7 +611,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         duplicateBotButtonEnabled: settings.duplicateBotButtonEnabled,
         duplicateBotButtonUrl: settings.duplicateBotButtonUrl,
         duplicateBotButtonText: settings.duplicateBotButtonText,
-        duplicateRulesButtonEnabled: settings.duplicateRulesButtonEnabled,
+        rulesAttachViolationsEnabled: settings.rulesAttachViolationsEnabled,
         rulesPublishedUrl,
         rulesPublishedMessageId,
         deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
@@ -637,7 +634,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         duplicateBotButtonEnabled: settings.duplicateBotButtonEnabled,
         duplicateBotButtonUrl: settings.duplicateBotButtonUrl,
         duplicateBotButtonText: settings.duplicateBotButtonText,
-        duplicateRulesButtonEnabled: settings.duplicateRulesButtonEnabled,
+        rulesAttachViolationsEnabled: settings.rulesAttachViolationsEnabled,
         rulesPublishedUrl,
         rulesPublishedMessageId,
         deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
@@ -712,7 +709,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             settings.linkBotButtonEnabled,
             settings.linkBotButtonUrl,
             settings.linkBotButtonText,
-            settings.linkRulesButtonEnabled,
+            settings.rulesAttachViolationsEnabled,
             rulesPublishedUrl,
             rulesPublishedMessageId,
           )
@@ -727,25 +724,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const textFilterEscalationSettings = isTextFilterHit
       ? this.resolveTextFilterEscalationSettings(topViolation.ruleCode, settings)
       : null;
-    const textFilterMessageOptions =
-      topViolation.ruleCode === 'COMMERCIAL_AD'
-        ? this.buildBotMessageOptions(
-            chatId,
-            settings.textFiltersBotButtonEnabled,
-            settings.textFiltersBotButtonUrl,
-            settings.textFiltersBotButtonText,
-            settings.textFiltersRulesButtonEnabled,
-            rulesPublishedUrl,
-            rulesPublishedMessageId,
-          )
-        : null;
+    const textFilterMessageOptions = isTextFilterHit
+      ? this.buildBotMessageOptions(
+          chatId,
+          settings.textFiltersBotButtonEnabled,
+          settings.textFiltersBotButtonUrl,
+          settings.textFiltersBotButtonText,
+          settings.rulesAttachViolationsEnabled,
+          rulesPublishedUrl,
+          rulesPublishedMessageId,
+        )
+      : null;
     const limitsMessageOptions = isMessageLimitsHit
       ? this.buildBotMessageOptions(
           chatId,
           settings.messageLimitsBotButtonEnabled,
           settings.messageLimitsBotButtonUrl,
           settings.messageLimitsBotButtonText,
-          settings.messageLimitsRulesButtonEnabled,
+          settings.rulesAttachViolationsEnabled,
           rulesPublishedUrl,
           rulesPublishedMessageId,
         )
@@ -756,7 +752,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           settings.thematicFiltersBotButtonEnabled,
           settings.thematicFiltersBotButtonUrl,
           settings.thematicFiltersBotButtonText,
-          settings.thematicFiltersRulesButtonEnabled,
+          settings.rulesAttachViolationsEnabled,
           rulesPublishedUrl,
           rulesPublishedMessageId,
         )
@@ -951,6 +947,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               topViolation.ruleCode,
               textFilterEscalationSettings?.warnMessageText ?? settings.textFiltersWarnMessageText,
             ),
+            textFilterMessageOptions ?? undefined,
           );
         } catch (error: unknown) {
           this.logger.warn(
@@ -1196,7 +1193,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     duplicateBotButtonEnabled: boolean;
     duplicateBotButtonUrl: string;
     duplicateBotButtonText: string;
-    duplicateRulesButtonEnabled: boolean;
+    rulesAttachViolationsEnabled: boolean;
     rulesPublishedUrl: string | null;
     rulesPublishedMessageId: string | null;
     deleteBotMessagesEnabled: boolean;
@@ -1216,7 +1213,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
       duplicateBotButtonText,
-      duplicateRulesButtonEnabled,
+      rulesAttachViolationsEnabled,
       rulesPublishedUrl,
       rulesPublishedMessageId,
       deleteBotMessagesEnabled,
@@ -1270,7 +1267,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
       duplicateBotButtonText,
-      duplicateRulesButtonEnabled,
+      rulesAttachViolationsEnabled,
       rulesPublishedUrl,
       rulesPublishedMessageId,
     );
@@ -1350,7 +1347,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     duplicateBotButtonEnabled: boolean;
     duplicateBotButtonUrl: string;
     duplicateBotButtonText: string;
-    duplicateRulesButtonEnabled: boolean;
+    rulesAttachViolationsEnabled: boolean;
     rulesPublishedUrl: string | null;
     rulesPublishedMessageId: string | null;
     deleteBotMessagesEnabled: boolean;
@@ -1369,7 +1366,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
       duplicateBotButtonText,
-      duplicateRulesButtonEnabled,
+      rulesAttachViolationsEnabled,
       rulesPublishedUrl,
       rulesPublishedMessageId,
       deleteBotMessagesEnabled,
@@ -1422,7 +1419,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
       duplicateBotButtonText,
-      duplicateRulesButtonEnabled,
+      rulesAttachViolationsEnabled,
       rulesPublishedUrl,
       rulesPublishedMessageId,
     );
@@ -3103,9 +3100,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     greetingBotButtonEnabled: boolean;
     greetingBotButtonUrl: string;
     greetingBotButtonText: string;
-    greetingRulesButtonEnabled: boolean;
-    rulesPublishedUrl: string | null;
-    rulesPublishedMessageId: string | null;
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
     excludedUserIds: ReadonlySet<string>;
@@ -3119,9 +3113,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       greetingBotButtonEnabled,
       greetingBotButtonUrl,
       greetingBotButtonText,
-      greetingRulesButtonEnabled,
-      rulesPublishedUrl,
-      rulesPublishedMessageId,
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
       excludedUserIds,
@@ -3141,9 +3132,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       greetingBotButtonEnabled,
       greetingBotButtonUrl,
       greetingBotButtonText,
-      greetingRulesButtonEnabled,
-      rulesPublishedUrl,
-      rulesPublishedMessageId,
     );
 
     for (const member of joinedMembers) {
@@ -3965,12 +3953,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           nightModeBotButtonEnabled: true,
           nightModeBotButtonUrl: true,
           nightModeBotButtonText: true,
-          nightModeRulesButtonEnabled: true,
         },
       });
-      const rulesByChatId = await this.loadRulesButtonReferenceMap(
-        nightModeChats.map((item) => item.chatId),
-      );
 
       for (const settings of nightModeChats) {
         const startMinutes = this.normalizeDayMinutes(settings.nightModeStartTimeMinutes, 23 * 60);
@@ -3996,15 +3980,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           timezone,
           settings.nightModeBotMessageText,
         );
-        const nightModeRulesReference = rulesByChatId.get(settings.chatId);
         const nightModeMessageOptions = this.buildBotMessageOptions(
           settings.chatId,
           settings.nightModeBotButtonEnabled,
           settings.nightModeBotButtonUrl,
           settings.nightModeBotButtonText,
-          settings.nightModeRulesButtonEnabled,
-          nightModeRulesReference?.publishedUrl ?? null,
-          nightModeRulesReference?.publishedMessageId ?? null,
         );
 
         try {

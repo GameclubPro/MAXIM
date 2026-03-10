@@ -187,6 +187,7 @@ model ChatSettings {
   duplicateBotButtonText           String                   @default("Открыть") @map("duplicate_bot_button_text")
   duplicateRulesButtonEnabled      Boolean                  @default(false) @map("duplicate_rules_button_enabled")
   messageLimitsRulesButtonEnabled  Boolean                  @default(false) @map("message_limits_rules_button_enabled")
+  rulesAttachViolationsEnabled     Boolean                  @default(true) @map("rules_attach_violations_enabled")
   banDurationHours                 Int                      @default(6) @map("ban_duration_hours")
   warnThreshold                    Int                      @default(3) @map("warn_threshold")
   createdAt                        DateTime                 @default(now()) @map("created_at")

@@ -114,6 +114,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     duplicateBotButtonText: 'Открыть',
     duplicateRulesButtonEnabled: false,
     messageLimitsRulesButtonEnabled: false,
+    rulesAttachViolationsEnabled: true,
     banDurationHours: 6,
     warnThreshold: 3,
     createdAt: new Date(),

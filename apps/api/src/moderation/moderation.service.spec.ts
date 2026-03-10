@@ -130,6 +130,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     duplicateBotButtonText: 'Открыть',
     duplicateRulesButtonEnabled: false,
     messageLimitsRulesButtonEnabled: false,
+    rulesAttachViolationsEnabled: false,
     banDurationHours: 6,
     warnThreshold: 3,
     createdAt: new Date(),
@@ -4932,7 +4933,7 @@ describe('ModerationService', () => {
             linkBotButtonEnabled: true,
             linkBotButtonUrl: 'https://max.ru/channel/news',
             linkBotButtonText: 'Канал',
-            linkRulesButtonEnabled: true,
+            rulesAttachViolationsEnabled: true,
           }),
           rules: {
             publishedUrl: 'https://max.ru/chats/chat-1/message/999',
@@ -5004,7 +5005,7 @@ describe('ModerationService', () => {
           settings: createSettings({
             linkBotMessageEnabled: true,
             linkWarnEnabled: true,
-            linkRulesButtonEnabled: true,
+            rulesAttachViolationsEnabled: true,
           }),
           rules: {
             publishedMessageId: null,
@@ -5064,7 +5065,7 @@ describe('ModerationService', () => {
           settings: createSettings({
             linkBotMessageEnabled: true,
             linkWarnEnabled: true,
-            linkRulesButtonEnabled: true,
+            rulesAttachViolationsEnabled: true,
           }),
           rules: {
             publishedMessageId: 'mid-rules-1',
@@ -5131,7 +5132,7 @@ describe('ModerationService', () => {
           settings: createSettings({
             linkBotMessageEnabled: true,
             linkWarnEnabled: true,
-            linkRulesButtonEnabled: true,
+            rulesAttachViolationsEnabled: true,
           }),
           rules: {
             publishedMessageId: 'mid-rules-2',

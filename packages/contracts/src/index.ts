@@ -224,6 +224,7 @@ export const chatSettingsSchema = z
     duplicateBotButtonText: botButtonTextSchema,
     duplicateRulesButtonEnabled: z.boolean().default(false),
     messageLimitsRulesButtonEnabled: z.boolean().default(false),
+    rulesAttachViolationsEnabled: z.boolean().default(true),
     banDurationHours: z.number().int().min(1).max(36).default(6),
     warnThreshold: z.number().int().min(1).max(10).default(3),
   })

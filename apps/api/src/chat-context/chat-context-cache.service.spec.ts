@@ -115,6 +115,7 @@ function buildSettings(chatId: string): ChatSettings {
     duplicateBotButtonText: 'Открыть',
     duplicateRulesButtonEnabled: false,
     messageLimitsRulesButtonEnabled: false,
+    rulesAttachViolationsEnabled: true,
     banDurationHours: 6,
     warnThreshold: 3,
     createdAt: now,

@@ -129,7 +129,6 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'linkBotButtonEnabled',
     'linkBotButtonUrl',
     'linkBotButtonText',
-    'linkRulesButtonEnabled',
   ],
   greeting: [
     'greetingEnabled',
@@ -138,7 +137,6 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'greetingBotButtonEnabled',
     'greetingBotButtonUrl',
     'greetingBotButtonText',
-    'greetingRulesButtonEnabled',
   ],
   profanityFilter: [
     'russianProfanityFilterEnabled',
@@ -161,7 +159,6 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'textFiltersBotButtonEnabled',
     'textFiltersBotButtonUrl',
     'textFiltersBotButtonText',
-    'textFiltersRulesButtonEnabled',
   ],
   thematicFilters: [
     'thematicCodewordEnabled',
@@ -173,7 +170,6 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'thematicFiltersBotButtonEnabled',
     'thematicFiltersBotButtonUrl',
     'thematicFiltersBotButtonText',
-    'thematicFiltersRulesButtonEnabled',
   ],
   duplicates: [
     'antiDuplicateEnabled',
@@ -191,7 +187,6 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'duplicateBotButtonEnabled',
     'duplicateBotButtonUrl',
     'duplicateBotButtonText',
-    'duplicateRulesButtonEnabled',
     'banDurationHours',
   ],
   limits: [
@@ -213,7 +208,6 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'messageLimitsBotButtonEnabled',
     'messageLimitsBotButtonUrl',
     'messageLimitsBotButtonText',
-    'messageLimitsRulesButtonEnabled',
     'banDurationHours',
   ],
   night: [
@@ -226,7 +220,6 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'nightModeBotButtonEnabled',
     'nightModeBotButtonUrl',
     'nightModeBotButtonText',
-    'nightModeRulesButtonEnabled',
   ],
   extra: [
     'globalCrossChatSpamEnabled',
@@ -381,6 +374,56 @@ const WARN_MESSAGE_PREVIEW_REPLACEMENTS: Record<WarnMessageEditorKey, Record<str
     reason: 'нарушение текстовых правил',
   },
 };
+
+const AUTO_RULES_FALLBACK_TEXT =
+  'Пожалуйста, уважайте участников чата и соблюдайте порядок в обсуждении.';
+
+function buildAutoRulesText(settings: ChatSettings): string {
+  const lines: string[] = [];
+
+  if (settings.linkPolicy !== 'ALERT_ONLY') {
+    lines.push('В этом чате ссылки запрещены.');
+  }
+
+  if (settings.russianProfanityFilterEnabled) {
+    lines.push('Пожалуйста, без мата и оскорблений.');
+  }
+
+  if (settings.commercialAdsFilterEnabled) {
+    lines.push('Реклама и коммерческие объявления запрещены.');
+  }
+
+  const codeword = settings.thematicCodeword.trim();
+  if (settings.thematicCodewordEnabled && codeword) {
+    lines.push(`Объявления начинайте с кодового слова «${codeword}».`);
+  }
+
+  if (settings.antiDuplicateEnabled) {
+    lines.push('Не отправляйте одно и то же сообщение повторно.');
+  }
+
+  if (settings.maxMessageLengthEnabled) {
+    lines.push(`Сообщения должны быть не длиннее ${settings.maxMessageLength} символов.`);
+  }
+
+  if (!settings.videoMessagesEnabled) {
+    lines.push('Видео в этом чате отключены.');
+  }
+
+  if (!settings.fileMessagesEnabled) {
+    lines.push('Файлы в этом чате отключены.');
+  }
+
+  if (!settings.voiceMessagesEnabled) {
+    lines.push('Голосовые сообщения в этом чате отключены.');
+  }
+
+  if (lines.length === 0) {
+    return AUTO_RULES_FALLBACK_TEXT;
+  }
+
+  return ['Пожалуйста, соблюдайте правила чата:', ...lines.map((line) => `• ${line}`)].join('\n');
+}
 
 function resolveBotMessageTemplate(customValue: string, fallbackTemplate: string): string {
   return customValue.trim().length > 0 ? customValue : fallbackTemplate;
@@ -1014,15 +1057,39 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     setDuplicateWindowInputValues({});
   }, [settingsQuery.data]);
 
+  const autoRulesText = useMemo(() => {
+    const sourceSettings = draft ?? settingsQuery.data;
+    return sourceSettings ? buildAutoRulesText(sourceSettings) : '';
+  }, [draft, settingsQuery.data]);
+
   useEffect(() => {
     if (!rulesQuery.data) {
       return;
     }
 
-    setRulesDraft(rulesQuery.data);
+    setRulesDraft((current) => {
+      const serverText = rulesQuery.data.text;
+
+      if (
+        !serverText.trim() &&
+        autoRulesText &&
+        (!current || current.text === serverText || current.text.trim().length === 0)
+      ) {
+        return chatRulesSchema.parse({
+          ...rulesQuery.data,
+          text: autoRulesText,
+        });
+      }
+
+      if (current && !serverText.trim() && current.text !== serverText) {
+        return current;
+      }
+
+      return rulesQuery.data;
+    });
     setRulesTextError('');
     setRulesImageError('');
-  }, [rulesQuery.data]);
+  }, [autoRulesText, rulesQuery.data]);
 
   useEffect(() => {
     if (!scheduleDomain) {
@@ -1961,48 +2028,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
   function toggleSectionApplyConfirm(section: ApplySectionKey) {
     setOpenSectionApplyConfirm((current) => (current === section ? null : section));
-  }
-
-  function renderRulesAttachToggle(
-    fieldKey:
-      | 'linkRulesButtonEnabled'
-      | 'greetingRulesButtonEnabled'
-      | 'textFiltersRulesButtonEnabled'
-      | 'thematicFiltersRulesButtonEnabled'
-      | 'duplicateRulesButtonEnabled'
-      | 'messageLimitsRulesButtonEnabled'
-      | 'nightModeRulesButtonEnabled',
-    ariaLabel: string,
-  ) {
-    if (!draft) {
-      return null;
-    }
-
-    const checked = draft[fieldKey];
-    const disabled = !hasPublishedRules && !checked;
-
-    return (
-      <div className="settings-native-toggle settings-native-toggle--nested">
-        <div className="settings-native-toggle__row">
-          <span className="settings-native-toggle__title">Прикрепить правила</span>
-
-          <label className="settings-native-switch" aria-label={ariaLabel}>
-            <input
-              type="checkbox"
-              checked={checked}
-              disabled={disabled}
-              onChange={(event) => setFieldValue(fieldKey, event.target.checked)}
-            />
-            <span className="toggle-switch" aria-hidden>
-              <span className="toggle-switch__thumb" />
-            </span>
-          </label>
-        </div>
-        {disabled ? (
-          <p className="settings-native-toggle__hint">Сначала опубликуйте правила.</p>
-        ) : null}
-      </div>
-    );
   }
 
   function handleApplySectionToAllChats(section: ApplySectionKey) {
@@ -2961,11 +2986,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                                 или профиль.
                               </p>
                             ) : null}
-
-                            {renderRulesAttachToggle(
-                              'linkRulesButtonEnabled',
-                              'Прикрепить правила к сообщению бота для модерации ссылок',
-                            )}
                           </div>
                         ) : null}
                       </>
@@ -3022,10 +3042,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         <div className="rules-panel__header">
                           <div className="rules-panel__title-wrap">
                             <h4>Пост с правилами</h4>
-                            <p>
-                              Текст и одна картинка. Кнопку можно включить в других блоках после
-                              публикации.
-                            </p>
                           </div>
                           <span
                             className={cn(
@@ -3048,12 +3064,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         <div className="rules-link-row">
                           <span>
                             {hasPublishedRules
-                              ? rulesPublishedUrl
-                                ? rulesPublishedAtLabel
-                                  ? `Пост опубликован · ${rulesPublishedAtLabel}`
-                                  : 'Пост опубликован'
-                                : 'Пост опубликован. Ссылка подтягивается автоматически.'
-                              : 'Опубликуйте правила, чтобы включить кнопку «Правила» в других блоках.'}
+                              ? rulesPublishedAtLabel
+                                ? `Опубликовано · ${rulesPublishedAtLabel}`
+                                : 'Опубликовано'
+                              : 'Черновик не опубликован'}
                           </span>
                           {rulesPublishedUrl ? (
                             <a
@@ -3066,6 +3080,40 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             </a>
                           ) : null}
                         </div>
+
+                        {draft ? (
+                          <div className="settings-native-toggle">
+                            <div className="settings-native-toggle__row">
+                              <span className="settings-native-toggle__title">
+                                Показывать кнопку «Правила» в сообщениях о нарушениях
+                              </span>
+
+                              <label
+                                className="settings-native-switch"
+                                aria-label="Показывать кнопку Правила в сообщениях о нарушениях"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={draft.rulesAttachViolationsEnabled}
+                                  onChange={(event) =>
+                                    setFieldValue(
+                                      'rulesAttachViolationsEnabled',
+                                      event.target.checked,
+                                    )
+                                  }
+                                />
+                                <span className="toggle-switch" aria-hidden>
+                                  <span className="toggle-switch__thumb" />
+                                </span>
+                              </label>
+                            </div>
+                            {!hasPublishedRules ? (
+                              <p className="settings-native-toggle__hint">
+                                Кнопка начнет показываться после публикации правил.
+                              </p>
+                            ) : null}
+                          </div>
+                        ) : null}
 
                         <label
                           className={cn(
@@ -3084,15 +3132,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             rows={7}
                             value={rulesDraft.text}
                             onChange={(event) => setRulesFieldValue('text', event.target.value)}
-                            placeholder="Напишите правила чата. Этот текст попадет в опубликованный пост."
+                            placeholder="Правила чата"
                           />
                           {rulesTextError ? (
                             <small className="field__hint">{rulesTextError}</small>
-                          ) : (
-                            <small className="field__hint">
-                              Черновик сохраняется автоматически.
-                            </small>
-                          )}
+                          ) : null}
                         </label>
 
                         <div
@@ -3157,11 +3201,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                                   {isSavingRules ? 'Сохраняем черновик...' : 'Черновик обновлён'}
                                 </span>
                               </div>
-                            ) : (
-                              <span className="field__hint">
-                                Черновик сохранится автоматически.
-                              </span>
-                            )}
+                            ) : null}
                           </div>
 
                           <button
@@ -3445,14 +3485,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                               id="greeting-bot-button-hint"
                               className="settings-native-toggle__hint"
                             >
-                              Добавляет кнопку в приветствие, например на правила чата.
+                              Добавляет кнопку в приветствие, например на чат или канал.
                             </p>
                           ) : null}
-
-                          {renderRulesAttachToggle(
-                            'greetingRulesButtonEnabled',
-                            'Прикрепить правила к приветственному сообщению',
-                          )}
                         </div>
                       ) : null}
                     </>
@@ -4124,11 +4159,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                               Добавляет кнопку в сообщение бота о коммерческом нарушении.
                             </p>
                           ) : null}
-
-                          {renderRulesAttachToggle(
-                            'textFiltersRulesButtonEnabled',
-                            'Прикрепить правила к сообщению бота о коммерческих объявлениях',
-                          )}
                         </div>
                       ) : null}
                     </>
@@ -4352,11 +4382,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           </label>
                         </div>
                       ) : null}
-
-                      {renderRulesAttachToggle(
-                        'thematicFiltersRulesButtonEnabled',
-                        'Прикрепить правила к сообщению бота для тематического фильтра',
-                      )}
 
                       <div className="settings-native-toggle settings-native-toggle--nested">
                         <div className="settings-native-toggle__row">
@@ -4888,11 +4913,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           чат, канал или профиль.
                         </p>
                       ) : null}
-
-                      {renderRulesAttachToggle(
-                        'duplicateRulesButtonEnabled',
-                        'Прикрепить правила к сообщению бота о дублях',
-                      )}
                     </div>
                   ) : null}
                   {renderSectionApplyControl('duplicates')}
@@ -5573,11 +5593,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           Добавляет кнопку в сообщение бота с переходом на чат, канал или профиль.
                         </p>
                       ) : null}
-
-                      {renderRulesAttachToggle(
-                        'messageLimitsRulesButtonEnabled',
-                        'Прикрепить правила к сообщению бота для ограничений сообщений',
-                      )}
                     </div>
                   ) : null}
                   {renderSectionApplyControl('limits')}
@@ -5916,11 +5931,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                               Добавляет кнопку в сообщение о закрытии чата на ночь.
                             </p>
                           ) : null}
-
-                          {renderRulesAttachToggle(
-                            'nightModeRulesButtonEnabled',
-                            'Прикрепить правила к сообщению бота о ночном режиме',
-                          )}
                         </div>
                       ) : null}
                     </>
