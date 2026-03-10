@@ -569,7 +569,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
             <ChannelEntityIcon />
           </div>
           <div className="channel-settings-header__main">
-            <span className="channel-settings-header__chip">Канал</span>
             <h1>{resolvedTitle || 'Настройки'}</h1>
             <p>{channelMetaLabel}</p>
           </div>

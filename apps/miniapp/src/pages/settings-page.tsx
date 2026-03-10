@@ -2426,7 +2426,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 <ChatEntityIcon />
               </div>
               <div className="settings-page-header__identity">
-                <span className="settings-page-header__chip">Чат</span>
                 <h2 className="settings-page-header__title">{chatTitle || chatId}</h2>
                 <p className="settings-page-header__meta">{chatMetaLabel}</p>
               </div>
