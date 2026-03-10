@@ -218,7 +218,7 @@ function ChannelSettingsHint({
   return (
     <p
       id={`channel-settings-hint-${hintKey}`}
-      className={cn('settings-native-toggle__hint', 'channel-settings-hint-popover')}
+      className="channel-settings-hint-popover"
       onClick={(event) => {
         event.preventDefault();
         event.stopPropagation();
