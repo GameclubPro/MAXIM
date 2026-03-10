@@ -360,12 +360,8 @@ describe('AdminService managed polls', () => {
       closedAt: new Date('2026-03-10T09:15:00.000Z'),
     };
 
-    prisma.managedPoll.upsert
-      .mockResolvedValueOnce(draftPoll)
-      .mockResolvedValueOnce(activePoll);
-    prisma.managedPoll.update
-      .mockResolvedValueOnce(activePoll)
-      .mockResolvedValueOnce(closedPoll);
+    prisma.managedPoll.upsert.mockResolvedValueOnce(draftPoll).mockResolvedValueOnce(activePoll);
+    prisma.managedPoll.update.mockResolvedValueOnce(activePoll).mockResolvedValueOnce(closedPoll);
     prisma.managedPollVote.findMany
       .mockResolvedValueOnce([])
       .mockResolvedValueOnce([{ optionIndex: 0 }, { optionIndex: 0 }, { optionIndex: 1 }])
@@ -1541,6 +1537,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       },
       {
         text: 'Новый выпуск уже в канале.',
+        textFormat: 'markdown',
         applyToAllChats: false,
         buttonEnabled: true,
         buttonUrl: 'https://max.ru/channel/maxim',
@@ -1561,6 +1558,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       'channel-1',
       'Новый выпуск уже в канале.',
       {
+        textFormat: 'markdown',
         button: {
           text: 'Открыть выпуск',
           url: 'https://max.ru/channel/maxim',

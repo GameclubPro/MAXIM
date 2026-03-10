@@ -1467,30 +1467,22 @@ export class AdminService {
   private getChatSettingsNormalizationChanges(
     current: Pick<
       ChatSettings,
-      | 'nightModeBotMessageEnabled'
-      | 'nightModeBotButtonEnabled'
-      | 'nightModeRulesButtonEnabled'
+      'nightModeBotMessageEnabled' | 'nightModeBotButtonEnabled' | 'nightModeRulesButtonEnabled'
     >,
     normalized: Pick<
       ChatSettings,
-      | 'nightModeBotMessageEnabled'
-      | 'nightModeBotButtonEnabled'
-      | 'nightModeRulesButtonEnabled'
+      'nightModeBotMessageEnabled' | 'nightModeBotButtonEnabled' | 'nightModeRulesButtonEnabled'
     >,
   ): Partial<
     Pick<
       ChatSettings,
-      | 'nightModeBotMessageEnabled'
-      | 'nightModeBotButtonEnabled'
-      | 'nightModeRulesButtonEnabled'
+      'nightModeBotMessageEnabled' | 'nightModeBotButtonEnabled' | 'nightModeRulesButtonEnabled'
     >
   > {
     const changes: Partial<
       Pick<
         ChatSettings,
-        | 'nightModeBotMessageEnabled'
-        | 'nightModeBotButtonEnabled'
-        | 'nightModeRulesButtonEnabled'
+        'nightModeBotMessageEnabled' | 'nightModeBotButtonEnabled' | 'nightModeRulesButtonEnabled'
       >
     > = {};
 
@@ -1569,6 +1561,10 @@ export class AdminService {
     }
 
     const messageText = parsed.data.text.trim() || (parsed.data.imageEnabled ? ' ' : '');
+    const textFormat: MaxSendMessageOptions['textFormat'] =
+      parsed.data.textFormat === 'markdown' && parsed.data.text.trim().length > 0
+        ? 'markdown'
+        : undefined;
 
     let delayMs = 0;
     let sendAt: string | null = null;
@@ -1631,8 +1627,9 @@ export class AdminService {
     }
 
     const messageOptions =
-      parsed.data.buttonEnabled || imagePayload
+      parsed.data.buttonEnabled || imagePayload || textFormat
         ? {
+            ...(textFormat ? { textFormat } : {}),
             ...(parsed.data.buttonEnabled
               ? {
                   button: {
@@ -2124,7 +2121,9 @@ export class AdminService {
         this.readManagedPollOptions(current.options),
       );
     } catch (error: unknown) {
-      throw new BadRequestException(error instanceof Error ? error.message : 'Опрос заполнен некорректно.');
+      throw new BadRequestException(
+        error instanceof Error ? error.message : 'Опрос заполнен некорректно.',
+      );
     }
 
     const nextVersion = Math.max(0, current.activeVersion) + 1;
@@ -2274,8 +2273,13 @@ export class AdminService {
       this.readManagedPollOptions(poll.options),
     );
     const voteCounts =
-      poll.status === PrismaManagedPollStatus.ACTIVE || poll.status === PrismaManagedPollStatus.CLOSED
-        ? await this.loadManagedPollVoteCounts(poll.id, poll.activeVersion, normalizedDraft.options.length)
+      poll.status === PrismaManagedPollStatus.ACTIVE ||
+      poll.status === PrismaManagedPollStatus.CLOSED
+        ? await this.loadManagedPollVoteCounts(
+            poll.id,
+            poll.activeVersion,
+            normalizedDraft.options.length,
+          )
         : normalizedDraft.options.map(() => 0);
     const summary = buildManagedPollOptionSummaries(normalizedDraft.options, voteCounts);
 
@@ -2857,10 +2861,7 @@ export class AdminService {
       },
     });
 
-    const normalizedRows = await this.canonicalizeActiveAllowlistRows(
-      chatId,
-      rows,
-    );
+    const normalizedRows = await this.canonicalizeActiveAllowlistRows(chatId, rows);
 
     return normalizedRows.map((row) => row.domain);
   }
@@ -3644,7 +3645,10 @@ export class AdminService {
   }
 
   private normalizeChannelAutoPostButtonsMode(
-    settings: Pick<ChannelSettings, 'autoPostButtonsMode' | 'commentsEnabled' | 'postSuggestionsEnabled'>,
+    settings: Pick<
+      ChannelSettings,
+      'autoPostButtonsMode' | 'commentsEnabled' | 'postSuggestionsEnabled'
+    >,
   ): ChannelSettings['autoPostButtonsMode'] {
     const includeComments =
       settings.commentsEnabled &&

@@ -3058,6 +3058,84 @@
   resize: vertical;
 }
 
+.max-markdown-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.max-markdown-editor__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(62, 96, 127, 0.16);
+  background:
+    linear-gradient(150deg, rgba(255, 255, 255, 0.94), rgba(236, 246, 255, 0.8)),
+    rgba(255, 255, 255, 0.82);
+}
+
+.max-markdown-editor__tool {
+  min-width: 38px;
+  min-height: 38px;
+  border-radius: 10px;
+  border: 1px solid rgba(11, 132, 255, 0.16);
+  background: rgba(255, 255, 255, 0.88);
+  color: #0b4f86;
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.max-markdown-editor__tool--italic {
+  font-style: italic;
+}
+
+.max-markdown-editor__tool--code {
+  font-family: ui-monospace, SFMono-Regular, 'SFMono-Regular', Consolas, monospace;
+  font-size: 0.72rem;
+}
+
+.max-markdown-editor__tool:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.max-markdown-preview {
+  display: grid;
+  gap: 10px;
+  color: var(--text-secondary);
+  font-size: 0.83rem;
+  line-height: 1.55;
+}
+
+.max-markdown-preview p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.max-markdown-preview a {
+  color: #0a79db;
+  font-weight: 700;
+  text-decoration: underline;
+  text-underline-offset: 0.14em;
+}
+
+.max-markdown-preview code {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(18, 37, 58, 0.1);
+  color: #0f2f4d;
+  font-size: 0.78rem;
+  font-family: ui-monospace, SFMono-Regular, 'SFMono-Regular', Consolas, monospace;
+}
+
+.max-markdown-preview--empty p {
+  color: var(--text-muted);
+}
+
 .mailing-message-field__meta {
   display: flex;
   align-items: flex-start;
@@ -3291,12 +3369,8 @@
   gap: 10px;
 }
 
-.channel-broadcast-preview__message p {
-  margin: 0;
+.channel-broadcast-preview__message .max-markdown-preview {
   color: var(--text-secondary);
-  font-size: 0.83rem;
-  line-height: 1.5;
-  white-space: pre-wrap;
 }
 
 .channel-broadcast-preview__image-placeholder {

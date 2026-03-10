@@ -8,9 +8,11 @@ export const commercialAdsSensitivitySchema = z.enum(['BALANCED', 'STRICT']);
 export const managedEntityTypeSchema = z.enum(['chat', 'channel']);
 export const channelAutoPostButtonsModeSchema = z.enum(['OFF', 'COMMENTS', 'SUGGEST', 'BOTH']);
 export const managedPollStatusSchema = z.enum(['DRAFT', 'ACTIVE', 'CLOSED']);
+export const broadcastTextFormatSchema = z.enum(['plain', 'markdown']);
 export type ManagedEntityType = z.infer<typeof managedEntityTypeSchema>;
 export type ChannelAutoPostButtonsMode = z.infer<typeof channelAutoPostButtonsModeSchema>;
 export type ManagedPollStatus = z.infer<typeof managedPollStatusSchema>;
+export type BroadcastTextFormat = z.infer<typeof broadcastTextFormatSchema>;
 
 export const MANAGED_POLL_MIN_OPTIONS = 2;
 export const MANAGED_POLL_MAX_OPTIONS = 6;
@@ -938,6 +940,7 @@ export const addGlobalUserBlacklistRequestSchema = z.object({
 export const sendBroadcastRequestSchema = z
   .object({
     text: z.string().trim().max(1_000).default(''),
+    textFormat: broadcastTextFormatSchema.default('plain'),
     applyToAllChats: z.boolean().default(false),
     buttonEnabled: z.boolean().default(false),
     buttonUrl: botButtonUrlSchema,

@@ -102,6 +102,8 @@ export type MaxReplyMessageLink = {
   mid: string;
 };
 
+export type MaxTextFormat = 'markdown' | 'html';
+
 export type MaxMessageButton =
   | MaxLinkButton
   | MaxCallbackButton
@@ -115,6 +117,7 @@ export type MaxSendMessageOptions = {
   buttons?: MaxMessageButton[][];
   imagePayload?: Record<string, unknown>;
   messageLink?: MaxReplyMessageLink | null;
+  textFormat?: MaxTextFormat;
   debugContext?: {
     screen?: string;
     action?: string;
@@ -265,6 +268,7 @@ export class MaxClientService implements OnModuleDestroy {
         },
         data: {
           text,
+          ...(options?.textFormat ? { format: options.textFormat } : {}),
           ...(messageLink ? { link: messageLink } : {}),
           ...(attachments.length > 0 ? { attachments } : {}),
         },
@@ -610,6 +614,7 @@ export class MaxClientService implements OnModuleDestroy {
             },
             data: {
               text: action.text,
+              ...(action.options?.textFormat ? { format: action.options.textFormat } : {}),
               ...(messageLink ? { link: messageLink } : {}),
               ...(attachments.length > 0 ? { attachments } : {}),
             },
@@ -1893,7 +1898,9 @@ export class MaxClientService implements OnModuleDestroy {
     const tokenFromSequence = this.buildChatPostLinkTokenFromSequence(
       this.readBigInt(body?.seq ?? row.seq ?? row.sequence),
     );
-    return tokenFromSequence ? `${MAX_CHAT_POST_LINK_BASE_URL}/c/${chatId}/${tokenFromSequence}` : null;
+    return tokenFromSequence
+      ? `${MAX_CHAT_POST_LINK_BASE_URL}/c/${chatId}/${tokenFromSequence}`
+      : null;
   }
 
   private buildChatPostLinkTokenFromMessageId(messageId: string | null): string | null {

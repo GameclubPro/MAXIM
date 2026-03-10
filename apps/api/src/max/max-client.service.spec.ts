@@ -158,7 +158,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
     };
     const service = createService(httpService);
 
-    const result = await service.sendMessageImmediateWithResolvedLink('chat-1', 'Правила чата');
+    const result = await service.sendMessageImmediateWithResolvedLink('chat-1', 'Правила чата', {
+      textFormat: 'markdown',
+    });
 
     expect(result).toEqual({
       messageId: 'mid-rules-1',
@@ -170,7 +172,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         method: 'post',
         url: 'https://platform-api.max.ru/messages',
         params: { chat_id: 'chat-1' },
-        data: { text: 'Правила чата' },
+        data: { text: 'Правила чата', format: 'markdown' },
       }),
     );
     expect(httpService.request).toHaveBeenNthCalledWith(
@@ -367,6 +369,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       'chat-1',
       'Нарушение',
       {
+        textFormat: 'markdown',
         messageLink: {
           type: 'reply',
           mid: 'mid-rules-1',
@@ -382,6 +385,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         params: { chat_id: 'chat-1' },
         data: {
           text: 'Нарушение',
+          format: 'markdown',
           link: {
             type: 'reply',
             mid: 'mid-rules-1',

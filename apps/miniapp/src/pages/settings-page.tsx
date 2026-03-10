@@ -10,6 +10,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { MaxMarkdownEditor } from '../components/max-markdown-editor';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import { GlassCard } from '../components/ui/glass-card';
 import { BackChevronIcon, ParticipantsIcon } from '../components/ui/entity-header-icons';
@@ -92,7 +93,8 @@ type HintKey =
   | 'nightBotButton'
   | 'deleteBotMessages'
   | 'removeBotsFromGroup'
-  | 'globalBlacklist';
+  | 'globalBlacklist'
+  | 'mailingText';
 type BotMessageEditorKey =
   | 'link'
   | 'greeting'
@@ -1165,11 +1167,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       : '';
   const isPendingAutoFillOnly = Boolean(
     rulesDraft &&
-      rulesAutoFillSeedText !== null &&
-      rulesDraft.text === rulesAutoFillSeedText &&
-      rulesDraft.imageBase64 === (rulesQuery.data?.imageBase64 ?? '') &&
-      rulesDraft.imageMimeType === (rulesQuery.data?.imageMimeType ?? '') &&
-      rulesDraft.imageFileName === (rulesQuery.data?.imageFileName ?? ''),
+    rulesAutoFillSeedText !== null &&
+    rulesDraft.text === rulesAutoFillSeedText &&
+    rulesDraft.imageBase64 === (rulesQuery.data?.imageBase64 ?? '') &&
+    rulesDraft.imageMimeType === (rulesQuery.data?.imageMimeType ?? '') &&
+    rulesDraft.imageFileName === (rulesQuery.data?.imageFileName ?? ''),
   );
 
   const saveMutation = useMutation({
@@ -1221,8 +1223,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     : hasPendingHeaderChanges
       ? 'Черновик'
       : 'Сохранено';
-  const chatMetaLabel =
-    chatTitle && chatTitle !== chatId ? `ID ${chatId}` : 'Настройки модерации';
+  const chatMetaLabel = chatTitle && chatTitle !== chatId ? `ID ${chatId}` : 'Настройки модерации';
   const showHeaderStatus = isHeaderSaving || hasPendingHeaderChanges;
   const chatParticipantsCountLabel = formatParticipantsCount(
     chatHeaderQuery.data?.participantsCount ?? null,
@@ -1500,7 +1501,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   ) {
     if (key === 'text') {
       const nextText = String(value);
-      setRulesAutoFillSeedText((current) => (current !== null && current !== nextText ? null : current));
+      setRulesAutoFillSeedText((current) =>
+        current !== null && current !== nextText ? null : current,
+      );
     }
 
     setRulesDraft((current) => {
@@ -2089,6 +2092,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
     sendBroadcastMutation.mutate({
       text: normalizedText,
+      textFormat: 'markdown',
       applyToAllChats: mailingApplyToAllChats && canApplyToAllChats,
       buttonEnabled: mailingButtonEnabled,
       buttonUrl: normalizedButtonUrl,
@@ -3427,7 +3431,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 style={{ animationDelay: '52ms' }}
                 aria-label="Опрос чата"
               >
-                <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+                <div
+                  className={cn('settings-section__head', 'settings-section__head--interactive')}
+                >
                   <button
                     type="button"
                     className="settings-section__toggle"
@@ -6234,15 +6240,40 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       mailingTextError && 'field--error',
                     )}
                   >
-                    <span className="field__label">Текст сообщения</span>
-                    <textarea
+                    <div className="channel-settings-field-label">
+                      <span className="field__label">Текст сообщения</span>
+                      <span className="channel-settings-hint-anchor">
+                        <button
+                          type="button"
+                          className={cn(
+                            'settings-info-button',
+                            openHintKey === 'mailingText' && 'is-open',
+                          )}
+                          aria-label="Пояснение для текста рассылки"
+                          aria-controls="mailing-text-hint"
+                          aria-expanded={openHintKey === 'mailingText'}
+                          onClick={() => toggleHint('mailingText')}
+                        >
+                          <span aria-hidden>i</span>
+                        </button>
+                        {openHintKey === 'mailingText' ? (
+                          <p id="mailing-text-hint" className="channel-settings-hint-popover">
+                            MAX поддерживает markdown: жирный, курсив, подчеркивание, зачеркнутый
+                            текст, код и ссылки. Отдельных заголовков нет, их лучше имитировать
+                            короткой акцентной строкой.
+                          </p>
+                        ) : null}
+                      </span>
+                    </div>
+                    <MaxMarkdownEditor
                       value={mailingText}
-                      onChange={(event) => {
-                        setMailingText(event.target.value);
+                      onChange={(nextValue) => {
+                        setMailingText(nextValue);
                         if (mailingTextError) {
                           setMailingTextError('');
                         }
                       }}
+                      ariaLabel="Текст рассылки в чат"
                       rows={5}
                       maxLength={MAX_BROADCAST_TEXT_LENGTH}
                       placeholder="Например: Сегодня в 21:00 старт турнира. Подключайтесь!"

@@ -3,6 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { BackChevronIcon, ParticipantsIcon } from '../components/ui/entity-header-icons';
+import { MaxMarkdownEditor, MaxMarkdownPreview } from '../components/max-markdown-editor';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
@@ -305,9 +306,7 @@ function ChannelSettingsToggleCard({
             </ChannelSettingsHintAnchor>
           ) : null}
         </div>
-        {description && !hintKey ? (
-          <span>{description}</span>
-        ) : null}
+        {description && !hintKey ? <span>{description}</span> : null}
       </div>
       <label className="settings-native-switch">
         <input
@@ -889,6 +888,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
 
     sendBroadcastMutation.mutate({
       text: normalizedText,
+      textFormat: 'markdown',
       applyToAllChats: false,
       buttonEnabled: broadcastButtonEnabled,
       buttonUrl: normalizedButtonUrl,
@@ -1060,9 +1060,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
             <span className="settings-section__toggle-main">
               <h3>Предложить пост</h3>
               <small>
-                {draft.postSuggestionsEnabled
-                  ? 'ПОД КАЖДЫМ ПОСТОМ'
-                  : 'ТОЛЬКО РУЧНАЯ ПУБЛИКАЦИЯ'}
+                {draft.postSuggestionsEnabled ? 'ПОД КАЖДЫМ ПОСТОМ' : 'ТОЛЬКО РУЧНАЯ ПУБЛИКАЦИЯ'}
               </small>
             </span>
             <SectionChevron isOpen={expandedSections.postSuggestions} />
@@ -1113,9 +1111,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                 <input
                   type="text"
                   value={draft.postSuggestionsButtonText}
-                  onChange={(event) =>
-                    patchDraft('postSuggestionsButtonText', event.target.value)
-                  }
+                  onChange={(event) => patchDraft('postSuggestionsButtonText', event.target.value)}
                   placeholder="Предложить пост"
                   maxLength={32}
                 />
@@ -1197,23 +1193,30 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                     onToggleHint={toggleHint}
                     label="Пояснение для текста рассылки"
                   >
-                    Короткий lead и понятный призыв к действию обычно дают лучший переход в канал.
+                    MAX поддерживает markdown: жирный, курсив, подчеркивание, зачеркнутый текст, код
+                    и ссылки. Отдельных заголовков нет, их лучше имитировать короткой акцентной
+                    строкой.
                   </ChannelSettingsHintAnchor>
                 </div>
-                <textarea
+                <MaxMarkdownEditor
                   value={broadcastText}
-                  onChange={(event) => {
-                    setBroadcastText(event.target.value);
+                  onChange={(nextValue) => {
+                    setBroadcastText(nextValue);
                     if (broadcastTextError) {
                       setBroadcastTextError('');
                     }
                   }}
+                  ariaLabel="Текст рассылки в канал"
                   rows={5}
                   maxLength={MAX_BROADCAST_TEXT_LENGTH}
                   placeholder="Например: Новый пост уже в канале. Откройте выпуск по кнопке ниже."
                 />
                 <div className="mailing-message-field__meta">
-                  {broadcastTextError ? <small className="field__hint">{broadcastTextError}</small> : <span />}
+                  {broadcastTextError ? (
+                    <small className="field__hint">{broadcastTextError}</small>
+                  ) : (
+                    <span />
+                  )}
                   <small
                     className={cn(
                       'mailing-message-field__counter',
@@ -1247,7 +1250,9 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                         </ChannelSettingsHintAnchor>
                       </div>
                       <small className="mailing-option-card__subtitle">
-                        {broadcastHasImage ? 'Изображение будет отправлено с постом.' : 'Необязательно'}
+                        {broadcastHasImage
+                          ? 'Изображение будет отправлено с постом.'
+                          : 'Необязательно'}
                       </small>
                     </div>
 
@@ -1358,7 +1363,8 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                           onToggleHint={toggleHint}
                           label="Пояснение для кнопки в рассылке"
                         >
-                          Добавляйте CTA, когда нужно перевести пользователя в канал, пост или на внешнюю страницу одним нажатием.
+                          Добавляйте CTA, когда нужно перевести пользователя в канал, пост или на
+                          внешнюю страницу одним нажатием.
                         </ChannelSettingsHintAnchor>
                       </div>
                       <small className="mailing-option-card__subtitle">
@@ -1468,10 +1474,10 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                     )
                   ) : null}
 
-                  <p>
-                    {broadcastText.trim() ||
-                      'Здесь будет текст поста. Можно отправить и только фото, но короткий lead обычно работает лучше.'}
-                  </p>
+                  <MaxMarkdownPreview
+                    text={broadcastText}
+                    fallback="Здесь будет текст поста. Можно отправить и только фото, но короткий lead обычно работает лучше."
+                  />
 
                   {broadcastButtonEnabled ? (
                     <div

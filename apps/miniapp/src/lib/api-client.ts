@@ -47,6 +47,7 @@ import {
   type PublishChannelEngagementRequest,
   type PublishChannelEngagementResult,
   type PublishChatRulesResult,
+  type BroadcastTextFormat,
   type SendBroadcastResult,
   updateChatRulesRequestSchema,
   managedPollSchema,
@@ -63,6 +64,7 @@ export type ApplySettingsToAllChatsResult = {
 
 export type SendBroadcastPayload = {
   text: string;
+  textFormat: BroadcastTextFormat;
   applyToAllChats: boolean;
   buttonEnabled: boolean;
   buttonUrl: string;
@@ -172,7 +174,10 @@ export class ApiClient {
     return managedPollSchema.parse(response);
   }
 
-  async updateChatPoll(chatId: string, payload: { question: string; options: string[] }): Promise<ManagedPoll> {
+  async updateChatPoll(
+    chatId: string,
+    payload: { question: string; options: string[] },
+  ): Promise<ManagedPoll> {
     const requestBody = updateManagedPollRequestSchema.parse(payload);
     const response = await this.request(`/chats/${chatId}/poll`, {
       method: 'PUT',
