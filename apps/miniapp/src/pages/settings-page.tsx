@@ -10,7 +10,7 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
-import { MaxMarkdownEditor } from '../components/max-markdown-editor';
+import { MaxMarkdownEditor, MaxMarkdownPreview } from '../components/max-markdown-editor';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import { GlassCard } from '../components/ui/glass-card';
 import { BackChevronIcon, ParticipantsIcon } from '../components/ui/entity-header-icons';
@@ -6294,6 +6294,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       >
                         {mailingText.length}/{MAX_BROADCAST_TEXT_LENGTH}
                       </small>
+                    </div>
+                    <div className="mailing-message-field__preview">
+                      <span className="mailing-message-field__preview-label">Как увидят в MAX</span>
+                      <MaxMarkdownPreview
+                        text={mailingText}
+                        fallback="Здесь появится форматированный предпросмотр сообщения."
+                      />
                     </div>
                   </label>
 

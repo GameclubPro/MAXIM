@@ -1536,7 +1536,7 @@ describe('AdminService.sendChannelBroadcast', () => {
         chatTitle: null,
       },
       {
-        text: 'Новый выпуск уже в канале.',
+        text: '**Новый выпуск** уже в канале.',
         textFormat: 'markdown',
         applyToAllChats: false,
         buttonEnabled: true,
@@ -1556,9 +1556,9 @@ describe('AdminService.sendChannelBroadcast', () => {
     expect(maxClient.uploadImage).toHaveBeenCalledTimes(1);
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'channel-1',
-      'Новый выпуск уже в канале.',
+      '<p><strong>Новый выпуск</strong> уже в канале.</p>',
       {
-        textFormat: 'markdown',
+        textFormat: 'html',
         button: {
           text: 'Открыть выпуск',
           url: 'https://max.ru/channel/maxim',

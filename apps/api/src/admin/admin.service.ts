@@ -81,6 +81,7 @@ import {
   normalizeManagedPollDraft,
   validateManagedPollForPublish,
 } from '../common/managed-poll.util';
+import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 
@@ -1560,11 +1561,14 @@ export class AdminService {
       );
     }
 
-    const messageText = parsed.data.text.trim() || (parsed.data.imageEnabled ? ' ' : '');
+    const normalizedSourceText = parsed.data.text.trim();
+    const renderedText =
+      parsed.data.textFormat === 'markdown' && normalizedSourceText
+        ? renderSupportedMarkdownAsHtml(normalizedSourceText)
+        : normalizedSourceText;
+    const messageText = renderedText || (parsed.data.imageEnabled ? ' ' : '');
     const textFormat: MaxSendMessageOptions['textFormat'] =
-      parsed.data.textFormat === 'markdown' && parsed.data.text.trim().length > 0
-        ? 'markdown'
-        : undefined;
+      parsed.data.textFormat === 'markdown' && normalizedSourceText ? 'html' : undefined;
 
     let delayMs = 0;
     let sendAt: string | null = null;
@@ -1738,9 +1742,7 @@ export class AdminService {
   private async sendBroadcastImageMessageWithRetry(
     chatId: string,
     text: string,
-    options:
-      | { button?: { text: string; url: string }; imagePayload?: Record<string, unknown> }
-      | undefined,
+    options: Pick<MaxSendMessageOptions, 'button' | 'imagePayload' | 'textFormat'> | undefined,
   ): Promise<void> {
     let lastError: unknown = null;
     const attempts = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length + 1;

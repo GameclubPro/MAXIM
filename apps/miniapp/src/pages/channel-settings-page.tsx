@@ -1226,6 +1226,13 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                     {broadcastText.length}/{MAX_BROADCAST_TEXT_LENGTH}
                   </small>
                 </div>
+                <div className="mailing-message-field__preview">
+                  <span className="mailing-message-field__preview-label">Как увидят в MAX</span>
+                  <MaxMarkdownPreview
+                    text={broadcastText}
+                    fallback="Здесь появится форматированный предпросмотр сообщения."
+                  />
+                </div>
               </label>
 
               <div className="mailing-options-grid">
