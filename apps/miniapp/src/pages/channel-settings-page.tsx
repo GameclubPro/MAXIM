@@ -827,6 +827,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     broadcastButtonEnabled &&
     Boolean(broadcastButtonText.trim()) &&
     isHttpUrl(broadcastButtonUrl.trim());
+  const broadcastRichTextEnabled = broadcastButtonEnabled;
 
   function resetBroadcastComposer() {
     setBroadcastText('');
@@ -1193,9 +1194,8 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                     onToggleHint={toggleHint}
                     label="Пояснение для текста рассылки"
                   >
-                    MAX поддерживает markdown: жирный, курсив, подчеркивание, зачеркнутый текст, код
-                    и ссылки. Отдельных заголовков нет, их лучше имитировать короткой акцентной
-                    строкой.
+                    В канале форматирование MAX надежно держится только вместе с кнопкой. Без CTA
+                    пост уйдет обычным текстом без markdown-оформления.
                   </ChannelSettingsHintAnchor>
                 </div>
                 <MaxMarkdownEditor
@@ -1208,9 +1208,16 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                   }}
                   ariaLabel="Текст рассылки в канал"
                   rows={5}
+                  showToolbar={broadcastRichTextEnabled}
                   maxLength={MAX_BROADCAST_TEXT_LENGTH}
                   placeholder="Например: Новый пост уже в канале. Откройте выпуск по кнопке ниже."
                 />
+                {broadcastRichTextEnabled ? null : (
+                  <small className="field__hint">
+                    Форматирование включается вместе с кнопкой. Сейчас сообщение опубликуется как
+                    обычный текст.
+                  </small>
+                )}
                 <div className="mailing-message-field__meta">
                   {broadcastTextError ? (
                     <small className="field__hint">{broadcastTextError}</small>
@@ -1230,6 +1237,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                   <span className="mailing-message-field__preview-label">Как увидят в MAX</span>
                   <MaxMarkdownPreview
                     text={broadcastText}
+                    formatEnabled={broadcastRichTextEnabled}
                     fallback="Здесь появится форматированный предпросмотр сообщения."
                   />
                 </div>
@@ -1483,6 +1491,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
 
                   <MaxMarkdownPreview
                     text={broadcastText}
+                    formatEnabled={broadcastRichTextEnabled}
                     fallback="Здесь будет текст поста. Можно отправить и только фото, но короткий lead обычно работает лучше."
                   />
 

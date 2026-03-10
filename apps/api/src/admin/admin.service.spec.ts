@@ -1582,6 +1582,70 @@ describe('AdminService.sendChannelBroadcast', () => {
       }),
     });
   });
+
+  it('falls back to plain text when channel broadcast has no button', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+      createdAt: new Date('2026-03-01T00:00:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-channel-1' }),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await service.sendChannelBroadcast(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: '**Новый выпуск** уже в [канале](https://max.ru/channel/maxim).',
+        textFormat: 'markdown',
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: '',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryDays: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'channel-1',
+      'Новый выпуск уже в канале.',
+      undefined,
+      { immediate: true },
+    );
+  });
 });
 
 describe('AdminService chat rules', () => {

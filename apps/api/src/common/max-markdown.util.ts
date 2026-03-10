@@ -26,6 +26,25 @@ export function renderSupportedMarkdownAsHtml(source: string): string {
     .join('');
 }
 
+export function stripSupportedMarkdownToPlainText(source: string): string {
+  const normalized = source.replace(/\r/g, '').trim();
+  if (!normalized) {
+    return '';
+  }
+
+  const paragraphs = normalized
+    .split(/\n{2,}/u)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+
+  return paragraphs
+    .map((paragraph) => {
+      const lines = paragraph.split('\n');
+      return lines.map((line) => renderInlineTokensAsPlainText(parseInlineTokens(line))).join('\n');
+    })
+    .join('\n\n');
+}
+
 function parseInlineTokens(source: string): InlineToken[] {
   const tokens: InlineToken[] = [];
   let cursor = 0;
@@ -154,6 +173,25 @@ function renderInlineTokens(tokens: InlineToken[]): string {
           return `<s>${renderInlineTokens(token.children)}</s>`;
         case 'link':
           return `<a href="${escapeAttribute(token.href)}">${renderInlineTokens(token.children)}</a>`;
+      }
+    })
+    .join('');
+}
+
+function renderInlineTokensAsPlainText(tokens: InlineToken[]): string {
+  return tokens
+    .map((token) => {
+      switch (token.type) {
+        case 'text':
+          return token.content;
+        case 'code':
+          return token.content;
+        case 'bold':
+        case 'italic':
+        case 'underline':
+        case 'strike':
+        case 'link':
+          return renderInlineTokensAsPlainText(token.children);
       }
     })
     .join('');

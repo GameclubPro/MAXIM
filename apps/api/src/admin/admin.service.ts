@@ -81,7 +81,10 @@ import {
   normalizeManagedPollDraft,
   validateManagedPollForPublish,
 } from '../common/managed-poll.util';
-import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
+import {
+  renderSupportedMarkdownAsHtml,
+  stripSupportedMarkdownToPlainText,
+} from '../common/max-markdown.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 
@@ -1562,13 +1565,19 @@ export class AdminService {
     }
 
     const normalizedSourceText = parsed.data.text.trim();
+    const shouldUseRichText =
+      parsed.data.textFormat === 'markdown' &&
+      normalizedSourceText.length > 0 &&
+      (entityType !== 'channel' || parsed.data.buttonEnabled);
     const renderedText =
-      parsed.data.textFormat === 'markdown' && normalizedSourceText
+      shouldUseRichText
         ? renderSupportedMarkdownAsHtml(normalizedSourceText)
+        : entityType === 'channel' && parsed.data.textFormat === 'markdown'
+          ? stripSupportedMarkdownToPlainText(normalizedSourceText)
         : normalizedSourceText;
     const messageText = renderedText || (parsed.data.imageEnabled ? ' ' : '');
     const textFormat: MaxSendMessageOptions['textFormat'] =
-      parsed.data.textFormat === 'markdown' && normalizedSourceText ? 'html' : undefined;
+      shouldUseRichText ? 'html' : undefined;
 
     let delayMs = 0;
     let sendAt: string | null = null;

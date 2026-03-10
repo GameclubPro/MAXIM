@@ -1,4 +1,7 @@
-import { renderSupportedMarkdownAsHtml } from './max-markdown.util';
+import {
+  renderSupportedMarkdownAsHtml,
+  stripSupportedMarkdownToPlainText,
+} from './max-markdown.util';
 
 describe('renderSupportedMarkdownAsHtml', () => {
   it('renders supported formatting and links to html', () => {
@@ -14,6 +17,16 @@ describe('renderSupportedMarkdownAsHtml', () => {
   it('escapes html in plain text and keeps unsupported links as text', () => {
     expect(renderSupportedMarkdownAsHtml('<b>x</b> [bad](javascript:alert(1))')).toBe(
       '<p>&lt;b&gt;x&lt;/b&gt; [bad](javascript:alert(1))</p>',
+    );
+  });
+
+  it('strips supported markdown to plain text', () => {
+    expect(
+      stripSupportedMarkdownToPlainText(
+        '**Заголовок**\nТекст с _курсивом_, ++подчеркиванием++, ~~зачеркиванием~~ и `кодом`.\n\n[Открыть MAX](https://max.ru/)',
+      ),
+    ).toBe(
+      'Заголовок\nТекст с курсивом, подчеркиванием, зачеркиванием и кодом.\n\nОткрыть MAX',
     );
   });
 });

@@ -30,6 +30,7 @@ export function MaxMarkdownEditor({
   placeholder,
   rows = 5,
   disabled = false,
+  showToolbar = true,
   ariaLabel,
   className,
 }: {
@@ -39,6 +40,7 @@ export function MaxMarkdownEditor({
   placeholder: string;
   rows?: number;
   disabled?: boolean;
+  showToolbar?: boolean;
   ariaLabel: string;
   className?: string;
 }) {
@@ -76,28 +78,34 @@ export function MaxMarkdownEditor({
 
   return (
     <div className={cn('max-markdown-editor', className)}>
-      <div className="max-markdown-editor__toolbar" role="toolbar" aria-label="Форматирование MAX">
-        {TOOL_DEFINITIONS.map((tool) => (
-          <button
-            key={tool.id}
-            type="button"
-            className={cn(
-              'max-markdown-editor__tool',
-              tool.id === 'italic' && 'max-markdown-editor__tool--italic',
-              tool.id === 'code' && 'max-markdown-editor__tool--code',
-            )}
-            title={tool.title}
-            aria-label={tool.title}
-            disabled={disabled}
-            onMouseDown={(event) => {
-              event.preventDefault();
-            }}
-            onClick={() => applyTool(tool.id)}
-          >
-            {tool.label}
-          </button>
-        ))}
-      </div>
+      {showToolbar ? (
+        <div
+          className="max-markdown-editor__toolbar"
+          role="toolbar"
+          aria-label="Форматирование MAX"
+        >
+          {TOOL_DEFINITIONS.map((tool) => (
+            <button
+              key={tool.id}
+              type="button"
+              className={cn(
+                'max-markdown-editor__tool',
+                tool.id === 'italic' && 'max-markdown-editor__tool--italic',
+                tool.id === 'code' && 'max-markdown-editor__tool--code',
+              )}
+              title={tool.title}
+              aria-label={tool.title}
+              disabled={disabled}
+              onMouseDown={(event) => {
+                event.preventDefault();
+              }}
+              onClick={() => applyTool(tool.id)}
+            >
+              {tool.label}
+            </button>
+          ))}
+        </div>
+      ) : null}
 
       <textarea
         ref={textareaRef}
@@ -116,10 +124,12 @@ export function MaxMarkdownEditor({
 export function MaxMarkdownPreview({
   text,
   fallback,
+  formatEnabled = true,
   className,
 }: {
   text: string;
   fallback: string;
+  formatEnabled?: boolean;
   className?: string;
 }) {
   const normalized = text.replace(/\r/g, '').trim();
@@ -142,7 +152,9 @@ export function MaxMarkdownPreview({
             {lines.map((line, lineIndex) => (
               <Fragment key={`line-${paragraphIndex}-${lineIndex}`}>
                 {lineIndex > 0 ? <br /> : null}
-                {renderInlineMarkdown(line, `${paragraphIndex}-${lineIndex}`)}
+                {formatEnabled
+                  ? renderInlineMarkdown(line, `${paragraphIndex}-${lineIndex}`)
+                  : renderInlinePlainText(line)}
               </Fragment>
             ))}
           </p>
@@ -336,6 +348,28 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   flushPlainText();
 
   return nodes;
+}
+
+function renderInlinePlainText(text: string): string {
+  let cursor = 0;
+  let output = '';
+
+  while (cursor < text.length) {
+    const token = matchToken(text.slice(cursor));
+    if (!token) {
+      output += text[cursor];
+      cursor += 1;
+      continue;
+    }
+
+    output +=
+      token.type === 'link'
+        ? renderInlinePlainText(token.label)
+        : renderInlinePlainText(token.content);
+    cursor += token.raw.length;
+  }
+
+  return output;
 }
 
 function matchToken(
