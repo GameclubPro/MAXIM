@@ -1763,25 +1763,68 @@
 }
 
 .settings-page-header {
-  border-radius: 14px;
-  border: 1px solid rgba(255, 255, 255, 0.62);
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.72);
   background:
-    radial-gradient(120% 170% at 0% 0%, rgba(11, 132, 255, 0.18), transparent 55%),
-    linear-gradient(150deg, rgba(255, 255, 255, 0.78), rgba(236, 246, 255, 0.56));
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(241, 248, 255, 0.9)),
+    rgba(255, 255, 255, 0.88);
+  box-shadow: 0 18px 34px rgba(28, 61, 92, 0.1);
   padding: 12px 14px;
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .settings-page-header__top {
-  display: grid;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 10px;
+}
+
+.settings-page-header__back {
+  min-height: 34px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.settings-page-header__status {
+  min-height: 30px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+  white-space: nowrap;
+}
+
+.settings-page-header__status.is-saving {
+  color: #0a79db;
+  background: rgba(11, 132, 255, 0.08);
+  border-color: rgba(11, 132, 255, 0.14);
+}
+
+.settings-page-header__status.is-draft {
+  color: #8c6200;
+  background: rgba(255, 189, 61, 0.14);
+  border-color: rgba(255, 189, 61, 0.2);
+}
+
+.settings-page-header__status.is-saved {
+  color: #0f7e5d;
+  background: rgba(27, 174, 118, 0.1);
+  border-color: rgba(27, 174, 118, 0.16);
 }
 
 .settings-page-header__identity {
   min-width: 0;
   display: grid;
-  gap: 3px;
+  gap: 4px;
 }
 
 .settings-page-header__eyebrow {
@@ -1795,16 +1838,18 @@
 
 .settings-page-header__title {
   margin: 0;
-  font-size: 1.04rem;
-  line-height: 1.28;
+  font-size: 1rem;
+  line-height: 1.22;
   color: var(--text-primary);
   overflow-wrap: anywhere;
 }
 
-.settings-page-header__hint {
+.settings-page-header__meta {
   margin: 0;
-  font-size: 0.78rem;
-  color: var(--text-secondary);
+  font-size: 0.76rem;
+  line-height: 1.24;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
 }
 
 .settings-section-apply {
@@ -1914,8 +1959,7 @@
 
 @media (min-width: 720px) {
   .settings-page-header__top {
-    grid-template-columns: minmax(0, 1fr);
-    align-items: start;
+    gap: 12px;
   }
 }
 

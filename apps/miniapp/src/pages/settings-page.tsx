@@ -1187,6 +1187,15 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const isSavingRules = saveRulesMutation.isPending;
   const mutateRules = saveRulesMutation.mutate;
   const mutateRulesAsync = saveRulesMutation.mutateAsync;
+  const isHeaderSaving = isSavingSettings || isSavingRules;
+  const hasPendingHeaderChanges = hasChanges || hasRulesChanges;
+  const headerStatusLabel = isHeaderSaving
+    ? 'Сохраняем'
+    : hasPendingHeaderChanges
+      ? 'Черновик'
+      : 'Сохранено';
+  const chatMetaLabel =
+    chatTitle && chatTitle !== chatId ? `ID ${chatId}` : 'Настройки модерации';
 
   const publishRulesMutation = useMutation({
     mutationFn: () => api.publishRules(chatId ?? ''),
@@ -2390,15 +2399,30 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         <section className="settings-sections" aria-label="Настройки модерации">
           <header className="settings-page-header stagger-in">
             <div className="settings-page-header__top">
-              <div className="settings-page-header__identity">
-                <p className="settings-page-header__eyebrow">Чат</p>
-                <h2 className="settings-page-header__title">{chatTitle || chatId}</h2>
-              </div>
+              <Link
+                to={buildManagedEntitiesRoute('chat')}
+                className="button button--ghost settings-page-header__back"
+              >
+                Назад
+              </Link>
+              <span
+                className={cn(
+                  'settings-page-header__status',
+                  isHeaderSaving
+                    ? 'is-saving'
+                    : hasPendingHeaderChanges
+                      ? 'is-draft'
+                      : 'is-saved',
+                )}
+                aria-live="polite"
+              >
+                {headerStatusLabel}
+              </span>
             </div>
-            <p className="settings-page-header__hint">
-              Настройки сохраняются автоматически. Для каждого блока есть отдельное применение ко
-              всем чатам.
-            </p>
+            <div className="settings-page-header__identity">
+              <h2 className="settings-page-header__title">{chatTitle || chatId}</h2>
+              <p className="settings-page-header__meta">{chatMetaLabel}</p>
+            </div>
           </header>
 
           <GlassCard className="settings-sections-shell" padding="sm">
