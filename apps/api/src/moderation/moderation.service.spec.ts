@@ -6392,10 +6392,14 @@ describe('ModerationService', () => {
         optionIndex: 0,
       },
     });
-    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
-      'channel-1',
-      'mid-poll-1',
-      expect.stringContaining('Всего голосов: 1'),
+    const votePollCall = (maxClient.editMessageInlineKeyboard as jest.Mock).mock.calls.at(-1);
+    expect(votePollCall).toBeDefined();
+    expect(votePollCall?.[0]).toBe('channel-1');
+    expect(votePollCall?.[1]).toBe('mid-poll-1');
+    expect(votePollCall?.[2]).toContain('Соло - 1 (100%)');
+    expect(votePollCall?.[2]).not.toContain('Всего голосов:');
+    expect(votePollCall?.[2]).not.toContain('Статус:');
+    expect(votePollCall?.[3]).toEqual(
       expect.objectContaining({
         buttons: [
           [expect.objectContaining({ text: 'Соло (1)' })],

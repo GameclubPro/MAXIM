@@ -93,16 +93,13 @@ export function buildManagedPollOptionSummaries(
 export function buildManagedPollMessageText(
   question: string,
   optionResults: readonly ManagedPollOptionSummary[],
-  status: ManagedPollStatus,
+  _status: ManagedPollStatus,
 ): string {
   const lines: string[] = ['Опрос', '', question.trim()];
 
   optionResults.forEach((row, index) => {
     lines.push(`${index + 1}. ${row.option} - ${row.votes} (${row.percent}%)`);
   });
-
-  const totalVotes = optionResults.reduce((sum, row) => sum + row.votes, 0);
-  lines.push('', `Всего голосов: ${totalVotes}`, `Статус: ${status === 'ACTIVE' ? 'Открыт' : 'Закрыт'}`);
 
   return lines.join('\n');
 }

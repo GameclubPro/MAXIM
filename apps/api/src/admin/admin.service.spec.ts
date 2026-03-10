@@ -415,11 +415,13 @@ describe('AdminService managed polls', () => {
 
     const closed = await service.closeChatPoll('chat-1', actor);
 
-    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
-      'chat-1',
-      'mid-poll-1',
-      expect.stringContaining('Статус: Закрыт'),
-    );
+    const closePollCall = (maxClient.editMessageInlineKeyboard as jest.Mock).mock.calls.at(-1);
+    expect(closePollCall).toBeDefined();
+    expect(closePollCall?.[0]).toBe('chat-1');
+    expect(closePollCall?.[1]).toBe('mid-poll-1');
+    expect(closePollCall?.[2]).toContain('Соло - 2 (67%)');
+    expect(closePollCall?.[2]).not.toContain('Всего голосов:');
+    expect(closePollCall?.[2]).not.toContain('Статус:');
     expect(closed.status).toBe('CLOSED');
     expect(closed.totalVotes).toBe(3);
     expect(closed.optionResults).toEqual([
