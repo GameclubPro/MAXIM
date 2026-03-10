@@ -174,6 +174,34 @@ function ChannelSettingsInfoButton({
   );
 }
 
+function ChannelSettingsHintAnchor({
+  hintKey,
+  openHintKey,
+  onToggleHint,
+  label,
+  children,
+}: {
+  hintKey: ChannelSettingsHintKey;
+  openHintKey: ChannelSettingsHintKey | null;
+  onToggleHint: (hintKey: ChannelSettingsHintKey) => void;
+  label: string;
+  children: string;
+}) {
+  return (
+    <span className="channel-settings-hint-anchor">
+      <ChannelSettingsInfoButton
+        hintKey={hintKey}
+        openHintKey={openHintKey}
+        onToggleHint={onToggleHint}
+        label={label}
+      />
+      <ChannelSettingsHint hintKey={hintKey} openHintKey={openHintKey}>
+        {children}
+      </ChannelSettingsHint>
+    </span>
+  );
+}
+
 function ChannelSettingsHint({
   hintKey,
   openHintKey,
@@ -188,7 +216,14 @@ function ChannelSettingsHint({
   }
 
   return (
-    <p id={`channel-settings-hint-${hintKey}`} className="settings-native-toggle__hint">
+    <p
+      id={`channel-settings-hint-${hintKey}`}
+      className={cn('settings-native-toggle__hint', 'channel-settings-hint-popover')}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+    >
       {children}
     </p>
   );
@@ -222,7 +257,11 @@ function ChannelSettingsToggleCard({
         }
 
         const target = event.target as HTMLElement;
-        if (target.closest('button, input, label')) {
+        if (
+          target.closest(
+            'button, input, label, .channel-settings-hint-anchor, .settings-native-toggle__hint',
+          )
+        ) {
           return;
         }
 
@@ -233,25 +272,20 @@ function ChannelSettingsToggleCard({
         <div className="channel-settings-toggle-card__title-row">
           <strong>{title}</strong>
           {description && hintKey ? (
-            <ChannelSettingsInfoButton
+            <ChannelSettingsHintAnchor
               hintKey={hintKey}
               openHintKey={openHintKey}
               onToggleHint={onToggleHint}
               label={`Пояснение для настройки «${title}»`}
-            />
+            >
+              {description}
+            </ChannelSettingsHintAnchor>
           ) : null}
         </div>
-        {description && hintKey ? (
-          <ChannelSettingsHint hintKey={hintKey} openHintKey={openHintKey}>
-            {description}
-          </ChannelSettingsHint>
-        ) : description ? (
+        {description && !hintKey ? (
           <span>{description}</span>
         ) : null}
       </div>
-      <span className={cn('channel-settings-toggle-card__state', checked && 'is-on')}>
-        {checked ? 'Вкл' : 'Выкл'}
-      </span>
       <label className="settings-native-switch">
         <input
           type="checkbox"
@@ -829,12 +863,14 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                         <label className="field">
                           <div className="channel-settings-field-label">
                             <span>Пауза между комментариями, сек</span>
-                            <ChannelSettingsInfoButton
+                            <ChannelSettingsHintAnchor
                               hintKey="commentsSlowModeSeconds"
                               openHintKey={openHintKey}
                               onToggleHint={toggleHint}
                               label="Пояснение для паузы между комментариями"
-                            />
+                            >
+                              0 = без таймера, но повторы всё равно режутся
+                            </ChannelSettingsHintAnchor>
                           </div>
                           <input
                             type="number"
@@ -856,12 +892,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                               )
                             }
                           />
-                          <ChannelSettingsHint
-                            hintKey="commentsSlowModeSeconds"
-                            openHintKey={openHintKey}
-                          >
-                            0 = без таймера, но повторы всё равно режутся
-                          </ChannelSettingsHint>
                         </label>
                       </div>
                     ) : null}
@@ -928,12 +958,14 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
               <label className="field">
                 <div className="channel-settings-field-label">
                   <span>Текст публикации</span>
-                  <ChannelSettingsInfoButton
+                  <ChannelSettingsHintAnchor
                     hintKey="engagementMessageText"
                     openHintKey={openHintKey}
                     onToggleHint={toggleHint}
                     label="Пояснение для текста публикации"
-                  />
+                  >
+                    Этот текст будет опубликован в канале над кнопками.
+                  </ChannelSettingsHintAnchor>
                 </div>
                 <textarea
                   rows={3}
@@ -941,9 +973,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                   onChange={(event) => patchDraft('engagementMessageText', event.target.value)}
                   placeholder="Есть идея или обратная связь? Нажмите кнопку ниже."
                 />
-                <ChannelSettingsHint hintKey="engagementMessageText" openHintKey={openHintKey}>
-                  Этот текст будет опубликован в канале над кнопками.
-                </ChannelSettingsHint>
               </label>
 
               <label className="field">
@@ -973,16 +1002,15 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                 <label className="field">
                   <div className="channel-settings-field-label">
                     <span>Пост с кнопками</span>
-                    <ChannelSettingsInfoButton
+                    <ChannelSettingsHintAnchor
                       hintKey="publishEngagement"
                       openHintKey={openHintKey}
                       onToggleHint={toggleHint}
                       label="Пояснение для поста с кнопками"
-                    />
+                    >
+                      {publishHint}
+                    </ChannelSettingsHintAnchor>
                   </div>
-                  <ChannelSettingsHint hintKey="publishEngagement" openHintKey={openHintKey}>
-                    {publishHint}
-                  </ChannelSettingsHint>
                 </label>
                 <button
                   type="button"
