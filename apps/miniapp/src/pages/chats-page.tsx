@@ -75,6 +75,10 @@ export function ChatsPage({ api }: { api: ApiClient }) {
   }, [activeTab]);
 
   const tabLabel = activeTab === 'chat' ? 'Чаты' : 'Каналы';
+  const searchLabel = activeTab === 'chat' ? 'Поиск по чатам' : 'Поиск по каналам';
+  const searchPlaceholder = activeTab === 'chat' ? 'Поиск чата или ID' : 'Поиск канала или ID';
+  const tabSubtitle =
+    activeTab === 'chat' ? 'Настройки и события' : 'Посты, реакции и обсуждения';
 
   return (
     <div className="page-stack page-enter">
@@ -89,33 +93,27 @@ export function ChatsPage({ api }: { api: ApiClient }) {
         >
           <div className="chats-search-card__head">
             <div className="chats-search-card__title">
-              <div className="chats-search-card__eyebrow">
-                <span className="chats-search-card__pill">
-                  {activeTab === 'chat' ? 'Чаты MAX' : 'Каналы MAX'}
+              <div className="chats-search-card__title-row">
+                <h1>{tabLabel}</h1>
+                <span
+                  className="chats-search-card__count"
+                  aria-label={`Найдено ${filteredEntities.length}`}
+                >
+                  {filteredEntities.length}
                 </span>
-                <span className="chats-search-card__hint">Переключение разделов внизу</span>
               </div>
-              <h1>{tabLabel}</h1>
-              <p>
-                {activeTab === 'chat'
-                  ? 'Быстрый доступ к настройкам и событиям.'
-                  : 'Настройки идей для постов, реакций и обсуждения.'}
-              </p>
-            </div>
-            <div className="chats-search-card__meta" aria-live="polite">
-              <strong>{filteredEntities.length}</strong>
-              <small>{activeTab === 'chat' ? 'чатов в работе' : 'каналов в работе'}</small>
+              <p>{tabSubtitle}</p>
             </div>
           </div>
 
           <label className="field field--search chats-search-card__field" htmlFor="chat-search">
-            <span>Поиск по названию или ID</span>
+            <span>{searchLabel}</span>
             <input
               id="chat-search"
               type="search"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder={activeTab === 'chat' ? 'Например: support' : 'Например: новости'}
+              placeholder={searchPlaceholder}
             />
           </label>
         </GlassCard>
