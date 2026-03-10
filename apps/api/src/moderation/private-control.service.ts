@@ -1200,12 +1200,7 @@ export class PrivateControlService {
             : settings.autoPostButtonsMode === 'OFF'
               ? settings.commentsEnabled
               : false;
-        const includeSuggestButton =
-          settings.autoPostButtonsMode === 'SUGGEST' || settings.autoPostButtonsMode === 'BOTH'
-            ? true
-            : settings.autoPostButtonsMode === 'OFF'
-              ? settings.postSuggestionsEnabled
-              : false;
+        const includeSuggestButton = true;
 
         await this.adminService.publishChannelEngagementMessage(chatId, context.actor, {
           text:

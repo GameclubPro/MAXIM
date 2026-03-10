@@ -154,6 +154,34 @@ async function publishCommentsDialogToken(
   return commentsLaunch.t;
 }
 
+async function publishSuggestDialogToken(
+  service: AdminService,
+  maxClient: { sendMessageImmediateWithResolvedLink: jest.Mock },
+) {
+  await service.publishChannelEngagementMessage(
+    'channel-1',
+    {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    },
+    {
+      text: 'Нажмите кнопку ниже.',
+      commentsButtonText: 'Комментарии',
+      suggestButtonText: 'Предложить пост',
+      includeCommentsButton: false,
+      includeSuggestButton: true,
+    },
+  );
+
+  const [, , options] = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
+  const suggestButton = options.buttons?.[0]?.[0];
+  const suggestStartParam = new URL(suggestButton.url).searchParams.get('startapp');
+  const suggestLaunch = decodeBase64UrlJson<{ t: string }>(suggestStartParam!.slice(3));
+  return suggestLaunch.t;
+}
+
 describe('AdminService night mode settings normalization', () => {
   it('forces night bot message toggles off when night mode is disabled on update', async () => {
     const prisma = createPrismaMock();
@@ -893,6 +921,59 @@ describe('AdminService.getChannelStats', () => {
     expect(result.secondary.lastBotActivityAt).toBe('2026-03-07T09:30:00.000Z');
     expect(result.meta.maxSnapshotAvailable).toBe(false);
     expect(result.meta.churnAvailable).toBe(false);
+  });
+});
+
+describe('AdminService.updateChannelSettings', () => {
+  it('syncs auto post suggestion mode with the suggestion toggle', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.updateChannelSettings(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        autoPostButtonsMode: 'OFF',
+        commentsEnabled: true,
+        postSuggestionsEnabled: true,
+      },
+    );
+
+    expect(result.autoPostButtonsMode).toBe('SUGGEST');
+    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: {
+          entityType: 'CHANNEL',
+          channelSettings: {
+            upsert: expect.objectContaining({
+              update: expect.objectContaining({
+                autoPostButtonsMode: 'SUGGEST',
+              }),
+            }),
+          },
+        },
+      }),
+    );
   });
 });
 
@@ -1732,6 +1813,85 @@ describe('AdminService.publishChannelEngagementMessage', () => {
             path: ['threadId'],
             equals: commentsTokenPayload.d,
           },
+        }),
+      }),
+    );
+  });
+
+  it('accepts a suggestion from a thread-scoped button even when auto suggestions are disabled', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue({
+      postSuggestionsEnabled: false,
+    });
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        recipient_chat_id: '555001',
+      },
+    ]);
+    prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+      id: 'suggestion-1',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-10T12:10:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-5', url: null }),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const suggestToken = await publishSuggestDialogToken(service, maxClient);
+    const suggestTokenPayload = decodeBase64UrlJson<{ d: string }>(suggestToken.slice(4));
+
+    const result = await service.createChannelDialogMessage(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'suggest',
+      {
+        token: suggestToken,
+        text: 'Есть идея для следующего поста',
+      },
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      message: {
+        type: 'suggest',
+        text: 'Есть идея для следующего поста',
+      },
+    });
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(prisma.auditLog.create).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'CHANNEL_DIALOG_SUGGESTION',
+          payload: expect.objectContaining({
+            threadId: suggestTokenPayload.d,
+          }),
         }),
       }),
     );

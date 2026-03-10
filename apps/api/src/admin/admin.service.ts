@@ -895,7 +895,16 @@ export class AdminService {
 
     const parsed = channelSettingsSchema.safeParse(chat.channelSettings);
     if (parsed.success) {
-      return parsed.data;
+      const normalized = this.normalizeChannelSettings(parsed.data);
+      if (this.hasChannelSettingsNormalizationChanges(parsed.data, normalized)) {
+        await this.prisma.channelSettings.update({
+          where: { chatId },
+          data: {
+            ...normalized,
+          },
+        });
+      }
+      return normalized;
     }
 
     this.logger.warn(
@@ -932,6 +941,7 @@ export class AdminService {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
+    const normalizedSettings = this.normalizeChannelSettings(parsed.data);
 
     await this.prisma.chat.upsert({
       where: { id: chatId },
@@ -941,7 +951,7 @@ export class AdminService {
         entityType: ChatEntityType.CHANNEL,
         channelSettings: {
           create: {
-            ...parsed.data,
+            ...normalizedSettings,
           },
         },
       },
@@ -950,10 +960,10 @@ export class AdminService {
         channelSettings: {
           upsert: {
             update: {
-              ...parsed.data,
+              ...normalizedSettings,
             },
             create: {
-              ...parsed.data,
+              ...normalizedSettings,
             },
           },
         },
@@ -966,13 +976,13 @@ export class AdminService {
         actorUserId: user.userId,
         action: 'UPDATE_CHANNEL_SETTINGS',
         payload: {
-          ...parsed.data,
+          ...normalizedSettings,
           source,
         },
       },
     });
 
-    return parsed.data;
+    return normalizedSettings;
   }
 
   async publishChannelEngagementMessage(chatId: string, user: AuthUser, body: unknown) {
@@ -1198,7 +1208,7 @@ export class AdminService {
       throw new BadRequestException('Комментарии для этого канала сейчас закрыты.');
     }
 
-    if (dialogType === 'suggest' && !channelSettings.postSuggestionsEnabled) {
+    if (dialogType === 'suggest' && !channelSettings.postSuggestionsEnabled && !threadId) {
       throw new BadRequestException('Предложить пост для этого канала сейчас нельзя.');
     }
 
@@ -3041,7 +3051,41 @@ export class AdminService {
     }
 
     const parsed = channelSettingsSchema.safeParse(settings);
-    return parsed.success ? parsed.data : DEFAULT_CHANNEL_SETTINGS;
+    return parsed.success ? this.normalizeChannelSettings(parsed.data) : DEFAULT_CHANNEL_SETTINGS;
+  }
+
+  private normalizeChannelSettings(settings: ChannelSettings): ChannelSettings {
+    return {
+      ...settings,
+      autoPostButtonsMode: this.normalizeChannelAutoPostButtonsMode(settings),
+    };
+  }
+
+  private normalizeChannelAutoPostButtonsMode(
+    settings: Pick<ChannelSettings, 'autoPostButtonsMode' | 'commentsEnabled' | 'postSuggestionsEnabled'>,
+  ): ChannelSettings['autoPostButtonsMode'] {
+    const includeComments =
+      settings.commentsEnabled &&
+      (settings.autoPostButtonsMode === 'COMMENTS' || settings.autoPostButtonsMode === 'BOTH');
+    const includeSuggest = settings.postSuggestionsEnabled;
+
+    if (includeComments && includeSuggest) {
+      return 'BOTH';
+    }
+    if (includeComments) {
+      return 'COMMENTS';
+    }
+    if (includeSuggest) {
+      return 'SUGGEST';
+    }
+    return 'OFF';
+  }
+
+  private hasChannelSettingsNormalizationChanges(
+    current: Pick<ChannelSettings, 'autoPostButtonsMode'>,
+    normalized: Pick<ChannelSettings, 'autoPostButtonsMode'>,
+  ): boolean {
+    return current.autoPostButtonsMode !== normalized.autoPostButtonsMode;
   }
 
   private async assertChannelCommentAllowed(params: {

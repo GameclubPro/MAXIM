@@ -42,19 +42,12 @@ function modeHasComments(mode: ChannelAutoPostButtonsMode): boolean {
   return mode === 'COMMENTS' || mode === 'BOTH';
 }
 
-function modeHasSuggest(mode: ChannelAutoPostButtonsMode): boolean {
-  return mode === 'SUGGEST' || mode === 'BOTH';
-}
-
 function sanitizeAutoPostButtonsMode(
   mode: ChannelAutoPostButtonsMode,
   commentsEnabled: boolean,
   suggestEnabled: boolean,
 ): ChannelAutoPostButtonsMode {
-  return buildAutoPostButtonsMode(
-    commentsEnabled && modeHasComments(mode),
-    suggestEnabled && modeHasSuggest(mode),
-  );
+  return buildAutoPostButtonsMode(commentsEnabled && modeHasComments(mode), suggestEnabled);
 }
 
 function resolveManualPublishButtons(settings: ChannelSettings) {
@@ -65,12 +58,7 @@ function resolveManualPublishButtons(settings: ChannelSettings) {
         : settings.autoPostButtonsMode === 'OFF'
           ? settings.commentsEnabled
           : false,
-    includeSuggestButton:
-      settings.autoPostButtonsMode === 'SUGGEST' || settings.autoPostButtonsMode === 'BOTH'
-        ? true
-        : settings.autoPostButtonsMode === 'OFF'
-          ? settings.postSuggestionsEnabled
-          : false,
+    includeSuggestButton: true,
   };
 }
 
@@ -600,12 +588,14 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   const canPublishEngagement =
     publishButtons.includeCommentsButton || publishButtons.includeSuggestButton;
   const publishHint = !canPublishEngagement
-    ? 'Включите обсуждение или предложку, чтобы публиковать пост с кнопками.'
-    : publishButtons.includeCommentsButton && publishButtons.includeSuggestButton
-      ? 'Под постом будут кнопки «Комментарии» и «Предложить пост».'
+    ? 'Включите хотя бы один сценарий, чтобы публиковать пост с кнопками.'
+    : draft.postSuggestionsEnabled
+      ? publishButtons.includeCommentsButton
+        ? 'На новых постах предложка появится автоматически. В этом сообщении будут кнопки «Комментарии» и «Предложить пост».'
+        : 'На новых постах предложка появится автоматически. В этом сообщении будет кнопка «Предложить пост».'
       : publishButtons.includeCommentsButton
-        ? 'Под постом будет только кнопка «Комментарии».'
-        : 'Под постом будет только кнопка «Предложить пост».';
+        ? 'Автопредложка выключена. Кнопка «Предложить пост» появится только под этим сообщением, вместе с кнопкой «Комментарии».'
+        : 'Автопредложка выключена. Кнопка «Предложить пост» появится только под этим сообщением.';
 
   return (
     <div className="channel-settings-screen page-enter">
@@ -778,7 +768,11 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
           >
             <span className="settings-section__toggle-main">
               <h3>Предложить пост</h3>
-              <small>{draft.postSuggestionsEnabled ? 'КНОПКА ВКЛЮЧЕНА' : 'КНОПКА ВЫКЛЮЧЕНА'}</small>
+              <small>
+                {draft.postSuggestionsEnabled
+                  ? 'ПОД КАЖДЫМ ПОСТОМ'
+                  : 'ТОЛЬКО РУЧНАЯ ПУБЛИКАЦИЯ'}
+              </small>
             </span>
             <SectionChevron isOpen={expandedSections.postSuggestions} />
           </button>
@@ -794,65 +788,63 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
           <div className="settings-section__collapse-inner">
             <ChannelSettingsToggleCard
               title="Разрешить предложения"
-              description="Показывает кнопку для отправки идей в канал."
+              description="Автоматически добавляет предложку под каждым новым постом. Если выключить, кнопку можно опубликовать вручную только для одного сообщения."
               checked={draft.postSuggestionsEnabled}
               onChange={(nextValue) => patchDraft('postSuggestionsEnabled', nextValue)}
             />
 
-            {draft.postSuggestionsEnabled ? (
-              <div className="channel-settings-stack">
-                <label className="field">
-                  <span>Текст публикации</span>
-                  <textarea
-                    rows={3}
-                    value={draft.engagementMessageText}
-                    onChange={(event) => patchDraft('engagementMessageText', event.target.value)}
-                    placeholder="Есть идея или обратная связь? Нажмите кнопку ниже."
-                  />
-                  <small className="field__hint">
-                    Этот текст будет опубликован в канале над кнопками.
-                  </small>
-                </label>
+            <div className="channel-settings-stack">
+              <label className="field">
+                <span>Текст публикации</span>
+                <textarea
+                  rows={3}
+                  value={draft.engagementMessageText}
+                  onChange={(event) => patchDraft('engagementMessageText', event.target.value)}
+                  placeholder="Есть идея или обратная связь? Нажмите кнопку ниже."
+                />
+                <small className="field__hint">
+                  Этот текст будет опубликован в канале над кнопками.
+                </small>
+              </label>
 
-                <label className="field">
-                  <span>Название кнопки</span>
-                  <input
-                    type="text"
-                    value={draft.postSuggestionsButtonText}
-                    onChange={(event) =>
-                      patchDraft('postSuggestionsButtonText', event.target.value)
-                    }
-                    placeholder="Предложить пост"
-                    maxLength={32}
-                  />
-                </label>
+              <label className="field">
+                <span>Название кнопки</span>
+                <input
+                  type="text"
+                  value={draft.postSuggestionsButtonText}
+                  onChange={(event) =>
+                    patchDraft('postSuggestionsButtonText', event.target.value)
+                  }
+                  placeholder="Предложить пост"
+                  maxLength={32}
+                />
+              </label>
 
-                <label className="field">
-                  <span>Текст</span>
-                  <textarea
-                    rows={3}
-                    value={draft.postSuggestionsText}
-                    onChange={(event) => patchDraft('postSuggestionsText', event.target.value)}
-                    placeholder="Коротко объясните, что отправлять."
-                  />
-                </label>
+              <label className="field">
+                <span>Текст</span>
+                <textarea
+                  rows={3}
+                  value={draft.postSuggestionsText}
+                  onChange={(event) => patchDraft('postSuggestionsText', event.target.value)}
+                  placeholder="Коротко объясните, что отправлять."
+                />
+              </label>
 
-                <div className="channel-settings-inline-fields">
-                  <label className="field">
-                    <span>Пост с кнопками</span>
-                    <small className="field__hint">{publishHint}</small>
-                  </label>
-                  <button
-                    type="button"
-                    className="button button--accent"
-                    onClick={() => publishMutation.mutate()}
-                    disabled={!canPublishEngagement || publishMutation.isPending}
-                  >
-                    {publishMutation.isPending ? 'Публикуем…' : 'Опубликовать или обновить'}
-                  </button>
-                </div>
+              <div className="channel-settings-inline-fields">
+                <label className="field">
+                  <span>Пост с кнопками</span>
+                  <small className="field__hint">{publishHint}</small>
+                </label>
+                <button
+                  type="button"
+                  className="button button--accent"
+                  onClick={() => publishMutation.mutate()}
+                  disabled={!canPublishEngagement || publishMutation.isPending}
+                >
+                  {publishMutation.isPending ? 'Публикуем…' : 'Опубликовать или обновить'}
+                </button>
               </div>
-            ) : null}
+            </div>
           </div>
         </div>
       </GlassCard>

@@ -58,6 +58,7 @@ describe('ModerationService channel auto post buttons', () => {
           entityType: 'CHANNEL',
           channelSettings: {
             autoPostButtonsMode: 'BOTH',
+            postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
           },
           admins: [],
@@ -139,6 +140,7 @@ describe('ModerationService channel auto post buttons', () => {
           entityType: 'CHANNEL',
           channelSettings: {
             autoPostButtonsMode: 'OFF',
+            postSuggestionsEnabled: false,
             postSuggestionsButtonText: '📰 Предложить пост',
           },
           admins: [],
@@ -182,6 +184,64 @@ describe('ModerationService channel auto post buttons', () => {
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
+  it('auto-attaches the suggestion button when suggestions are enabled even if the legacy mode is off', async () => {
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'channel-1',
+          title: 'Ищу модель | Ростов',
+          entityType: 'CHANNEL',
+          channelSettings: {
+            autoPostButtonsMode: 'OFF',
+            postSuggestionsEnabled: true,
+            postSuggestionsButtonText: '📰 Предложить пост',
+          },
+          admins: [],
+        }),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+    );
+
+    await service.handleUpdate(createChannelPostUpdate());
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-1',
+      'Новый пост в канале',
+      expect.objectContaining({
+        buttons: [[expect.objectContaining({ text: '📰 Предложить пост' })]],
+      }),
+    );
+  });
+
   it('polls channel posts and attaches buttons even without webhook delivery', async () => {
     const prisma = {
       channelSettings: {
@@ -189,6 +249,7 @@ describe('ModerationService channel auto post buttons', () => {
           {
             chatId: 'channel-1',
             autoPostButtonsMode: 'BOTH',
+            postSuggestionsEnabled: true,
             postSuggestionsButtonText: '📰 Предложить пост',
             updatedAt: new Date('2026-03-06T15:00:00.000Z'),
             chat: {
@@ -240,6 +301,31 @@ describe('ModerationService channel auto post buttons', () => {
 
     await (service as any).processChannelAutoPostButtons();
 
+    expect(prisma.channelSettings.findMany).toHaveBeenCalledWith({
+      where: {
+        OR: [
+          {
+            autoPostButtonsMode: {
+              in: ['COMMENTS', 'BOTH'],
+            },
+          },
+          {
+            postSuggestionsEnabled: true,
+          },
+        ],
+      },
+      include: {
+        chat: {
+          include: {
+            admins: {
+              select: {
+                userId: true,
+              },
+            },
+          },
+        },
+      },
+    });
     expect(maxClient.listMessages).toHaveBeenCalledWith('channel-1', 10);
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'channel-1',

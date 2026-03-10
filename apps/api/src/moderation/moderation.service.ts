@@ -5291,9 +5291,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     try {
       const channels = await this.prisma.channelSettings.findMany({
         where: {
-          autoPostButtonsMode: {
-            not: 'OFF',
-          },
+          OR: [
+            {
+              autoPostButtonsMode: {
+                in: ['COMMENTS', 'BOTH'],
+              },
+            },
+            {
+              postSuggestionsEnabled: true,
+            },
+          ],
         },
         include: {
           chat: {
@@ -5403,7 +5410,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }): Promise<void> {
     const { chatId, messageId, text, managedChannel, source, senderId } = params;
     const { includeCommentsButton, includeSuggestButton } = this.resolveChannelAutoPostButtons(
-      managedChannel.channelSettings.autoPostButtonsMode,
+      managedChannel.channelSettings,
     );
     if (!includeCommentsButton && !includeSuggestButton) {
       return;
@@ -5568,29 +5575,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return candidates.some((candidate) => this.readLowerString(candidate) === 'channel');
   }
 
-  private resolveChannelAutoPostButtons(mode: PersistedChannelSettings['autoPostButtonsMode']) {
-    switch (mode) {
-      case 'COMMENTS':
-        return {
-          includeCommentsButton: true,
-          includeSuggestButton: false,
-        };
-      case 'SUGGEST':
-        return {
-          includeCommentsButton: false,
-          includeSuggestButton: true,
-        };
-      case 'BOTH':
-        return {
-          includeCommentsButton: true,
-          includeSuggestButton: true,
-        };
-      default:
-        return {
-          includeCommentsButton: false,
-          includeSuggestButton: false,
-        };
-    }
+  private resolveChannelAutoPostButtons(
+    settings: Pick<PersistedChannelSettings, 'autoPostButtonsMode' | 'postSuggestionsEnabled'>,
+  ) {
+    return {
+      includeCommentsButton:
+        settings.autoPostButtonsMode === 'COMMENTS' || settings.autoPostButtonsMode === 'BOTH',
+      includeSuggestButton: settings.postSuggestionsEnabled,
+    };
   }
 
   private buildChannelAutoPostButtons(
