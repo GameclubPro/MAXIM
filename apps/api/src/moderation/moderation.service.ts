@@ -32,7 +32,6 @@ import type {
   DuplicateAction,
   DuplicateDecision,
   DuplicateHit,
-  TopicFilterTopic,
 } from './rule-engine.service';
 import { RuleEngineService } from './rule-engine.service';
 import { SanctionService } from './sanction.service';
@@ -990,7 +989,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               userLabel,
               canDeleteMessage,
               this.extractTopicFilterRequiredCodeword(topViolation.metadata),
-              this.extractTopicFilterTopics(topViolation.metadata),
             ),
             topicMessageOptions ?? undefined,
           );
@@ -1012,7 +1010,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             this.buildTopicFilterWarnExplanation(
               userLabel,
               this.extractTopicFilterRequiredCodeword(topViolation.metadata),
-              this.extractTopicFilterTopics(topViolation.metadata),
             ),
             topicMessageOptions ?? undefined,
           );
@@ -1059,7 +1056,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               ? this.buildTopicFilterBanExplanation(
                   userLabel,
                   this.extractTopicFilterRequiredCodeword(topViolation.metadata),
-                  this.extractTopicFilterTopics(topViolation.metadata),
                   actionBanDurationHours,
                 )
               : undefined,
@@ -1108,7 +1104,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             this.buildTopicFilterKickExplanation(
               userLabel,
               this.extractTopicFilterRequiredCodeword(topViolation.metadata),
-              this.extractTopicFilterTopics(topViolation.metadata),
             ),
             topicMessageOptions ?? undefined,
           );
@@ -1541,16 +1536,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userLabel: string,
     canDeleteMessage: boolean,
     requiredCodeword: string | null,
-    topics: TopicFilterTopic[],
   ): string {
     if (requiredCodeword) {
-      const fallback = canDeleteMessage
+      return canDeleteMessage
         ? `Объявление пользователя ${userLabel} удалено: объявления должны начинаться с кодового слова "${requiredCodeword}".`
         : `Объявление пользователя ${userLabel} нарушает правило: объявления должны начинаться с кодового слова "${requiredCodeword}".`;
-      return fallback;
     }
 
-    const requirement = this.resolveTopicFilterRequirementLabel(requiredCodeword, topics);
+    const requirement = this.resolveTopicFilterRequirementLabel(requiredCodeword);
     const fallback = canDeleteMessage
       ? `Сообщение пользователя ${userLabel} удалено: ${requirement}.`
       : `Сообщение пользователя ${userLabel} нарушает правило: ${requirement}.`;
@@ -1560,70 +1553,40 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private buildTopicFilterWarnExplanation(
     userLabel: string,
     requiredCodeword: string | null,
-    topics: TopicFilterTopic[],
   ): string {
-    if (requiredCodeword) {
-      return `Пользователю ${userLabel} вынесено предупреждение: объявления должны начинаться с кодового слова "${requiredCodeword}".`;
-    }
-
-    const requirement = this.resolveTopicFilterRequirementLabel(requiredCodeword, topics);
+    const requirement = this.resolveTopicFilterRequirementLabel(requiredCodeword);
     return `Пользователю ${userLabel} вынесено предупреждение: ${requirement}.`;
   }
 
   private buildTopicFilterKickExplanation(
     userLabel: string,
     requiredCodeword: string | null,
-    topics: TopicFilterTopic[],
   ): string {
     if (requiredCodeword) {
       return `Пользователь ${userLabel} удален из чата за повторные нарушения: объявления должны начинаться с кодового слова "${requiredCodeword}".`;
     }
 
-    const topicLabel = this.resolveTopicFilterLabel(topics);
-    return `Пользователь ${userLabel} удален из чата за повторные сообщения не по теме ${topicLabel}.`;
+    return `Пользователь ${userLabel} удален из чата за повторные нарушения тематического фильтра.`;
   }
 
   private buildTopicFilterBanExplanation(
     userLabel: string,
     requiredCodeword: string | null,
-    topics: TopicFilterTopic[],
     banDurationHours: number,
   ): string {
     if (requiredCodeword) {
       return `Пользователю ${userLabel} выдан временный бан на ${this.formatBanDurationLabel(banDurationHours)} за повторные нарушения: объявления должны начинаться с кодового слова "${requiredCodeword}".`;
     }
 
-    const topicLabel = this.resolveTopicFilterLabel(topics);
-    return `Пользователю ${userLabel} выдан временный бан на ${this.formatBanDurationLabel(banDurationHours)} за повторные сообщения не по теме ${topicLabel}.`;
+    return `Пользователю ${userLabel} выдан временный бан на ${this.formatBanDurationLabel(banDurationHours)} за повторные нарушения тематического фильтра.`;
   }
 
-  private resolveTopicFilterRequirementLabel(
-    requiredCodeword: string | null,
-    topics: TopicFilterTopic[],
-  ): string {
+  private resolveTopicFilterRequirementLabel(requiredCodeword: string | null): string {
     if (requiredCodeword) {
       return `объявления должны начинаться с кодового слова "${requiredCodeword}"`;
     }
 
-    const topicLabel = this.resolveTopicFilterLabel(topics);
-    return `сообщения должны относиться к теме ${topicLabel}`;
-  }
-
-  private resolveTopicFilterLabel(topics: TopicFilterTopic[]): string {
-    const normalizedTopics = new Set(topics);
-    if (normalizedTopics.size === 0) {
-      return 'недвижимости или авторынка';
-    }
-
-    if (normalizedTopics.has('REAL_ESTATE') && normalizedTopics.has('AUTO_MARKET')) {
-      return 'недвижимости или авторынка';
-    }
-
-    if (normalizedTopics.has('AUTO_MARKET')) {
-      return 'авторынка';
-    }
-
-    return 'недвижимости';
+    return 'сообщение не соответствует тематическому фильтру';
   }
 
   private extractTopicFilterRequiredCodeword(metadata?: Record<string, unknown>): string | null {
@@ -1631,17 +1594,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return typeof rawCodeword === 'string' && rawCodeword.trim().length > 0
       ? rawCodeword.trim()
       : null;
-  }
-
-  private extractTopicFilterTopics(metadata?: Record<string, unknown>): TopicFilterTopic[] {
-    const rawTopics = metadata?.activeTopics;
-    if (!Array.isArray(rawTopics)) {
-      return [];
-    }
-
-    return rawTopics.filter(
-      (topic): topic is TopicFilterTopic => topic === 'REAL_ESTATE' || topic === 'AUTO_MARKET',
-    );
   }
 
   private buildDuplicateExplanation(
@@ -6130,8 +6082,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       commercialAdsFilterEnabled: false,
       russianProfanityFilterEnabled: false,
       thematicCodewordEnabled: false,
-      realEstateTopicFilterEnabled: false,
-      autoMarketTopicFilterEnabled: false,
     };
   }
 

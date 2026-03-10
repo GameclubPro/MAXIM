@@ -232,8 +232,6 @@ export const chatSettingsSchema = z
     textFiltersRulesButtonEnabled: z.boolean().default(false),
     thematicCodewordEnabled: z.boolean().default(false),
     thematicCodeword: thematicCodewordSchema,
-    realEstateTopicFilterEnabled: z.boolean().default(false),
-    autoMarketTopicFilterEnabled: z.boolean().default(false),
     thematicFiltersBotMessageEnabled: z.boolean().default(false),
     thematicFiltersWarnEnabled: z.boolean().default(false),
     thematicFiltersBanEnabled: z.boolean().default(false),

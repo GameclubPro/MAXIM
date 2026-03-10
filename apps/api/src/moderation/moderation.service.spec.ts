@@ -93,8 +93,6 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     textFiltersRulesButtonEnabled: false,
     thematicCodewordEnabled: false,
     thematicCodeword: '',
-    realEstateTopicFilterEnabled: false,
-    autoMarketTopicFilterEnabled: false,
     thematicFiltersBotMessageEnabled: false,
     thematicFiltersWarnEnabled: false,
     thematicFiltersBanEnabled: false,
@@ -4080,96 +4078,6 @@ describe('ModerationService', () => {
     });
   });
 
-  it('deletes off-topic long message and sends first-step thematic explanation', async () => {
-    const maxClient = {
-      deleteMessage: jest.fn(),
-      sendMessage: jest.fn(),
-      kickMember: jest.fn(),
-      banMember: jest.fn(),
-      notifyModerators: jest.fn(),
-    };
-    const prisma = {
-      chat: {
-        upsert: jest.fn().mockResolvedValue({
-          id: 'chat-1',
-          title: 'Chat 1',
-          settings: createSettings({
-            realEstateTopicFilterEnabled: true,
-            thematicFiltersBotMessageEnabled: true,
-            thematicFiltersBotButtonEnabled: true,
-            thematicFiltersBotButtonUrl: 'https://max.ru/channel/rules',
-            thematicFiltersBotButtonText: 'Правила темы',
-          }),
-          domains: [],
-        }),
-      },
-      violation: {
-        create: jest.fn(),
-      },
-      moderationEvent: {
-        findFirst: jest.fn().mockResolvedValue(null),
-        create: jest.fn(),
-      },
-      webhookEvent: {
-        findUnique: jest.fn(),
-        update: jest.fn(),
-      },
-    };
-    const ruleEngine = {
-      detect: jest.fn().mockResolvedValue({
-        violations: [
-          {
-            ruleCode: 'TOPIC_FILTER_MISMATCH',
-            score: 0.84,
-            reason: 'Message without required thematic markers',
-            metadata: {
-              activeTopics: ['REAL_ESTATE'],
-              matchedTopics: [],
-              messageLength: 168,
-              genericOffTopicMinLengthExclusive: 70,
-            },
-          },
-        ],
-      }),
-    };
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      { resolveAction: jest.fn() } as never,
-      maxClient as never,
-    );
-
-    await service.handleUpdate(createUpdate());
-
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
-      'chat-1',
-      'Сообщение пользователя "Алексей" удалено: сообщения должны относиться к теме недвижимости.',
-      expect.objectContaining({
-        button: {
-          text: 'Правила темы',
-          url: 'https://max.ru/channel/rules',
-        },
-      }),
-    );
-    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
-      data: expect.objectContaining({
-        ruleCode: 'TOPIC_FILTER_MISMATCH_DELETE',
-        action: SanctionAction.DELETE_MESSAGE,
-        metadata: expect.objectContaining({
-          activeTopics: ['REAL_ESTATE'],
-          genericOffTopicMinLengthExclusive: 70,
-        }),
-      }),
-    });
-    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
-      data: expect.objectContaining({
-        ruleCode: 'TOPIC_FILTER_MISMATCH',
-        action: SanctionAction.NONE,
-      }),
-    });
-  });
-
   it('deletes message and explains required thematic codeword when codeword filter is enabled', async () => {
     const maxClient = {
       deleteMessage: jest.fn(),
@@ -4242,84 +4150,6 @@ describe('ModerationService', () => {
           mode: 'CODEWORD',
           requiredCodeword: 'недвижимость',
           messageFirstToken: 'продам',
-        }),
-      }),
-    });
-  });
-
-  it('issues WARN on second thematic violation in 24h when warning stage is enabled', async () => {
-    const maxClient = {
-      deleteMessage: jest.fn(),
-      sendMessage: jest.fn(),
-      kickMember: jest.fn(),
-      banMember: jest.fn(),
-      notifyModerators: jest.fn(),
-    };
-    const prisma = {
-      chat: {
-        upsert: jest.fn().mockResolvedValue({
-          id: 'chat-1',
-          title: 'Chat 1',
-          settings: createSettings({
-            autoMarketTopicFilterEnabled: true,
-            thematicFiltersBotMessageEnabled: true,
-            thematicFiltersWarnEnabled: true,
-          }),
-          domains: [],
-        }),
-      },
-      violation: {
-        create: jest.fn(),
-        count: jest.fn().mockResolvedValue(2),
-      },
-      moderationEvent: {
-        findFirst: jest.fn().mockResolvedValue(null),
-        create: jest.fn(),
-      },
-      webhookEvent: {
-        findUnique: jest.fn(),
-        update: jest.fn(),
-      },
-    };
-    const ruleEngine = {
-      detect: jest.fn().mockResolvedValue({
-        violations: [
-          {
-            ruleCode: 'TOPIC_FILTER_MISMATCH',
-            score: 0.84,
-            reason: 'Message without required thematic markers',
-            metadata: {
-              activeTopics: ['AUTO_MARKET'],
-              matchedTopics: [],
-              messageLength: 176,
-              genericOffTopicMinLengthExclusive: 70,
-            },
-          },
-        ],
-      }),
-    };
-    const service = new ModerationService(
-      prisma as never,
-      ruleEngine as never,
-      { resolveAction: jest.fn() } as never,
-      maxClient as never,
-    );
-
-    await service.handleUpdate(createUpdate());
-
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
-    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
-      'chat-1',
-      'Пользователю "Алексей" вынесено предупреждение: сообщения должны относиться к теме авторынка.',
-    );
-    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
-      data: expect.objectContaining({
-        ruleCode: 'TOPIC_FILTER_MISMATCH',
-        action: SanctionAction.WARN,
-        metadata: expect.objectContaining({
-          activeTopics: ['AUTO_MARKET'],
-          topicFilterViolationCount24h: 2,
-          topicFilterEscalationWindowHours: 24,
         }),
       }),
     });
@@ -4404,7 +4234,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('issues BAN on third thematic violation in 24h when ban stage is enabled', async () => {
+  it('issues BAN with thematic codeword text on third codeword violation in 24h', async () => {
     const maxClient = {
       deleteMessage: jest.fn(),
       sendMessage: jest.fn(),
@@ -4418,7 +4248,8 @@ describe('ModerationService', () => {
           id: 'chat-1',
           title: 'Chat 1',
           settings: createSettings({
-            realEstateTopicFilterEnabled: true,
+            thematicCodewordEnabled: true,
+            thematicCodeword: 'недвижимость',
             thematicFiltersBotMessageEnabled: true,
             thematicFiltersWarnEnabled: true,
             thematicFiltersBanEnabled: true,
@@ -4448,10 +4279,10 @@ describe('ModerationService', () => {
             score: 0.84,
             reason: 'Message without required thematic markers',
             metadata: {
-              activeTopics: ['REAL_ESTATE'],
-              matchedTopics: [],
+              mode: 'CODEWORD',
+              requiredCodeword: 'недвижимость',
+              messageFirstToken: 'продам',
               messageLength: 181,
-              genericOffTopicMinLengthExclusive: 70,
             },
           },
         ],
@@ -4470,14 +4301,15 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" выдан временный бан на 12ч за повторные сообщения не по теме недвижимости.',
+      'Пользователю "Алексей" выдан временный бан на 12ч за повторные нарушения: объявления должны начинаться с кодового слова "недвижимость".',
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
         ruleCode: 'TOPIC_FILTER_MISMATCH',
         action: SanctionAction.BAN,
         metadata: expect.objectContaining({
-          activeTopics: ['REAL_ESTATE'],
+          mode: 'CODEWORD',
+          requiredCodeword: 'недвижимость',
           topicFilterViolationCount24h: 3,
           topicFilterEscalationWindowHours: 24,
           banDurationHours: 12,
@@ -4486,7 +4318,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('kicks user on fourth thematic violation in 24h when kick stage is enabled', async () => {
+  it('kicks user on fourth codeword violation in 24h when kick stage is enabled', async () => {
     const maxClient = {
       deleteMessage: jest.fn(),
       sendMessage: jest.fn(),
@@ -4500,8 +4332,8 @@ describe('ModerationService', () => {
           id: 'chat-1',
           title: 'Chat 1',
           settings: createSettings({
-            realEstateTopicFilterEnabled: true,
-            autoMarketTopicFilterEnabled: true,
+            thematicCodewordEnabled: true,
+            thematicCodeword: 'авторынок',
             thematicFiltersBotMessageEnabled: true,
             thematicFiltersWarnEnabled: true,
             thematicFiltersKickEnabled: true,
@@ -4530,10 +4362,10 @@ describe('ModerationService', () => {
             score: 0.84,
             reason: 'Message without required thematic markers',
             metadata: {
-              activeTopics: ['REAL_ESTATE', 'AUTO_MARKET'],
-              matchedTopics: [],
+              mode: 'CODEWORD',
+              requiredCodeword: 'авторынок',
+              messageFirstToken: 'продам',
               messageLength: 190,
-              genericOffTopicMinLengthExclusive: 70,
             },
           },
         ],
@@ -4552,14 +4384,15 @@ describe('ModerationService', () => {
     expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователь "Алексей" удален из чата за повторные сообщения не по теме недвижимости или авторынка.',
+      'Пользователь "Алексей" удален из чата за повторные нарушения: объявления должны начинаться с кодового слова "авторынок".',
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
         ruleCode: 'TOPIC_FILTER_MISMATCH',
         action: SanctionAction.KICK,
         metadata: expect.objectContaining({
-          activeTopics: ['REAL_ESTATE', 'AUTO_MARKET'],
+          mode: 'CODEWORD',
+          requiredCodeword: 'авторынок',
           topicFilterViolationCount24h: 4,
           topicFilterEscalationWindowHours: 24,
         }),
