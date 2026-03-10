@@ -2,7 +2,7 @@ import type { ChannelAutoPostButtonsMode, ChannelSettings } from '@maxim/contrac
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
-import { BackChevronIcon, ChannelEntityIcon } from '../components/ui/entity-header-icons';
+import { BackChevronIcon, ParticipantsIcon } from '../components/ui/entity-header-icons';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
@@ -76,6 +76,14 @@ function getRouteState(state: unknown): ChannelRouteState {
   const chatLink = isHttpUrl(candidateLink) ? candidateLink : '';
 
   return { chatTitle, chatLink };
+}
+
+function formatParticipantsCount(value: number | null | undefined): string | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return null;
+  }
+
+  return new Intl.NumberFormat('ru-RU').format(value);
 }
 
 function normalizeApiError(error: unknown): string {
@@ -240,10 +248,12 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     enabled: Boolean(chatId),
   });
 
-  const channelsQuery = useQuery({
-    queryKey: ['channels'],
-    queryFn: () => api.getChannels(),
+  const channelHeaderQuery = useQuery({
+    queryKey: ['channel-header', chatId],
+    queryFn: () => api.getChannelHeader(chatId),
     enabled: Boolean(chatId),
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
   });
 
   useEffect(() => {
@@ -269,22 +279,38 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   }, [chatId, routeChatTitle]);
 
   const resolvedTitle = useMemo(() => {
+    const fromHeader = channelHeaderQuery.data?.title?.trim();
+    if (fromHeader) {
+      return fromHeader;
+    }
+
     if (routeChatTitle) {
       return routeChatTitle;
     }
 
     return readChatTitle(chatId);
-  }, [chatId, routeChatTitle]);
+  }, [channelHeaderQuery.data?.title, chatId, routeChatTitle]);
+
+  useEffect(() => {
+    if (!chatId || !resolvedTitle) {
+      return;
+    }
+
+    saveChatTitle(chatId, resolvedTitle);
+  }, [chatId, resolvedTitle]);
 
   const resolvedChannelLink = useMemo(() => {
+    const fromHeader = channelHeaderQuery.data?.link?.trim() ?? '';
+    if (isHttpUrl(fromHeader)) {
+      return fromHeader;
+    }
+
     if (routeChatLink) {
       return routeChatLink;
     }
 
-    const candidate =
-      channelsQuery.data?.find((channel) => channel.id === chatId)?.link?.trim() ?? '';
-    return isHttpUrl(candidate) ? candidate : '';
-  }, [chatId, channelsQuery.data, routeChatLink]);
+    return '';
+  }, [channelHeaderQuery.data?.link, routeChatLink]);
 
   const normalizedDraft = useMemo(
     () => (draft ? normalizeChannelSettingsDraft(draft, resolvedChannelLink) : null),
@@ -530,6 +556,10 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     resolvedTitle && resolvedTitle !== chatId
       ? resolvedChannelLink || `ID ${chatId}`
       : 'Настройки канала';
+  const showHeaderStatus = headerStatusTone !== 'saved';
+  const participantsCountLabel = formatParticipantsCount(
+    channelHeaderQuery.data?.participantsCount ?? null,
+  );
 
   return (
     <div className="channel-settings-screen page-enter">
@@ -542,35 +572,48 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
           >
             <BackChevronIcon />
           </Link>
-          <div className="channel-settings-header__actions">
-            <span
-              className={cn('channel-settings-header__status', `is-${headerStatusTone}`)}
-              aria-live="polite"
-            >
-              {headerStatusLabel}
-            </span>
-            {headerStatusTone === 'error' ? (
-              <button
-                type="button"
-                className="channel-settings-header__retry"
-                onClick={() => {
-                  lastFailedDraftKeyRef.current = null;
-                  void saveCurrentDraft({ force: true });
-                }}
-              >
-                Повторить
-              </button>
+          <div className="channel-settings-header__body">
+            <div className="channel-settings-header__title-row">
+              <div className="channel-settings-header__main">
+                <h1>{resolvedTitle || 'Настройки'}</h1>
+                <p>{channelMetaLabel}</p>
+              </div>
+              {showHeaderStatus ? (
+                <div className="channel-settings-header__actions">
+                  {showHeaderStatus ? (
+                    <span
+                      className={cn('channel-settings-header__status', `is-${headerStatusTone}`)}
+                      aria-live="polite"
+                    >
+                      {headerStatusLabel}
+                    </span>
+                  ) : null}
+                  {headerStatusTone === 'error' ? (
+                    <button
+                      type="button"
+                      className="channel-settings-header__retry"
+                      onClick={() => {
+                        lastFailedDraftKeyRef.current = null;
+                        void saveCurrentDraft({ force: true });
+                      }}
+                    >
+                      Повторить
+                    </button>
+                    ) : null}
+                </div>
+              ) : null}
+            </div>
+            {participantsCountLabel ? (
+              <div className="channel-settings-header__footer">
+                <span
+                  className="channel-settings-header__members"
+                  aria-label={`Участников: ${participantsCountLabel}`}
+                >
+                  <ParticipantsIcon />
+                  <span>{participantsCountLabel}</span>
+                </span>
+              </div>
             ) : null}
-          </div>
-        </div>
-
-        <div className="channel-settings-header__hero">
-          <div className="channel-settings-header__icon" aria-hidden>
-            <ChannelEntityIcon />
-          </div>
-          <div className="channel-settings-header__main">
-            <h1>{resolvedTitle || 'Настройки'}</h1>
-            <p>{channelMetaLabel}</p>
           </div>
         </div>
       </GlassCard>

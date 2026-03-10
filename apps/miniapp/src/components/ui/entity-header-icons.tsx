@@ -60,3 +60,38 @@ export function ChannelEntityIcon() {
     </svg>
   );
 }
+
+export function ParticipantsIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+      <path
+        d="M9 11.1A2.85 2.85 0 1 0 9 5.4a2.85 2.85 0 0 0 0 5.7Z"
+        stroke="currentColor"
+        strokeWidth="1.85"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M4.9 18.2a4.1 4.1 0 0 1 8.2 0"
+        stroke="currentColor"
+        strokeWidth="1.85"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M16.2 11.9a2.35 2.35 0 1 0 0-4.7"
+        stroke="currentColor"
+        strokeWidth="1.85"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M19.2 18.2a3.5 3.5 0 0 0-3.5-3.5"
+        stroke="currentColor"
+        strokeWidth="1.85"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}

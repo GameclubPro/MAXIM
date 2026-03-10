@@ -616,6 +616,15 @@ export const chatSummarySchema = z.object({
 });
 export type ChatSummary = z.infer<typeof chatSummarySchema>;
 
+export const managedEntityHeaderSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  entityType: managedEntityTypeSchema,
+  link: z.string().trim().max(2048).nullable(),
+  participantsCount: z.number().int().min(0).nullable(),
+});
+export type ManagedEntityHeader = z.infer<typeof managedEntityHeaderSchema>;
+
 export const meSchema = z.object({
   userId: z.string(),
   username: z.string().nullable(),

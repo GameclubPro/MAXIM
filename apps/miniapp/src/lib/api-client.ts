@@ -15,6 +15,7 @@ import {
   sendBroadcastRequestSchema,
   sendBroadcastResultSchema,
   moderationEventSchema,
+  managedEntityHeaderSchema,
   logsDashboardRangeSchema,
   logsDashboardResponseSchema,
   manualModerationActionRequestSchema,
@@ -37,6 +38,7 @@ import {
   type CreateChannelDialogMessageResponse,
   type LogsDashboardRange,
   type LogsDashboardResponse,
+  type ManagedEntityHeader,
   type ManualModerationActionRequest,
   type ManualModerationActionResult,
   type PublishChatRulesResult,
@@ -91,9 +93,19 @@ export class ApiClient {
     return response.map((item: unknown) => chatSummarySchema.parse(item));
   }
 
+  async getChatHeader(chatId: string): Promise<ManagedEntityHeader> {
+    const response = await this.request(`/chats/${chatId}/header`);
+    return managedEntityHeaderSchema.parse(response);
+  }
+
   async getChannels(): Promise<ChatSummary[]> {
     const response = await this.request('/channels');
     return response.map((item: unknown) => chatSummarySchema.parse(item));
+  }
+
+  async getChannelHeader(chatId: string): Promise<ManagedEntityHeader> {
+    const response = await this.request(`/channels/${chatId}/header`);
+    return managedEntityHeaderSchema.parse(response);
   }
 
   async getChannelStats(

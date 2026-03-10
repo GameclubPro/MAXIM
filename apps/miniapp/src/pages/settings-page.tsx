@@ -11,7 +11,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { GlassCard } from '../components/ui/glass-card';
-import { BackChevronIcon } from '../components/ui/entity-header-icons';
+import { BackChevronIcon, ParticipantsIcon } from '../components/ui/entity-header-icons';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
@@ -45,6 +45,14 @@ const MAX_BROADCAST_CYCLE_COUNT = 14;
 const MAX_BROADCAST_IMAGE_SIZE_BYTES = 1_000_000;
 const MAX_CHAT_RULES_TEXT_LENGTH = 2_000;
 const BROADCAST_DAY_MS = 24 * 60 * 60 * 1_000;
+
+function formatParticipantsCount(value: number | null | undefined): string | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return null;
+  }
+
+  return new Intl.NumberFormat('ru-RU').format(value);
+}
 
 type DuplicateEnabledKey = 'duplicateWarnEnabled' | 'duplicateKickEnabled' | 'duplicateBanEnabled';
 type DuplicateWindowKey =
@@ -997,6 +1005,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     refetchOnWindowFocus: false,
   });
 
+  const chatHeaderQuery = useQuery({
+    queryKey: ['chat-header', chatId],
+    queryFn: () => api.getChatHeader(chatId ?? ''),
+    enabled: Boolean(chatId),
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+
   const domainsQuery = useQuery({
     queryKey: ['domains', chatId],
     queryFn: () => api.getDomainAllowlistDetails(chatId ?? ''),
@@ -1016,6 +1032,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       return '';
     }
 
+    const fromHeader = chatHeaderQuery.data?.title?.trim();
+    if (fromHeader) {
+      return fromHeader;
+    }
+
     const fromList = chatsQuery.data?.find((chat) => chat.id === chatId)?.title?.trim();
     if (fromList) {
       return fromList;
@@ -1026,7 +1047,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     }
 
     return readChatTitle(chatId);
-  }, [chatId, chatsQuery.data, routeChatTitle]);
+  }, [chatHeaderQuery.data?.title, chatId, chatsQuery.data, routeChatTitle]);
 
   useEffect(() => {
     if (!chatId || !chatTitle) {
@@ -1198,6 +1219,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const chatMetaLabel =
     chatTitle && chatTitle !== chatId ? `ID ${chatId}` : 'Настройки модерации';
   const showHeaderStatus = isHeaderSaving || hasPendingHeaderChanges;
+  const chatParticipantsCountLabel = formatParticipantsCount(
+    chatHeaderQuery.data?.participantsCount ?? null,
+  );
 
   const publishRulesMutation = useMutation({
     mutationFn: () => api.publishRules(chatId ?? ''),
@@ -2409,20 +2433,33 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                 <BackChevronIcon />
               </Link>
               <div className="settings-page-header__body">
-                <div className="settings-page-header__identity">
-                  <h2 className="settings-page-header__title">{chatTitle || chatId}</h2>
-                  <p className="settings-page-header__meta">{chatMetaLabel}</p>
+                <div className="settings-page-header__title-row">
+                  <div className="settings-page-header__identity">
+                    <h2 className="settings-page-header__title">{chatTitle || chatId}</h2>
+                    <p className="settings-page-header__meta">{chatMetaLabel}</p>
+                  </div>
+                  {showHeaderStatus ? (
+                    <span
+                      className={cn(
+                        'settings-page-header__status',
+                        isHeaderSaving ? 'is-saving' : 'is-draft',
+                      )}
+                      aria-live="polite"
+                    >
+                      {headerStatusLabel}
+                    </span>
+                  ) : null}
                 </div>
-                {showHeaderStatus ? (
-                  <span
-                    className={cn(
-                      'settings-page-header__status',
-                      isHeaderSaving ? 'is-saving' : 'is-draft',
-                    )}
-                    aria-live="polite"
-                  >
-                    {headerStatusLabel}
-                  </span>
+                {chatParticipantsCountLabel ? (
+                  <div className="settings-page-header__footer">
+                    <span
+                      className="settings-page-header__members"
+                      aria-label={`Участников: ${chatParticipantsCountLabel}`}
+                    >
+                      <ParticipantsIcon />
+                      <span>{chatParticipantsCountLabel}</span>
+                    </span>
+                  </div>
                 ) : null}
               </div>
             </div>

@@ -18,9 +18,19 @@ export class AdminController {
     return this.adminService.listChats(user);
   }
 
+  @Get('chats/:chatId/header')
+  getChatHeader(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.adminService.getChatHeader(chatId, user);
+  }
+
   @Get('channels')
   getChannels(@CurrentUser() user: AuthUser) {
     return this.adminService.listChannels(user);
+  }
+
+  @Get('channels/:chatId/header')
+  getChannelHeader(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.adminService.getChannelHeader(chatId, user);
   }
 
   @Get('channels/:chatId/stats')

@@ -40,6 +40,7 @@ import {
   type PublishChatRulesResult,
   type SendBroadcastResult,
   type ChatSummary,
+  type ManagedEntityHeader,
   normalizeAllowlistLink,
   sendBroadcastRequestSchema,
   scheduleDomainRemovalRequestSchema,
@@ -154,6 +155,14 @@ export class AdminService {
 
   async listChannels(user: AuthUser): Promise<ChatSummary[]> {
     return this.listManagedEntities(user, 'channel');
+  }
+
+  async getChatHeader(chatId: string, user: AuthUser): Promise<ManagedEntityHeader> {
+    return this.getManagedEntityHeader(chatId, user, 'chat');
+  }
+
+  async getChannelHeader(chatId: string, user: AuthUser): Promise<ManagedEntityHeader> {
+    return this.getManagedEntityHeader(chatId, user, 'channel');
   }
 
   async listManagedEntities(
@@ -3488,6 +3497,65 @@ export class AdminService {
     }
 
     await this.upsertUserChatAccess(chatId, userId, null, expectedEntityType);
+  }
+
+  private async getManagedEntityHeader(
+    chatId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType,
+  ): Promise<ManagedEntityHeader> {
+    await this.assertChatAdmin(chatId, user.userId, entityType);
+    await this.ensureEntityType(chatId, user.userId, entityType);
+
+    const persistedChat = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: {
+        id: true,
+        title: true,
+      },
+    });
+
+    try {
+      const snapshot = await this.maxClient.getChatSnapshot(chatId);
+      const title = snapshot.title?.trim() || persistedChat?.title?.trim() || chatId;
+
+      if (
+        persistedChat &&
+        title &&
+        title !== persistedChat.title &&
+        !this.isFallbackTitle(chatId, title)
+      ) {
+        await this.prisma.chat.update({
+          where: { id: chatId },
+          data: { title },
+        });
+      }
+
+      return {
+        id: chatId,
+        title,
+        entityType,
+        link: snapshot.link,
+        participantsCount: snapshot.participantsCount,
+      };
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          entityType,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to load managed entity header snapshot from MAX API',
+      );
+    }
+
+    return {
+      id: chatId,
+      title: persistedChat?.title?.trim() || chatId,
+      entityType,
+      link: null,
+      participantsCount: null,
+    };
   }
 
   private toPrismaEntityType(entityType: ManagedEntityType): ChatEntityType {
