@@ -18,6 +18,16 @@ type ChannelRouteState = {
 };
 
 type ChannelSettingsSectionKey = 'comments' | 'postSuggestions';
+type ChannelSettingsHintKey =
+  | 'commentsEnabled'
+  | 'commentsModerationEnabled'
+  | 'commentsBlockLinksEnabled'
+  | 'commentsAntiSpamEnabled'
+  | 'commentsSlowModeSeconds'
+  | 'commentsLimitTwoInRowEnabled'
+  | 'postSuggestionsEnabled'
+  | 'engagementMessageText'
+  | 'publishEngagement';
 
 const AUTOSAVE_DELAY_MS = 700;
 const AUTOSAVE_SAVED_HIDE_MS = 1600;
@@ -133,29 +143,116 @@ function SectionChevron({ isOpen }: { isOpen: boolean }) {
   );
 }
 
+function ChannelSettingsInfoButton({
+  hintKey,
+  openHintKey,
+  onToggleHint,
+  label,
+}: {
+  hintKey: ChannelSettingsHintKey;
+  openHintKey: ChannelSettingsHintKey | null;
+  onToggleHint: (hintKey: ChannelSettingsHintKey) => void;
+  label: string;
+}) {
+  const isOpen = openHintKey === hintKey;
+
+  return (
+    <button
+      type="button"
+      className={cn('settings-info-button', isOpen && 'is-open')}
+      aria-label={label}
+      aria-controls={`channel-settings-hint-${hintKey}`}
+      aria-expanded={isOpen}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onToggleHint(hintKey);
+      }}
+    >
+      <span aria-hidden>i</span>
+    </button>
+  );
+}
+
+function ChannelSettingsHint({
+  hintKey,
+  openHintKey,
+  children,
+}: {
+  hintKey: ChannelSettingsHintKey;
+  openHintKey: ChannelSettingsHintKey | null;
+  children: string;
+}) {
+  if (openHintKey !== hintKey) {
+    return null;
+  }
+
+  return (
+    <p id={`channel-settings-hint-${hintKey}`} className="settings-native-toggle__hint">
+      {children}
+    </p>
+  );
+}
+
 function ChannelSettingsToggleCard({
   title,
   description,
+  hintKey,
+  openHintKey,
+  onToggleHint,
   checked,
   onChange,
   disabled = false,
 }: {
   title: string;
   description?: string;
+  hintKey?: ChannelSettingsHintKey;
+  openHintKey: ChannelSettingsHintKey | null;
+  onToggleHint: (hintKey: ChannelSettingsHintKey) => void;
   checked: boolean;
   onChange: (nextValue: boolean) => void;
   disabled?: boolean;
 }) {
   return (
-    <label className={cn('channel-settings-toggle-card', disabled && 'is-disabled')}>
+    <div
+      className={cn('channel-settings-toggle-card', disabled && 'is-disabled')}
+      onClick={(event) => {
+        if (disabled) {
+          return;
+        }
+
+        const target = event.target as HTMLElement;
+        if (target.closest('button, input, label')) {
+          return;
+        }
+
+        onChange(!checked);
+      }}
+    >
       <div className="channel-settings-toggle-card__copy">
-        <strong>{title}</strong>
-        {description ? <span>{description}</span> : null}
+        <div className="channel-settings-toggle-card__title-row">
+          <strong>{title}</strong>
+          {description && hintKey ? (
+            <ChannelSettingsInfoButton
+              hintKey={hintKey}
+              openHintKey={openHintKey}
+              onToggleHint={onToggleHint}
+              label={`Пояснение для настройки «${title}»`}
+            />
+          ) : null}
+        </div>
+        {description && hintKey ? (
+          <ChannelSettingsHint hintKey={hintKey} openHintKey={openHintKey}>
+            {description}
+          </ChannelSettingsHint>
+        ) : description ? (
+          <span>{description}</span>
+        ) : null}
       </div>
       <span className={cn('channel-settings-toggle-card__state', checked && 'is-on')}>
         {checked ? 'Вкл' : 'Выкл'}
       </span>
-      <span className="settings-native-switch">
+      <label className="settings-native-switch">
         <input
           type="checkbox"
           checked={checked}
@@ -165,8 +262,8 @@ function ChannelSettingsToggleCard({
         <span className="toggle-switch" aria-hidden>
           <span className="toggle-switch__thumb" />
         </span>
-      </span>
-    </label>
+      </label>
+    </div>
   );
 }
 
@@ -215,6 +312,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     comments: false,
     postSuggestions: false,
   });
+  const [openHintKey, setOpenHintKey] = useState<ChannelSettingsHintKey | null>(null);
   const { pushToast } = useToast();
 
   const settingsQuery = useQuery({
@@ -292,6 +390,10 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
       ...current,
       [section]: !current[section],
     }));
+  }
+
+  function toggleHint(hintKey: ChannelSettingsHintKey) {
+    setOpenHintKey((current) => (current === hintKey ? null : hintKey));
   }
 
   const normalizedDraft = useMemo(
@@ -681,6 +783,9 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
             <ChannelSettingsToggleCard
               title="Включить комментарии"
               description="Открывает обсуждение под постами канала."
+              hintKey="commentsEnabled"
+              openHintKey={openHintKey}
+              onToggleHint={toggleHint}
               checked={draft.commentsEnabled}
               onChange={(nextValue) => patchDraft('commentsEnabled', nextValue)}
             />
@@ -690,6 +795,9 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                 <ChannelSettingsToggleCard
                   title="Модерация"
                   description="Бот следит за сообщениями в комментариях."
+                  hintKey="commentsModerationEnabled"
+                  openHintKey={openHintKey}
+                  onToggleHint={toggleHint}
                   checked={draft.commentsModerationEnabled}
                   onChange={(nextValue) => patchDraft('commentsModerationEnabled', nextValue)}
                 />
@@ -699,6 +807,9 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                     <ChannelSettingsToggleCard
                       title="Запретить ссылки"
                       description="Комментарий со ссылкой сразу отклоняется."
+                      hintKey="commentsBlockLinksEnabled"
+                      openHintKey={openHintKey}
+                      onToggleHint={toggleHint}
                       checked={draft.commentsBlockLinksEnabled}
                       onChange={(nextValue) => patchDraft('commentsBlockLinksEnabled', nextValue)}
                     />
@@ -706,6 +817,9 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                     <ChannelSettingsToggleCard
                       title="Антиспам"
                       description="Блокирует частые и повторяющиеся комментарии."
+                      hintKey="commentsAntiSpamEnabled"
+                      openHintKey={openHintKey}
+                      onToggleHint={toggleHint}
                       checked={draft.commentsAntiSpamEnabled}
                       onChange={(nextValue) => patchDraft('commentsAntiSpamEnabled', nextValue)}
                     />
@@ -713,7 +827,15 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                     {draft.commentsAntiSpamEnabled ? (
                       <div className="channel-settings-inline-fields channel-settings-inline-fields--narrow">
                         <label className="field">
-                          <span>Пауза между комментариями, сек</span>
+                          <div className="channel-settings-field-label">
+                            <span>Пауза между комментариями, сек</span>
+                            <ChannelSettingsInfoButton
+                              hintKey="commentsSlowModeSeconds"
+                              openHintKey={openHintKey}
+                              onToggleHint={toggleHint}
+                              label="Пояснение для паузы между комментариями"
+                            />
+                          </div>
                           <input
                             type="number"
                             min={0}
@@ -734,9 +856,12 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                               )
                             }
                           />
-                          <small className="field__hint">
+                          <ChannelSettingsHint
+                            hintKey="commentsSlowModeSeconds"
+                            openHintKey={openHintKey}
+                          >
                             0 = без таймера, но повторы всё равно режутся
-                          </small>
+                          </ChannelSettingsHint>
                         </label>
                       </div>
                     ) : null}
@@ -744,6 +869,9 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                     <ChannelSettingsToggleCard
                       title="Не больше двух подряд"
                       description="Третий комментарий подряд от одного автора отклоняется."
+                      hintKey="commentsLimitTwoInRowEnabled"
+                      openHintKey={openHintKey}
+                      onToggleHint={toggleHint}
                       checked={draft.commentsLimitTwoInRowEnabled}
                       onChange={(nextValue) =>
                         patchDraft('commentsLimitTwoInRowEnabled', nextValue)
@@ -789,22 +917,33 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
             <ChannelSettingsToggleCard
               title="Разрешить предложения"
               description="Автоматически добавляет предложку под каждым новым постом. Если выключить, кнопку можно опубликовать вручную только для одного сообщения."
+              hintKey="postSuggestionsEnabled"
+              openHintKey={openHintKey}
+              onToggleHint={toggleHint}
               checked={draft.postSuggestionsEnabled}
               onChange={(nextValue) => patchDraft('postSuggestionsEnabled', nextValue)}
             />
 
             <div className="channel-settings-stack">
               <label className="field">
-                <span>Текст публикации</span>
+                <div className="channel-settings-field-label">
+                  <span>Текст публикации</span>
+                  <ChannelSettingsInfoButton
+                    hintKey="engagementMessageText"
+                    openHintKey={openHintKey}
+                    onToggleHint={toggleHint}
+                    label="Пояснение для текста публикации"
+                  />
+                </div>
                 <textarea
                   rows={3}
                   value={draft.engagementMessageText}
                   onChange={(event) => patchDraft('engagementMessageText', event.target.value)}
                   placeholder="Есть идея или обратная связь? Нажмите кнопку ниже."
                 />
-                <small className="field__hint">
+                <ChannelSettingsHint hintKey="engagementMessageText" openHintKey={openHintKey}>
                   Этот текст будет опубликован в канале над кнопками.
-                </small>
+                </ChannelSettingsHint>
               </label>
 
               <label className="field">
@@ -832,8 +971,18 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
 
               <div className="channel-settings-inline-fields">
                 <label className="field">
-                  <span>Пост с кнопками</span>
-                  <small className="field__hint">{publishHint}</small>
+                  <div className="channel-settings-field-label">
+                    <span>Пост с кнопками</span>
+                    <ChannelSettingsInfoButton
+                      hintKey="publishEngagement"
+                      openHintKey={openHintKey}
+                      onToggleHint={toggleHint}
+                      label="Пояснение для поста с кнопками"
+                    />
+                  </div>
+                  <ChannelSettingsHint hintKey="publishEngagement" openHintKey={openHintKey}>
+                    {publishHint}
+                  </ChannelSettingsHint>
                 </label>
                 <button
                   type="button"
