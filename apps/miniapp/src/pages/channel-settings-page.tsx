@@ -78,6 +78,14 @@ function resolveManualPublishButtons(settings: ChannelSettings) {
   };
 }
 
+function resolveBroadcastSystemButtons(settings: ChannelSettings) {
+  return {
+    includeCommentsButton:
+      settings.autoPostButtonsMode === 'COMMENTS' || settings.autoPostButtonsMode === 'BOTH',
+    includeSuggestButton: settings.postSuggestionsEnabled,
+  };
+}
+
 function isHttpUrl(value: string): boolean {
   try {
     const parsed = new URL(value);
@@ -813,6 +821,14 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
         : 'Автопредложка выключена. Кнопка «Предложить пост» появится только под этим сообщением.';
   const broadcastHasImage = broadcastImageEnabled && Boolean(broadcastImageBase64);
   const broadcastHasButton = broadcastButtonEnabled && Boolean(broadcastButtonText.trim());
+  const broadcastSystemButtons = normalizedDraft
+    ? resolveBroadcastSystemButtons(normalizedDraft)
+    : {
+        includeCommentsButton: false,
+        includeSuggestButton: false,
+      };
+  const broadcastHasSystemButtons =
+    broadcastSystemButtons.includeCommentsButton || broadcastSystemButtons.includeSuggestButton;
   const broadcastCanSend = Boolean(broadcastText.trim()) || broadcastHasImage;
   const broadcastHeaderSummary = broadcastCanSend
     ? broadcastHasImage && broadcastHasButton
@@ -827,7 +843,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     broadcastButtonEnabled &&
     Boolean(broadcastButtonText.trim()) &&
     isHttpUrl(broadcastButtonUrl.trim());
-  const broadcastRichTextEnabled = broadcastButtonEnabled;
+  const broadcastRichTextEnabled = broadcastButtonEnabled || broadcastHasSystemButtons;
 
   function resetBroadcastComposer() {
     setBroadcastText('');
@@ -1194,8 +1210,9 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                     onToggleHint={toggleHint}
                     label="Пояснение для текста рассылки"
                   >
-                    В канале форматирование MAX надежно держится только вместе с кнопкой. Без CTA
-                    пост уйдет обычным текстом без markdown-оформления.
+                    Форматирование в канале сохраняется, если пост сразу публикуется с кнопками.
+                    Это может быть ваша CTA-кнопка или системные кнопки комментариев и предложки,
+                    если они включены в настройках канала.
                   </ChannelSettingsHintAnchor>
                 </div>
                 <MaxMarkdownEditor
@@ -1214,10 +1231,14 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                 />
                 {broadcastRichTextEnabled ? null : (
                   <small className="field__hint">
-                    Форматирование включается вместе с кнопкой. Сейчас сообщение опубликуется как
-                    обычный текст.
+                    Сейчас у поста нет кнопок, поэтому сообщение опубликуется как обычный текст.
                   </small>
                 )}
+                {broadcastRichTextEnabled && !broadcastButtonEnabled && broadcastHasSystemButtons ? (
+                  <small className="field__hint">
+                    Форматирование сохранится: канал добавит системные кнопки сразу при публикации.
+                  </small>
+                ) : null}
                 <div className="mailing-message-field__meta">
                   {broadcastTextError ? (
                     <small className="field__hint">{broadcastTextError}</small>
@@ -1508,6 +1529,18 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                           ? broadcastButtonUrl.trim()
                           : 'Добавьте корректную ссылку http/https'}
                       </small>
+                    </div>
+                  ) : null}
+                  {broadcastSystemButtons.includeCommentsButton ? (
+                    <div className="channel-broadcast-preview__button">
+                      <span>💬 Комментарии</span>
+                      <small>Системная кнопка канала</small>
+                    </div>
+                  ) : null}
+                  {broadcastSystemButtons.includeSuggestButton ? (
+                    <div className="channel-broadcast-preview__button">
+                      <span>{normalizedDraft?.postSuggestionsButtonText.trim() || '📰 Предложить пост'}</span>
+                      <small>Системная кнопка канала</small>
                     </div>
                   ) : null}
                 </div>

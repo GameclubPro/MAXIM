@@ -36,6 +36,9 @@ function createPrismaMock() {
       findMany: jest.fn().mockResolvedValue([]),
       upsert: jest.fn().mockResolvedValue({
         chatId: 'channel-1',
+        autoPostButtonsMode: 'OFF',
+        postSuggestionsEnabled: false,
+        postSuggestionsButtonText: 'Предложить пост',
         engagementPublishedMessageId: null,
         engagementPublishedThreadId: null,
         engagementPublishedAt: null,
@@ -1559,10 +1562,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       '<p><strong>Новый выпуск</strong> уже в канале.</p>',
       {
         textFormat: 'html',
-        button: {
-          text: 'Открыть выпуск',
-          url: 'https://max.ru/channel/maxim',
-        },
+        buttons: [[{ text: 'Открыть выпуск', type: 'link', url: 'https://max.ru/channel/maxim' }]],
         imagePayload: { token: 'upload-token-channel-1' },
       },
       { immediate: true },
@@ -1645,6 +1645,82 @@ describe('AdminService.sendChannelBroadcast', () => {
       undefined,
       { immediate: true },
     );
+  });
+
+  it('publishes channel broadcast with system suggestion button in the first message', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+      createdAt: new Date('2026-03-01T00:00:00.000Z'),
+    });
+    prisma.channelSettings.upsert.mockResolvedValue({
+      chatId: 'channel-1',
+      autoPostButtonsMode: 'OFF',
+      postSuggestionsEnabled: true,
+      postSuggestionsButtonText: '📰 Предложить пост',
+      engagementPublishedMessageId: null,
+      engagementPublishedThreadId: null,
+      engagementPublishedAt: null,
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-channel-1' }),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await service.sendChannelBroadcast(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: '**Новый выпуск** уже в канале.',
+        textFormat: 'markdown',
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: '',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryDays: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    const [, messageText, options, dispatch] = maxClient.sendMessage.mock.calls[0];
+    expect(messageText).toBe('<p><strong>Новый выпуск</strong> уже в канале.</p>');
+    expect(dispatch).toEqual({ immediate: true });
+    expect(options).toMatchObject({
+      textFormat: 'html',
+      buttons: [[expect.objectContaining({ text: '📰 Предложить пост', type: 'link' })]],
+    });
+    expect(options.buttons[0][0].url).toContain('https://max.ru/777000_bot?startapp=');
   });
 });
 

@@ -1565,19 +1565,6 @@ export class AdminService {
     }
 
     const normalizedSourceText = parsed.data.text.trim();
-    const shouldUseRichText =
-      parsed.data.textFormat === 'markdown' &&
-      normalizedSourceText.length > 0 &&
-      (entityType !== 'channel' || parsed.data.buttonEnabled);
-    const renderedText =
-      shouldUseRichText
-        ? renderSupportedMarkdownAsHtml(normalizedSourceText)
-        : entityType === 'channel' && parsed.data.textFormat === 'markdown'
-          ? stripSupportedMarkdownToPlainText(normalizedSourceText)
-        : normalizedSourceText;
-    const messageText = renderedText || (parsed.data.imageEnabled ? ' ' : '');
-    const textFormat: MaxSendMessageOptions['textFormat'] =
-      shouldUseRichText ? 'html' : undefined;
 
     let delayMs = 0;
     let sendAt: string | null = null;
@@ -1639,28 +1626,38 @@ export class AdminService {
       }
     }
 
-    const messageOptions =
-      parsed.data.buttonEnabled || imagePayload || textFormat
-        ? {
-            ...(textFormat ? { textFormat } : {}),
-            ...(parsed.data.buttonEnabled
-              ? {
-                  button: {
-                    text: parsed.data.buttonText.trim(),
-                    url: parsed.data.buttonUrl.trim(),
-                  },
-                }
-              : {}),
-            ...(imagePayload ? { imagePayload } : {}),
-          }
-        : undefined;
-
     const sentChatIds: string[] = [];
     const failedChatIds: string[] = [];
     let firstSendError: unknown = null;
     for (const chatId of targetChatIds) {
       let chatFailed = false;
       for (let cycleIndex = 0; cycleIndex < cycleCount; cycleIndex += 1) {
+        const broadcastButtons = await this.resolveBroadcastButtons(chatId, entityType, {
+          includeCustomButton: parsed.data.buttonEnabled,
+          customButtonText: parsed.data.buttonText.trim(),
+          customButtonUrl: parsed.data.buttonUrl.trim(),
+        });
+        const shouldUseRichText =
+          parsed.data.textFormat === 'markdown' &&
+          normalizedSourceText.length > 0 &&
+          (entityType !== 'channel' || broadcastButtons.length > 0);
+        const renderedText =
+          shouldUseRichText
+            ? renderSupportedMarkdownAsHtml(normalizedSourceText)
+            : entityType === 'channel' && parsed.data.textFormat === 'markdown'
+              ? stripSupportedMarkdownToPlainText(normalizedSourceText)
+              : normalizedSourceText;
+        const messageText = renderedText || (parsed.data.imageEnabled ? ' ' : '');
+        const textFormat: MaxSendMessageOptions['textFormat'] =
+          shouldUseRichText ? 'html' : undefined;
+        const messageOptions =
+          broadcastButtons.length > 0 || imagePayload || textFormat
+            ? {
+                ...(textFormat ? { textFormat } : {}),
+                ...(broadcastButtons.length > 0 ? { buttons: broadcastButtons } : {}),
+                ...(imagePayload ? { imagePayload } : {}),
+              }
+            : undefined;
         const occurrenceDelayMs = delayMs + cycleIndex * cycleEveryMs;
         const sendImmediately = occurrenceDelayMs === 0;
         try {
@@ -1751,7 +1748,8 @@ export class AdminService {
   private async sendBroadcastImageMessageWithRetry(
     chatId: string,
     text: string,
-    options: Pick<MaxSendMessageOptions, 'button' | 'imagePayload' | 'textFormat'> | undefined,
+    options: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'imagePayload' | 'textFormat'>
+      | undefined,
   ): Promise<void> {
     let lastError: unknown = null;
     const attempts = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length + 1;
@@ -1867,6 +1865,98 @@ export class AdminService {
     }
 
     return 'broadcast-image.jpg';
+  }
+
+  private async resolveBroadcastButtons(
+    chatId: string,
+    entityType: ManagedEntityType,
+    options: {
+      includeCustomButton: boolean;
+      customButtonText: string;
+      customButtonUrl: string;
+    },
+  ): Promise<MaxMessageButton[][]> {
+    const rows: MaxMessageButton[][] = [];
+
+    if (options.includeCustomButton) {
+      rows.push([
+        {
+          type: 'link',
+          text: options.customButtonText,
+          url: options.customButtonUrl,
+        },
+      ]);
+    }
+
+    if (entityType !== 'channel') {
+      return rows;
+    }
+
+    const channelSettings = await this.prisma.channelSettings.upsert({
+      where: { chatId },
+      create: { chatId },
+      update: {},
+      select: {
+        autoPostButtonsMode: true,
+        postSuggestionsEnabled: true,
+        postSuggestionsButtonText: true,
+      },
+    });
+    const threadId = randomUUID();
+
+    if (
+      channelSettings.autoPostButtonsMode === 'COMMENTS' ||
+      channelSettings.autoPostButtonsMode === 'BOTH'
+    ) {
+      rows.push([this.buildChannelDialogButton(chatId, 'comments', threadId, '💬 Комментарии')]);
+    }
+
+    if (channelSettings.postSuggestionsEnabled) {
+      rows.push([
+        this.buildChannelDialogButton(
+          chatId,
+          'suggest',
+          threadId,
+          channelSettings.postSuggestionsButtonText.trim() || '📰 Предложить пост',
+        ),
+      ]);
+    }
+
+    return rows;
+  }
+
+  private buildChannelDialogButton(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+    text: string,
+  ): MaxMessageButton {
+    const launchUrl = this.buildChannelDialogLaunchUrl(chatId, type, threadId);
+    const webAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, type, threadId);
+    const botContactId = this.resolveBotContactId();
+
+    if (launchUrl) {
+      return {
+        type: 'link',
+        text,
+        url: launchUrl,
+      };
+    }
+
+    if (webAppUrl && botContactId) {
+      return {
+        type: 'open_app',
+        text,
+        webApp: webAppUrl,
+        contactId: botContactId,
+      };
+    }
+
+    return {
+      type: 'link',
+      text,
+      url: webAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
+    };
   }
 
   private resolveRulesImageFileName(fileName: string, mimeType: string): string {
