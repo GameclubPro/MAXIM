@@ -77,7 +77,7 @@ export type CreateChannelDialogMessagePayload = {
 
 export type UpdateChatRulesPayload = Pick<
   ChatRules,
-  'text' | 'imageBase64' | 'imageMimeType' | 'imageFileName'
+  'text' | 'imageBase64' | 'imageMimeType' | 'imageFileName' | 'autoTextEnabled'
 >;
 
 export class ApiClient {
@@ -151,6 +151,13 @@ export class ApiClient {
       method: 'POST',
     });
     return publishChatRulesResultSchema.parse(response);
+  }
+
+  async resetPublishedRules(chatId: string): Promise<ChatRules> {
+    const response = await this.request(`/chats/${chatId}/rules/publish`, {
+      method: 'DELETE',
+    });
+    return chatRulesSchema.parse(response);
   }
 
   async getChannelSettings(chatId: string): Promise<ChannelSettings> {

@@ -56,6 +56,7 @@ function createPrismaMock() {
         imageBase64: '',
         imageMimeType: '',
         imageFileName: '',
+        autoTextEnabled: false,
         publishedMessageId: null,
         publishedUrl: null,
         publishedAt: null,
@@ -1096,6 +1097,7 @@ describe('AdminService chat rules', () => {
       imageBase64: '',
       imageMimeType: '',
       imageFileName: '',
+      autoTextEnabled: false,
       publishedMessageId: 'mid-rules-1',
       publishedUrl: 'https://max.ru/chats/chat-1/message/123',
       publishedAt: new Date('2026-03-09T10:00:00.000Z'),
@@ -1130,6 +1132,7 @@ describe('AdminService chat rules', () => {
       imageBase64: '',
       imageMimeType: '',
       imageFileName: '',
+      autoTextEnabled: false,
       publishedMessageId: 'mid-rules-1',
       publishedUrl: 'https://max.ru/chats/chat-1/message/123',
       publishedAt: '2026-03-09T10:00:00.000Z',
@@ -1145,6 +1148,7 @@ describe('AdminService chat rules', () => {
       imageBase64: '',
       imageMimeType: '',
       imageFileName: '',
+      autoTextEnabled: false,
       publishedMessageId: 'mid-rules-9',
       publishedUrl: null,
       publishedAt: new Date('2026-03-09T10:00:00.000Z'),
@@ -1195,6 +1199,7 @@ describe('AdminService chat rules', () => {
         imageBase64: '',
         imageMimeType: '',
         imageFileName: '',
+        autoTextEnabled: true,
         publishedMessageId: null,
         publishedUrl: null,
         publishedAt: null,
@@ -1208,6 +1213,7 @@ describe('AdminService chat rules', () => {
         imageBase64: '',
         imageMimeType: '',
         imageFileName: '',
+        autoTextEnabled: true,
         publishedMessageId: null,
         publishedUrl: null,
         publishedAt: null,
@@ -1248,6 +1254,7 @@ describe('AdminService chat rules', () => {
         imageBase64: '',
         imageMimeType: '',
         imageFileName: '',
+        autoTextEnabled: true,
       },
     );
 
@@ -1297,6 +1304,7 @@ describe('AdminService chat rules', () => {
       imageBase64: '',
       imageMimeType: '',
       imageFileName: '',
+      autoTextEnabled: false,
       publishedMessageId: null,
       publishedUrl: null,
       publishedAt: null,
@@ -1344,6 +1352,83 @@ describe('AdminService chat rules', () => {
       messageId: 'mid-rules-3',
       url: null,
       publishedAt: expect.any(String),
+    });
+  });
+
+  it('resets published rules and deletes the existing MAX post', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatRules.upsert.mockResolvedValue({
+      id: 'rules-1',
+      chatId: 'chat-1',
+      text: 'Правила чата',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      autoTextEnabled: false,
+      publishedMessageId: 'mid-rules-4',
+      publishedUrl: 'https://max.ru/chats/chat-1/message/654',
+      publishedAt: new Date('2026-03-09T11:00:00.000Z'),
+      createdAt: new Date('2026-03-09T09:00:00.000Z'),
+      updatedAt: new Date('2026-03-09T11:00:00.000Z'),
+    });
+    prisma.chatRules.update.mockResolvedValue({
+      id: 'rules-1',
+      chatId: 'chat-1',
+      text: 'Правила чата',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      autoTextEnabled: false,
+      publishedMessageId: null,
+      publishedUrl: null,
+      publishedAt: null,
+      createdAt: new Date('2026-03-09T09:00:00.000Z'),
+      updatedAt: new Date('2026-03-09T11:05:00.000Z'),
+    });
+
+    const maxClient = {
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      resolveMessageLink: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.resetPublishedRules('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-rules-4', {
+      immediate: true,
+    });
+    expect(prisma.chatRules.update).toHaveBeenCalledWith({
+      where: { chatId: 'chat-1' },
+      data: {
+        publishedMessageId: null,
+        publishedUrl: null,
+        publishedAt: null,
+      },
+    });
+    expect(result).toEqual({
+      text: 'Правила чата',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      autoTextEnabled: false,
+      publishedMessageId: null,
+      publishedUrl: null,
+      publishedAt: null,
     });
   });
 });

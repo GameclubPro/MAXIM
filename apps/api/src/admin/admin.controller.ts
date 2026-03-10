@@ -75,6 +75,11 @@ export class AdminController {
     return this.adminService.publishRules(chatId, user);
   }
 
+  @Delete('chats/:chatId/rules/publish')
+  resetPublishedRules(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.adminService.resetPublishedRules(chatId, user);
+  }
+
   @Get('channels/:chatId/settings')
   getChannelSettings(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.adminService.getChannelSettings(chatId, user);

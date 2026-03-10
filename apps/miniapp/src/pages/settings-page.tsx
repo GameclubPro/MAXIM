@@ -1089,28 +1089,36 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     }
 
     setRulesDraft((current) => {
-      const serverText = rulesQuery.data.text;
+      const shouldEnableAutoText =
+        rulesQuery.data.autoTextEnabled || (!rulesQuery.data.text.trim() && !current);
 
-      if (
-        !serverText.trim() &&
-        autoRulesText &&
-        (!current || current.text === serverText || current.text.trim().length === 0)
-      ) {
-        return chatRulesSchema.parse({
-          ...rulesQuery.data,
-          text: autoRulesText,
-        });
-      }
-
-      if (current && !serverText.trim() && current.text !== serverText) {
-        return current;
-      }
-
-      return rulesQuery.data;
+      return chatRulesSchema.parse({
+        ...rulesQuery.data,
+        autoTextEnabled: shouldEnableAutoText,
+        text: shouldEnableAutoText && autoRulesText ? autoRulesText : rulesQuery.data.text,
+      });
     });
     setRulesTextError('');
     setRulesImageError('');
-  }, [autoRulesText, rulesQuery.data]);
+  }, [rulesQuery.data]);
+
+  useEffect(() => {
+    if (!autoRulesText) {
+      return;
+    }
+
+    setRulesDraft((current) => {
+      if (!current?.autoTextEnabled || current.text === autoRulesText) {
+        return current;
+      }
+
+      return chatRulesSchema.parse({
+        ...current,
+        text: autoRulesText,
+      });
+    });
+    setRulesTextError('');
+  }, [autoRulesText]);
 
   useEffect(() => {
     if (!scheduleDomain) {
@@ -1129,6 +1137,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     () =>
       rulesDraft
         ? JSON.stringify({
+            autoTextEnabled: rulesDraft.autoTextEnabled,
             text: rulesDraft.text,
             imageBase64: rulesDraft.imageBase64,
             imageMimeType: rulesDraft.imageMimeType,
@@ -1146,6 +1155,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     () =>
       rulesQuery.data
         ? JSON.stringify({
+            autoTextEnabled: rulesQuery.data.autoTextEnabled,
             text: rulesQuery.data.text,
             imageBase64: rulesQuery.data.imageBase64,
             imageMimeType: rulesQuery.data.imageMimeType,
@@ -1249,6 +1259,33 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     },
   });
   const isPublishingRules = publishRulesMutation.isPending;
+
+  const resetPublishedRulesMutation = useMutation({
+    mutationFn: () => api.resetPublishedRules(chatId ?? ''),
+    onSuccess: (updated) => {
+      const nextDraft = chatRulesSchema.parse({
+        ...(rulesDraft ?? updated),
+        publishedMessageId: null,
+        publishedUrl: null,
+        publishedAt: null,
+      });
+      setRulesDraft(nextDraft);
+      queryClient.setQueryData(['rules', chatId], nextDraft);
+      pushToast({
+        tone: 'success',
+        title: 'Публикация правил сброшена',
+        description: 'Ранее опубликованный пост удален, статус очищен.',
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось сбросить публикацию',
+        description: formatApiError(error),
+      });
+    },
+  });
+  const isResettingPublishedRules = resetPublishedRulesMutation.isPending;
 
   const applySectionToAllMutation = useMutation({
     mutationFn: async ({
@@ -1488,6 +1525,21 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     }
   }
 
+  function handleRulesAutoTextToggle(enabled: boolean) {
+    setRulesDraft((current) => {
+      if (!current) {
+        return current;
+      }
+
+      return chatRulesSchema.parse({
+        ...current,
+        autoTextEnabled: enabled,
+        text: enabled && autoRulesText ? autoRulesText : current.text,
+      });
+    });
+    setRulesTextError('');
+  }
+
   function clearRulesImage() {
     setRulesDraft((current) => {
       if (!current) {
@@ -1544,6 +1596,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     }
 
     return {
+      autoTextEnabled: value.autoTextEnabled,
       text: value.text,
       imageBase64: value.imageBase64,
       imageMimeType: value.imageMimeType,
@@ -1900,6 +1953,21 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     publishRulesMutation.mutate();
   }
 
+  function handleResetPublishedRules() {
+    if (!chatId || !hasPublishedRules || isResettingPublishedRules) {
+      return;
+    }
+
+    if (
+      typeof window !== 'undefined' &&
+      !window.confirm('Удалить опубликованный пост правил и снять статус публикации?')
+    ) {
+      return;
+    }
+
+    resetPublishedRulesMutation.mutate();
+  }
+
   function handleSendBroadcast() {
     if (!chatId) {
       return;
@@ -2224,7 +2292,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       ? `Опубликовано · ${rulesPublishedAtLabel}`
       : 'Опубликовано'
     : rulesDraft?.text.trim()
-      ? `Черновик · ${rulesDraft.text.trim().length}/${MAX_CHAT_RULES_TEXT_LENGTH}`
+      ? `${rulesDraft.autoTextEnabled ? 'Автотекст' : 'Черновик'} · ${rulesDraft.text.trim().length}/${MAX_CHAT_RULES_TEXT_LENGTH}`
       : 'Не настроено';
   const greetingHeaderSummary = draft?.greetingEnabled
     ? draft?.greetingBotMessageEnabled
@@ -3119,7 +3187,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             {hasPublishedRules
                               ? 'Опубликовано'
                               : rulesDraft.text.trim()
-                                ? 'Черновик'
+                                ? rulesDraft.autoTextEnabled
+                                  ? 'Автотекст'
+                                  : 'Черновик'
                                 : 'Пусто'}
                           </span>
                         </div>
@@ -3132,16 +3202,28 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                                 : 'Опубликовано'
                               : 'Черновик не опубликован'}
                           </span>
-                          {rulesPublishedUrl ? (
-                            <a
-                              href={rulesPublishedUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="rules-published-link"
-                            >
-                              Открыть пост
-                            </a>
-                          ) : null}
+                          <div className="rules-link-row__actions">
+                            {rulesPublishedUrl ? (
+                              <a
+                                href={rulesPublishedUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="rules-published-link"
+                              >
+                                Открыть пост
+                              </a>
+                            ) : null}
+                            {hasPublishedRules ? (
+                              <button
+                                type="button"
+                                className="button button--ghost rules-link-row__reset"
+                                onClick={handleResetPublishedRules}
+                                disabled={isResettingPublishedRules}
+                              >
+                                {isResettingPublishedRules ? 'Сбрасываем...' : 'Сбросить'}
+                              </button>
+                            ) : null}
+                          </div>
                         </div>
 
                         {draft ? (
@@ -3185,20 +3267,48 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             rulesTextError && 'field--error',
                           )}
                         >
-                          <div className="mailing-message-field__meta">
+                          <div className="mailing-message-field__meta rules-editor-field__meta">
                             <span className="field__label">Текст правил</span>
-                            <span className="chip">
-                              {rulesDraft.text.length}/{MAX_CHAT_RULES_TEXT_LENGTH}
-                            </span>
+                            <div className="rules-editor-field__meta-actions">
+                              <label className="rules-inline-toggle">
+                                <span className="rules-inline-toggle__label">
+                                  Заполнять автоматически
+                                </span>
+                                <span
+                                  className="settings-native-switch"
+                                  aria-label="Заполнять текст правил автоматически"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={rulesDraft.autoTextEnabled}
+                                    onChange={(event) =>
+                                      handleRulesAutoTextToggle(event.target.checked)
+                                    }
+                                  />
+                                  <span className="toggle-switch" aria-hidden>
+                                    <span className="toggle-switch__thumb" />
+                                  </span>
+                                </span>
+                              </label>
+                              <span className="chip">
+                                {rulesDraft.text.length}/{MAX_CHAT_RULES_TEXT_LENGTH}
+                              </span>
+                            </div>
                           </div>
                           <textarea
                             rows={7}
                             value={rulesDraft.text}
+                            readOnly={rulesDraft.autoTextEnabled}
                             onChange={(event) => setRulesFieldValue('text', event.target.value)}
                             placeholder="Правила чата"
                           />
                           {rulesTextError ? (
                             <small className="field__hint">{rulesTextError}</small>
+                          ) : rulesDraft.autoTextEnabled ? (
+                            <small className="field__hint rules-editor-field__hint">
+                              Текст собирается из текущих настроек чата. Выключите тумблер, если
+                              нужен свой текст.
+                            </small>
                           ) : null}
                         </label>
 
@@ -3274,6 +3384,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             disabled={
                               !rulesDraft.text.trim() ||
                               isPublishingRules ||
+                              isResettingPublishedRules ||
                               rulesQuery.isLoading ||
                               Boolean(rulesQuery.error)
                             }

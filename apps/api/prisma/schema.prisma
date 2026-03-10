@@ -199,17 +199,18 @@ model ChatSettings {
 }
 
 model ChatRules {
-  id               String    @id @default(cuid())
-  chatId           String    @unique @map("chat_id")
-  text             String    @default("")
-  imageBase64      String    @default("") @map("image_base64")
-  imageMimeType    String    @default("") @map("image_mime_type")
-  imageFileName    String    @default("") @map("image_file_name")
+  id                 String    @id @default(cuid())
+  chatId             String    @unique @map("chat_id")
+  text               String    @default("")
+  imageBase64        String    @default("") @map("image_base64")
+  imageMimeType      String    @default("") @map("image_mime_type")
+  imageFileName      String    @default("") @map("image_file_name")
+  autoTextEnabled    Boolean   @default(false) @map("auto_text_enabled")
   publishedMessageId String? @map("published_message_id")
-  publishedUrl     String?   @map("published_url")
-  publishedAt      DateTime? @map("published_at")
-  createdAt        DateTime  @default(now()) @map("created_at")
-  updatedAt        DateTime  @updatedAt @map("updated_at")
+  publishedUrl       String?   @map("published_url")
+  publishedAt        DateTime? @map("published_at")
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
 
   chat Chat @relation(fields: [chatId], references: [id], onDelete: Cascade)
 

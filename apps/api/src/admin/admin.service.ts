@@ -709,6 +709,7 @@ export class AdminService {
         actorUserId: user.userId,
         action: 'UPDATE_CHAT_RULES',
         payload: {
+          autoTextEnabled: normalizedDraft.autoTextEnabled,
           hasImage: Boolean(normalizedDraft.imageBase64),
           textLength: normalizedDraft.text.length,
           source: 'miniapp',
@@ -814,6 +815,52 @@ export class AdminService {
       url: hydratedRules.publishedUrl,
       publishedAt: publishedAt.toISOString(),
     });
+  }
+
+  async resetPublishedRules(chatId: string, user: AuthUser): Promise<ChatRules> {
+    await this.assertChatAdmin(chatId, user.userId, 'chat');
+    await this.ensureEntityType(chatId, user.userId, 'chat');
+
+    const rules = await this.upsertChatRules(chatId);
+    const publishedMessageId = rules.publishedMessageId?.trim() ?? '';
+
+    if (publishedMessageId) {
+      try {
+        await this.maxClient.deleteMessage(chatId, publishedMessageId, { immediate: true });
+      } catch (error: unknown) {
+        if (!this.isMaxMessageMissingError(error)) {
+          const maxApiMessage = this.extractMaxApiErrorMessage(error);
+          throw new BadRequestException(
+            maxApiMessage || 'Не удалось удалить опубликованный пост правил.',
+          );
+        }
+      }
+    }
+
+    const updatedRules = await this.prisma.chatRules.update({
+      where: { chatId },
+      data: {
+        publishedMessageId: null,
+        publishedUrl: null,
+        publishedAt: null,
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: 'RESET_CHAT_RULES_PUBLICATION',
+        payload: {
+          deletedPost: Boolean(publishedMessageId),
+          messageId: publishedMessageId || null,
+          source: 'miniapp',
+        },
+      },
+    });
+    await this.chatContextCache?.invalidate(chatId);
+
+    return this.mapChatRules(updatedRules);
   }
 
   async getChannelSettings(chatId: string, user: AuthUser): Promise<ChannelSettings> {
@@ -1648,6 +1695,7 @@ export class AdminService {
         imageBase64: '',
         imageMimeType: '',
         imageFileName: '',
+        autoTextEnabled: value.autoTextEnabled,
       };
     }
 
@@ -1656,6 +1704,7 @@ export class AdminService {
       imageBase64: normalizedImageBase64,
       imageMimeType: value.imageMimeType.trim(),
       imageFileName: value.imageFileName.trim(),
+      autoTextEnabled: value.autoTextEnabled,
     };
   }
 
@@ -1675,6 +1724,7 @@ export class AdminService {
       imageBase64: rules.imageBase64,
       imageMimeType: rules.imageMimeType,
       imageFileName: rules.imageFileName,
+      autoTextEnabled: rules.autoTextEnabled,
       publishedMessageId: rules.publishedMessageId,
       publishedUrl: rules.publishedUrl,
       publishedAt: rules.publishedAt ? rules.publishedAt.toISOString() : null,
@@ -1743,6 +1793,17 @@ export class AdminService {
     } catch {
       return null;
     }
+  }
+
+  private isMaxMessageMissingError(error: unknown): boolean {
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    if (status === 404) {
+      return true;
+    }
+
+    const responseData = (error as { response?: { data?: unknown } })?.response?.data;
+    const normalized = JSON.stringify(responseData ?? '').toLowerCase();
+    return normalized.includes('not found') || normalized.includes('message_not_found');
   }
 
   async getLogsDashboard(

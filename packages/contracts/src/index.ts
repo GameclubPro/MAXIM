@@ -492,6 +492,7 @@ const chatRulesObjectSchema = z.object({
   imageBase64: chatRulesImageBase64Schema,
   imageMimeType: chatRulesImageMimeTypeSchema,
   imageFileName: chatRulesImageFileNameSchema,
+  autoTextEnabled: z.boolean().default(false),
   publishedMessageId: z.string().trim().min(1).nullable().default(null),
   publishedUrl: z.string().trim().max(2_048).nullable().default(null),
   publishedAt: z.string().datetime().nullable().default(null),
@@ -523,6 +524,7 @@ export const updateChatRulesRequestSchema = chatRulesObjectSchema.pick({
   imageBase64: true,
   imageMimeType: true,
   imageFileName: true,
+  autoTextEnabled: true,
 });
 export type UpdateChatRulesRequest = z.infer<typeof updateChatRulesRequestSchema>;
 
