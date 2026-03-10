@@ -3540,6 +3540,13 @@
   align-items: center;
 }
 
+.rules-editor-field__title-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .rules-editor-field__meta-actions {
   display: flex;
   flex-wrap: wrap;
@@ -3595,6 +3602,7 @@
   }
 
   .rules-editor-field__meta,
+  .rules-editor-field__title-group,
   .rules-editor-field__meta-actions,
   .rules-inline-toggle {
     align-items: flex-start;

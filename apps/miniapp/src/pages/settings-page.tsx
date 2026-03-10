@@ -877,6 +877,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [draft, setDraft] = useState<ChatSettings | null>(null);
   const [rulesDraft, setRulesDraft] = useState<ChatRules | null>(null);
   const [rulesAutoFillEnabled, setRulesAutoFillEnabled] = useState(false);
+  const [rulesAutoFillSeedText, setRulesAutoFillSeedText] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [rulesTextError, setRulesTextError] = useState('');
   const [rulesImageError, setRulesImageError] = useState('');
@@ -949,6 +950,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     setOpenSectionApplyConfirm(null);
     setRulesDraft(null);
     setRulesAutoFillEnabled(false);
+    setRulesAutoFillSeedText(null);
     setRulesTextError('');
     setRulesImageError('');
     setRulesFailedSnapshot('');
@@ -1094,8 +1096,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       chatRulesSchema.parse({
         ...rulesQuery.data,
         autoTextEnabled: false,
+        text: rulesQuery.data.autoTextEnabled ? '' : rulesQuery.data.text,
       }),
     );
+    setRulesAutoFillEnabled(false);
+    setRulesAutoFillSeedText(null);
     setRulesTextError('');
     setRulesImageError('');
   }, [rulesQuery.data]);
@@ -1155,6 +1160,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     rulesDraft?.imageBase64 && rulesDraft.imageMimeType
       ? `data:${rulesDraft.imageMimeType};base64,${rulesDraft.imageBase64}`
       : '';
+  const isPendingAutoFillOnly = Boolean(
+    rulesDraft &&
+      rulesAutoFillSeedText !== null &&
+      rulesDraft.text === rulesAutoFillSeedText &&
+      rulesDraft.imageBase64 === (rulesQuery.data?.imageBase64 ?? '') &&
+      rulesDraft.imageMimeType === (rulesQuery.data?.imageMimeType ?? '') &&
+      rulesDraft.imageFileName === (rulesQuery.data?.imageFileName ?? ''),
+  );
 
   const saveMutation = useMutation({
     mutationFn: (payload: ChatSettings) => api.updateSettings(chatId ?? '', payload),
@@ -1180,6 +1193,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     mutationFn: (payload: UpdateChatRulesPayload) => api.updateRules(chatId ?? '', payload),
     onSuccess: (saved) => {
       setRulesDraft(saved);
+      setRulesAutoFillSeedText(null);
       setRulesTextError('');
       setRulesImageError('');
       setRulesFailedSnapshot('');
@@ -1481,6 +1495,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     key: K,
     value: UpdateChatRulesPayload[K],
   ) {
+    if (key === 'text') {
+      const nextText = String(value);
+      setRulesAutoFillSeedText((current) => (current !== null && current !== nextText ? null : current));
+    }
+
     setRulesDraft((current) => {
       if (!current) {
         return current;
@@ -1509,6 +1528,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     if (!enabled || !autoRulesText) {
       return;
     }
+
+    setRulesAutoFillSeedText(autoRulesText);
 
     setRulesDraft((current) => {
       if (!current) {
@@ -1753,7 +1774,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   ]);
 
   useEffect(() => {
-    if (!chatId || !rulesDraft || !hasRulesChanges || isSavingRules || isPublishingRules) {
+    if (
+      !chatId ||
+      !rulesDraft ||
+      !hasRulesChanges ||
+      isSavingRules ||
+      isPublishingRules ||
+      isPendingAutoFillOnly
+    ) {
       return;
     }
 
@@ -1778,6 +1806,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     hasRulesChanges,
     isPublishingRules,
     isSavingRules,
+    isPendingAutoFillOnly,
     mutateRules,
     rulesDraft,
     rulesDraftSnapshot,
@@ -3250,7 +3279,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           )}
                         >
                           <div className="mailing-message-field__meta rules-editor-field__meta">
-                            <span className="field__label">Текст правил</span>
+                            <span className="rules-editor-field__title-group">
+                              <span className="field__label">Текст правил</span>
+                              <span className="chip">
+                                {rulesDraft.text.length}/{MAX_CHAT_RULES_TEXT_LENGTH}
+                              </span>
+                            </span>
                             <div className="rules-editor-field__meta-actions">
                               <label className="rules-inline-toggle">
                                 <span className="rules-inline-toggle__label">
@@ -3272,9 +3306,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                                   </span>
                                 </span>
                               </label>
-                              <span className="chip">
-                                {rulesDraft.text.length}/{MAX_CHAT_RULES_TEXT_LENGTH}
-                              </span>
                             </div>
                           </div>
                           <textarea
