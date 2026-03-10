@@ -195,34 +195,6 @@ function ChannelSettingsFeatureCard({
   );
 }
 
-function ChannelSettingsSaveNotice({
-  state,
-  onRetry,
-}: {
-  state: 'idle' | 'saving' | 'saved' | 'error';
-  onRetry: () => void;
-}) {
-  if (state === 'idle') {
-    return null;
-  }
-
-  return (
-    <div className="channel-settings-save-float">
-      <div className={cn('channel-settings-save-notice', `is-${state}`)}>
-        <span className="channel-settings-save-notice__dot" aria-hidden />
-        <span className="channel-settings-save-notice__text">
-          {state === 'saving' ? 'Сохраняем' : state === 'saved' ? 'Сохранено' : 'Не сохранилось'}
-        </span>
-        {state === 'error' ? (
-          <button type="button" className="channel-settings-save-notice__retry" onClick={onRetry}>
-            Повторить
-          </button>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
 function normalizeChannelSettingsDraft(
   draft: ChannelSettings,
   resolvedChannelLink: string,
@@ -537,32 +509,64 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     );
   }
 
+  const headerStatusTone =
+    autosaveState === 'error'
+      ? 'error'
+      : autosaveState === 'saving'
+        ? 'saving'
+        : autosaveState === 'saved' || !isDirty
+          ? 'saved'
+          : 'draft';
+  const headerStatusLabel =
+    headerStatusTone === 'error'
+      ? 'Ошибка'
+      : headerStatusTone === 'saving'
+        ? 'Сохраняем'
+        : headerStatusTone === 'draft'
+          ? 'Черновик'
+          : 'Сохранено';
+  const channelMetaLabel =
+    resolvedTitle && resolvedTitle !== chatId
+      ? resolvedChannelLink || `ID ${chatId}`
+      : 'Настройки канала';
+
   return (
     <div className="channel-settings-screen page-enter">
       <GlassCard className="channel-settings-header" elevated>
-        <div className="channel-settings-hero__top">
+        <div className="channel-settings-header__top">
           <Link
             to={buildManagedEntitiesRoute('channel')}
-            className="button button--ghost channel-settings-hero__back"
+            className="button button--ghost channel-settings-header__back"
           >
             Назад
           </Link>
-          <span className="channel-settings-hero__badge">Канал</span>
+          <div className="channel-settings-header__actions">
+            <span
+              className={cn('channel-settings-header__status', `is-${headerStatusTone}`)}
+              aria-live="polite"
+            >
+              {headerStatusLabel}
+            </span>
+            {headerStatusTone === 'error' ? (
+              <button
+                type="button"
+                className="channel-settings-header__retry"
+                onClick={() => {
+                  lastFailedDraftKeyRef.current = null;
+                  void saveCurrentDraft({ force: true });
+                }}
+              >
+                Повторить
+              </button>
+            ) : null}
+          </div>
         </div>
 
         <div className="channel-settings-header__main">
           <h1>{resolvedTitle || 'Настройки'}</h1>
-          <p>{chatId}</p>
+          <p>{channelMetaLabel}</p>
         </div>
       </GlassCard>
-
-      <ChannelSettingsSaveNotice
-        state={autosaveState}
-        onRetry={() => {
-          lastFailedDraftKeyRef.current = null;
-          void saveCurrentDraft({ force: true });
-        }}
-      />
 
       <GlassCard className="channel-settings-card" elevated>
         <ChannelSettingsSectionHead title="Сценарии" />

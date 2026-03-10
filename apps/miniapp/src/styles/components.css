@@ -65,35 +65,29 @@
 }
 
 .channel-settings-header {
-  position: relative;
   display: grid;
   gap: 10px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(242, 248, 255, 0.9)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(241, 248, 255, 0.9)),
     rgba(255, 255, 255, 0.88);
-}
-
-.channel-settings-header::after {
-  display: none;
+  box-shadow: 0 18px 34px rgba(28, 61, 92, 0.1);
 }
 
 .channel-settings-header__main {
   display: grid;
-  gap: 6px;
-  position: relative;
-  z-index: 1;
+  gap: 4px;
 }
 
 .channel-settings-header__main h1 {
-  font-size: clamp(1.3rem, 1.12rem + 1vw, 1.92rem);
-  line-height: 0.98;
+  font-size: 1rem;
+  line-height: 1.22;
 }
 
 .channel-settings-header__main p {
   color: var(--text-muted);
-  font-size: 0.82rem;
-  line-height: 1.35;
-  word-break: break-word;
+  font-size: 0.76rem;
+  line-height: 1.24;
+  overflow-wrap: anywhere;
 }
 
 .channel-settings-card {
@@ -104,104 +98,74 @@
     rgba(255, 255, 255, 0.8);
 }
 
-.channel-settings-hero__top {
-  position: relative;
-  z-index: 1;
+.channel-settings-header__top {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
 }
 
-.channel-settings-hero__eyebrow {
+.channel-settings-header__actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+  justify-content: flex-end;
 }
 
-.channel-settings-hero__badge,
-.channel-settings-hero__hint {
+.channel-settings-header__status {
   min-height: 30px;
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
-  padding: 0 12px;
-  font-size: 0.72rem;
-  font-weight: 800;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.channel-settings-hero__badge {
-  color: #086cc6;
-  background: rgba(11, 132, 255, 0.1);
-  border: 1px solid rgba(11, 132, 255, 0.14);
-}
-
-.channel-settings-hero__back {
-  min-width: 88px;
-  position: relative;
-  z-index: 1;
-}
-
-.channel-settings-save-float {
-  position: sticky;
-  top: max(8px, env(safe-area-inset-top, 0px));
-  z-index: 14;
-}
-
-.channel-settings-save-notice {
-  width: fit-content;
-  max-width: 100%;
-  min-height: 42px;
-  margin: 0 auto;
-  padding: 0 14px;
-  border-radius: 999px;
-  border: 1px solid rgba(62, 96, 127, 0.14);
-  background: rgba(255, 255, 255, 0.9);
-  box-shadow: 0 12px 24px rgba(25, 67, 101, 0.1);
-  display: inline-flex;
-  align-items: center;
   justify-content: center;
-  gap: 10px;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  padding: 0 12px;
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+  white-space: nowrap;
 }
 
-.channel-settings-save-notice.is-saving {
-  color: var(--text-primary);
+.channel-settings-header__status.is-saving {
+  color: #0a79db;
+  background: rgba(11, 132, 255, 0.08);
+  border-color: rgba(11, 132, 255, 0.14);
 }
 
-.channel-settings-save-notice.is-saved {
+.channel-settings-header__status.is-draft {
+  color: #8c6200;
+  background: rgba(255, 189, 61, 0.14);
+  border-color: rgba(255, 189, 61, 0.2);
+}
+
+.channel-settings-header__status.is-saved {
   color: #0f7e5d;
+  background: rgba(27, 174, 118, 0.1);
+  border-color: rgba(27, 174, 118, 0.16);
 }
 
-.channel-settings-save-notice.is-error {
+.channel-settings-header__status.is-error {
   color: #a22f3f;
+  background: rgba(228, 83, 99, 0.1);
+  border-color: rgba(228, 83, 99, 0.16);
 }
 
-.channel-settings-save-notice__dot {
-  width: 8px;
-  height: 8px;
+.channel-settings-header__back {
+  min-height: 34px;
+  padding: 0 12px;
   border-radius: 999px;
-  background: currentColor;
-  opacity: 0.88;
-}
-
-.channel-settings-save-notice__text {
-  font-size: 0.82rem;
+  font-size: 0.76rem;
   font-weight: 700;
-  line-height: 1;
 }
 
-.channel-settings-save-notice__retry {
-  min-height: 28px;
-  border: 0;
+.channel-settings-header__retry {
+  min-height: 30px;
+  padding: 0 12px;
   border-radius: 999px;
-  padding: 0 10px;
-  background: rgba(255, 255, 255, 0.72);
-  color: inherit;
+  border: 1px solid rgba(228, 83, 99, 0.16);
+  background: rgba(255, 255, 255, 0.82);
+  color: #a22f3f;
   font-size: 0.74rem;
   font-weight: 700;
   cursor: pointer;
@@ -448,13 +412,8 @@
 }
 
 @media (max-width: 640px) {
-  .channel-settings-hero__top {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .channel-settings-hero__back {
-    width: 100%;
+  .channel-settings-header__top {
+    align-items: flex-start;
   }
 
   .channel-settings-hero__stats {
