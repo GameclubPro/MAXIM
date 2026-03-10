@@ -158,52 +158,6 @@ function ChannelSettingsToggleCard({
   );
 }
 
-function ChannelSettingsFeatureCard({
-  icon,
-  title,
-  description,
-  checked,
-  onChange,
-}: {
-  icon: string;
-  title: string;
-  description: string;
-  checked: boolean;
-  onChange: (nextValue: boolean) => void;
-}) {
-  return (
-    <label className={cn('channel-settings-feature-card', checked && 'is-active')}>
-      <div className="channel-settings-feature-card__head">
-        <div className="channel-settings-feature-card__identity">
-          <span className="channel-settings-feature-card__icon" aria-hidden>
-            {icon}
-          </span>
-          <div className="channel-settings-feature-card__copy">
-            <strong>{title}</strong>
-            <p>{description}</p>
-          </div>
-        </div>
-
-        <div className="channel-settings-feature-card__toggle">
-          <span className={cn('channel-settings-feature-card__state', checked && 'is-on')}>
-            {checked ? 'Вкл' : 'Выкл'}
-          </span>
-          <span className="settings-native-switch">
-            <input
-              type="checkbox"
-              checked={checked}
-              onChange={(event) => onChange(event.target.checked)}
-            />
-            <span className="toggle-switch" aria-hidden>
-              <span className="toggle-switch__thumb" />
-            </span>
-          </span>
-        </div>
-      </div>
-    </label>
-  );
-}
-
 function normalizeChannelSettingsDraft(
   draft: ChannelSettings,
   resolvedChannelLink: string,
@@ -599,7 +553,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                     >
                       Повторить
                     </button>
-                    ) : null}
+                  ) : null}
                 </div>
               ) : null}
             </div>
@@ -619,68 +573,27 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
       </GlassCard>
 
       <GlassCard className="channel-settings-card" elevated>
-        <ChannelSettingsSectionHead title="Сценарии" />
+        <ChannelSettingsSectionHead
+          title="Комментарии"
+          description="Диалог под постом и базовые ограничения для обсуждения."
+        />
 
-        <div className="channel-settings-feature-grid">
-          <ChannelSettingsFeatureCard
-            icon="💬"
-            title="Комментарии"
-            description="Диалог под постом."
-            checked={draft.commentsEnabled}
-            onChange={(nextValue) => patchDraft('commentsEnabled', nextValue)}
-          />
+        <ChannelSettingsToggleCard
+          title="Включить комментарии"
+          description="Открывает обсуждение под постами канала."
+          checked={draft.commentsEnabled}
+          onChange={(nextValue) => patchDraft('commentsEnabled', nextValue)}
+        />
 
-          <ChannelSettingsFeatureCard
-            icon="📰"
-            title="Идеи для постов"
-            description="Идеи постов от подписчиков."
-            checked={draft.postSuggestionsEnabled}
-            onChange={(nextValue) => patchDraft('postSuggestionsEnabled', nextValue)}
-          />
-        </div>
-      </GlassCard>
-
-      {draft.postSuggestionsEnabled ? (
-        <GlassCard className="channel-settings-card" elevated>
-          <ChannelSettingsSectionHead title="Идеи для постов" />
-
+        {draft.commentsEnabled ? (
           <div className="channel-settings-stack">
-            <label className="field">
-              <span>Название кнопки</span>
-              <input
-                type="text"
-                value={draft.postSuggestionsButtonText}
-                onChange={(event) => patchDraft('postSuggestionsButtonText', event.target.value)}
-                placeholder="Предложить пост"
-                maxLength={32}
-              />
-            </label>
+            <ChannelSettingsToggleCard
+              title="Модерация"
+              description="Бот следит за сообщениями в комментариях."
+              checked={draft.commentsModerationEnabled}
+              onChange={(nextValue) => patchDraft('commentsModerationEnabled', nextValue)}
+            />
 
-            <label className="field">
-              <span>Текст</span>
-              <textarea
-                rows={3}
-                value={draft.postSuggestionsText}
-                onChange={(event) => patchDraft('postSuggestionsText', event.target.value)}
-                placeholder="Коротко объясните, что отправлять."
-              />
-            </label>
-          </div>
-        </GlassCard>
-      ) : null}
-
-      {draft.commentsEnabled ? (
-        <GlassCard className="channel-settings-card" elevated>
-          <ChannelSettingsSectionHead title="Комментарии" />
-
-          <ChannelSettingsToggleCard
-            title="Модерация"
-            description="Бот следит за сообщениями."
-            checked={draft.commentsModerationEnabled}
-            onChange={(nextValue) => patchDraft('commentsModerationEnabled', nextValue)}
-          />
-
-          <div className="channel-settings-stack">
             <div className="channel-settings-inline-fields channel-settings-inline-fields--narrow">
               <label className="field">
                 <span>Пауза между сообщениями, сек</span>
@@ -715,8 +628,47 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
               />
             </label>
           </div>
-        </GlassCard>
-      ) : null}
+        ) : null}
+      </GlassCard>
+
+      <GlassCard className="channel-settings-card" elevated>
+        <ChannelSettingsSectionHead
+          title="Предложить пост"
+          description="Подписчики отправляют идеи через кнопку под постом."
+        />
+
+        <ChannelSettingsToggleCard
+          title="Разрешить предложения"
+          description="Показывает кнопку для отправки идей в канал."
+          checked={draft.postSuggestionsEnabled}
+          onChange={(nextValue) => patchDraft('postSuggestionsEnabled', nextValue)}
+        />
+
+        {draft.postSuggestionsEnabled ? (
+          <div className="channel-settings-stack">
+            <label className="field">
+              <span>Название кнопки</span>
+              <input
+                type="text"
+                value={draft.postSuggestionsButtonText}
+                onChange={(event) => patchDraft('postSuggestionsButtonText', event.target.value)}
+                placeholder="Предложить пост"
+                maxLength={32}
+              />
+            </label>
+
+            <label className="field">
+              <span>Текст</span>
+              <textarea
+                rows={3}
+                value={draft.postSuggestionsText}
+                onChange={(event) => patchDraft('postSuggestionsText', event.target.value)}
+                placeholder="Коротко объясните, что отправлять."
+              />
+            </label>
+          </div>
+        ) : null}
+      </GlassCard>
     </div>
   );
 }
