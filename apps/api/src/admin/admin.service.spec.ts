@@ -403,7 +403,10 @@ describe('AdminService managed polls', () => {
       'chat-1',
       expect.stringContaining('Ваш любимый режим?'),
       expect.objectContaining({
-        buttons: expect.any(Array),
+        buttons: [
+          [expect.objectContaining({ text: 'Соло (0)' })],
+          [expect.objectContaining({ text: 'Сквад (0)' })],
+        ],
       }),
     );
     expect(published.status).toBe('ACTIVE');

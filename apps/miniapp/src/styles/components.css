@@ -516,6 +516,10 @@
   .managed-poll-option-card__meta {
     justify-content: flex-start;
   }
+
+  .managed-poll-card__footer-copy {
+    align-items: flex-start;
+  }
 }
 
 @media (min-width: 720px) {
@@ -3368,16 +3372,17 @@
   min-width: 0;
 }
 
+.managed-poll-card__title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
 .managed-poll-card__title-wrap h3 {
   margin: 0;
   font-size: 1rem;
   line-height: 1.2;
-}
-
-.managed-poll-card__title-wrap small {
-  color: var(--text-secondary);
-  font-size: 0.78rem;
-  line-height: 1.4;
 }
 
 .managed-poll-card__chips {
@@ -3483,10 +3488,17 @@
   gap: 10px;
 }
 
-.managed-poll-card__footer-copy p {
-  margin: 0;
+.managed-poll-card__footer-copy {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.managed-poll-card__footer-copy-label {
   color: var(--text-secondary);
   font-size: 0.8rem;
+  font-weight: 700;
   line-height: 1.45;
 }
 

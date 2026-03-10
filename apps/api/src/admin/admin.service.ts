@@ -2132,7 +2132,12 @@ export class AdminService {
       normalizedDraft.options,
       normalizedDraft.options.map(() => 0),
     );
-    const buttons = buildManagedPollButtons(current.id, nextVersion, normalizedDraft.options);
+    const buttons = buildManagedPollButtons(
+      current.id,
+      nextVersion,
+      normalizedDraft.options,
+      zeroResults.optionResults,
+    );
     const messageText = buildManagedPollMessageText(
       normalizedDraft.question,
       zeroResults.optionResults,

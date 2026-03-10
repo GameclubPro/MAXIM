@@ -4456,7 +4456,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
 
     await this.maxClient.editMessageInlineKeyboard(chatId, sourceMessageId, text, {
-      buttons: buildManagedPollButtons(poll.id, poll.activeVersion, normalizedDraft.options),
+      buttons: buildManagedPollButtons(
+        poll.id,
+        poll.activeVersion,
+        normalizedDraft.options,
+        summary.optionResults,
+      ),
       debugContext: {
         screen: 'managed-poll',
         action: 'vote',

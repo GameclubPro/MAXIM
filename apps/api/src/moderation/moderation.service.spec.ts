@@ -6397,7 +6397,10 @@ describe('ModerationService', () => {
       'mid-poll-1',
       expect.stringContaining('Всего голосов: 1'),
       expect.objectContaining({
-        buttons: expect.any(Array),
+        buttons: [
+          [expect.objectContaining({ text: 'Соло (1)' })],
+          [expect.objectContaining({ text: 'Сквад (0)' })],
+        ],
       }),
     );
     expect(maxClient.answerCallback).toHaveBeenCalledWith('callback-poll-1', 'Голос учтён');

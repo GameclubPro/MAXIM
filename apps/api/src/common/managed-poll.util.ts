@@ -1,6 +1,7 @@
 import {
   MANAGED_POLL_MAX_OPTIONS,
   MANAGED_POLL_MIN_OPTIONS,
+  MANAGED_POLL_OPTION_MAX_LENGTH,
   type ManagedPollStatus,
 } from '@maxim/contracts';
 import type { MaxMessageButton } from '../max/max-client.service';
@@ -110,11 +111,12 @@ export function buildManagedPollButtons(
   pollId: string,
   version: number,
   options: readonly string[],
+  optionResults?: readonly ManagedPollOptionSummary[],
 ): MaxMessageButton[][] {
   return normalizeManagedPollDraft('', options).options.map((option, index) => [
     {
       type: 'callback',
-      text: option || `Вариант ${index + 1}`,
+      text: buildManagedPollButtonLabel(option, optionResults?.[index]?.votes ?? 0, index),
       payload: buildManagedPollCallbackPayload(pollId, version, index),
     },
   ]);
@@ -169,4 +171,22 @@ function normalizeManagedPollText(value: string): string {
 
 function normalizeManagedPollOptionKey(value: string): string {
   return normalizeManagedPollText(value).replace(/\s+/gu, ' ').toLowerCase().replace(/ё/gu, 'е');
+}
+
+function buildManagedPollButtonLabel(option: string, votes: number, index: number): string {
+  const safeVotes = Math.max(0, Math.trunc(votes));
+  const voteSuffix = ` (${safeVotes})`;
+  const baseLabel = normalizeManagedPollText(option) || `Вариант ${index + 1}`;
+  const maxBaseLength = Math.max(1, MANAGED_POLL_OPTION_MAX_LENGTH - voteSuffix.length);
+
+  if (baseLabel.length <= maxBaseLength) {
+    return `${baseLabel}${voteSuffix}`;
+  }
+
+  const truncatedBase =
+    maxBaseLength <= 3
+      ? baseLabel.slice(0, maxBaseLength)
+      : `${baseLabel.slice(0, maxBaseLength - 3).trimEnd()}...`;
+
+  return `${truncatedBase}${voteSuffix}`;
 }

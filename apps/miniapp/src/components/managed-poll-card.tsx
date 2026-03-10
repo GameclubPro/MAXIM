@@ -20,6 +20,8 @@ type ManagedPollDraft = {
   options: string[];
 };
 
+type ManagedPollHintKey = 'rules' | 'publish';
+
 function toDraft(poll: ManagedPoll): ManagedPollDraft {
   const options = poll.options.slice(0, MANAGED_POLL_MAX_OPTIONS);
   while (options.length < MANAGED_POLL_MIN_OPTIONS) {
@@ -86,6 +88,69 @@ function buildStatusTone(status: ManagedPoll['status']): 'success' | 'warning' |
   return undefined;
 }
 
+function ManagedPollInfoButton({
+  hintKey,
+  openHintKey,
+  onToggleHint,
+  label,
+}: {
+  hintKey: ManagedPollHintKey;
+  openHintKey: ManagedPollHintKey | null;
+  onToggleHint: (hintKey: ManagedPollHintKey) => void;
+  label: string;
+}) {
+  const isOpen = openHintKey === hintKey;
+
+  return (
+    <button
+      type="button"
+      className={cn('settings-info-button', isOpen && 'is-open')}
+      aria-label={label}
+      aria-controls={`managed-poll-hint-${hintKey}`}
+      aria-expanded={isOpen}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onToggleHint(hintKey);
+      }}
+    >
+      <span aria-hidden>i</span>
+    </button>
+  );
+}
+
+function ManagedPollHintAnchor({
+  hintKey,
+  openHintKey,
+  onToggleHint,
+  label,
+  children,
+}: {
+  hintKey: ManagedPollHintKey;
+  openHintKey: ManagedPollHintKey | null;
+  onToggleHint: (hintKey: ManagedPollHintKey) => void;
+  label: string;
+  children: string;
+}) {
+  const isOpen = openHintKey === hintKey;
+
+  return (
+    <span className="channel-settings-hint-anchor">
+      <ManagedPollInfoButton
+        hintKey={hintKey}
+        openHintKey={openHintKey}
+        onToggleHint={onToggleHint}
+        label={label}
+      />
+      {isOpen ? (
+        <span id={`managed-poll-hint-${hintKey}`} className="channel-settings-hint-popover">
+          {children}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 export function ManagedPollCard({
   api,
   entityType,
@@ -102,6 +167,7 @@ export function ManagedPollCard({
   const [saveState, setSaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
   const [questionError, setQuestionError] = useState('');
   const [optionError, setOptionError] = useState('');
+  const [openHintKey, setOpenHintKey] = useState<ManagedPollHintKey | null>(null);
   const autosaveTimerRef = useRef<number | null>(null);
   const autosaveHideTimerRef = useRef<number | null>(null);
   const saveInFlightRef = useRef<Promise<ManagedPoll> | null>(null);
@@ -354,6 +420,10 @@ export function ManagedPollCard({
     return uniqueOptions.size === trimmedOptions.length;
   }, [closeMutation.isPending, draft, isActive, publishMutation.isPending]);
 
+  const toggleHint = (hintKey: ManagedPollHintKey) => {
+    setOpenHintKey((current) => (current === hintKey ? null : hintKey));
+  };
+
   useEffect(() => {
     if (!draft) {
       return;
@@ -398,8 +468,17 @@ export function ManagedPollCard({
     <GlassCard className="managed-poll-card" elevated>
       <div className="managed-poll-card__head">
         <div className="managed-poll-card__title-wrap">
-          <h3>Опрос</h3>
-          <small>Один голос на участника, переголосование разрешено.</small>
+          <div className="managed-poll-card__title-row">
+            <h3>Опрос</h3>
+            <ManagedPollHintAnchor
+              hintKey="rules"
+              openHintKey={openHintKey}
+              onToggleHint={toggleHint}
+              label="Как работает голосование"
+            >
+              Один голос на участника, переголосование разрешено.
+            </ManagedPollHintAnchor>
+          </div>
         </div>
         <div className="managed-poll-card__chips">
           <span className={cn('chip', buildStatusTone(poll.status) && `chip--${buildStatusTone(poll.status)}`)}>
@@ -544,11 +623,17 @@ export function ManagedPollCard({
 
       <div className="managed-poll-card__footer">
         <div className="managed-poll-card__footer-copy">
-          <p>
+          <span className="managed-poll-card__footer-copy-label">Подсказка</span>
+          <ManagedPollHintAnchor
+            hintKey="publish"
+            openHintKey={openHintKey}
+            onToggleHint={toggleHint}
+            label="Подсказка по публикации опроса"
+          >
             {isActive
               ? 'Поля заблокированы до закрытия опроса.'
               : 'После публикации опрос появится в виде поста с кнопками голосования.'}
-          </p>
+          </ManagedPollHintAnchor>
         </div>
         <div className="managed-poll-card__actions">
           {isActive ? (
