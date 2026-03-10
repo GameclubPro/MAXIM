@@ -310,18 +310,6 @@ export function ChatsPage({ api }: { api: ApiClient }) {
               ) : (
                 <div className="chat-card__actions">
                   <Link
-                    to={`/channel/${entity.id}/stats`}
-                    className="button button--ghost"
-                    state={{ chatTitle: entity.title }}
-                    onClick={() => {
-                      saveLastEntityId('channel', entity.id);
-                      saveChatTitle(entity.id, entity.title);
-                    }}
-                  >
-                    Статистика
-                  </Link>
-
-                  <Link
                     to={`/channel/${entity.id}/settings`}
                     className="button button--accent"
                     state={{ chatTitle: entity.title, chatLink: entity.link ?? '' }}
@@ -331,6 +319,17 @@ export function ChatsPage({ api }: { api: ApiClient }) {
                     }}
                   >
                     Настройки
+                  </Link>
+                  <Link
+                    to={`/channel/${entity.id}/stats`}
+                    className="button button--ghost"
+                    state={{ chatTitle: entity.title }}
+                    onClick={() => {
+                      saveLastEntityId('channel', entity.id);
+                      saveChatTitle(entity.id, entity.title);
+                    }}
+                  >
+                    Статистика
                   </Link>
                 </div>
               )}
