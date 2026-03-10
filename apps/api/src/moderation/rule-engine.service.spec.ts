@@ -174,6 +174,21 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
   });
 
+  it('matches legacy allowlist rows with encoded trailing text', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'смотри https://max.ru/join/s-ue_EUH76fg0xkakyGtIbD4dfKhHyPStoqI3oK-ObU',
+      settings: buildSettings(),
+      domainAllowlist: [
+        'https://max.ru/join/s-ue_EUH76fg0xkakyGtIbD4dfKhHyPStoqI3oK-ObU%20MAX%20%D0%BF%D0%BE%D0%B7%D0%B2%D0%BE%D0%BB%D1%8F%D0%B5%D1%82%20%D0%BE%D1%82%D0%BF%D1%80%D0%B0%D0%B2%D0%BB%D1%8F%D1%82%D1%8C',
+      ],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+  });
+
   it('ignores bare branded domains when exact allowlisted URL is present', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({

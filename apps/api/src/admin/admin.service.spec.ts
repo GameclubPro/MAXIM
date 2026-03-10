@@ -1289,6 +1289,104 @@ describe('AdminService allowlist normalization', () => {
     });
   });
 
+  it('extracts exact link from pasted allowlist text', async () => {
+    const prisma = createPrismaMock();
+    prisma.domainAllowlist.findMany.mockResolvedValueOnce([]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await service.addDomain(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        domain:
+          'https://max.ru/join/s-ue_EUH76fg0xkakyGtIbD4dfKhHyPStoqI3oK-ObU MAX позволяет отправлять любые виды сообщений',
+      },
+    );
+
+    expect(prisma.domainAllowlist.upsert).toHaveBeenCalledWith({
+      where: {
+        chatId_domain: {
+          chatId: 'chat-1',
+          domain: 'https://max.ru/join/s-ue_EUH76fg0xkakyGtIbD4dfKhHyPStoqI3oK-ObU',
+        },
+      },
+      create: {
+        chatId: 'chat-1',
+        domain: 'https://max.ru/join/s-ue_EUH76fg0xkakyGtIbD4dfKhHyPStoqI3oK-ObU',
+      },
+      update: {
+        removeAfterAt: null,
+      },
+    });
+  });
+
+  it('treats legacy encoded trailing-text rows as the same allowlist link', async () => {
+    const prisma = createPrismaMock();
+    prisma.domainAllowlist.findMany.mockResolvedValueOnce([
+      {
+        domain:
+          'https://max.ru/join/s-ue_EUH76fg0xkakyGtIbD4dfKhHyPStoqI3oK-ObU%20MAX%20%D0%BF%D0%BE%D0%B7%D0%B2%D0%BE%D0%BB%D1%8F%D0%B5%D1%82%20%D0%BE%D1%82%D0%BF%D1%80%D0%B0%D0%B2%D0%BB%D1%8F%D1%82%D1%8C',
+      },
+      { domain: 'another.org' },
+    ]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await service.addDomain(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        domain: 'https://max.ru/join/s-ue_EUH76fg0xkakyGtIbD4dfKhHyPStoqI3oK-ObU',
+      },
+    );
+
+    expect(prisma.domainAllowlist.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        domain: {
+          in: [
+            'https://max.ru/join/s-ue_EUH76fg0xkakyGtIbD4dfKhHyPStoqI3oK-ObU%20MAX%20%D0%BF%D0%BE%D0%B7%D0%B2%D0%BE%D0%BB%D1%8F%D0%B5%D1%82%20%D0%BE%D1%82%D0%BF%D1%80%D0%B0%D0%B2%D0%BB%D1%8F%D1%82%D1%8C',
+          ],
+        },
+      },
+    });
+  });
+
   it('removes canonical and legacy rows by normalized link', async () => {
     const prisma = createPrismaMock();
     prisma.domainAllowlist.findMany.mockResolvedValue([
