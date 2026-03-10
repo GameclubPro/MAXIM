@@ -199,6 +199,8 @@ const ADS_TRANSACTIONAL_PATTERN = /\b(цена|стоимость|оплата|�
 const ADS_URGENCY_PATTERN = /\b(срочно|только сегодня|до конца дня|осталось\s+\d+)\b/iu;
 const ADS_QUANTITY_PATTERN = /\b(шт|штук|шт\.|пачк|упак|остатк|места)\b/iu;
 const ADS_PHONE_PATTERN = /\b(?:\+7|8)\s*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}\b/u;
+const DUPLICATE_EXCLUDED_PHONE_PATTERN =
+  /(?:^|[^\d])(?:\+7|8)\s*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?:$|[^\d])/u;
 const THEMATIC_CODEWORD_MIN_LENGTH = 90;
 const TOPIC_FILTER_GENERIC_OFFTOPIC_MIN_LENGTH = 70;
 const TOPIC_FILTER_TOPICS: readonly TopicFilterTopic[] = ['REAL_ESTATE', 'AUTO_MARKET'];
@@ -1237,9 +1239,9 @@ const AUTO_MARKET_TOPIC_DICTIONARY: TopicDictionary = {
   minSupportingIndicators: 2,
 };
 const DEFAULT_DUPLICATE_WINDOW_SEC = 60;
-const DUPLICATE_MIN_LENGTH = 32;
-const DUPLICATE_MIN_TOKEN_COUNT = 5;
-const DUPLICATE_MIN_UNIQUE_LONG_TOKENS = 3;
+const DUPLICATE_MIN_LENGTH = 50;
+const DUPLICATE_MIN_TOKEN_COUNT = 6;
+const DUPLICATE_MIN_UNIQUE_LONG_TOKENS = 4;
 const MIXED_CHAR_MAP: Record<string, string> = {
   a: 'а',
   b: 'б',
@@ -1433,7 +1435,8 @@ export class RuleEngineService {
       settings.linkPolicy,
       domainAllowlist,
     );
-    const duplicateCandidate = !hasOnlyAllowlistedLinks && this.shouldTrackDuplicate(compactText);
+    const duplicateCandidate =
+      !hasOnlyAllowlistedLinks && this.shouldTrackDuplicate(text, compactText);
     const duplicateState =
       settings.antiDuplicateEnabled && duplicateCandidate
         ? await this.detectDuplicateState({
@@ -1625,14 +1628,14 @@ export class RuleEngineService {
     return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   }
 
-  private shouldTrackDuplicate(compactText: string): boolean {
+  private shouldTrackDuplicate(rawText: string, compactText: string): boolean {
     if (!compactText) {
       return false;
     }
 
-    const hasUrl = this.extractUrlsFromText(compactText).length > 0;
-    if (hasUrl || ADS_PHONE_PATTERN.test(compactText)) {
-      return true;
+    const hasUrl = this.extractUrlsFromText(rawText).length > 0;
+    if (hasUrl || DUPLICATE_EXCLUDED_PHONE_PATTERN.test(rawText)) {
+      return false;
     }
 
     const hasAdMarker =
@@ -1872,7 +1875,8 @@ export class RuleEngineService {
     }
 
     const detectedOffTopicTopics = TOPIC_FILTER_TOPICS.filter(
-      (topic) => !activeTopics.includes(topic) && this.hasSufficientTopicEvidence(topicEvidence.get(topic)),
+      (topic) =>
+        !activeTopics.includes(topic) && this.hasSufficientTopicEvidence(topicEvidence.get(topic)),
     );
     if (
       measuredLength <= TOPIC_FILTER_GENERIC_OFFTOPIC_MIN_LENGTH &&
@@ -2016,7 +2020,9 @@ export class RuleEngineService {
     }
 
     const supportingIndicators = this.collectTopicSupportingIndicators(tokens, dictionary);
-    const hasIntentMarker = dictionary.intentMarkers.some((marker) => normalizedText.includes(marker));
+    const hasIntentMarker = dictionary.intentMarkers.some((marker) =>
+      normalizedText.includes(marker),
+    );
     const score =
       (phraseHits.length > 0 ? TOPIC_PHRASE_SCORE : 0) +
       (exactTokenHits.size > 0 ? TOPIC_EXACT_TOKEN_SCORE : 0) +

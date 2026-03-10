@@ -1383,6 +1383,55 @@ describe('RuleEngineService', () => {
     expect(second.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
   });
 
+  it('does not track duplicates for repeated messages with blocked links', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const text = 'смотри https://example.com/news это важно';
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text,
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    const second = await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text,
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(second.duplicateHit).toBeUndefined();
+    expect(second.duplicateDecision).toBeUndefined();
+    expect(second.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
+  });
+
+  it('does not track duplicates for repeated messages with phone numbers', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const text = 'звоните +7 (999) 123-45-67, расскажу подробнее';
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text,
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    const second = await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text,
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(second.duplicateHit).toBeUndefined();
+    expect(second.duplicateDecision).toBeUndefined();
+  });
+
   it('does not track duplicates for short everyday phrases', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     let lastResult = await service.detect({
