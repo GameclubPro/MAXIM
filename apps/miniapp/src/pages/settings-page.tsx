@@ -2692,7 +2692,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                                         <div className="allowlist-item__stack">
                                           <div className="allowlist-item__top-row">
                                             <div className="allowlist-item__title-wrap">
-                                              <span className="allowlist-item__domain">
+                                              <span
+                                                className="allowlist-item__domain"
+                                                title={entry.domain}
+                                              >
                                                 {entry.domain}
                                               </span>
                                               {scheduledAtLabel ? (

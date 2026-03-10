@@ -128,7 +128,6 @@ const CHANNEL_STATS_REFRESH_STALE_MS = 2 * 60 * 60 * 1000;
 const CHANNEL_COMMENT_DUPLICATE_WINDOW_MS = 10 * 60 * 1000;
 const CHANNEL_COMMENT_MAX_CONSECUTIVE = 2;
 const CHANNEL_COMMENT_LINK_PATTERN = /((https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,})(\/\S*)?/giu;
-
 type ChannelDialogTokenPayload = {
   v: 1;
   d: string;
@@ -583,15 +582,15 @@ export class AdminService {
 
     const parsed = chatSettingsSchema.safeParse(chat.settings);
     if (parsed.success) {
-      const normalizedSettings = this.normalizeNightModeSettings(parsed.data);
-      if (this.hasNightModeNormalizationChanges(parsed.data, normalizedSettings)) {
+      const normalizedSettings = this.normalizeChatSettings(parsed.data);
+      const normalizationChanges = this.getChatSettingsNormalizationChanges(
+        parsed.data,
+        normalizedSettings,
+      );
+      if (Object.keys(normalizationChanges).length > 0) {
         await this.prisma.chatSettings.update({
           where: { chatId },
-          data: {
-            nightModeBotMessageEnabled: normalizedSettings.nightModeBotMessageEnabled,
-            nightModeBotButtonEnabled: normalizedSettings.nightModeBotButtonEnabled,
-            nightModeRulesButtonEnabled: normalizedSettings.nightModeRulesButtonEnabled,
-          },
+          data: normalizationChanges,
         });
         await this.chatContextCache.invalidate(chatId);
       }
@@ -634,7 +633,7 @@ export class AdminService {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
-    const normalizedSettings = this.normalizeNightModeSettings(parsed.data);
+    const normalizedSettings = this.normalizeChatSettings(parsed.data);
 
     await this.prisma.chat.upsert({
       where: { id: chatId },
@@ -1355,7 +1354,7 @@ export class AdminService {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
-    const normalizedSettings = this.normalizeNightModeSettings(parsed.data);
+    const normalizedSettings = this.normalizeChatSettings(parsed.data);
 
     const availableChats = await this.listChats(user);
     const appliedChatIds = Array.from(
@@ -1440,6 +1439,10 @@ export class AdminService {
     };
   }
 
+  private normalizeChatSettings(settings: ChatSettings): ChatSettings {
+    return this.normalizeNightModeSettings(settings);
+  }
+
   private normalizeNightModeSettings(settings: ChatSettings): ChatSettings {
     if (!settings.nightModeEnabled) {
       return {
@@ -1461,21 +1464,47 @@ export class AdminService {
     return settings;
   }
 
-  private hasNightModeNormalizationChanges(
+  private getChatSettingsNormalizationChanges(
     current: Pick<
       ChatSettings,
-      'nightModeBotMessageEnabled' | 'nightModeBotButtonEnabled' | 'nightModeRulesButtonEnabled'
+      | 'nightModeBotMessageEnabled'
+      | 'nightModeBotButtonEnabled'
+      | 'nightModeRulesButtonEnabled'
     >,
     normalized: Pick<
       ChatSettings,
-      'nightModeBotMessageEnabled' | 'nightModeBotButtonEnabled' | 'nightModeRulesButtonEnabled'
+      | 'nightModeBotMessageEnabled'
+      | 'nightModeBotButtonEnabled'
+      | 'nightModeRulesButtonEnabled'
     >,
-  ): boolean {
-    return (
-      current.nightModeBotMessageEnabled !== normalized.nightModeBotMessageEnabled ||
-      current.nightModeBotButtonEnabled !== normalized.nightModeBotButtonEnabled ||
-      current.nightModeRulesButtonEnabled !== normalized.nightModeRulesButtonEnabled
-    );
+  ): Partial<
+    Pick<
+      ChatSettings,
+      | 'nightModeBotMessageEnabled'
+      | 'nightModeBotButtonEnabled'
+      | 'nightModeRulesButtonEnabled'
+    >
+  > {
+    const changes: Partial<
+      Pick<
+        ChatSettings,
+        | 'nightModeBotMessageEnabled'
+        | 'nightModeBotButtonEnabled'
+        | 'nightModeRulesButtonEnabled'
+      >
+    > = {};
+
+    if (current.nightModeBotMessageEnabled !== normalized.nightModeBotMessageEnabled) {
+      changes.nightModeBotMessageEnabled = normalized.nightModeBotMessageEnabled;
+    }
+    if (current.nightModeBotButtonEnabled !== normalized.nightModeBotButtonEnabled) {
+      changes.nightModeBotButtonEnabled = normalized.nightModeBotButtonEnabled;
+    }
+    if (current.nightModeRulesButtonEnabled !== normalized.nightModeRulesButtonEnabled) {
+      changes.nightModeRulesButtonEnabled = normalized.nightModeRulesButtonEnabled;
+    }
+
+    return changes;
   }
 
   async sendBroadcast(
@@ -2817,16 +2846,18 @@ export class AdminService {
     const rows = await this.prisma.domainAllowlist.findMany({
       where: this.activeDomainWhere(chatId),
       orderBy: { domain: 'asc' },
-      select: { domain: true },
+      select: {
+        domain: true,
+        removeAfterAt: true,
+      },
     });
 
-    return Array.from(
-      new Set(
-        rows
-          .map((row: { domain: string }) => normalizeAllowlistLink(row.domain))
-          .filter((value): value is string => Boolean(value)),
-      ),
-    ).sort((left, right) => left.localeCompare(right));
+    const normalizedRows = await this.canonicalizeActiveAllowlistRows(
+      chatId,
+      rows,
+    );
+
+    return normalizedRows.map((row) => row.domain);
   }
 
   async getDomainAllowlistDetails(chatId: string, user: AuthUser): Promise<DomainAllowlistEntry[]> {
@@ -2841,50 +2872,7 @@ export class AdminService {
       },
     });
 
-    const byDomain = new Map<string, Date | null>();
-    for (const row of rows) {
-      const normalizedDomain = normalizeAllowlistLink(row.domain);
-      if (!normalizedDomain) {
-        continue;
-      }
-
-      const current = byDomain.get(normalizedDomain);
-      if (current === undefined) {
-        byDomain.set(normalizedDomain, row.removeAfterAt);
-        continue;
-      }
-
-      if (current === null || row.removeAfterAt === null) {
-        byDomain.set(normalizedDomain, null);
-        continue;
-      }
-
-      if (row.removeAfterAt.getTime() < current.getTime()) {
-        byDomain.set(normalizedDomain, row.removeAfterAt);
-      }
-    }
-
-    return Array.from(byDomain.entries())
-      .sort(([leftDomain, leftRemoveAfter], [rightDomain, rightRemoveAfter]) => {
-        if (leftRemoveAfter === null && rightRemoveAfter !== null) {
-          return -1;
-        }
-        if (leftRemoveAfter !== null && rightRemoveAfter === null) {
-          return 1;
-        }
-        if (leftRemoveAfter !== null && rightRemoveAfter !== null) {
-          const byTime = leftRemoveAfter.getTime() - rightRemoveAfter.getTime();
-          if (byTime !== 0) {
-            return byTime;
-          }
-        }
-
-        return leftDomain.localeCompare(rightDomain);
-      })
-      .map(([domain, removeAfterAt]) => ({
-        domain,
-        removeAfterAt: removeAfterAt ? removeAfterAt.toISOString() : null,
-      }));
+    return this.canonicalizeActiveAllowlistRows(chatId, rows);
   }
 
   async addDomain(
@@ -3507,6 +3495,127 @@ export class AdminService {
     return rows
       .map((row: { domain: string }) => row.domain)
       .filter((storedDomain) => normalizeAllowlistLink(storedDomain) === normalizedDomain);
+  }
+
+  private async canonicalizeActiveAllowlistRows(
+    chatId: string,
+    rows: Array<{ domain: string; removeAfterAt: Date | null }>,
+  ): Promise<DomainAllowlistEntry[]> {
+    const byDomain = new Map<string, Date | null>();
+    const exactRows = new Map<string, Date | null>();
+    const obsoleteDomains = new Set<string>();
+
+    for (const row of rows) {
+      const normalizedDomain = normalizeAllowlistLink(row.domain);
+      if (!normalizedDomain) {
+        obsoleteDomains.add(row.domain);
+        continue;
+      }
+
+      if (row.domain === normalizedDomain) {
+        exactRows.set(normalizedDomain, row.removeAfterAt);
+      } else {
+        obsoleteDomains.add(row.domain);
+      }
+
+      const current = byDomain.get(normalizedDomain);
+      if (current === undefined) {
+        byDomain.set(normalizedDomain, row.removeAfterAt);
+        continue;
+      }
+
+      if (current === null || row.removeAfterAt === null) {
+        byDomain.set(normalizedDomain, null);
+        continue;
+      }
+
+      if (row.removeAfterAt.getTime() < current.getTime()) {
+        byDomain.set(normalizedDomain, row.removeAfterAt);
+      }
+    }
+
+    const normalizedRows = Array.from(byDomain.entries())
+      .sort(([leftDomain, leftRemoveAfter], [rightDomain, rightRemoveAfter]) => {
+        if (leftRemoveAfter === null && rightRemoveAfter !== null) {
+          return -1;
+        }
+        if (leftRemoveAfter !== null && rightRemoveAfter === null) {
+          return 1;
+        }
+        if (leftRemoveAfter !== null && rightRemoveAfter !== null) {
+          const byTime = leftRemoveAfter.getTime() - rightRemoveAfter.getTime();
+          if (byTime !== 0) {
+            return byTime;
+          }
+        }
+
+        return leftDomain.localeCompare(rightDomain);
+      })
+      .map(([domain, removeAfterAt]) => ({
+        domain,
+        removeAfterAt: removeAfterAt ? removeAfterAt.toISOString() : null,
+      }));
+
+    const domainsToUpsert = normalizedRows.filter((entry) => {
+      const existing = exactRows.get(entry.domain);
+      return !this.isSameOptionalIsoDate(existing, entry.removeAfterAt);
+    });
+
+    if (domainsToUpsert.length === 0 && obsoleteDomains.size === 0) {
+      return normalizedRows;
+    }
+
+    await this.prisma.$transaction([
+      ...domainsToUpsert.map((entry) =>
+        this.prisma.domainAllowlist.upsert({
+          where: {
+            chatId_domain: {
+              chatId,
+              domain: entry.domain,
+            },
+          },
+          create: {
+            chatId,
+            domain: entry.domain,
+            removeAfterAt: entry.removeAfterAt ? new Date(entry.removeAfterAt) : null,
+          },
+          update: {
+            removeAfterAt: entry.removeAfterAt ? new Date(entry.removeAfterAt) : null,
+          },
+        }),
+      ),
+      ...(obsoleteDomains.size > 0
+        ? [
+            this.prisma.domainAllowlist.deleteMany({
+              where: {
+                chatId,
+                domain: {
+                  in: Array.from(obsoleteDomains),
+                },
+              },
+            }),
+          ]
+        : []),
+    ]);
+
+    await this.chatContextCache.invalidate(chatId);
+    return normalizedRows;
+  }
+
+  private isSameOptionalIsoDate(value: Date | null | undefined, isoValue: string | null): boolean {
+    if (value === undefined) {
+      return false;
+    }
+
+    if (value === null) {
+      return isoValue === null;
+    }
+
+    if (isoValue === null) {
+      return false;
+    }
+
+    return value.toISOString() === isoValue;
   }
 
   private async getPublicChannelSettings(chatId: string): Promise<ChannelSettings> {
