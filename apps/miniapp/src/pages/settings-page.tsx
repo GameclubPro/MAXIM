@@ -11,7 +11,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { GlassCard } from '../components/ui/glass-card';
-import { BackChevronIcon, ChatEntityIcon } from '../components/ui/entity-header-icons';
+import { BackChevronIcon } from '../components/ui/entity-header-icons';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
@@ -1197,6 +1197,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       : 'Сохранено';
   const chatMetaLabel =
     chatTitle && chatTitle !== chatId ? `ID ${chatId}` : 'Настройки модерации';
+  const showHeaderStatus = isHeaderSaving || hasPendingHeaderChanges;
 
   const publishRulesMutation = useMutation({
     mutationFn: () => api.publishRules(chatId ?? ''),
@@ -2407,27 +2408,22 @@ export function SettingsPage({ api }: { api: ApiClient }) {
               >
                 <BackChevronIcon />
               </Link>
-              <span
-                className={cn(
-                  'settings-page-header__status',
-                  isHeaderSaving
-                    ? 'is-saving'
-                    : hasPendingHeaderChanges
-                      ? 'is-draft'
-                      : 'is-saved',
-                )}
-                aria-live="polite"
-              >
-                {headerStatusLabel}
-              </span>
-            </div>
-            <div className="settings-page-header__hero">
-              <div className="settings-page-header__icon" aria-hidden>
-                <ChatEntityIcon />
-              </div>
-              <div className="settings-page-header__identity">
-                <h2 className="settings-page-header__title">{chatTitle || chatId}</h2>
-                <p className="settings-page-header__meta">{chatMetaLabel}</p>
+              <div className="settings-page-header__body">
+                <div className="settings-page-header__identity">
+                  <h2 className="settings-page-header__title">{chatTitle || chatId}</h2>
+                  <p className="settings-page-header__meta">{chatMetaLabel}</p>
+                </div>
+                {showHeaderStatus ? (
+                  <span
+                    className={cn(
+                      'settings-page-header__status',
+                      isHeaderSaving ? 'is-saving' : 'is-draft',
+                    )}
+                    aria-live="polite"
+                  >
+                    {headerStatusLabel}
+                  </span>
+                ) : null}
               </div>
             </div>
           </header>
