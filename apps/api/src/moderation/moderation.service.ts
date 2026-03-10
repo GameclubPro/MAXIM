@@ -133,7 +133,7 @@ const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
 const CHANNEL_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
 const GLOBAL_BLACKLIST_TOGGLE_CACHE_TTL_MS = 30_000;
-const GLOBAL_CROSS_CHAT_SPAM_TOGGLE_CACHE_TTL_MS = 30_000;
+const GLOBAL_CROSS_CHAT_SPAM_SCOPE_CACHE_TTL_MS = 30_000;
 const GLOBAL_CROSS_CHAT_SPAM_WINDOW_SEC = 2 * 60;
 const GLOBAL_CROSS_CHAT_SPAM_MIN_CHATS = 3;
 const CROSS_CHAT_SPAM_ALWAYS_IGNORED_KEYS = new Set([
@@ -181,7 +181,13 @@ type PrivateControlCommand = 'menu' | 'chats' | 'help';
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ModerationService.name);
   private globalUserBlacklistEnabledCache: { value: boolean; checkedAt: number } | null = null;
-  private globalCrossChatSpamEnabledCache: { value: boolean; checkedAt: number } | null = null;
+  private readonly globalCrossChatSpamScopeCache = new Map<
+    string,
+    {
+      expiresAt: number;
+      adminScopeIds: string[];
+    }
+  >();
   private readonly chatAdminCache = new Map<
     string,
     {
@@ -365,9 +371,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const globalUserBlacklistEnabled = await this.isGlobalUserBlacklistEnabled(
       settings.globalUserBlacklistEnabled,
     );
-    const globalCrossChatSpamEnabled = await this.isGlobalCrossChatSpamEnabled(
-      settings.globalCrossChatSpamEnabled,
-    );
+    const globalCrossChatSpamAdminScopeIds = await this.resolveGlobalCrossChatSpamAdminScopeIds({
+      chatId,
+      chatSettingEnabled: settings.globalCrossChatSpamEnabled,
+      localAdminUserIds: chat.adminUserIds,
+    });
+    const globalCrossChatSpamEnabled = globalCrossChatSpamAdminScopeIds.length > 0;
 
     const updateType = this.readLowerString(update.type);
     const senderIsOwnBotInMessage =
@@ -552,6 +561,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         text,
         createdAt,
         update,
+        scopeAdminIds: globalCrossChatSpamAdminScopeIds,
         deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
         mediaFlags,
@@ -804,14 +814,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
     }
 
-    const isFirstLinkViolation = topViolation.ruleCode === 'LINK_BLOCKED' && linkViolationCount24h === 1;
+    const isFirstLinkViolation =
+      topViolation.ruleCode === 'LINK_BLOCKED' && linkViolationCount24h === 1;
     const isFirstTextFilterViolation = isTextFilterHit && textFilterViolationCount24h === 1;
     const isFirstTopicFilterViolation = isTopicFilterHit && topicFilterViolationCount24h === 1;
     const isFirstMessageLimitsViolation =
       isMessageLimitsHit && messageLimitsViolationCount12h === 1;
 
     if (topViolation.ruleCode === 'LINK_BLOCKED') {
-      if (action === SanctionAction.NONE && isFirstLinkViolation && settings.linkBotMessageEnabled) {
+      if (
+        action === SanctionAction.NONE &&
+        isFirstLinkViolation &&
+        settings.linkBotMessageEnabled
+      ) {
         try {
           await sendChatBotMessage(
             this.buildLinkExplanation(userLabel, canDeleteMessage, settings.linkBotMessageText),
@@ -3349,6 +3364,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     text: string;
     createdAt: string;
     update: MaxUpdate;
+    scopeAdminIds: string[];
     deleteBotMessagesEnabled: boolean;
     deleteBotMessagesDelayMinutes: number;
     mediaFlags: {
@@ -3370,10 +3386,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       text,
       createdAt,
       update,
+      scopeAdminIds,
       deleteBotMessagesEnabled,
       deleteBotMessagesDelayMinutes,
       mediaFlags,
     } = params;
+    if (scopeAdminIds.length === 0) {
+      return false;
+    }
     const signature = this.buildGlobalCrossChatSpamSignature({
       text,
       update,
@@ -3383,22 +3403,29 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
 
-    const redisKey = `cross-chat-spam:v1:${userId}:${signature.kind}:${signature.hash}`;
     let uniqueChatsCount: number;
 
     try {
-      const spreadState = await this.redisCounter.addToSetWithTtl(
-        redisKey,
-        chatId,
-        GLOBAL_CROSS_CHAT_SPAM_WINDOW_SEC + 5,
+      const spreadStates = await Promise.all(
+        scopeAdminIds.map((scopeAdminId) =>
+          this.redisCounter!.addToSetWithTtl(
+            this.buildGlobalCrossChatSpamRedisKey(scopeAdminId, userId, signature),
+            chatId,
+            GLOBAL_CROSS_CHAT_SPAM_WINDOW_SEC + 5,
+          ),
+        ),
       );
-      uniqueChatsCount = spreadState.size;
+      uniqueChatsCount = spreadStates.reduce(
+        (max, spreadState) => Math.max(max, spreadState.size),
+        0,
+      );
     } catch (error: unknown) {
       this.logger.warn(
         {
           chatId,
           userId,
           messageId,
+          scopeAdminIds,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
         'Failed to evaluate global cross-chat spam state',
@@ -3425,6 +3452,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           userId,
           messageId,
           uniqueChatsCount,
+          scopeAdminIds,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
         'Failed to delete global cross-chat spam message',
@@ -3457,6 +3485,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           uniqueChatsCount,
           windowSec: GLOBAL_CROSS_CHAT_SPAM_WINDOW_SEC,
           signatureKind: signature.kind,
+          scopeAdminIds,
         },
       },
     });
@@ -3475,6 +3504,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           userId,
           messageId,
           uniqueChatsCount,
+          scopeAdminIds,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
         'Failed to send global cross-chat spam notice',
@@ -3696,42 +3726,137 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  private buildGlobalCrossChatSpamRedisKey(
+    scopeAdminId: string,
+    userId: string,
+    signature: { kind: 'text' | 'photo' | 'forwarded'; hash: string },
+  ): string {
+    return `cross-chat-spam:v2:${scopeAdminId}:${userId}:${signature.kind}:${signature.hash}`;
+  }
+
   private buildGlobalCrossChatSpamNotice(userLabel: string, uniqueChatsCount: number): string {
     return `Сообщение пользователя ${userLabel} удалено: одинаковый текст/фото/пересланное отправлено в ${uniqueChatsCount} чатах за 2 минуты (кросс-чат спам).`;
   }
 
-  private async isGlobalCrossChatSpamEnabled(chatSettingEnabled: boolean): Promise<boolean> {
+  private async resolveGlobalCrossChatSpamAdminScopeIds(params: {
+    chatId: string;
+    chatSettingEnabled: boolean;
+    localAdminUserIds: string[] | undefined;
+  }): Promise<string[]> {
+    const { chatId, chatSettingEnabled, localAdminUserIds } = params;
+    const currentAdminScopeIds = await this.resolveCurrentChatAdminScopeIds(
+      chatId,
+      localAdminUserIds,
+    );
+    if (currentAdminScopeIds.length === 0) {
+      return [];
+    }
+
     if (chatSettingEnabled) {
-      this.globalCrossChatSpamEnabledCache = {
-        value: true,
-        checkedAt: Date.now(),
-      };
-      return true;
+      return currentAdminScopeIds;
     }
 
+    const cacheKey = `${chatId}:${currentAdminScopeIds.join(',')}`;
     const now = Date.now();
-    if (
-      this.globalCrossChatSpamEnabledCache &&
-      now - this.globalCrossChatSpamEnabledCache.checkedAt <=
-        GLOBAL_CROSS_CHAT_SPAM_TOGGLE_CACHE_TTL_MS
-    ) {
-      return this.globalCrossChatSpamEnabledCache.value;
+    const cached = this.globalCrossChatSpamScopeCache.get(cacheKey);
+    if (cached && cached.expiresAt > now) {
+      return cached.adminScopeIds;
     }
 
-    const enabledSomewhere = await this.prisma.chatSettings?.findFirst({
+    const adminScopeIds =
+      await this.findEnabledGlobalCrossChatSpamAdminScopeIds(currentAdminScopeIds);
+    this.globalCrossChatSpamScopeCache.set(cacheKey, {
+      expiresAt: now + GLOBAL_CROSS_CHAT_SPAM_SCOPE_CACHE_TTL_MS,
+      adminScopeIds,
+    });
+    return adminScopeIds;
+  }
+
+  private async resolveCurrentChatAdminScopeIds(
+    chatId: string,
+    localAdminUserIds: string[] | undefined,
+  ): Promise<string[]> {
+    const remoteAdminIds = await this.getRemoteChatAdminIds(chatId);
+    const sourceAdminIds =
+      remoteAdminIds && remoteAdminIds.size > 0
+        ? Array.from(remoteAdminIds)
+        : Array.isArray(localAdminUserIds)
+          ? localAdminUserIds
+          : [];
+
+    const adminScopeIds = new Set<string>();
+    for (const adminUserId of sourceAdminIds) {
+      const canonical = this.normalizeCrossChatSpamAdminScopeId(adminUserId);
+      if (canonical) {
+        adminScopeIds.add(canonical);
+      }
+    }
+
+    return Array.from(adminScopeIds).sort();
+  }
+
+  private async findEnabledGlobalCrossChatSpamAdminScopeIds(
+    currentAdminScopeIds: readonly string[],
+  ): Promise<string[]> {
+    if (
+      currentAdminScopeIds.length === 0 ||
+      typeof this.prisma.chatAdminAllowlist?.findMany !== 'function'
+    ) {
+      return [];
+    }
+
+    const candidateUserIds = Array.from(
+      new Set(
+        currentAdminScopeIds.flatMap((adminScopeId) =>
+          Array.from(this.buildUserIdVariants(adminScopeId)),
+        ),
+      ),
+    );
+    const currentAdminScopeIdSet = new Set(currentAdminScopeIds);
+    const rows = await this.prisma.chatAdminAllowlist.findMany({
       where: {
-        globalCrossChatSpamEnabled: true,
+        userId: {
+          in: candidateUserIds,
+        },
+        chat: {
+          settings: {
+            is: {
+              globalCrossChatSpamEnabled: true,
+            },
+          },
+        },
       },
       select: {
-        chatId: true,
+        userId: true,
       },
     });
-    const value = Boolean(enabledSomewhere);
-    this.globalCrossChatSpamEnabledCache = {
-      value,
-      checkedAt: now,
-    };
-    return value;
+
+    const enabledAdminScopeIds = new Set<string>();
+    for (const row of rows) {
+      const canonical = this.normalizeCrossChatSpamAdminScopeId(row.userId);
+      if (canonical && currentAdminScopeIdSet.has(canonical)) {
+        enabledAdminScopeIds.add(canonical);
+      }
+    }
+
+    return Array.from(enabledAdminScopeIds).sort();
+  }
+
+  private normalizeCrossChatSpamAdminScopeId(value: string | null | undefined): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+
+    if (/^id\d+$/u.test(normalized)) {
+      return normalized.slice(2);
+    }
+
+    return normalized;
   }
 
   private async isGlobalUserBlacklistEnabled(chatSettingEnabled: boolean): Promise<boolean> {

@@ -1159,7 +1159,7 @@ describe('ModerationService', () => {
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
-  it('deletes cross-chat spam on the third chat when global toggle is enabled', async () => {
+  it('deletes cross-chat spam on the third chat within the same admin scope', async () => {
     const nowIso = new Date().toISOString();
     const createSpamUpdate = (chatId: string, messageId: string): MaxUpdate => ({
       updateId: `upd-${chatId}-${messageId}`,
@@ -1195,24 +1195,12 @@ describe('ModerationService', () => {
               globalCrossChatSpamEnabled: false,
             }),
             domains: [],
-            admins: [],
+            admins: [{ userId: 'owner-1' }],
           }),
         ),
       },
-      chatSettings: {
-        findFirst: jest.fn().mockImplementation(
-          (args: {
-            where?: {
-              globalCrossChatSpamEnabled?: boolean;
-              globalUserBlacklistEnabled?: boolean;
-            };
-          }) => {
-            if (args.where?.globalCrossChatSpamEnabled) {
-              return Promise.resolve({ chatId: 'chat-global-toggle' });
-            }
-            return Promise.resolve(null);
-          },
-        ),
+      chatAdminAllowlist: {
+        findMany: jest.fn().mockResolvedValue([{ userId: 'owner-1' }]),
       },
       violation: {
         create: jest.fn(),
@@ -1281,6 +1269,111 @@ describe('ModerationService', () => {
         messageId: 'msg-3',
         ruleCode: 'GLOBAL_CROSS_CHAT_SPAM_DELETE',
         action: SanctionAction.DELETE_MESSAGE,
+      }),
+    });
+  });
+
+  it('does not mix global cross-chat spam scopes across different admins', async () => {
+    const nowIso = new Date().toISOString();
+    const createSpamUpdate = (chatId: string, messageId: string): MaxUpdate => ({
+      updateId: `upd-${chatId}-${messageId}`,
+      type: 'message_created',
+      message: {
+        messageId,
+        chatId,
+        senderId: 'user-spam-1',
+        senderName: 'Спамер',
+        text: 'Одинаковое сообщение для проверки scope',
+        createdAt: nowIso,
+      },
+      raw: {
+        message: {
+          sender: {
+            id: 'user-spam-1',
+            type: 'user',
+          },
+          body: {
+            text: 'Одинаковое сообщение для проверки scope',
+          },
+        },
+      },
+    });
+
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockImplementation(({ where }: { where: { id: string } }) =>
+          Promise.resolve({
+            id: where.id,
+            title: `Chat ${where.id}`,
+            settings: createSettings({
+              globalCrossChatSpamEnabled: false,
+            }),
+            domains: [],
+            admins: [{ userId: 'owner-1' }],
+          }),
+        ),
+      },
+      chatSettings: {
+        findFirst: jest.fn().mockResolvedValue({ chatId: 'chat-other-owner-enabled' }),
+      },
+      chatAdminAllowlist: {
+        findMany: jest.fn().mockResolvedValue([]),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalUserBlacklist: {
+        upsert: jest.fn(),
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({ violations: [] }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const redisCounter = {
+      addToSetWithTtl: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn().mockReturnValue('bot-1'),
+      } as never,
+      redisCounter as never,
+    );
+
+    await service.handleUpdate(createSpamUpdate('chat-1', 'msg-1'));
+    await service.handleUpdate(createSpamUpdate('chat-2', 'msg-2'));
+    await service.handleUpdate(createSpamUpdate('chat-3', 'msg-3'));
+
+    expect(redisCounter.addToSetWithTtl).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        ruleCode: 'GLOBAL_CROSS_CHAT_SPAM_DELETE',
       }),
     });
   });
