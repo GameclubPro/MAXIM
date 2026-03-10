@@ -128,6 +128,14 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           }
         },
       );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          reason,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to sync channel stats in background',
+      );
     } finally {
       this.scheduledSyncInFlight = false;
     }
