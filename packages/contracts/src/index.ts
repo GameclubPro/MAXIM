@@ -549,6 +549,9 @@ export const channelSettingsSchema = z
     autoPostButtonsMode: channelAutoPostButtonsModeSchema.default('OFF'),
     postSuggestionsEnabled: z.boolean().default(false),
     postSuggestionsText: botMessageTextSchema,
+    engagementMessageText: botMessageTextSchema.default(
+      'Есть идея или обратная связь? Нажмите кнопку ниже.',
+    ),
     postSuggestionsButtonEnabled: z.boolean().default(false),
     postSuggestionsButtonText: z.string().trim().max(32).default('Предложить пост'),
     postSuggestionsButtonUrl: botButtonUrlSchema,
@@ -968,6 +971,8 @@ export const publishChannelEngagementResultSchema = z.object({
   chatId: z.string(),
   sent: z.boolean(),
   messageId: z.string().nullable(),
+  updatedExisting: z.boolean().default(false),
+  publishedAt: z.string().datetime().nullable().default(null),
 });
 export type PublishChannelEngagementResult = z.infer<typeof publishChannelEngagementResultSchema>;
 
@@ -994,6 +999,7 @@ export type ChannelDialogMessage = z.infer<typeof channelDialogMessageSchema>;
 export const channelDialogResponseSchema = z.object({
   chatId: z.string(),
   type: channelDialogTypeSchema,
+  introText: z.string().nullable().default(null),
   messages: z.array(channelDialogMessageSchema),
 });
 export type ChannelDialogResponse = z.infer<typeof channelDialogResponseSchema>;

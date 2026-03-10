@@ -253,6 +253,7 @@ const CHANNEL_SECTION_FIELDS: Record<
 > = {
   post_suggestions: [
     { key: 'postSuggestionsEnabled', label: 'Подсказка «Предложить пост»', type: 'boolean' },
+    { key: 'engagementMessageText', label: 'Текст публикации', type: 'text' },
     { key: 'postSuggestionsText', label: 'Текст для участников', type: 'text' },
     { key: 'postSuggestionsButtonEnabled', label: 'Показывать кнопку перехода', type: 'boolean' },
     { key: 'postSuggestionsButtonText', label: 'Название кнопки', type: 'text' },
@@ -1207,7 +1208,9 @@ export class PrivateControlService {
               : false;
 
         await this.adminService.publishChannelEngagementMessage(chatId, context.actor, {
-          text: 'Есть идея или обратная связь? Нажмите кнопку ниже.',
+          text:
+            settings.engagementMessageText.trim() ||
+            'Есть идея или обратная связь? Нажмите кнопку ниже.',
           commentsButtonText: '💬 Комментарии',
           suggestButtonText: settings.postSuggestionsButtonText.trim() || '📰 Предложить пост',
           includeCommentsButton,

@@ -109,6 +109,7 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
   });
 
   const messages = dialogQuery.data?.messages ?? [];
+  const introText = dialogQuery.data?.introText?.trim() ?? '';
 
   useEffect(() => {
     const viewport = scrollViewportRef.current;
@@ -266,9 +267,15 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
           ) : null}
 
           {!dialogQuery.isLoading && !dialogQuery.error ? (
-            messages.length ? (
-              <div className="channel-dialog-message-list">
-                {messages.map((message) => {
+            <div className="channel-dialog-message-list">
+              {introText ? (
+                <div className="channel-dialog-intro">
+                  <p>{introText}</p>
+                </div>
+              ) : null}
+
+              {messages.length ? (
+                messages.map((message) => {
                   const isOwnMessage = meQuery.data?.userId === message.authorUserId;
                   return (
                     <article
@@ -301,11 +308,11 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
                       </div>
                     </article>
                   );
-                })}
-              </div>
-            ) : (
-              <div className="channel-dialog-empty">Пока пусто</div>
-            )
+                })
+              ) : (
+                <div className="channel-dialog-empty">Пока пусто</div>
+              )}
+            </div>
           ) : null}
         </section>
 

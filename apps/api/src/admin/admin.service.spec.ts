@@ -17,6 +17,13 @@ function createPrismaMock() {
     channelSettings: {
       findUnique: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
+      upsert: jest.fn().mockResolvedValue({
+        chatId: 'channel-1',
+        engagementPublishedMessageId: null,
+        engagementPublishedThreadId: null,
+        engagementPublishedAt: null,
+      }),
+      update: jest.fn().mockResolvedValue(undefined),
     },
     chatSettings: {
       update: jest.fn().mockResolvedValue(undefined),
@@ -121,7 +128,10 @@ function decodeBase64UrlJson<T>(value: string): T {
   return JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as T;
 }
 
-async function publishCommentsDialogToken(service: AdminService, maxClient: { sendMessage: jest.Mock }) {
+async function publishCommentsDialogToken(
+  service: AdminService,
+  maxClient: { sendMessageImmediateWithResolvedLink: jest.Mock },
+) {
   await service.publishChannelEngagementMessage(
     'channel-1',
     {
@@ -137,7 +147,7 @@ async function publishCommentsDialogToken(service: AdminService, maxClient: { se
     },
   );
 
-  const [, , options] = maxClient.sendMessage.mock.calls[0] ?? [];
+  const [, , options] = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
   const commentsButton = options.buttons?.[0]?.[0];
   const commentsStartParam = new URL(commentsButton.url).searchParams.get('startapp');
   const commentsLaunch = decodeBase64UrlJson<{ t: string }>(commentsStartParam!.slice(3));
@@ -1442,7 +1452,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      sendMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-1', url: null }),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -1470,12 +1482,11 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       },
     );
 
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    const [, , options, dispatchOptions] = maxClient.sendMessage.mock.calls[0] ?? [];
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+    const [, , options] = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
     const commentsButton = options.buttons?.[0]?.[0];
     const suggestButton = options.buttons?.[1]?.[0];
 
-    expect(dispatchOptions).toEqual({ immediate: true });
     expect(options.buttons).toHaveLength(2);
     expect(options.buttons?.[0]).toHaveLength(1);
     expect(options.buttons?.[1]).toHaveLength(1);
@@ -1521,9 +1532,19 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(commentsToken.s).not.toBe(suggestToken.s);
 
     const publishAuditPayload = prisma.auditLog.create.mock.calls[0]?.[0]?.data?.payload as {
+      messageId?: unknown;
       threadId?: unknown;
     };
+    expect(publishAuditPayload.messageId).toBe('mid-channel-engagement-1');
     expect(publishAuditPayload.threadId).toBe(commentsToken.d);
+    expect(prisma.channelSettings.update).toHaveBeenCalledWith({
+      where: { chatId: 'channel-1' },
+      data: {
+        engagementPublishedMessageId: 'mid-channel-engagement-1',
+        engagementPublishedThreadId: commentsToken.d,
+        engagementPublishedAt: expect.any(Date),
+      },
+    });
   });
 
   it('publishes only the selected engagement button rows', async () => {
@@ -1534,7 +1555,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      sendMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-2', url: null }),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -1564,7 +1587,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       },
     );
 
-    const [, , options] = maxClient.sendMessage.mock.calls[0] ?? [];
+    const [, , options] = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
     expect(options.buttons).toHaveLength(1);
     expect(options.buttons?.[0]).toHaveLength(1);
     expect(options.buttons?.[0]?.[0]).toMatchObject({
@@ -1581,7 +1604,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      sendMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-3', url: null }),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -1613,7 +1638,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       ),
     ).rejects.toThrow();
 
-    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
   });
 
   it('stores and queries dialog messages inside the thread encoded in the button token', async () => {
@@ -1630,7 +1655,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      sendMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-4', url: null }),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -1658,7 +1685,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       },
     );
 
-    const [, , options] = maxClient.sendMessage.mock.calls[0] ?? [];
+    const [, , options] = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
     const commentsButton = options.buttons?.[0]?.[0];
     const commentsStartParam = new URL(commentsButton.url).searchParams.get('startapp');
     const commentsLaunch = decodeBase64UrlJson<{ t: string }>(commentsStartParam!.slice(3));
@@ -1710,6 +1737,69 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
+  it('updates the existing published engagement post instead of creating a new one', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.upsert.mockResolvedValue({
+      chatId: 'channel-1',
+      engagementPublishedMessageId: 'mid-existing-engagement-1',
+      engagementPublishedThreadId: 'thread-existing-1',
+      engagementPublishedAt: new Date('2026-03-10T12:00:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-new-engagement-1', url: null }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.publishChannelEngagementMessage(
+      'channel-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Обновленный текст публикации.',
+        commentsButtonText: 'Комментарии',
+        suggestButtonText: 'Предложить пост',
+      },
+    );
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-existing-engagement-1',
+      'Обновленный текст публикации.',
+      expect.objectContaining({
+        buttons: expect.any(Array),
+      }),
+    );
+    expect(maxClient.sendMessageImmediateWithResolvedLink).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      chatId: 'channel-1',
+      sent: true,
+      messageId: 'mid-existing-engagement-1',
+      updatedExisting: true,
+      publishedAt: '2026-03-10T12:00:00.000Z',
+    });
+  });
+
   it('rejects channel comments with links when moderation blocks links', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
@@ -1726,7 +1816,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      sendMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-5', url: null }),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -1775,22 +1867,22 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       commentsSlowModeSeconds: 60,
     });
     prisma.auditLog.create.mockResolvedValueOnce(undefined);
-    prisma.auditLog.findMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([
-        {
-          id: 'comment-1',
-          actorUserId: 'user-1',
-          payload: {
-            text: 'Первый комментарий',
-          },
-          createdAt: new Date(),
+    prisma.auditLog.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      {
+        id: 'comment-1',
+        actorUserId: 'user-1',
+        payload: {
+          text: 'Первый комментарий',
         },
-      ]);
+        createdAt: new Date(),
+      },
+    ]);
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      sendMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-6', url: null }),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -1861,7 +1953,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      sendMessage: jest.fn().mockResolvedValue(undefined),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-7', url: null }),
     };
     const chatContextCache = {
       invalidate: jest.fn(),

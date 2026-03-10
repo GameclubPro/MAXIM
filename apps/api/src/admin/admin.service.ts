@@ -984,7 +984,22 @@ export class AdminService {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const threadId = randomUUID();
+    const persistedSettings = await this.prisma.channelSettings.upsert({
+      where: { chatId },
+      create: {
+        chatId,
+      },
+      update: {},
+      select: {
+        engagementPublishedMessageId: true,
+        engagementPublishedThreadId: true,
+        engagementPublishedAt: true,
+      },
+    });
+
+    const existingPublishedMessageId = persistedSettings.engagementPublishedMessageId?.trim() ?? '';
+    const existingThreadId = persistedSettings.engagementPublishedThreadId?.trim() ?? '';
+    const threadId = existingThreadId || randomUUID();
     const commentsUrl = this.buildChannelDialogLaunchUrl(chatId, 'comments', threadId);
     const suggestUrl = this.buildChannelDialogLaunchUrl(chatId, 'suggest', threadId);
     const commentsWebAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, 'comments', threadId);
@@ -1034,14 +1049,58 @@ export class AdminService {
       buttons.push([suggestButton]);
     }
 
-    await this.maxClient.sendMessage(
-      chatId,
-      parsed.data.text,
-      {
-        buttons,
-      } satisfies MaxSendMessageOptions,
-      { immediate: true },
-    );
+    let messageId = existingPublishedMessageId;
+    let updatedExisting = false;
+    let recreatedFromMessageId: string | null = null;
+    let publishedAt = persistedSettings.engagementPublishedAt ?? null;
+
+    if (messageId) {
+      try {
+        await this.maxClient.editMessageInlineKeyboard(chatId, messageId, parsed.data.text, {
+          buttons,
+        } satisfies Pick<MaxSendMessageOptions, 'buttons'>);
+        updatedExisting = true;
+      } catch (error: unknown) {
+        if (!this.shouldRecreateChannelEngagementMessage(error)) {
+          const maxApiMessage = this.extractMaxApiErrorMessage(error);
+          throw new BadRequestException(
+            maxApiMessage || 'Не удалось обновить опубликованный пост с кнопками.',
+          );
+        }
+
+        recreatedFromMessageId = messageId;
+        messageId = '';
+      }
+    }
+
+    if (!messageId) {
+      try {
+        const published = await this.maxClient.sendMessageImmediateWithResolvedLink(
+          chatId,
+          parsed.data.text,
+          {
+            buttons,
+          } satisfies MaxSendMessageOptions,
+        );
+        messageId = published.messageId;
+      } catch (error: unknown) {
+        const maxApiMessage = this.extractMaxApiErrorMessage(error);
+        throw new BadRequestException(maxApiMessage || 'Не удалось опубликовать пост с кнопками.');
+      }
+      publishedAt = new Date();
+      updatedExisting = false;
+    } else if (!publishedAt) {
+      publishedAt = new Date();
+    }
+
+    await this.prisma.channelSettings.update({
+      where: { chatId },
+      data: {
+        engagementPublishedMessageId: messageId,
+        engagementPublishedThreadId: threadId,
+        engagementPublishedAt: publishedAt,
+      },
+    });
 
     await this.prisma.auditLog.create({
       data: {
@@ -1049,12 +1108,15 @@ export class AdminService {
         actorUserId: user.userId,
         action: CHANNEL_DIALOG_ACTION_PUBLISH,
         payload: {
+          messageId,
           text: parsed.data.text,
           commentsButtonText: parsed.data.commentsButtonText,
           suggestButtonText: parsed.data.suggestButtonText,
           includeCommentsButton: parsed.data.includeCommentsButton,
           includeSuggestButton: parsed.data.includeSuggestButton,
           threadId,
+          updatedExisting,
+          recreatedFromMessageId,
           commentsUrl,
           suggestUrl,
         },
@@ -1064,7 +1126,9 @@ export class AdminService {
     return publishChannelEngagementResultSchema.parse({
       chatId,
       sent: true,
-      messageId: null,
+      messageId,
+      updatedExisting,
+      publishedAt: publishedAt?.toISOString() ?? null,
     });
   }
 
@@ -1076,6 +1140,7 @@ export class AdminService {
   ) {
     const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
     const threadId = this.resolveChannelDialogThreadId(chatId, dialogType, token);
+    const channelSettings = await this.getPublicChannelSettings(chatId);
 
     const action =
       dialogType === 'comments' ? CHANNEL_DIALOG_ACTION_COMMENT : CHANNEL_DIALOG_ACTION_SUGGEST;
@@ -1107,6 +1172,7 @@ export class AdminService {
     return channelDialogResponseSchema.parse({
       chatId,
       type: dialogType,
+      introText: this.resolveChannelDialogIntroText(channelSettings, dialogType),
       messages,
     });
   }
@@ -1795,6 +1861,16 @@ export class AdminService {
     }
   }
 
+  private resolveChannelDialogIntroText(
+    settings: ChannelSettings,
+    dialogType: ChannelDialogType,
+  ): string | null {
+    const value =
+      dialogType === 'suggest' ? settings.postSuggestionsText : settings.commentsMessageText;
+    const normalized = value.trim();
+    return normalized || null;
+  }
+
   private isMaxMessageMissingError(error: unknown): boolean {
     const status = (error as { response?: { status?: number } })?.response?.status;
     if (status === 404) {
@@ -1804,6 +1880,30 @@ export class AdminService {
     const responseData = (error as { response?: { data?: unknown } })?.response?.data;
     const normalized = JSON.stringify(responseData ?? '').toLowerCase();
     return normalized.includes('not found') || normalized.includes('message_not_found');
+  }
+
+  private shouldRecreateChannelEngagementMessage(error: unknown): boolean {
+    if (this.isMaxMessageMissingError(error)) {
+      return true;
+    }
+
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    if (status !== 400 && status !== 403) {
+      return false;
+    }
+
+    const responseData = (error as { response?: { data?: unknown } })?.response?.data;
+    const normalized = JSON.stringify(responseData ?? '').toLowerCase();
+    return (
+      normalized.includes('edit') ||
+      normalized.includes('update') ||
+      normalized.includes('too old') ||
+      normalized.includes('24') ||
+      normalized.includes("can't be edited") ||
+      normalized.includes('cannot edit') ||
+      normalized.includes('cant edit') ||
+      normalized.includes('message.not.updated')
+    );
   }
 
   async getLogsDashboard(

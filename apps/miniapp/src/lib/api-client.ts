@@ -20,6 +20,8 @@ import {
   logsDashboardResponseSchema,
   manualModerationActionRequestSchema,
   manualModerationActionResultSchema,
+  publishChannelEngagementRequestSchema,
+  publishChannelEngagementResultSchema,
   chatSummarySchema,
   globalUserBlacklistEntrySchema,
   meSchema,
@@ -41,6 +43,8 @@ import {
   type ManagedEntityHeader,
   type ManualModerationActionRequest,
   type ManualModerationActionResult,
+  type PublishChannelEngagementRequest,
+  type PublishChannelEngagementResult,
   type PublishChatRulesResult,
   type SendBroadcastResult,
   updateChatRulesRequestSchema,
@@ -171,6 +175,18 @@ export class ApiClient {
       body: JSON.stringify(data),
     });
     return channelSettingsSchema.parse(response);
+  }
+
+  async publishChannelEngagement(
+    chatId: string,
+    payload: PublishChannelEngagementRequest,
+  ): Promise<PublishChannelEngagementResult> {
+    const requestBody = publishChannelEngagementRequestSchema.parse(payload);
+    const response = await this.request(`/channels/${chatId}/engagement-publish`, {
+      method: 'POST',
+      body: JSON.stringify(requestBody),
+    });
+    return publishChannelEngagementResultSchema.parse(response);
   }
 
   async getChannelDialog(

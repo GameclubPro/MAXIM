@@ -1,11 +1,12 @@
 import type { ChannelAutoPostButtonsMode, ChannelSettings } from '@maxim/contracts';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { BackChevronIcon, ParticipantsIcon } from '../components/ui/entity-header-icons';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
+import { useToast } from '../components/ui/toast';
 import { cn } from '../lib/cn';
 import type { ApiClient } from '../lib/api-client';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
@@ -54,6 +55,23 @@ function sanitizeAutoPostButtonsMode(
     commentsEnabled && modeHasComments(mode),
     suggestEnabled && modeHasSuggest(mode),
   );
+}
+
+function resolveManualPublishButtons(settings: ChannelSettings) {
+  return {
+    includeCommentsButton:
+      settings.autoPostButtonsMode === 'COMMENTS' || settings.autoPostButtonsMode === 'BOTH'
+        ? true
+        : settings.autoPostButtonsMode === 'OFF'
+          ? settings.commentsEnabled
+          : false,
+    includeSuggestButton:
+      settings.autoPostButtonsMode === 'SUGGEST' || settings.autoPostButtonsMode === 'BOTH'
+        ? true
+        : settings.autoPostButtonsMode === 'OFF'
+          ? settings.postSuggestionsEnabled
+          : false,
+  };
 }
 
 function isHttpUrl(value: string): boolean {
@@ -177,6 +195,8 @@ function normalizeChannelSettingsDraft(
   return {
     ...draft,
     autoPostButtonsMode,
+    engagementMessageText:
+      draft.engagementMessageText.trim() || 'Есть идея или обратная связь? Нажмите кнопку ниже.',
     postSuggestionsButtonText: draft.postSuggestionsButtonText.trim() || 'Предложить пост',
     postSuggestionsButtonUrl:
       draft.postSuggestionsButtonEnabled && resolvedChannelLink
@@ -207,6 +227,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     comments: false,
     postSuggestions: false,
   });
+  const { pushToast } = useToast();
 
   const settingsQuery = useQuery({
     queryKey: ['channel-settings', chatId],
@@ -447,6 +468,46 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     return clearAutosaveTimer;
   }, [chatId, isDirty, normalizedDraft, normalizedDraftKey, normalizedSavedSnapshot]);
 
+  const publishMutation = useMutation({
+    mutationFn: async () => {
+      if (!chatId) {
+        throw new Error('Канал не выбран.');
+      }
+
+      const payload = latestNormalizedDraftRef.current;
+      if (!payload) {
+        throw new Error('Нет данных для публикации.');
+      }
+
+      const { includeCommentsButton, includeSuggestButton } = resolveManualPublishButtons(payload);
+      return api.publishChannelEngagement(chatId, {
+        text:
+          payload.engagementMessageText.trim() ||
+          'Есть идея или обратная связь? Нажмите кнопку ниже.',
+        commentsButtonText: '💬 Комментарии',
+        suggestButtonText: payload.postSuggestionsButtonText.trim() || '📰 Предложить пост',
+        includeCommentsButton,
+        includeSuggestButton,
+      });
+    },
+    onSuccess: (result) => {
+      pushToast({
+        tone: 'success',
+        title: result.updatedExisting ? 'Пост обновлен' : 'Пост опубликован',
+        description: result.updatedExisting
+          ? 'Текст и кнопки обновлены в уже опубликованном сообщении.'
+          : 'Сообщение с кнопками отправлено в канал.',
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Ошибка публикации',
+        description: normalizeApiError(error),
+      });
+    },
+  });
+
   if (!chatId) {
     return (
       <div className="page-stack page-enter">
@@ -533,6 +594,18 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   const participantsCountLabel = formatParticipantsCount(
     channelHeaderQuery.data?.participantsCount ?? null,
   );
+  const publishButtons = resolveManualPublishButtons(
+    normalizedDraft ?? normalizeChannelSettingsDraft(draft, resolvedChannelLink),
+  );
+  const canPublishEngagement =
+    publishButtons.includeCommentsButton || publishButtons.includeSuggestButton;
+  const publishHint = !canPublishEngagement
+    ? 'Включите обсуждение или предложку, чтобы публиковать пост с кнопками.'
+    : publishButtons.includeCommentsButton && publishButtons.includeSuggestButton
+      ? 'Под постом будут кнопки «Комментарии» и «Предложить пост».'
+      : publishButtons.includeCommentsButton
+        ? 'Под постом будет только кнопка «Комментарии».'
+        : 'Под постом будет только кнопка «Предложить пост».';
 
   return (
     <div className="channel-settings-screen page-enter">
@@ -602,7 +675,9 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
           >
             <span className="settings-section__toggle-main">
               <h3>Комментарии</h3>
-              <small>{draft.commentsEnabled ? 'ОБСУЖДЕНИЕ ВКЛЮЧЕНО' : 'ОБСУЖДЕНИЕ ВЫКЛЮЧЕНО'}</small>
+              <small>
+                {draft.commentsEnabled ? 'ОБСУЖДЕНИЕ ВКЛЮЧЕНО' : 'ОБСУЖДЕНИЕ ВЫКЛЮЧЕНО'}
+              </small>
             </span>
             <SectionChevron isOpen={expandedSections.comments} />
           </button>
@@ -660,7 +735,10 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                                 Number.isFinite(Number(event.target.value))
                                   ? Math.max(
                                       0,
-                                      Math.min(3600, Number.parseInt(event.target.value || '0', 10)),
+                                      Math.min(
+                                        3600,
+                                        Number.parseInt(event.target.value || '0', 10),
+                                      ),
                                     )
                                   : 0,
                               )
@@ -724,11 +802,26 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
             {draft.postSuggestionsEnabled ? (
               <div className="channel-settings-stack">
                 <label className="field">
+                  <span>Текст публикации</span>
+                  <textarea
+                    rows={3}
+                    value={draft.engagementMessageText}
+                    onChange={(event) => patchDraft('engagementMessageText', event.target.value)}
+                    placeholder="Есть идея или обратная связь? Нажмите кнопку ниже."
+                  />
+                  <small className="field__hint">
+                    Этот текст будет опубликован в канале над кнопками.
+                  </small>
+                </label>
+
+                <label className="field">
                   <span>Название кнопки</span>
                   <input
                     type="text"
                     value={draft.postSuggestionsButtonText}
-                    onChange={(event) => patchDraft('postSuggestionsButtonText', event.target.value)}
+                    onChange={(event) =>
+                      patchDraft('postSuggestionsButtonText', event.target.value)
+                    }
                     placeholder="Предложить пост"
                     maxLength={32}
                   />
@@ -743,6 +836,21 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                     placeholder="Коротко объясните, что отправлять."
                   />
                 </label>
+
+                <div className="channel-settings-inline-fields">
+                  <label className="field">
+                    <span>Пост с кнопками</span>
+                    <small className="field__hint">{publishHint}</small>
+                  </label>
+                  <button
+                    type="button"
+                    className="button button--accent"
+                    onClick={() => publishMutation.mutate()}
+                    disabled={!canPublishEngagement || publishMutation.isPending}
+                  >
+                    {publishMutation.isPending ? 'Публикуем…' : 'Опубликовать или обновить'}
+                  </button>
+                </div>
               </div>
             ) : null}
           </div>

@@ -223,6 +223,7 @@ model ChannelSettings {
   chatId                       String                     @unique @map("chat_id")
   postSuggestionsEnabled       Boolean                    @default(false) @map("post_suggestions_enabled")
   postSuggestionsText          String                     @default("") @map("post_suggestions_text")
+  engagementMessageText        String                     @default("Есть идея или обратная связь? Нажмите кнопку ниже.") @map("engagement_message_text")
   postSuggestionsButtonEnabled Boolean                    @default(false) @map("post_suggestions_button_enabled")
   postSuggestionsButtonText    String                     @default("Предложить пост") @map("post_suggestions_button_text")
   postSuggestionsButtonUrl     String                     @default("") @map("post_suggestions_button_url")
@@ -233,6 +234,9 @@ model ChannelSettings {
   commentsLimitTwoInRowEnabled Boolean                    @default(true) @map("comments_limit_two_in_row_enabled")
   commentsSlowModeSeconds      Int                        @default(0) @map("comments_slow_mode_seconds")
   commentsMessageText          String                     @default("") @map("comments_message_text")
+  engagementPublishedMessageId String?                    @map("engagement_published_message_id")
+  engagementPublishedThreadId  String?                    @map("engagement_published_thread_id")
+  engagementPublishedAt        DateTime?                  @map("engagement_published_at")
   createdAt                    DateTime                   @default(now()) @map("created_at")
   updatedAt                    DateTime                   @updatedAt @map("updated_at")
 
