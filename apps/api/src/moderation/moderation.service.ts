@@ -28,11 +28,7 @@ import { SystemModeService } from '../system/system-mode.service';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { PrivateControlService } from './private-control.service';
 import { RedisCounterService } from './redis-counter.service';
-import type {
-  DuplicateAction,
-  DuplicateDecision,
-  DuplicateHit,
-} from './rule-engine.service';
+import type { DuplicateAction, DuplicateDecision, DuplicateHit } from './rule-engine.service';
 import { RuleEngineService } from './rule-engine.service';
 import { SanctionService } from './sanction.service';
 import { maskText } from './text-mask.util';
@@ -115,13 +111,15 @@ const BOT_STARTED_INSTRUCTION_TEXT = [
 ].join('\n');
 const PRIVATE_MENU_CALLBACK_MENU = 'private_menu:menu';
 const PRIVATE_MENU_CALLBACK_CHATS = 'private_menu:chats';
+const PRIVATE_MENU_CALLBACK_CHANNELS = 'private_menu:channels';
 const PRIVATE_MENU_CALLBACK_HELP = 'private_menu:help';
 const PRIVATE_BOT_CHATS_PREVIEW_LIMIT = 12;
 const PRIVATE_MENU_PROMPT_TEXT = [
-  'Управление без приложения:',
-  '- «Мои чаты» — список чатов, где бот уже подключён.',
+  'Центр управления MAX:',
+  '- «Чаты» — быстрый вход в групповые чаты.',
+  '- «Каналы» — управление каналами, где бот уже админ.',
   '- «Помощь» — короткий гайд по запуску и правам.',
-  '- «Открыть приложение» — полный набор настроек.',
+  '- «Открыть приложение» — полный набор rich-настроек.',
 ].join('\n');
 const PRIVATE_HELP_TEXT = [
   'Быстрый гайд:',
@@ -132,6 +130,7 @@ const PRIVATE_HELP_TEXT = [
   'Команды в личке:',
   '- /menu',
   '- /chats',
+  '- /channels',
   '- /help',
 ].join('\n');
 const MAX_FORWARD_SCAN_DEPTH = 8;
@@ -182,7 +181,7 @@ const MESSAGE_LIMITS_RULE_CODES = new Set([
 ]);
 const TEXT_FILTER_RULE_CODES = new Set(['PROFANITY', 'COMMERCIAL_AD']);
 const TOPIC_FILTER_RULE_CODES = new Set(['TOPIC_FILTER_MISMATCH']);
-type PrivateControlCommand = 'menu' | 'chats' | 'help';
+type PrivateControlCommand = 'menu' | 'chats' | 'channels' | 'help';
 
 @Injectable()
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
@@ -351,11 +350,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (callbackPayload === RULES_CALLBACK_PAYLOAD) {
-      await this.handleRulesCallback(
-        chatId,
-        callbackId,
-        update.message?.messageId ?? null,
-      );
+      await this.handleRulesCallback(chatId, callbackId, update.message?.messageId ?? null);
       return;
     }
 
@@ -1478,7 +1473,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   ): string {
     const reason = 'в этом чате ссылки не проходят, без ссылок';
     const messageStatus = this.buildMessageStatusLabel(canDeleteMessage);
-    const fallback = this.buildMajorExplanationFallback(userLabel, 'Сообщение', messageStatus, reason);
+    const fallback = this.buildMajorExplanationFallback(
+      userLabel,
+      'Сообщение',
+      messageStatus,
+      reason,
+    );
 
     return this.renderBotMessageTemplate(templateText, fallback, {
       user: userLabel,
@@ -1703,8 +1703,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private formatUserLabel(senderName?: string): string {
-    const normalized =
-      typeof senderName === 'string' ? senderName.replace(/\s+/g, ' ').trim() : '';
+    const normalized = typeof senderName === 'string' ? senderName.replace(/\s+/g, ' ').trim() : '';
     const safe = normalized.length > 0 ? this.escapeMaxMarkdownText(normalized) : 'Пользователь';
     return `**${safe}**`;
   }
@@ -4264,6 +4263,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (command === 'chats') {
       return 'Собираю список чатов';
     }
+    if (command === 'channels') {
+      return 'Собираю список каналов';
+    }
     if (command === 'help') {
       return 'Открываю подсказки';
     }
@@ -4601,6 +4603,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (payload === PRIVATE_MENU_CALLBACK_CHATS) {
       return 'chats';
     }
+    if (payload === PRIVATE_MENU_CALLBACK_CHANNELS) {
+      return 'channels';
+    }
     if (payload === PRIVATE_MENU_CALLBACK_HELP) {
       return 'help';
     }
@@ -4637,6 +4642,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (
+      normalized === '/channels' ||
+      normalized === '/channel' ||
+      normalized === 'каналы' ||
+      normalized === 'мои каналы'
+    ) {
+      return 'channels';
+    }
+
+    if (
       normalized === '/help' ||
       normalized === 'help' ||
       normalized === 'помощь' ||
@@ -4662,43 +4676,63 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (command === 'chats') {
-      await this.sendPrivateChatList(chatId);
+      await this.sendPrivateEntityList(chatId, 'chat');
+      return;
+    }
+
+    if (command === 'channels') {
+      await this.sendPrivateEntityList(chatId, 'channel');
       return;
     }
 
     await this.sendPrivateMenu(chatId, PRIVATE_MENU_PROMPT_TEXT);
   }
 
-  private async sendPrivateChatList(chatId: string): Promise<void> {
+  private async sendPrivateEntityList(
+    chatId: string,
+    entityType: 'chat' | 'channel',
+  ): Promise<void> {
     try {
       const chats = await this.maxClient.listBotChats();
-      const groupChats = chats.filter((chat) => {
+      const entities = chats.filter((chat) => {
         const numericChatId = this.parseChatIdAsBigInt(chat.chatId);
-        return numericChatId !== null && numericChatId < 0n;
+        const isGroup = numericChatId !== null && numericChatId < 0n;
+        return entityType === 'channel' ? chat.entityType === 'channel' : isGroup;
       });
 
-      if (groupChats.length === 0) {
+      if (entities.length === 0) {
         await this.sendPrivateMenu(
           chatId,
-          'Пока нет групповых чатов с ботом. Добавьте бота в чат и выдайте права администратора.',
+          entityType === 'channel'
+            ? 'Пока нет каналов с ботом. Добавьте бота в канал и выдайте ему права администратора.'
+            : 'Пока нет групповых чатов с ботом. Добавьте бота в чат и выдайте права администратора.',
         );
         return;
       }
 
-      const preview = groupChats.slice(0, PRIVATE_BOT_CHATS_PREVIEW_LIMIT);
+      const preview = entities.slice(0, PRIVATE_BOT_CHATS_PREVIEW_LIMIT);
       const lines = preview.map((chat, index) => {
         const title = (chat.title ?? `Чат ${chat.chatId}`).replace(/\s+/g, ' ').trim();
         return `${index + 1}. ${title} (${chat.chatId})`;
       });
 
-      const moreCount = groupChats.length - preview.length;
+      const moreCount = entities.length - preview.length;
       const message = [
-        `Чаты с ботом: ${groupChats.length}`,
+        entityType === 'channel'
+          ? `Каналы с ботом: ${entities.length}`
+          : `Чаты с ботом: ${entities.length}`,
         '',
         ...lines,
-        ...(moreCount > 0 ? ['', `... и ещё ${moreCount} чатов.`] : []),
+        ...(moreCount > 0
+          ? [
+              '',
+              entityType === 'channel'
+                ? `... и ещё ${moreCount} каналов.`
+                : `... и ещё ${moreCount} чатов.`,
+            ]
+          : []),
         '',
-        'Для подробной настройки откройте приложение.',
+        'Для подробной настройки откройте приложение или используйте приватную панель.',
       ].join('\n');
 
       await this.sendPrivateMenu(chatId, message);
@@ -4742,13 +4776,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       [
         {
           type: 'callback',
-          text: 'Меню',
-          payload: PRIVATE_MENU_CALLBACK_MENU,
+          text: 'Чаты',
+          payload: PRIVATE_MENU_CALLBACK_CHATS,
         },
         {
           type: 'callback',
-          text: 'Мои чаты',
-          payload: PRIVATE_MENU_CALLBACK_CHATS,
+          text: 'Каналы',
+          payload: PRIVATE_MENU_CALLBACK_CHANNELS,
         },
       ],
       [

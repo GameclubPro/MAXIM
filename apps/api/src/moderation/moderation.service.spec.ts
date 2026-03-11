@@ -2127,9 +2127,22 @@ describe('ModerationService', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       '152517912',
-      expect.stringContaining('Управление без приложения'),
+      expect.stringContaining('Центр управления MAX'),
       expect.objectContaining({
         buttons: expect.any(Array),
+      }),
+    );
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      '152517912',
+      expect.any(String),
+      expect.objectContaining({
+        buttons: expect.arrayContaining([
+          expect.arrayContaining([
+            expect.objectContaining({ type: 'callback', text: 'Чаты' }),
+            expect.objectContaining({ type: 'callback', text: 'Каналы' }),
+          ]),
+          expect.arrayContaining([expect.objectContaining({ text: 'Открыть приложение' })]),
+        ]),
       }),
     );
     expect(prisma.chat.upsert).not.toHaveBeenCalled();
@@ -2182,7 +2195,7 @@ describe('ModerationService', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       '152517912',
-      expect.stringContaining('Управление без приложения'),
+      expect.stringContaining('Центр управления MAX'),
       expect.objectContaining({
         buttons: expect.any(Array),
       }),
@@ -2237,7 +2250,7 @@ describe('ModerationService', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       '152517912',
-      expect.stringContaining('Управление без приложения'),
+      expect.stringContaining('Центр управления MAX'),
       expect.objectContaining({
         buttons: expect.any(Array),
       }),
@@ -4362,10 +4375,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      topicFilterWarnNotice(
-        'Алексей',
-        'объявление должно начинаться с кодового слова "авторынок"',
-      ),
+      topicFilterWarnNotice('Алексей', 'объявление должно начинаться с кодового слова "авторынок"'),
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
