@@ -12,6 +12,7 @@ import { useToast } from '../components/ui/toast';
 import { cn } from '../lib/cn';
 import type { ApiClient, SendBroadcastPayload } from '../lib/api-client';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
+import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 
 type ChannelRouteState = {
@@ -848,6 +849,8 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     Boolean(broadcastButtonText.trim()) &&
     isHttpUrl(broadcastButtonUrl.trim());
   const broadcastRichTextEnabled = broadcastButtonEnabled || broadcastHasSystemButtons;
+
+  useHintPopoverAutoPosition(openHintKey !== null);
 
   function resetBroadcastComposer() {
     setBroadcastText('');

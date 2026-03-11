@@ -11,6 +11,7 @@ import { GlassCard } from './ui/glass-card';
 import { useToast } from './ui/toast';
 import { cn } from '../lib/cn';
 import type { ApiClient } from '../lib/api-client';
+import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 
 const AUTOSAVE_DELAY_MS = 650;
 const AUTOSAVE_SAVED_HIDE_MS = 1600;
@@ -423,6 +424,8 @@ export function ManagedPollCard({
   const toggleHint = (hintKey: ManagedPollHintKey) => {
     setOpenHintKey((current) => (current === hintKey ? null : hintKey));
   };
+
+  useHintPopoverAutoPosition(openHintKey !== null);
 
   useEffect(() => {
     if (!draft) {

@@ -456,6 +456,9 @@
 }
 
 .channel-settings-hint-anchor {
+  --hint-popover-gap: 8px;
+  --hint-popover-shift-x: 0px;
+  --hint-popover-shift-y: 0px;
   position: relative;
   display: inline-flex;
   align-items: center;
@@ -464,11 +467,13 @@
 
 .channel-settings-hint-popover {
   position: absolute;
-  top: calc(100% + 8px);
+  top: calc(100% + var(--hint-popover-gap));
   right: 0;
   z-index: 30;
-  width: clamp(220px, 72vw, 320px);
-  max-width: calc(100vw - 36px);
+  box-sizing: border-box;
+  width: min(320px, calc(100dvw - 24px));
+  max-width: min(320px, calc(100dvw - 24px));
+  max-height: min(48dvh, 360px);
   margin: 0;
   padding: 10px 12px;
   border-radius: 14px;
@@ -485,6 +490,15 @@
   opacity: 1;
   white-space: normal;
   overflow-wrap: anywhere;
+  word-break: break-word;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  transform: translate(var(--hint-popover-shift-x), var(--hint-popover-shift-y));
+}
+
+.channel-settings-hint-anchor[data-hint-placement='top'] .channel-settings-hint-popover {
+  top: auto;
+  bottom: calc(100% + var(--hint-popover-gap));
 }
 
 @media (max-width: 640px) {
@@ -564,6 +578,8 @@
   color: var(--text-muted);
   font-size: 0.78rem;
   line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .field--error .field__hint {

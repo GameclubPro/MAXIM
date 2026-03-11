@@ -20,6 +20,7 @@ import { useToast } from '../components/ui/toast';
 import { cn } from '../lib/cn';
 import type { ApiClient, SendBroadcastPayload, UpdateChatRulesPayload } from '../lib/api-client';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
+import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 
 type FieldErrors = Partial<Record<keyof ChatSettings, string>>;
@@ -2480,6 +2481,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   }${mailingCycleEnabled ? ` · ${mailingCycleSummary}` : ''}`;
   const mailingCanSend = mailingText.trim().length > 0 || mailingImageBase64.length > 0;
   const mailingSendDisabled = sendBroadcastMutation.isPending || !mailingCanSend;
+
+  useHintPopoverAutoPosition(openHintKey !== null);
 
   function renderSectionApplyControl(section: ApplySectionKey) {
     const isConfirmOpen = openSectionApplyConfirm === section;
