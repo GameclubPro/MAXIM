@@ -21,6 +21,10 @@ import {
   type ChannelStatsRange,
   type ChannelStatsResponse,
   type ChannelOverview,
+  type ManagedBroadcastDetails,
+  managedBroadcastDetailsSchema,
+  type ManagedBroadcastSummary,
+  managedBroadcastSummarySchema,
   type ChannelSettings,
   type ChatRules,
   type ChatSettings,
@@ -38,6 +42,8 @@ import {
   type UpdateChatRulesRequest,
   updateChatRulesRequestSchema,
   type PublishChatRulesResult,
+  type BroadcastTextFormat,
+  type SendBroadcastRequest,
   type SendBroadcastResult,
   type ChatSummary,
   type ManagedEntityHeader,
@@ -51,10 +57,12 @@ import {
 import {
   ChatEntityType,
   EventType,
+  ManagedBroadcastStatus as PrismaManagedBroadcastStatus,
   ManagedPollStatus as PrismaManagedPollStatus,
   Operator,
   Prisma,
   SanctionAction,
+  type ManagedBroadcast as PersistedManagedBroadcast,
   type ChatRules as PersistedChatRules,
   type ManagedPoll as PersistedManagedPoll,
 } from '@prisma/client';
@@ -98,11 +106,25 @@ type ManagedEntityTypeFilter = ManagedEntityType | 'all';
 
 export type AdminActionSource = 'miniapp' | 'private_bot';
 
+type PreparedManagedBroadcastRequest = {
+  payload: SendBroadcastRequest;
+  targetChatIds: string[];
+  normalizedSourceText: string;
+};
+
+type BroadcastOccurrenceResult = {
+  sentChatIds: string[];
+  failedChatIds: string[];
+  firstSendError: unknown;
+};
+
 const BROADCAST_IMAGE_MAX_BYTES = 1_000_000;
 const BROADCAST_MIN_DELAY_MS = 30_000;
 const BROADCAST_MAX_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
 const BROADCAST_CYCLE_MAX_COUNT = 100;
 const BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS = [1_500, 3_000, 6_000];
+const MANAGED_BROADCAST_DUE_BATCH_SIZE = 10;
+const MANAGED_BROADCAST_LOCK_STALE_MS = 60_000;
 const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 30;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 5;
@@ -1527,6 +1549,216 @@ export class AdminService {
     });
   }
 
+  async listManagedBroadcasts(
+    sourceChatId: string,
+    user: AuthUser,
+  ): Promise<ManagedBroadcastSummary[]> {
+    await this.assertChatAdmin(sourceChatId, user.userId, 'chat');
+    await this.ensureEntityType(sourceChatId, user.userId, 'chat');
+
+    const rows = await this.prisma.managedBroadcast.findMany({
+      where: {
+        sourceChatId,
+        entityType: ChatEntityType.CHAT,
+        status: {
+          in: [PrismaManagedBroadcastStatus.ACTIVE, PrismaManagedBroadcastStatus.FAILED],
+        },
+      },
+      orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'desc' }],
+    });
+
+    return rows.map((row) => managedBroadcastSummarySchema.parse(this.mapManagedBroadcastSummary(row)));
+  }
+
+  async getManagedBroadcast(
+    sourceChatId: string,
+    broadcastId: string,
+    user: AuthUser,
+  ): Promise<ManagedBroadcastDetails> {
+    await this.assertChatAdmin(sourceChatId, user.userId, 'chat');
+    await this.ensureEntityType(sourceChatId, user.userId, 'chat');
+
+    const row = await this.prisma.managedBroadcast.findFirst({
+      where: {
+        id: broadcastId,
+        sourceChatId,
+        entityType: ChatEntityType.CHAT,
+      },
+    });
+    if (!row) {
+      throw new BadRequestException('Рассылка не найдена.');
+    }
+
+    return managedBroadcastDetailsSchema.parse(this.mapManagedBroadcastDetails(row));
+  }
+
+  async updateManagedBroadcast(
+    sourceChatId: string,
+    broadcastId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ManagedBroadcastDetails> {
+    await this.assertChatAdmin(sourceChatId, user.userId, 'chat');
+    await this.ensureEntityType(sourceChatId, user.userId, 'chat');
+
+    const existing = await this.prisma.managedBroadcast.findFirst({
+      where: {
+        id: broadcastId,
+        sourceChatId,
+        entityType: ChatEntityType.CHAT,
+        status: {
+          in: [PrismaManagedBroadcastStatus.ACTIVE, PrismaManagedBroadcastStatus.FAILED],
+        },
+      },
+    });
+    if (!existing) {
+      throw new BadRequestException('Рассылка не найдена или уже завершена.');
+    }
+
+    const request = await this.prepareManagedBroadcastRequest(sourceChatId, user, body, {
+      entityType: 'chat',
+      resolveTargets: (actor) => this.listChats(actor),
+    });
+
+    const scheduledAt = this.parseManagedBroadcastSendAt(request.payload.sendAt, {
+      required: true,
+      sourceChatId,
+      sentCount: existing.sentCount,
+    });
+    if (!scheduledAt) {
+      throw new BadRequestException('Укажите следующее время отправки.');
+    }
+    const cycleEveryHours = request.payload.cycleEnabled ? request.payload.cycleEveryHours : 1;
+    const cycleCount = request.payload.cycleEnabled ? request.payload.cycleCount : 1;
+
+    if (existing.sentCount > 0 && !request.payload.cycleEnabled) {
+      throw new BadRequestException(
+        'После первого запуска цикла оставьте циклический режим включенным.',
+      );
+    }
+    if (existing.sentCount > 0 && cycleCount <= existing.sentCount) {
+      throw new BadRequestException('Количество отправок должно быть больше уже выполненных.');
+    }
+
+    const remainingDelayMs =
+      scheduledAt.getTime() -
+      Date.now() +
+      Math.max(0, cycleCount - existing.sentCount - 1) * cycleEveryHours * ONE_HOUR_MS;
+    if (remainingDelayMs > BROADCAST_MAX_DELAY_MS) {
+      throw new BadRequestException('Все оставшиеся отправки должны уместиться в 14 дней.');
+    }
+
+    const updated = await this.prisma.managedBroadcast.update({
+      where: { id: existing.id },
+      data: {
+        actorUserId: user.userId,
+        text: request.payload.text.trim(),
+        textFormat: request.payload.textFormat,
+        applyToAllChats: request.payload.applyToAllChats,
+        targetChatIds: request.targetChatIds as Prisma.InputJsonValue,
+        buttonEnabled: request.payload.buttonEnabled,
+        buttonUrl: request.payload.buttonEnabled ? request.payload.buttonUrl.trim() : '',
+        buttonText: request.payload.buttonEnabled
+          ? request.payload.buttonText.trim() || 'Открыть'
+          : 'Открыть',
+        imageEnabled: request.payload.imageEnabled,
+        imageBase64: request.payload.imageEnabled ? request.payload.imageBase64 : '',
+        imageMimeType: request.payload.imageEnabled ? request.payload.imageMimeType : '',
+        imageFileName: request.payload.imageEnabled ? request.payload.imageFileName : '',
+        nextSendAt: scheduledAt,
+        cycleEnabled: request.payload.cycleEnabled,
+        cycleEveryHours,
+        cycleCount,
+        status: PrismaManagedBroadcastStatus.ACTIVE,
+        lastError: null,
+        lockedAt: null,
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId: sourceChatId,
+        actorUserId: user.userId,
+        action: 'UPDATE_BROADCAST_SCHEDULE',
+        payload: {
+          broadcastId: existing.id,
+          targetChats: request.targetChatIds.length,
+          nextSendAt: scheduledAt.toISOString(),
+          cycleEnabled: request.payload.cycleEnabled,
+          cycleEveryHours,
+          cycleCount,
+        },
+      },
+    });
+
+    return managedBroadcastDetailsSchema.parse(this.mapManagedBroadcastDetails(updated));
+  }
+
+  async cancelManagedBroadcast(
+    sourceChatId: string,
+    broadcastId: string,
+    user: AuthUser,
+  ): Promise<ManagedBroadcastDetails> {
+    await this.assertChatAdmin(sourceChatId, user.userId, 'chat');
+    await this.ensureEntityType(sourceChatId, user.userId, 'chat');
+
+    const existing = await this.prisma.managedBroadcast.findFirst({
+      where: {
+        id: broadcastId,
+        sourceChatId,
+        entityType: ChatEntityType.CHAT,
+        status: {
+          in: [PrismaManagedBroadcastStatus.ACTIVE, PrismaManagedBroadcastStatus.FAILED],
+        },
+      },
+    });
+    if (!existing) {
+      throw new BadRequestException('Рассылка не найдена или уже завершена.');
+    }
+
+    const canceled = await this.prisma.managedBroadcast.update({
+      where: { id: existing.id },
+      data: {
+        status: PrismaManagedBroadcastStatus.CANCELED,
+        nextSendAt: null,
+        lockedAt: null,
+      },
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId: sourceChatId,
+        actorUserId: user.userId,
+        action: 'CANCEL_BROADCAST_SCHEDULE',
+        payload: {
+          broadcastId: existing.id,
+        },
+      },
+    });
+
+    return managedBroadcastDetailsSchema.parse(this.mapManagedBroadcastDetails(canceled));
+  }
+
+  async processDueManagedBroadcasts(reason: 'startup' | 'scheduled'): Promise<void> {
+    const now = new Date();
+    const staleLockBefore = new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS);
+    const dueRows = await this.prisma.managedBroadcast.findMany({
+      where: {
+        entityType: ChatEntityType.CHAT,
+        status: PrismaManagedBroadcastStatus.ACTIVE,
+        nextSendAt: { lte: now },
+        OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
+      },
+      orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }],
+      take: MANAGED_BROADCAST_DUE_BATCH_SIZE,
+      select: { id: true },
+    });
+
+    for (const row of dueRows) {
+      await this.processDueManagedBroadcast(row.id, reason, staleLockBefore);
+    }
+  }
+
   private async sendManagedBroadcast(
     sourceChatId: string,
     user: AuthUser,
@@ -1537,10 +1769,46 @@ export class AdminService {
       resolveTargets?: (user: AuthUser) => Promise<ChatSummary[]>;
     },
   ): Promise<SendBroadcastResult> {
-    const { entityType, source, resolveTargets } = options;
+    const request = await this.prepareManagedBroadcastRequest(sourceChatId, user, body, {
+      entityType: options.entityType,
+      resolveTargets: options.resolveTargets,
+    });
 
-    await this.assertChatAdmin(sourceChatId, user.userId, entityType);
-    await this.ensureEntityType(sourceChatId, user.userId, entityType);
+    if (options.entityType === 'chat' && (request.payload.sendAt || request.payload.cycleEnabled)) {
+      return this.scheduleManagedBroadcast(sourceChatId, user, request, options.source);
+    }
+
+    if (options.entityType !== 'chat') {
+      return this.sendManagedBroadcastViaQueue(
+        sourceChatId,
+        user,
+        request,
+        options.entityType,
+        options.source,
+      );
+    }
+
+    return this.sendManagedBroadcastImmediately(
+      sourceChatId,
+      user,
+      request,
+      options.entityType,
+      options.source,
+    );
+  }
+
+  private async prepareManagedBroadcastRequest(
+    sourceChatId: string,
+    user: AuthUser,
+    body: unknown,
+    options: {
+      entityType: ManagedEntityType;
+      resolveTargets?: (user: AuthUser) => Promise<ChatSummary[]>;
+    },
+  ): Promise<PreparedManagedBroadcastRequest> {
+    await this.assertChatAdmin(sourceChatId, user.userId, options.entityType);
+    await this.ensureEntityType(sourceChatId, user.userId, options.entityType);
+
     const parsed = sendBroadcastRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -1548,126 +1816,148 @@ export class AdminService {
 
     let targetChatIds = [sourceChatId];
     if (parsed.data.applyToAllChats) {
-      if (!resolveTargets) {
+      if (!options.resolveTargets) {
         throw new BadRequestException('Массовая рассылка по каналам пока недоступна.');
       }
 
-      const availableTargets = await resolveTargets(user);
+      const availableTargets = await options.resolveTargets(user);
       targetChatIds = Array.from(
         new Set([
           sourceChatId,
           ...availableTargets
-            .filter((chat) => chat.entityType === entityType)
+            .filter((chat) => chat.entityType === options.entityType)
             .map((chat) => chat.id),
         ]),
       );
     }
 
-    const normalizedSourceText = parsed.data.text.trim();
+    return {
+      payload: parsed.data,
+      targetChatIds,
+      normalizedSourceText: parsed.data.text.trim(),
+    };
+  }
 
-    let delayMs = 0;
-    let sendAt: string | null = null;
-    if (parsed.data.sendAt) {
-      const scheduledAt = new Date(parsed.data.sendAt);
-      if (Number.isNaN(scheduledAt.getTime())) {
-        throw new BadRequestException('Некорректное время рассылки.');
-      }
-      const calculatedDelayMs = scheduledAt.getTime() - Date.now();
-      if (calculatedDelayMs < BROADCAST_MIN_DELAY_MS) {
-        throw new BadRequestException('Укажите время рассылки минимум через 30 секунд.');
-      }
-      if (calculatedDelayMs > BROADCAST_MAX_DELAY_MS) {
-        throw new BadRequestException('Максимальный таймер рассылки: 14 дней.');
-      }
-      delayMs = calculatedDelayMs;
-      sendAt = scheduledAt.toISOString();
+  private async sendManagedBroadcastImmediately(
+    sourceChatId: string,
+    user: AuthUser,
+    request: PreparedManagedBroadcastRequest,
+    entityType: ManagedEntityType,
+    source: AdminActionSource,
+  ): Promise<SendBroadcastResult> {
+    const occurrence = await this.executeManagedBroadcastOccurrence(
+      sourceChatId,
+      user.userId,
+      request,
+      entityType,
+    );
+    if (occurrence.sentChatIds.length === 0 && occurrence.failedChatIds.length > 0) {
+      const fallbackMessage = 'Не удалось отправить рассылку.';
+      const maxApiMessage = this.extractMaxApiErrorMessage(occurrence.firstSendError);
+      throw new BadRequestException(maxApiMessage || fallbackMessage);
     }
 
-    const cycleEnabled = parsed.data.cycleEnabled;
-    const cycleEveryHours = cycleEnabled ? parsed.data.cycleEveryHours : 1;
-    const cycleCount = cycleEnabled ? parsed.data.cycleCount : 1;
-    if (cycleEnabled && cycleCount > BROADCAST_CYCLE_MAX_COUNT) {
-      throw new BadRequestException(`Максимум ${BROADCAST_CYCLE_MAX_COUNT} отправок в цикле.`);
-    }
+    const cycleEveryHours = request.payload.cycleEnabled ? request.payload.cycleEveryHours : 1;
+    const cycleCount = request.payload.cycleEnabled ? request.payload.cycleCount : 1;
+    const legacyCycleEveryDays = this.toLegacyCycleEveryDays(cycleEveryHours);
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId: sourceChatId,
+        actorUserId: user.userId,
+        action: 'SEND_BROADCAST',
+        payload: {
+          entityType,
+          applyToAllChats: request.payload.applyToAllChats,
+          targetChats: request.targetChatIds.length,
+          sentChats: occurrence.sentChatIds.length,
+          failedChats: occurrence.failedChatIds.length,
+          sendAt: null,
+          nextSendAt: null,
+          cycleEnabled: request.payload.cycleEnabled,
+          cycleEveryHours,
+          ...(legacyCycleEveryDays ? { cycleEveryDays: legacyCycleEveryDays } : {}),
+          cycleCount,
+          sentChatIds: occurrence.sentChatIds,
+          failedChatIds: occurrence.failedChatIds,
+          source,
+        },
+      },
+    });
+
+    return {
+      sourceChatId,
+      targetChats: request.targetChatIds.length,
+      sentChats: occurrence.sentChatIds.length,
+      failedChats: occurrence.failedChatIds.length,
+      sentChatIds: occurrence.sentChatIds,
+      failedChatIds: occurrence.failedChatIds,
+      sendAt: null,
+      nextSendAt: null,
+      cycleEnabled: request.payload.cycleEnabled,
+      cycleEveryHours,
+      ...(legacyCycleEveryDays ? { cycleEveryDays: legacyCycleEveryDays } : {}),
+      cycleCount,
+      scheduleId: null,
+      scheduledOccurrences: 0,
+    };
+  }
+
+  private async sendManagedBroadcastViaQueue(
+    sourceChatId: string,
+    user: AuthUser,
+    request: PreparedManagedBroadcastRequest,
+    entityType: ManagedEntityType,
+    source: AdminActionSource,
+  ): Promise<SendBroadcastResult> {
+    const scheduledAt = this.parseManagedBroadcastSendAt(request.payload.sendAt, {
+      required: false,
+      sourceChatId,
+      sentCount: 0,
+    });
+    const delayMs = scheduledAt ? scheduledAt.getTime() - Date.now() : 0;
+    const cycleEnabled = request.payload.cycleEnabled;
+    const cycleEveryHours = cycleEnabled ? request.payload.cycleEveryHours : 1;
+    const cycleCount = cycleEnabled ? request.payload.cycleCount : 1;
     const cycleEveryMs = cycleEveryHours * ONE_HOUR_MS;
     const maxDelayWithCycles = delayMs + (cycleCount - 1) * cycleEveryMs;
     if (maxDelayWithCycles > BROADCAST_MAX_DELAY_MS) {
       throw new BadRequestException('Все циклы должны укладываться в 14 дней от текущего момента.');
     }
-    const legacyCycleEveryDays = cycleEveryHours % 24 === 0 ? cycleEveryHours / 24 : undefined;
 
-    let imagePayload: Record<string, unknown> | undefined;
-    if (parsed.data.imageEnabled) {
-      const imageMimeType = parsed.data.imageMimeType.trim().toLowerCase();
-      if (!imageMimeType.startsWith('image/')) {
-        throw new BadRequestException('Поддерживаются только изображения.');
-      }
-      const imageBuffer = this.decodeBroadcastImageBase64(parsed.data.imageBase64);
-      if (imageBuffer.length > BROADCAST_IMAGE_MAX_BYTES) {
-        throw new BadRequestException('Фото слишком большое. Максимум 1 MB.');
-      }
-      try {
-        imagePayload = await this.maxClient.uploadImage(
-          imageBuffer,
-          this.resolveBroadcastImageFileName(parsed.data.imageFileName, imageMimeType),
-          imageMimeType,
-        );
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            entityType,
-            sourceChatId,
-            actorUserId: user.userId,
-            err: error instanceof Error ? error.message : String(error),
-          },
-          'Broadcast image upload failed',
-        );
-        throw new BadRequestException('Не удалось загрузить фото. Попробуйте другое изображение.');
-      }
-    }
-
+    const imagePayload = await this.uploadManagedBroadcastImage(
+      request.payload,
+      entityType,
+      sourceChatId,
+      user.userId,
+    );
     const sentChatIds: string[] = [];
     const failedChatIds: string[] = [];
     let firstSendError: unknown = null;
-    for (const chatId of targetChatIds) {
+
+    for (const chatId of request.targetChatIds) {
       let chatFailed = false;
       for (let cycleIndex = 0; cycleIndex < cycleCount; cycleIndex += 1) {
-        const broadcastButtons = await this.resolveBroadcastButtons(chatId, entityType, {
-          includeCustomButton: parsed.data.buttonEnabled,
-          customButtonText: parsed.data.buttonText.trim(),
-          customButtonUrl: parsed.data.buttonUrl.trim(),
-        });
-        const shouldUseRichText =
-          parsed.data.textFormat === 'markdown' &&
-          normalizedSourceText.length > 0 &&
-          (entityType !== 'channel' || broadcastButtons.length > 0);
-        const renderedText =
-          shouldUseRichText
-            ? renderSupportedMarkdownAsHtml(normalizedSourceText)
-            : entityType === 'channel' && parsed.data.textFormat === 'markdown'
-              ? stripSupportedMarkdownToPlainText(normalizedSourceText)
-              : normalizedSourceText;
-        const messageText = renderedText || (parsed.data.imageEnabled ? ' ' : '');
-        const textFormat: MaxSendMessageOptions['textFormat'] =
-          shouldUseRichText ? 'html' : undefined;
-        const messageOptions =
-          broadcastButtons.length > 0 || imagePayload || textFormat
-            ? {
-                ...(textFormat ? { textFormat } : {}),
-                ...(broadcastButtons.length > 0 ? { buttons: broadcastButtons } : {}),
-                ...(imagePayload ? { imagePayload } : {}),
-              }
-            : undefined;
         const occurrenceDelayMs = delayMs + cycleIndex * cycleEveryMs;
-        const sendImmediately = occurrenceDelayMs === 0;
         try {
-          if (sendImmediately && imagePayload) {
-            await this.sendBroadcastImageMessageWithRetry(chatId, messageText, messageOptions);
+          const message = await this.buildManagedBroadcastMessage(
+            chatId,
+            entityType,
+            request.payload,
+            request.normalizedSourceText,
+            imagePayload,
+          );
+          if (occurrenceDelayMs === 0 && imagePayload) {
+            await this.sendBroadcastImageMessageWithRetry(
+              chatId,
+              message.messageText,
+              message.messageOptions,
+            );
           } else {
             await this.maxClient.sendMessage(
               chatId,
-              messageText,
-              messageOptions,
+              message.messageText,
+              message.messageOptions,
               occurrenceDelayMs > 0 ? { delayMs: occurrenceDelayMs } : { immediate: true },
             );
           }
@@ -1682,7 +1972,7 @@ export class AdminService {
               sourceChatId,
               targetChatId: chatId,
               actorUserId: user.userId,
-              sendAt,
+              sendAt: scheduledAt?.toISOString() ?? null,
               cycleEnabled,
               cycleEveryHours,
               cycleCount,
@@ -1697,10 +1987,9 @@ export class AdminService {
 
       if (chatFailed) {
         failedChatIds.push(chatId);
-        continue;
+      } else {
+        sentChatIds.push(chatId);
       }
-
-      sentChatIds.push(chatId);
     }
 
     if (sentChatIds.length === 0 && failedChatIds.length > 0) {
@@ -1709,6 +1998,7 @@ export class AdminService {
       throw new BadRequestException(maxApiMessage || fallbackMessage);
     }
 
+    const legacyCycleEveryDays = this.toLegacyCycleEveryDays(cycleEveryHours);
     await this.prisma.auditLog.create({
       data: {
         chatId: sourceChatId,
@@ -1716,11 +2006,12 @@ export class AdminService {
         action: 'SEND_BROADCAST',
         payload: {
           entityType,
-          applyToAllChats: parsed.data.applyToAllChats,
-          targetChats: targetChatIds.length,
+          applyToAllChats: request.payload.applyToAllChats,
+          targetChats: request.targetChatIds.length,
           sentChats: sentChatIds.length,
           failedChats: failedChatIds.length,
-          sendAt,
+          sendAt: scheduledAt?.toISOString() ?? null,
+          nextSendAt: scheduledAt?.toISOString() ?? null,
           cycleEnabled,
           cycleEveryHours,
           ...(legacyCycleEveryDays ? { cycleEveryDays: legacyCycleEveryDays } : {}),
@@ -1734,16 +2025,499 @@ export class AdminService {
 
     return {
       sourceChatId,
-      targetChats: targetChatIds.length,
+      targetChats: request.targetChatIds.length,
       sentChats: sentChatIds.length,
       failedChats: failedChatIds.length,
-      sendAt,
+      sentChatIds,
+      failedChatIds,
+      sendAt: scheduledAt?.toISOString() ?? null,
+      nextSendAt: scheduledAt?.toISOString() ?? null,
       cycleEnabled,
       cycleEveryHours,
       ...(legacyCycleEveryDays ? { cycleEveryDays: legacyCycleEveryDays } : {}),
       cycleCount,
+      scheduleId: null,
+      scheduledOccurrences: 0,
+    };
+  }
+
+  private async scheduleManagedBroadcast(
+    sourceChatId: string,
+    user: AuthUser,
+    request: PreparedManagedBroadcastRequest,
+    source: AdminActionSource,
+  ): Promise<SendBroadcastResult> {
+    const scheduledAt = this.parseManagedBroadcastSendAt(request.payload.sendAt, {
+      required: false,
+      sourceChatId,
+      sentCount: 0,
+    });
+    const cycleEveryHours = request.payload.cycleEnabled ? request.payload.cycleEveryHours : 1;
+    const cycleCount = request.payload.cycleEnabled ? request.payload.cycleCount : 1;
+    const initialDelayMs = scheduledAt ? scheduledAt.getTime() - Date.now() : 0;
+    const maxDelayWithCycles = initialDelayMs + (cycleCount - 1) * cycleEveryHours * ONE_HOUR_MS;
+    if (maxDelayWithCycles > BROADCAST_MAX_DELAY_MS) {
+      throw new BadRequestException('Все циклы должны укладываться в 14 дней от текущего момента.');
+    }
+
+    let occurrence: BroadcastOccurrenceResult = {
+      sentChatIds: [],
+      failedChatIds: [],
+      firstSendError: null,
+    };
+    let sentCount = 0;
+    let nextSendAt = scheduledAt;
+
+    if (!scheduledAt && request.payload.cycleEnabled) {
+      occurrence = await this.executeManagedBroadcastOccurrence(
+        sourceChatId,
+        user.userId,
+        request,
+        'chat',
+      );
+      if (occurrence.sentChatIds.length === 0 && occurrence.failedChatIds.length > 0) {
+        const fallbackMessage = 'Не удалось отправить рассылку.';
+        const maxApiMessage = this.extractMaxApiErrorMessage(occurrence.firstSendError);
+        throw new BadRequestException(maxApiMessage || fallbackMessage);
+      }
+      sentCount = 1;
+      nextSendAt = new Date(Date.now() + cycleEveryHours * ONE_HOUR_MS);
+    }
+
+    const created = await this.prisma.managedBroadcast.create({
+      data: {
+        sourceChatId,
+        entityType: ChatEntityType.CHAT,
+        actorUserId: user.userId,
+        text: request.payload.text.trim(),
+        textFormat: request.payload.textFormat,
+        applyToAllChats: request.payload.applyToAllChats,
+        targetChatIds: request.targetChatIds as Prisma.InputJsonValue,
+        buttonEnabled: request.payload.buttonEnabled,
+        buttonUrl: request.payload.buttonEnabled ? request.payload.buttonUrl.trim() : '',
+        buttonText: request.payload.buttonEnabled
+          ? request.payload.buttonText.trim() || 'Открыть'
+          : 'Открыть',
+        imageEnabled: request.payload.imageEnabled,
+        imageBase64: request.payload.imageEnabled ? request.payload.imageBase64 : '',
+        imageMimeType: request.payload.imageEnabled ? request.payload.imageMimeType : '',
+        imageFileName: request.payload.imageEnabled ? request.payload.imageFileName : '',
+        nextSendAt,
+        cycleEnabled: request.payload.cycleEnabled,
+        cycleEveryHours,
+        cycleCount,
+        sentCount,
+        status: PrismaManagedBroadcastStatus.ACTIVE,
+      },
+    });
+
+    const legacyCycleEveryDays = this.toLegacyCycleEveryDays(cycleEveryHours);
+    await this.prisma.auditLog.create({
+      data: {
+        chatId: sourceChatId,
+        actorUserId: user.userId,
+        action: 'SCHEDULE_BROADCAST',
+        payload: {
+          broadcastId: created.id,
+          applyToAllChats: request.payload.applyToAllChats,
+          targetChats: request.targetChatIds.length,
+          sendAt: request.payload.sendAt,
+          nextSendAt: nextSendAt?.toISOString() ?? null,
+          cycleEnabled: request.payload.cycleEnabled,
+          cycleEveryHours,
+          ...(legacyCycleEveryDays ? { cycleEveryDays: legacyCycleEveryDays } : {}),
+          cycleCount,
+          sentCount,
+          source,
+        },
+      },
+    });
+
+    return {
+      sourceChatId,
+      targetChats: request.targetChatIds.length,
+      sentChats: occurrence.sentChatIds.length,
+      failedChats: occurrence.failedChatIds.length,
+      sentChatIds: occurrence.sentChatIds,
+      failedChatIds: occurrence.failedChatIds,
+      sendAt: request.payload.sendAt,
+      nextSendAt: nextSendAt?.toISOString() ?? null,
+      cycleEnabled: request.payload.cycleEnabled,
+      cycleEveryHours,
+      ...(legacyCycleEveryDays ? { cycleEveryDays: legacyCycleEveryDays } : {}),
+      cycleCount,
+      scheduleId: created.id,
+      scheduledOccurrences: Math.max(0, cycleCount - sentCount),
+    };
+  }
+
+  private async processDueManagedBroadcast(
+    broadcastId: string,
+    reason: 'startup' | 'scheduled',
+    staleLockBefore: Date,
+  ): Promise<void> {
+    const claimedAt = new Date();
+    const claim = await this.prisma.managedBroadcast.updateMany({
+      where: {
+        id: broadcastId,
+        status: PrismaManagedBroadcastStatus.ACTIVE,
+        nextSendAt: { lte: claimedAt },
+        OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
+      },
+      data: {
+        lockedAt: claimedAt,
+      },
+    });
+    if (claim.count === 0) {
+      return;
+    }
+
+    const row = await this.prisma.managedBroadcast.findUnique({
+      where: { id: broadcastId },
+    });
+    if (!row || row.status !== PrismaManagedBroadcastStatus.ACTIVE || !row.nextSendAt) {
+      await this.prisma.managedBroadcast.updateMany({
+        where: { id: broadcastId },
+        data: { lockedAt: null },
+      });
+      return;
+    }
+
+    const request: PreparedManagedBroadcastRequest = {
+      payload: {
+        text: row.text,
+        textFormat: this.normalizeBroadcastTextFormat(row.textFormat),
+        applyToAllChats: row.applyToAllChats,
+        buttonEnabled: row.buttonEnabled,
+        buttonUrl: row.buttonUrl,
+        buttonText: row.buttonText,
+        imageEnabled: row.imageEnabled,
+        imageBase64: row.imageBase64,
+        imageMimeType: row.imageMimeType,
+        imageFileName: row.imageFileName,
+        sendAt: row.nextSendAt.toISOString(),
+        cycleEnabled: row.cycleEnabled,
+        cycleEveryHours: row.cycleEveryHours,
+        cycleCount: row.cycleCount,
+      },
+      targetChatIds: this.parseManagedBroadcastTargetChatIds(row.targetChatIds),
+      normalizedSourceText: row.text.trim(),
+    };
+
+    try {
+      const occurrence = await this.executeManagedBroadcastOccurrence(
+        row.sourceChatId,
+        row.actorUserId,
+        request,
+        'chat',
+      );
+      if (occurrence.sentChatIds.length === 0 && occurrence.failedChatIds.length > 0) {
+        const errorMessage =
+          this.extractMaxApiErrorMessage(occurrence.firstSendError) ?? 'Не удалось отправить рассылку.';
+        await this.prisma.managedBroadcast.update({
+          where: { id: row.id },
+          data: {
+            status: PrismaManagedBroadcastStatus.FAILED,
+            lastError: errorMessage,
+            lockedAt: null,
+          },
+        });
+        return;
+      }
+
+      const nextSentCount = row.sentCount + 1;
+      const isComplete = nextSentCount >= row.cycleCount;
+      const nextSendAt = isComplete
+        ? null
+        : new Date(row.nextSendAt.getTime() + row.cycleEveryHours * ONE_HOUR_MS);
+      const lastError =
+        occurrence.failedChatIds.length > 0
+          ? `Не удалось отправить в ${occurrence.failedChatIds.length} чат(ов).`
+          : null;
+
+      await this.prisma.managedBroadcast.update({
+        where: { id: row.id },
+        data: {
+          sentCount: nextSentCount,
+          nextSendAt,
+          status: isComplete
+            ? PrismaManagedBroadcastStatus.COMPLETED
+            : PrismaManagedBroadcastStatus.ACTIVE,
+          lastError,
+          lockedAt: null,
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          broadcastId: row.id,
+          sourceChatId: row.sourceChatId,
+          reason,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Managed broadcast processing failed',
+      );
+      await this.prisma.managedBroadcast.update({
+        where: { id: row.id },
+        data: {
+          status: PrismaManagedBroadcastStatus.FAILED,
+          lastError:
+            error instanceof Error && error.message.trim().length > 0
+              ? error.message
+              : 'Не удалось обработать рассылку.',
+          lockedAt: null,
+        },
+      });
+    }
+  }
+
+  private async executeManagedBroadcastOccurrence(
+    sourceChatId: string,
+    actorUserId: string,
+    request: PreparedManagedBroadcastRequest,
+    entityType: ManagedEntityType,
+  ): Promise<BroadcastOccurrenceResult> {
+    const imagePayload = await this.uploadManagedBroadcastImage(
+      request.payload,
+      entityType,
+      sourceChatId,
+      actorUserId,
+    );
+    const sentChatIds: string[] = [];
+    const failedChatIds: string[] = [];
+    let firstSendError: unknown = null;
+
+    for (const chatId of request.targetChatIds) {
+      try {
+        const message = await this.buildManagedBroadcastMessage(
+          chatId,
+          entityType,
+          request.payload,
+          request.normalizedSourceText,
+          imagePayload,
+        );
+        if (imagePayload) {
+          await this.sendBroadcastImageMessageWithRetry(
+            chatId,
+            message.messageText,
+            message.messageOptions,
+          );
+        } else {
+          await this.maxClient.sendMessage(chatId, message.messageText, message.messageOptions, {
+            immediate: true,
+          });
+        }
+        sentChatIds.push(chatId);
+      } catch (error: unknown) {
+        if (!firstSendError) {
+          firstSendError = error;
+        }
+        failedChatIds.push(chatId);
+        this.logger.warn(
+          {
+            entityType,
+            sourceChatId,
+            targetChatId: chatId,
+            actorUserId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Broadcast occurrence failed for target chat',
+        );
+      }
+    }
+
+    return {
       sentChatIds,
       failedChatIds,
+      firstSendError,
+    };
+  }
+
+  private async buildManagedBroadcastMessage(
+    chatId: string,
+    entityType: ManagedEntityType,
+    payload: SendBroadcastRequest,
+    normalizedSourceText: string,
+    imagePayload?: Record<string, unknown>,
+  ): Promise<{
+    messageText: string;
+    messageOptions: Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'textFormat'> | undefined;
+  }> {
+    const broadcastButtons = await this.resolveBroadcastButtons(chatId, entityType, {
+      includeCustomButton: payload.buttonEnabled,
+      customButtonText: payload.buttonText.trim(),
+      customButtonUrl: payload.buttonUrl.trim(),
+    });
+    const shouldUseRichText =
+      payload.textFormat === 'markdown' &&
+      normalizedSourceText.length > 0 &&
+      (entityType !== 'channel' || broadcastButtons.length > 0);
+    const renderedText =
+      shouldUseRichText
+        ? renderSupportedMarkdownAsHtml(normalizedSourceText)
+        : entityType === 'channel' && payload.textFormat === 'markdown'
+          ? stripSupportedMarkdownToPlainText(normalizedSourceText)
+          : normalizedSourceText;
+    const messageText = renderedText || (payload.imageEnabled ? ' ' : '');
+    const textFormat: MaxSendMessageOptions['textFormat'] = shouldUseRichText ? 'html' : undefined;
+    const messageOptions =
+      broadcastButtons.length > 0 || imagePayload || textFormat
+        ? {
+            ...(textFormat ? { textFormat } : {}),
+            ...(broadcastButtons.length > 0 ? { buttons: broadcastButtons } : {}),
+            ...(imagePayload ? { imagePayload } : {}),
+          }
+        : undefined;
+
+    return {
+      messageText,
+      messageOptions,
+    };
+  }
+
+  private async uploadManagedBroadcastImage(
+    payload: SendBroadcastRequest,
+    entityType: ManagedEntityType,
+    sourceChatId: string,
+    actorUserId: string,
+  ): Promise<Record<string, unknown> | undefined> {
+    if (!payload.imageEnabled) {
+      return undefined;
+    }
+
+    const imageMimeType = payload.imageMimeType.trim().toLowerCase();
+    if (!imageMimeType.startsWith('image/')) {
+      throw new BadRequestException('Поддерживаются только изображения.');
+    }
+    const imageBuffer = this.decodeBroadcastImageBase64(payload.imageBase64);
+    if (imageBuffer.length > BROADCAST_IMAGE_MAX_BYTES) {
+      throw new BadRequestException('Фото слишком большое. Максимум 1 MB.');
+    }
+
+    try {
+      return await this.maxClient.uploadImage(
+        imageBuffer,
+        this.resolveBroadcastImageFileName(payload.imageFileName, imageMimeType),
+        imageMimeType,
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          entityType,
+          sourceChatId,
+          actorUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Broadcast image upload failed',
+      );
+      throw new BadRequestException('Не удалось загрузить фото. Попробуйте другое изображение.');
+    }
+  }
+
+  private parseManagedBroadcastSendAt(
+    sendAt: string | null,
+    options: {
+      required: boolean;
+      sourceChatId: string;
+      sentCount: number;
+    },
+  ): Date | null {
+    if (!sendAt) {
+      if (options.required) {
+        throw new BadRequestException('Укажите следующее время отправки.');
+      }
+      return null;
+    }
+
+    const scheduledAt = new Date(sendAt);
+    if (Number.isNaN(scheduledAt.getTime())) {
+      throw new BadRequestException('Некорректное время рассылки.');
+    }
+    const calculatedDelayMs = scheduledAt.getTime() - Date.now();
+    if (calculatedDelayMs < BROADCAST_MIN_DELAY_MS) {
+      const message =
+        options.sentCount > 0
+          ? 'Следующую отправку можно поставить минимум через 30 секунд.'
+          : 'Укажите время рассылки минимум через 30 секунд.';
+      throw new BadRequestException(message);
+    }
+    if (calculatedDelayMs > BROADCAST_MAX_DELAY_MS) {
+      throw new BadRequestException('Максимальный таймер рассылки: 14 дней.');
+    }
+    return scheduledAt;
+  }
+
+  private toLegacyCycleEveryDays(cycleEveryHours: number): number | undefined {
+    return cycleEveryHours % 24 === 0 ? cycleEveryHours / 24 : undefined;
+  }
+
+  private parseManagedBroadcastTargetChatIds(value: Prisma.JsonValue): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+  }
+
+  private normalizeBroadcastTextFormat(value: string): BroadcastTextFormat {
+    return value === 'markdown' ? 'markdown' : 'plain';
+  }
+
+  private mapManagedBroadcastSummary(row: PersistedManagedBroadcast): ManagedBroadcastSummary {
+    const targetChatIds = this.parseManagedBroadcastTargetChatIds(row.targetChatIds);
+    const normalizedText = row.text.replace(/\s+/gu, ' ').trim();
+
+    return {
+      id: row.id,
+      status: row.status,
+      textPreview: normalizedText
+        ? normalizedText.slice(0, 160)
+        : row.imageEnabled
+          ? 'Фото без текста'
+          : 'Пустая рассылка',
+      textLength: row.text.length,
+      applyToAllChats: row.applyToAllChats,
+      targetChats: targetChatIds.length,
+      hasImage: row.imageEnabled,
+      buttonEnabled: row.buttonEnabled,
+      nextSendAt: row.nextSendAt?.toISOString() ?? null,
+      cycleEnabled: row.cycleEnabled,
+      cycleEveryHours: row.cycleEveryHours,
+      cycleCount: row.cycleCount,
+      sentCount: row.sentCount,
+      remainingCount: Math.max(0, row.cycleCount - row.sentCount),
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+      lastError: row.lastError ?? null,
+    };
+  }
+
+  private mapManagedBroadcastDetails(row: PersistedManagedBroadcast): ManagedBroadcastDetails {
+    const targetChatIds = this.parseManagedBroadcastTargetChatIds(row.targetChatIds);
+
+    return {
+      id: row.id,
+      status: row.status,
+      text: row.text,
+      textFormat: this.normalizeBroadcastTextFormat(row.textFormat),
+      applyToAllChats: row.applyToAllChats,
+      targetChatIds,
+      buttonEnabled: row.buttonEnabled,
+      buttonUrl: row.buttonUrl,
+      buttonText: row.buttonText,
+      imageEnabled: row.imageEnabled,
+      imageBase64: row.imageBase64,
+      imageMimeType: row.imageMimeType,
+      imageFileName: row.imageFileName,
+      nextSendAt: row.nextSendAt?.toISOString() ?? null,
+      cycleEnabled: row.cycleEnabled,
+      cycleEveryHours: row.cycleEveryHours,
+      cycleCount: row.cycleCount,
+      sentCount: row.sentCount,
+      remainingCount: Math.max(0, row.cycleCount - row.sentCount),
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+      lastError: row.lastError ?? null,
     };
   }
 

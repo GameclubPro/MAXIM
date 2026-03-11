@@ -3,7 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { BackChevronIcon, ParticipantsIcon } from '../components/ui/entity-header-icons';
-import { MaxMarkdownEditor, MaxMarkdownPreview } from '../components/max-markdown-editor';
+import { MaxMarkdownEditor } from '../components/max-markdown-editor';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
@@ -396,7 +396,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   const [broadcastImageBase64, setBroadcastImageBase64] = useState('');
   const [broadcastImageMimeType, setBroadcastImageMimeType] = useState('');
   const [broadcastImageFileName, setBroadcastImageFileName] = useState('');
-  const [broadcastImagePreviewUrl, setBroadcastImagePreviewUrl] = useState('');
   const [broadcastImageError, setBroadcastImageError] = useState('');
 
   const settingsQuery = useQuery({
@@ -436,17 +435,8 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     setBroadcastImageBase64('');
     setBroadcastImageMimeType('');
     setBroadcastImageFileName('');
-    setBroadcastImagePreviewUrl('');
     setBroadcastImageError('');
   }, [chatId]);
-
-  useEffect(() => {
-    return () => {
-      if (broadcastImagePreviewUrl) {
-        URL.revokeObjectURL(broadcastImagePreviewUrl);
-      }
-    };
-  }, [broadcastImagePreviewUrl]);
 
   useEffect(() => {
     if (!chatId) {
@@ -844,10 +834,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
           ? 'ПОСТ С CTA ГОТОВ'
           : 'ПОСТ ГОТОВ К ОТПРАВКЕ'
     : 'ТЕКСТ, ФОТО И КНОПКА';
-  const broadcastPreviewButtonEnabled =
-    broadcastButtonEnabled &&
-    Boolean(broadcastButtonText.trim()) &&
-    isHttpUrl(broadcastButtonUrl.trim());
   const broadcastRichTextEnabled = broadcastButtonEnabled || broadcastHasSystemButtons;
 
   useHintPopoverAutoPosition(openHintKey !== null);
@@ -864,7 +850,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     setBroadcastImageBase64('');
     setBroadcastImageMimeType('');
     setBroadcastImageFileName('');
-    setBroadcastImagePreviewUrl('');
     setBroadcastImageError('');
   }
 
@@ -1261,14 +1246,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                     {broadcastText.length}/{MAX_BROADCAST_TEXT_LENGTH}
                   </small>
                 </div>
-                <div className="mailing-message-field__preview">
-                  <span className="mailing-message-field__preview-label">Как увидят в MAX</span>
-                  <MaxMarkdownPreview
-                    text={broadcastText}
-                    formatEnabled={broadcastRichTextEnabled}
-                    fallback="Здесь появится форматированный предпросмотр сообщения."
-                  />
-                </div>
               </label>
 
               <div className="mailing-options-grid">
@@ -1310,7 +1287,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                             setBroadcastImageBase64('');
                             setBroadcastImageMimeType('');
                             setBroadcastImageFileName('');
-                            setBroadcastImagePreviewUrl('');
                             setBroadcastImageError('');
                           }
                         }}
@@ -1340,7 +1316,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                               setBroadcastImageBase64('');
                               setBroadcastImageMimeType('');
                               setBroadcastImageFileName('');
-                              setBroadcastImagePreviewUrl('');
                               setBroadcastImageError('Выберите фото.');
                               return;
                             }
@@ -1349,7 +1324,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                               setBroadcastImageBase64('');
                               setBroadcastImageMimeType('');
                               setBroadcastImageFileName('');
-                              setBroadcastImagePreviewUrl('');
                               setBroadcastImageError('Нужен файл изображения.');
                               return;
                             }
@@ -1358,7 +1332,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                               setBroadcastImageBase64('');
                               setBroadcastImageMimeType('');
                               setBroadcastImageFileName('');
-                              setBroadcastImagePreviewUrl('');
                               setBroadcastImageError('Фото слишком большое. Максимум 1 MB.');
                               return;
                             }
@@ -1368,13 +1341,11 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                               setBroadcastImageBase64(imageBase64);
                               setBroadcastImageMimeType(file.type);
                               setBroadcastImageFileName(file.name);
-                              setBroadcastImagePreviewUrl(URL.createObjectURL(file));
                               setBroadcastImageError('');
                             } catch {
                               setBroadcastImageBase64('');
                               setBroadcastImageMimeType('');
                               setBroadcastImageFileName('');
-                              setBroadcastImagePreviewUrl('');
                               setBroadcastImageError('Не удалось прочитать фото.');
                             }
                           }}
@@ -1486,68 +1457,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                           <small className="field__hint">{broadcastButtonTextError}</small>
                         ) : null}
                       </label>
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-
-              <div className="channel-broadcast-preview">
-                <div className="channel-broadcast-preview__head">
-                  <div className="channel-broadcast-preview__title-wrap">
-                    <span className="channel-broadcast-preview__eyebrow">Предпросмотр</span>
-                    <strong>{resolvedTitle || 'Выбранный канал'}</strong>
-                  </div>
-                  <small className="channel-broadcast-preview__meta">
-                    Сообщение уйдёт сразу после отправки.
-                  </small>
-                </div>
-
-                <div className="channel-broadcast-preview__message">
-                  {broadcastImageEnabled ? (
-                    broadcastImagePreviewUrl ? (
-                      <img
-                        src={broadcastImagePreviewUrl}
-                        alt="Предпросмотр фото для поста канала"
-                        className="broadcast-image-preview"
-                      />
-                    ) : (
-                      <div className="channel-broadcast-preview__image-placeholder">
-                        Фото появится здесь после загрузки
-                      </div>
-                    )
-                  ) : null}
-
-                  <MaxMarkdownPreview
-                    text={broadcastText}
-                    formatEnabled={broadcastRichTextEnabled}
-                    fallback="Здесь будет текст поста. Можно отправить и только фото, но короткий lead обычно работает лучше."
-                  />
-
-                  {broadcastButtonEnabled ? (
-                    <div
-                      className={cn(
-                        'channel-broadcast-preview__button',
-                        !broadcastPreviewButtonEnabled && 'is-disabled',
-                      )}
-                    >
-                      <span>{broadcastButtonText.trim() || 'Название кнопки'}</span>
-                      <small>
-                        {broadcastPreviewButtonEnabled
-                          ? broadcastButtonUrl.trim()
-                          : 'Добавьте корректную ссылку http/https'}
-                      </small>
-                    </div>
-                  ) : null}
-                  {broadcastSystemButtons.includeCommentsButton ? (
-                    <div className="channel-broadcast-preview__button">
-                      <span>💬 Комментарии</span>
-                      <small>Системная кнопка канала</small>
-                    </div>
-                  ) : null}
-                  {broadcastSystemButtons.includeSuggestButton ? (
-                    <div className="channel-broadcast-preview__button">
-                      <span>{normalizedDraft?.postSuggestionsButtonText.trim() || '📰 Предложить пост'}</span>
-                      <small>Системная кнопка канала</small>
                     </div>
                   ) : null}
                 </div>

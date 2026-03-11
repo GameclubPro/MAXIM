@@ -69,6 +69,13 @@ enum ManagedPollStatus {
   CLOSED
 }
 
+enum ManagedBroadcastStatus {
+  ACTIVE
+  FAILED
+  COMPLETED
+  CANCELED
+}
+
 model Chat {
   id         String         @id
   title      String
@@ -88,6 +95,7 @@ model Chat {
   channelAudienceSnapshots ChannelAudienceSnapshot[]
   channelPosts             ChannelPost[]
   channelStatsSyncState    ChannelStatsSyncState?
+  managedBroadcasts        ManagedBroadcast[]
 
   @@map("chats")
 }
@@ -399,6 +407,40 @@ model AuditLog {
 
   @@index([chatId, createdAt])
   @@map("audit_logs")
+}
+
+model ManagedBroadcast {
+  id             String                 @id @default(cuid())
+  sourceChatId   String                 @map("source_chat_id")
+  entityType     ChatEntityType         @default(CHAT) @map("entity_type")
+  actorUserId    String                 @map("actor_user_id")
+  text           String                 @default("")
+  textFormat     String                 @default("plain") @map("text_format")
+  applyToAllChats Boolean               @default(false) @map("apply_to_all_chats")
+  targetChatIds  Json                   @map("target_chat_ids")
+  buttonEnabled  Boolean                @default(false) @map("button_enabled")
+  buttonUrl      String                 @default("") @map("button_url")
+  buttonText     String                 @default("Открыть") @map("button_text")
+  imageEnabled   Boolean                @default(false) @map("image_enabled")
+  imageBase64    String                 @default("") @map("image_base64")
+  imageMimeType  String                 @default("") @map("image_mime_type")
+  imageFileName  String                 @default("") @map("image_file_name")
+  nextSendAt     DateTime?              @map("next_send_at")
+  cycleEnabled   Boolean                @default(false) @map("cycle_enabled")
+  cycleEveryHours Int                   @default(1) @map("cycle_every_hours")
+  cycleCount     Int                    @default(1) @map("cycle_count")
+  sentCount      Int                    @default(0) @map("sent_count")
+  status         ManagedBroadcastStatus @default(ACTIVE)
+  lastError      String?                @map("last_error")
+  lockedAt       DateTime?              @map("locked_at")
+  createdAt      DateTime               @default(now()) @map("created_at")
+  updatedAt      DateTime               @updatedAt @map("updated_at")
+
+  chat Chat @relation(fields: [sourceChatId], references: [id], onDelete: Cascade)
+
+  @@index([sourceChatId, status, nextSendAt], map: "managed_broadcasts_source_chat_id_status_next_send_at_idx")
+  @@index([status, nextSendAt], map: "managed_broadcasts_status_next_send_at_idx")
+  @@map("managed_broadcasts")
 }
 
 model ChannelAudienceSnapshot {

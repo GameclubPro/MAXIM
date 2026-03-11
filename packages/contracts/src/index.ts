@@ -1041,12 +1041,65 @@ export const sendBroadcastResultSchema = z.object({
   sentChatIds: z.array(z.string()),
   failedChatIds: z.array(z.string()),
   sendAt: z.string().datetime().nullable(),
+  nextSendAt: z.string().datetime().nullable().default(null),
   cycleEnabled: z.boolean(),
   cycleEveryHours: z.number().int().min(1),
   cycleEveryDays: z.number().int().min(1).optional(),
   cycleCount: z.number().int().min(1),
+  scheduleId: z.string().nullable().default(null),
+  scheduledOccurrences: z.number().int().min(0).default(0),
 });
 export type SendBroadcastResult = z.infer<typeof sendBroadcastResultSchema>;
+
+export const managedBroadcastStatusSchema = z.enum(['ACTIVE', 'FAILED', 'COMPLETED', 'CANCELED']);
+export type ManagedBroadcastStatus = z.infer<typeof managedBroadcastStatusSchema>;
+
+export const managedBroadcastSummarySchema = z.object({
+  id: z.string(),
+  status: managedBroadcastStatusSchema,
+  textPreview: z.string(),
+  textLength: z.number().int().min(0),
+  applyToAllChats: z.boolean(),
+  targetChats: z.number().int().min(1),
+  hasImage: z.boolean(),
+  buttonEnabled: z.boolean(),
+  nextSendAt: z.string().datetime().nullable(),
+  cycleEnabled: z.boolean(),
+  cycleEveryHours: z.number().int().min(1),
+  cycleCount: z.number().int().min(1),
+  sentCount: z.number().int().min(0),
+  remainingCount: z.number().int().min(0),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  lastError: z.string().nullable(),
+});
+export type ManagedBroadcastSummary = z.infer<typeof managedBroadcastSummarySchema>;
+
+export const managedBroadcastDetailsSchema = z.object({
+  id: z.string(),
+  status: managedBroadcastStatusSchema,
+  text: z.string(),
+  textFormat: broadcastTextFormatSchema,
+  applyToAllChats: z.boolean(),
+  targetChatIds: z.array(z.string()),
+  buttonEnabled: z.boolean(),
+  buttonUrl: botButtonUrlSchema,
+  buttonText: botButtonTextSchema,
+  imageEnabled: z.boolean(),
+  imageBase64: z.string(),
+  imageMimeType: z.string(),
+  imageFileName: z.string(),
+  nextSendAt: z.string().datetime().nullable(),
+  cycleEnabled: z.boolean(),
+  cycleEveryHours: z.number().int().min(1),
+  cycleCount: z.number().int().min(1),
+  sentCount: z.number().int().min(0),
+  remainingCount: z.number().int().min(0),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+  lastError: z.string().nullable(),
+});
+export type ManagedBroadcastDetails = z.infer<typeof managedBroadcastDetailsSchema>;
 
 export const channelDialogTypeSchema = z.enum(['comments', 'suggest']);
 export type ChannelDialogType = z.infer<typeof channelDialogTypeSchema>;

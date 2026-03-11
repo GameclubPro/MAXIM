@@ -198,6 +198,39 @@ export class AdminController {
     return this.adminService.sendBroadcast(chatId, user, body);
   }
 
+  @Get('chats/:chatId/broadcasts')
+  getManagedBroadcasts(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.adminService.listManagedBroadcasts(chatId, user);
+  }
+
+  @Get('chats/:chatId/broadcasts/:broadcastId')
+  getManagedBroadcast(
+    @Param('chatId') chatId: string,
+    @Param('broadcastId') broadcastId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.adminService.getManagedBroadcast(chatId, broadcastId, user);
+  }
+
+  @Put('chats/:chatId/broadcasts/:broadcastId')
+  updateManagedBroadcast(
+    @Param('chatId') chatId: string,
+    @Param('broadcastId') broadcastId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.updateManagedBroadcast(chatId, broadcastId, user, body);
+  }
+
+  @Delete('chats/:chatId/broadcasts/:broadcastId')
+  cancelManagedBroadcast(
+    @Param('chatId') chatId: string,
+    @Param('broadcastId') broadcastId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.adminService.cancelManagedBroadcast(chatId, broadcastId, user);
+  }
+
   @Get('chats/:chatId/moderation-events')
   getEvents(
     @Param('chatId') chatId: string,

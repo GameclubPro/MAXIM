@@ -16,6 +16,8 @@ import {
   sendBroadcastResultSchema,
   moderationEventSchema,
   managedEntityHeaderSchema,
+  managedBroadcastDetailsSchema,
+  managedBroadcastSummarySchema,
   logsDashboardRangeSchema,
   logsDashboardResponseSchema,
   manualModerationActionRequestSchema,
@@ -32,6 +34,8 @@ import {
   type DomainAllowlistEntry,
   type GlobalUserBlacklistEntry,
   type Me,
+  type ManagedBroadcastDetails,
+  type ManagedBroadcastSummary,
   type ModerationEvent,
   type ChannelDialogType,
   type ChannelDialogResponse,
@@ -78,6 +82,8 @@ export type SendBroadcastPayload = {
   cycleEveryHours: number;
   cycleCount: number;
 };
+
+export type UpdateManagedBroadcastPayload = SendBroadcastPayload;
 
 export type CreateChannelDialogMessagePayload = {
   token: string;
@@ -314,6 +320,42 @@ export class ApiClient {
       body: JSON.stringify(requestBody),
     });
     return sendBroadcastResultSchema.parse(response);
+  }
+
+  async getManagedBroadcasts(chatId: string): Promise<ManagedBroadcastSummary[]> {
+    const response = await this.request(`/chats/${chatId}/broadcasts`);
+    if (!Array.isArray(response)) {
+      throw new Error('Invalid managed broadcasts response');
+    }
+    return response.map((item: unknown) => managedBroadcastSummarySchema.parse(item));
+  }
+
+  async getManagedBroadcast(chatId: string, broadcastId: string): Promise<ManagedBroadcastDetails> {
+    const response = await this.request(`/chats/${chatId}/broadcasts/${broadcastId}`);
+    return managedBroadcastDetailsSchema.parse(response);
+  }
+
+  async updateManagedBroadcast(
+    chatId: string,
+    broadcastId: string,
+    payload: UpdateManagedBroadcastPayload,
+  ): Promise<ManagedBroadcastDetails> {
+    const requestBody = sendBroadcastRequestSchema.parse(payload);
+    const response = await this.request(`/chats/${chatId}/broadcasts/${broadcastId}`, {
+      method: 'PUT',
+      body: JSON.stringify(requestBody),
+    });
+    return managedBroadcastDetailsSchema.parse(response);
+  }
+
+  async cancelManagedBroadcast(
+    chatId: string,
+    broadcastId: string,
+  ): Promise<ManagedBroadcastDetails> {
+    const response = await this.request(`/chats/${chatId}/broadcasts/${broadcastId}`, {
+      method: 'DELETE',
+    });
+    return managedBroadcastDetailsSchema.parse(response);
   }
 
   async sendChannelBroadcast(

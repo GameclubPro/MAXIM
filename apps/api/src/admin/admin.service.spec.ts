@@ -62,6 +62,68 @@ function createPrismaMock() {
       findMany: jest.fn().mockResolvedValue([]),
       create: jest.fn().mockResolvedValue(undefined),
     },
+    managedBroadcast: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findFirst: jest.fn().mockResolvedValue(null),
+      findUnique: jest.fn().mockResolvedValue(null),
+      create: jest.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({
+        id: 'broadcast-1',
+        sourceChatId: 'chat-1',
+        entityType: 'CHAT',
+        actorUserId: 'admin-1',
+        text: '',
+        textFormat: 'plain',
+        applyToAllChats: false,
+        targetChatIds: ['chat-1'],
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        nextSendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+        sentCount: 0,
+        status: 'ACTIVE',
+        lastError: null,
+        lockedAt: null,
+        createdAt: new Date('2026-03-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-03-01T00:00:00.000Z'),
+        ...data,
+      })),
+      update: jest.fn().mockImplementation(async ({ data }: { data: Record<string, unknown> }) => ({
+        id: 'broadcast-1',
+        sourceChatId: 'chat-1',
+        entityType: 'CHAT',
+        actorUserId: 'admin-1',
+        text: '',
+        textFormat: 'plain',
+        applyToAllChats: false,
+        targetChatIds: ['chat-1'],
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        nextSendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+        sentCount: 0,
+        status: 'ACTIVE',
+        lastError: null,
+        lockedAt: null,
+        createdAt: new Date('2026-03-01T00:00:00.000Z'),
+        updatedAt: new Date('2026-03-01T00:00:00.000Z'),
+        ...data,
+      })),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
     channelAudienceSnapshot: {
       findFirst: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
@@ -1505,13 +1567,12 @@ describe('AdminService.sendBroadcast', () => {
     jest.useRealTimers();
   });
 
-  it('schedules image broadcast with delayed send', async () => {
+  it('stores future chat broadcast in managed schedules', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
 
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-1' }),
       sendMessage: jest.fn().mockResolvedValue(undefined),
     };
     const chatContextCache = {
@@ -1550,20 +1611,30 @@ describe('AdminService.sendBroadcast', () => {
       },
     );
 
-    expect(maxClient.uploadImage).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
-      'chat-1',
-      ' ',
-      { imagePayload: { token: 'upload-token-1' } },
-      { delayMs: 3_600_000 },
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(prisma.managedBroadcast.create).toHaveBeenCalledTimes(1);
+    expect(prisma.managedBroadcast.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          sourceChatId: 'chat-1',
+          imageEnabled: true,
+          imageMimeType: 'image/jpeg',
+          imageFileName: 'photo.jpg',
+          nextSendAt: new Date('2026-03-03T11:00:00.000Z'),
+          cycleEnabled: false,
+          cycleCount: 1,
+          sentCount: 0,
+        }),
+      }),
     );
     expect(result.sendAt).toBe('2026-03-03T11:00:00.000Z');
-    expect(result.sentChats).toBe(1);
+    expect(result.nextSendAt).toBe('2026-03-03T11:00:00.000Z');
+    expect(result.scheduleId).toBe('broadcast-1');
+    expect(result.sentChats).toBe(0);
     expect(result.failedChats).toBe(0);
   });
 
-  it('uses hourly interval for cyclic broadcast', async () => {
+  it('sends first cycle immediately and stores remaining launches', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
 
     const prisma = createPrismaMock();
@@ -1608,30 +1679,29 @@ describe('AdminService.sendBroadcast', () => {
       },
     );
 
-    expect(maxClient.sendMessage).toHaveBeenCalledTimes(3);
-    expect(maxClient.sendMessage).toHaveBeenNthCalledWith(
-      1,
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'chat-1',
       'Напоминание',
       undefined,
       { immediate: true },
     );
-    expect(maxClient.sendMessage).toHaveBeenNthCalledWith(
-      2,
-      'chat-1',
-      'Напоминание',
-      undefined,
-      { delayMs: 7_200_000 },
-    );
-    expect(maxClient.sendMessage).toHaveBeenNthCalledWith(
-      3,
-      'chat-1',
-      'Напоминание',
-      undefined,
-      { delayMs: 14_400_000 },
+    expect(prisma.managedBroadcast.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          nextSendAt: new Date('2026-03-03T12:00:00.000Z'),
+          cycleEnabled: true,
+          cycleEveryHours: 2,
+          cycleCount: 3,
+          sentCount: 1,
+        }),
+      }),
     );
     expect(result.cycleEveryHours).toBe(2);
     expect(result.cycleCount).toBe(3);
+    expect(result.nextSendAt).toBe('2026-03-03T12:00:00.000Z');
+    expect(result.scheduleId).toBe('broadcast-1');
+    expect(result.scheduledOccurrences).toBe(2);
   });
 });
 
