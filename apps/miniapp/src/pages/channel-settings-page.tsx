@@ -920,7 +920,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
       imageFileName: broadcastHasImage ? broadcastImageFileName : '',
       sendAt: null,
       cycleEnabled: false,
-      cycleEveryDays: 1,
+      cycleEveryHours: 1,
       cycleCount: 1,
     });
   }

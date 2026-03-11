@@ -102,7 +102,6 @@ const BROADCAST_IMAGE_MAX_BYTES = 1_000_000;
 const BROADCAST_MIN_DELAY_MS = 30_000;
 const BROADCAST_MAX_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
 const BROADCAST_CYCLE_MAX_COUNT = 14;
-const BROADCAST_DAY_MS = 24 * 60 * 60 * 1000;
 const BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS = [1_500, 3_000, 6_000];
 const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 30;
 const ONE_HOUR_MS = 60 * 60 * 1000;
@@ -1585,16 +1584,17 @@ export class AdminService {
     }
 
     const cycleEnabled = parsed.data.cycleEnabled;
-    const cycleEveryDays = cycleEnabled ? parsed.data.cycleEveryDays : 1;
+    const cycleEveryHours = cycleEnabled ? parsed.data.cycleEveryHours : 1;
     const cycleCount = cycleEnabled ? parsed.data.cycleCount : 1;
     if (cycleEnabled && cycleCount > BROADCAST_CYCLE_MAX_COUNT) {
       throw new BadRequestException(`Максимум ${BROADCAST_CYCLE_MAX_COUNT} отправок в цикле.`);
     }
-    const cycleEveryMs = cycleEveryDays * BROADCAST_DAY_MS;
+    const cycleEveryMs = cycleEveryHours * ONE_HOUR_MS;
     const maxDelayWithCycles = delayMs + (cycleCount - 1) * cycleEveryMs;
     if (maxDelayWithCycles > BROADCAST_MAX_DELAY_MS) {
       throw new BadRequestException('Все циклы должны укладываться в 14 дней от текущего момента.');
     }
+    const legacyCycleEveryDays = cycleEveryHours % 24 === 0 ? cycleEveryHours / 24 : undefined;
 
     let imagePayload: Record<string, unknown> | undefined;
     if (parsed.data.imageEnabled) {
@@ -1684,7 +1684,7 @@ export class AdminService {
               actorUserId: user.userId,
               sendAt,
               cycleEnabled,
-              cycleEveryDays,
+              cycleEveryHours,
               cycleCount,
               cycleIndex: cycleIndex + 1,
               err: error instanceof Error ? error.message : String(error),
@@ -1722,7 +1722,8 @@ export class AdminService {
           failedChats: failedChatIds.length,
           sendAt,
           cycleEnabled,
-          cycleEveryDays,
+          cycleEveryHours,
+          ...(legacyCycleEveryDays ? { cycleEveryDays: legacyCycleEveryDays } : {}),
           cycleCount,
           sentChatIds,
           failedChatIds,
@@ -1738,7 +1739,8 @@ export class AdminService {
       failedChats: failedChatIds.length,
       sendAt,
       cycleEnabled,
-      cycleEveryDays,
+      cycleEveryHours,
+      ...(legacyCycleEveryDays ? { cycleEveryDays: legacyCycleEveryDays } : {}),
       cycleCount,
       sentChatIds,
       failedChatIds,

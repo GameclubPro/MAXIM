@@ -964,7 +964,8 @@ export const sendBroadcastRequestSchema = z
     imageFileName: z.string().trim().max(128).default(''),
     sendAt: z.string().datetime().nullable().default(null),
     cycleEnabled: z.boolean().default(false),
-    cycleEveryDays: z.number().int().min(1).max(14).default(1),
+    cycleEveryHours: z.number().int().min(1).max(14 * 24).optional(),
+    cycleEveryDays: z.number().int().min(1).max(14).optional(),
     cycleCount: z.number().int().min(1).max(14).default(1),
   })
   .superRefine((value, ctx) => {
@@ -1017,7 +1018,19 @@ export const sendBroadcastRequestSchema = z
         message: 'Для цикла укажите минимум 2 отправки.',
       });
     }
-  });
+
+    if (value.cycleEnabled && value.cycleEveryHours == null && value.cycleEveryDays == null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['cycleEveryHours'],
+        message: 'Укажите интервал циклической рассылки.',
+      });
+    }
+  })
+  .transform((value) => ({
+    ...value,
+    cycleEveryHours: value.cycleEveryHours ?? (value.cycleEveryDays ?? 1) * 24,
+  }));
 export type SendBroadcastRequest = z.infer<typeof sendBroadcastRequestSchema>;
 
 export const sendBroadcastResultSchema = z.object({
@@ -1029,7 +1042,8 @@ export const sendBroadcastResultSchema = z.object({
   failedChatIds: z.array(z.string()),
   sendAt: z.string().datetime().nullable(),
   cycleEnabled: z.boolean(),
-  cycleEveryDays: z.number().int().min(1),
+  cycleEveryHours: z.number().int().min(1),
+  cycleEveryDays: z.number().int().min(1).optional(),
   cycleCount: z.number().int().min(1),
 });
 export type SendBroadcastResult = z.infer<typeof sendBroadcastResultSchema>;

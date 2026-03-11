@@ -1545,7 +1545,7 @@ describe('AdminService.sendBroadcast', () => {
         imageFileName: 'photo.jpg',
         sendAt: '2026-03-03T11:00:00.000Z',
         cycleEnabled: false,
-        cycleEveryDays: 1,
+        cycleEveryHours: 1,
         cycleCount: 1,
       },
     );
@@ -1561,6 +1561,77 @@ describe('AdminService.sendBroadcast', () => {
     expect(result.sendAt).toBe('2026-03-03T11:00:00.000Z');
     expect(result.sentChats).toBe(1);
     expect(result.failedChats).toBe(0);
+  });
+
+  it('uses hourly interval for cyclic broadcast', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.sendBroadcast(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Напоминание',
+        textFormat: 'plain',
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        sendAt: null,
+        cycleEnabled: true,
+        cycleEveryHours: 2,
+        cycleCount: 3,
+      },
+    );
+
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(3);
+    expect(maxClient.sendMessage).toHaveBeenNthCalledWith(
+      1,
+      'chat-1',
+      'Напоминание',
+      undefined,
+      { immediate: true },
+    );
+    expect(maxClient.sendMessage).toHaveBeenNthCalledWith(
+      2,
+      'chat-1',
+      'Напоминание',
+      undefined,
+      { delayMs: 7_200_000 },
+    );
+    expect(maxClient.sendMessage).toHaveBeenNthCalledWith(
+      3,
+      'chat-1',
+      'Напоминание',
+      undefined,
+      { delayMs: 14_400_000 },
+    );
+    expect(result.cycleEveryHours).toBe(2);
+    expect(result.cycleCount).toBe(3);
   });
 });
 
@@ -1626,7 +1697,7 @@ describe('AdminService.sendChannelBroadcast', () => {
         imageFileName: 'cover.jpg',
         sendAt: null,
         cycleEnabled: false,
-        cycleEveryDays: 1,
+        cycleEveryHours: 1,
         cycleCount: 1,
       },
     );
@@ -1709,7 +1780,7 @@ describe('AdminService.sendChannelBroadcast', () => {
         imageFileName: '',
         sendAt: null,
         cycleEnabled: false,
-        cycleEveryDays: 1,
+        cycleEveryHours: 1,
         cycleCount: 1,
       },
     );
@@ -1783,7 +1854,7 @@ describe('AdminService.sendChannelBroadcast', () => {
         imageFileName: '',
         sendAt: null,
         cycleEnabled: false,
-        cycleEveryDays: 1,
+        cycleEveryHours: 1,
         cycleCount: 1,
       },
     );
@@ -1860,7 +1931,7 @@ describe('AdminService.sendChannelBroadcast', () => {
         imageFileName: '',
         sendAt: null,
         cycleEnabled: false,
-        cycleEveryDays: 1,
+        cycleEveryHours: 1,
         cycleCount: 1,
       },
     );

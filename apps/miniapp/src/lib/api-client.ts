@@ -75,7 +75,7 @@ export type SendBroadcastPayload = {
   imageFileName: string;
   sendAt: string | null;
   cycleEnabled: boolean;
-  cycleEveryDays: number;
+  cycleEveryHours: number;
   cycleCount: number;
 };
 
