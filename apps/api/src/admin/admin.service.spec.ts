@@ -1206,6 +1206,8 @@ describe('AdminService allowlist normalization', () => {
     prisma.domainAllowlist.findMany.mockResolvedValue([
       { domain: 'max.ru/news', removeAfterAt: null },
       { domain: 'https://max.ru/news', removeAfterAt: null },
+      { domain: 'https://vk.com/studia_svetlana_armavir', removeAfterAt: null },
+      { domain: 'https://vk.ru/studia_svetlana_armavir', removeAfterAt: null },
       { domain: 'example.org', removeAfterAt: null },
       { domain: 'https://EXAMPLE.org/', removeAfterAt: null },
     ]);
@@ -1231,7 +1233,70 @@ describe('AdminService allowlist normalization', () => {
       chatTitle: null,
     });
 
-    expect(result).toEqual(['https://example.org', 'https://max.ru/news']);
+    expect(result).toEqual([
+      'https://example.org',
+      'https://max.ru/news',
+      'https://vk.com/studia_svetlana_armavir',
+    ]);
+  });
+
+  it('deduplicates host aliases when adding a link', async () => {
+    const prisma = createPrismaMock();
+    prisma.domainAllowlist.findMany.mockResolvedValueOnce([
+      { domain: 'https://vk.ru/studia_svetlana_armavir' },
+      { domain: 'another.org' },
+    ]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await service.addDomain(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        domain: 'https://vk.com/studia_svetlana_armavir',
+      },
+    );
+
+    expect(prisma.domainAllowlist.upsert).toHaveBeenCalledWith({
+      where: {
+        chatId_domain: {
+          chatId: 'chat-1',
+          domain: 'https://vk.com/studia_svetlana_armavir',
+        },
+      },
+      create: {
+        chatId: 'chat-1',
+        domain: 'https://vk.com/studia_svetlana_armavir',
+      },
+      update: {
+        removeAfterAt: null,
+      },
+    });
+    expect(prisma.domainAllowlist.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        domain: {
+          in: ['https://vk.ru/studia_svetlana_armavir'],
+        },
+      },
+    });
   });
 
   it('canonicalizes legacy link rows when adding a link', async () => {

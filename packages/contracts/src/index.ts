@@ -73,6 +73,14 @@ function isValidBotButtonUrl(value: string): boolean {
 const ALLOWLIST_URL_CANDIDATE_PATTERN =
   /(?:https?:\/\/|(?:[a-z0-9-]+\.)+[a-z]{2,})[^\s<>"'()[\]{}]*/i;
 const ENCODED_WHITESPACE_PATTERN = /%(?:09|0a|0d|20)/i;
+const ALLOWLIST_HOST_ALIASES = new Map<string, string>([
+  ['vk.com', 'vk.com'],
+  ['www.vk.com', 'vk.com'],
+  ['vk.ru', 'vk.com'],
+  ['www.vk.ru', 'vk.com'],
+  ['instagram.com', 'instagram.com'],
+  ['www.instagram.com', 'instagram.com'],
+]);
 
 function tryDecodeUriComponent(value: string): string | null {
   try {
@@ -111,6 +119,11 @@ function extractAllowlistUrlCandidate(value: string): string | null {
   return null;
 }
 
+function canonicalizeAllowlistHostname(hostname: string): string {
+  const normalized = hostname.trim().toLowerCase();
+  return ALLOWLIST_HOST_ALIASES.get(normalized) ?? normalized;
+}
+
 export function normalizeAllowlistLink(value: string): string | null {
   const raw = extractAllowlistUrlCandidate(value);
   if (!raw) {
@@ -130,7 +143,7 @@ export function normalizeAllowlistLink(value: string): string | null {
     return null;
   }
 
-  const hostname = parsed.hostname.toLowerCase();
+  const hostname = canonicalizeAllowlistHostname(parsed.hostname);
   if (!hostname) {
     return null;
   }

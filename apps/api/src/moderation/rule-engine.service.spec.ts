@@ -172,6 +172,19 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
   });
 
+  it('treats vk.com and vk.ru as the same allowlisted link', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'смотри https://vk.ru/studia_svetlana_armavir',
+      settings: buildSettings(),
+      domainAllowlist: ['https://vk.com/studia_svetlana_armavir'],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+  });
+
   it('matches legacy allowlist rows with encoded trailing text', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
