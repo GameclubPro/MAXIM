@@ -9,7 +9,7 @@ import {
   type ManagedBroadcastDetails,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { MaxMarkdownEditor } from '../components/max-markdown-editor';
 import { ManagedPollCard } from '../components/managed-poll-card';
@@ -34,6 +34,7 @@ const DUPLICATE_COUNT_MIN = 2;
 const DUPLICATE_COUNT_MAX = 20;
 const MESSAGE_LENGTH_MIN = 50;
 const MESSAGE_LENGTH_MAX = 1500;
+const MESSAGE_LENGTH_STEP = 10;
 const PHOTO_COOLDOWN_MIN_HOURS = 1;
 const PHOTO_COOLDOWN_MAX_HOURS = 24;
 const STICKER_COOLDOWN_MIN_MINUTES = 1;
@@ -60,6 +61,97 @@ function formatParticipantsCount(value: number | null | undefined): string | nul
   }
 
   return new Intl.NumberFormat('ru-RU').format(value);
+}
+
+type MaxMessageLengthSliderProps = {
+  value: ChatSettings['maxMessageLength'];
+  min: number;
+  max: number;
+  step: number;
+  onCommit: (value: ChatSettings['maxMessageLength']) => void;
+};
+
+function MaxMessageLengthSlider({
+  value,
+  min,
+  max,
+  step,
+  onCommit,
+}: MaxMessageLengthSliderProps) {
+  const [localValue, setLocalValue] = useState(value);
+  const [isDragging, setIsDragging] = useState(false);
+  const isDraggingRef = useRef(false);
+
+  useEffect(() => {
+    if (!isDraggingRef.current) {
+      setLocalValue(value);
+    }
+  }, [value]);
+
+  function normalizeValue(rawValue: string): ChatSettings['maxMessageLength'] {
+    const parsedValue = Number(rawValue);
+    const safeValue = Number.isFinite(parsedValue) ? parsedValue : value;
+    return Math.min(max, Math.max(min, safeValue)) as ChatSettings['maxMessageLength'];
+  }
+
+  function commitValue(nextValue: ChatSettings['maxMessageLength']) {
+    isDraggingRef.current = false;
+    setIsDragging(false);
+    setLocalValue(nextValue);
+    if (nextValue !== value) {
+      onCommit(nextValue);
+    }
+  }
+
+  return (
+    <>
+      <div className="settings-native-toggle__row">
+        <span className="settings-native-toggle__title settings-native-toggle__title--sub">
+          Максимум
+        </span>
+        <output className="settings-length-limit__value" aria-live="polite">
+          {localValue} симв.
+        </output>
+      </div>
+
+      <input
+        className="settings-length-limit__slider"
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={localValue}
+        onPointerDown={() => {
+          isDraggingRef.current = true;
+          setIsDragging(true);
+        }}
+        onChange={(event) => {
+          const nextValue = normalizeValue(event.target.value);
+          setLocalValue(nextValue);
+          if (!isDraggingRef.current) {
+            onCommit(nextValue);
+          }
+        }}
+        onPointerUp={(event) => {
+          commitValue(normalizeValue(event.currentTarget.value));
+        }}
+        onPointerCancel={(event) => {
+          commitValue(normalizeValue(event.currentTarget.value));
+        }}
+        onBlur={(event) => {
+          if (!isDragging && !isDraggingRef.current) {
+            commitValue(normalizeValue(event.currentTarget.value));
+          }
+        }}
+        aria-label="Лимит длины сообщения"
+      />
+
+      <div className="settings-length-limit__labels" aria-hidden>
+        <span>{min}</span>
+        <span>{max}</span>
+      </div>
+    </>
+  );
 }
 
 type DuplicateEnabledKey = 'duplicateWarnEnabled' | 'duplicateKickEnabled' | 'duplicateBanEnabled';
@@ -5459,37 +5551,15 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     </div>
 
                     {draft.maxMessageLengthEnabled ? (
-                      <>
-                        <div className="settings-native-toggle__row">
-                          <span className="settings-native-toggle__title settings-native-toggle__title--sub">
-                            Максимум
-                          </span>
-                          <output className="settings-length-limit__value" aria-live="polite">
-                            {draft.maxMessageLength} симв.
-                          </output>
-                        </div>
-
-                        <input
-                          className="settings-length-limit__slider"
-                          type="range"
-                          min={MESSAGE_LENGTH_MIN}
-                          max={MESSAGE_LENGTH_MAX}
-                          step={1}
-                          value={draft.maxMessageLength}
-                          onChange={(event) =>
-                            setFieldValue(
-                              'maxMessageLength',
-                              Number(event.target.value) as ChatSettings['maxMessageLength'],
-                            )
-                          }
-                          aria-label="Лимит длины сообщения"
-                        />
-
-                        <div className="settings-length-limit__labels" aria-hidden>
-                          <span>{MESSAGE_LENGTH_MIN}</span>
-                          <span>{MESSAGE_LENGTH_MAX}</span>
-                        </div>
-                      </>
+                      <MaxMessageLengthSlider
+                        value={draft.maxMessageLength}
+                        min={MESSAGE_LENGTH_MIN}
+                        max={MESSAGE_LENGTH_MAX}
+                        step={MESSAGE_LENGTH_STEP}
+                        onCommit={(value) =>
+                          setFieldValue('maxMessageLength', value as ChatSettings['maxMessageLength'])
+                        }
+                      />
                     ) : null}
 
                     {openHintKey === 'maxMessageLength' ? (
