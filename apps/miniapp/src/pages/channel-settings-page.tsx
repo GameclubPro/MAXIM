@@ -1218,6 +1218,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                   ariaLabel="Текст рассылки в канал"
                   rows={5}
                   showToolbar={broadcastRichTextEnabled}
+                  compactToolbar
                   maxLength={MAX_BROADCAST_TEXT_LENGTH}
                   placeholder="Например: Новый пост уже в канале. Откройте выпуск по кнопке ниже."
                 />

@@ -31,6 +31,7 @@ export function MaxMarkdownEditor({
   rows = 5,
   disabled = false,
   showToolbar = true,
+  compactToolbar = false,
   ariaLabel,
   className,
 }: {
@@ -41,6 +42,7 @@ export function MaxMarkdownEditor({
   rows?: number;
   disabled?: boolean;
   showToolbar?: boolean;
+  compactToolbar?: boolean;
   ariaLabel: string;
   className?: string;
 }) {
@@ -80,7 +82,7 @@ export function MaxMarkdownEditor({
     <div className={cn('max-markdown-editor', className)}>
       {showToolbar ? (
         <div
-          className="max-markdown-editor__toolbar"
+          className={cn('max-markdown-editor__toolbar', compactToolbar && 'max-markdown-editor__toolbar--compact')}
           role="toolbar"
           aria-label="Форматирование MAX"
         >

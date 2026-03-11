@@ -3214,6 +3214,13 @@
     rgba(255, 255, 255, 0.82);
 }
 
+.max-markdown-editor__toolbar--compact {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 6px;
+  padding: 6px;
+}
+
 .max-markdown-editor__tool {
   min-width: 38px;
   min-height: 38px;
@@ -3225,6 +3232,16 @@
   font-weight: 800;
   line-height: 1;
   cursor: pointer;
+}
+
+.max-markdown-editor__toolbar--compact .max-markdown-editor__tool {
+  min-width: 0;
+  width: 100%;
+  font-size: 0.74rem;
+}
+
+.max-markdown-editor__toolbar--compact .max-markdown-editor__tool--code {
+  font-size: 0.68rem;
 }
 
 .max-markdown-editor__tool--italic {
