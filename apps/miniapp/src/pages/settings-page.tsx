@@ -18,6 +18,7 @@ import { BackChevronIcon, ParticipantsIcon } from '../components/ui/entity-heade
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
+import { prepareBroadcastImage } from '../lib/broadcast-image';
 import { cn } from '../lib/cn';
 import type { ApiClient, SendBroadcastPayload, UpdateChatRulesPayload } from '../lib/api-client';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
@@ -48,7 +49,7 @@ const MAX_BROADCAST_SCHEDULE_DAYS = 14;
 const MIN_BROADCAST_CYCLE_HOURS = 1;
 const MAX_BROADCAST_CYCLE_HOURS = 24;
 const MAX_BROADCAST_CYCLE_COUNT = 100;
-const MAX_BROADCAST_IMAGE_SIZE_BYTES = 1_000_000;
+const MAX_RULES_IMAGE_SIZE_BYTES = 1_000_000;
 const MAX_CHAT_RULES_TEXT_LENGTH = 2_000;
 const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
 const BROADCAST_DAY_MS = 24 * 60 * 60 * 1_000;
@@ -2027,7 +2028,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       return;
     }
 
-    if (file.size > MAX_BROADCAST_IMAGE_SIZE_BYTES) {
+    if (file.size > MAX_RULES_IMAGE_SIZE_BYTES) {
       setRulesImageError('Фото правил слишком большое. Максимум 1 MB.');
       return;
     }
@@ -6615,8 +6616,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                               onToggleHint={toggleHint}
                               label="Пояснение для фото в рассылке"
                             >
-                              Одна картинка до 1 MB. Поддерживаются PNG, JPG и WEBP. Фото можно
-                              отправить отдельно или вместе с текстом.
+                              Фото можно отправить отдельно или вместе с текстом. Приложение
+                              подготовит его перед отправкой.
                             </SettingsHintAnchor>
                           </div>
                         </div>
@@ -6677,25 +6678,21 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                                   return;
                                 }
 
-                                if (file.size > MAX_BROADCAST_IMAGE_SIZE_BYTES) {
-                                  setMailingImageBase64('');
-                                  setMailingImageMimeType('');
-                                  setMailingImageFileName('');
-                                  setMailingImageError('Фото слишком большое. Максимум 1 MB.');
-                                  return;
-                                }
-
                                 try {
-                                  const imageBase64 = await fileToBase64(file);
-                                  setMailingImageBase64(imageBase64);
-                                  setMailingImageMimeType(file.type);
-                                  setMailingImageFileName(file.name);
+                                  const preparedImage = await prepareBroadcastImage(file);
+                                  setMailingImageBase64(preparedImage.base64);
+                                  setMailingImageMimeType(preparedImage.mimeType);
+                                  setMailingImageFileName(preparedImage.fileName);
                                   setMailingImageError('');
-                                } catch {
+                                } catch (error: unknown) {
                                   setMailingImageBase64('');
                                   setMailingImageMimeType('');
                                   setMailingImageFileName('');
-                                  setMailingImageError('Не удалось прочитать фото.');
+                                  setMailingImageError(
+                                    error instanceof Error && error.message.trim()
+                                      ? error.message
+                                      : 'Не удалось подготовить фото.',
+                                  );
                                 }
                               }}
                               disabled={isMailingBusy}

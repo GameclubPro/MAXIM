@@ -9,6 +9,7 @@ import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
+import { prepareBroadcastImage } from '../lib/broadcast-image';
 import { cn } from '../lib/cn';
 import type { ApiClient, SendBroadcastPayload } from '../lib/api-client';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
@@ -37,7 +38,6 @@ type ChannelSettingsHintKey =
 const AUTOSAVE_DELAY_MS = 700;
 const AUTOSAVE_SAVED_HIDE_MS = 1600;
 const MAX_BROADCAST_TEXT_LENGTH = 1_000;
-const MAX_BROADCAST_IMAGE_SIZE_BYTES = 1_000_000;
 
 function buildAutoPostButtonsMode(
   includeComments: boolean,
@@ -139,24 +139,6 @@ function normalizeApiError(error: unknown): string {
   }
 
   return text;
-}
-
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = typeof reader.result === 'string' ? reader.result : '';
-      const payload = result.includes(',') ? result.split(',')[1] : '';
-      if (!payload) {
-        reject(new Error('Не удалось прочитать файл.'));
-        return;
-      }
-
-      resolve(payload);
-    };
-    reader.onerror = () => reject(new Error('Не удалось прочитать файл.'));
-    reader.readAsDataURL(file);
-  });
 }
 
 function SectionChevron({ isOpen }: { isOpen: boolean }) {
@@ -1267,7 +1249,8 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                           onToggleHint={toggleHint}
                           label="Пояснение для фото в рассылке"
                         >
-                          Используйте обложку или ключевой кадр. Поддерживаются изображения до 1 MB.
+                          Используйте обложку или ключевой кадр. Приложение подготовит фото перед
+                          отправкой.
                         </ChannelSettingsHintAnchor>
                       </div>
                       <small className="mailing-option-card__subtitle">
@@ -1329,25 +1312,21 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                               return;
                             }
 
-                            if (file.size > MAX_BROADCAST_IMAGE_SIZE_BYTES) {
-                              setBroadcastImageBase64('');
-                              setBroadcastImageMimeType('');
-                              setBroadcastImageFileName('');
-                              setBroadcastImageError('Фото слишком большое. Максимум 1 MB.');
-                              return;
-                            }
-
                             try {
-                              const imageBase64 = await fileToBase64(file);
-                              setBroadcastImageBase64(imageBase64);
-                              setBroadcastImageMimeType(file.type);
-                              setBroadcastImageFileName(file.name);
+                              const preparedImage = await prepareBroadcastImage(file);
+                              setBroadcastImageBase64(preparedImage.base64);
+                              setBroadcastImageMimeType(preparedImage.mimeType);
+                              setBroadcastImageFileName(preparedImage.fileName);
                               setBroadcastImageError('');
-                            } catch {
+                            } catch (error: unknown) {
                               setBroadcastImageBase64('');
                               setBroadcastImageMimeType('');
                               setBroadcastImageFileName('');
-                              setBroadcastImageError('Не удалось прочитать фото.');
+                              setBroadcastImageError(
+                                error instanceof Error && error.message.trim()
+                                  ? error.message
+                                  : 'Не удалось подготовить фото.',
+                              );
                             }
                           }}
                         />

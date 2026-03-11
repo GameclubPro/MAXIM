@@ -959,7 +959,7 @@ export const sendBroadcastRequestSchema = z
     buttonUrl: botButtonUrlSchema,
     buttonText: botButtonTextSchema,
     imageEnabled: z.boolean().default(false),
-    imageBase64: z.string().trim().max(1_500_000).default(''),
+    imageBase64: z.string().trim().max(4_000_000).default(''),
     imageMimeType: z.string().trim().max(128).default(''),
     imageFileName: z.string().trim().max(128).default(''),
     sendAt: z.string().datetime().nullable().default(null),

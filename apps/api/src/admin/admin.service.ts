@@ -118,7 +118,8 @@ type BroadcastOccurrenceResult = {
   firstSendError: unknown;
 };
 
-const BROADCAST_IMAGE_MAX_BYTES = 1_000_000;
+const RULES_IMAGE_MAX_BYTES = 1_000_000;
+const BROADCAST_IMAGE_MAX_BYTES = 3_000_000;
 const BROADCAST_MIN_DELAY_MS = 30_000;
 const BROADCAST_MAX_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
 const BROADCAST_CYCLE_MAX_COUNT = 100;
@@ -723,7 +724,7 @@ export class AdminService {
     const normalizedDraft = this.normalizeChatRulesDraft(parsed.data);
     if (normalizedDraft.imageBase64) {
       const imageBuffer = this.decodeRulesImageBase64(normalizedDraft.imageBase64);
-      if (imageBuffer.length > BROADCAST_IMAGE_MAX_BYTES) {
+      if (imageBuffer.length > RULES_IMAGE_MAX_BYTES) {
         throw new BadRequestException('Фото правил слишком большое. Максимум 1 MB.');
       }
       if (!normalizedDraft.imageMimeType.toLowerCase().startsWith('image/')) {
@@ -778,7 +779,7 @@ export class AdminService {
       }
 
       const imageBuffer = this.decodeRulesImageBase64(rules.imageBase64);
-      if (imageBuffer.length > BROADCAST_IMAGE_MAX_BYTES) {
+      if (imageBuffer.length > RULES_IMAGE_MAX_BYTES) {
         throw new BadRequestException('Фото правил слишком большое. Максимум 1 MB.');
       }
 
@@ -2391,7 +2392,7 @@ export class AdminService {
     }
     const imageBuffer = this.decodeBroadcastImageBase64(payload.imageBase64);
     if (imageBuffer.length > BROADCAST_IMAGE_MAX_BYTES) {
-      throw new BadRequestException('Фото слишком большое. Максимум 1 MB.');
+      throw new BadRequestException('Фото слишком большое. Попробуйте другое изображение.');
     }
 
     try {
