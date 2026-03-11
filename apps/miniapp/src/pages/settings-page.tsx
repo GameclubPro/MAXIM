@@ -43,9 +43,12 @@ const BOT_MESSAGES_DELETE_DELAY_MAX = 60;
 const DOMAIN_REMOVAL_MIN_FUTURE_MS = 30_000;
 const MAX_BROADCAST_TEXT_LENGTH = 1_000;
 const MAX_BROADCAST_SCHEDULE_DAYS = 14;
+const MIN_BROADCAST_SCHEDULE_HOURS = 1;
+const MAX_BROADCAST_SCHEDULE_HOURS = 24;
 const MAX_BROADCAST_CYCLE_COUNT = 14;
 const MAX_BROADCAST_IMAGE_SIZE_BYTES = 1_000_000;
 const MAX_CHAT_RULES_TEXT_LENGTH = 2_000;
+const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
 const BROADCAST_DAY_MS = 24 * 60 * 60 * 1_000;
 
 function formatParticipantsCount(value: number | null | undefined): string | null {
@@ -516,29 +519,31 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
-function buildBroadcastScheduleIso(days: number, time: string): string | null {
-  if (!Number.isInteger(days) || days < 0 || days > MAX_BROADCAST_SCHEDULE_DAYS) {
+function isValidBroadcastScheduleHours(value: number): boolean {
+  return (
+    Number.isInteger(value) &&
+    value >= MIN_BROADCAST_SCHEDULE_HOURS &&
+    value <= MAX_BROADCAST_SCHEDULE_HOURS
+  );
+}
+
+function clampBroadcastScheduleHours(value: number): number {
+  if (!Number.isFinite(value)) {
+    return MIN_BROADCAST_SCHEDULE_HOURS;
+  }
+
+  return Math.max(
+    MIN_BROADCAST_SCHEDULE_HOURS,
+    Math.min(MAX_BROADCAST_SCHEDULE_HOURS, Math.round(value)),
+  );
+}
+
+function buildBroadcastScheduleIso(hours: number): string | null {
+  if (!isValidBroadcastScheduleHours(hours)) {
     return null;
   }
 
-  const [hoursRaw, minutesRaw] = time.split(':');
-  const hours = Number.parseInt(hoursRaw ?? '', 10);
-  const minutes = Number.parseInt(minutesRaw ?? '', 10);
-  if (
-    Number.isNaN(hours) ||
-    Number.isNaN(minutes) ||
-    hours < 0 ||
-    hours > 23 ||
-    minutes < 0 ||
-    minutes > 59
-  ) {
-    return null;
-  }
-
-  const scheduledAt = new Date();
-  scheduledAt.setDate(scheduledAt.getDate() + days);
-  scheduledAt.setHours(hours, minutes, 0, 0);
-  return scheduledAt.toISOString();
+  return new Date(Date.now() + hours * BROADCAST_HOUR_MS).toISOString();
 }
 
 function normalizeDayMinutes(value: number, fallback = 0): number {
@@ -902,10 +907,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [mailingImageFileName, setMailingImageFileName] = useState('');
   const [mailingImagePreviewUrl, setMailingImagePreviewUrl] = useState('');
   const [mailingScheduleEnabled, setMailingScheduleEnabled] = useState(false);
-  const [mailingScheduleDays, setMailingScheduleDays] = useState(0);
-  const [mailingScheduleTime, setMailingScheduleTime] = useState(() =>
-    toLocalTimeInputValue(new Date(Date.now() + 60 * 60 * 1000)),
-  );
+  const [mailingScheduleHours, setMailingScheduleHours] = useState(MIN_BROADCAST_SCHEDULE_HOURS);
   const [mailingCycleEnabled, setMailingCycleEnabled] = useState(false);
   const [mailingCycleEveryDays, setMailingCycleEveryDays] = useState(1);
   const [mailingCycleCount, setMailingCycleCount] = useState(2);
@@ -970,8 +972,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     setMailingImageFileName('');
     setMailingImagePreviewUrl('');
     setMailingScheduleEnabled(false);
-    setMailingScheduleDays(0);
-    setMailingScheduleTime(toLocalTimeInputValue(new Date(Date.now() + 60 * 60 * 1000)));
+    setMailingScheduleHours(MIN_BROADCAST_SCHEDULE_HOURS);
     setMailingCycleEnabled(false);
     setMailingCycleEveryDays(1);
     setMailingCycleCount(2);
@@ -1996,7 +1997,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     const normalizedButtonUrl = mailingButtonUrl.trim();
     const normalizedButtonText = mailingButtonText.trim();
     const scheduleIso = mailingScheduleEnabled
-      ? buildBroadcastScheduleIso(mailingScheduleDays, mailingScheduleTime)
+      ? buildBroadcastScheduleIso(mailingScheduleHours)
       : null;
     const cycleEveryDays = Math.max(
       1,
@@ -2055,8 +2056,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     }
 
     if (mailingScheduleEnabled) {
-      if (!scheduleIso) {
-        setMailingScheduleError('Проверьте день и время рассылки.');
+      if (!isValidBroadcastScheduleHours(mailingScheduleHours) || !scheduleIso) {
+        setMailingScheduleError(
+          `Интервал должен быть от ${MIN_BROADCAST_SCHEDULE_HOURS}ч до ${MAX_BROADCAST_SCHEDULE_HOURS}ч.`,
+        );
         hasError = true;
       } else if (new Date(scheduleIso).getTime() <= Date.now() + 30_000) {
         setMailingScheduleError('Выберите время минимум через 30 секунд.');
@@ -2403,18 +2406,18 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       ? `Во все чаты (${chatsCount})`
       : 'Только текущий чат';
   const mailingSchedulePreview = mailingScheduleEnabled
-    ? formatRemovalDateTime(buildBroadcastScheduleIso(mailingScheduleDays, mailingScheduleTime))
+    ? formatRemovalDateTime(buildBroadcastScheduleIso(mailingScheduleHours))
     : '';
   const mailingCycleSummary = mailingCycleEnabled
     ? `${mailingCycleCount} отправок / ${mailingCycleEveryDays} дн`
     : '';
   const mailingContentLabel = mailingText.trim()
     ? `${mailingText.trim().length}/${MAX_BROADCAST_TEXT_LENGTH}`
-    : mailingImageEnabled && mailingImageBase64
-      ? 'фото'
-      : 'пусто';
+      : mailingImageEnabled && mailingImageBase64
+        ? 'фото'
+        : 'пусто';
   const mailingHeaderSummary = `${mailingTargetLabel} · ${mailingContentLabel}${
-    mailingScheduleEnabled ? ' · по таймеру' : ''
+    mailingScheduleEnabled ? ` · через ${mailingScheduleHours}ч` : ''
   }${mailingCycleEnabled ? ` · ${mailingCycleSummary}` : ''}`;
   const mailingCanSend = mailingText.trim().length > 0 || mailingImageBase64.length > 0;
   const mailingSendDisabled = sendBroadcastMutation.isPending || !mailingCanSend;
@@ -6543,7 +6546,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         <div className="mailing-option-card__title-wrap">
                           <span className="mailing-option-card__title">Таймер отправки</span>
                           <small className="mailing-option-card__subtitle">
-                            Отложенная отправка до 14 дней.
+                            Отложенная отправка от 1 до 24 часов.
                           </small>
                         </div>
 
@@ -6566,36 +6569,45 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       </div>
 
                       {mailingScheduleEnabled ? (
-                        <div className="mailing-option-card__body mailing-inline-fields">
-                          <label className="field settings-text-field mailing-inline-field">
-                            <span className="field__label">Через сколько дней</span>
-                            <input
-                              type="number"
-                              min={0}
-                              max={MAX_BROADCAST_SCHEDULE_DAYS}
-                              value={mailingScheduleDays}
-                              onChange={(event) => {
-                                const nextValue = Number.parseInt(event.target.value, 10);
-                                const safeValue = Number.isNaN(nextValue)
-                                  ? 0
-                                  : Math.max(0, Math.min(MAX_BROADCAST_SCHEDULE_DAYS, nextValue));
-                                setMailingScheduleDays(safeValue);
-                                setMailingScheduleError('');
-                              }}
-                            />
-                          </label>
+                        <div className="mailing-option-card__body">
+                          <div className="mailing-hours-stepper">
+                            <span className="mailing-hours-stepper__label">Через сколько часов</span>
+                            <div className="mailing-hours-stepper__control">
+                              <button
+                                type="button"
+                                className="mailing-hours-stepper__button"
+                                onClick={() => {
+                                  setMailingScheduleHours((prev) =>
+                                    clampBroadcastScheduleHours(prev - 1),
+                                  );
+                                  setMailingScheduleError('');
+                                }}
+                                disabled={mailingScheduleHours <= MIN_BROADCAST_SCHEDULE_HOURS}
+                                aria-label="Уменьшить интервал рассылки"
+                              >
+                                -
+                              </button>
 
-                          <label className="field settings-text-field mailing-inline-field">
-                            <span className="field__label">Время</span>
-                            <input
-                              type="time"
-                              value={mailingScheduleTime}
-                              onChange={(event) => {
-                                setMailingScheduleTime(event.target.value);
-                                setMailingScheduleError('');
-                              }}
-                            />
-                          </label>
+                              <div className="mailing-hours-stepper__value" aria-live="polite">
+                                {mailingScheduleHours}ч
+                              </div>
+
+                              <button
+                                type="button"
+                                className="mailing-hours-stepper__button"
+                                onClick={() => {
+                                  setMailingScheduleHours((prev) =>
+                                    clampBroadcastScheduleHours(prev + 1),
+                                  );
+                                  setMailingScheduleError('');
+                                }}
+                                disabled={mailingScheduleHours >= MAX_BROADCAST_SCHEDULE_HOURS}
+                                aria-label="Увеличить интервал рассылки"
+                              >
+                                +
+                              </button>
+                            </div>
+                          </div>
                         </div>
                       ) : null}
 
@@ -6604,8 +6616,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       ) : mailingScheduleEnabled ? (
                         <small className="mailing-option-card__hint is-info">
                           {mailingSchedulePreview
-                            ? `Отправка: ${mailingSchedulePreview}`
-                            : 'Проверьте день и время отправки.'}
+                            ? `Отправка через ${mailingScheduleHours}ч: ${mailingSchedulePreview}`
+                            : 'Проверьте интервал отправки.'}
                         </small>
                       ) : (
                         <small className="mailing-option-card__hint">
@@ -6726,10 +6738,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         setMailingImageFileName('');
                         setMailingImagePreviewUrl('');
                         setMailingScheduleEnabled(false);
-                        setMailingScheduleDays(0);
-                        setMailingScheduleTime(
-                          toLocalTimeInputValue(new Date(Date.now() + 60 * 60 * 1000)),
-                        );
+                        setMailingScheduleHours(MIN_BROADCAST_SCHEDULE_HOURS);
                         setMailingCycleEnabled(false);
                         setMailingCycleEveryDays(1);
                         setMailingCycleCount(2);
