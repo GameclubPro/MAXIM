@@ -714,6 +714,8 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     },
   });
 
+  useHintPopoverAutoPosition(openHintKey !== null);
+
   if (!chatId) {
     return (
       <div className="page-stack page-enter">
@@ -835,8 +837,6 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
           : 'ПОСТ ГОТОВ К ОТПРАВКЕ'
     : 'ТЕКСТ, ФОТО И КНОПКА';
   const broadcastRichTextEnabled = broadcastButtonEnabled || broadcastHasSystemButtons;
-
-  useHintPopoverAutoPosition(openHintKey !== null);
 
   function resetBroadcastComposer() {
     setBroadcastText('');
