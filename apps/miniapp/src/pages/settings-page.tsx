@@ -321,32 +321,40 @@ const RUSSIAN_TIMEZONE_OPTIONS = [
 ] as const;
 
 const DEFAULT_BOT_MESSAGE_TEMPLATES: Record<BotMessageEditorKey, string> = {
-  link: 'Сообщение пользователя {user} {message_status}: {reason}',
-  greeting: 'Приветствуем {user} в чате!',
-  textFilters: 'Сообщение пользователя {user} {message_status}: {reason}',
-  duplicate: 'Сообщение пользователя {user} {duplicate_context}. {sanction}',
-  messageLimits: 'Сообщение пользователя {user} {message_status}: {reason}',
-  night: 'Чат сейчас закрыт на ночь ({night_window}, {night_timezone}). {night_status}',
+  link: 'Товарищ {user}, Майор Максимов на связи 👮‍♂️ Сообщение {message_status}: {reason}. Поправьте и едем дальше.',
+  greeting: 'Здравия желаю, {user}. Майор Максимов на связи 🤝 Добро пожаловать в чат.',
+  textFilters:
+    'Товарищ {user}, Майор Максимов на связи 👮‍♂️ Сообщение {message_status}: {reason}. Поправьте и едем дальше.',
+  duplicate:
+    'Товарищ {user}, Майор Максимов на связи 👮‍♂️ Повтор по базе: сообщение {duplicate_context}. {sanction} Дальше без серий, договорились.',
+  messageLimits:
+    'Товарищ {user}, Майор Максимов на связи 👮‍♂️ Сообщение {message_status}: {reason}. Поправьте и едем дальше.',
+  night: 'Ночной режим, граждане 🌙 Участок закрыт на {night_window} ({night_timezone}). {night_status}',
 };
 
 const DEFAULT_WARN_MESSAGE_TEMPLATES: Record<WarnMessageEditorKey, string> = {
-  linkWarn: 'Пользователю {user} {warning}. {reason}.',
-  textFiltersWarn: 'Пользователю {user} {warning}.',
+  linkWarn:
+    'Товарищ {user}, {warning}. 👮‍♂️ {reason}. Без повторов, и разойдёмся по-хорошему.',
+  textFiltersWarn: 'Товарищ {user}, {warning}. Дальше держим порядок.',
 };
 
 const BOT_MESSAGE_TEMPLATE_HINTS: Record<BotMessageEditorKey, string> = {
-  link: 'Плейсхолдеры: {user}, {message_status}, {reason}.',
-  greeting: 'Плейсхолдеры: {user}, {greeting}.',
-  textFilters: 'Плейсхолдеры: {user}, {message_status}, {reason}.',
-  duplicate: 'Плейсхолдеры: {user}, {duplicate_context}, {sanction}, {ban_duration}.',
+  link: 'Плейсхолдеры: {user}, {message_status}, {reason}. Поддерживается Markdown MAX.',
+  greeting: 'Плейсхолдеры: {user}, {greeting}. Поддерживается Markdown MAX.',
+  textFilters:
+    'Плейсхолдеры: {user}, {message_status}, {reason}. Поддерживается Markdown MAX.',
+  duplicate:
+    'Плейсхолдеры: {user}, {duplicate_context}, {sanction}, {ban_duration}. Поддерживается Markdown MAX.',
   messageLimits:
-    'Плейсхолдеры: {user}, {message_status}, {reason}, {actual_length}, {max_length}, {photo_cooldown_hours}.',
-  night: 'Плейсхолдеры: {user}, {night_window}, {night_timezone}, {night_status}.',
+    'Плейсхолдеры: {user}, {message_status}, {reason}, {actual_length}, {max_length}, {photo_cooldown_hours}. Поддерживается Markdown MAX.',
+  night:
+    'Плейсхолдеры: {user}, {night_window}, {night_timezone}, {night_status}. Поддерживается Markdown MAX.',
 };
 
 const WARN_MESSAGE_TEMPLATE_HINTS: Record<WarnMessageEditorKey, string> = {
-  linkWarn: 'Плейсхолдеры: {user}, {warning}, {reason}.',
-  textFiltersWarn: 'Плейсхолдеры: {user}, {warning}, {reason}.',
+  linkWarn: 'Плейсхолдеры: {user}, {warning}, {reason}. Поддерживается Markdown MAX.',
+  textFiltersWarn:
+    'Плейсхолдеры: {user}, {warning}, {reason}. Поддерживается Markdown MAX.',
 };
 
 const AUTO_RULES_FALLBACK_TEXT =

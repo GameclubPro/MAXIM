@@ -1476,29 +1476,31 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     canDeleteMessage: boolean,
     templateText: string,
   ): string {
-    const fallback = canDeleteMessage
-      ? `Сообщение пользователя ${userLabel} удалено: в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.`
-      : `Сообщение пользователя ${userLabel} нарушает правило: в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.`;
-    const messageStatus = canDeleteMessage ? 'удалено' : 'нарушает правило';
+    const reason = 'в этом чате ссылки не проходят, без ссылок';
+    const messageStatus = this.buildMessageStatusLabel(canDeleteMessage);
+    const fallback = this.buildMajorExplanationFallback(userLabel, 'Сообщение', messageStatus, reason);
 
     return this.renderBotMessageTemplate(templateText, fallback, {
       user: userLabel,
       message_status: messageStatus,
-      reason: 'в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.',
+      reason,
     });
   }
 
   private buildLinkWarnExplanation(userLabel: string, templateText: string): string {
-    const fallback = `Пользователю ${userLabel} вынесено предупреждение за ссылку. В этом чате нельзя отправлять ссылки.`;
+    const reason = 'в этом чате ссылки не проходят, без ссылок';
+    const warning = 'вынесено предупреждение за ссылку';
+    const fallback = `Товарищ ${userLabel}, ${warning}. 👮‍♂️ ${reason}. Без повторов, и разойдёмся по-хорошему.`;
+
     return this.renderBotMessageTemplate(templateText, fallback, {
       user: userLabel,
-      reason: 'в этом чате нельзя отправлять ссылки',
-      warning: 'вынесено предупреждение за ссылку',
+      reason,
+      warning,
     });
   }
 
   private buildLinkKickExplanation(userLabel: string): string {
-    return `Пользователь ${userLabel} удален из чата за повторные сообщения со ссылками.`;
+    return `Товарищ ${userLabel}, за повторные заходы со ссылками пришлось вывести вас из чата.`;
   }
 
   private buildTextFilterWarnExplanation(
@@ -1508,28 +1510,30 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   ): string {
     const reason =
       ruleCode === 'COMMERCIAL_AD'
-        ? 'коммерческую рекламу'
+        ? 'рекламу'
         : ruleCode === 'PROFANITY'
-          ? 'нецензурную лексику'
+          ? 'грубую лексику'
           : 'нарушение текстовых правил';
-    const fallback = `Пользователю ${userLabel} вынесено предупреждение за ${reason}.`;
+    const warning = `вынесено предупреждение за ${reason}`;
+    const fallback = `Товарищ ${userLabel}, ${warning}. Дальше держим порядок.`;
+
     return this.renderBotMessageTemplate(templateText, fallback, {
       user: userLabel,
       reason,
-      warning: `вынесено предупреждение за ${reason}`,
+      warning,
     });
   }
 
   private buildTextFilterKickExplanation(userLabel: string, ruleCode: string): string {
     if (ruleCode === 'COMMERCIAL_AD') {
-      return `Пользователь ${userLabel} удален из чата за повторную коммерческую рекламу.`;
+      return `Товарищ ${userLabel}, за повторную рекламу пришлось вывести вас из чата.`;
     }
 
     if (ruleCode === 'PROFANITY') {
-      return `Пользователь ${userLabel} удален из чата за повторную нецензурную лексику.`;
+      return `Товарищ ${userLabel}, за повторную грубую лексику пришлось вывести вас из чата.`;
     }
 
-    return `Пользователь ${userLabel} удален из чата за повторные нарушения текстовых правил.`;
+    return `Товарищ ${userLabel}, за повторные нарушения текстовых правил пришлось вывести вас из чата.`;
   }
 
   private buildTopicFilterExplanation(
@@ -1537,17 +1541,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     canDeleteMessage: boolean,
     requiredCodeword: string | null,
   ): string {
+    const messageStatus = this.buildMessageStatusLabel(canDeleteMessage);
     if (requiredCodeword) {
-      return canDeleteMessage
-        ? `Объявление пользователя ${userLabel} удалено: объявления должны начинаться с кодового слова "${requiredCodeword}".`
-        : `Объявление пользователя ${userLabel} нарушает правило: объявления должны начинаться с кодового слова "${requiredCodeword}".`;
+      return this.buildMajorExplanationFallback(
+        userLabel,
+        'Объявление',
+        messageStatus,
+        this.resolveTopicFilterRequirementLabel(requiredCodeword),
+      );
     }
 
     const requirement = this.resolveTopicFilterRequirementLabel(requiredCodeword);
-    const fallback = canDeleteMessage
-      ? `Сообщение пользователя ${userLabel} удалено: ${requirement}.`
-      : `Сообщение пользователя ${userLabel} нарушает правило: ${requirement}.`;
-    return fallback;
+    return this.buildMajorExplanationFallback(userLabel, 'Сообщение', messageStatus, requirement);
   }
 
   private buildTopicFilterWarnExplanation(
@@ -1555,7 +1560,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     requiredCodeword: string | null,
   ): string {
     const requirement = this.resolveTopicFilterRequirementLabel(requiredCodeword);
-    return `Пользователю ${userLabel} вынесено предупреждение: ${requirement}.`;
+    return `Товарищ ${userLabel}, фиксирую предупреждение. Причина: ${requirement}.`;
   }
 
   private buildTopicFilterKickExplanation(
@@ -1563,10 +1568,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     requiredCodeword: string | null,
   ): string {
     if (requiredCodeword) {
-      return `Пользователь ${userLabel} удален из чата за повторные нарушения: объявления должны начинаться с кодового слова "${requiredCodeword}".`;
+      return `Товарищ ${userLabel}, за повторные объявления не по форме пришлось вывести вас из чата.`;
     }
 
-    return `Пользователь ${userLabel} удален из чата за повторные нарушения тематического фильтра.`;
+    return `Товарищ ${userLabel}, за повторные сообщения не по форме пришлось вывести вас из чата.`;
   }
 
   private buildTopicFilterBanExplanation(
@@ -1574,19 +1579,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     requiredCodeword: string | null,
     banDurationHours: number,
   ): string {
-    if (requiredCodeword) {
-      return `Пользователю ${userLabel} выдан временный бан на ${this.formatBanDurationLabel(banDurationHours)} за повторные нарушения: объявления должны начинаться с кодового слова "${requiredCodeword}".`;
-    }
-
-    return `Пользователю ${userLabel} выдан временный бан на ${this.formatBanDurationLabel(banDurationHours)} за повторные нарушения тематического фильтра.`;
+    const durationLabel = this.formatBanDurationLabel(banDurationHours);
+    const requirement = this.resolveTopicFilterRequirementLabel(requiredCodeword);
+    return `Товарищ ${userLabel}, оформляю тайм-аут на ${durationLabel}. Причина: ${requirement}.`;
   }
 
   private resolveTopicFilterRequirementLabel(requiredCodeword: string | null): string {
     if (requiredCodeword) {
-      return `объявления должны начинаться с кодового слова "${requiredCodeword}"`;
+      return `объявление должно начинаться с кодового слова "${this.escapeMaxMarkdownText(requiredCodeword)}"`;
     }
 
-    return 'сообщение не соответствует тематическому фильтру';
+    return 'сообщение не проходит тематический фильтр';
   }
 
   private extractTopicFilterRequiredCodeword(metadata?: Record<string, unknown>): string | null {
@@ -1603,39 +1606,39 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     templateText: string,
   ): string {
     const banDurationLabel = this.formatBanDurationLabel(banDurationHours);
-    const baseContext = 'удалено как дубль';
+    const baseContext = this.buildDuplicateContextLabel(true);
 
     if (decision.action === 'WARN') {
-      const fallback = `Сообщение пользователя ${userLabel} удалено как дубль. Пользователю вынесено предупреждение.`;
+      const fallback = `Товарищ ${userLabel}, Майор Максимов на связи 👮‍♂️ Повтор по базе: сообщение ${baseContext}. Фиксирую предупреждение. Дальше без серий, договорились.`;
       return this.renderBotMessageTemplate(templateText, fallback, {
         user: userLabel,
-        message_status: 'удалено',
-        reason: 'в этом чате нельзя отправлять дубли сообщений',
+        message_status: this.buildMessageStatusLabel(true),
+        reason: 'в этом чате серийные повторы не проходят',
         duplicate_context: baseContext,
-        sanction: 'Пользователю вынесено предупреждение.',
+        sanction: 'Фиксирую предупреждение.',
         ban_duration: banDurationLabel,
       });
     }
 
     if (decision.action === 'KICK') {
-      const fallback = `Сообщение пользователя ${userLabel} удалено как дубль. Пользователь удален из чата.`;
+      const fallback = `Товарищ ${userLabel}, Майор Максимов на связи 👮‍♂️ Повтор по базе: сообщение ${baseContext}. Пришлось вывести из чата. Дальше без серий, договорились.`;
       return this.renderBotMessageTemplate(templateText, fallback, {
         user: userLabel,
-        message_status: 'удалено',
-        reason: 'в этом чате нельзя отправлять дубли сообщений',
+        message_status: this.buildMessageStatusLabel(true),
+        reason: 'в этом чате серийные повторы не проходят',
         duplicate_context: baseContext,
-        sanction: 'Пользователь удален из чата.',
+        sanction: 'Пришлось вывести из чата.',
         ban_duration: banDurationLabel,
       });
     }
 
-    const fallback = `Сообщение пользователя ${userLabel} удалено как дубль. Пользователю выдан временный бан на ${banDurationLabel}.`;
+    const fallback = `Товарищ ${userLabel}, Майор Максимов на связи 👮‍♂️ Повтор по базе: сообщение ${baseContext}. Оформляю тайм-аут на ${banDurationLabel}. Дальше без серий, договорились.`;
     return this.renderBotMessageTemplate(templateText, fallback, {
       user: userLabel,
-      message_status: 'удалено',
-      reason: 'в этом чате нельзя отправлять дубли сообщений',
+      message_status: this.buildMessageStatusLabel(true),
+      reason: 'в этом чате серийные повторы не проходят',
       duplicate_context: baseContext,
-      sanction: `Пользователю выдан временный бан на ${banDurationLabel}.`,
+      sanction: `Оформляю тайм-аут на ${banDurationLabel}.`,
       ban_duration: banDurationLabel,
     });
   }
@@ -1645,20 +1648,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     canDeleteMessage: boolean,
     templateText: string,
   ): string {
-    const fallback = canDeleteMessage
-      ? `Сообщение пользователя ${userLabel} удалено: в этом чате нельзя отправлять дубли сообщений.`
-      : `Сообщение пользователя ${userLabel} нарушает правило: в этом чате нельзя отправлять дубли сообщений.`;
-    const messageStatus = canDeleteMessage ? 'удалено' : 'нарушает правило';
-    const duplicateContext = canDeleteMessage
-      ? 'удалено: в этом чате нельзя отправлять дубли сообщений'
-      : 'нарушает правило: в этом чате нельзя отправлять дубли сообщений';
+    const duplicateContext = this.buildDuplicateContextLabel(canDeleteMessage);
+    const messageStatus = this.buildMessageStatusLabel(canDeleteMessage);
+    const fallback = `Товарищ ${userLabel}, Майор Максимов на связи 👮‍♂️ Повтор по базе: сообщение ${duplicateContext}. Пока без взыскания. Дальше без серий, договорились.`;
 
     return this.renderBotMessageTemplate(templateText, fallback, {
       user: userLabel,
       message_status: messageStatus,
-      reason: 'в этом чате нельзя отправлять дубли сообщений',
+      reason: 'в этом чате серийные повторы не проходят',
       duplicate_context: duplicateContext,
-      sanction: '',
+      sanction: 'Пока без взыскания.',
     });
   }
 
@@ -1682,10 +1681,32 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return normalizedRendered.length > 0 ? normalizedRendered : fallbackText;
   }
 
+  private buildMajorExplanationFallback(
+    userLabel: string,
+    subject: 'Сообщение' | 'Объявление',
+    messageStatus: string,
+    reason: string,
+  ): string {
+    return `Товарищ ${userLabel}, Майор Максимов на связи 👮‍♂️ ${subject} ${messageStatus}: ${reason}. Поправьте и едем дальше.`;
+  }
+
+  private buildMessageStatusLabel(canDeleteMessage: boolean): string {
+    return canDeleteMessage ? 'снято с линии' : 'не по форме';
+  }
+
+  private buildDuplicateContextLabel(canDeleteMessage: boolean): string {
+    return canDeleteMessage ? 'снято с линии как дубль' : 'идёт повтором';
+  }
+
+  private escapeMaxMarkdownText(value: string): string {
+    return value.replace(/\\/g, '\\\\').replace(/([*_`\[\]()~+])/g, '\\$1');
+  }
+
   private formatUserLabel(senderName?: string): string {
-    const normalized = typeof senderName === 'string' ? senderName.trim() : '';
-    const safe = normalized.length > 0 ? normalized.replace(/"/g, "'") : 'Пользователь';
-    return `"${safe}"`;
+    const normalized =
+      typeof senderName === 'string' ? senderName.replace(/\s+/g, ' ').trim() : '';
+    const safe = normalized.length > 0 ? this.escapeMaxMarkdownText(normalized) : 'Пользователь';
+    return `**${safe}**`;
   }
 
   private async applySanctionAction(params: {
@@ -1797,7 +1818,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private buildBanNotice(userLabel: string, banDurationHours: number): string {
-    return `Пользователю ${userLabel} выдан временный бан на ${this.formatBanDurationLabel(banDurationHours)}.`;
+    return `Товарищ ${userLabel}, оформляю тайм-аут на ${this.formatBanDurationLabel(banDurationHours)}. Возвращайтесь без нарушений.`;
   }
 
   private shouldResolveSanction(ruleCode: string): boolean {
@@ -1964,26 +1985,34 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     canDeleteMessage: boolean,
     templateText: string,
   ): string {
-    const messageStatus = canDeleteMessage ? 'удалено' : 'нарушает правило';
+    const messageStatus = this.buildMessageStatusLabel(canDeleteMessage);
 
     if (ruleCode === 'PROFANITY') {
-      const fallback = canDeleteMessage
-        ? `Сообщение пользователя ${userLabel} удалено: нецензурная лексика запрещена правилами чата.`
-        : `Сообщение пользователя ${userLabel} нарушает правило: нецензурная лексика запрещена правилами чата.`;
+      const reason = 'грубая лексика запрещена правилами чата';
+      const fallback = this.buildMajorExplanationFallback(
+        userLabel,
+        'Сообщение',
+        messageStatus,
+        reason,
+      );
       return this.renderBotMessageTemplate(templateText, fallback, {
         user: userLabel,
         message_status: messageStatus,
-        reason: 'нецензурная лексика запрещена правилами чата',
+        reason,
       });
     }
 
-    const fallback = canDeleteMessage
-      ? `Сообщение пользователя ${userLabel} удалено: коммерческие объявления в этом чате запрещены.`
-      : `Сообщение пользователя ${userLabel} нарушает правило: коммерческие объявления в этом чате запрещены.`;
+    const reason = 'коммерческая реклама в этом чате запрещена';
+    const fallback = this.buildMajorExplanationFallback(
+      userLabel,
+      'Сообщение',
+      messageStatus,
+      reason,
+    );
     return this.renderBotMessageTemplate(templateText, fallback, {
       user: userLabel,
       message_status: messageStatus,
-      reason: 'коммерческие объявления в этом чате запрещены',
+      reason,
     });
   }
 
@@ -1997,7 +2026,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     maxMessageLength?: number,
     templateText?: string,
   ): string {
-    const messageStatus = canDeleteMessage ? 'удалено' : 'нарушает правило';
+    const messageStatus = this.buildMessageStatusLabel(canDeleteMessage);
 
     if (ruleCode === 'MESSAGE_TOO_LONG') {
       const actualLength =
@@ -2010,18 +2039,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         maxMessageLength > 0
           ? Math.round(maxMessageLength)
           : null;
-      const lengthDetails =
-        actualLength !== null && maxLength !== null
-          ? ` длина сообщения ${actualLength} символов, лимит ${maxLength}.`
-          : ' сообщение превышает допустимую длину.';
       const reason =
         actualLength !== null && maxLength !== null
-          ? `длина сообщения ${actualLength} символов, лимит ${maxLength}`
-          : 'сообщение превышает допустимую длину';
-
-      const fallback = canDeleteMessage
-        ? `Сообщение пользователя ${userLabel} удалено:${lengthDetails}`
-        : `Сообщение пользователя ${userLabel} нарушает правило:${lengthDetails}`;
+          ? `слишком длинное сообщение: ${actualLength} символов при лимите ${maxLength}`
+          : 'слишком длинное сообщение';
+      const fallback = this.buildMajorExplanationFallback(
+        userLabel,
+        'Сообщение',
+        messageStatus,
+        `${reason}${actualLength !== null && maxLength !== null ? '.' : ''}`.replace(/\.$/u, ''),
+      );
       return this.renderBotMessageTemplate(templateText ?? '', fallback, {
         user: userLabel,
         message_status: messageStatus,
@@ -2032,35 +2059,47 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (ruleCode === 'VIDEO_BLOCKED') {
-      const fallback = canDeleteMessage
-        ? `Сообщение пользователя ${userLabel} удалено: отправка видео в этом чате отключена.`
-        : `Сообщение пользователя ${userLabel} нарушает правило: отправка видео в этом чате отключена.`;
+      const reason = 'видео в этом чате отключены';
+      const fallback = this.buildMajorExplanationFallback(
+        userLabel,
+        'Сообщение',
+        messageStatus,
+        reason,
+      );
       return this.renderBotMessageTemplate(templateText ?? '', fallback, {
         user: userLabel,
         message_status: messageStatus,
-        reason: 'отправка видео в этом чате отключена',
+        reason,
       });
     }
 
     if (ruleCode === 'FILE_BLOCKED') {
-      const fallback = canDeleteMessage
-        ? `Сообщение пользователя ${userLabel} удалено: отправка файлов в этом чате отключена.`
-        : `Сообщение пользователя ${userLabel} нарушает правило: отправка файлов в этом чате отключена.`;
+      const reason = 'файлы в этом чате отключены';
+      const fallback = this.buildMajorExplanationFallback(
+        userLabel,
+        'Сообщение',
+        messageStatus,
+        reason,
+      );
       return this.renderBotMessageTemplate(templateText ?? '', fallback, {
         user: userLabel,
         message_status: messageStatus,
-        reason: 'отправка файлов в этом чате отключена',
+        reason,
       });
     }
 
     if (ruleCode === 'VOICE_BLOCKED') {
-      const fallback = canDeleteMessage
-        ? `Сообщение пользователя ${userLabel} удалено: голосовые сообщения в этом чате отключены.`
-        : `Сообщение пользователя ${userLabel} нарушает правило: голосовые сообщения в этом чате отключены.`;
+      const reason = 'голосовые сообщения в этом чате отключены';
+      const fallback = this.buildMajorExplanationFallback(
+        userLabel,
+        'Сообщение',
+        messageStatus,
+        reason,
+      );
       return this.renderBotMessageTemplate(templateText ?? '', fallback, {
         user: userLabel,
         message_status: messageStatus,
-        reason: 'голосовые сообщения в этом чате отключены',
+        reason,
       });
     }
 
@@ -2071,13 +2110,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         stickerCooldownMinutes <= 60
           ? stickerCooldownMinutes
           : 5;
-      const fallback = canDeleteMessage
-        ? `Сообщение пользователя ${userLabel} удалено: стикеры можно отправлять не чаще одного раза в ${minutes} мин.`
-        : `Сообщение пользователя ${userLabel} нарушает правило: стикеры можно отправлять не чаще одного раза в ${minutes} мин.`;
+      const reason = `слишком частая отправка стикеров: не чаще одного раза в ${minutes} мин`;
+      const fallback = this.buildMajorExplanationFallback(
+        userLabel,
+        'Сообщение',
+        messageStatus,
+        reason,
+      );
       return this.renderBotMessageTemplate(templateText ?? '', fallback, {
         user: userLabel,
         message_status: messageStatus,
-        reason: `стикеры можно отправлять не чаще одного раза в ${minutes} мин`,
+        reason,
       });
     }
 
@@ -2085,71 +2128,27 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       Number.isInteger(photoCooldownHours) && photoCooldownHours >= 1 && photoCooldownHours <= 24
         ? photoCooldownHours
         : 1;
-    const fallback = canDeleteMessage
-      ? `Сообщение пользователя ${userLabel} удалено: фото можно отправлять не чаще одного раза в ${hours}ч, чтобы не перегружать ленту. Если нужно отправить несколько фото, используйте альбом или коллаж.`
-      : `Сообщение пользователя ${userLabel} нарушает правило: фото можно отправлять не чаще одного раза в ${hours}ч, чтобы не перегружать ленту. Если нужно отправить несколько фото, используйте альбом или коллаж.`;
+    const reason = `слишком частая отправка фото: не чаще одного раза в ${hours}ч. Если фото несколько, лучше собрать их в альбом или коллаж`;
+    const fallback = this.buildMajorExplanationFallback(
+      userLabel,
+      'Сообщение',
+      messageStatus,
+      reason,
+    );
     return this.renderBotMessageTemplate(templateText ?? '', fallback, {
       user: userLabel,
       message_status: messageStatus,
-      reason: `фото можно отправлять не чаще одного раза в ${hours}ч, чтобы не перегружать ленту; используйте альбом или коллаж`,
+      reason,
       photo_cooldown_hours: String(hours),
     });
   }
 
   private buildMessageLimitsKickExplanation(userLabel: string, ruleCode: string): string {
-    if (ruleCode === 'PHOTO_RATE_LIMIT') {
-      return `Пользователь ${userLabel} удален из чата за повторные нарушения лимита по фото.`;
-    }
-
-    if (ruleCode === 'STICKER_RATE_LIMIT') {
-      return `Пользователь ${userLabel} удален из чата за повторные нарушения лимита по стикерам.`;
-    }
-
-    if (ruleCode === 'MESSAGE_TOO_LONG') {
-      return `Пользователь ${userLabel} удален из чата за повторные слишком длинные сообщения.`;
-    }
-
-    if (ruleCode === 'VIDEO_BLOCKED') {
-      return `Пользователь ${userLabel} удален из чата за повторную отправку видео при отключенном видео-режиме.`;
-    }
-
-    if (ruleCode === 'FILE_BLOCKED') {
-      return `Пользователь ${userLabel} удален из чата за повторную отправку файлов при отключенной отправке файлов.`;
-    }
-
-    if (ruleCode === 'VOICE_BLOCKED') {
-      return `Пользователь ${userLabel} удален из чата за повторную отправку голосовых при отключенных голосовых сообщениях.`;
-    }
-
-    return `Пользователь ${userLabel} удален из чата за повторные нарушения ограничений сообщений.`;
+    return `Товарищ ${userLabel}, за повторные нарушения пришлось вывести вас из чата. Причина: ${this.resolveMessageLimitsSanctionReasonLabel(ruleCode)}.`;
   }
 
   private buildMessageLimitsWarnExplanation(userLabel: string, ruleCode: string): string {
-    if (ruleCode === 'PHOTO_RATE_LIMIT') {
-      return `Пользователю ${userLabel} вынесено предупреждение: слишком частая отправка фото.`;
-    }
-
-    if (ruleCode === 'STICKER_RATE_LIMIT') {
-      return `Пользователю ${userLabel} вынесено предупреждение: слишком частая отправка стикеров.`;
-    }
-
-    if (ruleCode === 'MESSAGE_TOO_LONG') {
-      return `Пользователю ${userLabel} вынесено предупреждение: слишком длинные сообщения.`;
-    }
-
-    if (ruleCode === 'VIDEO_BLOCKED') {
-      return `Пользователю ${userLabel} вынесено предупреждение: отправка видео в этом чате отключена.`;
-    }
-
-    if (ruleCode === 'FILE_BLOCKED') {
-      return `Пользователю ${userLabel} вынесено предупреждение: отправка файлов в этом чате отключена.`;
-    }
-
-    if (ruleCode === 'VOICE_BLOCKED') {
-      return `Пользователю ${userLabel} вынесено предупреждение: голосовые сообщения в этом чате отключены.`;
-    }
-
-    return `Пользователю ${userLabel} вынесено предупреждение за нарушение ограничений сообщений.`;
+    return `Товарищ ${userLabel}, фиксирую предупреждение. Причина: ${this.resolveMessageLimitsSanctionReasonLabel(ruleCode)}.`;
   }
 
   private buildMessageLimitsBanExplanation(
@@ -2158,32 +2157,35 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     banDurationHours: number,
   ): string {
     const durationLabel = this.formatBanDurationLabel(banDurationHours);
+    return `Товарищ ${userLabel}, оформляю тайм-аут на ${durationLabel}. Причина: ${this.resolveMessageLimitsSanctionReasonLabel(ruleCode)}.`;
+  }
 
+  private resolveMessageLimitsSanctionReasonLabel(ruleCode: string): string {
     if (ruleCode === 'PHOTO_RATE_LIMIT') {
-      return `Пользователю ${userLabel} выдан временный бан на ${durationLabel} за повторные нарушения лимита по фото.`;
+      return 'слишком частая отправка фото';
     }
 
     if (ruleCode === 'STICKER_RATE_LIMIT') {
-      return `Пользователю ${userLabel} выдан временный бан на ${durationLabel} за повторные нарушения лимита по стикерам.`;
+      return 'слишком частая отправка стикеров';
     }
 
     if (ruleCode === 'MESSAGE_TOO_LONG') {
-      return `Пользователю ${userLabel} выдан временный бан на ${durationLabel} за повторные слишком длинные сообщения.`;
+      return 'слишком длинное сообщение';
     }
 
     if (ruleCode === 'VIDEO_BLOCKED') {
-      return `Пользователю ${userLabel} выдан временный бан на ${durationLabel} за повторную отправку видео при отключенном видео-режиме.`;
+      return 'видео в этом чате отключены';
     }
 
     if (ruleCode === 'FILE_BLOCKED') {
-      return `Пользователю ${userLabel} выдан временный бан на ${durationLabel} за повторную отправку файлов при отключенной отправке файлов.`;
+      return 'файлы в этом чате отключены';
     }
 
     if (ruleCode === 'VOICE_BLOCKED') {
-      return `Пользователю ${userLabel} выдан временный бан на ${durationLabel} за повторную отправку голосовых при отключенных голосовых сообщениях.`;
+      return 'голосовые сообщения в этом чате отключены';
     }
 
-    return `Пользователю ${userLabel} выдан временный бан на ${durationLabel} за повторные нарушения ограничений сообщений.`;
+    return 'нарушение ограничений сообщений';
   }
 
   private calculateEffectiveMessageLength(update: MaxUpdate): number {
@@ -3184,7 +3186,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private buildGreetingMessage(userLabel: string, templateText: string): string {
-    const fallback = `Приветствуем ${userLabel} в чате!`;
+    const fallback = `Здравия желаю, ${userLabel}. Майор Максимов на связи 🤝 Добро пожаловать в чат.`;
     return this.renderBotMessageTemplate(templateText, fallback, {
       user: userLabel,
       greeting: 'добро пожаловать в чат',
@@ -3690,7 +3692,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private buildGlobalCrossChatSpamNotice(userLabel: string, uniqueChatsCount: number): string {
-    return `Сообщение пользователя ${userLabel} удалено: одинаковый текст/фото/пересланное отправлено в ${uniqueChatsCount} чатах за 2 минуты (кросс-чат спам).`;
+    return `Товарищ ${userLabel}, сообщение снято с линии: одинаковый текст или фото улетели в ${uniqueChatsCount} чатов за 2 минуты. Похоже на кросс-чат спам.`;
   }
 
   private async resolveGlobalCrossChatSpamAdminScopeIds(params: {
@@ -5141,7 +5143,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const windowLabel = `${this.formatMinutesAsTime(startMinutes)}-${this.formatMinutesAsTime(endMinutes)}`;
     const timezoneLabel = timezone === DEFAULT_NIGHT_MODE_TIMEZONE ? 'Москва' : timezone;
     const nightStatus = 'Новые сообщения временно не принимаются.';
-    const fallback = `Чат сейчас закрыт на ночь (${windowLabel}, ${timezoneLabel}). Новые сообщения временно не принимаются.`;
+    const fallback = `Ночной режим, граждане 🌙 Участок закрыт на ${windowLabel} (${timezoneLabel}). ${nightStatus}`;
 
     return this.renderBotMessageTemplate(templateText, fallback, {
       user: '',
@@ -6270,7 +6272,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     await this.maxClient.sendMessage(
       chatId,
       text,
-      messageOptions,
+      {
+        ...(messageOptions ?? {}),
+        textFormat: 'markdown',
+      },
       this.buildBotMessageDispatchOptions({
         deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes,

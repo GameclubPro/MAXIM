@@ -78,8 +78,6 @@ function buildSettings(chatId: string): ChatSettings {
     textFiltersRulesButtonEnabled: false,
     thematicCodewordEnabled: false,
     thematicCodeword: '',
-    realEstateTopicFilterEnabled: false,
-    autoMarketTopicFilterEnabled: false,
     thematicFiltersBotMessageEnabled: false,
     thematicFiltersWarnEnabled: false,
     thematicFiltersBanEnabled: false,

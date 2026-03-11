@@ -27,6 +27,62 @@ expect.extend({
   },
 });
 
+function escapeMaxMarkdown(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/([*_`\[\]()~+])/g, '\\$1');
+}
+
+function boldUser(name: string): string {
+  return `**${escapeMaxMarkdown(name)}**`;
+}
+
+function majorExplanation(
+  name: string,
+  messageStatus: 'снято с линии' | 'не по форме',
+  reason: string,
+  subject = 'Сообщение',
+): string {
+  return `Товарищ ${boldUser(name)}, Майор Максимов на связи 👮‍♂️ ${subject} ${messageStatus}: ${reason}. Поправьте и едем дальше.`;
+}
+
+function duplicateExplanation(
+  name: string,
+  sanction: 'Фиксирую предупреждение.' | 'Пришлось вывести из чата.' | 'Пока без взыскания.',
+): string {
+  return `Товарищ ${boldUser(name)}, Майор Максимов на связи 👮‍♂️ Повтор по базе: сообщение снято с линии как дубль. ${sanction} Дальше без серий, договорились.`;
+}
+
+function banNotice(name: string, duration: string): string {
+  return `Товарищ ${boldUser(name)}, оформляю тайм-аут на ${duration}. Возвращайтесь без нарушений.`;
+}
+
+function textFilterWarnNotice(name: string, reason: string): string {
+  return `Товарищ ${boldUser(name)}, вынесено предупреждение за ${reason}. Дальше держим порядок.`;
+}
+
+function linkWarnNotice(name: string): string {
+  return `Товарищ ${boldUser(name)}, вынесено предупреждение за ссылку. 👮‍♂️ в этом чате ссылки не проходят, без ссылок. Без повторов, и разойдёмся по-хорошему.`;
+}
+
+function messageLimitsWarnNotice(name: string, reason: string): string {
+  return `Товарищ ${boldUser(name)}, фиксирую предупреждение. Причина: ${reason}.`;
+}
+
+function messageLimitsKickNotice(name: string, reason: string): string {
+  return `Товарищ ${boldUser(name)}, за повторные нарушения пришлось вывести вас из чата. Причина: ${reason}.`;
+}
+
+function messageLimitsBanNotice(name: string, duration: string, reason: string): string {
+  return `Товарищ ${boldUser(name)}, оформляю тайм-аут на ${duration}. Причина: ${reason}.`;
+}
+
+function topicFilterWarnNotice(name: string, reason: string): string {
+  return `Товарищ ${boldUser(name)}, фиксирую предупреждение. Причина: ${reason}.`;
+}
+
+function nightModeNotice(window: string, timezone: string): string {
+  return `Ночной режим, граждане 🌙 Участок закрыт на ${window} (${timezone}). Новые сообщения временно не принимаются.`;
+}
+
 function createSettings(overrides: Record<string, unknown> = {}) {
   return {
     id: 'settings-1',
@@ -1174,7 +1230,7 @@ describe('ModerationService', () => {
         messageId: 'msg-night-own-bot-1',
         chatId: 'chat-1',
         senderId: 'bot-1',
-        text: 'Чат сейчас закрыт на ночь (23:00-08:00, Москва). Новые сообщения временно не принимаются.',
+        text: nightModeNotice('23:00-08:00', 'Москва'),
         createdAt: new Date().toISOString(),
       },
       raw: {
@@ -1596,7 +1652,7 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Добро пожаловать, "Новый участник"! добро пожаловать в чат.',
+      `Добро пожаловать, ${boldUser('Новый участник')}! добро пожаловать в чат.`,
     );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -1662,7 +1718,7 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Добро пожаловать, "Новый участник из data"! добро пожаловать в чат.',
+      `Добро пожаловать, ${boldUser('Новый участник из data')}! добро пожаловать в чат.`,
     );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -1728,7 +1784,7 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Добро пожаловать, "Новый участник без sender"! добро пожаловать в чат.',
+      `Добро пожаловать, ${boldUser('Новый участник без sender')}! добро пожаловать в чат.`,
     );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -1794,7 +1850,7 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Добро пожаловать, "Новый участник user_added"! добро пожаловать в чат.',
+      `Добро пожаловать, ${boldUser('Новый участник user_added')}! добро пожаловать в чат.`,
     );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -2655,7 +2711,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      expect.stringContaining('Чат сейчас закрыт на ночь'),
+      expect.stringContaining('Ночной режим, граждане'),
     );
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
@@ -3053,7 +3109,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Сообщение пользователя "Алексей" удалено как дубль. Пользователю вынесено предупреждение.',
+      duplicateExplanation('Алексей', 'Фиксирую предупреждение.'),
     );
   });
 
@@ -3132,7 +3188,7 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Сообщение пользователя "Алексей" удалено: в этом чате нельзя отправлять дубли сообщений.',
+      duplicateExplanation('Алексей', 'Пока без взыскания.'),
     );
   });
 
@@ -3198,12 +3254,13 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Сообщение пользователя "Алексей" удалено как дубль. Пользователю вынесено предупреждение.',
+      duplicateExplanation('Алексей', 'Фиксирую предупреждение.'),
       {
         button: {
           text: 'Правила',
           url: 'https://max.ru/help/bots',
         },
+        textFormat: 'markdown',
       },
     );
   });
@@ -3268,7 +3325,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" выдан временный бан на 6ч.',
+      banNotice('Алексей', '6ч'),
     );
   });
 
@@ -3330,7 +3387,7 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" выдан временный бан на 12ч.',
+      banNotice('Алексей', '12ч'),
     );
   });
 
@@ -3391,7 +3448,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Сообщение пользователя "Алексей" удалено: в этом чате нельзя отправлять дубли сообщений.',
+      duplicateExplanation('Алексей', 'Пока без взыскания.'),
     );
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -3526,7 +3583,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" вынесено предупреждение за нецензурную лексику.',
+      textFilterWarnNotice('Алексей', 'грубую лексику'),
     );
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -3656,7 +3713,7 @@ describe('ModerationService', () => {
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" выдан временный бан на 12ч.',
+      banNotice('Алексей', '12ч'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
@@ -3732,7 +3789,7 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователь "Алексей" удален из чата за повторную нецензурную лексику.',
+      'Товарищ **Алексей**, за повторную грубую лексику пришлось вывести вас из чата.',
     );
     expect(globalUserBlacklist.upsert).toHaveBeenCalledWith({
       where: { userId: 'user-1' },
@@ -3894,12 +3951,13 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Сообщение пользователя "Алексей" удалено: коммерческие объявления в этом чате запрещены.',
+      majorExplanation('Алексей', 'снято с линии', 'коммерческая реклама в этом чате запрещена'),
       {
         button: {
           text: 'Правила',
           url: 'https://max.ru/channel/rules',
         },
+        textFormat: 'markdown',
       },
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
@@ -4064,7 +4122,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" вынесено предупреждение за коммерческую рекламу.',
+      textFilterWarnNotice('Алексей', 'рекламу'),
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
@@ -4140,7 +4198,12 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Объявление пользователя "Алексей" удалено: объявления должны начинаться с кодового слова "недвижимость".',
+      majorExplanation(
+        'Алексей',
+        'снято с линии',
+        'объявление должно начинаться с кодового слова "недвижимость"',
+        'Объявление',
+      ),
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
       data: expect.objectContaining({
@@ -4153,6 +4216,86 @@ describe('ModerationService', () => {
         }),
       }),
     });
+  });
+
+  it('escapes markdown in user labels and dynamic reason text for bot moderation messages', async () => {
+    const requiredCodeword = '*авторынок*_[]';
+    const senderName = '*admin*_[]';
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            thematicCodewordEnabled: true,
+            thematicCodeword: requiredCodeword,
+            thematicFiltersBotMessageEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [
+          {
+            ruleCode: 'TOPIC_FILTER_MISMATCH',
+            score: 0.84,
+            reason: 'Message without required thematic markers',
+            metadata: {
+              mode: 'CODEWORD',
+              requiredCodeword,
+            },
+          },
+        ],
+      }),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+    const update = createUpdate();
+
+    await service.handleUpdate({
+      ...update,
+      message: {
+        ...update.message!,
+        senderName,
+      },
+    });
+
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      majorExplanation(
+        senderName,
+        'снято с линии',
+        `объявление должно начинаться с кодового слова "${escapeMaxMarkdown(requiredCodeword)}"`,
+        'Объявление',
+      ),
+      expect.objectContaining({ textFormat: 'markdown' }),
+      undefined,
+    );
   });
 
   it('issues WARN with thematic codeword text on second codeword violation in 24h', async () => {
@@ -4219,7 +4362,10 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" вынесено предупреждение: объявления должны начинаться с кодового слова "авторынок".',
+      topicFilterWarnNotice(
+        'Алексей',
+        'объявление должно начинаться с кодового слова "авторынок"',
+      ),
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
@@ -4301,7 +4447,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" выдан временный бан на 12ч за повторные нарушения: объявления должны начинаться с кодового слова "недвижимость".',
+      'Товарищ **Алексей**, оформляю тайм-аут на 12ч. Причина: объявление должно начинаться с кодового слова "недвижимость".',
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
@@ -4384,7 +4530,7 @@ describe('ModerationService', () => {
     expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователь "Алексей" удален из чата за повторные нарушения: объявления должны начинаться с кодового слова "авторынок".',
+      'Товарищ **Алексей**, за повторные объявления не по форме пришлось вывести вас из чата.',
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
@@ -4458,7 +4604,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Сообщение пользователя "Алексей" удалено: в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.',
+      majorExplanation('Алексей', 'снято с линии', 'в этом чате ссылки не проходят, без ссылок'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
@@ -4526,12 +4672,13 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Сообщение пользователя "Алексей" удалено: в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.',
+      majorExplanation('Алексей', 'снято с линии', 'в этом чате ссылки не проходят, без ссылок'),
       {
         button: {
           text: 'Канал',
           url: 'https://max.ru/channel/news',
         },
+        textFormat: 'markdown',
       },
     );
   });
@@ -4647,7 +4794,7 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Сообщение пользователя "Алексей" нарушает правило: в этом чате нельзя отправлять ссылки. Пожалуйста, без ссылок.',
+      majorExplanation('Алексей', 'не по форме', 'в этом чате ссылки не проходят, без ссылок'),
     );
   });
 
@@ -4705,7 +4852,7 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" вынесено предупреждение за ссылку. В этом чате нельзя отправлять ссылки.',
+      linkWarnNotice('Алексей'),
     );
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -4779,12 +4926,13 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" вынесено предупреждение за ссылку. В этом чате нельзя отправлять ссылки.',
+      linkWarnNotice('Алексей'),
       {
         button: {
           text: 'Правила',
           url: 'https://max.ru/channel/rules',
         },
+        textFormat: 'markdown',
       },
     );
   });
@@ -4846,7 +4994,7 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" вынесено предупреждение за ссылку. В этом чате нельзя отправлять ссылки.',
+      linkWarnNotice('Алексей'),
       {
         buttons: [
           [
@@ -4860,6 +5008,7 @@ describe('ModerationService', () => {
             },
           ],
         ],
+        textFormat: 'markdown',
       },
     );
   });
@@ -4919,8 +5068,8 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" вынесено предупреждение за ссылку. В этом чате нельзя отправлять ссылки.',
-      undefined,
+      linkWarnNotice('Алексей'),
+      expect.objectContaining({ textFormat: 'markdown' }),
     );
   });
 
@@ -4981,12 +5130,13 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" вынесено предупреждение за ссылку. В этом чате нельзя отправлять ссылки.',
+      linkWarnNotice('Алексей'),
       {
         button: {
           text: 'Правила',
           url: 'https://max.ru/chats/chat-1/message/123',
         },
+        textFormat: 'markdown',
       },
     );
   });
@@ -5051,12 +5201,13 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" вынесено предупреждение за ссылку. В этом чате нельзя отправлять ссылки.',
+      linkWarnNotice('Алексей'),
       {
         messageLink: {
           type: 'reply',
           mid: 'mid-rules-2',
         },
+        textFormat: 'markdown',
       },
     );
   });
@@ -5161,7 +5312,7 @@ describe('ModerationService', () => {
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" выдан временный бан на 12ч.',
+      banNotice('Алексей', '12ч'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
@@ -5235,12 +5386,13 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" выдан временный бан на 12ч.',
+      banNotice('Алексей', '12ч'),
       {
         button: {
           text: 'Правила',
           url: 'https://max.ru/channel/rules',
         },
+        textFormat: 'markdown',
       },
     );
   });
@@ -5301,7 +5453,7 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователь "Алексей" удален из чата за повторные сообщения со ссылками.',
+      'Товарищ **Алексей**, за повторные заходы со ссылками пришлось вывести вас из чата.',
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
@@ -5373,12 +5525,13 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователь "Алексей" удален из чата за повторные сообщения со ссылками.',
+      'Товарищ **Алексей**, за повторные заходы со ссылками пришлось вывести вас из чата.',
       {
         button: {
           text: 'Правила',
           url: 'https://max.ru/channel/rules',
         },
+        textFormat: 'markdown',
       },
     );
   });
@@ -5613,7 +5766,11 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Сообщение пользователя "Алексей" удалено: длина сообщения 187 символов, лимит 100.',
+      majorExplanation(
+        'Алексей',
+        'снято с линии',
+        'слишком длинное сообщение: 187 символов при лимите 100',
+      ),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
   });
@@ -5677,7 +5834,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" вынесено предупреждение: слишком длинные сообщения.',
+      messageLimitsWarnNotice('Алексей', 'слишком длинное сообщение'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
@@ -5752,7 +5909,7 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователю "Алексей" выдан временный бан на 12ч за повторные нарушения лимита по фото.',
+      messageLimitsBanNotice('Алексей', '12ч', 'слишком частая отправка фото'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
@@ -5827,7 +5984,7 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Пользователь "Алексей" удален из чата за повторные нарушения лимита по фото.',
+      messageLimitsKickNotice('Алексей', 'слишком частая отправка фото'),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
@@ -6302,12 +6459,13 @@ describe('ModerationService', () => {
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-voice-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Сообщение пользователя "Алексей" удалено: голосовые сообщения в этом чате отключены.',
+      majorExplanation('Алексей', 'снято с линии', 'голосовые сообщения в этом чате отключены'),
       {
         button: {
           text: 'Правила чата',
           url: 'https://max.ru/channel/rules',
         },
+        textFormat: 'markdown',
       },
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
