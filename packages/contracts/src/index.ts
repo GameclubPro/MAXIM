@@ -966,7 +966,7 @@ export const sendBroadcastRequestSchema = z
     cycleEnabled: z.boolean().default(false),
     cycleEveryHours: z.number().int().min(1).max(14 * 24).optional(),
     cycleEveryDays: z.number().int().min(1).max(14).optional(),
-    cycleCount: z.number().int().min(1).max(14).default(1),
+    cycleCount: z.number().int().min(1).max(100).default(1),
   })
   .superRefine((value, ctx) => {
     if (value.text.length === 0 && !value.imageEnabled) {

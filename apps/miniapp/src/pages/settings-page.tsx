@@ -45,7 +45,7 @@ const MAX_BROADCAST_TEXT_LENGTH = 1_000;
 const MAX_BROADCAST_SCHEDULE_DAYS = 14;
 const MIN_BROADCAST_CYCLE_HOURS = 1;
 const MAX_BROADCAST_CYCLE_HOURS = 24;
-const MAX_BROADCAST_CYCLE_COUNT = 14;
+const MAX_BROADCAST_CYCLE_COUNT = 100;
 const MAX_BROADCAST_IMAGE_SIZE_BYTES = 1_000_000;
 const MAX_CHAT_RULES_TEXT_LENGTH = 2_000;
 const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
@@ -97,7 +97,12 @@ type HintKey =
   | 'deleteBotMessages'
   | 'removeBotsFromGroup'
   | 'globalBlacklist'
-  | 'mailingText';
+  | 'mailingText'
+  | 'mailingTargets'
+  | 'mailingImage'
+  | 'mailingButton'
+  | 'mailingSchedule'
+  | 'mailingCycle';
 type BotMessageEditorKey =
   | 'link'
   | 'greeting'
@@ -783,6 +788,53 @@ function EditToggleButton({ label, onClick, disabled, isOpen }: EditToggleButton
     >
       <EditIcon />
     </button>
+  );
+}
+
+function SettingsHintAnchor({
+  hintKey,
+  openHintKey,
+  onToggleHint,
+  label,
+  children,
+}: {
+  hintKey: HintKey;
+  openHintKey: HintKey | null;
+  onToggleHint: (key: HintKey) => void;
+  label: string;
+  children: string;
+}) {
+  const isOpen = openHintKey === hintKey;
+
+  return (
+    <span className="channel-settings-hint-anchor">
+      <button
+        type="button"
+        className={cn('settings-info-button', isOpen && 'is-open')}
+        aria-label={label}
+        aria-controls={`settings-hint-${hintKey}`}
+        aria-expanded={isOpen}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onToggleHint(hintKey);
+        }}
+      >
+        <span aria-hidden>i</span>
+      </button>
+      {isOpen ? (
+        <p
+          id={`settings-hint-${hintKey}`}
+          className="channel-settings-hint-popover"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+        >
+          {children}
+        </p>
+      ) : null}
+    </span>
   );
 }
 
@@ -6212,7 +6264,19 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   >
                     <div className="mailing-target-card__row">
                       <div className="mailing-target-card__title-wrap">
-                        <span className="mailing-target-card__title">Применить во всех чатах</span>
+                        <div className="mailing-card-title-row">
+                          <span className="mailing-target-card__title">Применить во всех чатах</span>
+                          <SettingsHintAnchor
+                            hintKey="mailingTargets"
+                            openHintKey={openHintKey}
+                            onToggleHint={toggleHint}
+                            label="Пояснение для массовой рассылки"
+                          >
+                            {canApplyToAllChats
+                              ? `Отправим в ${chatsCount} чатах, где у вас и у бота есть админ-права.`
+                              : 'Пока доступен только текущий чат.'}
+                          </SettingsHintAnchor>
+                        </div>
                         <small className="mailing-target-card__meta">
                           {mailingApplyToAllChats && canApplyToAllChats
                             ? `Выбрано чатов: ${chatsCount}`
@@ -6235,12 +6299,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         </span>
                       </label>
                     </div>
-
-                    <p className="mailing-target-card__hint">
-                      {canApplyToAllChats
-                        ? `Отправим в ${chatsCount} чатах, где у вас и у бота есть админ-права.`
-                        : 'Пока доступен только текущий чат.'}
-                    </p>
                   </div>
 
                   <label
@@ -6270,7 +6328,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           <p id="mailing-text-hint" className="channel-settings-hint-popover">
                             MAX поддерживает markdown: жирный, курсив, подчеркивание, зачеркнутый
                             текст, код и ссылки. Отдельных заголовков нет, их лучше имитировать
-                            короткой акцентной строкой.
+                            короткой акцентной строкой. Можно отправить и только фото, но текст
+                            обычно повышает вовлеченность.
                           </p>
                         ) : null}
                       </span>
@@ -6291,11 +6350,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     <div className="mailing-message-field__meta">
                       {mailingTextError ? (
                         <small className="field__hint">{mailingTextError}</small>
-                      ) : (
-                        <small className="field__hint">
-                          Можно отправить только фото, но текст обычно повышает вовлеченность.
-                        </small>
-                      )}
+                      ) : null}
                       <small
                         className={cn(
                           'mailing-message-field__counter',
@@ -6324,12 +6379,18 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     >
                       <div className="mailing-option-card__head">
                         <div className="mailing-option-card__title-wrap">
-                          <span className="mailing-option-card__title">Фото</span>
-                          <small className="mailing-option-card__subtitle">
-                            {mailingImageEnabled
-                              ? 'Будет отправлено вместе с текстом.'
-                              : 'Опционально, до 1 MB.'}
-                          </small>
+                          <div className="mailing-card-title-row">
+                            <span className="mailing-option-card__title">Фото</span>
+                            <SettingsHintAnchor
+                              hintKey="mailingImage"
+                              openHintKey={openHintKey}
+                              onToggleHint={toggleHint}
+                              label="Пояснение для фото в рассылке"
+                            >
+                              Одна картинка до 1 MB. Поддерживаются PNG, JPG и WEBP. Фото можно
+                              отправить отдельно или вместе с текстом.
+                            </SettingsHintAnchor>
+                          </div>
                         </div>
 
                         <label
@@ -6419,9 +6480,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                               <small className="field__hint">{mailingImageError}</small>
                             ) : mailingImageFileName ? (
                               <small className="field__hint">{mailingImageFileName}</small>
-                            ) : (
-                              <small className="field__hint">PNG/JPG/WEBP, до 1 MB.</small>
-                            )}
+                            ) : null}
                           </label>
 
                           {mailingImagePreviewUrl ? (
@@ -6435,11 +6494,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             </div>
                           ) : null}
                         </div>
-                      ) : (
-                        <p className="mailing-option-card__hint">
-                          Добавьте изображение, чтобы сообщение выделялось в ленте чата.
-                        </p>
-                      )}
+                      ) : null}
                     </div>
 
                     <div
@@ -6451,12 +6506,18 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     >
                       <div className="mailing-option-card__head">
                         <div className="mailing-option-card__title-wrap">
-                          <span className="mailing-option-card__title">Кнопка действия</span>
-                          <small className="mailing-option-card__subtitle">
-                            {mailingButtonEnabled
-                              ? 'Укажите ссылку и подпись для кнопки.'
-                              : 'Опционально: перевод в канал, пост или форму.'}
-                          </small>
+                          <div className="mailing-card-title-row">
+                            <span className="mailing-option-card__title">Кнопка действия</span>
+                            <SettingsHintAnchor
+                              hintKey="mailingButton"
+                              openHintKey={openHintKey}
+                              onToggleHint={toggleHint}
+                              label="Пояснение для кнопки рассылки"
+                            >
+                              Кнопка ведёт на канал, пост или внешнюю форму. Ссылка должна быть
+                              `http/https`, подпись кнопки до 32 символов.
+                            </SettingsHintAnchor>
+                          </div>
                         </div>
 
                         <label
@@ -6528,16 +6589,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             />
                             {mailingButtonTextError ? (
                               <small className="field__hint">{mailingButtonTextError}</small>
-                            ) : (
-                              <small className="field__hint">До 32 символов.</small>
-                            )}
+                            ) : null}
                           </label>
                         </div>
-                      ) : (
-                        <p className="mailing-option-card__hint">
-                          Кнопка усиливает конверсию: переход в нужный чат, пост или форму.
-                        </p>
-                      )}
+                      ) : null}
                     </div>
                   </div>
 
@@ -6551,10 +6606,18 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     >
                       <div className="mailing-option-card__head">
                         <div className="mailing-option-card__title-wrap">
-                          <span className="mailing-option-card__title">Таймер отправки</span>
-                          <small className="mailing-option-card__subtitle">
-                            Отложенная отправка до 14 дней.
-                          </small>
+                          <div className="mailing-card-title-row">
+                            <span className="mailing-option-card__title">Таймер отправки</span>
+                            <SettingsHintAnchor
+                              hintKey="mailingSchedule"
+                              openHintKey={openHintKey}
+                              onToggleHint={toggleHint}
+                              label="Пояснение для таймера рассылки"
+                            >
+                              Отложенная отправка доступна до 14 дней вперёд. Если таймер
+                              выключен, сообщение уйдёт сразу.
+                            </SettingsHintAnchor>
+                          </div>
                         </div>
 
                         <label
@@ -6611,17 +6674,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                       {mailingScheduleError ? (
                         <small className="field__hint">{mailingScheduleError}</small>
-                      ) : mailingScheduleEnabled ? (
+                      ) : mailingScheduleEnabled && mailingSchedulePreview ? (
                         <small className="mailing-option-card__hint is-info">
-                          {mailingSchedulePreview
-                            ? `Отправка: ${mailingSchedulePreview}`
-                            : 'Проверьте день и время отправки.'}
+                          {`Отправка: ${mailingSchedulePreview}`}
                         </small>
-                      ) : (
-                        <small className="mailing-option-card__hint">
-                          Если выключено, отправка произойдет сразу.
-                        </small>
-                      )}
+                      ) : null}
                     </div>
 
                     <div
@@ -6633,10 +6690,18 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     >
                       <div className="mailing-option-card__head">
                         <div className="mailing-option-card__title-wrap">
-                          <span className="mailing-option-card__title">Циклическая рассылка</span>
-                          <small className="mailing-option-card__subtitle">
-                            Повтор сообщений с заданным интервалом.
-                          </small>
+                          <div className="mailing-card-title-row">
+                            <span className="mailing-option-card__title">Циклическая рассылка</span>
+                            <SettingsHintAnchor
+                              hintKey="mailingCycle"
+                              openHintKey={openHintKey}
+                              onToggleHint={toggleHint}
+                              label="Пояснение для циклической рассылки"
+                            >
+                              Интервал повторов задаётся в часах от 1 до 24. Максимум 100
+                              отправок, но весь цикл всё равно должен уместиться в 14 дней.
+                            </SettingsHintAnchor>
+                          </div>
                         </div>
 
                         <label
@@ -6720,17 +6785,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                       {mailingCycleError ? (
                         <small className="field__hint">{mailingCycleError}</small>
-                      ) : mailingCycleEnabled ? (
+                      ) : mailingCycleEnabled && mailingCycleSummary ? (
                         <small className="mailing-option-card__hint is-info">
-                          {mailingCycleSummary
-                            ? `Цикл: ${mailingCycleSummary}. Все отправки должны уместиться в 14 дней.`
-                            : 'Укажите параметры цикла.'}
+                          {`Цикл: ${mailingCycleSummary}`}
                         </small>
-                      ) : (
-                        <small className="mailing-option-card__hint">
-                          Удобно для напоминаний о турнирах, событиях и розыгрышах.
-                        </small>
-                      )}
+                      ) : null}
                     </div>
                   </div>
 
