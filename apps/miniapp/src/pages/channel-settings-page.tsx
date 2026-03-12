@@ -1317,7 +1317,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
             >
               <span className="settings-section__toggle-main">
                 <h3>Розыгрыши</h3>
-                <small>ЧЕРНОВИК, ПУБЛИКАЦИЯ, ИТОГИ И CLAIM</small>
+                <small>СОЗДАНИЕ И УПРАВЛЕНИЕ В ЛИЧКЕ БОТА</small>
               </span>
               <SectionChevron isOpen={expandedSections.giveaway} />
             </button>

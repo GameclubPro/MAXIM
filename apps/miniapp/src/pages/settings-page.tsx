@@ -3780,7 +3780,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   >
                     <span className="settings-section__toggle-main">
                       <h3>Розыгрыши</h3>
-                      <small>Черновик, публикация, итоги и reroll</small>
+                      <small>Создание и управление в личке бота</small>
                     </span>
                     <SectionChevron isOpen={expandedSections.giveaway} />
                   </button>
