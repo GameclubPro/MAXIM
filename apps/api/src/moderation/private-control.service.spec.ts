@@ -255,6 +255,7 @@ function createHarness(
     settings?: typeof defaultSettings;
     channelSettings?: typeof defaultChannelSettings;
     adminService?: Record<string, unknown>;
+    managedGiveaway?: ManagedGiveawayDetails | null;
   } = {},
 ) {
   const chats = [
@@ -357,6 +358,27 @@ function createHarness(
     ...overrides.adminService,
   };
 
+  let currentGiveaway = overrides.managedGiveaway === undefined ? createGiveaway() : overrides.managedGiveaway;
+  const giveawayStore = new Map<string, ManagedGiveawayDetails>();
+  if (currentGiveaway) {
+    giveawayStore.set(currentGiveaway.id, currentGiveaway);
+  }
+
+  const saveGiveaway = (giveaway: ManagedGiveawayDetails) => {
+    giveawayStore.set(giveaway.id, giveaway);
+    if (
+      giveaway.status === 'DRAFT' ||
+      giveaway.status === 'SCHEDULED' ||
+      giveaway.status === 'ACTIVE' ||
+      giveaway.status === 'DRAWING'
+    ) {
+      currentGiveaway = giveaway;
+    } else if (currentGiveaway?.id === giveaway.id) {
+      currentGiveaway = null;
+    }
+    return giveaway;
+  };
+
   const managedGiveawayService = {
     parseClaimStartPayload: jest.fn((payload: string | null) =>
       payload === 'ggc-test-payload'
@@ -380,33 +402,120 @@ function createHarness(
         claimedAt: new Date().toISOString(),
       }),
     }),
-    getManagedGiveaway: jest.fn().mockResolvedValue(createGiveaway()),
-    getCurrentManagedGiveawayForEntity: jest.fn().mockResolvedValue(createGiveaway()),
+    getManagedGiveaway: jest.fn().mockImplementation(async (_chatId, giveawayId) => {
+      return giveawayStore.get(giveawayId) ?? createGiveaway({ id: giveawayId });
+    }),
+    getCurrentManagedGiveawayForEntity: jest.fn().mockImplementation(async () => currentGiveaway),
+    createManagedGiveaway: jest.fn().mockImplementation(async (_chatId, _actor, payload) => {
+      const created = createGiveaway({
+        id: 'giveaway-draft-1',
+        title: payload.title,
+        description: payload.description,
+        imageEnabled: payload.imageEnabled,
+        imageBase64: payload.imageBase64,
+        imageMimeType: payload.imageMimeType,
+        imageFileName: payload.imageFileName,
+        claimHours: payload.claimHours,
+        startsAt: payload.startsAt,
+        endsAt: payload.endsAt,
+        prizes: payload.prizes.map((prize: { position: number; title: string }) => ({
+          id: `prize-${prize.position}`,
+          position: prize.position,
+          title: prize.title,
+        })),
+        status: 'DRAFT',
+        publicationMessageId: null,
+        publicationUrl: null,
+        publishedAt: null,
+        winners: [],
+        winnersCount: 0,
+        entriesCount: 0,
+        verifiedEntriesCount: 0,
+        pendingEntriesCount: 0,
+      });
+      return saveGiveaway(created);
+    }),
+    updateManagedGiveaway: jest.fn().mockImplementation(async (_chatId, giveawayId, _actor, payload) => {
+      const existing = giveawayStore.get(giveawayId) ?? createGiveaway({ id: giveawayId, status: 'DRAFT' });
+      const updated = createGiveaway({
+        ...existing,
+        title: payload.title,
+        description: payload.description,
+        imageEnabled: payload.imageEnabled,
+        imageBase64: payload.imageBase64,
+        imageMimeType: payload.imageMimeType,
+        imageFileName: payload.imageFileName,
+        claimHours: payload.claimHours,
+        startsAt: payload.startsAt,
+        endsAt: payload.endsAt,
+        hasImage: payload.imageEnabled,
+        prizes: payload.prizes.map((prize: { position: number; title: string }) => ({
+          id: `prize-${prize.position}`,
+          position: prize.position,
+          title: prize.title,
+        })),
+        status: 'DRAFT',
+        updatedAt: new Date().toISOString(),
+      });
+      return saveGiveaway(updated);
+    }),
     getGiveawaySettingsMiniappUrl: jest
       .fn()
       .mockReturnValue('https://maxim.play-team.ru/app/chat/-70000000000001/settings?focus=giveaway'),
-    publishManagedGiveaway: jest.fn().mockResolvedValue(createGiveaway({ status: 'ACTIVE' })),
-    closeManagedGiveaway: jest.fn().mockResolvedValue(
-      createGiveaway({
-        status: 'COMPLETED',
-        winnersCount: 1,
-      }),
-    ),
-    rerollManagedGiveawayWinner: jest.fn().mockResolvedValue(
-      createGiveaway({
-        status: 'COMPLETED',
-        winnersCount: 1,
-        winners: [createGiveawayWinner({ id: 'winner-2', userId: 'user-2', displayName: 'Новый победитель' })],
-      }),
-    ),
-    markManagedGiveawayWinnerDelivered: jest.fn().mockResolvedValue(
-      createGiveaway({
-        status: 'COMPLETED',
-        winnersCount: 1,
-        winners: [createGiveawayWinner({ status: 'DELIVERED', deliveredAt: new Date().toISOString() })],
-      }),
-    ),
-    cancelManagedGiveaway: jest.fn().mockResolvedValue(createGiveaway({ status: 'CANCELED' })),
+    publishManagedGiveaway: jest.fn().mockImplementation(async (_chatId, giveawayId) => {
+      const existing = giveawayStore.get(giveawayId) ?? createGiveaway({ id: giveawayId, status: 'DRAFT' });
+      return saveGiveaway(
+        createGiveaway({
+          ...existing,
+          status: 'ACTIVE',
+          publicationMessageId: 'msg-1',
+          publicationUrl: 'https://max.ru/chats/chat-1/message/1',
+          publishedAt: new Date().toISOString(),
+        }),
+      );
+    }),
+    closeManagedGiveaway: jest.fn().mockImplementation(async (_chatId, giveawayId) => {
+      const existing = giveawayStore.get(giveawayId) ?? createGiveaway({ id: giveawayId });
+      return saveGiveaway(
+        createGiveaway({
+          ...existing,
+          status: 'COMPLETED',
+          winnersCount: 1,
+        }),
+      );
+    }),
+    rerollManagedGiveawayWinner: jest.fn().mockImplementation(async (_chatId, giveawayId) => {
+      const existing = giveawayStore.get(giveawayId) ?? createGiveaway({ id: giveawayId, status: 'COMPLETED' });
+      return saveGiveaway(
+        createGiveaway({
+          ...existing,
+          status: 'COMPLETED',
+          winnersCount: 1,
+          winners: [
+            createGiveawayWinner({
+              id: 'winner-2',
+              userId: 'user-2',
+              displayName: 'Новый победитель',
+            }),
+          ],
+        }),
+      );
+    }),
+    markManagedGiveawayWinnerDelivered: jest.fn().mockImplementation(async (_chatId, giveawayId) => {
+      const existing = giveawayStore.get(giveawayId) ?? createGiveaway({ id: giveawayId, status: 'COMPLETED' });
+      return saveGiveaway(
+        createGiveaway({
+          ...existing,
+          status: 'COMPLETED',
+          winnersCount: 1,
+          winners: [createGiveawayWinner({ status: 'DELIVERED', deliveredAt: new Date().toISOString() })],
+        }),
+      );
+    }),
+    cancelManagedGiveaway: jest.fn().mockImplementation(async (_chatId, giveawayId) => {
+      const existing = giveawayStore.get(giveawayId) ?? createGiveaway({ id: giveawayId });
+      return saveGiveaway(createGiveaway({ ...existing, status: 'CANCELED' }));
+    }),
   };
 
   const service = new PrivateControlService(
@@ -774,7 +883,71 @@ describe('PrivateControlService', () => {
       'chat',
     );
     expect(getLastSentText(maxClient)).toContain('Название: Весенний розыгрыш');
-    expect(getLastSentText(maxClient)).toContain('Режим: контент правится в miniapp');
+    expect(getLastSentText(maxClient)).toContain('Фото: нет');
+  });
+
+  it('starts a new giveaway draft in private bot when there is no current giveaway', async () => {
+    const { service, maxClient, chats, managedGiveawayService } = createHarness({
+      managedGiveaway: null,
+    });
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
+
+    expect(getLastEditedText(maxClient)).toContain('Состояние: пусто');
+    expect(
+      getLastButtons(maxClient)
+        .flat()
+        .some(
+          (button) =>
+            typeof button === 'object' &&
+            button !== null &&
+            'text' in button &&
+            button.text === 'Создать черновик',
+        ),
+    ).toBe(true);
+
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|giveaway_create'));
+
+    expect(managedGiveawayService.createManagedGiveaway).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        title: 'Новый розыгрыш',
+        prizes: [{ position: 1, title: 'Приз 1' }],
+      }),
+      'chat',
+      'private_bot',
+    );
+    expect(getLastEditedText(maxClient)).toContain('Статус: Черновик');
+  });
+
+  it('updates giveaway title from private bot input prompt', async () => {
+    const { service, chats, managedGiveawayService } = createHarness({
+      managedGiveaway: createGiveaway({
+        id: 'giveaway-draft-1',
+        status: 'DRAFT',
+        publicationMessageId: null,
+        publicationUrl: null,
+        publishedAt: null,
+      }),
+    });
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|giveaway_input_prompt|title'));
+    await service.handleUpdate(createPrivateTextUpdate('Розыгрыш апреля'));
+
+    expect(managedGiveawayService.updateManagedGiveaway).toHaveBeenCalledWith(
+      chats[0].id,
+      'giveaway-draft-1',
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        title: 'Розыгрыш апреля',
+      }),
+      'chat',
+      'private_bot',
+    );
   });
 
   it('opens the poll screen and publishes a poll from private control', async () => {
