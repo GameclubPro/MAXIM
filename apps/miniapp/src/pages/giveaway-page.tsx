@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useParams } from 'react-router-dom';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import { cn } from '../lib/cn';
-import { openMaxBotLink } from '../lib/max-bridge';
 import type { ApiClient } from '../lib/api-client';
-import { useParams } from 'react-router-dom';
+import { openMaxBotLink } from '../lib/max-bridge';
 
 function formatApiError(error: unknown): string {
   if (!(error instanceof Error)) {
@@ -26,9 +26,9 @@ function formatApiError(error: unknown): string {
   return text;
 }
 
-function formatDateTime(value: string | null): string {
+function formatDateTime(value: string | null, fallback = 'не задано'): string {
   if (!value) {
-    return 'не задано';
+    return fallback;
   }
 
   const parsed = new Date(value);
@@ -50,7 +50,7 @@ function buildStatusLabel(status: string): string {
     return 'Приём заявок открыт';
   }
   if (status === 'SCHEDULED') {
-    return 'Розыгрыш ещё не стартовал';
+    return 'Розыгрыш по таймеру';
   }
   if (status === 'COMPLETED') {
     return 'Итоги опубликованы';
@@ -58,7 +58,7 @@ function buildStatusLabel(status: string): string {
   if (status === 'CANCELED') {
     return 'Розыгрыш отменён';
   }
-  return 'Розыгрыш обрабатывается';
+  return 'Подводим итоги';
 }
 
 function buildStatusTone(status: string): 'success' | 'warning' | 'muted' | 'danger' {
@@ -107,7 +107,7 @@ function buildWinnerStatusLabel(status: string | null | undefined): string | nul
 }
 
 function buildWinnerStatusTone(status: string | null | undefined): 'success' | 'warning' | 'muted' | 'danger' {
-  if (status === 'CLAIMED' || status === 'DELIVERED' || status === 'SELECTED') {
+  if (status === 'SELECTED' || status === 'CLAIMED' || status === 'DELIVERED') {
     return 'success';
   }
   if (status === 'EXPIRED') {
@@ -254,29 +254,8 @@ export function GiveawayPage({ api }: { api: ApiClient }) {
     giveaway?.imageEnabled && giveaway.imageBase64
       ? `data:${giveaway.imageMimeType || 'image/jpeg'};base64,${giveaway.imageBase64}`
       : null;
-  const participantStatus = buildParticipantStatus({
-    joined: Boolean(participant?.joined),
-    isWinner: Boolean(participant?.isWinner),
-    canClaim: Boolean(participant?.canClaim),
-    winnerStatus: participant?.winnerStatus,
-    eligibilityState: participant?.eligibilityState,
-    giveawayStatus: giveaway?.status ?? 'DRAWING',
-  });
-  const participantSummary = buildParticipantSummary({
-    joined: Boolean(participant?.joined),
-    isWinner: Boolean(participant?.isWinner),
-    canClaim: Boolean(participant?.canClaim),
-    winnerStatus: participant?.winnerStatus,
-    eligibilityState: participant?.eligibilityState,
-    eligibilityReason: participant?.eligibilityReason,
-    giveawayStatus: giveaway?.status ?? 'DRAWING',
-    prizePosition: participant?.prizePosition,
-    prizeTitle: participant?.prizeTitle,
-  });
-  const eligibilityLabel = buildEligibilityLabel(participant?.eligibilityState);
-  const winnerStatusLabel = buildWinnerStatusLabel(participant?.winnerStatus);
 
-  if (giveawayQuery.isLoading || participantQuery.isLoading) {
+  if (giveawayQuery.isLoading) {
     return (
       <div className="giveaway-page">
         <SkeletonCard lines={6} />
@@ -285,19 +264,69 @@ export function GiveawayPage({ api }: { api: ApiClient }) {
     );
   }
 
-  if (giveawayQuery.error || participantQuery.error || !giveaway) {
+  if (giveawayQuery.error || !giveaway) {
     return (
       <div className="giveaway-page">
         <GlassCard elevated>
           <StatusState
             tone="danger"
             title="Не удалось открыть розыгрыш"
-            description={formatApiError(giveawayQuery.error ?? participantQuery.error)}
+            description={formatApiError(giveawayQuery.error)}
           />
         </GlassCard>
       </div>
     );
   }
+
+  const participantStatus = participantQuery.isLoading
+    ? { label: 'Проверяем статус', tone: 'muted' as const }
+    : participantQuery.error
+    ? { label: 'Статус недоступен', tone: 'warning' as const }
+    : buildParticipantStatus({
+        joined: Boolean(participant?.joined),
+        isWinner: Boolean(participant?.isWinner),
+        canClaim: Boolean(participant?.canClaim),
+        winnerStatus: participant?.winnerStatus,
+        eligibilityState: participant?.eligibilityState,
+        giveawayStatus: giveaway.status,
+      });
+  const participantSummary = participantQuery.error
+    ? 'Не удалось загрузить персональный статус. Сам розыгрыш открыт, можно повторить проверку ниже.'
+    : buildParticipantSummary({
+        joined: Boolean(participant?.joined),
+        isWinner: Boolean(participant?.isWinner),
+        canClaim: Boolean(participant?.canClaim),
+        winnerStatus: participant?.winnerStatus,
+        eligibilityState: participant?.eligibilityState,
+        eligibilityReason: participant?.eligibilityReason,
+        giveawayStatus: giveaway.status,
+        prizePosition: participant?.prizePosition,
+        prizeTitle: participant?.prizeTitle,
+      });
+  const eligibilityLabel = participantQuery.isLoading || participantQuery.error
+    ? null
+    : buildEligibilityLabel(participant?.eligibilityState);
+  const winnerStatusLabel = participantQuery.isLoading || participantQuery.error
+    ? null
+    : buildWinnerStatusLabel(participant?.winnerStatus);
+
+  const primaryAction = participantQuery.isLoading || participantQuery.error
+    ? null
+    : !participant?.joined && giveaway.status === 'ACTIVE'
+      ? {
+          label: enterMutation.isPending ? 'Входим…' : 'Участвовать',
+          disabled: enterMutation.isPending,
+          onClick: () => {
+            void enterMutation.mutateAsync();
+          },
+        }
+      : participant?.canClaim && participant.claimBotUrl
+        ? {
+            label: 'Подтвердить приз в боте',
+            disabled: false,
+            onClick: () => openMaxBotLink(participant.claimBotUrl ?? ''),
+          }
+        : null;
 
   return (
     <div className="giveaway-page">
@@ -306,7 +335,7 @@ export function GiveawayPage({ api }: { api: ApiClient }) {
           <div className="giveaway-page__hero-copy">
             <div className="giveaway-page__eyebrow">{giveaway.sourceTitle}</div>
             <h1>{giveaway.title}</h1>
-            <p>{giveaway.description || 'Описание не добавлено.'}</p>
+            {giveaway.description.trim() ? <p>{giveaway.description}</p> : null}
           </div>
           <div className={cn('giveaway-page__status', `is-${buildStatusTone(giveaway.status)}`)}>
             {buildStatusLabel(giveaway.status)}
@@ -319,23 +348,13 @@ export function GiveawayPage({ api }: { api: ApiClient }) {
           </div>
         ) : null}
 
-        <div className="giveaway-page__metrics">
-          <div className="giveaway-page__metric">
-            <span>Старт</span>
-            <strong>{formatDateTime(giveaway.startsAt)}</strong>
-          </div>
-          <div className="giveaway-page__metric">
-            <span>Финиш</span>
-            <strong>{formatDateTime(giveaway.endsAt)}</strong>
-          </div>
-          <div className="giveaway-page__metric">
-            <span>Участники</span>
-            <strong>{giveaway.entriesCount}</strong>
-          </div>
-          <div className="giveaway-page__metric">
-            <span>Победители</span>
-            <strong>{giveaway.winnersCount}</strong>
-          </div>
+        <div className="giveaway-page__chips">
+          <span className="giveaway-page__chip">
+            Старт: {formatDateTime(giveaway.startsAt, 'сразу')}
+          </span>
+          <span className="giveaway-page__chip">Финиш: {formatDateTime(giveaway.endsAt)}</span>
+          <span className="giveaway-page__chip">{giveaway.entriesCount} заявок</span>
+          <span className="giveaway-page__chip">{giveaway.prizes.length} мест</span>
         </div>
 
         <div className="giveaway-page__prizes-block">
@@ -344,17 +363,17 @@ export function GiveawayPage({ api }: { api: ApiClient }) {
             <small>{giveaway.prizes.length} мест</small>
           </div>
           <div className="giveaway-page__chips">
-          {giveaway.prizes.map((prize) => (
-            <span key={prize.id} className="giveaway-page__chip">
-              {prize.position}. {prize.title}
-            </span>
-          ))}
+            {giveaway.prizes.map((prize) => (
+              <span key={prize.id} className="giveaway-page__chip">
+                {prize.position}. {prize.title}
+              </span>
+            ))}
           </div>
         </div>
       </GlassCard>
 
       <GlassCard className="giveaway-page__panel" elevated>
-        <div className="giveaway-page__section-head">
+        <div className="giveaway-page__panel-head">
           <h2>Ваш статус</h2>
           <div className="giveaway-page__status-badges">
             <span className={cn('giveaway-page__status', `is-${participantStatus.tone}`)}>
@@ -365,65 +384,71 @@ export function GiveawayPage({ api }: { api: ApiClient }) {
           </div>
         </div>
 
-        <div className="giveaway-page__status-card">
-          <strong>{participantSummary}</strong>
-          <div className="giveaway-page__meta">
-            {participant?.joinedAt ? <span>Заявка: {formatDateTime(participant.joinedAt)}</span> : null}
-            {participant?.claimDeadlineAt ? (
-              <span>Claim до: {formatDateTime(participant.claimDeadlineAt)}</span>
+        {participantQuery.isLoading ? (
+          <StatusState
+            tone="neutral"
+            title="Проверяем ваш статус"
+            description="Подтягиваем участие и eligibility."
+          />
+        ) : participantQuery.error ? (
+          <StatusState
+            tone="warning"
+            title="Статус пока недоступен"
+            description={formatApiError(participantQuery.error)}
+            action={
+              <button
+                type="button"
+                className="button button--ghost"
+                onClick={() => {
+                  void participantQuery.refetch();
+                }}
+              >
+                Повторить
+              </button>
+            }
+          />
+        ) : (
+          <>
+            <div className="giveaway-page__status-card">
+              <strong>{participantSummary}</strong>
+              <div className="giveaway-page__meta">
+                {participant?.joinedAt ? <span>Заявка: {formatDateTime(participant.joinedAt)}</span> : null}
+                {participant?.claimDeadlineAt ? (
+                  <span>Claim до: {formatDateTime(participant.claimDeadlineAt)}</span>
+                ) : null}
+                {participant?.isWinner && participant?.prizeTitle ? (
+                  <span>
+                    Приз: {participant.prizePosition}. {participant.prizeTitle}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+
+            {giveaway.publicationUrl || giveaway.resultsUrl ? (
+              <div className="giveaway-page__actions">
+                {giveaway.publicationUrl ? (
+                  <button
+                    type="button"
+                    className="button button--ghost"
+                    onClick={() => openMaxBotLink(giveaway.publicationUrl ?? '')}
+                  >
+                    Открыть пост
+                  </button>
+                ) : null}
+
+                {giveaway.resultsUrl ? (
+                  <button
+                    type="button"
+                    className="button button--ghost"
+                    onClick={() => openMaxBotLink(giveaway.resultsUrl ?? '')}
+                  >
+                    Итоги
+                  </button>
+                ) : null}
+              </div>
             ) : null}
-            {participant?.isWinner && participant?.prizeTitle ? (
-              <span>
-                Приз: {participant.prizePosition}. {participant.prizeTitle}
-              </span>
-            ) : null}
-          </div>
-        </div>
-
-        <div className="giveaway-page__actions">
-          {!participant?.joined && giveaway.status === 'ACTIVE' ? (
-            <button
-              type="button"
-              className="button button--accent"
-              disabled={enterMutation.isPending}
-              onClick={() => {
-                void enterMutation.mutateAsync();
-              }}
-            >
-              Участвовать
-            </button>
-          ) : null}
-
-          {participant?.canClaim && participant.claimBotUrl ? (
-            <button
-              type="button"
-              className="button button--accent"
-              onClick={() => openMaxBotLink(participant.claimBotUrl ?? '')}
-            >
-              Перейти к claim
-            </button>
-          ) : null}
-
-          {giveaway.publicationUrl ? (
-            <button
-              type="button"
-              className="button button--ghost"
-              onClick={() => openMaxBotLink(giveaway.publicationUrl ?? '')}
-            >
-              Открыть пост
-            </button>
-          ) : null}
-
-          {giveaway.resultsUrl ? (
-            <button
-              type="button"
-              className="button button--ghost"
-              onClick={() => openMaxBotLink(giveaway.resultsUrl ?? '')}
-            >
-              Итоги
-            </button>
-          ) : null}
-        </div>
+          </>
+        )}
       </GlassCard>
 
       {giveaway.status === 'COMPLETED' && giveaway.winners.length > 0 ? (
@@ -458,6 +483,19 @@ export function GiveawayPage({ api }: { api: ApiClient }) {
             ))}
           </div>
         </GlassCard>
+      ) : null}
+
+      {primaryAction ? (
+        <div className="giveaway-page__sticky-bar">
+          <button
+            type="button"
+            className="button button--accent"
+            disabled={primaryAction.disabled}
+            onClick={primaryAction.onClick}
+          >
+            {primaryAction.label}
+          </button>
+        </div>
       ) : null}
     </div>
   );

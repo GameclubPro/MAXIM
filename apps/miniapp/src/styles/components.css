@@ -5041,11 +5041,31 @@
   min-width: 0;
 }
 
-.managed-giveaway__overview-card,
-.managed-giveaway__panel,
-.managed-giveaway__step,
-.managed-giveaway__history-toggle {
+.managed-giveaway__empty {
+  gap: 8px;
+  padding: 15px;
   border-radius: 22px;
+  border-style: solid;
+  background: rgba(248, 250, 252, 0.92);
+}
+
+.managed-giveaway__empty strong {
+  color: var(--text-primary);
+  font-size: 0.96rem;
+}
+
+.managed-giveaway__empty p {
+  margin: 0;
+}
+
+.managed-giveaway__header .button {
+  min-height: 40px;
+  padding-inline: 14px;
+}
+
+.managed-giveaway__panel,
+.managed-giveaway__history-toggle {
+  border-radius: 24px;
   border: 1px solid rgba(78, 106, 136, 0.13);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(245, 249, 253, 0.95)),
@@ -5053,30 +5073,23 @@
   box-shadow: 0 18px 40px rgba(24, 56, 88, 0.06);
 }
 
-.managed-giveaway__overview-card {
-  display: grid;
-  gap: 12px;
-  padding: 15px;
+.managed-giveaway__summary-card {
+  gap: 14px;
+  padding: 16px;
   background:
-    radial-gradient(circle at top right, rgba(78, 154, 255, 0.18), transparent 42%),
+    radial-gradient(circle at top right, rgba(78, 154, 255, 0.16), transparent 42%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(240, 247, 255, 0.96)),
     rgba(255, 255, 255, 0.94);
 }
 
-.managed-giveaway__overview-main {
-  display: grid;
-  gap: 5px;
-  min-width: 0;
-}
-
-.managed-giveaway__overview-topline {
+.managed-giveaway__summary-topline {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
 }
 
-.managed-giveaway__overview-kicker {
+.managed-giveaway__eyebrow {
   color: var(--text-muted);
   font-size: 0.72rem;
   font-weight: 700;
@@ -5084,294 +5097,116 @@
   letter-spacing: 0.07em;
 }
 
-.managed-giveaway__overview-main strong {
+.managed-giveaway__summary-copy {
+  display: grid;
+  gap: 6px;
+}
+
+.managed-giveaway__summary-copy h4 {
   margin: 0;
-  font-size: 1rem;
-  line-height: 1.22;
+  font-size: 1.04rem;
+  line-height: 1.16;
   color: var(--text-primary);
 }
 
-.managed-giveaway__overview-main span {
-  color: var(--text-secondary);
-  font-size: 0.84rem;
-  line-height: 1.42;
-}
-
-.managed-giveaway__overview-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.managed-giveaway__overview-chip {
-  display: inline-flex;
-  align-items: center;
-  min-height: 30px;
-  padding: 0 11px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.82);
-  border: 1px solid rgba(78, 106, 136, 0.11);
-  color: #33506a;
-  font-size: 0.79rem;
-  font-weight: 700;
-}
-
-.managed-giveaway__empty {
-  gap: 8px;
-  padding: 14px;
-  border-radius: 20px;
-  border-style: solid;
-  background: rgba(248, 250, 252, 0.92);
-}
-
-.managed-giveaway__empty p {
+.managed-giveaway__summary-copy p {
   margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.87rem;
+  line-height: 1.46;
 }
 
-.managed-giveaway__composer,
+.managed-giveaway__stat-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.managed-giveaway__stat-card {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border-radius: 18px;
+  border: 1px solid rgba(78, 106, 136, 0.11);
+  background: rgba(255, 255, 255, 0.76);
+}
+
+.managed-giveaway__stat-card span {
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  line-height: 1.1;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.managed-giveaway__stat-card strong {
+  color: var(--text-primary);
+  font-size: 0.9rem;
+  line-height: 1.28;
+}
+
+.managed-giveaway__stat-card small {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  line-height: 1.32;
+}
+
+.managed-giveaway__error-inline {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 11px 12px;
+  border-radius: 16px;
+  border: 1px solid rgba(196, 122, 33, 0.16);
+  background: rgba(255, 246, 229, 0.72);
+  color: #8c5c19;
+  font-size: 0.82rem;
+  line-height: 1.4;
+}
+
+.managed-giveaway__section,
 .managed-giveaway__history {
   display: grid;
   gap: 10px;
 }
 
-.managed-giveaway__step {
-  overflow: hidden;
-  transition:
-    border-color 0.2s ease,
-    box-shadow 0.2s ease,
-    background 0.2s ease,
-    transform 0.2s ease;
+.managed-giveaway__section-copy strong {
+  color: var(--text-primary);
+  font-size: 0.92rem;
+  line-height: 1.2;
 }
 
-.managed-giveaway__step.is-open {
-  border-color: rgba(52, 116, 193, 0.22);
-  box-shadow: 0 20px 42px rgba(24, 56, 88, 0.08);
-}
-
-.managed-giveaway__step.is-error {
-  border-color: rgba(228, 83, 99, 0.2);
-}
-
-.managed-giveaway__step-head {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-}
-
-.managed-giveaway__step-head .channel-settings-hint-anchor {
-  padding: 14px 14px 0 0;
-  flex-shrink: 0;
-}
-
-.managed-giveaway__step-toggle {
-  appearance: none;
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px;
-  border: 0;
-  background: transparent;
-  cursor: pointer;
-  text-align: left;
-  color: inherit;
-}
-
-.managed-giveaway__step-toggle.is-error .managed-giveaway__step-main strong {
-  color: var(--danger);
-}
-
-.managed-giveaway__step-main {
-  min-width: 0;
+.managed-giveaway__winner-copy {
   display: grid;
   gap: 4px;
+  min-width: 0;
 }
 
-.managed-giveaway__step-main strong {
-  font-size: 0.95rem;
-  line-height: 1.2;
+.managed-giveaway__winner-copy strong {
   color: var(--text-primary);
+  font-size: 0.9rem;
+  line-height: 1.24;
 }
 
-.managed-giveaway__step-main small {
+.managed-giveaway__winner-copy p,
+.managed-giveaway__winner-copy small {
+  margin: 0;
   color: var(--text-secondary);
-  font-size: 0.79rem;
-  line-height: 1.35;
-}
-
-.managed-giveaway__step-body {
-  gap: 12px;
-  padding: 0 14px 14px;
-}
-
-.managed-giveaway__step-body .settings-text-field {
-  gap: 6px;
-}
-
-.managed-giveaway__step-body textarea {
-  min-height: 104px;
-  resize: vertical;
-}
-
-.managed-giveaway__grid {
-  display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-}
-
-.managed-giveaway__prizes,
-.managed-giveaway__winners,
-.managed-giveaway__history-list {
-  gap: 8px;
-}
-
-.managed-giveaway__prize-row,
-.managed-giveaway__winner-row,
-.managed-giveaway__history-item {
-  border-radius: 18px;
-  border: 1px solid rgba(78, 106, 136, 0.12);
-  background: rgba(255, 255, 255, 0.76);
-}
-
-.managed-giveaway__prize-row {
-  align-items: flex-start;
-  padding: 12px;
-  gap: 10px;
-}
-
-.managed-giveaway__prize-field {
-  min-width: 0;
-  display: grid;
-  gap: 6px;
-}
-
-.managed-giveaway__prize-row .button {
-  min-height: 42px;
-}
-
-.managed-giveaway__prize-position,
-.managed-giveaway__chip,
-.managed-giveaway__overview-chip,
-.giveaway-page__chip {
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.45);
-}
-
-.managed-giveaway__cover-actions {
-  display: grid;
-  gap: 10px;
-}
-
-.managed-giveaway__cover-preview {
-  display: grid;
-  gap: 10px;
-  padding: 10px;
-  border-radius: 18px;
-  border: 1px solid rgba(78, 106, 136, 0.12);
-  background: rgba(249, 251, 253, 0.96);
-}
-
-.managed-giveaway__cover-image {
-  display: block;
-  width: 100%;
-  aspect-ratio: 16 / 9;
-  object-fit: cover;
-  border-radius: 16px;
-  border: 1px solid rgba(78, 106, 136, 0.12);
-}
-
-.managed-giveaway__cover-loaded {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  min-width: 0;
-}
-
-.managed-giveaway__cover-loaded span {
-  min-width: 0;
-  color: var(--text-secondary);
-  font-size: 0.82rem;
-  line-height: 1.35;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.managed-giveaway__panel {
-  gap: 12px;
-  padding: 14px;
-}
-
-.managed-giveaway__summary-head {
-  align-items: flex-start;
-}
-
-.managed-giveaway__section-copy {
-  gap: 6px;
-}
-
-.managed-giveaway__section-copy h4 {
-  font-size: 1rem;
-}
-
-.managed-giveaway__details {
-  gap: 8px;
-}
-
-.managed-giveaway__details p {
-  color: var(--text-secondary);
-  font-size: 0.87rem;
-  line-height: 1.48;
-}
-
-.managed-giveaway__meta,
-.managed-giveaway__meta-list {
-  font-size: 0.81rem;
-}
-
-.managed-giveaway__winners {
-  gap: 8px;
+  font-size: 0.83rem;
+  line-height: 1.36;
 }
 
 .managed-giveaway__winner-row {
-  gap: 4px 10px;
-  padding: 12px;
-}
-
-.managed-giveaway__winner-row strong {
-  color: var(--text-primary);
-  font-size: 0.9rem;
-}
-
-.managed-giveaway__winner-row p {
-  color: var(--text-secondary);
-  font-size: 0.84rem;
+  align-items: flex-start;
 }
 
 .managed-giveaway__actions {
   gap: 8px;
 }
 
-.managed-giveaway__actions .button,
-.managed-giveaway__composer-bar .button {
+.managed-giveaway__actions .button {
   min-height: 44px;
-}
-
-.managed-giveaway__composer-bar {
-  position: sticky;
-  z-index: 3;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-  padding: 10px;
-  border-radius: 20px;
-  border: 1px solid rgba(78, 106, 136, 0.15);
-  background: rgba(255, 255, 255, 0.86);
-  box-shadow: 0 22px 40px rgba(24, 56, 88, 0.1);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
 }
 
 .managed-giveaway__history-toggle {
@@ -5420,11 +5255,11 @@
 }
 
 .giveaway-page__hero {
-  gap: 12px;
+  gap: 14px;
   border-color: rgba(97, 133, 168, 0.14);
   background:
-    radial-gradient(circle at top right, rgba(91, 160, 255, 0.18), transparent 42%),
-    linear-gradient(145deg, rgba(255, 255, 255, 0.98), rgba(239, 247, 255, 0.94));
+    radial-gradient(circle at top right, rgba(91, 160, 255, 0.16), transparent 40%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.985), rgba(239, 247, 255, 0.95));
 }
 
 .giveaway-page__hero-top,
@@ -5436,15 +5271,36 @@
   gap: 6px;
 }
 
+.giveaway-page__panel,
+.giveaway-page__sticky-bar {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(246, 250, 255, 0.94)),
+    rgba(255, 255, 255, 0.9);
+  border-color: rgba(68, 91, 117, 0.12);
+}
+
+.giveaway-page__panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.giveaway-page__panel-head h2 {
+  margin: 0;
+  font-size: 1rem;
+  line-height: 1.18;
+}
+
 .giveaway-page__hero h1 {
   margin: 0;
-  font-size: clamp(1.12rem, 1rem + 0.6vw, 1.46rem);
+  font-size: clamp(1.12rem, 1rem + 0.6vw, 1.44rem);
   line-height: 1.12;
 }
 
 .giveaway-page__eyebrow {
   color: var(--text-secondary);
-  font-size: 0.82rem;
+  font-size: 0.81rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }
@@ -5474,34 +5330,8 @@
   object-fit: cover;
 }
 
-.giveaway-page__metrics {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.giveaway-page__chips {
   gap: 8px;
-}
-
-.giveaway-page__metric {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
-  padding: 11px 12px;
-  border-radius: 16px;
-  border: 1px solid rgba(104, 136, 168, 0.12);
-  background: rgba(255, 255, 255, 0.76);
-}
-
-.giveaway-page__metric span {
-  color: var(--text-secondary);
-  font-size: 0.71rem;
-  line-height: 1.1;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.giveaway-page__metric strong {
-  color: var(--text-primary);
-  font-size: 0.88rem;
-  line-height: 1.25;
 }
 
 .giveaway-page__status-badges {
@@ -5533,7 +5363,7 @@
 }
 
 .giveaway-page__status-card {
-  padding: 12px;
+  padding: 13px;
   border-radius: 18px;
   border: 1px solid rgba(68, 91, 117, 0.12);
   background: rgba(244, 247, 250, 0.84);
@@ -5543,12 +5373,6 @@
   color: var(--text-primary);
   font-size: 0.94rem;
   line-height: 1.35;
-}
-
-.giveaway-page__participant-copy {
-  display: grid;
-  gap: 10px;
-  color: var(--text-secondary);
 }
 
 .giveaway-page__winner-row {
@@ -5561,48 +5385,47 @@
   line-height: 1.35;
 }
 
-@media (max-width: 520px) {
-  .managed-giveaway__overview-topline {
-    align-items: flex-start;
+.giveaway-page__sticky-bar {
+  position: sticky;
+  z-index: 3;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
+  padding: 10px;
+  border-radius: 22px;
+  border: 1px solid rgba(78, 106, 136, 0.15);
+  box-shadow: 0 22px 40px rgba(24, 56, 88, 0.1);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+}
+
+.giveaway-page__sticky-bar .button {
+  width: 100%;
+  min-height: 46px;
+}
+
+@media (max-width: 640px) {
+  .managed-giveaway__header,
+  .giveaway-page__panel-head,
+  .giveaway-page__hero-top {
+    flex-direction: column;
   }
 
-  .managed-giveaway__step-head .channel-settings-hint-anchor {
-    padding-top: 12px;
-    padding-right: 12px;
+  .managed-giveaway__header .button {
+    width: 100%;
   }
 
-  .managed-giveaway__composer-bar {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+  .managed-giveaway__stat-grid,
+  .giveaway-page__winner-row,
+  .managed-giveaway__winner-row {
+    grid-template-columns: 1fr;
   }
 
-  .managed-giveaway__composer-bar .button--accent {
-    grid-column: 1 / -1;
-  }
-
-  .managed-giveaway__cover-loaded {
+  .managed-giveaway__error-inline {
     align-items: flex-start;
     flex-direction: column;
   }
 
-  .managed-giveaway__hero-metrics {
-    grid-template-columns: 1fr;
-  }
-
-  .giveaway-page__metrics {
-    grid-template-columns: 1fr;
-  }
-
-  .giveaway-page__winner-row {
-    grid-template-columns: 1fr;
-  }
-
   .giveaway-page__status-badges {
     justify-content: flex-start;
-  }
-
-  .managed-giveaway__prize-row,
-  .managed-giveaway__winner-row {
-    grid-template-columns: 1fr;
   }
 }
 
