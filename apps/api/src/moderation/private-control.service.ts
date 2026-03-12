@@ -195,6 +195,14 @@ type CallbackAction = {
   args: string[];
 };
 
+type GiveawayHandoffStartPayload = {
+  v: 1;
+  k: 'giveaway-handoff';
+  c: string;
+  e: ManagedEntityType;
+  g: string | null;
+};
+
 type ParsedImageAttachment = {
   url: string;
   token: string | null;
@@ -205,6 +213,7 @@ const SESSION_TTL_SEC = 45 * 60;
 const SESSION_KEY_PREFIX = 'private-ui:v2';
 const BROADCAST_HANDOFF_START_PAYLOAD = 'broadcast_handoff';
 const GIVEAWAY_HANDOFF_START_PAYLOAD = 'giveaway_handoff';
+const GIVEAWAY_HANDOFF_START_PREFIX = 'ggh-';
 const PAGE_SIZE_CHATS = 8;
 const PAGE_SIZE_DOMAINS = 8;
 const PAGE_SIZE_EVENTS = 10;
@@ -874,6 +883,21 @@ export class PrivateControlService {
     }
 
     const session = await this.loadSession(context.actor.userId);
+    const handoffPayload = this.parseGiveawayHandoffStartPayload(startPayload);
+    if (handoffPayload) {
+      session.selectedChatId = handoffPayload.chatId;
+      session.selectedEntityType = handoffPayload.entityType;
+      session.managedGiveawayId = handoffPayload.giveawayId;
+      session.entityTab = handoffPayload.entityType;
+      session.uiMode = 'modern';
+      session.screen = 'giveaway';
+      session.section = null;
+      session.channelSection = null;
+      session.searchQuery = null;
+      session.pendingInput = null;
+      session.pendingMassAction = null;
+      session.lastScreenStack = [];
+    }
     session.screen =
       session.selectedChatId === null
         ? 'chat_select'
@@ -990,7 +1014,13 @@ export class PrivateControlService {
 
     await this.saveSession(user.userId, session);
 
-    const botUrl = this.buildBotStartUrl(GIVEAWAY_HANDOFF_START_PAYLOAD);
+    const botUrl = this.buildBotStartUrl(
+      this.buildGiveawayHandoffStartPayload({
+        chatId: sourceChatId,
+        entityType,
+        giveawayId: parsed.data.giveawayId,
+      }),
+    );
     if (!botUrl) {
       throw new BadRequestException('Ссылка на личный чат бота не настроена.');
     }
@@ -5119,6 +5149,28 @@ export class PrivateControlService {
         ),
       ]);
     }
+    const giveawayMiniappUrl = this.managedGiveawayService.getGiveawayPublicMiniappUrl(giveaway.id);
+    if (giveawayMiniappUrl) {
+      rows.push([this.buildMiniappOpenButton('Открыть розыгрыш', giveawayMiniappUrl)]);
+    }
+    const linkRow: MaxMessageButton[] = [];
+    if (giveaway.publicationUrl) {
+      linkRow.push({
+        type: 'link',
+        text: 'Открыть пост',
+        url: giveaway.publicationUrl,
+      });
+    }
+    if (giveaway.resultsUrl) {
+      linkRow.push({
+        type: 'link',
+        text: 'Итоги',
+        url: giveaway.resultsUrl,
+      });
+    }
+    if (linkRow.length > 0) {
+      rows.push(linkRow);
+    }
     rows.push(...this.buildFooterButtons());
 
     return {
@@ -6535,6 +6587,65 @@ export class PrivateControlService {
     }
 
     return `https://max.ru/${encodeURIComponent(this.botDeepLinkId)}?start=${encodeURIComponent(startPayload)}`;
+  }
+
+  private buildGiveawayHandoffStartPayload(params: {
+    chatId: string;
+    entityType: ManagedEntityType;
+    giveawayId: string | null;
+  }): string {
+    const payload = Buffer.from(
+      JSON.stringify({
+        v: 1,
+        k: 'giveaway-handoff',
+        c: params.chatId,
+        e: params.entityType,
+        g: params.giveawayId,
+      } satisfies GiveawayHandoffStartPayload),
+      'utf8',
+    ).toString('base64url');
+
+    return `${GIVEAWAY_HANDOFF_START_PREFIX}${payload}`;
+  }
+
+  private parseGiveawayHandoffStartPayload(
+    startPayload: string | null,
+  ): { chatId: string; entityType: ManagedEntityType; giveawayId: string | null } | null {
+    if (!startPayload || startPayload === GIVEAWAY_HANDOFF_START_PAYLOAD) {
+      return null;
+    }
+
+    if (!startPayload.startsWith(GIVEAWAY_HANDOFF_START_PREFIX)) {
+      return null;
+    }
+
+    const encodedPayload = startPayload.slice(GIVEAWAY_HANDOFF_START_PREFIX.length);
+    if (!encodedPayload) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(
+        Buffer.from(encodedPayload, 'base64url').toString('utf8'),
+      ) as Partial<GiveawayHandoffStartPayload>;
+      const chatId = typeof parsed.c === 'string' ? parsed.c.trim() : '';
+      const entityType =
+        parsed.e === 'channel' ? 'channel' : parsed.e === 'chat' ? 'chat' : null;
+      const giveawayId =
+        typeof parsed.g === 'string' && parsed.g.trim().length > 0 ? parsed.g.trim() : null;
+
+      if (parsed.v !== 1 || parsed.k !== 'giveaway-handoff' || !chatId || !entityType) {
+        return null;
+      }
+
+      return {
+        chatId,
+        entityType,
+        giveawayId,
+      };
+    } catch {
+      return null;
+    }
   }
 
   private resolveBotContactId(): string | null {

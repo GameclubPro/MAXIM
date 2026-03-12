@@ -175,7 +175,7 @@ function buildParticipantSummary(params: {
   prizeTitle: string | null | undefined;
 }): string {
   if (params.isWinner && params.canClaim) {
-    return `Вы выиграли ${params.prizePosition}. ${params.prizeTitle}. Подтвердите приз в личке бота.`;
+    return `Вы выиграли ${params.prizePosition}. ${params.prizeTitle}. Подтвердите приз одним нажатием.`;
   }
 
   if (params.isWinner) {
@@ -243,6 +243,28 @@ export function GiveawayPage({ api }: { api: ApiClient }) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось вступить',
+        description: formatApiError(error),
+      });
+    },
+  });
+
+  const claimMutation = useMutation({
+    mutationFn: () => api.claimGiveaway(giveawayId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['public-giveaway', giveawayId] }),
+        queryClient.invalidateQueries({ queryKey: ['public-giveaway-participant', giveawayId] }),
+      ]);
+      pushToast({
+        tone: 'success',
+        title: 'Приз подтверждён',
+        description: 'Статус обновлён.',
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось подтвердить приз',
         description: formatApiError(error),
       });
     },
@@ -320,11 +342,13 @@ export function GiveawayPage({ api }: { api: ApiClient }) {
             void enterMutation.mutateAsync();
           },
         }
-      : participant?.canClaim && participant.claimBotUrl
+      : participant?.canClaim
         ? {
-            label: 'Подтвердить приз в боте',
-            disabled: false,
-            onClick: () => openMaxBotLink(participant.claimBotUrl ?? ''),
+            label: claimMutation.isPending ? 'Подтверждаем…' : 'Подтвердить приз',
+            disabled: claimMutation.isPending,
+            onClick: () => {
+              void claimMutation.mutateAsync();
+            },
           }
         : null;
 
@@ -423,6 +447,18 @@ export function GiveawayPage({ api }: { api: ApiClient }) {
                 ) : null}
               </div>
             </div>
+
+            {participant?.canClaim && participant.claimBotUrl ? (
+              <div className="giveaway-page__actions">
+                <button
+                  type="button"
+                  className="button button--ghost"
+                  onClick={() => openMaxBotLink(participant.claimBotUrl ?? '')}
+                >
+                  Открыть чат бота
+                </button>
+              </div>
+            ) : null}
 
             {giveaway.publicationUrl || giveaway.resultsUrl ? (
               <div className="giveaway-page__actions">

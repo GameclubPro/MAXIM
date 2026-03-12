@@ -413,6 +413,7 @@ export class ManagedGiveawayService {
       });
     });
 
+    await this.editGiveawayPublicationIfNeeded(updated, ManagedGiveawayStatus.COMPLETED);
     await this.republishGiveawayResults(updated);
     await this.writeAuditLog(sourceChatId, user.userId, 'REROLL_GIVEAWAY_WINNER', {
       giveawayId,
@@ -470,6 +471,9 @@ export class ManagedGiveawayService {
       where: { id: giveaway.id },
       include: MANAGED_GIVEAWAY_INCLUDE,
     });
+
+    await this.editGiveawayPublicationIfNeeded(refreshed, ManagedGiveawayStatus.COMPLETED);
+    await this.republishGiveawayResults(refreshed);
 
     return managedGiveawayDetailsSchema.parse(this.mapGiveawayDetails(refreshed));
   }
@@ -657,6 +661,14 @@ export class ManagedGiveawayService {
       source,
     });
 
+    const refreshed = await this.prisma.managedGiveaway.findUniqueOrThrow({
+      where: { id: giveaway.id },
+      include: MANAGED_GIVEAWAY_INCLUDE,
+    });
+
+    await this.editGiveawayPublicationIfNeeded(refreshed, ManagedGiveawayStatus.COMPLETED);
+    await this.republishGiveawayResults(refreshed);
+
     return claimManagedGiveawayResponseSchema.parse({
       ok: true,
       winner: this.mapGiveawayWinner(updated),
@@ -831,6 +843,10 @@ export class ManagedGiveawayService {
     return `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?start=${encodeURIComponent(
       `${GIVEAWAY_CLAIM_START_PREFIX}${payload}`,
     )}`;
+  }
+
+  getGiveawayPublicMiniappUrl(giveawayId: string): string | null {
+    return this.buildGiveawayDirectWebAppUrl(giveawayId);
   }
 
   private async assertAdminEntityAccess(
@@ -1028,7 +1044,7 @@ export class ManagedGiveawayService {
               .map((winner) => ({
                 prizePosition: winner.prize.position,
                 prizeTitle: winner.prize.title,
-                displayName: winner.entry.displayName ?? null,
+                displayName: this.resolvePublicWinnerDisplayName(winner),
                 status: winner.status,
               }))
           : [],
@@ -1097,6 +1113,27 @@ export class ManagedGiveawayService {
     };
   }
 
+  private resolvePublicWinnerDisplayName(
+    winner: PersistedManagedGiveawayWinner & {
+      prize: PersistedManagedGiveawayPrize;
+      entry: PersistedManagedGiveawayEntry;
+    },
+  ): string | null {
+    return winner.status === ManagedGiveawayWinnerStatus.CLAIMED ||
+      winner.status === ManagedGiveawayWinnerStatus.DELIVERED
+      ? winner.entry.displayName ?? null
+      : null;
+  }
+
+  private formatPublicWinnerName(
+    winner: PersistedManagedGiveawayWinner & {
+      prize: PersistedManagedGiveawayPrize;
+      entry: PersistedManagedGiveawayEntry;
+    },
+  ): string {
+    return this.resolvePublicWinnerDisplayName(winner) ?? 'победитель подтверждает приз';
+  }
+
   private async uploadGiveawayImage(
     giveaway: Pick<
       PersistedManagedGiveaway,
@@ -1124,6 +1161,14 @@ export class ManagedGiveawayService {
   }
 
   private buildGiveawayEntryButton(giveawayId: string): MaxMessageButton | null {
+    return this.buildGiveawayMiniappButton(giveawayId, 'Участвовать');
+  }
+
+  private buildGiveawayOpenButton(giveawayId: string): MaxMessageButton | null {
+    return this.buildGiveawayMiniappButton(giveawayId, 'Открыть розыгрыш');
+  }
+
+  private buildGiveawayMiniappButton(giveawayId: string, text: string): MaxMessageButton | null {
     const launchUrl = this.buildGiveawayLaunchUrl(giveawayId);
     const webAppUrl = this.buildGiveawayDirectWebAppUrl(giveawayId);
     const botContactId = this.resolveBotContactId();
@@ -1131,7 +1176,7 @@ export class ManagedGiveawayService {
     if (webAppUrl && botContactId) {
       return {
         type: 'open_app',
-        text: 'Участвовать',
+        text,
         webApp: webAppUrl,
         contactId: botContactId,
       };
@@ -1140,7 +1185,7 @@ export class ManagedGiveawayService {
     if (launchUrl) {
       return {
         type: 'link',
-        text: 'Участвовать',
+        text,
         url: launchUrl,
       };
     }
@@ -1148,7 +1193,7 @@ export class ManagedGiveawayService {
     if (webAppUrl) {
       return {
         type: 'link',
-        text: 'Участвовать',
+        text,
         url: webAppUrl,
       };
     }
@@ -1191,7 +1236,7 @@ export class ManagedGiveawayService {
     lines.push('', 'Победители:');
     for (const winner of currentWinners) {
       lines.push(
-        `${winner.prize.position}. ${winner.prize.title} — ${winner.entry.displayName ?? winner.entry.userId}`,
+        `${winner.prize.position}. ${winner.prize.title} — ${this.formatPublicWinnerName(winner)}`,
       );
     }
 
@@ -1220,7 +1265,7 @@ export class ManagedGiveawayService {
               ? 'claim истёк'
               : 'ожидает claim';
       lines.push(
-        `${winner.prize.position}. ${winner.prize.title} — ${winner.entry.displayName ?? winner.entry.userId} (${status})`,
+        `${winner.prize.position}. ${winner.prize.title} — ${this.formatPublicWinnerName(winner)} (${status})`,
       );
     }
 
@@ -1238,10 +1283,12 @@ export class ManagedGiveawayService {
 
     try {
       if (status === ManagedGiveawayStatus.CANCELED) {
+        const button = this.buildGiveawayOpenButton(giveaway.id);
         await this.maxClient.editMessageInlineKeyboard(
           giveaway.sourceChatId,
           messageId,
           `Розыгрыш отменён\n\n${giveaway.title.trim()}`,
+          button ? { buttons: [[button]] } : undefined,
         );
         return;
       }
@@ -1257,10 +1304,12 @@ export class ManagedGiveawayService {
         return;
       }
 
+      const button = this.buildGiveawayOpenButton(giveaway.id);
       await this.maxClient.editMessageInlineKeyboard(
         giveaway.sourceChatId,
         messageId,
         this.buildGiveawayCompletedPublicationText(giveaway),
+        button ? { buttons: [[button]] } : undefined,
       );
     } catch (error: unknown) {
       this.logger.warn(
@@ -1276,11 +1325,13 @@ export class ManagedGiveawayService {
   }
 
   private async republishGiveawayResults(giveaway: PersistedGiveawayWithRelations): Promise<void> {
+    const button = this.buildGiveawayOpenButton(giveaway.id);
     if (!giveaway.resultsMessageId?.trim()) {
       try {
         const result = await this.maxClient.sendMessageImmediateWithResolvedLink(
           giveaway.sourceChatId,
           this.buildGiveawayResultsText(giveaway),
+          button ? { buttons: [[button]] } : undefined,
         );
         await this.prisma.managedGiveaway.update({
           where: { id: giveaway.id },
@@ -1306,6 +1357,7 @@ export class ManagedGiveawayService {
         giveaway.sourceChatId,
         giveaway.resultsMessageId,
         this.buildGiveawayResultsText(giveaway),
+        button ? { buttons: [[button]] } : undefined,
       );
     } catch (error: unknown) {
       this.logger.warn(

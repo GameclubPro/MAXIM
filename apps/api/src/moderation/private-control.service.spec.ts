@@ -462,6 +462,9 @@ function createHarness(
     getGiveawaySettingsMiniappUrl: jest
       .fn()
       .mockReturnValue('https://maxim.play-team.ru/app/chat/-70000000000001/settings?focus=giveaway'),
+    getGiveawayPublicMiniappUrl: jest
+      .fn()
+      .mockReturnValue('https://maxim.play-team.ru/app/giveaways/giveaway-1'),
     publishManagedGiveaway: jest.fn().mockImplementation(async (_chatId, giveawayId) => {
       const existing = giveawayStore.get(giveawayId) ?? createGiveaway({ id: giveawayId, status: 'DRAFT' });
       return saveGiveaway(
@@ -557,6 +560,11 @@ function getLastButtons(maxClient: { sendMessage: jest.Mock; answerCallback: jes
 
   const callbackButtons = maxClient.answerCallback.mock.calls.at(-1)?.[2]?.options?.buttons;
   return (callbackButtons ?? []) as Array<Array<unknown>>;
+}
+
+function extractStartPayload(url: string): string {
+  const parsed = new URL(url);
+  return parsed.searchParams.get('start') ?? '';
 }
 
 describe('PrivateControlService', () => {
@@ -872,9 +880,9 @@ describe('PrivateControlService', () => {
       'chat',
     );
 
-    expect(result.botUrl).toBe('https://max.ru/777000_bot?start=giveaway_handoff');
+    expect(result.botUrl).toContain('https://max.ru/777000_bot?start=');
 
-    await service.handleBotStarted(createBotStartedPrivateUpdate('giveaway_handoff'));
+    await service.handleBotStarted(createBotStartedPrivateUpdate(extractStartPayload(result.botUrl)));
 
     expect(managedGiveawayService.getManagedGiveaway).toHaveBeenCalledWith(
       chats[0].id,
@@ -1087,6 +1095,17 @@ describe('PrivateControlService', () => {
             button !== null &&
             'text' in button &&
             button.text === 'Подтвердить приз',
+        ),
+    ).toBe(true);
+    expect(
+      getLastButtons(maxClient)
+        .flat()
+        .some(
+          (button) =>
+            typeof button === 'object' &&
+            button !== null &&
+            'text' in button &&
+            button.text === 'Открыть розыгрыш',
         ),
     ).toBe(true);
 
