@@ -3782,13 +3782,7 @@ export class PrivateControlService {
       }`,
       `Текст: ${draft.text.trim() ? this.compactText(draft.text, 80) : 'не указан'}`,
       ...(channelSettings
-        ? [
-            `Комментарии: ${this.describeBooleanCompact(channelSettings.commentsEnabled)}`,
-            `Предложка: ${this.describeBooleanCompact(channelSettings.postSuggestionsEnabled)}`,
-            `Кнопка предложки: ${this.describeBooleanCompact(
-              channelSettings.postSuggestionsButtonEnabled,
-            )}`,
-          ]
+        ? [`Комментарии: ${this.describeBooleanCompact(channelSettings.commentsEnabled)}`]
         : []),
       ...(!isChannel ? [`Во все чаты: ${applyToAllEnabled ? 'Да' : 'Нет'}`] : []),
       `Кнопка рассылки: ${draft.buttonEnabled ? 'Да' : 'Нет'}`,

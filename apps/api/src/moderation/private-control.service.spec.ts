@@ -489,7 +489,7 @@ describe('PrivateControlService', () => {
     );
   });
 
-  it('shows channel discussion and suggestion statuses on the handoff broadcast screen without footer links', async () => {
+  it('shows only channel discussion status on the handoff broadcast screen without footer links', async () => {
     const { service, maxClient, channels } = createHarness({
       channelSettings: {
         ...defaultChannelSettings,
@@ -526,8 +526,8 @@ describe('PrivateControlService', () => {
 
     expect(getLastSentText(maxClient)).toContain('Рассылка в канал');
     expect(getLastSentText(maxClient)).toContain('Комментарии: вкл');
-    expect(getLastSentText(maxClient)).toContain('Предложка: вкл');
-    expect(getLastSentText(maxClient)).toContain('Кнопка предложки: выкл');
+    expect(getLastSentText(maxClient)).not.toContain('Предложка:');
+    expect(getLastSentText(maxClient)).not.toContain('Кнопка предложки:');
 
     const buttonTexts = getLastButtons(maxClient)
       .flat()
