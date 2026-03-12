@@ -37,6 +37,45 @@ function createPrivateTextUpdate(text: string): MaxUpdate {
   };
 }
 
+function createPrivatePhotoUpdate(): MaxUpdate {
+  return {
+    updateId: `upd-photo-${Date.now()}`,
+    type: 'message_created',
+    message: {
+      messageId: `msg-photo-${Date.now()}`,
+      chatId: '152517912',
+      senderId: 'user-1',
+      senderName: 'Тестовый пользователь',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'message_created',
+      message: {
+        body: {
+          attachments: [
+            {
+              type: 'image',
+              payload: {
+                url: 'https://example.test/broadcast-photo.jpg',
+                photo_id: 'photo-1',
+              },
+            },
+          ],
+        },
+        sender: {
+          user_id: 'user-1',
+          name: 'Тестовый пользователь',
+        },
+        recipient: {
+          chat_id: 152517912,
+          chat_type: 'dialog',
+        },
+      },
+    },
+  };
+}
+
 function createPrivateCallbackUpdate(payload: string): MaxUpdate {
   return {
     updateId: `upd-cb-${Date.now()}`,
@@ -448,6 +487,68 @@ describe('PrivateControlService', () => {
       }),
       'private_bot',
     );
+  });
+
+  it('allows adding photo after text on the broadcast screen without extra button press', async () => {
+    const { service, adminService, chats } = createHarness();
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: chats[0].id,
+      chatTitle: chats[0].title,
+    };
+    const originalFetch = global.fetch;
+    const imageBuffer = Buffer.from('test-image');
+
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'content-type' ? 'image/jpeg' : null),
+      },
+      arrayBuffer: async () =>
+        imageBuffer.buffer.slice(
+          imageBuffer.byteOffset,
+          imageBuffer.byteOffset + imageBuffer.byteLength,
+        ),
+    }) as typeof fetch;
+
+    try {
+      await service.handoffBroadcastFromMiniapp(
+        chats[0].id,
+        actor,
+        {
+          applyToAllChats: false,
+          buttonEnabled: false,
+          buttonUrl: '',
+          buttonText: 'Открыть',
+          sendAt: null,
+          cycleEnabled: false,
+          cycleEveryHours: 1,
+          cycleCount: 1,
+        },
+        'chat',
+      );
+
+      await service.handleBotStarted(createBotStartedPrivateUpdate());
+      await service.handleUpdate(createPrivateTextUpdate('Текст перед фото'));
+      await service.handleUpdate(createPrivatePhotoUpdate());
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+
+      expect(adminService.sendBroadcast).toHaveBeenCalledWith(
+        chats[0].id,
+        expect.objectContaining({ userId: 'user-1' }),
+        expect.objectContaining({
+          text: 'Текст перед фото',
+          imageEnabled: true,
+          imageMimeType: 'image/jpeg',
+          imageFileName: expect.stringContaining('private-broadcast-photo-1'),
+        }),
+        'private_bot',
+      );
+    } finally {
+      global.fetch = originalFetch;
+    }
   });
 
   it('opens the poll screen and publishes a poll from private control', async () => {

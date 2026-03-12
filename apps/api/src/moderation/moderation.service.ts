@@ -121,6 +121,7 @@ const PRIVATE_MENU_PROMPT_TEXT = [
   '- «Помощь» — короткий гайд по запуску и правам.',
   '- «Открыть приложение» — полный набор rich-настроек.',
 ].join('\n');
+const BROADCAST_HANDOFF_START_PAYLOAD = 'broadcast_handoff';
 const PRIVATE_HELP_TEXT = [
   'Быстрый гайд:',
   '1) Добавьте бота в нужный чат.',
@@ -4120,12 +4121,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const startPayload = this.extractBotStartedStartPayload(update);
+    const skipLongInstruction = startPayload === BROADCAST_HANDOFF_START_PAYLOAD;
+
     try {
-      await this.maxClient.sendMessage(
-        chatId,
-        BOT_STARTED_INSTRUCTION_TEXT,
-        BOT_STARTED_INSTRUCTION_OPTIONS,
-      );
+      if (!skipLongInstruction) {
+        await this.maxClient.sendMessage(
+          chatId,
+          BOT_STARTED_INSTRUCTION_TEXT,
+          BOT_STARTED_INSTRUCTION_OPTIONS,
+        );
+      }
       if (this.privateControlService) {
         await this.privateControlService.handleBotStarted(update);
       } else {
@@ -4189,6 +4195,42 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
       if (type) {
         return type;
+      }
+    }
+
+    return null;
+  }
+
+  private extractBotStartedStartPayload(update: MaxUpdate): string | null {
+    const raw = this.asRecord(update.raw);
+    if (!raw) {
+      return null;
+    }
+
+    const data = this.asRecord(raw.data);
+    const event = this.asRecord(raw.event);
+    const candidates = [
+      raw,
+      this.asRecord(raw.bot_started),
+      data,
+      data ? this.asRecord(data.bot_started) : null,
+      event,
+      event ? this.asRecord(event.bot_started) : null,
+    ];
+
+    for (const candidate of candidates) {
+      if (!candidate) {
+        continue;
+      }
+
+      const value =
+        candidate.start_payload ??
+        candidate.startPayload ??
+        candidate.payload ??
+        candidate.start;
+
+      if (typeof value === 'string' && value.trim().length > 0) {
+        return value.trim();
       }
     }
 

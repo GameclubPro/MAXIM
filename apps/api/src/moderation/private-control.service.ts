@@ -1010,6 +1010,22 @@ export class PrivateControlService {
       return;
     }
 
+    if (
+      session.screen === 'broadcast' &&
+      session.selectedChatId &&
+      (context.text.trim().length > 0 ||
+        this.extractFirstImageAttachment(context.update) !== null ||
+        this.hasVideoAttachment(context.update))
+    ) {
+      await this.captureBroadcastContent(context, session, context.text);
+      const view = await this.renderBroadcastScreen(context, session, 'Контент сохранён.');
+      await this.respond(context, session, view, {
+        callbackId: null,
+        notification: null,
+      });
+      return;
+    }
+
     const view = session.selectedChatId
       ? await this.renderPrimaryScreen(context, session)
       : await this.renderChatSelection(context, session);

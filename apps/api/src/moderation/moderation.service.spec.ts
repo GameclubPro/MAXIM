@@ -484,6 +484,36 @@ function createBotStartedPrivateUpdate(): MaxUpdate {
   };
 }
 
+function createBotStartedPrivateHandoffUpdate(): MaxUpdate {
+  return {
+    updateId: 'upd-bot-started-private-handoff-1',
+    type: 'bot_started',
+    message: {
+      messageId: 'bot_started:upd-bot-started-private-handoff-1',
+      chatId: '152517912',
+      senderId: 'user-started-1',
+      senderName: 'Пользователь bot_started',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'bot_started',
+      chat_id: 152517912,
+      start_payload: 'broadcast_handoff',
+      chat: {
+        id: 152517912,
+        type: 'dialog',
+      },
+      user: {
+        user_id: 'user-started-1',
+        type: 'user',
+        display_name: 'Пользователь bot_started',
+      },
+      timestamp: Date.now(),
+    },
+  };
+}
+
 function createBotStartedGroupUpdate(): MaxUpdate {
   return {
     updateId: 'upd-bot-started-group-1',
@@ -2030,6 +2060,64 @@ describe('ModerationService', () => {
         },
       },
     );
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('skips the long instruction for broadcast handoff bot_started update', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const privateControlService = {
+      handleBotStarted: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      privateControlService as never,
+    );
+
+    const update = createBotStartedPrivateHandoffUpdate();
+
+    await service.handleUpdate(update);
+
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(privateControlService.handleBotStarted).toHaveBeenCalledWith(update);
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(prisma.chat.upsert).not.toHaveBeenCalled();
     expect(prisma.violation.create).not.toHaveBeenCalled();
