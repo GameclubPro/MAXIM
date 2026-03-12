@@ -168,11 +168,18 @@ export function ManagedGiveawayCard({
                         void handoffMutation.mutateAsync(item.id);
                       }}
                     >
-                      <span>{item.title}</span>
-                      <small>
-                        {buildHistoryLabel(item.status)} · {item.entriesCount} заявок ·{' '}
-                        {formatCompactDate(item.completedAt ?? item.updatedAt)}
-                      </small>
+                      <span className="managed-giveaway__history-title">{item.title}</span>
+                      <span className="managed-giveaway__history-meta">
+                        <span
+                          className={cn(
+                            'managed-giveaway__badge',
+                            item.status === 'CANCELED' ? 'is-danger' : 'is-muted',
+                          )}
+                        >
+                          {buildHistoryLabel(item.status)}
+                        </span>
+                        <small>{formatCompactDate(item.completedAt ?? item.updatedAt)}</small>
+                      </span>
                     </button>
 
                     <button

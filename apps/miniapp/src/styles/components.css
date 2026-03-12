@@ -5240,7 +5240,10 @@
 }
 
 .managed-giveaway__history-item {
-  gap: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
   padding: 12px;
   min-width: 0;
 }
@@ -5273,14 +5276,27 @@
   color: var(--text-primary);
 }
 
-.managed-giveaway__history-item span {
+.managed-giveaway__history-title {
   color: var(--text-primary);
   font-weight: 700;
+  min-width: 0;
+  flex: 1 1 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.managed-giveaway__history-item small {
+.managed-giveaway__history-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.managed-giveaway__history-meta small {
   color: var(--text-secondary);
-  line-height: 1.35;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .giveaway-page__hero {
