@@ -78,6 +78,45 @@ function createPrivatePhotoUpdate(): MaxUpdate {
   };
 }
 
+function createPrivateStickerUpdate(code = '1e1321f26'): MaxUpdate {
+  return {
+    updateId: `upd-sticker-${Date.now()}`,
+    type: 'message_created',
+    message: {
+      messageId: `msg-sticker-${Date.now()}`,
+      chatId: '152517912',
+      senderId: 'user-1',
+      senderName: 'Тестовый пользователь',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'message_created',
+      message: {
+        body: {
+          attachments: [
+            {
+              type: 'sticker',
+              payload: {
+                code,
+                url: `https://i.oneme.ru/getSmile?smileId=${code}&smileType=4`,
+              },
+            },
+          ],
+        },
+        sender: {
+          user_id: 'user-1',
+          name: 'Тестовый пользователь',
+        },
+        recipient: {
+          chat_id: 152517912,
+          chat_type: 'dialog',
+        },
+      },
+    },
+  };
+}
+
 function createPrivateCallbackUpdate(payload: string): MaxUpdate {
   return {
     updateId: `upd-cb-${Date.now()}`,
@@ -620,7 +659,7 @@ describe('PrivateControlService', () => {
     try {
       await service.handleUpdate(createPrivateTextUpdate('/sticker'));
 
-      expect(getLastSentText(maxClient)).toContain('Фото для sticker');
+      expect(getLastSentText(maxClient)).toContain('Фото или sticker');
 
       await service.handleUpdate(createPrivatePhotoUpdate());
 
@@ -662,6 +701,46 @@ describe('PrivateControlService', () => {
     } finally {
       fetchControl.restore();
     }
+  });
+
+  it('resends incoming sticker by code during sticker flow', async () => {
+    const { service, maxClient } = createHarness();
+
+    await service.handleUpdate(createPrivateTextUpdate('/sticker'));
+    await service.handleUpdate(createPrivateStickerUpdate());
+
+    expect(maxClient.uploadImage).not.toHaveBeenCalled();
+    expect(maxClient.sendCustomMessageImmediate).toHaveBeenCalledWith('152517912', {
+      text: '',
+      attachments: [
+        {
+          type: 'sticker',
+          payload: {
+            code: '1e1321f26',
+          },
+        },
+      ],
+    });
+    expect(getLastSentText(maxClient)).toContain('sticker отправлен');
+  });
+
+  it('resends incoming sticker by code without explicit command', async () => {
+    const { service, maxClient } = createHarness();
+
+    await service.handleUpdate(createPrivateStickerUpdate('copy-test-42'));
+
+    expect(maxClient.uploadImage).not.toHaveBeenCalled();
+    expect(maxClient.sendCustomMessageImmediate).toHaveBeenCalledWith('152517912', {
+      text: '',
+      attachments: [
+        {
+          type: 'sticker',
+          payload: {
+            code: 'copy-test-42',
+          },
+        },
+      ],
+    });
   });
 
   it('opens chat home, settings hub, and toggles a section setting via callback edit', async () => {

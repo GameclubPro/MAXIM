@@ -211,6 +211,11 @@ type ParsedImageAttachment = {
   photoId: string | null;
 };
 
+type ParsedStickerAttachment = {
+  code: string;
+  url: string | null;
+};
+
 type PreparedStickerAsset = {
   buffer: Buffer<ArrayBufferLike>;
   mimeType: 'image/webp';
@@ -1043,6 +1048,7 @@ export class PrivateControlService {
     const session = await this.loadSession(context.actor.userId);
     const normalizedCommand = this.normalizeCommand(context.text);
     const imageAttachment = this.extractFirstImageAttachment(context.update);
+    const stickerAttachment = this.extractFirstStickerAttachment(context.update);
 
     if (normalizedCommand === '/reset') {
       const resetSession = this.createDefaultSession();
@@ -1180,6 +1186,11 @@ export class PrivateControlService {
 
     if (imageAttachment) {
       await this.handleStickerPhotoMessage(context, session, imageAttachment);
+      return;
+    }
+
+    if (stickerAttachment) {
+      await this.handleStickerAttachmentMessage(context, session, stickerAttachment);
       return;
     }
 
@@ -3391,15 +3402,22 @@ export class PrivateControlService {
 
       case 'sticker_photo': {
         const imageAttachment = this.extractFirstImageAttachment(context.update);
-        if (!imageAttachment) {
-          if (this.hasVideoAttachment(context.update)) {
-            throw new BadRequestException('Нужно фото, не видео.');
-          }
-          throw new BadRequestException('Отправьте фото отдельным сообщением.');
+        if (imageAttachment) {
+          await this.handleStickerPhotoMessage(context, session, imageAttachment);
+          return;
         }
 
-        await this.handleStickerPhotoMessage(context, session, imageAttachment);
-        return;
+        const stickerAttachment = this.extractFirstStickerAttachment(context.update);
+        if (stickerAttachment) {
+          await this.handleStickerAttachmentMessage(context, session, stickerAttachment);
+          return;
+        }
+
+        if (this.hasVideoAttachment(context.update)) {
+          throw new BadRequestException('Нужно фото или sticker, не видео.');
+        }
+
+        throw new BadRequestException('Отправьте фото или sticker отдельным сообщением.');
       }
 
       case 'giveaway_title': {
@@ -3761,6 +3779,31 @@ export class PrivateControlService {
 
     session.pendingInput = null;
     const view = this.renderStickerResultView(session, deliveryMode);
+    await this.respond(context, session, view, {
+      callbackId: null,
+      notification: null,
+    });
+  }
+
+  private async handleStickerAttachmentMessage(
+    context: PrivateContext,
+    session: PrivateSession,
+    stickerAttachment: ParsedStickerAttachment,
+  ): Promise<void> {
+    await this.maxClient.sendCustomMessageImmediate(context.chatId, {
+      text: '',
+      attachments: [
+        {
+          type: 'sticker',
+          payload: {
+            code: stickerAttachment.code,
+          },
+        },
+      ],
+    });
+
+    session.pendingInput = null;
+    const view = this.renderStickerResultView(session, 'sticker');
     await this.respond(context, session, view, {
       callbackId: null,
       notification: null,
@@ -6306,9 +6349,9 @@ export class PrivateControlService {
         };
       case 'sticker_photo':
         return {
-          title: 'Фото для sticker',
+          title: 'Фото или sticker',
           description:
-            'Отправьте фото следующим сообщением. Бот подготовит webp и попробует вернуть его как sticker.',
+            'Отправьте фото или готовый sticker следующим сообщением. Фото бот попробует превратить в sticker, а готовый sticker вернёт по его коду.',
         };
       case 'giveaway_title':
         return {
@@ -7143,10 +7186,10 @@ export class PrivateControlService {
     return normalized.length > 0 ? normalized : null;
   }
 
-  private extractFirstImageAttachment(update: MaxUpdate): ParsedImageAttachment | null {
+  private collectMessageAttachments(update: MaxUpdate): Record<string, unknown>[] {
     const raw = this.asRecord(update.raw);
     if (!raw) {
-      return null;
+      return [];
     }
 
     const messageCandidates = [
@@ -7154,6 +7197,8 @@ export class PrivateControlService {
       this.asRecord(this.asRecord(raw.data)?.message),
       this.asRecord(this.asRecord(raw.event)?.message),
     ].filter((candidate): candidate is Record<string, unknown> => Boolean(candidate));
+
+    const attachments: Record<string, unknown>[] = [];
 
     for (const message of messageCandidates) {
       const body = this.asRecord(message.body);
@@ -7174,74 +7219,71 @@ export class PrivateControlService {
             continue;
           }
 
-          const row = attachment as Record<string, unknown>;
-          const type = this.readLowerString(row.type);
-          if (type !== 'image') {
-            continue;
-          }
-
-          const payload = this.asRecord(row.payload);
-          if (!payload) {
-            continue;
-          }
-
-          const url = this.readString(payload.url);
-          if (!url) {
-            continue;
-          }
-
-          return {
-            url,
-            token: this.readString(payload.token) ?? null,
-            photoId: this.normalizeUserId(payload.photo_id ?? payload.photoId) ?? null,
-          };
+          attachments.push(attachment as Record<string, unknown>);
         }
       }
+    }
+
+    return attachments;
+  }
+
+  private extractFirstImageAttachment(update: MaxUpdate): ParsedImageAttachment | null {
+    for (const row of this.collectMessageAttachments(update)) {
+      const type = this.readLowerString(row.type);
+      if (type !== 'image') {
+        continue;
+      }
+
+      const payload = this.asRecord(row.payload);
+      if (!payload) {
+        continue;
+      }
+
+      const url = this.readString(payload.url);
+      if (!url) {
+        continue;
+      }
+
+      return {
+        url,
+        token: this.readString(payload.token) ?? null,
+        photoId: this.normalizeUserId(payload.photo_id ?? payload.photoId) ?? null,
+      };
+    }
+
+    return null;
+  }
+
+  private extractFirstStickerAttachment(update: MaxUpdate): ParsedStickerAttachment | null {
+    for (const row of this.collectMessageAttachments(update)) {
+      const type = this.readLowerString(row.type);
+      if (type !== 'sticker') {
+        continue;
+      }
+
+      const payload = this.asRecord(row.payload);
+      const code = this.readString(payload?.code);
+      if (!code) {
+        continue;
+      }
+
+      return {
+        code,
+        url: this.readString(payload?.url) ?? null,
+      };
     }
 
     return null;
   }
 
   private hasVideoAttachment(update: MaxUpdate): boolean {
-    const raw = this.asRecord(update.raw);
-    if (!raw) {
-      return false;
-    }
+    for (const row of this.collectMessageAttachments(update)) {
+      const type = this.readLowerString(row.type);
+      const payload = this.asRecord(row.payload);
+      const mimeType = this.readLowerString(payload?.mime_type ?? payload?.mimeType);
 
-    const messageCandidates = [
-      this.asRecord(raw.message),
-      this.asRecord(this.asRecord(raw.data)?.message),
-      this.asRecord(this.asRecord(raw.event)?.message),
-    ].filter((candidate): candidate is Record<string, unknown> => Boolean(candidate));
-
-    for (const message of messageCandidates) {
-      const body = this.asRecord(message.body);
-      const candidates = [
-        message.attachments,
-        body?.attachments,
-        this.asRecord(message.data)?.attachments,
-        this.asRecord(message.payload)?.attachments,
-      ];
-
-      for (const node of candidates) {
-        if (!Array.isArray(node)) {
-          continue;
-        }
-
-        for (const attachment of node) {
-          if (!attachment || typeof attachment !== 'object') {
-            continue;
-          }
-
-          const row = attachment as Record<string, unknown>;
-          const type = this.readLowerString(row.type);
-          const payload = this.asRecord(row.payload);
-          const mimeType = this.readLowerString(payload?.mime_type ?? payload?.mimeType);
-
-          if (type === 'video' || mimeType?.startsWith('video/')) {
-            return true;
-          }
-        }
+      if (type === 'video' || mimeType?.startsWith('video/')) {
+        return true;
       }
     }
 
