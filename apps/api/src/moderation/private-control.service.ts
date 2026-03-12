@@ -3760,6 +3760,9 @@ export class PrivateControlService {
 
     const draft = session.broadcastDraft;
     const isChannel = session.selectedEntityType === 'channel';
+    const channelSettings = isChannel
+      ? await this.adminService.getChannelSettings(session.selectedChatId, context.actor)
+      : null;
     const applyToAllEnabled = !isChannel && draft.applyToAllChats;
     const timingSummary = isChannel ? 'недоступен' : draft.sendAt ? this.formatIsoDate(draft.sendAt) : 'нет';
     const cycleSummary = draft.cycleEnabled
@@ -3778,8 +3781,17 @@ export class PrivateControlService {
             : 'не добавлен'
       }`,
       `Текст: ${draft.text.trim() ? this.compactText(draft.text, 80) : 'не указан'}`,
+      ...(channelSettings
+        ? [
+            `Комментарии: ${this.describeBooleanCompact(channelSettings.commentsEnabled)}`,
+            `Предложка: ${this.describeBooleanCompact(channelSettings.postSuggestionsEnabled)}`,
+            `Кнопка предложки: ${this.describeBooleanCompact(
+              channelSettings.postSuggestionsButtonEnabled,
+            )}`,
+          ]
+        : []),
       ...(!isChannel ? [`Во все чаты: ${applyToAllEnabled ? 'Да' : 'Нет'}`] : []),
-      `Кнопка: ${draft.buttonEnabled ? 'Да' : 'Нет'}`,
+      `Кнопка рассылки: ${draft.buttonEnabled ? 'Да' : 'Нет'}`,
       `Фото: ${draft.imageEnabled ? 'Да' : 'Нет'}`,
       ...(!isChannel ? [`Таймер: ${timingSummary}`, `Цикл: ${cycleSummary}`] : []),
       `Режим: ${session.broadcastView === 'basic' ? 'Основное' : 'Ещё параметры'}`,
@@ -3874,7 +3886,6 @@ export class PrivateControlService {
       this.callbackButton('⬅️ Назад', this.cb('back')),
       this.callbackButton('Главный экран', this.cb('home')),
     ]);
-    rows.push(...this.buildFooterButtons());
 
     return {
       text: lines.join('\n'),

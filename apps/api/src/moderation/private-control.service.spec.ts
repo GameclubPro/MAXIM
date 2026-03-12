@@ -489,6 +489,54 @@ describe('PrivateControlService', () => {
     );
   });
 
+  it('shows channel discussion and suggestion statuses on the handoff broadcast screen without footer links', async () => {
+    const { service, maxClient, channels } = createHarness({
+      channelSettings: {
+        ...defaultChannelSettings,
+        commentsEnabled: true,
+        postSuggestionsEnabled: true,
+        postSuggestionsButtonEnabled: false,
+      },
+    });
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: channels[0].id,
+      chatTitle: channels[0].title,
+    };
+
+    await service.handoffBroadcastFromMiniapp(
+      channels[0].id,
+      actor,
+      {
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 24,
+        cycleCount: 1,
+      },
+      'channel',
+    );
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate());
+
+    expect(getLastSentText(maxClient)).toContain('Рассылка в канал');
+    expect(getLastSentText(maxClient)).toContain('Комментарии: вкл');
+    expect(getLastSentText(maxClient)).toContain('Предложка: вкл');
+    expect(getLastSentText(maxClient)).toContain('Кнопка предложки: выкл');
+
+    const buttonTexts = getLastButtons(maxClient)
+      .flat()
+      .map((button) => String((button as { text?: string }).text ?? ''));
+
+    expect(buttonTexts).not.toContain('Открыть приложение');
+    expect(buttonTexts).not.toContain('Поддержка');
+  });
+
   it('allows adding photo after text on the broadcast screen without extra button press', async () => {
     const { service, adminService, chats } = createHarness();
     const actor = {
