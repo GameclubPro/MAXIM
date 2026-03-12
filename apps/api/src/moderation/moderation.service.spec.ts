@@ -484,7 +484,7 @@ function createBotStartedPrivateUpdate(): MaxUpdate {
   };
 }
 
-function createBotStartedPrivateHandoffUpdate(): MaxUpdate {
+function createBotStartedPrivateHandoffUpdate(startPayload = 'broadcast_handoff'): MaxUpdate {
   return {
     updateId: 'upd-bot-started-private-handoff-1',
     type: 'bot_started',
@@ -499,7 +499,7 @@ function createBotStartedPrivateHandoffUpdate(): MaxUpdate {
     raw: {
       update_type: 'bot_started',
       chat_id: 152517912,
-      start_payload: 'broadcast_handoff',
+      start_payload: startPayload,
       chat: {
         id: 152517912,
         type: 'dialog',
@@ -2113,6 +2113,64 @@ describe('ModerationService', () => {
     );
 
     const update = createBotStartedPrivateHandoffUpdate();
+
+    await service.handleUpdate(update);
+
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(privateControlService.handleBotStarted).toHaveBeenCalledWith(update);
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(prisma.violation.create).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('skips the long instruction for giveaway handoff bot_started update', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const privateControlService = {
+      handleBotStarted: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      privateControlService as never,
+    );
+
+    const update = createBotStartedPrivateHandoffUpdate('giveaway_handoff');
 
     await service.handleUpdate(update);
 

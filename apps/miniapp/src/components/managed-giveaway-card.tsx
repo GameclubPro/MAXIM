@@ -11,6 +11,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { cn } from '../lib/cn';
 import { prepareBroadcastImage } from '../lib/broadcast-image';
 import type { ApiClient, UpdateManagedGiveawayPayload } from '../lib/api-client';
+import { openMaxBotLink } from '../lib/max-bridge';
 import { useToast } from './ui/toast';
 
 const MAX_GIVEAWAY_IMAGE_SIZE_BYTES = 1_000_000;
@@ -176,6 +177,10 @@ function isCurrentLifecycle(status: ManagedGiveawaySummary['status']): boolean {
   );
 }
 
+function getEntityLabel(entityType: 'chat' | 'channel'): string {
+  return entityType === 'channel' ? 'канала' : 'чата';
+}
+
 export function ManagedGiveawayCard({
   api,
   entityType,
@@ -287,116 +292,13 @@ export function ManagedGiveawayCard({
     },
   });
 
-  const publishMutation = useMutation({
-    mutationFn: (giveawayId: string) => api.publishManagedGiveaway(entityType, entityId, giveawayId),
-    onSuccess: async (updated) => {
-      setDraft(null);
-      setSelectedGiveawayId(updated.id);
-      await invalidateGiveawayQueries();
-      pushToast({
-        tone: 'success',
-        title: 'Розыгрыш опубликован',
-        description: updated.status === 'SCHEDULED' ? 'Старт будет по таймеру.' : 'Приём заявок открыт.',
-      });
-    },
+  const handoffMutation = useMutation({
+    mutationFn: (giveawayId: string | null) =>
+      api.handoffManagedGiveaway(entityType, entityId, { giveawayId }),
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось опубликовать розыгрыш',
-        description: formatApiError(error),
-      });
-    },
-  });
-
-  const closeMutation = useMutation({
-    mutationFn: (giveawayId: string) => api.closeManagedGiveaway(entityType, entityId, giveawayId),
-    onSuccess: async (updated) => {
-      setSelectedGiveawayId(updated.id);
-      await invalidateGiveawayQueries();
-      pushToast({
-        tone: 'success',
-        title: 'Итоги готовы',
-        description: 'Победители выбраны.',
-      });
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось завершить розыгрыш',
-        description: formatApiError(error),
-      });
-    },
-  });
-
-  const cancelMutation = useMutation({
-    mutationFn: (giveawayId: string) => api.cancelManagedGiveaway(entityType, entityId, giveawayId),
-    onSuccess: async (updated) => {
-      if (selectedGiveawayId === updated.id) {
-        setDraft(null);
-      }
-      await invalidateGiveawayQueries();
-      pushToast({
-        tone: 'success',
-        title: 'Розыгрыш отменён',
-        description: 'Публикация больше не активна.',
-      });
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось отменить розыгрыш',
-        description: formatApiError(error),
-      });
-    },
-  });
-
-  const rerollMutation = useMutation({
-    mutationFn: ({
-      giveawayId,
-      winnerId,
-    }: {
-      giveawayId: string;
-      winnerId: string;
-    }) => api.rerollManagedGiveawayWinner(entityType, entityId, giveawayId, winnerId),
-    onSuccess: async (updated) => {
-      setSelectedGiveawayId(updated.id);
-      await invalidateGiveawayQueries();
-      pushToast({
-        tone: 'success',
-        title: 'Победитель перевыбран',
-        description: 'Следующий участник занял место.',
-      });
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось сделать reroll',
-        description: formatApiError(error),
-      });
-    },
-  });
-
-  const deliveredMutation = useMutation({
-    mutationFn: ({
-      giveawayId,
-      winnerId,
-    }: {
-      giveawayId: string;
-      winnerId: string;
-    }) => api.markManagedGiveawayWinnerDelivered(entityType, entityId, giveawayId, winnerId),
-    onSuccess: async (updated) => {
-      setSelectedGiveawayId(updated.id);
-      await invalidateGiveawayQueries();
-      pushToast({
-        tone: 'success',
-        title: 'Выдача отмечена',
-        description: 'Статус победителя обновлён.',
-      });
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось отметить выдачу',
+        title: 'Не удалось открыть бота',
         description: formatApiError(error),
       });
     },
@@ -405,11 +307,7 @@ export function ManagedGiveawayCard({
   const isBusy =
     createMutation.isPending ||
     updateMutation.isPending ||
-    publishMutation.isPending ||
-    closeMutation.isPending ||
-    cancelMutation.isPending ||
-    rerollMutation.isPending ||
-    deliveredMutation.isPending;
+    handoffMutation.isPending;
 
   const startNewDraft = () => {
     setSelectedGiveawayId(null);
@@ -523,39 +421,44 @@ export function ManagedGiveawayCard({
     );
   };
 
-  const saveDraft = async () => {
+  const saveDraft = async (): Promise<ManagedGiveawayDetails | null> => {
     if (!draft) {
-      return;
+      return null;
     }
 
     if (selectedGiveaway?.status === 'DRAFT') {
-      await updateMutation.mutateAsync({
+      return updateMutation.mutateAsync({
         giveawayId: selectedGiveaway.id,
         payload: draft,
       });
-      return;
     }
 
-    await createMutation.mutateAsync(draft);
+    return createMutation.mutateAsync(draft);
   };
 
-  const publishDraft = async () => {
-    if (!draft) {
-      return;
-    }
+  const continueInBot = async () => {
+    try {
+      let giveawayId = selectedGiveaway?.id ?? null;
 
-    let giveawayId = selectedGiveaway?.status === 'DRAFT' ? selectedGiveaway.id : null;
-    if (!giveawayId) {
-      const created = await createMutation.mutateAsync(draft);
-      giveawayId = created.id;
-    } else {
-      await updateMutation.mutateAsync({
-        giveawayId,
-        payload: draft,
-      });
-    }
+      if (draft) {
+        const saved = await saveDraft();
+        giveawayId = saved?.id ?? giveawayId;
+      }
 
-    await publishMutation.mutateAsync(giveawayId);
+      if (!giveawayId) {
+        pushToast({
+          tone: 'danger',
+          title: 'Сначала сохраните черновик',
+          description: 'Боту нужен конкретный розыгрыш для продолжения сценария.',
+        });
+        return;
+      }
+
+      const result = await handoffMutation.mutateAsync(giveawayId);
+      openMaxBotLink(result.botUrl);
+    } catch {
+      // Toasts already handled in mutations above.
+    }
   };
 
   const selectedSummary = giveaways.find((item) => item.id === selectedGiveawayId) ?? null;
@@ -586,6 +489,13 @@ export function ManagedGiveawayCard({
         ) : null}
       </div>
 
+      <div className="managed-giveaway__panel">
+        <p>
+          Здесь собирается карточка розыгрыша: текст, фото, призы и тайминг. Публикация,
+          завершение, reroll и выдача приза идут дальше в личке бота.
+        </p>
+      </div>
+
       {listQuery.isLoading ? (
         <div className="managed-giveaway__empty">Загружаем розыгрыши...</div>
       ) : null}
@@ -596,7 +506,7 @@ export function ManagedGiveawayCard({
 
       {!listQuery.isLoading && !listQuery.error && !selectedGiveaway && !draft && giveaways.length === 0 ? (
         <div className="managed-giveaway__empty">
-          <p>Запустите первый розыгрыш для этого {entityType === 'channel' ? 'канала' : 'чата'}.</p>
+          <p>Запустите первый розыгрыш для этого {getEntityLabel(entityType)}.</p>
           <button type="button" className="button button--accent" onClick={startNewDraft}>
             Создать черновик
           </button>
@@ -744,7 +654,14 @@ export function ManagedGiveawayCard({
             >
               Сбросить
             </button>
-            <button type="button" className="button button--ghost" disabled={isBusy} onClick={saveDraft}>
+            <button
+              type="button"
+              className="button button--ghost"
+              disabled={isBusy}
+              onClick={() => {
+                void saveDraft();
+              }}
+            >
               {selectedGiveaway?.status === 'DRAFT' ? 'Сохранить' : 'Создать черновик'}
             </button>
             <button
@@ -752,10 +669,10 @@ export function ManagedGiveawayCard({
               className="button button--accent"
               disabled={isBusy}
               onClick={() => {
-                void publishDraft();
+                void continueInBot();
               }}
             >
-              Опубликовать
+              Продолжить в боте
             </button>
           </div>
         </div>
@@ -802,7 +719,7 @@ export function ManagedGiveawayCard({
               <div className="managed-giveaway__section-head">
                 <div>
                   <strong>Победители</strong>
-                  <small>Можно перевыбрать или отметить выдачу</small>
+                  <small>Reroll и выдача приза продолжаются в личке бота</small>
                 </div>
               </div>
 
@@ -814,39 +731,6 @@ export function ManagedGiveawayCard({
                     </strong>
                     <p>{winner.displayName || winner.userId}</p>
                     <small>{buildWinnerStatusLabel(winner.status)}</small>
-                  </div>
-                  <div className="managed-giveaway__winner-actions">
-                    {selectedGiveaway.status === 'COMPLETED' &&
-                    (winner.status === 'SELECTED' || winner.status === 'EXPIRED') ? (
-                      <button
-                        type="button"
-                        className="button button--ghost"
-                        disabled={isBusy}
-                        onClick={() => {
-                          void rerollMutation.mutateAsync({
-                            giveawayId: selectedGiveaway.id,
-                            winnerId: winner.id,
-                          });
-                        }}
-                      >
-                        Реролл
-                      </button>
-                    ) : null}
-                    {winner.status === 'CLAIMED' || winner.status === 'SELECTED' ? (
-                      <button
-                        type="button"
-                        className="button button--ghost"
-                        disabled={isBusy}
-                        onClick={() => {
-                          void deliveredMutation.mutateAsync({
-                            giveawayId: selectedGiveaway.id,
-                            winnerId: winner.id,
-                          });
-                        }}
-                      >
-                        Выдано
-                      </button>
-                    ) : null}
                   </div>
                 </div>
               ))}
@@ -875,30 +759,16 @@ export function ManagedGiveawayCard({
                 Править
               </button>
             ) : null}
-            {(selectedGiveaway.status === 'ACTIVE' || selectedGiveaway.status === 'SCHEDULED') ? (
-              <button
-                type="button"
-                className="button button--accent"
-                disabled={isBusy}
-                onClick={() => {
-                  void closeMutation.mutateAsync(selectedGiveaway.id);
-                }}
-              >
-                Завершить
-              </button>
-            ) : null}
-            {['DRAFT', 'SCHEDULED', 'ACTIVE'].includes(selectedGiveaway.status) ? (
-              <button
-                type="button"
-                className="button button--ghost"
-                disabled={isBusy}
-                onClick={() => {
-                  void cancelMutation.mutateAsync(selectedGiveaway.id);
-                }}
-              >
-                Отменить
-              </button>
-            ) : null}
+            <button
+              type="button"
+              className="button button--accent"
+              disabled={isBusy}
+              onClick={() => {
+                void continueInBot();
+              }}
+            >
+              Продолжить в боте
+            </button>
           </div>
         </div>
       ) : null}

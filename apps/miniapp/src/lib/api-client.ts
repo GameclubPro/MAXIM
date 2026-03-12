@@ -25,6 +25,7 @@ import {
   manualModerationActionRequestSchema,
   manualModerationActionResultSchema,
   managedGiveawayDetailsSchema,
+  managedGiveawayHandoffRequestSchema,
   managedGiveawayParticipantStateSchema,
   managedGiveawayPublicSchema,
   managedGiveawaySummarySchema,
@@ -100,6 +101,9 @@ export type SendBroadcastPayload = {
 
 export type UpdateManagedBroadcastPayload = SendBroadcastPayload;
 export type UpdateManagedGiveawayPayload = UpdateManagedGiveawayRequest;
+export type ManagedGiveawayHandoffPayload = {
+  giveawayId: string | null;
+};
 
 export type BroadcastHandoffPayload = {
   applyToAllChats: boolean;
@@ -550,6 +554,22 @@ export class ApiClient {
       },
     );
     return managedGiveawayDetailsSchema.parse(response);
+  }
+
+  async handoffManagedGiveaway(
+    entityType: 'chat' | 'channel',
+    entityId: string,
+    payload: ManagedGiveawayHandoffPayload,
+  ): Promise<BroadcastHandoffResponse> {
+    const requestBody = managedGiveawayHandoffRequestSchema.parse(payload);
+    const response = await this.request(
+      `/${entityType === 'channel' ? 'channels' : 'chats'}/${entityId}/giveaway/handoff`,
+      {
+        method: 'POST',
+        body: JSON.stringify(requestBody),
+      },
+    );
+    return broadcastHandoffResponseSchema.parse(response);
   }
 
   async getPublicGiveaway(giveawayId: string): Promise<ManagedGiveawayPublic> {

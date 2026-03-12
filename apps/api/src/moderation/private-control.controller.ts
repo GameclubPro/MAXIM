@@ -25,4 +25,22 @@ export class PrivateControlController {
   ) {
     return this.privateControlService.handoffBroadcastFromMiniapp(chatId, user, body, 'channel');
   }
+
+  @Post('chats/:chatId/giveaway/handoff')
+  handoffChatGiveaway(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.privateControlService.handoffGiveawayFromMiniapp(chatId, user, body, 'chat');
+  }
+
+  @Post('channels/:chatId/giveaway/handoff')
+  handoffChannelGiveaway(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.privateControlService.handoffGiveawayFromMiniapp(chatId, user, body, 'channel');
+  }
 }

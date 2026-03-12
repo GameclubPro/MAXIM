@@ -931,6 +931,13 @@ export type MarkManagedGiveawayWinnerDeliveredRequest = z.infer<
   typeof markManagedGiveawayWinnerDeliveredRequestSchema
 >;
 
+export const managedGiveawayHandoffRequestSchema = z.object({
+  giveawayId: z.string().trim().min(1).nullable().default(null),
+});
+export type ManagedGiveawayHandoffRequest = z.infer<
+  typeof managedGiveawayHandoffRequestSchema
+>;
+
 export const claimManagedGiveawayResponseSchema = z.object({
   ok: z.literal(true),
   winner: managedGiveawayWinnerSchema,

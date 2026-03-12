@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import {
   broadcastHandoffRequestSchema,
   broadcastHandoffResponseSchema,
+  managedGiveawayHandoffRequestSchema,
   type BroadcastHandoffResponse,
   type ChannelSettings,
   type ChatSettings,
@@ -143,6 +144,7 @@ type PrivateSession = {
   version: 3;
   selectedChatId: string | null;
   selectedEntityType: ManagedEntityType | null;
+  managedGiveawayId: string | null;
   entityTab: ManagedEntityType;
   uiMode: PrivateUiMode;
   screen: PrivateScreen;
@@ -193,6 +195,7 @@ type ParsedImageAttachment = {
 const SESSION_TTL_SEC = 45 * 60;
 const SESSION_KEY_PREFIX = 'private-ui:v2';
 const BROADCAST_HANDOFF_START_PAYLOAD = 'broadcast_handoff';
+const GIVEAWAY_HANDOFF_START_PAYLOAD = 'giveaway_handoff';
 const PAGE_SIZE_CHATS = 8;
 const PAGE_SIZE_DOMAINS = 8;
 const PAGE_SIZE_EVENTS = 10;
@@ -249,6 +252,8 @@ const ENTITY_CALLBACK_ACTIONS = new Set<string>([
   'giveaway_publish',
   'giveaway_close',
   'giveaway_cancel',
+  'giveaway_reroll',
+  'giveaway_deliver',
   'broadcast_view',
   'broadcast_toggle',
   'broadcast_input_prompt',
@@ -893,6 +898,7 @@ export class PrivateControlService {
     const session = await this.loadSession(user.userId);
     session.selectedChatId = sourceChatId;
     session.selectedEntityType = entityType;
+    session.managedGiveawayId = null;
     session.entityTab = entityType;
     session.uiMode = 'modern';
     session.screen = 'broadcast';
@@ -920,6 +926,56 @@ export class PrivateControlService {
     await this.saveSession(user.userId, session);
 
     const botUrl = this.buildBotStartUrl(BROADCAST_HANDOFF_START_PAYLOAD);
+    if (!botUrl) {
+      throw new BadRequestException('Ссылка на личный чат бота не настроена.');
+    }
+
+    return broadcastHandoffResponseSchema.parse({ botUrl });
+  }
+
+  async handoffGiveawayFromMiniapp(
+    sourceChatId: string,
+    user: AuthUser,
+    body: unknown,
+    entityType: ManagedEntityType,
+  ): Promise<BroadcastHandoffResponse> {
+    if (entityType === 'channel') {
+      await this.adminService.getChannelSettings(sourceChatId, user);
+    } else {
+      await this.adminService.getSettings(sourceChatId, user);
+    }
+
+    const parsed = managedGiveawayHandoffRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    if (parsed.data.giveawayId) {
+      await this.managedGiveawayService.getManagedGiveaway(
+        sourceChatId,
+        parsed.data.giveawayId,
+        user,
+        entityType,
+      );
+    }
+
+    const session = await this.loadSession(user.userId);
+    session.selectedChatId = sourceChatId;
+    session.selectedEntityType = entityType;
+    session.managedGiveawayId = parsed.data.giveawayId;
+    session.entityTab = entityType;
+    session.uiMode = 'modern';
+    session.screen = 'giveaway';
+    session.section = null;
+    session.channelSection = null;
+    session.searchQuery = null;
+    session.pendingMassAction = null;
+    session.pendingInput = null;
+    session.lastScreenStack = [];
+
+    await this.saveSession(user.userId, session);
+
+    const botUrl = this.buildBotStartUrl(GIVEAWAY_HANDOFF_START_PAYLOAD);
     if (!botUrl) {
       throw new BadRequestException('Ссылка на личный чат бота не настроена.');
     }
@@ -1160,6 +1216,7 @@ export class PrivateControlService {
         session.uiMode = 'modern';
         session.pendingInput = null;
         session.pendingMassAction = null;
+        session.managedGiveawayId = null;
         session.section = null;
         session.channelSection = null;
         session.searchQuery = null;
@@ -1247,6 +1304,7 @@ export class PrivateControlService {
 
         session.selectedChatId = chatId;
         session.selectedEntityType = selectedEntityType;
+        session.managedGiveawayId = null;
         session.entityTab = selectedEntityType;
         session.screen = this.resolvePrimaryScreen(session);
         session.section = null;
@@ -1276,6 +1334,7 @@ export class PrivateControlService {
 
       case 'change_chat': {
         session.screen = 'chat_select';
+        session.managedGiveawayId = null;
         session.chatPage = 1;
         session.pendingInput = null;
         session.pendingMassAction = null;
@@ -1944,6 +2003,7 @@ export class PrivateControlService {
 
         this.pushHistory(session);
         session.screen = 'giveaway';
+        session.managedGiveawayId = null;
         const view = await this.renderGiveawayScreen(context, session);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
@@ -1971,11 +2031,7 @@ export class PrivateControlService {
           throw new BadRequestException('Сначала выберите чат или канал.');
         }
 
-        const giveaway = await this.managedGiveawayService.getCurrentManagedGiveawayForEntity(
-          session.selectedChatId,
-          context.actor,
-          session.selectedEntityType,
-        );
+        const giveaway = await this.getManagedGiveawayForSession(context.actor, session);
         if (!giveaway || giveaway.status !== 'DRAFT') {
           throw new BadRequestException('Черновик розыгрыша не найден.');
         }
@@ -1987,6 +2043,7 @@ export class PrivateControlService {
           session.selectedEntityType,
           'private_bot',
         );
+        session.managedGiveawayId = giveaway.id;
         const view = await this.renderGiveawayScreen(context, session, 'Розыгрыш опубликован.');
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
@@ -2000,11 +2057,7 @@ export class PrivateControlService {
           throw new BadRequestException('Сначала выберите чат или канал.');
         }
 
-        const giveaway = await this.managedGiveawayService.getCurrentManagedGiveawayForEntity(
-          session.selectedChatId,
-          context.actor,
-          session.selectedEntityType,
-        );
+        const giveaway = await this.getManagedGiveawayForSession(context.actor, session);
         if (!giveaway || (giveaway.status !== 'ACTIVE' && giveaway.status !== 'SCHEDULED')) {
           throw new BadRequestException('Нет активного розыгрыша для завершения.');
         }
@@ -2016,6 +2069,7 @@ export class PrivateControlService {
           session.selectedEntityType,
           'private_bot',
         );
+        session.managedGiveawayId = giveaway.id;
         const view = await this.renderGiveawayScreen(context, session, 'Итоги опубликованы.');
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
@@ -2029,11 +2083,7 @@ export class PrivateControlService {
           throw new BadRequestException('Сначала выберите чат или канал.');
         }
 
-        const giveaway = await this.managedGiveawayService.getCurrentManagedGiveawayForEntity(
-          session.selectedChatId,
-          context.actor,
-          session.selectedEntityType,
-        );
+        const giveaway = await this.getManagedGiveawayForSession(context.actor, session);
         if (
           !giveaway ||
           (giveaway.status !== 'DRAFT' &&
@@ -2050,10 +2100,75 @@ export class PrivateControlService {
           session.selectedEntityType,
           'private_bot',
         );
+        session.managedGiveawayId = giveaway.id;
         const view = await this.renderGiveawayScreen(context, session, 'Розыгрыш отменён.');
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Розыгрыш отменён',
+        });
+        return;
+      }
+
+      case 'giveaway_reroll': {
+        if (!session.selectedChatId || !session.selectedEntityType) {
+          throw new BadRequestException('Сначала выберите чат или канал.');
+        }
+
+        const winnerId = callback.args[0]?.trim();
+        if (!winnerId) {
+          throw new BadRequestException('Не удалось определить победителя для реролла.');
+        }
+
+        const giveaway = await this.getManagedGiveawayForSession(context.actor, session);
+        if (!giveaway) {
+          throw new BadRequestException('Розыгрыш не найден.');
+        }
+
+        await this.managedGiveawayService.rerollManagedGiveawayWinner(
+          session.selectedChatId,
+          giveaway.id,
+          context.actor,
+          { winnerId },
+          session.selectedEntityType,
+          'private_bot',
+        );
+        session.managedGiveawayId = giveaway.id;
+        const view = await this.renderGiveawayScreen(context, session, 'Победитель перевыбран.');
+        await this.respond(context, session, view, {
+          callbackId: context.callbackId,
+          notification: 'Реролл выполнен',
+        });
+        return;
+      }
+
+      case 'giveaway_deliver': {
+        if (!session.selectedChatId || !session.selectedEntityType) {
+          throw new BadRequestException('Сначала выберите чат или канал.');
+        }
+
+        const winnerId = callback.args[0]?.trim();
+        if (!winnerId) {
+          throw new BadRequestException('Не удалось определить победителя для выдачи.');
+        }
+
+        const giveaway = await this.getManagedGiveawayForSession(context.actor, session);
+        if (!giveaway) {
+          throw new BadRequestException('Розыгрыш не найден.');
+        }
+
+        await this.managedGiveawayService.markManagedGiveawayWinnerDelivered(
+          session.selectedChatId,
+          giveaway.id,
+          context.actor,
+          { winnerId },
+          session.selectedEntityType,
+          'private_bot',
+        );
+        session.managedGiveawayId = giveaway.id;
+        const view = await this.renderGiveawayScreen(context, session, 'Выдача подтверждена.');
+        await this.respond(context, session, view, {
+          callbackId: context.callbackId,
+          notification: 'Статус обновлён',
         });
         return;
       }
@@ -4233,11 +4348,7 @@ export class PrivateControlService {
       return this.renderChatSelection(context, session);
     }
 
-    const giveaway = await this.managedGiveawayService.getCurrentManagedGiveawayForEntity(
-      session.selectedChatId,
-      context.actor,
-      session.selectedEntityType,
-    );
+    const giveaway = await this.getManagedGiveawayForSession(context.actor, session);
     const entityLabel = session.selectedEntityType === 'channel' ? 'Канал' : 'Чат';
     const miniappUrl = this.managedGiveawayService.getGiveawaySettingsMiniappUrl(
       session.selectedChatId,
@@ -4247,7 +4358,11 @@ export class PrivateControlService {
     const lines: string[] = ['Розыгрыш', '', `${entityLabel}: ${session.selectedChatId}`];
 
     if (!giveaway) {
-      lines.push('', 'Текущего розыгрыша нет.', 'Создайте черновик в miniapp и публикуйте его оттуда.');
+      lines.push(
+        '',
+        'Текущего розыгрыша нет.',
+        'Соберите черновик в miniapp и продолжайте публикацию и контроль здесь, в личке бота.',
+      );
     } else {
       const statusLabel =
         giveaway.status === 'ACTIVE'
@@ -4258,6 +4373,8 @@ export class PrivateControlService {
               ? 'Завершён'
               : giveaway.status === 'DRAWING'
                 ? 'Подводим итоги'
+                : giveaway.status === 'CANCELED'
+                  ? 'Отменён'
                 : 'Черновик';
       lines.push(
         '',
@@ -4267,6 +4384,7 @@ export class PrivateControlService {
         `Победители: ${giveaway.winnersCount}`,
         `Финиш: ${this.formatDateTimeLabel(giveaway.endsAt)}`,
       );
+      lines.push('Режим: контент правится в miniapp, публикация и контроль идут здесь.');
 
       if (giveaway.startsAt) {
         lines.push(`Старт: ${this.formatDateTimeLabel(giveaway.startsAt)}`);
@@ -4286,7 +4404,7 @@ export class PrivateControlService {
         lines.push(
           ...giveaway.winners.map(
             (winner) =>
-              `${winner.prizePosition}. ${winner.prizeTitle} — ${winner.displayName ?? winner.userId} (${winner.status.toLowerCase()})`,
+              `${winner.prizePosition}. ${winner.prizeTitle} — ${winner.displayName ?? winner.userId} (${this.formatGiveawayWinnerStatusLabel(winner.status)})`,
           ),
         );
       }
@@ -4300,6 +4418,35 @@ export class PrivateControlService {
         rows.push([this.callbackButton('Завершить розыгрыш', this.cb('giveaway_close'), 'positive')]);
         rows.push([this.callbackButton('Отменить розыгрыш', this.cb('giveaway_cancel'), 'negative')]);
       }
+
+      const winnerActionRows = giveaway.winners.flatMap((winner) => {
+        const actionRow: MaxMessageButton[] = [];
+
+        if (
+          giveaway.status === 'COMPLETED' &&
+          (winner.status === 'SELECTED' || winner.status === 'EXPIRED')
+        ) {
+          actionRow.push(
+            this.callbackButton(
+              `Реролл ${winner.prizePosition}`,
+              this.cb('giveaway_reroll', winner.id),
+            ),
+          );
+        }
+
+        if (winner.status === 'SELECTED' || winner.status === 'CLAIMED') {
+          actionRow.push(
+            this.callbackButton(
+              `Выдано ${winner.prizePosition}`,
+              this.cb('giveaway_deliver', winner.id),
+              'positive',
+            ),
+          );
+        }
+
+        return actionRow.length > 0 ? [actionRow] : [];
+      });
+      rows.push(...winnerActionRows);
     }
 
     if (notice) {
@@ -4322,6 +4469,45 @@ export class PrivateControlService {
         buttons: rows,
       },
     };
+  }
+
+  private async getManagedGiveawayForSession(
+    user: AuthUser,
+    session: PrivateSession,
+  ): Promise<ManagedGiveawayDetails | null> {
+    if (!session.selectedChatId || !session.selectedEntityType) {
+      return null;
+    }
+
+    if (session.managedGiveawayId) {
+      return this.managedGiveawayService.getManagedGiveaway(
+        session.selectedChatId,
+        session.managedGiveawayId,
+        user,
+        session.selectedEntityType,
+      );
+    }
+
+    return this.managedGiveawayService.getCurrentManagedGiveawayForEntity(
+      session.selectedChatId,
+      user,
+      session.selectedEntityType,
+    );
+  }
+
+  private formatGiveawayWinnerStatusLabel(status: ManagedGiveawayWinner['status']): string {
+    switch (status) {
+      case 'CLAIMED':
+        return 'claim подтверждён';
+      case 'DELIVERED':
+        return 'приз выдан';
+      case 'EXPIRED':
+        return 'claim истёк';
+      case 'REROLLED':
+        return 'перевыбран';
+      default:
+        return 'ждёт claim';
+    }
   }
 
   private renderGiveawayClaimView(
@@ -5014,6 +5200,7 @@ export class PrivateControlService {
       sectionView: session.sectionView,
       homeTab: session.homeTab,
       selectedEntityType: session.selectedEntityType,
+      managedGiveawayId: session.managedGiveawayId,
       entityTab: session.entityTab,
       domainPage: session.domainPage,
       eventsPage: session.eventsPage,
@@ -5050,6 +5237,10 @@ export class PrivateControlService {
       session.sectionView = this.parseSectionView(row.sectionView);
       session.homeTab = this.parseHomeTab(row.homeTab);
       session.selectedEntityType = this.parseEntityType(row.selectedEntityType);
+      session.managedGiveawayId =
+        typeof row.managedGiveawayId === 'string' && row.managedGiveawayId.trim().length > 0
+          ? row.managedGiveawayId.trim()
+          : null;
       session.entityTab = this.parseEntityType(row.entityTab) ?? session.entityTab;
       session.domainPage = this.toPositiveInt(row.domainPage, 1);
       session.eventsPage = this.toPositiveInt(row.eventsPage, 1);
@@ -6359,6 +6550,7 @@ export class PrivateControlService {
       version: 3,
       selectedChatId: null,
       selectedEntityType: null,
+      managedGiveawayId: null,
       entityTab: 'chat',
       uiMode: 'modern',
       screen: 'chat_select',
@@ -6404,6 +6596,10 @@ export class PrivateControlService {
       version: 3,
       selectedChatId,
       selectedEntityType: parsedSelectedEntityType ?? (selectedChatId ? 'chat' : null),
+      managedGiveawayId:
+        typeof row.managedGiveawayId === 'string' && row.managedGiveawayId.trim().length > 0
+          ? row.managedGiveawayId.trim()
+          : null,
       entityTab: this.parseEntityType(row.entityTab) ?? parsedSelectedEntityType ?? 'chat',
       uiMode: this.parseUiMode(row.uiMode),
       screen: this.parseScreen(row.screen),
