@@ -18,7 +18,23 @@ import { useToast } from './ui/toast';
 const MAX_GIVEAWAY_IMAGE_SIZE_BYTES = 1_000_000;
 
 type GiveawayDraft = UpdateManagedGiveawayPayload;
-type ManagedGiveawayHintKey = 'flow' | 'timing' | 'cover' | 'prizes' | 'winners';
+type ComposerMode = 'view' | 'create' | 'edit';
+type ComposerStepKey = 'basics' | 'prizes' | 'timing' | 'cover';
+type ManagedGiveawayHintKey = 'timing' | 'cover' | 'prizes';
+
+type GiveawayDraftValidation = {
+  title: string | null;
+  claimHours: string | null;
+  startsAt: string | null;
+  endsAt: string | null;
+  prizes: Array<string | null>;
+  image: string | null;
+  stepIssues: Record<ComposerStepKey, number>;
+  firstError: string | null;
+  hasErrors: boolean;
+};
+
+const COMPOSER_STEP_ORDER: ComposerStepKey[] = ['basics', 'prizes', 'timing', 'cover'];
 
 function createDefaultEndsAt(): string {
   return new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString();
@@ -183,6 +199,201 @@ function getEntityLabel(entityType: 'chat' | 'channel'): string {
   return entityType === 'channel' ? 'канала' : 'чата';
 }
 
+function shortenText(value: string, maxLength = 40): string {
+  const normalized = value.trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function normalizePrizeTitle(value: string): string {
+  return value.trim().replace(/\s+/gu, ' ').toLowerCase().replace(/ё/gu, 'е');
+}
+
+function validateDraft(draft: GiveawayDraft): GiveawayDraftValidation {
+  const stepIssues: Record<ComposerStepKey, number> = {
+    basics: 0,
+    prizes: 0,
+    timing: 0,
+    cover: 0,
+  };
+
+  let titleError: string | null = null;
+  let claimHoursError: string | null = null;
+  let startsAtError: string | null = null;
+  let endsAtError: string | null = null;
+  let imageError: string | null = null;
+  const prizeErrors = draft.prizes.map(() => null as string | null);
+
+  if (!draft.title.trim()) {
+    titleError = 'Введите название розыгрыша.';
+    stepIssues.basics += 1;
+  }
+
+  const claimHours = Number(draft.claimHours);
+  if (!Number.isFinite(claimHours) || claimHours < 1 || claimHours > 336) {
+    claimHoursError = 'Claim-окно должно быть от 1 до 336 часов.';
+    stepIssues.timing += 1;
+  }
+
+  let startsAtTimestamp = Date.now();
+  if (draft.startsAt) {
+    startsAtTimestamp = Date.parse(draft.startsAt);
+    if (!Number.isFinite(startsAtTimestamp)) {
+      startsAtError = 'Укажите корректное время старта.';
+      startsAtTimestamp = Date.now();
+      stepIssues.timing += 1;
+    }
+  }
+
+  const endsAtTimestamp = Date.parse(draft.endsAt);
+  if (!Number.isFinite(endsAtTimestamp)) {
+    endsAtError = 'Укажите корректное время завершения.';
+    stepIssues.timing += 1;
+  } else if (endsAtTimestamp <= startsAtTimestamp) {
+    endsAtError = 'Завершение должно быть позже старта.';
+    stepIssues.timing += 1;
+  }
+
+  const duplicateCounts = new Map<string, number>();
+  draft.prizes.forEach((prize) => {
+    const normalized = normalizePrizeTitle(prize.title);
+    if (!normalized) {
+      return;
+    }
+    duplicateCounts.set(normalized, (duplicateCounts.get(normalized) ?? 0) + 1);
+  });
+
+  draft.prizes.forEach((prize, index) => {
+    const normalized = normalizePrizeTitle(prize.title);
+    if (!normalized) {
+      prizeErrors[index] = 'Введите название приза.';
+      stepIssues.prizes += 1;
+      return;
+    }
+
+    if ((duplicateCounts.get(normalized) ?? 0) > 1) {
+      prizeErrors[index] = 'Название приза повторяется.';
+      stepIssues.prizes += 1;
+    }
+  });
+
+  if (draft.imageEnabled) {
+    if (!draft.imageBase64.trim()) {
+      imageError = 'Добавьте изображение для обложки.';
+      stepIssues.cover += 1;
+    } else if (
+      !draft.imageMimeType.trim() ||
+      !draft.imageMimeType.toLowerCase().startsWith('image/')
+    ) {
+      imageError = 'Поддерживаются только изображения.';
+      stepIssues.cover += 1;
+    }
+  }
+
+  const firstError =
+    titleError ??
+    prizeErrors.find((error): error is string => Boolean(error)) ??
+    startsAtError ??
+    endsAtError ??
+    claimHoursError ??
+    imageError ??
+    null;
+
+  const hasErrors =
+    Boolean(titleError) ||
+    Boolean(claimHoursError) ||
+    Boolean(startsAtError) ||
+    Boolean(endsAtError) ||
+    Boolean(imageError) ||
+    prizeErrors.some(Boolean);
+
+  return {
+    title: titleError,
+    claimHours: claimHoursError,
+    startsAt: startsAtError,
+    endsAt: endsAtError,
+    prizes: prizeErrors,
+    image: imageError,
+    stepIssues,
+    firstError,
+    hasErrors,
+  };
+}
+
+function buildComposerStepSummary(
+  step: ComposerStepKey,
+  draft: GiveawayDraft,
+  validation: GiveawayDraftValidation,
+): string {
+  switch (step) {
+    case 'basics':
+      return `${draft.title.trim() ? shortenText(draft.title, 32) : 'без названия'} · ${
+        draft.description.trim() ? 'описание готово' : 'без описания'
+      }`;
+    case 'prizes': {
+      const filled = draft.prizes.filter((prize) => prize.title.trim()).length;
+      return `${draft.prizes.length} мест · ${filled}/${draft.prizes.length} заполнено`;
+    }
+    case 'timing':
+      return `${
+        draft.startsAt ? formatDateTimeLabel(draft.startsAt) : 'сразу'
+      } -> ${formatDateTimeLabel(draft.endsAt)}`;
+    case 'cover':
+      return draft.imageEnabled ? draft.imageFileName || 'обложка загружена' : 'без обложки';
+    default:
+      return validation.hasErrors ? 'Нужно проверить поля' : 'Готово';
+  }
+}
+
+function buildComposerOverview(
+  draft: GiveawayDraft,
+  validation: GiveawayDraftValidation,
+  mode: ComposerMode,
+): { title: string; subtitle: string; meta: string[] } {
+  const invalidSteps = COMPOSER_STEP_ORDER.filter((step) => validation.stepIssues[step] > 0).length;
+
+  return {
+    title: draft.title.trim() || (mode === 'edit' ? 'Редактирование черновика' : 'Новый черновик'),
+    subtitle:
+      invalidSteps > 0
+        ? `Нужно проверить ${invalidSteps} ${
+            invalidSteps === 1 ? 'раздел' : invalidSteps < 5 ? 'раздела' : 'разделов'
+          }`
+        : 'Форма готова к сохранению и передаче в бота',
+    meta: [
+      `Призы: ${draft.prizes.length}`,
+      `Финиш: ${formatDateTimeLabel(draft.endsAt)}`,
+      `Claim: ${draft.claimHours} ч`,
+    ],
+  };
+}
+
+function buildViewOverview(
+  giveaway: ManagedGiveawayDetails | ManagedGiveawaySummary | null,
+  entityType: 'chat' | 'channel',
+): { title: string; subtitle: string; meta: string[] } {
+  if (!giveaway) {
+    return {
+      title: 'Розыгрышей пока нет',
+      subtitle: `Создайте первый черновик для ${getEntityLabel(entityType)}.`,
+      meta: ['Статус: пусто', 'Заявки: 0', 'Победители: 0'],
+    };
+  }
+
+  return {
+    title: giveaway.title,
+    subtitle: `${buildStatusLabel(giveaway.status)} · ${giveaway.entriesCount} заявок`,
+    meta: [
+      `Победители: ${giveaway.winnersCount}`,
+      `Финиш: ${formatDateTimeLabel(giveaway.endsAt)}`,
+      giveaway.startsAt ? `Старт: ${formatDateTimeLabel(giveaway.startsAt)}` : 'Старт: сразу',
+    ],
+  };
+}
+
 function ManagedGiveawayInfoButton({
   hintKey,
   openHintKey,
@@ -246,6 +457,85 @@ function ManagedGiveawayHintAnchor({
   );
 }
 
+function StepChevron({ isOpen }: { isOpen: boolean }) {
+  return (
+    <span className={cn('settings-section__chevron', isOpen && 'is-open')} aria-hidden>
+      <svg
+        className="settings-section__chevron-icon"
+        viewBox="0 0 20 20"
+        fill="none"
+        focusable="false"
+      >
+        <path
+          d="M5.5 7.75L10 12.25L14.5 7.75"
+          stroke="currentColor"
+          strokeWidth="2.2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    </span>
+  );
+}
+
+function ManagedGiveawayStep({
+  title,
+  summary,
+  isOpen,
+  hasError,
+  onToggle,
+  hintKey,
+  openHintKey,
+  onToggleHint,
+  hintLabel,
+  hintText,
+  children,
+}: {
+  title: string;
+  summary: string;
+  isOpen: boolean;
+  hasError: boolean;
+  onToggle: () => void;
+  hintKey?: ManagedGiveawayHintKey;
+  openHintKey: ManagedGiveawayHintKey | null;
+  onToggleHint: (hintKey: ManagedGiveawayHintKey) => void;
+  hintLabel?: string;
+  hintText?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className={cn('managed-giveaway__step', hasError && 'is-error', isOpen && 'is-open')}>
+      <div className="managed-giveaway__step-head">
+        <button
+          type="button"
+          className={cn('managed-giveaway__step-toggle', hasError && 'is-error')}
+          aria-expanded={isOpen}
+          onClick={onToggle}
+        >
+          <span className="managed-giveaway__step-main">
+            <strong>{title}</strong>
+            <small>{summary}</small>
+          </span>
+          <StepChevron isOpen={isOpen} />
+        </button>
+        {hintKey && hintLabel && hintText ? (
+          <ManagedGiveawayHintAnchor
+            hintKey={hintKey}
+            openHintKey={openHintKey}
+            onToggleHint={onToggleHint}
+            label={hintLabel}
+          >
+            {hintText}
+          </ManagedGiveawayHintAnchor>
+        ) : null}
+      </div>
+      <div className={cn('settings-section__collapse', isOpen && 'is-open')}>
+        <div className="settings-section__collapse-inner managed-giveaway__step-body">{children}</div>
+      </div>
+    </section>
+  );
+}
+
 export function ManagedGiveawayCard({
   api,
   entityType,
@@ -257,9 +547,16 @@ export function ManagedGiveawayCard({
 }) {
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+
+  const [mode, setMode] = useState<ComposerMode>('view');
   const [selectedGiveawayId, setSelectedGiveawayId] = useState<string | null>(null);
   const [draft, setDraft] = useState<GiveawayDraft | null>(null);
+  const [openStep, setOpenStep] = useState<ComposerStepKey>('basics');
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [showErrors, setShowErrors] = useState(false);
   const [openHintKey, setOpenHintKey] = useState<ManagedGiveawayHintKey | null>(null);
+
+  const isComposing = mode === 'create' || mode === 'edit';
   useHintPopoverAutoPosition(openHintKey !== null);
 
   const listQuery = useQuery({
@@ -276,8 +573,14 @@ export function ManagedGiveawayCard({
   );
 
   useEffect(() => {
+    if (isComposing) {
+      return;
+    }
+
     if (!giveaways.length) {
-      setSelectedGiveawayId(null);
+      if (selectedGiveawayId !== null) {
+        setSelectedGiveawayId(null);
+      }
       return;
     }
 
@@ -286,7 +589,13 @@ export function ManagedGiveawayCard({
     }
 
     setSelectedGiveawayId((currentGiveaway ?? giveaways[0]).id);
-  }, [currentGiveaway, giveaways, selectedGiveawayId]);
+  }, [currentGiveaway, giveaways, isComposing, selectedGiveawayId]);
+
+  useEffect(() => {
+    if (isComposing) {
+      setHistoryOpen(false);
+    }
+  }, [isComposing]);
 
   const detailQuery = useQuery({
     queryKey: ['managed-giveaway', entityType, entityId, selectedGiveawayId] as const,
@@ -296,24 +605,21 @@ export function ManagedGiveawayCard({
   });
 
   const selectedGiveaway = detailQuery.data ?? null;
-
-  useEffect(() => {
-    if (!selectedGiveaway || selectedGiveaway.status !== 'DRAFT') {
-      return;
-    }
-
-    setDraft(toDraft(selectedGiveaway));
-  }, [selectedGiveaway]);
-
-  const historyGiveaways = giveaways.filter((item) => item.id !== currentGiveaway?.id);
+  const selectedSummary = giveaways.find((item) => item.id === selectedGiveawayId) ?? null;
+  const visibleSummary = selectedSummary ?? currentGiveaway ?? giveaways[0] ?? null;
+  const historyGiveaways = giveaways.filter(
+    (item) => item.id !== (selectedGiveawayId ?? currentGiveaway?.id ?? null),
+  );
   const canCreateNew = !currentGiveaway || ['COMPLETED', 'CANCELED'].includes(currentGiveaway.status);
+  const draftValidation = useMemo(
+    () => (draft ? validateDraft(draft) : null),
+    [draft],
+  );
 
   const invalidateGiveawayQueries = async () => {
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: ['managed-giveaways', entityType, entityId] }),
-      queryClient.invalidateQueries({
-        queryKey: ['managed-giveaway', entityType, entityId, selectedGiveawayId],
-      }),
+      queryClient.invalidateQueries({ queryKey: ['managed-giveaway', entityType, entityId] }),
     ]);
   };
 
@@ -321,6 +627,7 @@ export function ManagedGiveawayCard({
     mutationFn: (payload: GiveawayDraft) => api.createManagedGiveaway(entityType, entityId, payload),
     onSuccess: async (created) => {
       setSelectedGiveawayId(created.id);
+      setMode('edit');
       setDraft(toDraft(created));
       await invalidateGiveawayQueries();
       pushToast({
@@ -342,6 +649,8 @@ export function ManagedGiveawayCard({
     mutationFn: ({ giveawayId, payload }: { giveawayId: string; payload: GiveawayDraft }) =>
       api.updateManagedGiveaway(entityType, entityId, giveawayId, payload),
     onSuccess: async (updated) => {
+      setSelectedGiveawayId(updated.id);
+      setMode('edit');
       setDraft(toDraft(updated));
       await invalidateGiveawayQueries();
       pushToast({
@@ -372,13 +681,45 @@ export function ManagedGiveawayCard({
   });
 
   const isBusy =
+    listQuery.isFetching ||
+    detailQuery.isFetching ||
     createMutation.isPending ||
     updateMutation.isPending ||
     handoffMutation.isPending;
 
+  const toggleHint = (hintKey: ManagedGiveawayHintKey) => {
+    setOpenHintKey((current) => (current === hintKey ? null : hintKey));
+  };
+
+  const openComposerStep = (step: ComposerStepKey) => {
+    setOpenStep((current) => (current === step ? current : step));
+  };
+
   const startNewDraft = () => {
-    setSelectedGiveawayId(null);
+    setMode('create');
     setDraft(createDefaultDraft());
+    setOpenStep('basics');
+    setShowErrors(false);
+    setOpenHintKey(null);
+  };
+
+  const startEditing = () => {
+    if (!selectedGiveaway || selectedGiveaway.status !== 'DRAFT') {
+      return;
+    }
+
+    setMode('edit');
+    setDraft(toDraft(selectedGiveaway));
+    setOpenStep('basics');
+    setShowErrors(false);
+    setOpenHintKey(null);
+  };
+
+  const cancelComposer = () => {
+    setMode('view');
+    setDraft(null);
+    setShowErrors(false);
+    setOpenHintKey(null);
   };
 
   const handleDraftChange = <K extends keyof GiveawayDraft>(key: K, value: GiveawayDraft[K]) => {
@@ -391,10 +732,12 @@ export function ManagedGiveawayCard({
         return current;
       }
 
-      const prizes = current.prizes.map((prize, prizeIndex) =>
-        prizeIndex === index ? { ...prize, title } : prize,
-      );
-      return { ...current, prizes };
+      return {
+        ...current,
+        prizes: current.prizes.map((prize, prizeIndex) =>
+          prizeIndex === index ? { ...prize, title } : prize,
+        ),
+      };
     });
   };
 
@@ -423,13 +766,15 @@ export function ManagedGiveawayCard({
         return current;
       }
 
-      const prizes = current.prizes
-        .filter((_, prizeIndex) => prizeIndex !== index)
-        .map((prize, prizeIndex) => ({
-          ...prize,
-          position: prizeIndex + 1,
-        }));
-      return { ...current, prizes };
+      return {
+        ...current,
+        prizes: current.prizes
+          .filter((_, prizeIndex) => prizeIndex !== index)
+          .map((prize, prizeIndex) => ({
+            ...prize,
+            position: prizeIndex + 1,
+          })),
+      };
     });
   };
 
@@ -488,12 +833,33 @@ export function ManagedGiveawayCard({
     );
   };
 
-  const saveDraft = async (): Promise<ManagedGiveawayDetails | null> => {
-    if (!draft) {
+  const ensureDraftValid = () => {
+    if (!draft || !draftValidation) {
+      return false;
+    }
+
+    if (!draftValidation.hasErrors) {
+      return true;
+    }
+
+    setShowErrors(true);
+    const firstInvalidStep =
+      COMPOSER_STEP_ORDER.find((step) => draftValidation.stepIssues[step] > 0) ?? 'basics';
+    setOpenStep(firstInvalidStep);
+    pushToast({
+      tone: 'danger',
+      title: 'Проверьте поля',
+      description: draftValidation.firstError ?? 'Форма заполнена не полностью.',
+    });
+    return false;
+  };
+
+  const persistDraft = async (): Promise<ManagedGiveawayDetails | null> => {
+    if (!draft || !ensureDraftValid()) {
       return null;
     }
 
-    if (selectedGiveaway?.status === 'DRAFT') {
+    if (mode === 'edit' && selectedGiveaway?.status === 'DRAFT') {
       return updateMutation.mutateAsync({
         giveawayId: selectedGiveaway.id,
         payload: draft,
@@ -503,95 +869,114 @@ export function ManagedGiveawayCard({
     return createMutation.mutateAsync(draft);
   };
 
+  const saveDraft = async () => {
+    try {
+      await persistDraft();
+    } catch {
+      // Mutation toasts are already shown in onError handlers.
+    }
+  };
+
   const continueInBot = async () => {
     try {
       let giveawayId = selectedGiveaway?.id ?? null;
 
-      if (draft) {
-        const saved = await saveDraft();
+      if (isComposing) {
+        const saved = await persistDraft();
         giveawayId = saved?.id ?? giveawayId;
       }
 
       if (!giveawayId) {
         pushToast({
           tone: 'danger',
-          title: 'Сначала сохраните черновик',
-          description: 'Боту нужен конкретный розыгрыш для продолжения сценария.',
+          title: 'Черновик не выбран',
+          description: 'Сначала откройте розыгрыш или создайте новый черновик.',
         });
         return;
       }
 
       const result = await handoffMutation.mutateAsync(giveawayId);
+      setMode('view');
+      setDraft(null);
+      setShowErrors(false);
+      setOpenHintKey(null);
       openMaxBotLink(result.botUrl);
     } catch {
-      // Toasts already handled in mutations above.
+      // Mutation toasts are already shown in onError handlers.
     }
   };
 
-  const selectedSummary = giveaways.find((item) => item.id === selectedGiveawayId) ?? null;
-  const statusSummary =
-    selectedGiveaway ?? currentGiveaway ?? selectedSummary ?? (giveaways[0] ?? null);
-  const toggleHint = (hintKey: ManagedGiveawayHintKey) => {
-    setOpenHintKey((current) => (current === hintKey ? null : hintKey));
+  const refreshGiveaways = () => {
+    void listQuery.refetch();
+    if (selectedGiveawayId) {
+      void detailQuery.refetch();
+    }
   };
+
+  const composerOverview = draft && draftValidation ? buildComposerOverview(draft, draftValidation, mode) : null;
+  const viewOverview = buildViewOverview(visibleSummary, entityType);
+  const overviewTone = isComposing
+    ? 'warning'
+    : visibleSummary
+      ? buildStatusTone(visibleSummary.status)
+      : 'muted';
+  const overviewStatusLabel = isComposing
+    ? mode === 'edit'
+      ? 'Черновик'
+      : 'Новый'
+    : visibleSummary
+      ? buildStatusLabel(visibleSummary.status)
+      : 'Пусто';
+  const canContinueInBot =
+    !isComposing || Boolean(draft && draftValidation && !draftValidation.hasErrors);
+  const coverPreviewSrc =
+    draft?.imageEnabled && draft.imageBase64
+      ? `data:${draft.imageMimeType || 'image/jpeg'};base64,${draft.imageBase64}`
+      : null;
 
   return (
     <div className="managed-giveaway">
-      <div className="managed-giveaway__toolbar">
-        <div className="managed-giveaway__toolbar-copy">
-          <div className="managed-giveaway__title">Текущий розыгрыш</div>
+      <div className="managed-giveaway__header">
+        <div className="managed-giveaway__header-copy">
+          <div className="managed-giveaway__title">Розыгрыши</div>
           <div className="managed-giveaway__subtitle">
-            {statusSummary
-              ? `${buildStatusLabel(statusSummary.status)} · ${statusSummary.entriesCount} заявок`
-              : 'Черновика ещё нет'}
+            {isComposing
+              ? 'Соберите черновик и передайте публикацию в личку бота'
+              : 'Черновик, публикация, итоги и работа с победителями'}
           </div>
         </div>
 
-        <div className="managed-giveaway__toolbar-actions">
-          <ManagedGiveawayHintAnchor
-            hintKey="flow"
-            openHintKey={openHintKey}
-            onToggleHint={toggleHint}
-            label="Как устроен сценарий розыгрыша"
+        {!isComposing && canCreateNew ? (
+          <button
+            type="button"
+            className="button button--ghost"
+            disabled={isBusy}
+            onClick={startNewDraft}
           >
-            Miniapp нужен для карточки розыгрыша: текст, фото, призы и тайминг. Публикация,
-            завершение, reroll и выдача приза продолжаются в личке бота.
-          </ManagedGiveawayHintAnchor>
-          {canCreateNew ? (
-            <button
-              type="button"
-              className="button button--ghost"
-              disabled={isBusy}
-              onClick={startNewDraft}
-            >
-              Новый
-            </button>
-          ) : null}
-        </div>
+            Новый
+          </button>
+        ) : null}
       </div>
 
-      <div className="managed-giveaway__hero-card">
-        <div className="managed-giveaway__hero-copy">
-          <strong>{statusSummary?.title ?? 'Соберите новый розыгрыш'}</strong>
-          <span>
-            {statusSummary
-              ? 'Контент и тайминг правятся здесь, публикация и контроль идут в боте.'
-              : `Подготовьте карточку розыгрыша для ${getEntityLabel(entityType)}.`}
-          </span>
+      <div className="managed-giveaway__overview-card">
+        <div className="managed-giveaway__overview-main">
+          <div className="managed-giveaway__overview-topline">
+            <span className={cn('managed-giveaway__badge', `is-${overviewTone}`)}>
+              {overviewStatusLabel}
+            </span>
+            <span className="managed-giveaway__overview-kicker">
+              {isComposing ? 'miniapp -> бот' : `${getEntityLabel(entityType)} · hybrid-flow`}
+            </span>
+          </div>
+          <strong>{isComposing && composerOverview ? composerOverview.title : viewOverview.title}</strong>
+          <span>{isComposing && composerOverview ? composerOverview.subtitle : viewOverview.subtitle}</span>
         </div>
-        <div className="managed-giveaway__hero-metrics">
-          <div className="managed-giveaway__metric">
-            <span>Статус</span>
-            <strong>{statusSummary ? buildStatusLabel(statusSummary.status) : 'Пусто'}</strong>
-          </div>
-          <div className="managed-giveaway__metric">
-            <span>Заявки</span>
-            <strong>{statusSummary?.entriesCount ?? 0}</strong>
-          </div>
-          <div className="managed-giveaway__metric">
-            <span>Победители</span>
-            <strong>{statusSummary?.winnersCount ?? 0}</strong>
-          </div>
+        <div className="managed-giveaway__overview-meta">
+          {(isComposing && composerOverview ? composerOverview.meta : viewOverview.meta).map((item) => (
+            <span key={item} className="managed-giveaway__overview-chip">
+              {item}
+            </span>
+          ))}
         </div>
       </div>
 
@@ -603,7 +988,11 @@ export function ManagedGiveawayCard({
         <div className="managed-giveaway__empty is-danger">{formatApiError(listQuery.error)}</div>
       ) : null}
 
-      {!listQuery.isLoading && !listQuery.error && !selectedGiveaway && !draft && giveaways.length === 0 ? (
+      {!listQuery.isLoading &&
+      !listQuery.error &&
+      !isComposing &&
+      !selectedGiveawayId &&
+      giveaways.length === 0 ? (
         <div className="managed-giveaway__empty">
           <p>Запустите первый розыгрыш для этого {getEntityLabel(entityType)}.</p>
           <button type="button" className="button button--accent" onClick={startNewDraft}>
@@ -612,74 +1001,125 @@ export function ManagedGiveawayCard({
         </div>
       ) : null}
 
-      {draft ? (
-        <div className="managed-giveaway__panel managed-giveaway__panel--draft">
-          <div className="managed-giveaway__section-head">
-            <div className="managed-giveaway__section-copy">
-              <strong>{selectedGiveaway?.status === 'DRAFT' ? 'Черновик' : 'Новый черновик'}</strong>
-              <small>Соберите карточку и передайте публикацию в личку бота</small>
-            </div>
-          </div>
-
-          <div className="managed-giveaway__grid">
-            <label className="field settings-text-field">
-              <span>Название</span>
-              <input
-                type="text"
-                value={draft.title}
-                maxLength={MANAGED_GIVEAWAY_TITLE_MAX_LENGTH}
-                onChange={(event) => handleDraftChange('title', event.target.value)}
-                placeholder="Например: Весенний розыгрыш"
-              />
-            </label>
-
-            <label className="field settings-text-field">
-              <span>Claim-окно, часы</span>
-              <input
-                type="number"
-                min={1}
-                max={336}
-                value={draft.claimHours}
-                onChange={(event) =>
-                  handleDraftChange(
-                    'claimHours',
-                    Math.min(336, Math.max(1, Number(event.target.value) || 1)),
-                  )
-                }
-              />
-            </label>
-          </div>
-
-          <label className="field settings-text-field">
-            <span>Описание</span>
-            <textarea
-              rows={3}
-              maxLength={MANAGED_GIVEAWAY_DESCRIPTION_MAX_LENGTH}
-              value={draft.description}
-              onChange={(event) => handleDraftChange('description', event.target.value)}
-              placeholder="Коротко объясните условия и что разыгрываете."
-            />
-          </label>
-
-          <div className="managed-giveaway__panel managed-giveaway__panel--nested">
-            <div className="managed-giveaway__section-head">
-              <div className="managed-giveaway__section-copy">
-                <strong>Тайминг</strong>
-                <small>Старт, дедлайн и окно подтверждения</small>
-              </div>
-              <ManagedGiveawayHintAnchor
-                hintKey="timing"
-                openHintKey={openHintKey}
-                onToggleHint={toggleHint}
-                label="Подсказка по таймингу розыгрыша"
-              >
-                Если старт не задан, розыгрыш начнётся сразу после публикации. Claim-окно -
-                сколько часов победитель может подтвердить приз в личке бота.
-              </ManagedGiveawayHintAnchor>
-            </div>
-
+      {isComposing && draft && draftValidation ? (
+        <div className="managed-giveaway__composer">
+          <ManagedGiveawayStep
+            title="Основное"
+            summary={buildComposerStepSummary('basics', draft, draftValidation)}
+            isOpen={openStep === 'basics'}
+            hasError={showErrors && draftValidation.stepIssues.basics > 0}
+            onToggle={() => openComposerStep('basics')}
+            openHintKey={openHintKey}
+            onToggleHint={toggleHint}
+          >
             <div className="managed-giveaway__grid">
+              <label
+                className={cn(
+                  'field settings-text-field',
+                  showErrors && draftValidation.title && 'field--error',
+                )}
+              >
+                <span>Название</span>
+                <input
+                  type="text"
+                  value={draft.title}
+                  maxLength={MANAGED_GIVEAWAY_TITLE_MAX_LENGTH}
+                  onChange={(event) => handleDraftChange('title', event.target.value)}
+                  placeholder="Например: Весенний розыгрыш"
+                />
+                {showErrors && draftValidation.title ? (
+                  <small className="field__hint">{draftValidation.title}</small>
+                ) : null}
+              </label>
+
               <label className="field settings-text-field">
+                <span>Описание</span>
+                <textarea
+                  rows={4}
+                  maxLength={MANAGED_GIVEAWAY_DESCRIPTION_MAX_LENGTH}
+                  value={draft.description}
+                  onChange={(event) => handleDraftChange('description', event.target.value)}
+                  placeholder="Коротко объясните, что разыгрываете и какие условия участия."
+                />
+              </label>
+            </div>
+          </ManagedGiveawayStep>
+
+          <ManagedGiveawayStep
+            title="Призы"
+            summary={buildComposerStepSummary('prizes', draft, draftValidation)}
+            isOpen={openStep === 'prizes'}
+            hasError={showErrors && draftValidation.stepIssues.prizes > 0}
+            onToggle={() => openComposerStep('prizes')}
+            hintKey="prizes"
+            openHintKey={openHintKey}
+            onToggleHint={toggleHint}
+            hintLabel="Подсказка по призовым местам"
+            hintText="Призы задают порядок победителей. После завершения бот автоматически назначит места сверху вниз и позволит сделать reroll по любому непринятому месту."
+          >
+            <div className="managed-giveaway__prizes">
+              {draft.prizes.map((prize, index) => (
+                <label
+                  key={`prize-${prize.position}`}
+                  className={cn(
+                    'managed-giveaway__prize-row',
+                    showErrors && draftValidation.prizes[index] && 'field--error',
+                  )}
+                >
+                  <span className="managed-giveaway__prize-position">{prize.position}</span>
+                  <div className="managed-giveaway__prize-field">
+                    <input
+                      type="text"
+                      value={prize.title}
+                      maxLength={MANAGED_GIVEAWAY_PRIZE_TITLE_MAX_LENGTH}
+                      onChange={(event) => handlePrizeChange(index, event.target.value)}
+                      placeholder={`Приз за ${prize.position} место`}
+                    />
+                    {showErrors && draftValidation.prizes[index] ? (
+                      <small className="field__hint">{draftValidation.prizes[index]}</small>
+                    ) : null}
+                  </div>
+                  <button
+                    type="button"
+                    className="button button--ghost"
+                    disabled={draft.prizes.length <= 1}
+                    onClick={() => removePrize(index)}
+                  >
+                    Удалить
+                  </button>
+                </label>
+              ))}
+            </div>
+
+            <button
+              type="button"
+              className="button button--ghost"
+              disabled={draft.prizes.length >= MANAGED_GIVEAWAY_MAX_PRIZES}
+              onClick={addPrize}
+            >
+              Добавить место
+            </button>
+          </ManagedGiveawayStep>
+
+          <ManagedGiveawayStep
+            title="Тайминг"
+            summary={buildComposerStepSummary('timing', draft, draftValidation)}
+            isOpen={openStep === 'timing'}
+            hasError={showErrors && draftValidation.stepIssues.timing > 0}
+            onToggle={() => openComposerStep('timing')}
+            hintKey="timing"
+            openHintKey={openHintKey}
+            onToggleHint={toggleHint}
+            hintLabel="Подсказка по таймингу"
+            hintText="Если старт не задан, розыгрыш начнётся сразу после публикации. Claim-окно определяет, сколько часов победитель может подтвердить приз в личке бота."
+          >
+            <div className="managed-giveaway__grid">
+              <label
+                className={cn(
+                  'field settings-text-field',
+                  showErrors && draftValidation.startsAt && 'field--error',
+                )}
+              >
                 <span>Старт</span>
                 <input
                   type="datetime-local"
@@ -688,9 +1128,17 @@ export function ManagedGiveawayCard({
                     handleDraftChange('startsAt', fromLocalDateTimeInputValue(event.target.value))
                   }
                 />
+                {showErrors && draftValidation.startsAt ? (
+                  <small className="field__hint">{draftValidation.startsAt}</small>
+                ) : null}
               </label>
 
-              <label className="field settings-text-field">
+              <label
+                className={cn(
+                  'field settings-text-field',
+                  showErrors && draftValidation.endsAt && 'field--error',
+                )}
+              >
                 <span>Завершение</span>
                 <input
                   type="datetime-local"
@@ -702,108 +1150,98 @@ export function ManagedGiveawayCard({
                     )
                   }
                 />
+                {showErrors && draftValidation.endsAt ? (
+                  <small className="field__hint">{draftValidation.endsAt}</small>
+                ) : null}
+              </label>
+
+              <label
+                className={cn(
+                  'field settings-text-field',
+                  showErrors && draftValidation.claimHours && 'field--error',
+                )}
+              >
+                <span>Claim-окно, часы</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={336}
+                  value={draft.claimHours}
+                  onChange={(event) =>
+                    handleDraftChange(
+                      'claimHours',
+                      Math.min(336, Math.max(1, Number(event.target.value) || 1)),
+                    )
+                  }
+                />
+                {showErrors && draftValidation.claimHours ? (
+                  <small className="field__hint">{draftValidation.claimHours}</small>
+                ) : null}
               </label>
             </div>
-          </div>
+          </ManagedGiveawayStep>
 
-          <div className="managed-giveaway__panel managed-giveaway__panel--nested">
-            <div className="managed-giveaway__section-head">
-              <div className="managed-giveaway__section-copy">
-                <strong>Обложка</strong>
-                <small>{draft.imageEnabled ? draft.imageFileName || 'Файл загружен' : 'Необязательно'}</small>
-              </div>
-              <div className="managed-giveaway__section-actions">
-                <ManagedGiveawayHintAnchor
-                  hintKey="cover"
-                  openHintKey={openHintKey}
-                  onToggleHint={toggleHint}
-                  label="Подсказка по обложке"
-                >
-                  Обложка нужна только если розыгрышу нужен визуальный акцент в посте. Лимит -
-                  до 1 MB после подготовки изображения.
-                </ManagedGiveawayHintAnchor>
-                {draft.imageEnabled ? (
-                  <button type="button" className="button button--ghost" onClick={clearImage}>
-                    Убрать
-                  </button>
+          <ManagedGiveawayStep
+            title="Обложка"
+            summary={buildComposerStepSummary('cover', draft, draftValidation)}
+            isOpen={openStep === 'cover'}
+            hasError={showErrors && draftValidation.stepIssues.cover > 0}
+            onToggle={() => openComposerStep('cover')}
+            hintKey="cover"
+            openHintKey={openHintKey}
+            onToggleHint={toggleHint}
+            hintLabel="Подсказка по обложке"
+            hintText="Обложка нужна только если розыгрышу нужен визуальный акцент в посте. Лимит - до 1 MB после подготовки изображения."
+          >
+            <div className="managed-giveaway__cover-actions">
+              <label
+                className={cn(
+                  'field settings-text-field mailing-upload-field',
+                  showErrors && draftValidation.image && 'field--error',
+                )}
+              >
+                <span>Фото до 1 MB</span>
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={(event) => {
+                    void handleImageUpload(event.target.files?.[0] ?? null);
+                    event.currentTarget.value = '';
+                  }}
+                />
+                {showErrors && draftValidation.image ? (
+                  <small className="field__hint">{draftValidation.image}</small>
                 ) : null}
-              </div>
-            </div>
+              </label>
 
-            <label className="field settings-text-field mailing-upload-field">
-              <span>Фото до 1 MB</span>
-              <input
-                type="file"
-                accept="image/*"
-                onChange={(event) => {
-                  void handleImageUpload(event.target.files?.[0] ?? null);
-                  event.currentTarget.value = '';
-                }}
-              />
-            </label>
-          </div>
-
-          <div className="managed-giveaway__panel managed-giveaway__panel--nested">
-            <div className="managed-giveaway__section-head">
-              <div className="managed-giveaway__section-copy">
-                <strong>Призы</strong>
-                <small>{draft.prizes.length} мест</small>
-              </div>
-              <div className="managed-giveaway__section-actions">
-                <ManagedGiveawayHintAnchor
-                  hintKey="prizes"
-                  openHintKey={openHintKey}
-                  onToggleHint={toggleHint}
-                  label="Подсказка по призовым местам"
-                >
-                  Призы задают порядок победителей. После завершения бот автоматически назначит
-                  места сверху вниз и позволит сделать reroll по любому непринятому месту.
-                </ManagedGiveawayHintAnchor>
-                <button
-                  type="button"
-                  className="button button--ghost"
-                  disabled={draft.prizes.length >= MANAGED_GIVEAWAY_MAX_PRIZES}
-                  onClick={addPrize}
-                >
-                  Добавить
-                </button>
-              </div>
-            </div>
-
-            <div className="managed-giveaway__prizes">
-              {draft.prizes.map((prize, index) => (
-                <div key={`prize-${prize.position}`} className="managed-giveaway__prize-row">
-                  <span className="managed-giveaway__prize-position">{prize.position}</span>
-                  <input
-                    type="text"
-                    value={prize.title}
-                    maxLength={MANAGED_GIVEAWAY_PRIZE_TITLE_MAX_LENGTH}
-                    onChange={(event) => handlePrizeChange(index, event.target.value)}
-                    placeholder={`Приз за ${prize.position} место`}
-                  />
-                  <button
-                    type="button"
-                    className="button button--ghost"
-                    disabled={draft.prizes.length <= 1}
-                    onClick={() => removePrize(index)}
-                  >
-                    Удалить
-                  </button>
+              {draft.imageEnabled ? (
+                <div className="managed-giveaway__cover-preview">
+                  {coverPreviewSrc ? (
+                    <img
+                      src={coverPreviewSrc}
+                      alt="Превью обложки розыгрыша"
+                      className="managed-giveaway__cover-image"
+                    />
+                  ) : null}
+                  <div className="managed-giveaway__cover-loaded">
+                    <span>{draft.imageFileName || 'Файл загружен'}</span>
+                    <button type="button" className="button button--ghost" onClick={clearImage}>
+                      Убрать
+                    </button>
+                  </div>
                 </div>
-              ))}
+              ) : null}
             </div>
-          </div>
+          </ManagedGiveawayStep>
 
-          <div className="managed-giveaway__actions">
+          <div className="managed-giveaway__composer-bar">
             <button
               type="button"
               className="button button--ghost"
               disabled={isBusy}
-              onClick={() => {
-                setDraft(selectedGiveaway?.status === 'DRAFT' ? toDraft(selectedGiveaway) : null);
-              }}
+              onClick={cancelComposer}
             >
-              Сбросить
+              Назад
             </button>
             <button
               type="button"
@@ -813,33 +1251,47 @@ export function ManagedGiveawayCard({
                 void saveDraft();
               }}
             >
-              {selectedGiveaway?.status === 'DRAFT' ? 'Сохранить' : 'Создать черновик'}
+              Сохранить
             </button>
             <button
               type="button"
               className="button button--accent"
-              disabled={isBusy}
+              disabled={isBusy || !canContinueInBot}
               onClick={() => {
                 void continueInBot();
               }}
             >
-              Продолжить в боте
+              В бота
             </button>
           </div>
         </div>
       ) : null}
 
-      {selectedGiveaway && !draft ? (
+      {!isComposing && selectedGiveawayId && detailQuery.isLoading ? (
+        <div className="managed-giveaway__panel">Загружаем розыгрыш...</div>
+      ) : null}
+
+      {!isComposing && detailQuery.error ? (
+        <div className="managed-giveaway__empty is-danger">
+          <p>{formatApiError(detailQuery.error)}</p>
+          <button
+            type="button"
+            className="button button--ghost"
+            onClick={() => {
+              void detailQuery.refetch();
+            }}
+          >
+            Повторить
+          </button>
+        </div>
+      ) : null}
+
+      {!isComposing && selectedGiveaway ? (
         <div className="managed-giveaway__panel">
           <div className="managed-giveaway__summary-head">
             <div className="managed-giveaway__section-copy">
               <h4>{selectedGiveaway.title}</h4>
-              <div
-                className={cn(
-                  'managed-giveaway__badge',
-                  `is-${buildStatusTone(selectedGiveaway.status)}`,
-                )}
-              >
+              <div className={cn('managed-giveaway__badge', `is-${buildStatusTone(selectedGiveaway.status)}`)}>
                 {buildStatusLabel(selectedGiveaway.status)}
               </div>
             </div>
@@ -849,40 +1301,28 @@ export function ManagedGiveawayCard({
             </div>
           </div>
 
-          <div className="managed-giveaway__details">
-            <p>{selectedGiveaway.description || 'Описание не добавлено.'}</p>
-            <div className="managed-giveaway__meta-list">
-              <span>Старт: {formatDateTimeLabel(selectedGiveaway.startsAt)}</span>
-              <span>Финиш: {formatDateTimeLabel(selectedGiveaway.endsAt)}</span>
-              <span>Claim: {selectedGiveaway.claimHours} ч.</span>
+          {selectedGiveaway.description.trim() ? (
+            <div className="managed-giveaway__details">
+              <p>{selectedGiveaway.description}</p>
             </div>
-            <div className="managed-giveaway__chips">
-              {selectedGiveaway.prizes.map((prize) => (
-                <span key={prize.id} className="managed-giveaway__chip">
-                  {prize.position}. {prize.title}
-                </span>
-              ))}
-            </div>
+          ) : null}
+
+          <div className="managed-giveaway__meta-list">
+            <span>Старт: {formatDateTimeLabel(selectedGiveaway.startsAt)}</span>
+            <span>Финиш: {formatDateTimeLabel(selectedGiveaway.endsAt)}</span>
+            <span>Claim: {selectedGiveaway.claimHours} ч.</span>
+          </div>
+
+          <div className="managed-giveaway__chips">
+            {selectedGiveaway.prizes.map((prize) => (
+              <span key={prize.id} className="managed-giveaway__chip">
+                {prize.position}. {prize.title}
+              </span>
+            ))}
           </div>
 
           {selectedGiveaway.winners.length > 0 ? (
             <div className="managed-giveaway__winners">
-              <div className="managed-giveaway__section-head">
-                <div className="managed-giveaway__section-copy">
-                  <strong>Победители</strong>
-                  <small>Текущие статусы призовых мест</small>
-                </div>
-                <ManagedGiveawayHintAnchor
-                  hintKey="winners"
-                  openHintKey={openHintKey}
-                  onToggleHint={toggleHint}
-                  label="Подсказка по победителям"
-                >
-                  Здесь показываются только статусы и состав победителей. Reroll, завершение и
-                  подтверждение выдачи делаются в личке бота после handoff.
-                </ManagedGiveawayHintAnchor>
-              </div>
-
               {selectedGiveaway.winners.map((winner) => (
                 <div key={winner.id} className="managed-giveaway__winner-row">
                   <div>
@@ -901,11 +1341,8 @@ export function ManagedGiveawayCard({
             <button
               type="button"
               className="button button--ghost"
-              disabled={detailQuery.isFetching || isBusy}
-              onClick={() => {
-                void detailQuery.refetch();
-                void listQuery.refetch();
-              }}
+              disabled={isBusy}
+              onClick={refreshGiveaways}
             >
               Обновить
             </button>
@@ -914,9 +1351,27 @@ export function ManagedGiveawayCard({
                 type="button"
                 className="button button--ghost"
                 disabled={isBusy}
-                onClick={() => setDraft(toDraft(selectedGiveaway))}
+                onClick={startEditing}
               >
                 Править
+              </button>
+            ) : null}
+            {selectedGiveaway.publicationUrl ? (
+              <button
+                type="button"
+                className="button button--ghost"
+                onClick={() => openMaxBotLink(selectedGiveaway.publicationUrl ?? '')}
+              >
+                Открыть пост
+              </button>
+            ) : null}
+            {selectedGiveaway.resultsUrl ? (
+              <button
+                type="button"
+                className="button button--ghost"
+                onClick={() => openMaxBotLink(selectedGiveaway.resultsUrl ?? '')}
+              >
+                Итоги
               </button>
             ) : null}
             <button
@@ -927,41 +1382,51 @@ export function ManagedGiveawayCard({
                 void continueInBot();
               }}
             >
-              Продолжить в боте
+              В бота
             </button>
           </div>
         </div>
       ) : null}
 
-      {historyGiveaways.length > 0 ? (
+      {!isComposing && historyGiveaways.length > 0 ? (
         <div className="managed-giveaway__history">
-          <div className="managed-giveaway__section-head">
-            <div className="managed-giveaway__section-copy">
-              <strong>История</strong>
-              <small>Завершённые и отменённые розыгрыши</small>
-            </div>
-          </div>
+          <button
+            type="button"
+            className="managed-giveaway__history-toggle"
+            aria-expanded={historyOpen}
+            onClick={() => setHistoryOpen((current) => !current)}
+          >
+            <span className="managed-giveaway__history-copy">
+              <strong>Другие розыгрыши</strong>
+              <small>{historyGiveaways.length} карточек в списке</small>
+            </span>
+            <StepChevron isOpen={historyOpen} />
+          </button>
 
-          <div className="managed-giveaway__history-list">
-            {historyGiveaways.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={cn(
-                  'managed-giveaway__history-item',
-                  selectedGiveawayId === item.id && 'is-active',
-                )}
-                onClick={() => {
-                  setDraft(null);
-                  setSelectedGiveawayId(item.id);
-                }}
-              >
-                <span>{item.title}</span>
-                <small>
-                  {buildStatusLabel(item.status)} · {formatDateTimeLabel(item.completedAt ?? item.endsAt)}
-                </small>
-              </button>
-            ))}
+          <div className={cn('settings-section__collapse', historyOpen && 'is-open')}>
+            <div className="settings-section__collapse-inner">
+              <div className="managed-giveaway__history-list">
+                {historyGiveaways.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={cn(
+                      'managed-giveaway__history-item',
+                      selectedGiveawayId === item.id && 'is-active',
+                    )}
+                    onClick={() => {
+                      setSelectedGiveawayId(item.id);
+                    }}
+                  >
+                    <span>{item.title}</span>
+                    <small>
+                      {buildStatusLabel(item.status)} ·{' '}
+                      {formatDateTimeLabel(item.completedAt ?? item.endsAt)}
+                    </small>
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       ) : null}
