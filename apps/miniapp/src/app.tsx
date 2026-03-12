@@ -22,7 +22,6 @@ import { ChannelDialogPage } from './pages/channel-dialog-page';
 import { EventsPage } from './pages/events-page';
 import { GiveawayPage } from './pages/giveaway-page';
 import { SettingsPage } from './pages/settings-page';
-import { StickerTestPage } from './pages/sticker-test-page';
 
 const queryClient = new QueryClient();
 const initData = getInitData();
@@ -86,10 +85,6 @@ export function App() {
           <Routes>
             <Route element={<Shell />}>
               <Route path="/" element={<ChatsPage api={apiClient} />} />
-              <Route
-                path="/chat/:chatId/settings/stickers"
-                element={<StickerTestPage api={apiClient} />}
-              />
               <Route path="/chat/:chatId/settings" element={<SettingsPage api={apiClient} />} />
               <Route
                 path="/channel/:chatId/settings"

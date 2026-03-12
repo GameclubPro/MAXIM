@@ -124,6 +124,13 @@ export type MaxSendMessageOptions = {
   };
 };
 
+export type MaxCustomMessagePayload = {
+  text?: string;
+  attachments?: Record<string, unknown>[];
+  messageLink?: MaxReplyMessageLink | null;
+  textFormat?: MaxTextFormat;
+};
+
 export type MaxCallbackMessageEdit = {
   text: string;
   options?: MaxSendMessageOptions;
@@ -290,6 +297,38 @@ export class MaxClientService implements OnModuleDestroy {
       messageId,
       url: resolvedUrl ?? null,
     };
+  }
+
+  async sendCustomMessageImmediate(
+    chatId: string,
+    payload: MaxCustomMessagePayload,
+  ): Promise<Record<string, unknown>> {
+    const attachments = Array.isArray(payload.attachments)
+      ? payload.attachments.filter(
+          (attachment): attachment is Record<string, unknown> =>
+            Boolean(attachment) && typeof attachment === 'object',
+        )
+      : [];
+    const messageLink = this.buildMessageLinkData(payload.messageLink);
+    const hasText = typeof payload.text === 'string';
+
+    if (!hasText && attachments.length === 0) {
+      throw new Error('MAX custom message payload is empty');
+    }
+
+    return this.executeMutation(chatId, async () => {
+      return this.request<Record<string, unknown>>('post', '/messages', {
+        params: {
+          chat_id: chatId,
+        },
+        data: {
+          ...(hasText ? { text: payload.text } : {}),
+          ...(payload.textFormat ? { format: payload.textFormat } : {}),
+          ...(messageLink ? { link: messageLink } : {}),
+          ...(attachments.length > 0 ? { attachments } : {}),
+        },
+      });
+    });
   }
 
   async resolveMessageLink(messageId: string): Promise<string | null> {

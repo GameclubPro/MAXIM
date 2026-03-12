@@ -27,6 +27,7 @@ import {
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
 import { RedisCounterService } from './redis-counter.service';
+import sharp from 'sharp';
 
 type PrivateSectionKey =
   | 'links'
@@ -84,6 +85,7 @@ type PendingInput =
   | { kind: 'broadcast_cycle_every_hours' }
   | { kind: 'broadcast_cycle_count' }
   | { kind: 'broadcast_photo' }
+  | { kind: 'sticker_photo' }
   | { kind: 'giveaway_title' }
   | { kind: 'giveaway_description' }
   | { kind: 'giveaway_start_at' }
@@ -209,6 +211,14 @@ type ParsedImageAttachment = {
   photoId: string | null;
 };
 
+type PreparedStickerAsset = {
+  buffer: Buffer<ArrayBufferLike>;
+  mimeType: 'image/webp';
+  fileName: string;
+};
+
+type StickerDeliveryMode = 'sticker' | 'image_fallback';
+
 const SESSION_TTL_SEC = 45 * 60;
 const SESSION_KEY_PREFIX = 'private-ui:v2';
 const BROADCAST_HANDOFF_START_PAYLOAD = 'broadcast_handoff';
@@ -220,6 +230,7 @@ const PAGE_SIZE_EVENTS = 10;
 const PAGE_SIZE_MANUAL_USERS = 8;
 const SEARCH_RESULT_LIMIT = 8;
 const SUPPORT_CHAT_URL = 'https://max.ru/join/qX7U_Hj-L-xMJG8V7wlF6dD-6a6cXIzTBGRtU2mRMzk';
+const STICKER_IMAGE_MAX_BYTES = 1_000_000;
 const MAX_CALLBACK_PREFIX = 'pc2';
 const LEGACY_CALLBACK_PREFIX = 'pc';
 const CALLBACK_REFRESH_NOTIFICATION = 'Меню обновлено';
@@ -1031,6 +1042,7 @@ export class PrivateControlService {
   private async processTextMessage(context: PrivateContext): Promise<void> {
     const session = await this.loadSession(context.actor.userId);
     const normalizedCommand = this.normalizeCommand(context.text);
+    const imageAttachment = this.extractFirstImageAttachment(context.update);
 
     if (normalizedCommand === '/reset') {
       const resetSession = this.createDefaultSession();
@@ -1049,6 +1061,16 @@ export class PrivateControlService {
 
     if (normalizedCommand === '/help') {
       const view = this.renderHelpView();
+      await this.respond(context, session, view, {
+        callbackId: null,
+        notification: null,
+      });
+      return;
+    }
+
+    if (normalizedCommand === '/sticker') {
+      session.pendingInput = { kind: 'sticker_photo' };
+      const view = this.renderInputPrompt(session.pendingInput);
       await this.respond(context, session, view, {
         callbackId: null,
         notification: null,
@@ -1144,7 +1166,7 @@ export class PrivateControlService {
       session.screen === 'broadcast' &&
       session.selectedChatId &&
       (context.text.trim().length > 0 ||
-        this.extractFirstImageAttachment(context.update) !== null ||
+        imageAttachment !== null ||
         this.hasVideoAttachment(context.update))
     ) {
       await this.captureBroadcastContent(context, session, context.text);
@@ -1153,6 +1175,11 @@ export class PrivateControlService {
         callbackId: null,
         notification: null,
       });
+      return;
+    }
+
+    if (imageAttachment) {
+      await this.handleStickerPhotoMessage(context, session, imageAttachment);
       return;
     }
 
@@ -1308,6 +1335,16 @@ export class PrivateControlService {
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Открываю помощь',
+        });
+        return;
+      }
+
+      case 'sticker_photo_prompt': {
+        session.pendingInput = { kind: 'sticker_photo' };
+        const view = this.renderInputPrompt(session.pendingInput);
+        await this.respond(context, session, view, {
+          callbackId: context.callbackId,
+          notification: 'Жду фото',
         });
         return;
       }
@@ -3352,6 +3389,19 @@ export class PrivateControlService {
         return;
       }
 
+      case 'sticker_photo': {
+        const imageAttachment = this.extractFirstImageAttachment(context.update);
+        if (!imageAttachment) {
+          if (this.hasVideoAttachment(context.update)) {
+            throw new BadRequestException('Нужно фото, не видео.');
+          }
+          throw new BadRequestException('Отправьте фото отдельным сообщением.');
+        }
+
+        await this.handleStickerPhotoMessage(context, session, imageAttachment);
+        return;
+      }
+
       case 'giveaway_title': {
         this.assertSelectedEntityType(session, session.selectedEntityType ?? 'chat');
         const draft = await this.getManagedGiveawayDraftForSession(context.actor, session);
@@ -3692,6 +3742,175 @@ export class PrivateControlService {
     session.screen = 'broadcast';
   }
 
+  private async handleStickerPhotoMessage(
+    context: PrivateContext,
+    session: PrivateSession,
+    imageAttachment: ParsedImageAttachment,
+  ): Promise<void> {
+    const downloaded = await this.downloadImageAttachment(imageAttachment, 'private-sticker-source');
+    const preparedSticker = await this.prepareStickerAsset(
+      Buffer.from(downloaded.base64, 'base64'),
+      downloaded.fileName,
+    );
+    const uploadPayload = await this.maxClient.uploadImage(
+      preparedSticker.buffer,
+      preparedSticker.fileName,
+      preparedSticker.mimeType,
+    );
+    const deliveryMode = await this.deliverPreparedSticker(context.chatId, uploadPayload);
+
+    session.pendingInput = null;
+    const view = this.renderStickerResultView(session, deliveryMode);
+    await this.respond(context, session, view, {
+      callbackId: null,
+      notification: null,
+    });
+  }
+
+  private async prepareStickerAsset(
+    sourceBuffer: Buffer,
+    sourceFileName: string,
+  ): Promise<PreparedStickerAsset> {
+    const qualityLevels = [92, 84, 76, 68] as const;
+    let outputBuffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+
+    try {
+      for (const quality of qualityLevels) {
+        outputBuffer = await sharp(sourceBuffer)
+          .rotate()
+          .resize(512, 512, {
+            fit: 'contain',
+            background: {
+              r: 0,
+              g: 0,
+              b: 0,
+              alpha: 0,
+            },
+          })
+          .webp({
+            quality,
+            alphaQuality: 100,
+            effort: 4,
+            nearLossless: quality >= 84,
+          })
+          .toBuffer();
+
+        if (outputBuffer.length <= STICKER_IMAGE_MAX_BYTES) {
+          break;
+        }
+      }
+    } catch {
+      throw new BadRequestException('Не удалось подготовить sticker из фото.');
+    }
+
+    if (outputBuffer.length === 0) {
+      throw new BadRequestException('Не удалось подготовить sticker из фото.');
+    }
+
+    const baseName = sourceFileName.replace(/\.[^.]+$/u, '').trim() || `sticker-${Date.now()}`;
+    return {
+      buffer: outputBuffer,
+      mimeType: 'image/webp',
+      fileName: `${baseName}.webp`,
+    };
+  }
+
+  private async deliverPreparedSticker(
+    chatId: string,
+    uploadPayload: Record<string, unknown>,
+  ): Promise<StickerDeliveryMode> {
+    const attempts: Array<Record<string, unknown>[]> = [
+      [
+        {
+          type: 'sticker',
+          payload: uploadPayload,
+        },
+      ],
+      [
+        {
+          type: 'sticker',
+          payload: {
+            ...uploadPayload,
+            mime_type: 'image/webp',
+          },
+        },
+      ],
+      [
+        {
+          type: 'image',
+          payload: {
+            ...uploadPayload,
+            mime_type: 'image/webp',
+            media_type: 'sticker',
+          },
+        },
+      ],
+    ];
+
+    for (const [index, attachments] of attempts.entries()) {
+      try {
+        await this.maxClient.sendCustomMessageImmediate(chatId, {
+          text: '',
+          attachments,
+        });
+        return 'sticker';
+      } catch (error: unknown) {
+        this.logger.debug(
+          {
+            chatId,
+            attempt: index + 1,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'MAX rejected experimental sticker attachment',
+        );
+      }
+    }
+
+    await this.maxClient.sendCustomMessageImmediate(chatId, {
+      text: '',
+      attachments: [
+        {
+          type: 'image',
+          payload: uploadPayload,
+        },
+      ],
+    });
+
+    return 'image_fallback';
+  }
+
+  private renderStickerResultView(
+    session: PrivateSession,
+    deliveryMode: StickerDeliveryMode,
+  ): PrivateView {
+    const lines =
+      deliveryMode === 'sticker'
+        ? [
+            'Стикер из фото',
+            '',
+            'Статус: sticker отправлен.',
+            'Пришлите ещё фото или нажмите кнопку ниже.',
+          ]
+        : [
+            'Стикер из фото',
+            '',
+            'Статус: MAX не принял вложение как sticker.',
+            'Отправил подготовленное изображение как обычную картинку.',
+            'Можно попробовать ещё одно фото.',
+          ];
+
+    return {
+      text: lines.join('\n'),
+      options: {
+        buttons: [
+          [this.callbackButton('Ещё фото', this.cb('sticker_photo_prompt'), 'positive')],
+          [this.callbackButton('Главный экран', this.cb('home'))],
+          ...this.buildFooterButtons(),
+        ],
+      },
+    };
+  }
+
   private async sendBroadcastFromSession(context: PrivateContext, session: PrivateSession) {
     const payload: PrivateBroadcastDraft = {
       ...session.broadcastDraft,
@@ -3943,6 +4162,7 @@ export class PrivateControlService {
                 this.cb('entity_tab', 'channel'),
               ),
             ],
+            [this.callbackButton('Стикер из фото', this.cb('sticker_photo_prompt'), 'positive')],
             [this.callbackButton('Помощь', this.cb('help'))],
             ...this.buildFooterButtons(),
           ],
@@ -3981,6 +4201,7 @@ export class PrivateControlService {
       ),
     ]);
     rows.push(this.paginationButtons(pageInfo.page, pageInfo.pages, 'chat_page'));
+    rows.push([this.callbackButton('Стикер из фото', this.cb('sticker_photo_prompt'), 'positive')]);
     rows.push([this.callbackButton('Помощь', this.cb('help'))]);
     rows.push(...this.buildFooterButtons());
 
@@ -4109,6 +4330,7 @@ export class PrivateControlService {
         this.callbackButton('Розыгрыш', this.cb('open_giveaway')),
         this.callbackButton('Пост с кнопками', this.cb('publish_channel_engagement')),
       ],
+      [this.callbackButton('Стикер из фото', this.cb('sticker_photo_prompt'), 'positive')],
       [this.callbackButton('Сменить канал', this.cb('change_chat'))],
       [this.callbackButton('Помощь', this.cb('help'))],
       ...this.buildFooterButtons(),
@@ -4216,6 +4438,7 @@ export class PrivateControlService {
         this.callbackButton('Поиск', this.cb('open_search')),
         this.callbackButton('Ручные действия', this.cb('open_manual_users')),
       ],
+      [this.callbackButton('Стикер из фото', this.cb('sticker_photo_prompt'), 'positive')],
       [this.callbackButton('Сменить чат', this.cb('change_chat'))],
     ];
 
@@ -4391,6 +4614,7 @@ export class PrivateControlService {
         this.callbackButton('Нарушения', this.cb('open_events')),
         this.callbackButton('Статистика', this.cb('open_logs')),
       ],
+      [this.callbackButton('Стикер из фото', this.cb('sticker_photo_prompt'), 'positive')],
       [this.callbackButton('Ручной бан', this.cb('open_manual_users'))],
       [this.callbackButton('Другой чат', this.cb('change_chat'))],
       [this.callbackButton('Новый вид', this.cb('home'))],
@@ -5894,10 +6118,12 @@ export class PrivateControlService {
       '- /menu — открыть главное меню',
       '- /chats — выбрать или сменить чат',
       '- /channels — выбрать или сменить канал',
+      '- /sticker — включить режим фото -> sticker',
       '- /help — подсказка по управлению',
       '- /reset — сбросить текущую сессию',
       '- /legacy и /modern — совместимые алиасы, оба открывают актуальный интерфейс',
       '',
+      'Можно просто отправить фото в личку бота.',
       'Если бот ждёт ввод, отправьте /cancel для отмены.',
     ];
 
@@ -5905,6 +6131,7 @@ export class PrivateControlService {
       text: lines.join('\n'),
       options: {
         buttons: [
+          [this.callbackButton('Стикер из фото', this.cb('sticker_photo_prompt'), 'positive')],
           [this.callbackButton('Главный экран', this.cb('home'))],
           [this.callbackButton('Сменить чат', this.cb('change_chat'))],
           ...this.buildFooterButtons(),
@@ -6076,6 +6303,12 @@ export class PrivateControlService {
         return {
           title: 'Фото для рассылки',
           description: 'Отправьте фото следующим сообщением. Бот добавит его в черновик.',
+        };
+      case 'sticker_photo':
+        return {
+          title: 'Фото для sticker',
+          description:
+            'Отправьте фото следующим сообщением. Бот подготовит webp и попробует вернуть его как sticker.',
         };
       case 'giveaway_title':
         return {
@@ -7455,6 +7688,7 @@ export class PrivateControlService {
       'broadcast_cycle_every_hours',
       'broadcast_cycle_count',
       'broadcast_photo',
+      'sticker_photo',
       'giveaway_title',
       'giveaway_description',
       'giveaway_start_at',

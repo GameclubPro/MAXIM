@@ -168,6 +168,10 @@ function createBotStartedGiveawayClaimUpdate(): MaxUpdate {
 
 const defaultSettings = chatSettingsSchema.parse({});
 const defaultChannelSettings = channelSettingsSchema.parse({});
+const TINY_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
+  'base64',
+);
 
 function createPoll(overrides: Partial<ManagedPoll> = {}): ManagedPoll {
   return {
@@ -277,6 +281,8 @@ function createHarness(
 
   const maxClient = {
     sendMessage: jest.fn().mockResolvedValue(undefined),
+    sendCustomMessageImmediate: jest.fn().mockResolvedValue({ message_id: 'msg-custom-1' }),
+    uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-1' }),
     answerCallback: jest.fn().mockResolvedValue(undefined),
   };
 
@@ -567,6 +573,34 @@ function extractStartPayload(url: string): string {
   return parsed.searchParams.get('start') ?? '';
 }
 
+function mockImageFetch(buffer: Buffer = TINY_PNG, mimeType = 'image/png') {
+  const fetchMock = jest.fn().mockResolvedValue({
+    ok: true,
+    headers: {
+      get: (name: string) => (name.toLowerCase() === 'content-type' ? mimeType : null),
+    },
+    arrayBuffer: async () =>
+      buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+  });
+  const originalFetch = global.fetch;
+  Object.defineProperty(global, 'fetch', {
+    configurable: true,
+    writable: true,
+    value: fetchMock,
+  });
+
+  return {
+    fetchMock,
+    restore() {
+      Object.defineProperty(global, 'fetch', {
+        configurable: true,
+        writable: true,
+        value: originalFetch,
+      });
+    },
+  };
+}
+
 describe('PrivateControlService', () => {
   it('renders the new entity picker for /menu in private dialog', async () => {
     const { service, maxClient, adminService } = createHarness();
@@ -577,6 +611,57 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).toContain('Выберите чат');
     expect(getLastButtons(maxClient).length).toBeGreaterThan(0);
     expect(adminService.listManagedEntities).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts sticker flow from command and sends experimental sticker attachment for a photo', async () => {
+    const { service, maxClient } = createHarness();
+    const fetchControl = mockImageFetch();
+
+    try {
+      await service.handleUpdate(createPrivateTextUpdate('/sticker'));
+
+      expect(getLastSentText(maxClient)).toContain('Фото для sticker');
+
+      await service.handleUpdate(createPrivatePhotoUpdate());
+
+      expect(maxClient.uploadImage).toHaveBeenCalledTimes(1);
+      expect(maxClient.sendCustomMessageImmediate).toHaveBeenCalledWith(
+        '152517912',
+        expect.objectContaining({
+          text: '',
+          attachments: [expect.objectContaining({ type: 'sticker' })],
+        }),
+      );
+      expect(getLastSentText(maxClient)).toContain('sticker отправлен');
+    } finally {
+      fetchControl.restore();
+    }
+  });
+
+  it('falls back to image when MAX rejects experimental sticker attachment', async () => {
+    const { service, maxClient } = createHarness();
+    const fetchControl = mockImageFetch();
+    maxClient.sendCustomMessageImmediate
+      .mockRejectedValueOnce(new Error('sticker rejected #1'))
+      .mockRejectedValueOnce(new Error('sticker rejected #2'))
+      .mockRejectedValueOnce(new Error('sticker rejected #3'))
+      .mockResolvedValueOnce({ message_id: 'msg-image-fallback-1' });
+
+    try {
+      await service.handleUpdate(createPrivatePhotoUpdate());
+
+      expect(maxClient.sendCustomMessageImmediate).toHaveBeenCalledTimes(4);
+      expect(maxClient.sendCustomMessageImmediate).toHaveBeenLastCalledWith(
+        '152517912',
+        expect.objectContaining({
+          text: '',
+          attachments: [expect.objectContaining({ type: 'image' })],
+        }),
+      );
+      expect(getLastSentText(maxClient)).toContain('MAX не принял вложение как sticker');
+    } finally {
+      fetchControl.restore();
+    }
   });
 
   it('opens chat home, settings hub, and toggles a section setting via callback edit', async () => {
