@@ -3744,6 +3744,24 @@ export class PrivateControlService {
     return 'Черновик';
   }
 
+  private buildGiveawayDraftGuideLines(giveaway: ManagedGiveawayDetails): string[] {
+    const contentState = giveaway.imageEnabled
+      ? 'название + описание + фото'
+      : giveaway.description.trim()
+        ? 'название + описание'
+        : 'минимум: название';
+
+    return [
+      'Шаги',
+      `1. Контент: ${contentState}`,
+      `2. Призы: ${giveaway.prizes.length} мест`,
+      `3. Тайминг: ${
+        giveaway.startsAt ? this.formatDateTimeLabel(giveaway.startsAt) : 'старт сразу'
+      } -> ${this.formatDateTimeLabel(giveaway.endsAt)}`,
+      `4. Публикация: ${giveaway.prizes.length > 0 ? 'можно публиковать' : 'нужно добавить место'}`,
+    ];
+  }
+
   private async createManagedGiveawayDraftForSession(
     chatId: string,
     actor: AuthUser,
@@ -4860,15 +4878,15 @@ export class PrivateControlService {
       lines.push(
         '',
         'Состояние: пусто',
-        'Создание, фото, текст и публикация теперь ведутся прямо здесь, в боте.',
-        'Нажмите «Создать черновик», чтобы собрать карточку без miniapp-формы.',
+        'Создание, фото, текст и публикация идут прямо здесь, в боте.',
+        'Нажмите «Создать черновик».',
       );
       rows.push([this.callbackButton('Создать черновик', this.cb('giveaway_create'), 'positive')]);
     } else {
       const statusLabel = this.formatGiveawayStatusLabel(giveaway.status);
       lines.push(
         '',
-        'Текущий слот',
+        giveaway.status === 'DRAFT' ? 'Черновик' : 'Текущий слот',
         `Название: ${giveaway.title}`,
         `Статус: ${statusLabel}`,
         `Фото: ${giveaway.imageEnabled ? 'добавлено' : 'нет'}`,
@@ -4878,12 +4896,12 @@ export class PrivateControlService {
             : `сейчас -> ${this.formatDateTimeLabel(giveaway.endsAt)}`
         }`,
         `Claim: ${giveaway.claimHours} ч`,
-        `Заявки: ${giveaway.entriesCount} / verified ${giveaway.verifiedEntriesCount} / pending ${giveaway.pendingEntriesCount}`,
+        `Заявки: ${giveaway.entriesCount} / ok ${giveaway.verifiedEntriesCount} / pending ${giveaway.pendingEntriesCount}`,
         `Победители: ${giveaway.winnersCount}`,
       );
 
       if (giveaway.description.trim()) {
-        lines.push('', `Описание: ${this.compactText(giveaway.description, 400)}`);
+        lines.push('', `Описание: ${this.compactText(giveaway.description, 220)}`);
       }
 
       const linkLines: string[] = [];
@@ -4897,29 +4915,30 @@ export class PrivateControlService {
         lines.push('', 'Ссылки', ...linkLines);
       }
 
-      lines.push('', 'Призы');
-      lines.push(...giveaway.prizes.map((prize) => `${prize.position}. ${prize.title}`));
-
       if (giveaway.status === 'DRAFT') {
+        lines.push('', ...this.buildGiveawayDraftGuideLines(giveaway));
         lines.push(
           '',
           waitingLabel
-            ? `Жду ввод: ${waitingLabel}`
-            : 'Редактируйте поля кнопками ниже и публикуйте, когда карточка готова.',
+            ? `Сейчас: жду ввод для «${waitingLabel}».`
+            : 'Сейчас: выберите следующий шаг кнопками ниже.',
         );
       }
+
+      lines.push('', 'Призы');
+      lines.push(...giveaway.prizes.map((prize) => `${prize.position}. ${prize.title}`));
 
       if (giveaway.winners.length > 0) {
         lines.push('', 'Победители');
         lines.push(
-          ...giveaway.winners.flatMap((winner) => [
-            `${winner.prizePosition}. ${winner.prizeTitle}`,
-            `Участник: ${winner.displayName ?? winner.userId}`,
-            `Статус: ${this.formatGiveawayWinnerStatusLabel(winner.status)}`,
-            ...(winner.claimDeadlineAt
-              ? [`Claim до: ${this.formatDateTimeLabel(winner.claimDeadlineAt)}`]
-              : []),
-          ]),
+          ...giveaway.winners.flatMap((winner) => {
+            const winnerLine = `${winner.prizePosition}. ${winner.prizeTitle} — ${
+              winner.displayName ?? winner.userId
+            } · ${this.formatGiveawayWinnerStatusLabel(winner.status)}`;
+            return winner.claimDeadlineAt
+              ? [winnerLine, `Claim до: ${this.formatDateTimeLabel(winner.claimDeadlineAt)}`]
+              : [winnerLine];
+          }),
         );
       }
 
