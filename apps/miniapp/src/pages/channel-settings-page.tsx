@@ -9,9 +9,9 @@ import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
-import { prepareBroadcastImage } from '../lib/broadcast-image';
 import { cn } from '../lib/cn';
-import type { ApiClient, SendBroadcastPayload } from '../lib/api-client';
+import { openMaxBotLink } from '../lib/max-bridge';
+import type { ApiClient, BroadcastHandoffPayload } from '../lib/api-client';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
@@ -638,19 +638,20 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     return clearAutosaveTimer;
   }, [chatId, isDirty, normalizedDraft, normalizedDraftKey, normalizedSavedSnapshot]);
 
-  const sendBroadcastMutation = useMutation({
-    mutationFn: (payload: SendBroadcastPayload) => api.sendChannelBroadcast(chatId, payload),
-    onSuccess: () => {
+  const handoffBroadcastMutation = useMutation({
+    mutationFn: (payload: BroadcastHandoffPayload) => api.handoffChannelBroadcast(chatId, payload),
+    onSuccess: (result) => {
       pushToast({
-        tone: 'success',
-        title: 'Пост отправлен',
-        description: 'Сообщение опубликовано в канал.',
+        tone: 'info',
+        title: 'Открываем личный чат бота',
+        description: 'Отправьте там текст или фото, затем подтвердите публикацию.',
       });
+      openMaxBotLink(result.botUrl);
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось отправить пост',
+        title: 'Не удалось открыть сбор контента',
         description: normalizeApiError(error),
       });
     },
@@ -798,27 +799,10 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
       : publishButtons.includeCommentsButton
         ? 'Автопредложка выключена. Кнопка «Предложить пост» появится только под этим сообщением, вместе с кнопкой «Комментарии».'
         : 'Автопредложка выключена. Кнопка «Предложить пост» появится только под этим сообщением.';
-  const broadcastHasImage = broadcastImageEnabled && Boolean(broadcastImageBase64);
   const broadcastHasButton = broadcastButtonEnabled && Boolean(broadcastButtonText.trim());
-  const broadcastSystemButtons = normalizedDraft
-    ? resolveBroadcastSystemButtons(normalizedDraft)
-    : {
-        includeCommentsButton: false,
-        includeSuggestButton: false,
-      };
-  const broadcastHasSystemButtons =
-    broadcastSystemButtons.includeCommentsButton || broadcastSystemButtons.includeSuggestButton;
-  const broadcastCanSend = Boolean(broadcastText.trim()) || broadcastHasImage;
-  const broadcastHeaderSummary = broadcastCanSend
-    ? broadcastHasImage && broadcastHasButton
-      ? 'ТЕКСТ, ФОТО И CTA ГОТОВЫ'
-      : broadcastHasImage
-        ? 'ПОСТ С ФОТО ГОТОВ'
-        : broadcastHasButton
-          ? 'ПОСТ С CTA ГОТОВ'
-          : 'ПОСТ ГОТОВ К ОТПРАВКЕ'
-    : 'ТЕКСТ, ФОТО И КНОПКА';
-  const broadcastRichTextEnabled = broadcastButtonEnabled || broadcastHasSystemButtons;
+  const broadcastHeaderSummary = broadcastHasButton
+    ? 'КОНТЕНТ В БОТЕ · CTA ГОТОВА'
+    : 'КОНТЕНТ В БОТЕ';
 
   function resetBroadcastComposer() {
     setBroadcastText('');
@@ -836,24 +820,13 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   }
 
   function handleSendChannelBroadcast() {
-    const normalizedText = broadcastText.trim();
     const normalizedButtonUrl = broadcastButtonUrl.trim();
     const normalizedButtonText = broadcastButtonText.trim() || 'Открыть';
 
-    setBroadcastTextError('');
     setBroadcastButtonUrlError('');
     setBroadcastButtonTextError('');
-    setBroadcastImageError('');
 
     let hasError = false;
-
-    if (!normalizedText && !broadcastHasImage) {
-      setBroadcastTextError('Введите текст или добавьте фото.');
-      hasError = true;
-    } else if (normalizedText.length > MAX_BROADCAST_TEXT_LENGTH) {
-      setBroadcastTextError(`Максимум ${MAX_BROADCAST_TEXT_LENGTH} символов.`);
-      hasError = true;
-    }
 
     if (broadcastButtonEnabled) {
       if (!isHttpUrl(normalizedButtonUrl)) {
@@ -866,28 +839,15 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
       }
     }
 
-    if (broadcastImageEnabled) {
-      if (!broadcastImageBase64 || !broadcastImageMimeType) {
-        setBroadcastImageError('Загрузите фото.');
-        hasError = true;
-      }
-    }
-
     if (hasError) {
       return;
     }
 
-    sendBroadcastMutation.mutate({
-      text: normalizedText,
-      textFormat: 'markdown',
+    handoffBroadcastMutation.mutate({
       applyToAllChats: false,
       buttonEnabled: broadcastButtonEnabled,
       buttonUrl: normalizedButtonUrl,
       buttonText: normalizedButtonText,
-      imageEnabled: broadcastHasImage,
-      imageBase64: broadcastHasImage ? broadcastImageBase64 : '',
-      imageMimeType: broadcastHasImage ? broadcastImageMimeType : '',
-      imageFileName: broadcastHasImage ? broadcastImageFileName : '',
       sendAt: null,
       cycleEnabled: false,
       cycleEveryHours: 1,
@@ -1169,175 +1129,13 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
         >
           <div className="settings-section__collapse-inner">
             <div className="channel-broadcast-studio">
-              <label
-                className={cn(
-                  'field',
-                  'mailing-message-field',
-                  broadcastTextError && 'field--error',
-                )}
-              >
-                <div className="channel-settings-field-label">
-                  <span className="field__label">Текст сообщения</span>
-                  <ChannelSettingsHintAnchor
-                    hintKey="broadcastText"
-                    openHintKey={openHintKey}
-                    onToggleHint={toggleHint}
-                    label="Пояснение для текста рассылки"
-                  >
-                    Форматирование в канале сохраняется, если пост сразу публикуется с кнопками.
-                    Это может быть ваша CTA-кнопка или системные кнопки комментариев и предложки,
-                    если они включены в настройках канала.
-                  </ChannelSettingsHintAnchor>
-                </div>
-                <MaxMarkdownEditor
-                  value={broadcastText}
-                  onChange={(nextValue) => {
-                    setBroadcastText(nextValue);
-                    if (broadcastTextError) {
-                      setBroadcastTextError('');
-                    }
-                  }}
-                  ariaLabel="Текст рассылки в канал"
-                  rows={5}
-                  showToolbar={broadcastRichTextEnabled}
-                  compactToolbar
-                  maxLength={MAX_BROADCAST_TEXT_LENGTH}
-                  placeholder="Например: Новый пост уже в канале. Откройте выпуск по кнопке ниже."
-                />
-                {broadcastRichTextEnabled ? null : (
-                  <small className="field__hint">
-                    Сейчас у поста нет кнопок, поэтому сообщение опубликуется как обычный текст.
-                  </small>
-                )}
-                {broadcastRichTextEnabled && !broadcastButtonEnabled && broadcastHasSystemButtons ? (
-                  <small className="field__hint">
-                    Форматирование сохранится: канал добавит системные кнопки сразу при публикации.
-                  </small>
-                ) : null}
-                <div className="mailing-message-field__meta">
-                  {broadcastTextError ? (
-                    <small className="field__hint">{broadcastTextError}</small>
-                  ) : (
-                    <span />
-                  )}
-                  <small
-                    className={cn(
-                      'mailing-message-field__counter',
-                      broadcastText.length >= MAX_BROADCAST_TEXT_LENGTH && 'is-limit',
-                    )}
-                  >
-                    {broadcastText.length}/{MAX_BROADCAST_TEXT_LENGTH}
-                  </small>
-                </div>
-              </label>
-
               <div className="mailing-options-grid">
-                <div
-                  className={cn(
-                    'mailing-option-card',
-                    broadcastImageEnabled && 'is-enabled',
-                    broadcastImageError && 'field--error',
-                  )}
-                >
-                  <div className="mailing-option-card__head">
-                    <div className="mailing-option-card__title-wrap">
-                      <div className="channel-settings-field-label">
-                        <span className="mailing-option-card__title">Фото</span>
-                        <ChannelSettingsHintAnchor
-                          hintKey="broadcastImage"
-                          openHintKey={openHintKey}
-                          onToggleHint={toggleHint}
-                          label="Пояснение для фото в рассылке"
-                        >
-                          Используйте обложку или ключевой кадр. Приложение подготовит фото перед
-                          отправкой.
-                        </ChannelSettingsHintAnchor>
-                      </div>
-                      <small className="mailing-option-card__subtitle">
-                        {broadcastHasImage
-                          ? 'Изображение будет отправлено с постом.'
-                          : 'Необязательно'}
-                      </small>
-                    </div>
-
-                    <label className="settings-native-switch" aria-label="Добавить фото в пост">
-                      <input
-                        type="checkbox"
-                        checked={broadcastImageEnabled}
-                        onChange={(event) => {
-                          const enabled = event.target.checked;
-                          setBroadcastImageEnabled(enabled);
-                          if (!enabled) {
-                            setBroadcastImageBase64('');
-                            setBroadcastImageMimeType('');
-                            setBroadcastImageFileName('');
-                            setBroadcastImageError('');
-                          }
-                        }}
-                      />
-                      <span className="toggle-switch" aria-hidden>
-                        <span className="toggle-switch__thumb" />
-                      </span>
-                    </label>
-                  </div>
-
-                  {broadcastImageEnabled ? (
-                    <div className="mailing-option-card__body">
-                      <label
-                        className={cn(
-                          'field',
-                          'mailing-upload-field',
-                          broadcastImageError && 'field--error',
-                        )}
-                      >
-                        <span className="field__label">Файл изображения</span>
-                        <input
-                          type="file"
-                          accept="image/*"
-                          onChange={async (event) => {
-                            const file = event.target.files?.[0];
-                            if (!file) {
-                              setBroadcastImageBase64('');
-                              setBroadcastImageMimeType('');
-                              setBroadcastImageFileName('');
-                              setBroadcastImageError('Выберите фото.');
-                              return;
-                            }
-
-                            if (!file.type.toLowerCase().startsWith('image/')) {
-                              setBroadcastImageBase64('');
-                              setBroadcastImageMimeType('');
-                              setBroadcastImageFileName('');
-                              setBroadcastImageError('Нужен файл изображения.');
-                              return;
-                            }
-
-                            try {
-                              const preparedImage = await prepareBroadcastImage(file);
-                              setBroadcastImageBase64(preparedImage.base64);
-                              setBroadcastImageMimeType(preparedImage.mimeType);
-                              setBroadcastImageFileName(preparedImage.fileName);
-                              setBroadcastImageError('');
-                            } catch (error: unknown) {
-                              setBroadcastImageBase64('');
-                              setBroadcastImageMimeType('');
-                              setBroadcastImageFileName('');
-                              setBroadcastImageError(
-                                error instanceof Error && error.message.trim()
-                                  ? error.message
-                                  : 'Не удалось подготовить фото.',
-                              );
-                            }
-                          }}
-                        />
-                        {broadcastImageError ? (
-                          <small className="field__hint">{broadcastImageError}</small>
-                        ) : broadcastImageFileName ? (
-                          <small className="field__hint">{broadcastImageFileName}</small>
-                        ) : null}
-                      </label>
-                    </div>
-                  ) : null}
+                <div className="managed-broadcast-editor-note">
+                  <strong>Контент собирается в боте</strong>
+                  <small>
+                    В miniapp остаётся только CTA-кнопка. После кнопки ниже откроется личка бота,
+                    где можно отправить текст или фото обычным сообщением.
+                  </small>
                 </div>
 
                 <div
@@ -1447,15 +1245,17 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                   type="button"
                   className="button button--accent mailing-action-bar__send"
                   onClick={handleSendChannelBroadcast}
-                  disabled={sendBroadcastMutation.isPending || !broadcastCanSend}
+                  disabled={handoffBroadcastMutation.isPending}
                 >
-                  {sendBroadcastMutation.isPending ? 'Отправляем...' : 'Опубликовать в канал'}
+                  {handoffBroadcastMutation.isPending
+                    ? 'Открываем бота...'
+                    : 'Продолжить в боте'}
                 </button>
                 <button
                   type="button"
                   className="button button--ghost mailing-action-bar__clear"
                   onClick={resetBroadcastComposer}
-                  disabled={sendBroadcastMutation.isPending}
+                  disabled={handoffBroadcastMutation.isPending}
                 >
                   Очистить
                 </button>

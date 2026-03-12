@@ -69,6 +69,34 @@ function createPrivateCallbackUpdate(payload: string): MaxUpdate {
   };
 }
 
+function createBotStartedPrivateUpdate(): MaxUpdate {
+  return {
+    updateId: `upd-bot-started-${Date.now()}`,
+    type: 'bot_started',
+    message: {
+      messageId: `bot-started-${Date.now()}`,
+      chatId: '152517912',
+      senderId: 'user-1',
+      senderName: 'Тестовый пользователь',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'bot_started',
+      chat_id: 152517912,
+      start_payload: 'broadcast_handoff',
+      user: {
+        user_id: 'user-1',
+        name: 'Тестовый пользователь',
+      },
+      chat: {
+        chat_id: 152517912,
+        type: 'dialog',
+      },
+    },
+  };
+}
+
 const defaultSettings = chatSettingsSchema.parse({});
 const defaultChannelSettings = channelSettingsSchema.parse({});
 
@@ -202,7 +230,17 @@ function createHarness(
     maxClient as never,
     adminService as never,
     undefined,
-    undefined,
+    {
+      get: jest.fn((key: string) => {
+        if (key === 'MAX_BOT_ID') {
+          return '777000_bot';
+        }
+        if (key === 'APP_BASE_URL') {
+          return 'https://maxim.play-team.ru';
+        }
+        return undefined;
+      }),
+    } as never,
   );
 
   return { service, maxClient, adminService, chats, channels };
@@ -353,6 +391,60 @@ describe('PrivateControlService', () => {
       expect.objectContaining({
         text: 'Новый пост для канала',
         applyToAllChats: false,
+      }),
+      'private_bot',
+    );
+  });
+
+  it('hands off chat broadcast from miniapp into private bot content flow', async () => {
+    const { service, adminService, maxClient, chats } = createHarness();
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: chats[0].id,
+      chatTitle: chats[0].title,
+    };
+
+    const result = await service.handoffBroadcastFromMiniapp(
+      chats[0].id,
+      actor,
+      {
+        applyToAllChats: true,
+        buttonEnabled: true,
+        buttonUrl: 'https://max.ru/channel/test',
+        buttonText: 'Открыть',
+        sendAt: '2026-03-13T12:00:00.000Z',
+        cycleEnabled: true,
+        cycleEveryHours: 6,
+        cycleCount: 3,
+      },
+      'chat',
+    );
+
+    expect(result.botUrl).toBe('https://max.ru/777000_bot?start=broadcast_handoff');
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate());
+
+    expect(getLastSentText(maxClient)).toContain('Рассылка');
+    expect(getLastSentText(maxClient)).toContain('Контент: жду следующее сообщение');
+
+    await service.handleUpdate(createPrivateTextUpdate('Контент из лички бота'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|mass_confirm'));
+
+    expect(adminService.sendBroadcast).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        text: 'Контент из лички бота',
+        applyToAllChats: true,
+        buttonEnabled: true,
+        buttonUrl: 'https://max.ru/channel/test',
+        sendAt: '2026-03-13T12:00:00.000Z',
+        cycleEnabled: true,
+        cycleEveryHours: 6,
+        cycleCount: 3,
       }),
       'private_bot',
     );

@@ -18,9 +18,14 @@ import { BackChevronIcon, ParticipantsIcon } from '../components/ui/entity-heade
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
-import { prepareBroadcastImage } from '../lib/broadcast-image';
 import { cn } from '../lib/cn';
-import type { ApiClient, SendBroadcastPayload, UpdateChatRulesPayload } from '../lib/api-client';
+import { openMaxBotLink } from '../lib/max-bridge';
+import type {
+  ApiClient,
+  BroadcastHandoffPayload,
+  SendBroadcastPayload,
+  UpdateChatRulesPayload,
+} from '../lib/api-client';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
@@ -1582,31 +1587,20 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     },
   });
 
-  const sendBroadcastMutation = useMutation({
-    mutationFn: (payload: SendBroadcastPayload) => api.sendBroadcast(chatId ?? '', payload),
+  const handoffBroadcastMutation = useMutation({
+    mutationFn: (payload: BroadcastHandoffPayload) => api.handoffBroadcast(chatId ?? '', payload),
     onSuccess: (result) => {
-      void queryClient.invalidateQueries({ queryKey: ['managed-broadcasts', chatId] });
-      resetMailingComposer();
-      const cycleSuffix = result.cycleEnabled
-        ? ` Цикл: ${result.cycleCount} отправок каждые ${result.cycleEveryHours}ч.`
-        : '';
-      const description = result.scheduleId
-        ? result.sentChats > 0 && result.nextSendAt
-          ? `Первый запуск отправлен. Следующая отправка: ${formatRemovalDateTime(result.nextSendAt)}. Чатов: ${result.targetChats}.${cycleSuffix}`
-          : `Сохранено на ${formatRemovalDateTime(result.nextSendAt ?? result.sendAt)}. Чатов: ${result.targetChats}.${cycleSuffix}`
-        : result.failedChats > 0
-          ? `Доставлено в ${result.sentChats} чат(ов), ошибок: ${result.failedChats}.${cycleSuffix}`
-          : `Отправлено в ${result.sentChats} чат(ов).${cycleSuffix}`;
       pushToast({
-        tone: result.scheduleId || result.failedChats > 0 ? 'info' : 'success',
-        title: result.scheduleId ? 'Рассылка сохранена' : 'Рассылка выполнена',
-        description,
+        tone: 'info',
+        title: 'Открываем личный чат бота',
+        description: 'Отправьте там текст или фото, затем подтвердите рассылку.',
       });
+      openMaxBotLink(result.botUrl);
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось отправить рассылку',
+        title: 'Не удалось открыть сбор контента',
         description: formatApiError(error),
       });
     },
@@ -2276,24 +2270,29 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     );
 
     let hasError = false;
-    if (!normalizedText && !mailingImageEnabled) {
-      setMailingTextError('Введите текст или добавьте фото.');
-      hasError = true;
-    } else if (normalizedText.length > MAX_BROADCAST_TEXT_LENGTH) {
-      setMailingTextError(`Максимум ${MAX_BROADCAST_TEXT_LENGTH} символов.`);
-      hasError = true;
-    } else {
-      setMailingTextError('');
-    }
-
-    if (mailingImageEnabled) {
-      if (!mailingImageBase64 || !mailingImageMimeType.toLowerCase().startsWith('image/')) {
-        setMailingImageError('Добавьте фото для рассылки.');
+    if (editingManagedBroadcast) {
+      if (!normalizedText && !mailingImageEnabled) {
+        setMailingTextError('В сохранённой рассылке нет текста или фото.');
         hasError = true;
+      } else if (normalizedText.length > MAX_BROADCAST_TEXT_LENGTH) {
+        setMailingTextError(`Максимум ${MAX_BROADCAST_TEXT_LENGTH} символов.`);
+        hasError = true;
+      } else {
+        setMailingTextError('');
+      }
+
+      if (mailingImageEnabled) {
+        if (!mailingImageBase64 || !mailingImageMimeType.toLowerCase().startsWith('image/')) {
+          setMailingImageError('В сохранённой рассылке отсутствует фото.');
+          hasError = true;
+        } else {
+          setMailingImageError('');
+        }
       } else {
         setMailingImageError('');
       }
     } else {
+      setMailingTextError('');
       setMailingImageError('');
     }
 
@@ -2363,17 +2362,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       return;
     }
 
-    const payload: SendBroadcastPayload = {
-      text: normalizedText,
-      textFormat: 'markdown',
+    const handoffPayload: BroadcastHandoffPayload = {
       applyToAllChats: mailingApplyToAllChats && canApplyToAllChats,
       buttonEnabled: mailingButtonEnabled,
       buttonUrl: normalizedButtonUrl,
       buttonText: normalizedButtonText || 'Открыть',
-      imageEnabled: mailingImageEnabled,
-      imageBase64: mailingImageEnabled ? mailingImageBase64 : '',
-      imageMimeType: mailingImageEnabled ? mailingImageMimeType : '',
-      imageFileName: mailingImageEnabled ? mailingImageFileName : '',
       sendAt: mailingScheduleEnabled ? scheduleIso : null,
       cycleEnabled: mailingCycleEnabled,
       cycleEveryHours: mailingCycleEnabled ? cycleEveryHours : 1,
@@ -2381,6 +2374,15 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     };
 
     if (editingManagedBroadcast) {
+      const payload: SendBroadcastPayload = {
+        text: normalizedText,
+        textFormat: 'markdown',
+        ...handoffPayload,
+        imageEnabled: mailingImageEnabled,
+        imageBase64: mailingImageEnabled ? mailingImageBase64 : '',
+        imageMimeType: mailingImageEnabled ? mailingImageMimeType : '',
+        imageFileName: mailingImageEnabled ? mailingImageFileName : '',
+      };
       updateManagedBroadcastMutation.mutate({
         broadcastId: editingManagedBroadcast.id,
         payload,
@@ -2388,7 +2390,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       return;
     }
 
-    sendBroadcastMutation.mutate(payload);
+    handoffBroadcastMutation.mutate(handoffPayload);
   }
 
   function handleCommercialSensitivitySliderChange(rawValue: number) {
@@ -2688,7 +2690,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       : 2;
   const isUpdatingManagedBroadcast = updateManagedBroadcastMutation.isPending;
   const isMailingBusy =
-    sendBroadcastMutation.isPending ||
+    handoffBroadcastMutation.isPending ||
     isUpdatingManagedBroadcast ||
     cancelManagedBroadcastMutation.isPending;
   const mailingTargetLabel =
@@ -2701,16 +2703,17 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const mailingCycleSummary = mailingCycleEnabled
     ? `${mailingCycleCount} отправок / ${mailingCycleEveryHours}ч`
     : '';
-  const mailingContentLabel = mailingText.trim()
-    ? `${mailingText.trim().length}/${MAX_BROADCAST_TEXT_LENGTH}`
-    : mailingImageEnabled && mailingImageBase64
-      ? 'фото'
-      : 'пусто';
+  const mailingContentLabel = editingManagedBroadcast
+    ? mailingImageEnabled && mailingImageBase64
+      ? 'контент сохранён'
+      : mailingText.trim()
+        ? 'контент сохранён'
+        : 'без контента'
+    : 'контент в боте';
   const mailingHeaderSummary = `${mailingTargetLabel} · ${mailingContentLabel}${
     mailingScheduleEnabled ? ' · по таймеру' : ''
   }${mailingCycleEnabled ? ` · ${mailingCycleSummary}` : ''}`;
-  const mailingCanSend = mailingText.trim().length > 0 || mailingImageBase64.length > 0;
-  const mailingSendDisabled = isMailingBusy || !mailingCanSend;
+  const mailingSendDisabled = isMailingBusy;
 
   useHintPopoverAutoPosition(openHintKey !== null);
 
@@ -6568,7 +6571,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       <small>
                         {editingManagedBroadcast.sentCount > 0
                           ? `Уже отправлено: ${editingManagedBroadcast.sentCount} из ${editingManagedBroadcast.cycleCount}.`
-                          : 'Можно менять текст, фото, кнопку и следующее время отправки.'}
+                          : 'Контент уже сохранён. Здесь можно менять кнопку, охват и следующее время отправки.'}
                       </small>
                     </div>
                   ) : null}
@@ -6615,175 +6618,18 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     </div>
                   </div>
 
-                  <label
-                    className={cn(
-                      'field',
-                      'mailing-message-field',
-                      mailingTextError && 'field--error',
-                    )}
-                  >
-                    <div className="channel-settings-field-label">
-                      <span className="field__label">Текст сообщения</span>
-                      <span className="channel-settings-hint-anchor">
-                        <button
-                          type="button"
-                          className={cn(
-                            'settings-info-button',
-                            openHintKey === 'mailingText' && 'is-open',
-                          )}
-                          aria-label="Пояснение для текста рассылки"
-                          aria-controls="mailing-text-hint"
-                          aria-expanded={openHintKey === 'mailingText'}
-                          onClick={() => toggleHint('mailingText')}
-                        >
-                          <span aria-hidden>i</span>
-                        </button>
-                        {openHintKey === 'mailingText' ? (
-                          <p id="mailing-text-hint" className="channel-settings-hint-popover">
-                            MAX поддерживает markdown: жирный, курсив, подчеркивание, зачеркнутый
-                            текст, код и ссылки. Отдельных заголовков нет, их лучше имитировать
-                            короткой акцентной строкой. Можно отправить и только фото, но текст
-                            обычно повышает вовлеченность.
-                          </p>
-                        ) : null}
-                      </span>
-                    </div>
-                    <MaxMarkdownEditor
-                      value={mailingText}
-                      onChange={(nextValue) => {
-                        setMailingText(nextValue);
-                        if (mailingTextError) {
-                          setMailingTextError('');
-                        }
-                      }}
-                      ariaLabel="Текст рассылки в чат"
-                      rows={5}
-                      maxLength={MAX_BROADCAST_TEXT_LENGTH}
-                      placeholder="Например: Сегодня в 21:00 старт турнира. Подключайтесь!"
-                    />
-                    <div className="mailing-message-field__meta">
-                      {mailingTextError ? (
-                        <small className="field__hint">{mailingTextError}</small>
-                      ) : null}
-                      <small
-                        className={cn(
-                          'mailing-message-field__counter',
-                          mailingText.length >= MAX_BROADCAST_TEXT_LENGTH && 'is-limit',
-                        )}
-                      >
-                        {mailingText.length}/{MAX_BROADCAST_TEXT_LENGTH}
-                      </small>
-                    </div>
-                  </label>
+                  <div className="managed-broadcast-editor-note">
+                    <strong>
+                      {editingManagedBroadcast ? 'Контент меняется в боте' : 'Контент собирается в боте'}
+                    </strong>
+                    <small>
+                      {editingManagedBroadcast
+                        ? 'Чтобы заменить текст или фото, откройте новую рассылку через личный чат бота.'
+                        : 'В miniapp остаются только параметры. После кнопки ниже откроется личка бота, где можно отправить текст или фото обычным сообщением.'}
+                    </small>
+                  </div>
 
                   <div className="mailing-options-grid">
-                    <div
-                      className={cn(
-                        'mailing-option-card',
-                        mailingImageEnabled && 'is-enabled',
-                        mailingImageError && 'field--error',
-                      )}
-                    >
-                      <div className="mailing-option-card__head">
-                        <div className="mailing-option-card__title-wrap">
-                          <div className="mailing-card-title-row">
-                            <span className="mailing-option-card__title">Фото</span>
-                            <SettingsHintAnchor
-                              hintKey="mailingImage"
-                              openHintKey={openHintKey}
-                              onToggleHint={toggleHint}
-                              label="Пояснение для фото в рассылке"
-                            >
-                              Фото можно отправить отдельно или вместе с текстом. Приложение
-                              подготовит его перед отправкой.
-                            </SettingsHintAnchor>
-                          </div>
-                        </div>
-
-                        <label
-                          className="settings-native-switch"
-                          aria-label="Добавить фото в рассылку"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={mailingImageEnabled}
-                            onChange={(event) => {
-                              const enabled = event.target.checked;
-                              setMailingImageEnabled(enabled);
-                              if (!enabled) {
-                                setMailingImageBase64('');
-                                setMailingImageMimeType('');
-                                setMailingImageFileName('');
-                                setMailingImageError('');
-                              }
-                            }}
-                            disabled={isMailingBusy}
-                          />
-                          <span className="toggle-switch" aria-hidden>
-                            <span className="toggle-switch__thumb" />
-                          </span>
-                        </label>
-                      </div>
-
-                      {mailingImageEnabled ? (
-                        <div className="mailing-option-card__body">
-                          <label
-                            className={cn(
-                              'field',
-                              'mailing-upload-field',
-                              mailingImageError && 'field--error',
-                            )}
-                          >
-                            <span className="field__label">Файл изображения</span>
-                            <input
-                              type="file"
-                              accept="image/*"
-                              onChange={async (event) => {
-                                const file = event.target.files?.[0];
-                                if (!file) {
-                                  setMailingImageBase64('');
-                                  setMailingImageMimeType('');
-                                  setMailingImageFileName('');
-                                  setMailingImageError('Выберите фото.');
-                                  return;
-                                }
-
-                                if (!file.type.toLowerCase().startsWith('image/')) {
-                                  setMailingImageBase64('');
-                                  setMailingImageMimeType('');
-                                  setMailingImageFileName('');
-                                  setMailingImageError('Нужен файл изображения.');
-                                  return;
-                                }
-
-                                try {
-                                  const preparedImage = await prepareBroadcastImage(file);
-                                  setMailingImageBase64(preparedImage.base64);
-                                  setMailingImageMimeType(preparedImage.mimeType);
-                                  setMailingImageFileName(preparedImage.fileName);
-                                  setMailingImageError('');
-                                } catch (error: unknown) {
-                                  setMailingImageBase64('');
-                                  setMailingImageMimeType('');
-                                  setMailingImageFileName('');
-                                  setMailingImageError(
-                                    error instanceof Error && error.message.trim()
-                                      ? error.message
-                                      : 'Не удалось подготовить фото.',
-                                  );
-                                }
-                              }}
-                              disabled={isMailingBusy}
-                            />
-                            {mailingImageError ? (
-                              <small className="field__hint">{mailingImageError}</small>
-                            ) : mailingImageFileName ? (
-                              <small className="field__hint">{mailingImageFileName}</small>
-                            ) : null}
-                          </label>
-                        </div>
-                      ) : null}
-                    </div>
 
                     <div
                       className={cn(
@@ -7111,11 +6957,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     >
                       {isUpdatingManagedBroadcast
                         ? 'Сохраняем...'
-                        : sendBroadcastMutation.isPending
-                          ? 'Отправляем...'
+                        : handoffBroadcastMutation.isPending
+                          ? 'Открываем бота...'
                           : editingManagedBroadcast
                             ? 'Сохранить рассылку'
-                            : 'Отправить рассылку'}
+                            : 'Продолжить в боте'}
                     </button>
                     <button
                       type="button"

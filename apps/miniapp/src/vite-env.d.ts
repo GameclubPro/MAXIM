@@ -12,6 +12,8 @@ type MaxWebAppBridge = {
   startParam?: string;
   start_param?: string;
   ready?: () => void;
+  close?: () => void;
+  openMaxLink?: (url: string) => void;
 };
 
 declare global {

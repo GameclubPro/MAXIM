@@ -1,4 +1,6 @@
 import {
+  broadcastHandoffRequestSchema,
+  broadcastHandoffResponseSchema,
   addGlobalUserBlacklistRequestSchema,
   chatRulesSchema,
   channelStatsRangeSchema,
@@ -52,6 +54,7 @@ import {
   type PublishChannelEngagementResult,
   type PublishChatRulesResult,
   type BroadcastTextFormat,
+  type BroadcastHandoffResponse,
   type SendBroadcastResult,
   updateChatRulesRequestSchema,
   managedPollSchema,
@@ -84,6 +87,17 @@ export type SendBroadcastPayload = {
 };
 
 export type UpdateManagedBroadcastPayload = SendBroadcastPayload;
+
+export type BroadcastHandoffPayload = {
+  applyToAllChats: boolean;
+  buttonEnabled: boolean;
+  buttonUrl: string;
+  buttonText: string;
+  sendAt: string | null;
+  cycleEnabled: boolean;
+  cycleEveryHours: number;
+  cycleCount: number;
+};
 
 export type CreateChannelDialogMessagePayload = {
   token: string;
@@ -322,6 +336,18 @@ export class ApiClient {
     return sendBroadcastResultSchema.parse(response);
   }
 
+  async handoffBroadcast(
+    chatId: string,
+    payload: BroadcastHandoffPayload,
+  ): Promise<BroadcastHandoffResponse> {
+    const requestBody = broadcastHandoffRequestSchema.parse(payload);
+    const response = await this.request(`/chats/${chatId}/broadcast/handoff`, {
+      method: 'POST',
+      body: JSON.stringify(requestBody),
+    });
+    return broadcastHandoffResponseSchema.parse(response);
+  }
+
   async getManagedBroadcasts(chatId: string): Promise<ManagedBroadcastSummary[]> {
     const response = await this.request(`/chats/${chatId}/broadcasts`);
     if (!Array.isArray(response)) {
@@ -368,6 +394,18 @@ export class ApiClient {
       body: JSON.stringify(requestBody),
     });
     return sendBroadcastResultSchema.parse(response);
+  }
+
+  async handoffChannelBroadcast(
+    chatId: string,
+    payload: BroadcastHandoffPayload,
+  ): Promise<BroadcastHandoffResponse> {
+    const requestBody = broadcastHandoffRequestSchema.parse(payload);
+    const response = await this.request(`/channels/${chatId}/broadcast/handoff`, {
+      method: 'POST',
+      body: JSON.stringify(requestBody),
+    });
+    return broadcastHandoffResponseSchema.parse(response);
   }
 
   async getDomainAllowlist(chatId: string): Promise<string[]> {

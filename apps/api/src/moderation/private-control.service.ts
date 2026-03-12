@@ -1,6 +1,9 @@
 import { BadRequestException, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  broadcastHandoffRequestSchema,
+  broadcastHandoffResponseSchema,
+  type BroadcastHandoffResponse,
   type ChannelSettings,
   type ChatSettings,
   type LogsDashboardRange,
@@ -67,11 +70,12 @@ type PendingInput =
   | { kind: 'schedule_domain'; domain: string }
   | { kind: 'add_blacklist_user' }
   | { kind: 'remove_blacklist_user' }
+  | { kind: 'broadcast_content' }
   | { kind: 'broadcast_text' }
   | { kind: 'broadcast_button_url' }
   | { kind: 'broadcast_button_text' }
   | { kind: 'broadcast_send_at' }
-  | { kind: 'broadcast_cycle_every_days' }
+  | { kind: 'broadcast_cycle_every_hours' }
   | { kind: 'broadcast_cycle_count' }
   | { kind: 'broadcast_photo' }
   | { kind: 'poll_question' }
@@ -101,7 +105,7 @@ type PrivateBroadcastDraft = {
   imageFileName: string;
   sendAt: string | null;
   cycleEnabled: boolean;
-  cycleEveryDays: number;
+  cycleEveryHours: number;
   cycleCount: number;
 };
 
@@ -184,6 +188,7 @@ type ParsedImageAttachment = {
 
 const SESSION_TTL_SEC = 45 * 60;
 const SESSION_KEY_PREFIX = 'private-ui:v2';
+const BROADCAST_HANDOFF_START_PAYLOAD = 'broadcast_handoff';
 const PAGE_SIZE_CHATS = 8;
 const PAGE_SIZE_DOMAINS = 8;
 const PAGE_SIZE_EVENTS = 10;
@@ -746,7 +751,7 @@ const DEFAULT_BROADCAST_DRAFT: PrivateBroadcastDraft = {
   imageFileName: '',
   sendAt: null,
   cycleEnabled: false,
-  cycleEveryDays: 1,
+  cycleEveryHours: 24,
   cycleCount: 1,
 };
 
@@ -759,6 +764,7 @@ const DEFAULT_POLL_DRAFT: PrivatePollDraft = {
 export class PrivateControlService {
   private readonly logger = new Logger(PrivateControlService.name);
   private readonly appBaseUrl: string | null;
+  private readonly botDeepLinkId: string | null;
   private readonly explicitBotContactId: string | null;
   private readonly ownBotUserId: string | null;
   private readonly ownBotUserIdVariants: Set<string>;
@@ -774,6 +780,7 @@ export class PrivateControlService {
     @Optional() configService?: ConfigService,
   ) {
     this.appBaseUrl = this.normalizeAppBaseUrl(configService?.get<string>('APP_BASE_URL'));
+    this.botDeepLinkId = this.normalizeBotDeepLinkId(configService?.get<string>('MAX_BOT_ID'));
     this.explicitBotContactId = this.normalizeBotContactId(
       configService?.get<string>('MAX_BOT_CONTACT_ID'),
     );
@@ -818,19 +825,77 @@ export class PrivateControlService {
     }
 
     const session = await this.loadSession(context.actor.userId);
-    session.screen = session.selectedChatId ? this.resolvePrimaryScreen(session) : 'chat_select';
-    session.pendingInput = null;
+    session.screen =
+      session.selectedChatId === null
+        ? 'chat_select'
+        : session.screen === 'chat_select'
+          ? this.resolvePrimaryScreen(session)
+          : session.screen;
+    if (session.pendingInput?.kind !== 'broadcast_content') {
+      session.pendingInput = null;
+    }
     session.pendingMassAction = null;
 
-    const view =
-      session.selectedChatId !== null
-        ? await this.renderPrimaryScreen(context, session)
-        : await this.renderChatSelection(context, session);
+    const view = await this.renderByCurrentScreen(context, session);
 
     await this.respond(context, session, view, {
       callbackId: null,
       notification: null,
     });
+  }
+
+  async handoffBroadcastFromMiniapp(
+    sourceChatId: string,
+    user: AuthUser,
+    body: unknown,
+    entityType: ManagedEntityType,
+  ): Promise<BroadcastHandoffResponse> {
+    if (entityType === 'channel') {
+      await this.adminService.getChannelSettings(sourceChatId, user);
+    } else {
+      await this.adminService.getSettings(sourceChatId, user);
+    }
+
+    const parsed = broadcastHandoffRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const session = await this.loadSession(user.userId);
+    session.selectedChatId = sourceChatId;
+    session.selectedEntityType = entityType;
+    session.entityTab = entityType;
+    session.uiMode = 'modern';
+    session.screen = 'broadcast';
+    session.section = null;
+    session.channelSection = null;
+    session.searchQuery = null;
+    session.broadcastView = 'advanced';
+    session.pendingMassAction = null;
+    session.pendingInput = { kind: 'broadcast_content' };
+    session.broadcastDraft = {
+      ...DEFAULT_BROADCAST_DRAFT,
+      applyToAllChats: entityType === 'channel' ? false : parsed.data.applyToAllChats,
+      buttonEnabled: parsed.data.buttonEnabled,
+      buttonUrl: parsed.data.buttonEnabled ? parsed.data.buttonUrl.trim() : '',
+      buttonText: parsed.data.buttonEnabled
+        ? parsed.data.buttonText.trim() || 'Открыть'
+        : DEFAULT_BROADCAST_DRAFT.buttonText,
+      sendAt: entityType === 'channel' ? null : parsed.data.sendAt,
+      cycleEnabled: entityType === 'channel' ? false : parsed.data.cycleEnabled,
+      cycleEveryHours:
+        entityType === 'channel' || !parsed.data.cycleEnabled ? 24 : parsed.data.cycleEveryHours,
+      cycleCount: entityType === 'channel' || !parsed.data.cycleEnabled ? 1 : parsed.data.cycleCount,
+    };
+
+    await this.saveSession(user.userId, session);
+
+    const botUrl = this.buildBotStartUrl(BROADCAST_HANDOFF_START_PAYLOAD);
+    if (!botUrl) {
+      throw new BadRequestException('Ссылка на личный чат бота не настроена.');
+    }
+
+    return broadcastHandoffResponseSchema.parse({ botUrl });
   }
 
   private async processTextMessage(context: PrivateContext): Promise<void> {
@@ -984,7 +1049,11 @@ export class PrivateControlService {
       return;
     }
 
-    if (session.pendingInput && callback.action !== 'input_cancel') {
+    if (
+      session.pendingInput &&
+      session.pendingInput.kind !== 'broadcast_content' &&
+      callback.action !== 'input_cancel'
+    ) {
       const view = this.renderInputPrompt(session.pendingInput);
       await this.respond(context, session, view, {
         callbackId: context.callbackId,
@@ -1852,6 +1921,17 @@ export class PrivateControlService {
 
       case 'broadcast_send': {
         this.assertChatSelected(session);
+        const hasContent =
+          session.broadcastDraft.text.trim().length > 0 || session.broadcastDraft.imageEnabled;
+        if (!hasContent) {
+          session.pendingInput = { kind: 'broadcast_content' };
+          const view = this.renderInputPrompt(session.pendingInput);
+          await this.respond(context, session, view, {
+            callbackId: context.callbackId,
+            notification: 'Сначала пришлите контент',
+          });
+          return;
+        }
 
         if (session.selectedEntityType !== 'channel' && session.broadcastDraft.applyToAllChats) {
           const availableChats = await this.adminService.listChats(context.actor);
@@ -2610,6 +2690,16 @@ export class PrivateControlService {
         return;
       }
 
+      case 'broadcast_content': {
+        await this.captureBroadcastContent(context, session, rawText);
+        const view = await this.renderBroadcastScreen(context, session, 'Контент сохранён.');
+        await this.respond(context, session, view, {
+          callbackId: null,
+          notification: null,
+        });
+        return;
+      }
+
       case 'broadcast_text': {
         session.broadcastDraft.text = rawText;
         session.pendingInput = null;
@@ -2658,9 +2748,9 @@ export class PrivateControlService {
         return;
       }
 
-      case 'broadcast_cycle_every_days': {
-        const parsedDays = this.parseIntInput(rawText, 1, 14);
-        session.broadcastDraft.cycleEveryDays = parsedDays;
+      case 'broadcast_cycle_every_hours': {
+        const parsedHours = this.parseIntInput(rawText, 1, 14 * 24);
+        session.broadcastDraft.cycleEveryHours = parsedHours;
         session.pendingInput = null;
         session.screen = 'broadcast';
         const view = await this.renderBroadcastScreen(context, session);
@@ -2821,6 +2911,39 @@ export class PrivateControlService {
     };
 
     await this.adminService.updateChannelSettings(chatId, actor, nextSettings, 'private_bot');
+  }
+
+  private async captureBroadcastContent(
+    context: PrivateContext,
+    session: PrivateSession,
+    rawText: string,
+  ): Promise<void> {
+    const normalizedText = rawText.trim();
+    const imageAttachment = this.extractFirstImageAttachment(context.update);
+
+    if (!normalizedText && !imageAttachment) {
+      if (this.hasVideoAttachment(context.update)) {
+        throw new BadRequestException(
+          'Видео в рассылке пока не поддерживается. Отправьте текст или фото.',
+        );
+      }
+      throw new BadRequestException('Отправьте текст или фото отдельным сообщением.');
+    }
+
+    if (normalizedText) {
+      session.broadcastDraft.text = rawText;
+    }
+
+    if (imageAttachment) {
+      const downloaded = await this.downloadImageAttachment(imageAttachment);
+      session.broadcastDraft.imageEnabled = true;
+      session.broadcastDraft.imageBase64 = downloaded.base64;
+      session.broadcastDraft.imageMimeType = downloaded.mimeType;
+      session.broadcastDraft.imageFileName = downloaded.fileName;
+    }
+
+    session.pendingInput = null;
+    session.screen = 'broadcast';
   }
 
   private async sendBroadcastFromSession(context: PrivateContext, session: PrivateSession) {
@@ -3622,30 +3745,39 @@ export class PrivateControlService {
     const draft = session.broadcastDraft;
     const isChannel = session.selectedEntityType === 'channel';
     const applyToAllEnabled = !isChannel && draft.applyToAllChats;
-    const timingSummary = draft.sendAt ? this.formatIsoDate(draft.sendAt) : 'нет';
+    const timingSummary = isChannel ? 'недоступен' : draft.sendAt ? this.formatIsoDate(draft.sendAt) : 'нет';
     const cycleSummary = draft.cycleEnabled
-      ? `каждые ${draft.cycleEveryDays} дн., ${draft.cycleCount} раз`
+      ? `каждые ${draft.cycleEveryHours} ч., ${draft.cycleCount} раз`
       : 'нет';
+    const waitingForContent = session.pendingInput?.kind === 'broadcast_content';
 
     const lines: string[] = [
       isChannel ? 'Рассылка в канал' : 'Рассылка',
       '',
+      `Контент: ${
+        waitingForContent
+          ? 'жду следующее сообщение'
+          : draft.text.trim() || draft.imageEnabled
+            ? 'готов'
+            : 'не добавлен'
+      }`,
       `Текст: ${draft.text.trim() ? this.compactText(draft.text, 80) : 'не указан'}`,
       ...(!isChannel ? [`Во все чаты: ${applyToAllEnabled ? 'Да' : 'Нет'}`] : []),
       `Кнопка: ${draft.buttonEnabled ? 'Да' : 'Нет'}`,
       `Фото: ${draft.imageEnabled ? 'Да' : 'Нет'}`,
-      `Таймер: ${timingSummary}`,
-      `Цикл: ${cycleSummary}`,
+      ...(!isChannel ? [`Таймер: ${timingSummary}`, `Цикл: ${cycleSummary}`] : []),
       `Режим: ${session.broadcastView === 'basic' ? 'Основное' : 'Ещё параметры'}`,
       ...(notice ? ['', `Статус: ${notice}`] : []),
       '',
-      'Настройте параметры и нажмите «Отправить».',
+      waitingForContent
+        ? 'Пришлите текст или фото следующим сообщением, затем нажмите «Отправить».'
+        : 'Настройте параметры и нажмите «Отправить».',
     ];
 
     const rows: MaxMessageButton[][] = [];
     if (session.broadcastView === 'basic') {
       rows.push([
-        this.callbackButton('✏️ Текст сообщения', this.cb('broadcast_input_prompt', 'text')),
+        this.callbackButton('🧾 Контент сообщением', this.cb('broadcast_input_prompt', 'content')),
       ]);
       if (!isChannel) {
         rows.push([
@@ -3659,7 +3791,7 @@ export class PrivateControlService {
       rows.push([this.callbackButton('⚙️ Ещё параметры', this.cb('broadcast_view', 'advanced'))]);
     } else {
       rows.push([
-        this.callbackButton('✏️ Текст сообщения', this.cb('broadcast_input_prompt', 'text')),
+        this.callbackButton('🧾 Контент сообщением', this.cb('broadcast_input_prompt', 'content')),
       ]);
       if (!isChannel) {
         rows.push([
@@ -3685,42 +3817,36 @@ export class PrivateControlService {
         ]);
       }
 
-      rows.push([
-        this.callbackButton(
-          `${draft.imageEnabled ? '✅' : '⬜'} Фото`,
-          this.cb('broadcast_toggle', 'image_enabled'),
-        ),
-      ]);
-
       if (draft.imageEnabled) {
         rows.push([
-          this.callbackButton('📷 Загрузить фото', this.cb('broadcast_input_prompt', 'photo')),
           this.callbackButton('🗑 Удалить фото', this.cb('broadcast_clear_photo')),
         ]);
       }
 
-      rows.push([
-        this.callbackButton('🕒 Время отправки', this.cb('broadcast_input_prompt', 'send_at')),
-        this.callbackButton('🧹 Убрать таймер', this.cb('broadcast_clear_timer')),
-      ]);
+      if (!isChannel) {
+        rows.push([
+          this.callbackButton('🕒 Время отправки', this.cb('broadcast_input_prompt', 'send_at')),
+          this.callbackButton('🧹 Убрать таймер', this.cb('broadcast_clear_timer')),
+        ]);
 
-      rows.push([
-        this.callbackButton(
-          `${draft.cycleEnabled ? '✅' : '⬜'} Цикл`,
-          this.cb('broadcast_toggle', 'cycle_enabled'),
-        ),
-      ]);
-
-      if (draft.cycleEnabled) {
         rows.push([
           this.callbackButton(
-            '🔁 Шаг цикла (дни)',
-            this.cb('broadcast_input_prompt', 'cycle_days'),
+            `${draft.cycleEnabled ? '✅' : '⬜'} Цикл`,
+            this.cb('broadcast_toggle', 'cycle_enabled'),
           ),
         ]);
-        rows.push([
-          this.callbackButton('🔢 Повторов', this.cb('broadcast_input_prompt', 'cycle_count')),
-        ]);
+
+        if (draft.cycleEnabled) {
+          rows.push([
+            this.callbackButton(
+              '🔁 Шаг цикла (часы)',
+              this.cb('broadcast_input_prompt', 'cycle_hours'),
+            ),
+          ]);
+          rows.push([
+            this.callbackButton('🔢 Повторов', this.cb('broadcast_input_prompt', 'cycle_count')),
+          ]);
+        }
       }
 
       rows.push([this.callbackButton('⬅️ Основное', this.cb('broadcast_view', 'basic'))]);
@@ -4675,6 +4801,12 @@ export class PrivateControlService {
     }
 
     switch (input.kind) {
+      case 'broadcast_content':
+        return {
+          title: 'Контент рассылки',
+          description:
+            'Отправьте следующим сообщением текст, фото или подпись с фото. Бот добавит это в черновик.',
+        };
       case 'search_settings':
         return {
           title: 'Найти настройку',
@@ -4722,10 +4854,10 @@ export class PrivateControlService {
           description:
             'Введите ISO (2026-03-09T18:30:00+03:00) или ДД.ММ.ГГГГ ЧЧ:ММ. Чтобы отключить таймер, отправьте `-`.',
         };
-      case 'broadcast_cycle_every_days':
+      case 'broadcast_cycle_every_hours':
         return {
-          title: 'Шаг цикла (дни)',
-          description: 'Введите число от 1 до 14.',
+          title: 'Шаг цикла (часы)',
+          description: 'Введите число от 1 до 336.',
         };
       case 'broadcast_cycle_count':
         return {
@@ -4987,13 +5119,17 @@ export class PrivateControlService {
       const next = !session.broadcastDraft.cycleEnabled;
       session.broadcastDraft.cycleEnabled = next;
       if (!next) {
-        session.broadcastDraft.cycleEveryDays = 1;
+        session.broadcastDraft.cycleEveryHours = 24;
         session.broadcastDraft.cycleCount = 1;
       }
     }
   }
 
   private buildBroadcastPendingInput(flag: string): PendingInput | null {
+    if (flag === 'content') {
+      return { kind: 'broadcast_content' };
+    }
+
     if (flag === 'text') {
       return { kind: 'broadcast_text' };
     }
@@ -5010,8 +5146,8 @@ export class PrivateControlService {
       return { kind: 'broadcast_send_at' };
     }
 
-    if (flag === 'cycle_days') {
-      return { kind: 'broadcast_cycle_every_days' };
+    if (flag === 'cycle_hours') {
+      return { kind: 'broadcast_cycle_every_hours' };
     }
 
     if (flag === 'cycle_count') {
@@ -5181,6 +5317,14 @@ export class PrivateControlService {
     return `${this.appBaseUrl}/app/`;
   }
 
+  private buildBotStartUrl(startPayload: string): string | null {
+    if (!this.botDeepLinkId) {
+      return null;
+    }
+
+    return `https://max.ru/${encodeURIComponent(this.botDeepLinkId)}?start=${encodeURIComponent(startPayload)}`;
+  }
+
   private resolveBotContactId(): string | null {
     if (this.explicitBotContactId) {
       return this.explicitBotContactId;
@@ -5205,6 +5349,15 @@ export class PrivateControlService {
     }
 
     return normalized;
+  }
+
+  private normalizeBotDeepLinkId(value: string | undefined): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const normalized = value.trim();
+    return normalized.length > 0 ? normalized : null;
   }
 
   private parseCallbackAction(payload: string | null): CallbackAction | null {
@@ -5455,6 +5608,52 @@ export class PrivateControlService {
     }
 
     return null;
+  }
+
+  private hasVideoAttachment(update: MaxUpdate): boolean {
+    const raw = this.asRecord(update.raw);
+    if (!raw) {
+      return false;
+    }
+
+    const messageCandidates = [
+      this.asRecord(raw.message),
+      this.asRecord(this.asRecord(raw.data)?.message),
+      this.asRecord(this.asRecord(raw.event)?.message),
+    ].filter((candidate): candidate is Record<string, unknown> => Boolean(candidate));
+
+    for (const message of messageCandidates) {
+      const body = this.asRecord(message.body);
+      const candidates = [
+        message.attachments,
+        body?.attachments,
+        this.asRecord(message.data)?.attachments,
+        this.asRecord(message.payload)?.attachments,
+      ];
+
+      for (const node of candidates) {
+        if (!Array.isArray(node)) {
+          continue;
+        }
+
+        for (const attachment of node) {
+          if (!attachment || typeof attachment !== 'object') {
+            continue;
+          }
+
+          const row = attachment as Record<string, unknown>;
+          const type = this.readLowerString(row.type);
+          const payload = this.asRecord(row.payload);
+          const mimeType = this.readLowerString(payload?.mime_type ?? payload?.mimeType);
+
+          if (type === 'video' || mimeType?.startsWith('video/')) {
+            return true;
+          }
+        }
+      }
+    }
+
+    return false;
   }
 
   private async downloadImageAttachment(
@@ -5875,11 +6074,12 @@ export class PrivateControlService {
       'add_domain',
       'add_blacklist_user',
       'remove_blacklist_user',
+      'broadcast_content',
       'broadcast_text',
       'broadcast_button_url',
       'broadcast_button_text',
       'broadcast_send_at',
-      'broadcast_cycle_every_days',
+      'broadcast_cycle_every_hours',
       'broadcast_cycle_count',
       'broadcast_photo',
       'poll_question',
@@ -5963,7 +6163,13 @@ export class PrivateControlService {
       imageFileName: typeof row.imageFileName === 'string' ? row.imageFileName : '',
       sendAt: typeof row.sendAt === 'string' ? row.sendAt : null,
       cycleEnabled: row.cycleEnabled === true,
-      cycleEveryDays: this.toPositiveInt(row.cycleEveryDays, 1),
+      cycleEveryHours: this.toPositiveInt(
+        (row as Partial<PrivateBroadcastDraft> & { cycleEveryDays?: unknown }).cycleEveryHours ??
+          (typeof (row as { cycleEveryDays?: unknown }).cycleEveryDays === 'number'
+            ? Number((row as { cycleEveryDays?: unknown }).cycleEveryDays) * 24
+            : undefined),
+        24,
+      ),
       cycleCount: this.toPositiveInt(row.cycleCount, 1),
     };
   }

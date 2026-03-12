@@ -1033,6 +1033,62 @@ export const sendBroadcastRequestSchema = z
   }));
 export type SendBroadcastRequest = z.infer<typeof sendBroadcastRequestSchema>;
 
+export const broadcastHandoffRequestSchema = z
+  .object({
+    applyToAllChats: z.boolean().default(false),
+    buttonEnabled: z.boolean().default(false),
+    buttonUrl: botButtonUrlSchema,
+    buttonText: botButtonTextSchema,
+    sendAt: z.string().datetime().nullable().default(null),
+    cycleEnabled: z.boolean().default(false),
+    cycleEveryHours: z.number().int().min(1).max(14 * 24).optional(),
+    cycleEveryDays: z.number().int().min(1).max(14).optional(),
+    cycleCount: z.number().int().min(1).max(100).default(1),
+  })
+  .superRefine((value, ctx) => {
+    if (value.buttonEnabled && !isValidBotButtonUrl(value.buttonUrl)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['buttonUrl'],
+        message: 'Укажите корректную ссылку для кнопки (http/https).',
+      });
+    }
+
+    if (value.buttonEnabled && !isValidBotButtonText(value.buttonText)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['buttonText'],
+        message: 'Введите название кнопки.',
+      });
+    }
+
+    if (value.cycleEnabled && value.cycleCount < 2) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['cycleCount'],
+        message: 'Для цикла укажите минимум 2 отправки.',
+      });
+    }
+
+    if (value.cycleEnabled && value.cycleEveryHours == null && value.cycleEveryDays == null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['cycleEveryHours'],
+        message: 'Укажите интервал циклической рассылки.',
+      });
+    }
+  })
+  .transform((value) => ({
+    ...value,
+    cycleEveryHours: value.cycleEveryHours ?? (value.cycleEveryDays ?? 1) * 24,
+  }));
+export type BroadcastHandoffRequest = z.infer<typeof broadcastHandoffRequestSchema>;
+
+export const broadcastHandoffResponseSchema = z.object({
+  botUrl: z.string().url(),
+});
+export type BroadcastHandoffResponse = z.infer<typeof broadcastHandoffResponseSchema>;
+
 export const sendBroadcastResultSchema = z.object({
   sourceChatId: z.string(),
   targetChats: z.number().int().min(1),

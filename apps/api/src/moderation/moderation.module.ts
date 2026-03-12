@@ -6,6 +6,7 @@ import { MaxModule } from '../max/max.module';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
 import { SystemModule } from '../system/system.module';
 import { ModerationProcessor, ModerationService } from './moderation.service';
+import { PrivateControlController } from './private-control.controller';
 import { PrivateControlService } from './private-control.service';
 import { RedisCounterService } from './redis-counter.service';
 import { RuleEngineService } from './rule-engine.service';
@@ -28,6 +29,7 @@ const moderationProviders = [
     ChatContextModule,
     AdminModule,
   ],
+  controllers: [PrivateControlController],
   providers: moderationProviders,
   exports: [ModerationService],
 })
