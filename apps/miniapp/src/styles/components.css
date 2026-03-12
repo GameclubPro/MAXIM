@@ -5242,6 +5242,35 @@
 .managed-giveaway__history-item {
   gap: 6px;
   padding: 12px;
+  min-width: 0;
+}
+
+.managed-giveaway__history-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.managed-giveaway__history-delete {
+  border: 1px solid rgba(68, 91, 117, 0.14);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--text-secondary);
+  border-radius: 16px;
+  min-width: 44px;
+  min-height: 44px;
+  font-size: 1.2rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.managed-giveaway__history-delete:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.managed-giveaway__history-delete:hover {
+  color: var(--text-primary);
 }
 
 .managed-giveaway__history-item span {

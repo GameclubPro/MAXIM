@@ -327,6 +327,15 @@ export class AdminController {
     return this.managedGiveawayService.cancelManagedGiveaway(chatId, giveawayId, user, 'chat');
   }
 
+  @Delete('chats/:chatId/giveaways/:giveawayId')
+  deleteChatGiveaway(
+    @Param('chatId') chatId: string,
+    @Param('giveawayId') giveawayId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.managedGiveawayService.deleteManagedGiveaway(chatId, giveawayId, user, 'chat');
+  }
+
   @Get('chats/:chatId/moderation-events')
   getEvents(
     @Param('chatId') chatId: string,
@@ -432,6 +441,15 @@ export class AdminController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.managedGiveawayService.cancelManagedGiveaway(chatId, giveawayId, user, 'channel');
+  }
+
+  @Delete('channels/:chatId/giveaways/:giveawayId')
+  deleteChannelGiveaway(
+    @Param('chatId') chatId: string,
+    @Param('giveawayId') giveawayId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.managedGiveawayService.deleteManagedGiveaway(chatId, giveawayId, user, 'channel');
   }
 
   @Get('giveaways/:giveawayId')

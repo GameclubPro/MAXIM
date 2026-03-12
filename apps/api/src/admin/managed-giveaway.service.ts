@@ -517,6 +517,35 @@ export class ManagedGiveawayService {
     return managedGiveawayDetailsSchema.parse(this.mapGiveawayDetails(updated));
   }
 
+  async deleteManagedGiveaway(
+    sourceChatId: string,
+    giveawayId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType,
+    source: GiveawayActionSource = 'miniapp',
+  ): Promise<void> {
+    await this.assertAdminEntityAccess(sourceChatId, user, entityType);
+
+    const giveaway = await this.findGiveawayForSource(sourceChatId, giveawayId, entityType);
+    if (
+      giveaway.status !== ManagedGiveawayStatus.COMPLETED &&
+      giveaway.status !== ManagedGiveawayStatus.CANCELED
+    ) {
+      throw new BadRequestException('Удалять можно только завершённый или отменённый розыгрыш.');
+    }
+
+    await this.prisma.managedGiveaway.delete({
+      where: { id: giveaway.id },
+    });
+
+    await this.writeAuditLog(sourceChatId, user.userId, 'DELETE_GIVEAWAY', {
+      giveawayId,
+      entityType,
+      source,
+      status: giveaway.status,
+    });
+  }
+
   async getPublicGiveaway(giveawayId: string, user: AuthUser): Promise<ManagedGiveawayPublic> {
     const giveaway = await this.findGiveawayById(giveawayId);
     if (giveaway.status === ManagedGiveawayStatus.SCHEDULED) {

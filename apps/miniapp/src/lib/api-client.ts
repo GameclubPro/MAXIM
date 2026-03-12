@@ -556,6 +556,19 @@ export class ApiClient {
     return managedGiveawayDetailsSchema.parse(response);
   }
 
+  async deleteManagedGiveaway(
+    entityType: 'chat' | 'channel',
+    entityId: string,
+    giveawayId: string,
+  ): Promise<void> {
+    await this.request(
+      `/${entityType === 'channel' ? 'channels' : 'chats'}/${entityId}/giveaways/${giveawayId}`,
+      {
+        method: 'DELETE',
+      },
+    );
+  }
+
   async handoffManagedGiveaway(
     entityType: 'chat' | 'channel',
     entityId: string,
