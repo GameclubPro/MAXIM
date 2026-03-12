@@ -4738,6 +4738,212 @@
   gap: 4px;
 }
 
+.managed-giveaway,
+.giveaway-page {
+  display: grid;
+  gap: 14px;
+}
+
+.managed-giveaway__toolbar,
+.managed-giveaway__section-head,
+.managed-giveaway__summary-head,
+.giveaway-page__section-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.managed-giveaway__title {
+  font-size: 0.94rem;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.managed-giveaway__subtitle,
+.managed-giveaway__section-head small,
+.giveaway-page__section-head small,
+.managed-giveaway__winner-row small {
+  color: var(--text-secondary);
+}
+
+.managed-giveaway__empty {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 18px;
+  border: 1px dashed rgba(68, 91, 117, 0.24);
+  background: rgba(249, 250, 251, 0.7);
+  color: var(--text-secondary);
+}
+
+.managed-giveaway__empty.is-danger {
+  border-color: rgba(178, 64, 44, 0.24);
+  color: #8c3c2d;
+}
+
+.managed-giveaway__panel {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.82);
+  border: 1px solid rgba(68, 91, 117, 0.12);
+}
+
+.managed-giveaway__grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.managed-giveaway__prizes,
+.managed-giveaway__winners,
+.managed-giveaway__history-list,
+.giveaway-page__winner-list {
+  display: grid;
+  gap: 10px;
+}
+
+.managed-giveaway__prize-row,
+.managed-giveaway__winner-row,
+.giveaway-page__winner-row {
+  display: grid;
+  gap: 10px;
+  align-items: center;
+  border-radius: 16px;
+  padding: 12px;
+  background: rgba(244, 247, 250, 0.9);
+  border: 1px solid rgba(68, 91, 117, 0.12);
+}
+
+.managed-giveaway__prize-row {
+  grid-template-columns: auto 1fr auto;
+}
+
+.managed-giveaway__winner-row {
+  grid-template-columns: 1fr auto;
+}
+
+.managed-giveaway__prize-row input,
+.managed-giveaway__prize-row textarea {
+  width: 100%;
+}
+
+.managed-giveaway__prize-position,
+.managed-giveaway__badge,
+.giveaway-page__status,
+.managed-giveaway__chip,
+.giveaway-page__chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.managed-giveaway__badge,
+.giveaway-page__status {
+  background: rgba(68, 91, 117, 0.1);
+  color: var(--text-primary);
+}
+
+.managed-giveaway__badge.is-success {
+  background: rgba(30, 122, 82, 0.14);
+  color: #1c6c49;
+}
+
+.managed-giveaway__badge.is-warning {
+  background: rgba(184, 120, 33, 0.14);
+  color: #8c5c19;
+}
+
+.managed-giveaway__badge.is-danger {
+  background: rgba(178, 64, 44, 0.14);
+  color: #8c3c2d;
+}
+
+.managed-giveaway__prize-position,
+.managed-giveaway__chip,
+.giveaway-page__chip {
+  background: rgba(229, 236, 243, 0.9);
+  color: #36516c;
+}
+
+.managed-giveaway__details,
+.giveaway-page__hero {
+  display: grid;
+  gap: 12px;
+}
+
+.managed-giveaway__meta,
+.managed-giveaway__meta-list,
+.giveaway-page__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+}
+
+.managed-giveaway__chips,
+.giveaway-page__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.managed-giveaway__actions,
+.managed-giveaway__winner-actions,
+.giveaway-page__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.managed-giveaway__history-item {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  border: 1px solid rgba(68, 91, 117, 0.12);
+  background: rgba(249, 250, 251, 0.7);
+  text-align: left;
+  cursor: pointer;
+}
+
+.managed-giveaway__history-item.is-active {
+  border-color: rgba(52, 116, 193, 0.28);
+  background: rgba(231, 241, 255, 0.76);
+}
+
+.giveaway-page__hero h1 {
+  margin: 0;
+}
+
+.giveaway-page__eyebrow {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.giveaway-page__participant-copy {
+  display: grid;
+  gap: 10px;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 520px) {
+  .managed-giveaway__prize-row,
+  .managed-giveaway__winner-row {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 520px) {
   .logs-violation-item__head {
     align-items: flex-start;

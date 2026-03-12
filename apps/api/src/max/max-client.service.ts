@@ -765,6 +765,26 @@ export class MaxClientService implements OnModuleDestroy {
       .filter((value): value is string => value !== null);
   }
 
+  async hasChatMember(chatId: string, userId: string): Promise<boolean> {
+    const normalizedUserId = userId.trim();
+    if (!normalizedUserId) {
+      return false;
+    }
+
+    const data = await this.request<Record<string, unknown>>('get', `/chats/${chatId}/members`, {
+      params: {
+        user_ids: normalizedUserId,
+      },
+    });
+    const members = Array.isArray(data.members)
+      ? data.members
+      : Array.isArray(data.users)
+        ? data.users
+        : [];
+
+    return members.some((member) => this.readMemberUserId(member) === normalizedUserId);
+  }
+
   async listBotChats(): Promise<MaxBotChat[]> {
     const results: MaxBotChat[] = [];
     const seenMarkers = new Set<string>();
@@ -877,6 +897,32 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     return 'chat';
+  }
+
+  private readMemberUserId(value: unknown): string | null {
+    if (!value || typeof value !== 'object') {
+      return null;
+    }
+
+    const row = value as Record<string, unknown>;
+    const nestedUser =
+      row.user && typeof row.user === 'object' && !Array.isArray(row.user)
+        ? (row.user as Record<string, unknown>)
+        : null;
+    const candidate =
+      row.user_id ??
+      row.userId ??
+      row.id ??
+      nestedUser?.user_id ??
+      nestedUser?.userId ??
+      nestedUser?.id;
+
+    if (typeof candidate !== 'string' && typeof candidate !== 'number') {
+      return null;
+    }
+
+    const normalized = String(candidate).trim();
+    return normalized.length > 0 ? normalized : null;
   }
 
   private parseChatLink(row: Record<string, unknown>): string | null {

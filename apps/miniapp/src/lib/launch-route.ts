@@ -1,6 +1,7 @@
 import type { ChannelDialogType } from '@maxim/contracts';
 
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
+const GIVEAWAY_START_PARAM_PREFIX = 'gg-';
 
 type ChannelDialogLaunchPayload = {
   v: 1;
@@ -8,6 +9,12 @@ type ChannelDialogLaunchPayload = {
   c: string;
   m: ChannelDialogType;
   t: string;
+};
+
+type GiveawayLaunchPayload = {
+  v: 1;
+  k: 'giveaway';
+  g: string;
 };
 
 function readString(value: unknown): string {
@@ -113,15 +120,51 @@ function parseChannelDialogStartParam(value: string): ChannelDialogLaunchPayload
   }
 }
 
-export function resolveLaunchDialogRoute(initData: string): string | null {
+function parseGiveawayStartParam(value: string): GiveawayLaunchPayload | null {
+  const normalized = value.trim();
+  if (!normalized.startsWith(GIVEAWAY_START_PARAM_PREFIX)) {
+    return null;
+  }
+
+  const encodedPayload = normalized.slice(GIVEAWAY_START_PARAM_PREFIX.length);
+  if (!encodedPayload) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(decodeBase64Url(encodedPayload)) as Partial<GiveawayLaunchPayload>;
+    const giveawayId = readString(parsed.g);
+    if (parsed.v !== 1 || parsed.k !== 'giveaway' || !giveawayId) {
+      return null;
+    }
+
+    return {
+      v: 1,
+      k: 'giveaway',
+      g: giveawayId,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function resolveLaunchRoute(initData: string): string | null {
   const startParam =
     readStartParamFromLocation() ||
     readStartParamFromBridge() ||
     readStartParamFromInitData(initData);
-  const launch = parseChannelDialogStartParam(startParam);
-  if (!launch) {
+
+  const giveawayLaunch = parseGiveawayStartParam(startParam);
+  if (giveawayLaunch) {
+    return `/giveaways/${encodeURIComponent(giveawayLaunch.g)}`;
+  }
+
+  const channelDialogLaunch = parseChannelDialogStartParam(startParam);
+  if (!channelDialogLaunch) {
     return null;
   }
 
-  return `/channel/${encodeURIComponent(launch.c)}/dialog/${launch.m}?token=${encodeURIComponent(launch.t)}`;
+  return `/channel/${encodeURIComponent(channelDialogLaunch.c)}/dialog/${channelDialogLaunch.m}?token=${encodeURIComponent(channelDialogLaunch.t)}`;
 }
+
+export const resolveLaunchDialogRoute = resolveLaunchRoute;

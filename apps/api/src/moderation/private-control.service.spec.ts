@@ -1,6 +1,8 @@
 import {
   channelSettingsSchema,
   chatSettingsSchema,
+  type ManagedGiveawayDetails,
+  type ManagedGiveawayWinner,
   type ManagedPoll,
   type MaxUpdate,
 } from '@maxim/contracts';
@@ -136,6 +138,34 @@ function createBotStartedPrivateUpdate(): MaxUpdate {
   };
 }
 
+function createBotStartedGiveawayClaimUpdate(): MaxUpdate {
+  return {
+    updateId: `upd-bot-started-giveaway-${Date.now()}`,
+    type: 'bot_started',
+    message: {
+      messageId: `bot-started-giveaway-${Date.now()}`,
+      chatId: '152517912',
+      senderId: 'user-1',
+      senderName: 'Тестовый пользователь',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'bot_started',
+      chat_id: 152517912,
+      start_payload: 'ggc-test-payload',
+      user: {
+        user_id: 'user-1',
+        name: 'Тестовый пользователь',
+      },
+      chat: {
+        chat_id: 152517912,
+        type: 'dialog',
+      },
+    },
+  };
+}
+
 const defaultSettings = chatSettingsSchema.parse({});
 const defaultChannelSettings = channelSettingsSchema.parse({});
 
@@ -154,6 +184,68 @@ function createPoll(overrides: Partial<ManagedPoll> = {}): ManagedPoll {
       { option: '', votes: 0, percent: 0 },
       { option: '', votes: 0, percent: 0 },
     ],
+    ...overrides,
+  };
+}
+
+function createGiveawayWinner(
+  overrides: Partial<ManagedGiveawayWinner> = {},
+): ManagedGiveawayWinner {
+  return {
+    id: 'winner-1',
+    prizeId: 'prize-1',
+    prizePosition: 1,
+    prizeTitle: 'Подписка MAX',
+    entryId: 'entry-1',
+    userId: 'user-1',
+    displayName: 'Тестовый пользователь',
+    status: 'SELECTED',
+    selectedAt: new Date().toISOString(),
+    claimDeadlineAt: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+    claimedAt: null,
+    deliveredAt: null,
+    expiredAt: null,
+    rerolledAt: null,
+    ...overrides,
+  };
+}
+
+function createGiveaway(overrides: Partial<ManagedGiveawayDetails> = {}): ManagedGiveawayDetails {
+  return {
+    id: 'giveaway-1',
+    sourceChatId: '-70000000000001',
+    entityType: 'chat',
+    title: 'Весенний розыгрыш',
+    description: 'Разыгрываем подписку.',
+    imageEnabled: false,
+    imageBase64: '',
+    imageMimeType: '',
+    imageFileName: '',
+    claimHours: 24,
+    publicationMessageId: 'msg-1',
+    publicationUrl: 'https://max.ru/chats/chat-1/message/1',
+    resultsMessageId: null,
+    resultsUrl: null,
+    status: 'ACTIVE',
+    hasImage: false,
+    entriesCount: 12,
+    verifiedEntriesCount: 10,
+    pendingEntriesCount: 2,
+    winnersCount: 0,
+    startsAt: null,
+    endsAt: new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString(),
+    publishedAt: new Date().toISOString(),
+    completedAt: null,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    prizes: [
+      {
+        id: 'prize-1',
+        position: 1,
+        title: 'Подписка MAX',
+      },
+    ],
+    winners: [],
     ...overrides,
   };
 }
@@ -265,9 +357,47 @@ function createHarness(
     ...overrides.adminService,
   };
 
+  const managedGiveawayService = {
+    parseClaimStartPayload: jest.fn((payload: string | null) =>
+      payload === 'ggc-test-payload'
+        ? {
+            giveawayId: 'giveaway-1',
+            winnerId: 'winner-1',
+          }
+        : null,
+    ),
+    getGiveawayClaimContext: jest.fn().mockResolvedValue({
+      giveaway: createGiveaway({
+        status: 'COMPLETED',
+        winnersCount: 1,
+      }),
+      winner: createGiveawayWinner(),
+    }),
+    claimGiveaway: jest.fn().mockResolvedValue({
+      ok: true,
+      winner: createGiveawayWinner({
+        status: 'CLAIMED',
+        claimedAt: new Date().toISOString(),
+      }),
+    }),
+    getCurrentManagedGiveawayForEntity: jest.fn().mockResolvedValue(createGiveaway()),
+    getGiveawaySettingsMiniappUrl: jest
+      .fn()
+      .mockReturnValue('https://maxim.play-team.ru/app/chat/-70000000000001/settings?focus=giveaway'),
+    publishManagedGiveaway: jest.fn().mockResolvedValue(createGiveaway({ status: 'ACTIVE' })),
+    closeManagedGiveaway: jest.fn().mockResolvedValue(
+      createGiveaway({
+        status: 'COMPLETED',
+        winnersCount: 1,
+      }),
+    ),
+    cancelManagedGiveaway: jest.fn().mockResolvedValue(createGiveaway({ status: 'CANCELED' })),
+  };
+
   const service = new PrivateControlService(
     maxClient as never,
     adminService as never,
+    managedGiveawayService as never,
     undefined,
     {
       get: jest.fn((key: string) => {
@@ -282,7 +412,7 @@ function createHarness(
     } as never,
   );
 
-  return { service, maxClient, adminService, chats, channels };
+  return { service, maxClient, adminService, managedGiveawayService, chats, channels };
 }
 
 function getLastSentText(maxClient: { sendMessage: jest.Mock }): string {
@@ -650,6 +780,61 @@ describe('PrivateControlService', () => {
       'Опрос опубликован',
       expect.objectContaining({
         text: expect.stringContaining('Статус: Активен'),
+      }),
+    );
+  });
+
+  it('opens giveaway screen from private control and shows current giveaway', async () => {
+    const { service, maxClient, chats, managedGiveawayService } = createHarness();
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
+
+    expect(managedGiveawayService.getCurrentManagedGiveawayForEntity).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      'chat',
+    );
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-1',
+      'Открываю розыгрыши',
+      expect.objectContaining({
+        text: expect.stringContaining('Название: Весенний розыгрыш'),
+      }),
+    );
+  });
+
+  it('renders giveaway claim flow on bot_started deep link and confirms claim', async () => {
+    const { service, maxClient, managedGiveawayService } = createHarness();
+
+    await service.handleBotStarted(createBotStartedGiveawayClaimUpdate());
+    expect(managedGiveawayService.parseClaimStartPayload).toHaveBeenCalledWith('ggc-test-payload');
+    expect(
+      getLastButtons(maxClient)
+        .flat()
+        .some(
+          (button) =>
+            typeof button === 'object' &&
+            button !== null &&
+            'text' in button &&
+            button.text === 'Подтвердить приз',
+        ),
+    ).toBe(true);
+
+    await service.handleUpdate(
+      createPrivateCallbackUpdate('pc2|giveaway_claim_confirm|giveaway-1|winner-1'),
+    );
+
+    expect(managedGiveawayService.claimGiveaway).toHaveBeenCalledWith(
+      'giveaway-1',
+      expect.objectContaining({ userId: 'user-1' }),
+      'private_claim',
+    );
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-1',
+      'Claim подтверждён',
+      expect.objectContaining({
+        text: expect.stringContaining('Приз подтверждён'),
       }),
     );
   });

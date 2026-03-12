@@ -122,6 +122,7 @@ const PRIVATE_MENU_PROMPT_TEXT = [
   '- «Открыть приложение» — полный набор rich-настроек.',
 ].join('\n');
 const BROADCAST_HANDOFF_START_PAYLOAD = 'broadcast_handoff';
+const GIVEAWAY_CLAIM_START_PAYLOAD_PREFIX = 'ggc-';
 const PRIVATE_HELP_TEXT = [
   'Быстрый гайд:',
   '1) Добавьте бота в нужный чат.',
@@ -4122,7 +4123,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const startPayload = this.extractBotStartedStartPayload(update);
-    const skipLongInstruction = startPayload === BROADCAST_HANDOFF_START_PAYLOAD;
+    const skipLongInstruction =
+      startPayload === BROADCAST_HANDOFF_START_PAYLOAD ||
+      Boolean(startPayload?.startsWith(GIVEAWAY_CLAIM_START_PAYLOAD_PREFIX));
 
     try {
       if (!skipLongInstruction) {

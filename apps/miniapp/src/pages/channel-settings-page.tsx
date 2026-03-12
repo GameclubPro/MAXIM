@@ -3,6 +3,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { BackChevronIcon, ParticipantsIcon } from '../components/ui/entity-header-icons';
+import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { MaxMarkdownEditor } from '../components/max-markdown-editor';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import { GlassCard } from '../components/ui/glass-card';
@@ -21,7 +22,7 @@ type ChannelRouteState = {
   chatLink: string;
 };
 
-type ChannelSettingsSectionKey = 'comments' | 'postSuggestions' | 'broadcast' | 'poll';
+type ChannelSettingsSectionKey = 'comments' | 'postSuggestions' | 'broadcast' | 'poll' | 'giveaway';
 type ChannelSettingsHintKey =
   | 'commentsEnabled'
   | 'commentsModerationEnabled'
@@ -364,6 +365,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     postSuggestions: false,
     broadcast: false,
     poll: false,
+    giveaway: false,
   });
   const [openHintKey, setOpenHintKey] = useState<ChannelSettingsHintKey | null>(null);
   const { pushToast } = useToast();
@@ -385,6 +387,15 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     queryFn: () => api.getChannelSettings(chatId),
     enabled: Boolean(chatId),
   });
+
+  useEffect(() => {
+    const focusSection = new URLSearchParams(location.search).get('focus');
+    if (focusSection !== 'giveaway') {
+      return;
+    }
+
+    setExpandedSections((current) => ({ ...current, giveaway: true }));
+  }, [location.search]);
 
   const channelHeaderQuery = useQuery({
     queryKey: ['channel-header', chatId],
@@ -1289,6 +1300,35 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
           >
             <div className="settings-section__collapse-inner">
               <ManagedPollCard api={api} entityType="channel" entityId={chatId} />
+            </div>
+          </div>
+        </GlassCard>
+      ) : null}
+
+      {chatId ? (
+        <GlassCard className="channel-settings-card" elevated>
+          <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+            <button
+              type="button"
+              className="settings-section__toggle"
+              onClick={() => toggleSection('giveaway')}
+              aria-expanded={expandedSections.giveaway}
+              aria-controls="channel-settings-giveaway"
+            >
+              <span className="settings-section__toggle-main">
+                <h3>Розыгрыши</h3>
+                <small>ЧЕРНОВИК, ПУБЛИКАЦИЯ, ИТОГИ И CLAIM</small>
+              </span>
+              <SectionChevron isOpen={expandedSections.giveaway} />
+            </button>
+          </div>
+
+          <div
+            id="channel-settings-giveaway"
+            className={cn('settings-section__collapse', expandedSections.giveaway && 'is-open')}
+          >
+            <div className="settings-section__collapse-inner">
+              <ManagedGiveawayCard api={api} entityType="channel" entityId={chatId} />
             </div>
           </div>
         </GlassCard>

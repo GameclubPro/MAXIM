@@ -14,12 +14,13 @@ import { StatusState } from './components/ui/status-state';
 import { ToastProvider } from './components/ui/toast';
 import { ApiClient } from './lib/api-client';
 import { getInitData } from './lib/init-data';
-import { resolveLaunchDialogRoute } from './lib/launch-route';
+import { resolveLaunchRoute } from './lib/launch-route';
 import { ChatsPage } from './pages/chats-page';
 import { ChannelSettingsPage } from './pages/channel-settings-page';
 import { ChannelStatsPage } from './pages/channel-stats-page';
 import { ChannelDialogPage } from './pages/channel-dialog-page';
 import { EventsPage } from './pages/events-page';
+import { GiveawayPage } from './pages/giveaway-page';
 import { SettingsPage } from './pages/settings-page';
 
 const queryClient = new QueryClient();
@@ -32,7 +33,7 @@ function LaunchRouteSync({ launchInitData }: { launchInitData: string }) {
   const appliedRouteRef = useRef<string | null>(null);
 
   useEffect(() => {
-    const targetRoute = resolveLaunchDialogRoute(launchInitData);
+    const targetRoute = resolveLaunchRoute(launchInitData);
     if (!targetRoute || appliedRouteRef.current === targetRoute) {
       return;
     }
@@ -95,6 +96,7 @@ export function App() {
                 element={<ChannelDialogPage api={apiClient} />}
               />
               <Route path="/chat/:chatId/events" element={<EventsPage api={apiClient} />} />
+              <Route path="/giveaways/:giveawayId" element={<GiveawayPage api={apiClient} />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>

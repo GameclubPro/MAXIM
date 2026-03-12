@@ -100,6 +100,13 @@ function BottomNavIcon({ name }: { name: BottomNavIconName }) {
 }
 
 function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
+  if (pathname.includes('/giveaways/')) {
+    return {
+      title: 'Розыгрыш',
+      subtitle: chatLabel || 'Участие и итоги в одном экране.',
+    };
+  }
+
   if (pathname.includes('/channel/') && pathname.includes('/dialog/')) {
     const isSuggest = pathname.includes('/dialog/suggest');
     return {
@@ -226,6 +233,7 @@ export function Shell() {
     : '';
   const isChatsListRoute = isChatsRoute && selectedRootEntityType === 'chat';
   const isChannelsListRoute = isChatsRoute && selectedRootEntityType === 'channel';
+  const isGiveawayRoute = location.pathname.includes('/giveaways/');
   const isDialogRoute =
     location.pathname.includes('/channel/') && location.pathname.includes('/dialog/');
   const isSettingsRoute = location.pathname.includes('/settings');
@@ -233,7 +241,12 @@ export function Shell() {
   const isChannelStatsRoute =
     location.pathname.includes('/channel/') && location.pathname.includes('/stats');
   const hasTopbar =
-    !isChatsRoute && !isSettingsRoute && !isEventsRoute && !isDialogRoute && !isChannelStatsRoute;
+    !isChatsRoute &&
+    !isSettingsRoute &&
+    !isEventsRoute &&
+    !isDialogRoute &&
+    !isChannelStatsRoute &&
+    !isGiveawayRoute;
 
   const screen = useMemo(
     () => resolveScreenInfo(location.pathname, resolvedChatTitle || resolvedChatId),
@@ -287,7 +300,7 @@ export function Shell() {
       className={cn(
         'app-shell',
         !hasTopbar && 'app-shell--no-topbar',
-        isDialogRoute && 'app-shell--immersive',
+        (isDialogRoute || isGiveawayRoute) && 'app-shell--immersive',
       )}
     >
       {hasTopbar ? (
@@ -309,7 +322,7 @@ export function Shell() {
         <Outlet />
       </main>
 
-      {!isDialogRoute ? (
+      {!isDialogRoute && !isGiveawayRoute ? (
         <nav
           className={cn('bottom-nav glass-card', isKeyboardOpen && 'is-keyboard-open')}
           aria-label="Навигация приложения"

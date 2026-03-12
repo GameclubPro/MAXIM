@@ -24,6 +24,10 @@ import {
   logsDashboardResponseSchema,
   manualModerationActionRequestSchema,
   manualModerationActionResultSchema,
+  managedGiveawayDetailsSchema,
+  managedGiveawayParticipantStateSchema,
+  managedGiveawayPublicSchema,
+  managedGiveawaySummarySchema,
   publishChannelEngagementRequestSchema,
   publishChannelEngagementResultSchema,
   chatSummarySchema,
@@ -38,6 +42,10 @@ import {
   type Me,
   type ManagedBroadcastDetails,
   type ManagedBroadcastSummary,
+  type ManagedGiveawayDetails,
+  type ManagedGiveawayParticipantState,
+  type ManagedGiveawayPublic,
+  type ManagedGiveawaySummary,
   type ModerationEvent,
   type ChannelDialogType,
   type ChannelDialogResponse,
@@ -53,11 +61,15 @@ import {
   type PublishChannelEngagementRequest,
   type PublishChannelEngagementResult,
   type PublishChatRulesResult,
+  type UpdateManagedGiveawayRequest,
   type BroadcastTextFormat,
   type BroadcastHandoffResponse,
   type SendBroadcastResult,
   updateChatRulesRequestSchema,
+  updateManagedGiveawayRequestSchema,
   managedPollSchema,
+  markManagedGiveawayWinnerDeliveredRequestSchema,
+  rerollManagedGiveawayWinnerRequestSchema,
   updateManagedPollRequestSchema,
 } from '@maxim/contracts';
 
@@ -87,6 +99,7 @@ export type SendBroadcastPayload = {
 };
 
 export type UpdateManagedBroadcastPayload = SendBroadcastPayload;
+export type UpdateManagedGiveawayPayload = UpdateManagedGiveawayRequest;
 
 export type BroadcastHandoffPayload = {
   applyToAllChats: boolean;
@@ -406,6 +419,160 @@ export class ApiClient {
       body: JSON.stringify(requestBody),
     });
     return broadcastHandoffResponseSchema.parse(response);
+  }
+
+  async getManagedGiveaways(
+    entityType: 'chat' | 'channel',
+    entityId: string,
+  ): Promise<ManagedGiveawaySummary[]> {
+    const response = await this.request(`/${entityType === 'channel' ? 'channels' : 'chats'}/${entityId}/giveaways`);
+    if (!Array.isArray(response)) {
+      throw new Error('Invalid managed giveaways response');
+    }
+    return response.map((item: unknown) => managedGiveawaySummarySchema.parse(item));
+  }
+
+  async createManagedGiveaway(
+    entityType: 'chat' | 'channel',
+    entityId: string,
+    payload: UpdateManagedGiveawayPayload,
+  ): Promise<ManagedGiveawayDetails> {
+    const requestBody = updateManagedGiveawayRequestSchema.parse(payload);
+    const response = await this.request(
+      `/${entityType === 'channel' ? 'channels' : 'chats'}/${entityId}/giveaways`,
+      {
+        method: 'POST',
+        body: JSON.stringify(requestBody),
+      },
+    );
+    return managedGiveawayDetailsSchema.parse(response);
+  }
+
+  async getManagedGiveaway(
+    entityType: 'chat' | 'channel',
+    entityId: string,
+    giveawayId: string,
+  ): Promise<ManagedGiveawayDetails> {
+    const response = await this.request(
+      `/${entityType === 'channel' ? 'channels' : 'chats'}/${entityId}/giveaways/${giveawayId}`,
+    );
+    return managedGiveawayDetailsSchema.parse(response);
+  }
+
+  async updateManagedGiveaway(
+    entityType: 'chat' | 'channel',
+    entityId: string,
+    giveawayId: string,
+    payload: UpdateManagedGiveawayPayload,
+  ): Promise<ManagedGiveawayDetails> {
+    const requestBody = updateManagedGiveawayRequestSchema.parse(payload);
+    const response = await this.request(
+      `/${entityType === 'channel' ? 'channels' : 'chats'}/${entityId}/giveaways/${giveawayId}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify(requestBody),
+      },
+    );
+    return managedGiveawayDetailsSchema.parse(response);
+  }
+
+  async publishManagedGiveaway(
+    entityType: 'chat' | 'channel',
+    entityId: string,
+    giveawayId: string,
+  ): Promise<ManagedGiveawayDetails> {
+    const response = await this.request(
+      `/${entityType === 'channel' ? 'channels' : 'chats'}/${entityId}/giveaways/${giveawayId}/publish`,
+      {
+        method: 'POST',
+      },
+    );
+    return managedGiveawayDetailsSchema.parse(response);
+  }
+
+  async closeManagedGiveaway(
+    entityType: 'chat' | 'channel',
+    entityId: string,
+    giveawayId: string,
+  ): Promise<ManagedGiveawayDetails> {
+    const response = await this.request(
+      `/${entityType === 'channel' ? 'channels' : 'chats'}/${entityId}/giveaways/${giveawayId}/close`,
+      {
+        method: 'POST',
+      },
+    );
+    return managedGiveawayDetailsSchema.parse(response);
+  }
+
+  async rerollManagedGiveawayWinner(
+    entityType: 'chat' | 'channel',
+    entityId: string,
+    giveawayId: string,
+    winnerId: string,
+  ): Promise<ManagedGiveawayDetails> {
+    const requestBody = rerollManagedGiveawayWinnerRequestSchema.parse({ winnerId });
+    const response = await this.request(
+      `/${entityType === 'channel' ? 'channels' : 'chats'}/${entityId}/giveaways/${giveawayId}/reroll`,
+      {
+        method: 'POST',
+        body: JSON.stringify(requestBody),
+      },
+    );
+    return managedGiveawayDetailsSchema.parse(response);
+  }
+
+  async markManagedGiveawayWinnerDelivered(
+    entityType: 'chat' | 'channel',
+    entityId: string,
+    giveawayId: string,
+    winnerId: string,
+  ): Promise<ManagedGiveawayDetails> {
+    const requestBody = markManagedGiveawayWinnerDeliveredRequestSchema.parse({ winnerId });
+    const response = await this.request(
+      `/${entityType === 'channel' ? 'channels' : 'chats'}/${entityId}/giveaways/${giveawayId}/deliver`,
+      {
+        method: 'POST',
+        body: JSON.stringify(requestBody),
+      },
+    );
+    return managedGiveawayDetailsSchema.parse(response);
+  }
+
+  async cancelManagedGiveaway(
+    entityType: 'chat' | 'channel',
+    entityId: string,
+    giveawayId: string,
+  ): Promise<ManagedGiveawayDetails> {
+    const response = await this.request(
+      `/${entityType === 'channel' ? 'channels' : 'chats'}/${entityId}/giveaways/${giveawayId}/cancel`,
+      {
+        method: 'POST',
+      },
+    );
+    return managedGiveawayDetailsSchema.parse(response);
+  }
+
+  async getPublicGiveaway(giveawayId: string): Promise<ManagedGiveawayPublic> {
+    const response = await this.request(`/giveaways/${giveawayId}`);
+    return managedGiveawayPublicSchema.parse(response);
+  }
+
+  async getGiveawayParticipantState(giveawayId: string): Promise<ManagedGiveawayParticipantState> {
+    const response = await this.request(`/giveaways/${giveawayId}/me`);
+    return managedGiveawayParticipantStateSchema.parse(response);
+  }
+
+  async enterGiveaway(giveawayId: string): Promise<ManagedGiveawayParticipantState> {
+    const response = await this.request(`/giveaways/${giveawayId}/enter`, {
+      method: 'POST',
+    });
+    return managedGiveawayParticipantStateSchema.parse(response);
+  }
+
+  async claimGiveaway(giveawayId: string): Promise<void> {
+    await this.request(`/giveaways/${giveawayId}/claim`, {
+      method: 'POST',
+    });
   }
 
   async getDomainAllowlist(chatId: string): Promise<string[]> {
