@@ -4360,8 +4360,8 @@ export class PrivateControlService {
     if (!giveaway) {
       lines.push(
         '',
-        'Текущего розыгрыша нет.',
-        'Соберите черновик в miniapp и продолжайте публикацию и контроль здесь, в личке бота.',
+        'Состояние: пусто',
+        'Контур: miniapp собирает карточку, бот ведёт публикацию и контроль.',
       );
     } else {
       const statusLabel =
@@ -4378,34 +4378,45 @@ export class PrivateControlService {
                 : 'Черновик';
       lines.push(
         '',
+        'Текущий слот',
         `Название: ${giveaway.title}`,
         `Статус: ${statusLabel}`,
-        `Заявки: ${giveaway.entriesCount} (подтверждено ${giveaway.verifiedEntriesCount}, pending ${giveaway.pendingEntriesCount})`,
+        `Режим: контент правится в miniapp, запуск и контроль идут в боте.`,
+        `Период: ${
+          giveaway.startsAt
+            ? `${this.formatDateTimeLabel(giveaway.startsAt)} -> ${this.formatDateTimeLabel(giveaway.endsAt)}`
+            : `сейчас -> ${this.formatDateTimeLabel(giveaway.endsAt)}`
+        }`,
+        `Claim: ${giveaway.claimHours} ч`,
+        `Заявки: ${giveaway.entriesCount} / verified ${giveaway.verifiedEntriesCount} / pending ${giveaway.pendingEntriesCount}`,
         `Победители: ${giveaway.winnersCount}`,
-        `Финиш: ${this.formatDateTimeLabel(giveaway.endsAt)}`,
       );
-      lines.push('Режим: контент правится в miniapp, публикация и контроль идут здесь.');
 
-      if (giveaway.startsAt) {
-        lines.push(`Старт: ${this.formatDateTimeLabel(giveaway.startsAt)}`);
-      }
+      const linkLines: string[] = [];
       if (giveaway.publicationUrl) {
-        lines.push(`Пост: ${giveaway.publicationUrl}`);
+        linkLines.push(`Пост: ${giveaway.publicationUrl}`);
       }
       if (giveaway.resultsUrl) {
-        lines.push(`Итоги: ${giveaway.resultsUrl}`);
+        linkLines.push(`Итоги: ${giveaway.resultsUrl}`);
+      }
+      if (linkLines.length > 0) {
+        lines.push('', 'Ссылки', ...linkLines);
       }
 
-      lines.push('', 'Призы:');
+      lines.push('', 'Призы');
       lines.push(...giveaway.prizes.map((prize) => `${prize.position}. ${prize.title}`));
 
       if (giveaway.winners.length > 0) {
-        lines.push('', 'Победители:');
+        lines.push('', 'Победители');
         lines.push(
-          ...giveaway.winners.map(
-            (winner) =>
-              `${winner.prizePosition}. ${winner.prizeTitle} — ${winner.displayName ?? winner.userId} (${this.formatGiveawayWinnerStatusLabel(winner.status)})`,
-          ),
+          ...giveaway.winners.flatMap((winner) => [
+            `${winner.prizePosition}. ${winner.prizeTitle}`,
+            `Участник: ${winner.displayName ?? winner.userId}`,
+            `Статус: ${this.formatGiveawayWinnerStatusLabel(winner.status)}`,
+            ...(winner.claimDeadlineAt
+              ? [`Claim до: ${this.formatDateTimeLabel(winner.claimDeadlineAt)}`]
+              : []),
+          ]),
         );
       }
 

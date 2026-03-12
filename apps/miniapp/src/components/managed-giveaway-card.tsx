@@ -10,6 +10,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { cn } from '../lib/cn';
 import { prepareBroadcastImage } from '../lib/broadcast-image';
+import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import type { ApiClient, UpdateManagedGiveawayPayload } from '../lib/api-client';
 import { openMaxBotLink } from '../lib/max-bridge';
 import { useToast } from './ui/toast';
@@ -17,6 +18,7 @@ import { useToast } from './ui/toast';
 const MAX_GIVEAWAY_IMAGE_SIZE_BYTES = 1_000_000;
 
 type GiveawayDraft = UpdateManagedGiveawayPayload;
+type ManagedGiveawayHintKey = 'flow' | 'timing' | 'cover' | 'prizes' | 'winners';
 
 function createDefaultEndsAt(): string {
   return new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString();
@@ -181,6 +183,69 @@ function getEntityLabel(entityType: 'chat' | 'channel'): string {
   return entityType === 'channel' ? 'канала' : 'чата';
 }
 
+function ManagedGiveawayInfoButton({
+  hintKey,
+  openHintKey,
+  onToggleHint,
+  label,
+}: {
+  hintKey: ManagedGiveawayHintKey;
+  openHintKey: ManagedGiveawayHintKey | null;
+  onToggleHint: (hintKey: ManagedGiveawayHintKey) => void;
+  label: string;
+}) {
+  const isOpen = openHintKey === hintKey;
+
+  return (
+    <button
+      type="button"
+      className={cn('settings-info-button', isOpen && 'is-open')}
+      aria-label={label}
+      aria-controls={`managed-giveaway-hint-${hintKey}`}
+      aria-expanded={isOpen}
+      onClick={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        onToggleHint(hintKey);
+      }}
+    >
+      <span aria-hidden>i</span>
+    </button>
+  );
+}
+
+function ManagedGiveawayHintAnchor({
+  hintKey,
+  openHintKey,
+  onToggleHint,
+  label,
+  children,
+}: {
+  hintKey: ManagedGiveawayHintKey;
+  openHintKey: ManagedGiveawayHintKey | null;
+  onToggleHint: (hintKey: ManagedGiveawayHintKey) => void;
+  label: string;
+  children: string;
+}) {
+  const isOpen = openHintKey === hintKey;
+
+  return (
+    <span className="channel-settings-hint-anchor">
+      <ManagedGiveawayInfoButton
+        hintKey={hintKey}
+        openHintKey={openHintKey}
+        onToggleHint={onToggleHint}
+        label={label}
+      />
+      {isOpen ? (
+        <span id={`managed-giveaway-hint-${hintKey}`} className="channel-settings-hint-popover">
+          {children}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
 export function ManagedGiveawayCard({
   api,
   entityType,
@@ -194,6 +259,8 @@ export function ManagedGiveawayCard({
   const { pushToast } = useToast();
   const [selectedGiveawayId, setSelectedGiveawayId] = useState<string | null>(null);
   const [draft, setDraft] = useState<GiveawayDraft | null>(null);
+  const [openHintKey, setOpenHintKey] = useState<ManagedGiveawayHintKey | null>(null);
+  useHintPopoverAutoPosition(openHintKey !== null);
 
   const listQuery = useQuery({
     queryKey: ['managed-giveaways', entityType, entityId] as const,
@@ -464,11 +531,14 @@ export function ManagedGiveawayCard({
   const selectedSummary = giveaways.find((item) => item.id === selectedGiveawayId) ?? null;
   const statusSummary =
     selectedGiveaway ?? currentGiveaway ?? selectedSummary ?? (giveaways[0] ?? null);
+  const toggleHint = (hintKey: ManagedGiveawayHintKey) => {
+    setOpenHintKey((current) => (current === hintKey ? null : hintKey));
+  };
 
   return (
     <div className="managed-giveaway">
       <div className="managed-giveaway__toolbar">
-        <div>
+        <div className="managed-giveaway__toolbar-copy">
           <div className="managed-giveaway__title">Текущий розыгрыш</div>
           <div className="managed-giveaway__subtitle">
             {statusSummary
@@ -477,23 +547,52 @@ export function ManagedGiveawayCard({
           </div>
         </div>
 
-        {canCreateNew ? (
-          <button
-            type="button"
-            className="button button--ghost"
-            disabled={isBusy}
-            onClick={startNewDraft}
+        <div className="managed-giveaway__toolbar-actions">
+          <ManagedGiveawayHintAnchor
+            hintKey="flow"
+            openHintKey={openHintKey}
+            onToggleHint={toggleHint}
+            label="Как устроен сценарий розыгрыша"
           >
-            Новый
-          </button>
-        ) : null}
+            Miniapp нужен для карточки розыгрыша: текст, фото, призы и тайминг. Публикация,
+            завершение, reroll и выдача приза продолжаются в личке бота.
+          </ManagedGiveawayHintAnchor>
+          {canCreateNew ? (
+            <button
+              type="button"
+              className="button button--ghost"
+              disabled={isBusy}
+              onClick={startNewDraft}
+            >
+              Новый
+            </button>
+          ) : null}
+        </div>
       </div>
 
-      <div className="managed-giveaway__panel">
-        <p>
-          Здесь собирается карточка розыгрыша: текст, фото, призы и тайминг. Публикация,
-          завершение, reroll и выдача приза идут дальше в личке бота.
-        </p>
+      <div className="managed-giveaway__hero-card">
+        <div className="managed-giveaway__hero-copy">
+          <strong>{statusSummary?.title ?? 'Соберите новый розыгрыш'}</strong>
+          <span>
+            {statusSummary
+              ? 'Контент и тайминг правятся здесь, публикация и контроль идут в боте.'
+              : `Подготовьте карточку розыгрыша для ${getEntityLabel(entityType)}.`}
+          </span>
+        </div>
+        <div className="managed-giveaway__hero-metrics">
+          <div className="managed-giveaway__metric">
+            <span>Статус</span>
+            <strong>{statusSummary ? buildStatusLabel(statusSummary.status) : 'Пусто'}</strong>
+          </div>
+          <div className="managed-giveaway__metric">
+            <span>Заявки</span>
+            <strong>{statusSummary?.entriesCount ?? 0}</strong>
+          </div>
+          <div className="managed-giveaway__metric">
+            <span>Победители</span>
+            <strong>{statusSummary?.winnersCount ?? 0}</strong>
+          </div>
+        </div>
       </div>
 
       {listQuery.isLoading ? (
@@ -514,7 +613,14 @@ export function ManagedGiveawayCard({
       ) : null}
 
       {draft ? (
-        <div className="managed-giveaway__panel">
+        <div className="managed-giveaway__panel managed-giveaway__panel--draft">
+          <div className="managed-giveaway__section-head">
+            <div className="managed-giveaway__section-copy">
+              <strong>{selectedGiveaway?.status === 'DRAFT' ? 'Черновик' : 'Новый черновик'}</strong>
+              <small>Соберите карточку и передайте публикацию в личку бота</small>
+            </div>
+          </div>
+
           <div className="managed-giveaway__grid">
             <label className="field settings-text-field">
               <span>Название</span>
@@ -535,7 +641,10 @@ export function ManagedGiveawayCard({
                 max={336}
                 value={draft.claimHours}
                 onChange={(event) =>
-                  handleDraftChange('claimHours', Math.min(336, Math.max(1, Number(event.target.value) || 1)))
+                  handleDraftChange(
+                    'claimHours',
+                    Math.min(336, Math.max(1, Number(event.target.value) || 1)),
+                  )
                 }
               />
             </label>
@@ -544,7 +653,7 @@ export function ManagedGiveawayCard({
           <label className="field settings-text-field">
             <span>Описание</span>
             <textarea
-              rows={4}
+              rows={3}
               maxLength={MANAGED_GIVEAWAY_DESCRIPTION_MAX_LENGTH}
               value={draft.description}
               onChange={(event) => handleDraftChange('description', event.target.value)}
@@ -552,42 +661,73 @@ export function ManagedGiveawayCard({
             />
           </label>
 
-          <div className="managed-giveaway__grid">
-            <label className="field settings-text-field">
-              <span>Старт</span>
-              <input
-                type="datetime-local"
-                value={toLocalDateTimeInputValue(draft.startsAt)}
-                onChange={(event) => handleDraftChange('startsAt', fromLocalDateTimeInputValue(event.target.value))}
-              />
-            </label>
+          <div className="managed-giveaway__panel managed-giveaway__panel--nested">
+            <div className="managed-giveaway__section-head">
+              <div className="managed-giveaway__section-copy">
+                <strong>Тайминг</strong>
+                <small>Старт, дедлайн и окно подтверждения</small>
+              </div>
+              <ManagedGiveawayHintAnchor
+                hintKey="timing"
+                openHintKey={openHintKey}
+                onToggleHint={toggleHint}
+                label="Подсказка по таймингу розыгрыша"
+              >
+                Если старт не задан, розыгрыш начнётся сразу после публикации. Claim-окно -
+                сколько часов победитель может подтвердить приз в личке бота.
+              </ManagedGiveawayHintAnchor>
+            </div>
 
-            <label className="field settings-text-field">
-              <span>Завершение</span>
-              <input
-                type="datetime-local"
-                value={toLocalDateTimeInputValue(draft.endsAt)}
-                onChange={(event) =>
-                  handleDraftChange(
-                    'endsAt',
-                    fromLocalDateTimeInputValue(event.target.value) ?? createDefaultEndsAt(),
-                  )
-                }
-              />
-            </label>
+            <div className="managed-giveaway__grid">
+              <label className="field settings-text-field">
+                <span>Старт</span>
+                <input
+                  type="datetime-local"
+                  value={toLocalDateTimeInputValue(draft.startsAt)}
+                  onChange={(event) =>
+                    handleDraftChange('startsAt', fromLocalDateTimeInputValue(event.target.value))
+                  }
+                />
+              </label>
+
+              <label className="field settings-text-field">
+                <span>Завершение</span>
+                <input
+                  type="datetime-local"
+                  value={toLocalDateTimeInputValue(draft.endsAt)}
+                  onChange={(event) =>
+                    handleDraftChange(
+                      'endsAt',
+                      fromLocalDateTimeInputValue(event.target.value) ?? createDefaultEndsAt(),
+                    )
+                  }
+                />
+              </label>
+            </div>
           </div>
 
-          <div className="managed-giveaway__panel">
+          <div className="managed-giveaway__panel managed-giveaway__panel--nested">
             <div className="managed-giveaway__section-head">
-              <div>
+              <div className="managed-giveaway__section-copy">
                 <strong>Обложка</strong>
                 <small>{draft.imageEnabled ? draft.imageFileName || 'Файл загружен' : 'Необязательно'}</small>
               </div>
-              {draft.imageEnabled ? (
-                <button type="button" className="button button--ghost" onClick={clearImage}>
-                  Убрать
-                </button>
-              ) : null}
+              <div className="managed-giveaway__section-actions">
+                <ManagedGiveawayHintAnchor
+                  hintKey="cover"
+                  openHintKey={openHintKey}
+                  onToggleHint={toggleHint}
+                  label="Подсказка по обложке"
+                >
+                  Обложка нужна только если розыгрышу нужен визуальный акцент в посте. Лимит -
+                  до 1 MB после подготовки изображения.
+                </ManagedGiveawayHintAnchor>
+                {draft.imageEnabled ? (
+                  <button type="button" className="button button--ghost" onClick={clearImage}>
+                    Убрать
+                  </button>
+                ) : null}
+              </div>
             </div>
 
             <label className="field settings-text-field mailing-upload-field">
@@ -603,20 +743,31 @@ export function ManagedGiveawayCard({
             </label>
           </div>
 
-          <div className="managed-giveaway__panel">
+          <div className="managed-giveaway__panel managed-giveaway__panel--nested">
             <div className="managed-giveaway__section-head">
-              <div>
+              <div className="managed-giveaway__section-copy">
                 <strong>Призы</strong>
                 <small>{draft.prizes.length} мест</small>
               </div>
-              <button
-                type="button"
-                className="button button--ghost"
-                disabled={draft.prizes.length >= MANAGED_GIVEAWAY_MAX_PRIZES}
-                onClick={addPrize}
-              >
-                Добавить
-              </button>
+              <div className="managed-giveaway__section-actions">
+                <ManagedGiveawayHintAnchor
+                  hintKey="prizes"
+                  openHintKey={openHintKey}
+                  onToggleHint={toggleHint}
+                  label="Подсказка по призовым местам"
+                >
+                  Призы задают порядок победителей. После завершения бот автоматически назначит
+                  места сверху вниз и позволит сделать reroll по любому непринятому месту.
+                </ManagedGiveawayHintAnchor>
+                <button
+                  type="button"
+                  className="button button--ghost"
+                  disabled={draft.prizes.length >= MANAGED_GIVEAWAY_MAX_PRIZES}
+                  onClick={addPrize}
+                >
+                  Добавить
+                </button>
+              </div>
             </div>
 
             <div className="managed-giveaway__prizes">
@@ -681,7 +832,7 @@ export function ManagedGiveawayCard({
       {selectedGiveaway && !draft ? (
         <div className="managed-giveaway__panel">
           <div className="managed-giveaway__summary-head">
-            <div>
+            <div className="managed-giveaway__section-copy">
               <h4>{selectedGiveaway.title}</h4>
               <div
                 className={cn(
@@ -717,10 +868,19 @@ export function ManagedGiveawayCard({
           {selectedGiveaway.winners.length > 0 ? (
             <div className="managed-giveaway__winners">
               <div className="managed-giveaway__section-head">
-                <div>
+                <div className="managed-giveaway__section-copy">
                   <strong>Победители</strong>
-                  <small>Reroll и выдача приза продолжаются в личке бота</small>
+                  <small>Текущие статусы призовых мест</small>
                 </div>
+                <ManagedGiveawayHintAnchor
+                  hintKey="winners"
+                  openHintKey={openHintKey}
+                  onToggleHint={toggleHint}
+                  label="Подсказка по победителям"
+                >
+                  Здесь показываются только статусы и состав победителей. Reroll, завершение и
+                  подтверждение выдачи делаются в личке бота после handoff.
+                </ManagedGiveawayHintAnchor>
               </div>
 
               {selectedGiveaway.winners.map((winner) => (
@@ -776,7 +936,7 @@ export function ManagedGiveawayCard({
       {historyGiveaways.length > 0 ? (
         <div className="managed-giveaway__history">
           <div className="managed-giveaway__section-head">
-            <div>
+            <div className="managed-giveaway__section-copy">
               <strong>История</strong>
               <small>Завершённые и отменённые розыгрыши</small>
             </div>
