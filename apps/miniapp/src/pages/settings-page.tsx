@@ -1375,6 +1375,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const chatParticipantsCountLabel = formatParticipantsCount(
     chatHeaderQuery.data?.participantsCount ?? null,
   );
+  const stickerTestRoute = chatId ? `/chat/${chatId}/settings/stickers` : '';
 
   const publishRulesMutation = useMutation({
     mutationFn: () => api.publishRules(chatId ?? ''),
@@ -2857,6 +2858,17 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       <ParticipantsIcon />
                       <span>{chatParticipantsCountLabel}</span>
                     </span>
+                  </div>
+                ) : null}
+                {stickerTestRoute ? (
+                  <div className="settings-page-header__actions-row">
+                    <Link
+                      to={stickerTestRoute}
+                      state={chatTitle ? { chatTitle } : undefined}
+                      className="settings-page-header__quick-link"
+                    >
+                      Стикеры
+                    </Link>
                   </div>
                 ) : null}
               </div>
