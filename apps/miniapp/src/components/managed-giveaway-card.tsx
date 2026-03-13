@@ -205,21 +205,21 @@ function normalizePrizeKey(value: string): string {
 
 function validateDraft(draft: GiveawayEditorDraft): { valid: boolean; message: string } {
   if (!draft.title.trim()) {
-    return { valid: false, message: 'Введите название розыгрыша.' };
+    return { valid: false, message: 'Введите название.' };
   }
 
   if (!draft.endsAtLocal.trim()) {
-    return { valid: false, message: 'Укажите время завершения.' };
+    return { valid: false, message: 'Укажите дату и время финиша.' };
   }
 
   const startsAt = draft.startsAtLocal.trim() ? parseDateTimeInput(draft.startsAtLocal) : null;
   if (draft.startsAtLocal.trim() && !startsAt) {
-    return { valid: false, message: 'Укажите корректное время старта.' };
+    return { valid: false, message: 'Проверьте дату старта.' };
   }
 
   const endsAt = parseDateTimeInput(draft.endsAtLocal);
   if (!endsAt) {
-    return { valid: false, message: 'Укажите корректное время завершения.' };
+    return { valid: false, message: 'Проверьте дату финиша.' };
   }
 
   const startsAtMs = startsAt ? startsAt.getTime() : Date.now();
@@ -232,7 +232,10 @@ function validateDraft(draft: GiveawayEditorDraft): { valid: boolean; message: s
     draft.claimHours < MIN_CLAIM_HOURS ||
     draft.claimHours > MAX_CLAIM_HOURS
   ) {
-    return { valid: false, message: `Подтверждение: от ${MIN_CLAIM_HOURS} до ${MAX_CLAIM_HOURS} часов.` };
+    return {
+      valid: false,
+      message: `Срок подтверждения: от ${MIN_CLAIM_HOURS} до ${MAX_CLAIM_HOURS} часов.`,
+    };
   }
 
   if (draft.prizes.length < 1 || draft.prizes.length > MANAGED_GIVEAWAY_MAX_PRIZES) {
@@ -241,7 +244,7 @@ function validateDraft(draft: GiveawayEditorDraft): { valid: boolean; message: s
 
   const trimmedPrizes = draft.prizes.map((item) => item.trim());
   if (trimmedPrizes.some((item) => !item)) {
-    return { valid: false, message: 'Заполните названия всех призов.' };
+    return { valid: false, message: 'Заполните все призы.' };
   }
 
   const normalized = trimmedPrizes.map((item) => normalizePrizeKey(item));
@@ -260,10 +263,10 @@ function toUpdatePayload(draft: GiveawayEditorDraft): UpdateManagedGiveawayPaylo
   const startsAtDate = draft.startsAtLocal.trim() ? parseDateTimeInput(draft.startsAtLocal) : null;
   const endsAtDate = parseDateTimeInput(draft.endsAtLocal);
   if (!endsAtDate) {
-    throw new Error('Укажите корректное время завершения.');
+    throw new Error('Проверьте дату финиша.');
   }
   if (draft.startsAtLocal.trim() && !startsAtDate) {
-    throw new Error('Укажите корректное время старта.');
+    throw new Error('Проверьте дату старта.');
   }
 
   return {
@@ -293,18 +296,18 @@ function buildEditorStatusLabel(params: {
     return '';
   }
   if (params.loadingDetails) {
-    return 'Загружаем черновик…';
+    return 'Загружаем...';
   }
   if (params.busy) {
     return 'Сохраняем…';
   }
   if (params.mode === 'create') {
-    return 'Новый черновик';
+    return 'Создайте и опубликуйте';
   }
   if (params.isDirty) {
-    return 'Есть несохранённые изменения';
+    return 'Есть изменения';
   }
-  return 'Черновик синхронизирован';
+  return 'Все сохранено';
 }
 
 function buildCurrentSubtitle(item: ManagedGiveawaySummary): string {
@@ -580,7 +583,7 @@ export function ManagedGiveawayCard({
       if (!silent) {
         pushToast({
           tone: 'danger',
-          title: 'Проверьте форму',
+          title: 'Проверьте поля',
           description: checked.message,
         });
       }
@@ -627,7 +630,7 @@ export function ManagedGiveawayCard({
       setValidationHint(checked.message);
       pushToast({
         tone: 'danger',
-        title: 'Проверьте форму',
+        title: 'Проверьте поля',
         description: checked.message,
       });
       return;
@@ -666,7 +669,7 @@ export function ManagedGiveawayCard({
       setEditorError(message);
       pushToast({
         tone: 'danger',
-        title: 'Ошибка публикации',
+        title: 'Не удалось опубликовать',
         description: message,
       });
     }
@@ -684,14 +687,14 @@ export function ManagedGiveawayCard({
       clearEditor();
       pushToast({
         tone: 'success',
-        title: 'Черновик отменён',
+        title: 'Черновик удалён',
       });
     } catch (error: unknown) {
       const message = formatApiError(error, 'Не удалось отменить черновик.');
       setEditorError(message);
       pushToast({
         tone: 'danger',
-        title: 'Ошибка',
+        title: 'Не удалось удалить',
         description: message,
       });
     }
@@ -714,12 +717,12 @@ export function ManagedGiveawayCard({
         <div className="managed-giveaway__header-copy">
           <strong className="managed-giveaway__title">Розыгрыши</strong>
           <small className="managed-giveaway__subtitle">
-            Настройка черновика в miniapp, живое управление в боте.
+            Заполните поля и нажмите «Опубликовать».
           </small>
         </div>
         {isEditingOpen ? (
           <button type="button" className="button button--ghost" disabled={isBusy} onClick={clearEditor}>
-            Свернуть
+            Закрыть
           </button>
         ) : currentItem?.status === 'DRAFT' ? (
           <button type="button" className="button button--accent" disabled={isBusy} onClick={startEditCurrentDraft}>
@@ -748,26 +751,26 @@ export function ManagedGiveawayCard({
           <div className={cn('managed-giveaway__panel', 'managed-giveaway__editor-card')}>
             <div className="managed-giveaway__editor-head">
               <div className="managed-giveaway__section-copy">
-                <strong>Черновик</strong>
-                <small>{draftDetailsQuery.isLoading ? 'Загружаем черновик…' : 'Подготовка формы…'}</small>
+                <strong>Создание розыгрыша</strong>
+                <small>{draftDetailsQuery.isLoading ? 'Загружаем...' : 'Готовим форму...'}</small>
               </div>
-              <span className="managed-giveaway__badge is-warning">Черновик</span>
+              <span className="managed-giveaway__badge is-warning">Форма</span>
             </div>
           </div>
         ) : (
         <div className={cn('managed-giveaway__panel', 'managed-giveaway__editor-card')}>
           <div className="managed-giveaway__editor-head">
             <div className="managed-giveaway__section-copy">
-              <strong>Черновик</strong>
+              <strong>Создание розыгрыша</strong>
               <small>{editorStatusLabel}</small>
             </div>
             <span className={cn('managed-giveaway__badge', editorMode === 'create' ? 'is-warning' : 'is-muted')}>
-              {editorMode === 'create' ? 'Новый' : 'Черновик'}
+              {editorMode === 'create' ? 'Новый' : 'Редактирование'}
             </span>
           </div>
 
           <div className="managed-giveaway__preset-row">
-            <span>Пресеты:</span>
+            <span>Быстрый старт:</span>
             {QUICK_DURATION_HOURS.map((hours) => (
               <button
                 key={`duration-${hours}`}
@@ -811,7 +814,7 @@ export function ManagedGiveawayCard({
                 setEditorError('');
               }}
               maxLength={MANAGED_GIVEAWAY_TITLE_MAX_LENGTH}
-              placeholder="Например: Весенний розыгрыш"
+              placeholder="Например: Розыгрыш на выходные"
               disabled={isBusy}
             />
           </label>
@@ -836,14 +839,14 @@ export function ManagedGiveawayCard({
                 setEditorError('');
               }}
               maxLength={MANAGED_GIVEAWAY_DESCRIPTION_MAX_LENGTH}
-              placeholder="Коротко опишите правила участия."
+              placeholder="Что нужно сделать для участия."
               disabled={isBusy}
             />
           </label>
 
           <div className="managed-giveaway__editor-grid">
             <label className="field">
-              <span>Старт (опционально)</span>
+              <span>Старт (необязательно)</span>
               <input
                 type="datetime-local"
                 value={draft.startsAtLocal}
@@ -864,7 +867,7 @@ export function ManagedGiveawayCard({
             </label>
 
             <label className="field">
-              <span>Финиш</span>
+              <span>Финиш (обязательно)</span>
               <input
                 type="datetime-local"
                 value={draft.endsAtLocal}
@@ -887,7 +890,7 @@ export function ManagedGiveawayCard({
 
           <div className="managed-giveaway__editor-grid">
             <label className="field">
-              <span>Подтверждение приза (часы)</span>
+              <span>Срок подтверждения (ч)</span>
               <input
                 type="number"
                 min={MIN_CLAIM_HOURS}
@@ -910,7 +913,7 @@ export function ManagedGiveawayCard({
             </label>
 
             <div className="managed-giveaway__preset-row managed-giveaway__preset-row--inline">
-              <span>Быстро:</span>
+              <span>Готово:</span>
               {QUICK_CLAIM_HOURS.map((hours) => (
                 <button
                   key={`claim-${hours}`}
@@ -939,7 +942,7 @@ export function ManagedGiveawayCard({
           <div className="managed-giveaway__section">
             <div className="managed-giveaway__section-head">
               <div className="managed-giveaway__section-copy">
-                <strong>Призы</strong>
+                <strong>Призы и места</strong>
                 <small>
                   {draft.prizes.length}/{MANAGED_GIVEAWAY_MAX_PRIZES} мест
                 </small>
@@ -954,7 +957,7 @@ export function ManagedGiveawayCard({
                     <input
                       type="text"
                       value={prizeTitle}
-                      placeholder={`Приз #${index + 1}`}
+                      placeholder={`Место #${index + 1}`}
                       maxLength={MANAGED_GIVEAWAY_PRIZE_TITLE_MAX_LENGTH}
                       onChange={(event) => {
                         setDraft((current) => {
@@ -1024,7 +1027,7 @@ export function ManagedGiveawayCard({
 
           <div className="managed-giveaway__editor-actions">
             <button type="button" className="button button--ghost" onClick={cancelEditorDraft} disabled={isBusy}>
-              {cancelMutation.isPending ? 'Отменяем…' : 'Отменить черновик'}
+              {cancelMutation.isPending ? 'Удаляем…' : 'Удалить черновик'}
             </button>
             <button
               type="button"
@@ -1118,7 +1121,7 @@ export function ManagedGiveawayCard({
                 disabled={isBusy}
                 onClick={startEditCurrentDraft}
               >
-                Редактировать в miniapp
+                Редактировать
               </button>
             ) : null}
 
