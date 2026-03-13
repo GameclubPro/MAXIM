@@ -5,7 +5,11 @@ import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import type { ApiClient } from '../lib/api-client';
 import { canShareMaxContent, openMaxBotLink, shareMaxContent } from '../lib/max-bridge';
-import { prepareStickerImage, type PreparedStickerImage } from '../lib/sticker-image';
+import {
+  prepareStickerClipboardImage,
+  prepareStickerImage,
+  type PreparedStickerImage,
+} from '../lib/sticker-image';
 
 type StickerLabPageProps = {
   api: ApiClient;
@@ -46,6 +50,76 @@ function normalizeErrorMessage(error: unknown, fallback: string): string {
   return raw.replace(/^API request failed:\s*\d+\s*/u, '').trim() || fallback;
 }
 
+function canWriteImageClipboard(): boolean {
+  const clipboard = navigator.clipboard;
+  const clipboardItemCtor = (window as Window & { ClipboardItem?: unknown }).ClipboardItem;
+  return typeof clipboard?.write === 'function' && typeof clipboardItemCtor === 'function';
+}
+
+async function writeImageToClipboard(blob: Blob, mimeType: string): Promise<boolean> {
+  if (!canWriteImageClipboard()) {
+    return false;
+  }
+
+  const ClipboardItemCtor = (
+    window as Window & {
+      ClipboardItem?: new (items: Record<string, Blob>) => unknown;
+    }
+  ).ClipboardItem;
+  if (!ClipboardItemCtor) {
+    return false;
+  }
+
+  try {
+    await (navigator.clipboard as { write: (items: unknown[]) => Promise<void> }).write([
+      new ClipboardItemCtor({ [mimeType]: blob }),
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function copyImageWithExecCommand(dataUrl: string): boolean {
+  const container = document.createElement('div');
+  container.contentEditable = 'true';
+  container.style.position = 'fixed';
+  container.style.opacity = '0';
+  container.style.left = '-9999px';
+  container.style.top = '-9999px';
+
+  const image = document.createElement('img');
+  image.src = dataUrl;
+  image.width = 512;
+  image.height = 512;
+  image.alt = 'sticker';
+  container.appendChild(image);
+
+  document.body.appendChild(container);
+  const selection = window.getSelection();
+  if (!selection) {
+    document.body.removeChild(container);
+    return false;
+  }
+
+  const range = document.createRange();
+  range.selectNodeContents(container);
+  selection.removeAllRanges();
+  selection.addRange(range);
+
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } catch {
+    copied = false;
+  } finally {
+    selection.removeAllRanges();
+    document.body.removeChild(container);
+  }
+
+  return copied;
+}
+
 export function StickerLabPage({ api }: StickerLabPageProps) {
   const { pushToast } = useToast();
   const [prepared, setPrepared] = useState<PreparedStickerImage | null>(null);
@@ -53,6 +127,7 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
   const [deliveryType, setDeliveryType] = useState<'file' | 'image'>('file');
   const [isPreparing, setIsPreparing] = useState(false);
   const [isSending, setIsSending] = useState(false);
+  const [isCopying, setIsCopying] = useState(false);
   const [pickerError, setPickerError] = useState<string | null>(null);
   const bridgeAvailable = canShareMaxContent();
 
@@ -209,6 +284,47 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
     }
   }
 
+  async function handleCopyPreparedImage(): Promise<void> {
+    if (!prepared || isCopying) {
+      return;
+    }
+
+    setIsCopying(true);
+    setPickerError(null);
+
+    try {
+      const clipboardAsset = await prepareStickerClipboardImage(prepared);
+      const copiedWithClipboardApi = await writeImageToClipboard(
+        clipboardAsset.blob,
+        clipboardAsset.mimeType,
+      );
+      const copied =
+        copiedWithClipboardApi || copyImageWithExecCommand(clipboardAsset.dataUrl);
+      if (!copied) {
+        throw new Error('Не удалось скопировать изображение в буфер обмена.');
+      }
+
+      pushToast({
+        tone: 'success',
+        title: 'Скопировано',
+        description: 'Теперь вставьте изображение в личку с ботом в MAX.',
+      });
+    } catch (error: unknown) {
+      const message = normalizeErrorMessage(
+        error,
+        'Не удалось скопировать изображение. Попробуйте ещё раз.',
+      );
+      setPickerError(message);
+      pushToast({
+        tone: 'danger',
+        title: 'Копирование не удалось',
+        description: message,
+      });
+    } finally {
+      setIsCopying(false);
+    }
+  }
+
   return (
     <div className="page-stack page-enter sticker-lab-page">
       <GlassCard className="sticker-lab-card sticker-lab-card--upload" elevated>
@@ -271,7 +387,7 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
             type="button"
             className="button button--accent"
             onClick={() => void handleSend()}
-            disabled={!prepared || isPreparing || isSending}
+            disabled={!prepared || isPreparing || isSending || isCopying}
           >
             {isSending
               ? 'Отправляем...'
@@ -282,6 +398,14 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
                 : deliveryType === 'file'
                   ? 'Отправить файлом боту'
                   : 'Отправить картинкой боту'}
+          </button>
+          <button
+            type="button"
+            className="button button--ghost"
+            onClick={() => void handleCopyPreparedImage()}
+            disabled={!prepared || isPreparing || isSending || isCopying}
+          >
+            {isCopying ? 'Копируем...' : 'Скопировать для вставки в MAX'}
           </button>
           <Link to="/" className="button button--ghost">
             К чатам

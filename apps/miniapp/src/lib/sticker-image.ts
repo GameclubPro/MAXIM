@@ -9,6 +9,13 @@ export type PreparedStickerImage = {
   height: number;
 };
 
+export type PreparedStickerClipboardImage = {
+  blob: Blob;
+  dataUrl: string;
+  mimeType: 'image/png';
+  fileName: string;
+};
+
 function readBlobAsDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -127,5 +134,33 @@ export async function prepareStickerImage(file: File): Promise<PreparedStickerIm
     previewDataUrl,
     width: STICKER_CANVAS_SIZE,
     height: STICKER_CANVAS_SIZE,
+  };
+}
+
+export async function prepareStickerClipboardImage(
+  prepared: PreparedStickerImage,
+): Promise<PreparedStickerClipboardImage> {
+  const sourceDataUrl = `data:${prepared.mimeType};base64,${prepared.base64}`;
+  const image = await loadImage(sourceDataUrl);
+  const canvas = document.createElement('canvas');
+  canvas.width = STICKER_CANVAS_SIZE;
+  canvas.height = STICKER_CANVAS_SIZE;
+
+  const context = canvas.getContext('2d');
+  if (!context) {
+    throw new Error('Не удалось подготовить изображение для копирования.');
+  }
+
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+  const blob = await canvasToBlob(canvas, 'image/png');
+  const dataUrl = await readBlobAsDataUrl(blob);
+
+  return {
+    blob,
+    dataUrl,
+    mimeType: 'image/png',
+    fileName: sanitizeStickerFileName(prepared.fileName, 'png'),
   };
 }
