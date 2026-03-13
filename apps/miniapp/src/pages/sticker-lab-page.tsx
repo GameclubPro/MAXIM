@@ -40,13 +40,9 @@ function canWriteImageClipboard(): boolean {
   return typeof clipboard?.write === 'function' && typeof clipboardItemCtor === 'function';
 }
 
-async function writeImageToClipboard(
-  blob: Blob,
-  mimeType: string,
-  dataUrl: string,
-): Promise<'rich' | 'image' | null> {
+async function writeImageToClipboard(blob: Blob, mimeType: string): Promise<boolean> {
   if (!canWriteImageClipboard()) {
-    return null;
+    return false;
   }
 
   const ClipboardItemCtor = (
@@ -55,77 +51,52 @@ async function writeImageToClipboard(
     }
   ).ClipboardItem;
   if (!ClipboardItemCtor) {
-    return null;
-  }
-
-  const html = `<img src="${dataUrl}" width="512" height="512" alt="sticker" />`;
-  try {
-    await (navigator.clipboard as { write: (items: unknown[]) => Promise<void> }).write([
-      new ClipboardItemCtor({
-        [mimeType]: blob,
-        'text/html': new Blob([html], { type: 'text/html' }),
-        'text/plain': new Blob([' '], { type: 'text/plain' }),
-      }),
-    ]);
-    return 'rich';
-  } catch {
-    try {
-      await (navigator.clipboard as { write: (items: unknown[]) => Promise<void> }).write([
-        new ClipboardItemCtor({ [mimeType]: blob }),
-      ]);
-      return 'image';
-    } catch {
-      return null;
-    }
-  }
-}
-
-function copyImageWithExecCommand(dataUrl: string): boolean {
-  const container = document.createElement('div');
-  const imageHtml = `<img src="${dataUrl}" width="512" height="512" alt="sticker" />`;
-  container.contentEditable = 'true';
-  container.style.position = 'fixed';
-  container.style.opacity = '0';
-  container.style.left = '-9999px';
-  container.style.top = '-9999px';
-  container.innerHTML = imageHtml;
-  document.body.appendChild(container);
-
-  const onCopy = (event: Event) => {
-    const clipboardEvent = event as ClipboardEvent;
-    if (!clipboardEvent.clipboardData) {
-      return;
-    }
-    clipboardEvent.clipboardData.setData('text/html', imageHtml);
-    clipboardEvent.clipboardData.setData('text/plain', ' ');
-    clipboardEvent.preventDefault();
-  };
-  container.addEventListener('copy', onCopy);
-
-  const selection = window.getSelection();
-  if (!selection) {
-    container.removeEventListener('copy', onCopy);
-    document.body.removeChild(container);
     return false;
   }
 
-  const range = document.createRange();
-  range.selectNodeContents(container);
-  selection.removeAllRanges();
-  selection.addRange(range);
-
-  let copied = false;
   try {
-    copied = document.execCommand('copy');
+    await (navigator.clipboard as { write: (items: unknown[]) => Promise<void> }).write([
+      new ClipboardItemCtor({ [mimeType]: blob }),
+    ]);
+    return true;
   } catch {
-    copied = false;
-  } finally {
-    selection.removeAllRanges();
-    container.removeEventListener('copy', onCopy);
-    document.body.removeChild(container);
+    return false;
+  }
+}
+
+function canShareImageFile(file: File): boolean {
+  const shareFn = navigator.share;
+  const canShareFn = (navigator as Navigator & {
+    canShare?: (data?: ShareData) => boolean;
+  }).canShare;
+
+  if (typeof shareFn !== 'function') {
+    return false;
   }
 
-  return copied;
+  try {
+    if (typeof canShareFn !== 'function') {
+      return true;
+    }
+    return canShareFn({ files: [file] });
+  } catch {
+    return false;
+  }
+}
+
+async function openNativeShare(file: File): Promise<boolean> {
+  if (!canShareImageFile(file) || typeof navigator.share !== 'function') {
+    return false;
+  }
+  try {
+    await navigator.share({
+      title: 'Sticker',
+      files: [file],
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function StickerLabPage() {
@@ -222,24 +193,35 @@ export function StickerLabPage() {
 
     try {
       const clipboardAsset = await prepareStickerClipboardImage(prepared);
-      const clipboardWriteMode = await writeImageToClipboard(
+      const copied = await writeImageToClipboard(
         clipboardAsset.blob,
         clipboardAsset.mimeType,
-        clipboardAsset.dataUrl,
       );
-      const copied = clipboardWriteMode !== null || copyImageWithExecCommand(clipboardAsset.dataUrl);
-      if (!copied) {
-        throw new Error('Не удалось скопировать изображение в буфер обмена.');
+      if (copied) {
+        pushToast({
+          tone: 'success',
+          title: 'Скопировано',
+          description: 'Вставьте изображение в личку с ботом в MAX.',
+        });
+        return;
       }
 
-      pushToast({
-        tone: 'success',
-        title: 'Скопировано',
-        description:
-          clipboardWriteMode === 'rich'
-            ? 'Вставьте изображение в личку с ботом в MAX.'
-            : 'Вставьте в MAX. Если не вставилось, сделайте долгое нажатие по превью и «Скопировать».',
+      const shareFile = new File([clipboardAsset.blob], clipboardAsset.fileName, {
+        type: clipboardAsset.mimeType,
       });
+      const shared = await openNativeShare(shareFile);
+      if (shared) {
+        pushToast({
+          tone: 'info',
+          title: 'Открыт Share',
+          description: 'Выберите «Скопировать» в системном меню iPhone.',
+        });
+        return;
+      }
+
+      throw new Error(
+        'Автокопирование недоступно. Нажмите и удерживайте превью ниже и выберите «Скопировать».',
+      );
     } catch (error: unknown) {
       const message = normalizeErrorMessage(
         error,
@@ -302,6 +284,10 @@ export function StickerLabPage() {
             <div className="sticker-lab-preview__media">
               <img src={prepared.previewDataUrl} alt="Подготовленный макет стикера." />
             </div>
+            <small className="field__hint">
+              Если после кнопки снова будет `OBJ`: нажмите и удерживайте картинку выше и выберите
+              «Скопировать».
+            </small>
           </div>
         ) : null}
 
