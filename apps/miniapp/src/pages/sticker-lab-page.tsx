@@ -218,23 +218,6 @@ export function StickerLabPage() {
       const shareFile = new File([preparedClipboard.blob], preparedClipboard.fileName, {
         type: preparedClipboard.mimeType,
       });
-      const copied = await writePngToClipboard(preparedClipboard.blob);
-
-      if (copied) {
-        pushToast({
-          tone: 'success',
-          title: 'Скопировано',
-        });
-        return;
-      }
-
-      if (!iosDevice && copyImageWithExecCommand(preparedClipboard.dataUrl)) {
-        pushToast({
-          tone: 'success',
-          title: 'Скопировано',
-        });
-        return;
-      }
 
       if (iosDevice) {
         const shared = await openNativeShare(shareFile);
@@ -246,12 +229,30 @@ export function StickerLabPage() {
           return;
         }
 
+        const copied = await writePngToClipboard(preparedClipboard.blob);
+        if (copied) {
+          pushToast({
+            tone: 'success',
+            title: 'Скопировано',
+          });
+          return;
+        }
+
         const objectUrl = URL.createObjectURL(preparedClipboard.blob);
         setFallbackPreviewSrc((current) => {
           if (current?.startsWith('blob:')) {
             URL.revokeObjectURL(current);
           }
           return objectUrl;
+        });
+        return;
+      }
+
+      const copied = await writePngToClipboard(preparedClipboard.blob);
+      if (copied || copyImageWithExecCommand(preparedClipboard.dataUrl)) {
+        pushToast({
+          tone: 'success',
+          title: 'Скопировано',
         });
         return;
       }
