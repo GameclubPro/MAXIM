@@ -78,6 +78,7 @@ import {
   Optional,
 } from '@nestjs/common';
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import sharp from 'sharp';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
@@ -141,6 +142,12 @@ type StickerLabDeliveryResult = {
   attemptName: string;
   failedAttempts: StickerLabFailedAttempt[];
 };
+type StickerLabUploadCandidate = {
+  name: string;
+  buffer: Buffer;
+  mimeType: string;
+  fileName: string;
+};
 
 const RULES_IMAGE_MAX_BYTES = 1_000_000;
 const BROADCAST_IMAGE_MAX_BYTES = 3_000_000;
@@ -148,6 +155,9 @@ const BROADCAST_MIN_DELAY_MS = 30_000;
 const BROADCAST_MAX_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
 const BROADCAST_CYCLE_MAX_COUNT = 100;
 const BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS = [1_500, 3_000, 6_000];
+const STICKER_LAB_CANVAS_SIZE = 512;
+const STICKER_LAB_TARGET_BYTES = 1_000_000;
+const STICKER_LAB_QUALITY_LEVELS = [92, 84, 76, 68] as const;
 const MANAGED_BROADCAST_DUE_BATCH_SIZE = 10;
 const MANAGED_BROADCAST_LOCK_STALE_MS = 60_000;
 const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 30;
@@ -244,20 +254,163 @@ export class AdminService {
       parsed.data.imageFileName,
       imageMimeType,
     );
+    const uploadCandidates = await this.buildStickerLabUploadCandidates(
+      imageBuffer,
+      normalizedImageFileName,
+      imageMimeType,
+    );
+    this.logger.log(
+      {
+        userId: user.userId,
+        privateChatId,
+        deliveryType,
+        sourceMimeType: imageMimeType,
+        sourceFileName: normalizedImageFileName,
+        sourceBytes: imageBuffer.length,
+        uploadCandidates: uploadCandidates.map((candidate) => ({
+          name: candidate.name,
+          mimeType: candidate.mimeType,
+          fileName: candidate.fileName,
+          bytes: candidate.buffer.length,
+        })),
+      },
+      'Sticker lab share request received',
+    );
+
+    if (deliveryType === 'file') {
+      const failedCandidateAttempts: Array<{
+        candidateName: string;
+        stage: 'upload' | 'send';
+        maxApiMessage: string | null;
+        error: string;
+      }> = [];
+      let lastMaxApiMessage = '';
+
+      for (const [candidateIndex, candidate] of uploadCandidates.entries()) {
+        let uploadPayload: Record<string, unknown>;
+        try {
+          uploadPayload = await this.maxClient.uploadFile(
+            candidate.buffer,
+            candidate.fileName,
+            candidate.mimeType,
+          );
+          this.logger.log(
+            {
+              userId: user.userId,
+              privateChatId,
+              candidateIndex: candidateIndex + 1,
+              candidateName: candidate.name,
+              candidateMimeType: candidate.mimeType,
+              candidateFileName: candidate.fileName,
+              candidateBytes: candidate.buffer.length,
+              uploadPayloadKeys: Object.keys(uploadPayload).sort(),
+              uploadHasUrl: typeof uploadPayload.url === 'string',
+              uploadHasToken: typeof uploadPayload.token === 'string',
+            },
+            'Sticker lab asset uploaded to MAX',
+          );
+        } catch (error: unknown) {
+          const maxApiMessage = this.extractMaxApiErrorMessage(error);
+          if (maxApiMessage) {
+            lastMaxApiMessage = maxApiMessage;
+          }
+          failedCandidateAttempts.push({
+            candidateName: candidate.name,
+            stage: 'upload',
+            maxApiMessage: maxApiMessage || null,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          this.logger.warn(
+            {
+              userId: user.userId,
+              privateChatId,
+              candidateIndex: candidateIndex + 1,
+              candidateName: candidate.name,
+              candidateMimeType: candidate.mimeType,
+              candidateFileName: candidate.fileName,
+              candidateBytes: candidate.buffer.length,
+              maxApiMessage: maxApiMessage || null,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Sticker lab asset upload failed',
+          );
+          continue;
+        }
+
+        try {
+          const sent = await this.sendStickerLabFileMessageWithRetry(privateChatId, uploadPayload);
+          this.logger.log(
+            {
+              userId: user.userId,
+              privateChatId,
+              mid: sent.messageId,
+              messageUrl: sent.url,
+              attachmentType: 'file',
+              deliveryMode: 'file',
+              acceptedAttemptNumber: candidateIndex + 1,
+              acceptedAttemptName: candidate.name,
+              failedAttemptsCount: failedCandidateAttempts.length,
+              imageMimeType: candidate.mimeType,
+              imageFileName: candidate.fileName,
+              source: 'sticker_lab',
+            },
+            'Sticker lab asset delivered to private chat',
+          );
+          return stickerLabShareResponseSchema.parse({
+            mid: sent.messageId,
+            messageUrl: sent.url,
+            privateChatId,
+          });
+        } catch (error: unknown) {
+          const maxApiMessage = this.extractMaxApiErrorMessage(error);
+          if (maxApiMessage) {
+            lastMaxApiMessage = maxApiMessage;
+          }
+          failedCandidateAttempts.push({
+            candidateName: candidate.name,
+            stage: 'send',
+            maxApiMessage: maxApiMessage || null,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          this.logger.warn(
+            {
+              userId: user.userId,
+              privateChatId,
+              candidateIndex: candidateIndex + 1,
+              candidateName: candidate.name,
+              candidateMimeType: candidate.mimeType,
+              candidateFileName: candidate.fileName,
+              candidateBytes: candidate.buffer.length,
+              maxApiMessage: maxApiMessage || null,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Sticker lab asset delivery failed',
+          );
+        }
+      }
+
+      throw new BadRequestException(
+        lastMaxApiMessage || 'Не удалось отправить файл в личный чат бота. Попробуйте ещё раз.',
+      );
+    }
+
+    const imageCandidate = this.selectPreferredStickerLabImageCandidate(uploadCandidates);
     let uploadPayload: Record<string, unknown>;
     try {
-      uploadPayload =
-        deliveryType === 'file'
-          ? await this.maxClient.uploadFile(imageBuffer, normalizedImageFileName, imageMimeType)
-          : await this.maxClient.uploadImage(imageBuffer, normalizedImageFileName, imageMimeType);
+      uploadPayload = await this.maxClient.uploadImage(
+        imageCandidate.buffer,
+        imageCandidate.fileName,
+        imageCandidate.mimeType,
+      );
       const uploadPayloadKeys = Object.keys(uploadPayload).sort();
       this.logger.log(
         {
           userId: user.userId,
           privateChatId,
-          deliveryType,
-          imageMimeType,
-          imageFileName: normalizedImageFileName,
+          candidateName: imageCandidate.name,
+          candidateMimeType: imageCandidate.mimeType,
+          candidateFileName: imageCandidate.fileName,
+          candidateBytes: imageCandidate.buffer.length,
           uploadPayloadKeys,
           uploadHasUrl: typeof uploadPayload.url === 'string',
           uploadHasToken: typeof uploadPayload.token === 'string',
@@ -271,6 +424,10 @@ export class AdminService {
         {
           userId: user.userId,
           privateChatId,
+          candidateName: imageCandidate.name,
+          candidateMimeType: imageCandidate.mimeType,
+          candidateFileName: imageCandidate.fileName,
+          candidateBytes: imageCandidate.buffer.length,
           err: error instanceof Error ? error.message : String(error),
         },
         'Sticker lab asset upload failed',
@@ -281,36 +438,10 @@ export class AdminService {
     }
 
     try {
-      if (deliveryType === 'file') {
-        const sent = await this.sendStickerLabFileMessageWithRetry(privateChatId, uploadPayload);
-        this.logger.log(
-          {
-            userId: user.userId,
-            privateChatId,
-            mid: sent.messageId,
-            messageUrl: sent.url,
-            attachmentType: 'file',
-            deliveryMode: 'file',
-            acceptedAttemptNumber: 1,
-            acceptedAttemptName: 'file_payload',
-            failedAttemptsCount: 0,
-            imageMimeType,
-            imageFileName: normalizedImageFileName,
-            source: 'sticker_lab',
-          },
-          'Sticker lab asset delivered to private chat',
-        );
-        return stickerLabShareResponseSchema.parse({
-          mid: sent.messageId,
-          messageUrl: sent.url,
-          privateChatId,
-        });
-      }
-
       const delivery = await this.deliverStickerLabAsset(
         privateChatId,
         uploadPayload,
-        imageMimeType,
+        imageCandidate.mimeType,
       );
       const attachmentType =
         delivery.deliveryMode === 'sticker'
@@ -329,8 +460,8 @@ export class AdminService {
           acceptedAttemptNumber: delivery.attemptNumber,
           acceptedAttemptName: delivery.attemptName,
           failedAttemptsCount: delivery.failedAttempts.length,
-          imageMimeType,
-          imageFileName: normalizedImageFileName,
+          imageMimeType: imageCandidate.mimeType,
+          imageFileName: imageCandidate.fileName,
           source: 'sticker_lab',
         },
         'Sticker lab asset delivered to private chat',
@@ -348,6 +479,10 @@ export class AdminService {
           userId: user.userId,
           privateChatId,
           deliveryType,
+          candidateName: imageCandidate.name,
+          candidateMimeType: imageCandidate.mimeType,
+          candidateFileName: imageCandidate.fileName,
+          candidateBytes: imageCandidate.buffer.length,
           err: error instanceof Error ? error.message : String(error),
           maxApiMessage: maxApiMessage || null,
         },
@@ -772,6 +907,141 @@ export class AdminService {
     } catch {
       return null;
     }
+  }
+
+  private async buildStickerLabUploadCandidates(
+    sourceBuffer: Buffer,
+    sourceFileName: string,
+    sourceMimeType: string,
+  ): Promise<StickerLabUploadCandidate[]> {
+    const candidates: StickerLabUploadCandidate[] = [];
+    const fingerprints = new Set<string>();
+    const sourceBaseName =
+      sourceFileName.replace(/\.[^./\\]+$/u, '').trim() || `sticker-${Date.now()}`;
+
+    this.pushStickerLabUploadCandidate(candidates, fingerprints, {
+      name: 'original',
+      buffer: sourceBuffer,
+      mimeType: sourceMimeType,
+      fileName: sourceFileName,
+    });
+
+    try {
+      const pngBuffer = await sharp(sourceBuffer)
+        .rotate()
+        .resize(STICKER_LAB_CANVAS_SIZE, STICKER_LAB_CANVAS_SIZE, {
+          fit: 'contain',
+          background: { r: 0, g: 0, b: 0, alpha: 0 },
+        })
+        .png({
+          compressionLevel: 9,
+          adaptiveFiltering: true,
+          palette: true,
+          quality: 100,
+          effort: 10,
+        })
+        .toBuffer();
+      this.pushStickerLabUploadCandidate(candidates, fingerprints, {
+        name: 'square_png_512',
+        buffer: Buffer.from(pngBuffer),
+        mimeType: 'image/png',
+        fileName: `${sourceBaseName}.png`,
+      });
+
+      let webpBuffer: Buffer<ArrayBufferLike> | null = null;
+      for (const quality of STICKER_LAB_QUALITY_LEVELS) {
+        const rendered = await sharp(sourceBuffer)
+          .rotate()
+          .resize(STICKER_LAB_CANVAS_SIZE, STICKER_LAB_CANVAS_SIZE, {
+            fit: 'contain',
+            background: { r: 0, g: 0, b: 0, alpha: 0 },
+          })
+          .webp({
+            quality,
+            alphaQuality: 100,
+            effort: 4,
+            nearLossless: quality >= 84,
+          })
+          .toBuffer();
+        webpBuffer = rendered;
+        if (rendered.length <= STICKER_LAB_TARGET_BYTES) {
+          break;
+        }
+      }
+      if (webpBuffer) {
+        this.pushStickerLabUploadCandidate(candidates, fingerprints, {
+          name: 'square_webp_512',
+          buffer: Buffer.from(webpBuffer),
+          mimeType: 'image/webp',
+          fileName: `${sourceBaseName}.webp`,
+        });
+      }
+
+      let jpegBuffer: Buffer<ArrayBufferLike> | null = null;
+      for (const quality of STICKER_LAB_QUALITY_LEVELS) {
+        const rendered = await sharp(sourceBuffer)
+          .rotate()
+          .resize(STICKER_LAB_CANVAS_SIZE, STICKER_LAB_CANVAS_SIZE, {
+            fit: 'contain',
+            background: { r: 255, g: 255, b: 255, alpha: 1 },
+          })
+          .flatten({ background: '#ffffff' })
+          .jpeg({
+            quality,
+            mozjpeg: true,
+            chromaSubsampling: '4:4:4',
+          })
+          .toBuffer();
+        jpegBuffer = rendered;
+        if (rendered.length <= STICKER_LAB_TARGET_BYTES) {
+          break;
+        }
+      }
+      if (jpegBuffer) {
+        this.pushStickerLabUploadCandidate(candidates, fingerprints, {
+          name: 'square_jpeg_512',
+          buffer: Buffer.from(jpegBuffer),
+          mimeType: 'image/jpeg',
+          fileName: `${sourceBaseName}.jpg`,
+        });
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Sticker lab image candidate generation failed, using original payload only',
+      );
+    }
+
+    return candidates;
+  }
+
+  private pushStickerLabUploadCandidate(
+    candidates: StickerLabUploadCandidate[],
+    fingerprints: Set<string>,
+    candidate: StickerLabUploadCandidate,
+  ): void {
+    if (!candidate.buffer.length || candidate.buffer.length > BROADCAST_IMAGE_MAX_BYTES) {
+      return;
+    }
+    const prefix = candidate.buffer.subarray(0, 16).toString('base64');
+    const fingerprint = `${candidate.mimeType}:${candidate.buffer.length}:${prefix}`;
+    if (fingerprints.has(fingerprint)) {
+      return;
+    }
+    fingerprints.add(fingerprint);
+    candidates.push(candidate);
+  }
+
+  private selectPreferredStickerLabImageCandidate(
+    candidates: StickerLabUploadCandidate[],
+  ): StickerLabUploadCandidate {
+    return (
+      candidates.find((candidate) => candidate.name === 'square_png_512') ??
+      candidates.find((candidate) => candidate.name === 'original') ??
+      candidates[0]
+    );
   }
 
   private async sendStickerLabFileMessageWithRetry(

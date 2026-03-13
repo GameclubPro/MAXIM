@@ -513,6 +513,77 @@ describe('AdminService.shareStickerLabAsset', () => {
     });
   });
 
+  it('falls back to the next file candidate format when the first one is rejected', async () => {
+    const prisma = createPrismaMock();
+    const uploadFile = jest
+      .fn()
+      .mockRejectedValueOnce({
+        response: {
+          status: 400,
+          data: {
+            message: 'Unsupported format image/webp',
+          },
+        },
+      })
+      .mockResolvedValueOnce({ token: 'upload-token-file-2' });
+    const maxClient = {
+      uploadImage: jest.fn(),
+      uploadFile,
+      sendCustomMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'mid-file-2',
+        url: 'https://max.ru/c/152517912/file-mid-2',
+      }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    const tinyPngBase64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/aM4AAAAASUVORK5CYII=';
+
+    const result = await service.shareStickerLabAsset(
+      {
+        userId: '98315271',
+        username: 'alex',
+        displayName: 'Alex',
+        chatId: '152517912',
+        chatTitle: 'Личка с ботом',
+      },
+      {
+        imageBase64: tinyPngBase64,
+        imageMimeType: 'image/webp',
+        imageFileName: 'sticker.webp',
+        deliveryType: 'file',
+      },
+    );
+
+    expect(maxClient.uploadImage).not.toHaveBeenCalled();
+    expect(uploadFile).toHaveBeenCalledTimes(2);
+    expect(uploadFile).toHaveBeenNthCalledWith(1, expect.any(Buffer), 'sticker.webp', 'image/webp');
+    expect(uploadFile).toHaveBeenNthCalledWith(2, expect.any(Buffer), 'sticker.png', 'image/png');
+    expect(maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      '152517912',
+      {
+        attachments: [
+          {
+            type: 'file',
+            payload: { token: 'upload-token-file-2' },
+          },
+        ],
+      },
+    );
+    expect(result).toEqual({
+      mid: 'mid-file-2',
+      messageUrl: 'https://max.ru/c/152517912/file-mid-2',
+      privateChatId: '152517912',
+    });
+  });
+
   it('falls back to plain image when MAX rejects sticker attachment variants', async () => {
     const prisma = createPrismaMock();
     const sendCustomMessageImmediateWithResolvedLink = jest
