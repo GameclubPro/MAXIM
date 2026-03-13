@@ -47,18 +47,18 @@ function formatDateTime(value: string | null, fallback = 'не задано'): s
 
 function buildStatusLabel(status: string): string {
   if (status === 'ACTIVE') {
-    return 'Приём заявок открыт';
+    return 'Активен';
   }
   if (status === 'SCHEDULED') {
-    return 'Розыгрыш по таймеру';
+    return 'Запланирован';
   }
   if (status === 'COMPLETED') {
-    return 'Итоги опубликованы';
+    return 'Завершён';
   }
   if (status === 'CANCELED') {
-    return 'Розыгрыш отменён';
+    return 'Отменён';
   }
-  return 'Подводим итоги';
+  return 'Подсчёт';
 }
 
 function buildStatusTone(status: string): 'success' | 'warning' | 'muted' | 'danger' {
@@ -76,13 +76,13 @@ function buildStatusTone(status: string): 'success' | 'warning' | 'muted' | 'dan
 
 function buildEligibilityLabel(state: string | null | undefined): string | null {
   if (state === 'VERIFIED') {
-    return 'Проверка пройдена';
+    return 'Проверка: пройдена';
   }
   if (state === 'PENDING') {
-    return 'Проверка позже';
+    return 'Проверка: ожидает';
   }
   if (state === 'REJECTED') {
-    return 'Условие не выполнено';
+    return 'Проверка: не пройдена';
   }
   return null;
 }
@@ -130,7 +130,7 @@ function buildParticipantStatus(params: {
   giveawayStatus: string;
 }): { label: string; tone: 'success' | 'warning' | 'muted' | 'danger' } {
   if (params.isWinner && params.canClaim) {
-    return { label: 'Нужно подтвердить приз', tone: 'success' };
+    return { label: 'Подтвердите приз', tone: 'success' };
   }
 
   if (params.isWinner) {
@@ -162,7 +162,7 @@ function buildParticipantStatus(params: {
     return { label: 'Розыгрыш отменён', tone: 'danger' };
   }
 
-  return { label: 'Приём заявок закрыт', tone: 'muted' };
+  return { label: 'Приём закрыт', tone: 'muted' };
 }
 
 function buildParticipantSummary(params: {
@@ -177,7 +177,7 @@ function buildParticipantSummary(params: {
   prizeTitle: string | null | undefined;
 }): string {
   if (params.isWinner && params.canClaim) {
-    return `Вы выиграли ${params.prizePosition}. ${params.prizeTitle}. Подтвердите приз одним нажатием.`;
+    return `Вы выиграли ${params.prizePosition}. ${params.prizeTitle}. Подтвердите приз до дедлайна.`;
   }
 
   if (params.isWinner) {
@@ -186,27 +186,27 @@ function buildParticipantSummary(params: {
 
   if (params.joined) {
     if (params.eligibilityState === 'VERIFIED') {
-      return 'Заявка принята и участвует в розыгрыше.';
+      return 'Заявка принята.';
     }
     if (params.eligibilityState === 'REJECTED') {
       return params.eligibilityReason?.trim() || 'Условие участия не выполнено.';
     }
-    return params.eligibilityReason?.trim() || 'Заявка сохранена, финальная проверка будет позже.';
+    return params.eligibilityReason?.trim() || 'Заявка на проверке.';
   }
 
   if (params.giveawayStatus === 'ACTIVE') {
-    return 'Можно войти одним нажатием.';
+    return 'Нажмите «Участвовать».';
   }
   if (params.giveawayStatus === 'SCHEDULED') {
-    return 'Розыгрыш ещё не стартовал.';
+    return 'Розыгрыш ещё не начался.';
   }
   if (params.giveawayStatus === 'COMPLETED') {
-    return 'Приём заявок завершён, смотрите итоги ниже.';
+    return 'Приём завершён.';
   }
   if (params.giveawayStatus === 'CANCELED') {
-    return 'Розыгрыш отменён организатором.';
+    return 'Розыгрыш отменён.';
   }
-  return 'Сейчас подводим итоги.';
+  return 'Идёт подведение итогов.';
 }
 
 export function GiveawayPage({ api }: { api: ApiClient }) {
@@ -315,7 +315,7 @@ export function GiveawayPage({ api }: { api: ApiClient }) {
           giveawayStatus: giveaway.status,
         });
   const participantSummary = participantQuery.error
-    ? 'Не удалось загрузить персональный статус. Сам розыгрыш открыт, можно повторить проверку ниже.'
+    ? 'Статус недоступен, попробуйте обновить.'
     : buildParticipantSummary({
         joined: Boolean(participant?.joined),
         isWinner: Boolean(participant?.isWinner),
@@ -377,52 +377,42 @@ export function GiveawayPage({ api }: { api: ApiClient }) {
           </div>
         ) : null}
 
-        <div className="giveaway-page__chips">
-          <span className="giveaway-page__chip">
-            Старт: {formatDateTime(giveaway.startsAt, 'сразу')}
-          </span>
-          <span className="giveaway-page__chip">Финиш: {formatDateTime(giveaway.endsAt)}</span>
-          <span className="giveaway-page__chip">{giveaway.entriesCount} заявок</span>
-          <span className="giveaway-page__chip">{giveaway.prizes.length} мест</span>
+        <div className="giveaway-page__meta">
+          <span>Финиш: {formatDateTime(giveaway.endsAt)}</span>
+          <span>{giveaway.entriesCount} заявок</span>
+          <span>{giveaway.prizes.length} мест</span>
         </div>
 
-        <div className="giveaway-page__prizes-block">
-          <div className="giveaway-page__section-head">
-            <h2>Призы</h2>
-            <small>{giveaway.prizes.length} мест</small>
+        {giveaway.prizes.length > 0 ? (
+          <div className="giveaway-page__prizes-block">
+            <div className="giveaway-page__section-head">
+              <h2>Призы</h2>
+            </div>
+            <div className="giveaway-page__chips">
+              {giveaway.prizes.map((prize) => (
+                <span key={prize.id} className="giveaway-page__chip">
+                  {prize.position}. {prize.title}
+                </span>
+              ))}
+            </div>
           </div>
-          <div className="giveaway-page__chips">
-            {giveaway.prizes.map((prize) => (
-              <span key={prize.id} className="giveaway-page__chip">
-                {prize.position}. {prize.title}
-              </span>
-            ))}
-          </div>
-        </div>
+        ) : null}
       </GlassCard>
 
       <GlassCard className="giveaway-page__panel" elevated>
         <div className="giveaway-page__panel-head">
           <h2>Ваш статус</h2>
-          <div className="giveaway-page__status-badges">
-            <span className={cn('giveaway-page__status', `is-${participantStatus.tone}`)}>
-              {participantStatus.label}
-            </span>
-            {eligibilityLabel ? <small>{eligibilityLabel}</small> : null}
-            {winnerStatusLabel && participant?.isWinner ? <small>{winnerStatusLabel}</small> : null}
-          </div>
+          <span className={cn('giveaway-page__status', `is-${participantStatus.tone}`)}>
+            {participantStatus.label}
+          </span>
         </div>
 
         {participantQuery.isLoading ? (
-          <StatusState
-            tone="neutral"
-            title="Проверяем ваш статус"
-            description="Подтягиваем участие и eligibility."
-          />
+          <StatusState tone="neutral" title="Проверяем статус" description="Пара секунд." />
         ) : participantQuery.error ? (
           <StatusState
             tone="warning"
-            title="Статус пока недоступен"
+            title="Статус недоступен"
             description={formatApiError(participantQuery.error)}
             action={
               <button
@@ -432,7 +422,7 @@ export function GiveawayPage({ api }: { api: ApiClient }) {
                   void participantQuery.refetch();
                 }}
               >
-                Повторить
+                Обновить
               </button>
             }
           />
@@ -452,30 +442,33 @@ export function GiveawayPage({ api }: { api: ApiClient }) {
                     Приз: {participant.prizePosition}. {participant.prizeTitle}
                   </span>
                 ) : null}
+                {eligibilityLabel ? <span>{eligibilityLabel}</span> : null}
+                {winnerStatusLabel && participant?.isWinner ? <span>{winnerStatusLabel}</span> : null}
               </div>
             </div>
 
-            {participant?.canClaim && participant.claimBotUrl ? (
+            {participant?.canClaim ||
+            participant?.claimBotUrl ||
+            giveaway.publicationUrl ||
+            giveaway.resultsUrl ? (
               <div className="giveaway-page__actions">
-                <button
-                  type="button"
-                  className="button button--ghost"
-                  onClick={() => openMaxBotLink(participant.claimBotUrl ?? '')}
-                >
-                  Открыть чат бота
-                </button>
-              </div>
-            ) : null}
+                {participant?.canClaim && participant.claimBotUrl ? (
+                  <button
+                    type="button"
+                    className="button button--ghost"
+                    onClick={() => openMaxBotLink(participant.claimBotUrl ?? '')}
+                  >
+                    Чат бота
+                  </button>
+                ) : null}
 
-            {giveaway.publicationUrl || giveaway.resultsUrl ? (
-              <div className="giveaway-page__actions">
                 {giveaway.publicationUrl ? (
                   <button
                     type="button"
                     className="button button--ghost"
                     onClick={() => openMaxBotLink(giveaway.publicationUrl ?? '')}
                   >
-                    Открыть пост
+                    Публикация
                   </button>
                 ) : null}
 

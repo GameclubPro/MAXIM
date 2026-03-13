@@ -96,21 +96,21 @@ function formatCompactDate(value: string): string {
 
 function buildCurrentSubtitle(item: ManagedGiveawaySummary): string {
   if (item.status === 'DRAFT') {
-    return `Черновик готов. Финиш: ${formatDateTime(item.endsAt)}.`;
+    return `Черновик. Финиш: ${formatDateTime(item.endsAt)}.`;
   }
   if (item.status === 'SCHEDULED') {
     return `Старт: ${formatDateTime(item.startsAt, 'сразу')}. Финиш: ${formatDateTime(item.endsAt)}.`;
   }
   if (item.status === 'ACTIVE') {
-    return `Приём заявок открыт до ${formatDateTime(item.endsAt)}.`;
+    return `Идёт до ${formatDateTime(item.endsAt)}.`;
   }
   if (item.status === 'DRAWING') {
-    return 'Идёт проверка участников и фиксация победителей.';
+    return 'Подводим итоги.';
   }
   if (item.status === 'COMPLETED') {
-    return `Итоги обновлены ${formatDateTime(item.completedAt ?? item.updatedAt)}.`;
+    return `Обновлён: ${formatDateTime(item.completedAt ?? item.updatedAt)}.`;
   }
-  return `Розыгрыш отменён ${formatDateTime(item.updatedAt)}.`;
+  return `Отменён: ${formatDateTime(item.updatedAt)}.`;
 }
 
 function StepChevron({ isOpen }: { isOpen: boolean }) {
@@ -217,9 +217,9 @@ export function ManagedGiveawayCard({
     <div className="managed-giveaway">
       <div className="managed-giveaway__header">
         <div className="managed-giveaway__header-copy">
-          <strong className="managed-giveaway__title">Гибридные розыгрыши</strong>
+          <strong className="managed-giveaway__title">Розыгрыши</strong>
           <small className="managed-giveaway__subtitle">
-            Miniapp для контроля, личка бота для детального управления и действий с победителями.
+            Коротко: обзор здесь, управление в чате бота.
           </small>
         </div>
         <button
@@ -236,8 +236,7 @@ export function ManagedGiveawayCard({
 
       {listQuery.isLoading ? (
         <div className="managed-giveaway__empty">
-          <strong>Загружаем розыгрыши…</strong>
-          <p>Подтягиваем текущий статус и историю.</p>
+          <strong>Загружаем…</strong>
         </div>
       ) : null}
 
@@ -259,7 +258,7 @@ export function ManagedGiveawayCard({
       {!listQuery.isLoading && !listQuery.error && currentItem ? (
         <div className={cn('managed-giveaway__panel', 'managed-giveaway__summary-card')}>
           <div className="managed-giveaway__summary-topline">
-            <span className="managed-giveaway__eyebrow">Текущий розыгрыш</span>
+            <span className="managed-giveaway__eyebrow">Текущий</span>
             <span className={cn('managed-giveaway__badge', buildStatusTone(currentItem.status))}>
               {buildStatusLabel(currentItem.status)}
             </span>
@@ -274,22 +273,18 @@ export function ManagedGiveawayCard({
             <div className="managed-giveaway__stat-card">
               <span>Заявки</span>
               <strong>{currentItem.entriesCount}</strong>
-              <small>всего</small>
             </div>
             <div className="managed-giveaway__stat-card">
               <span>Подтверждены</span>
               <strong>{currentItem.verifiedEntriesCount}</strong>
-              <small>допущены</small>
             </div>
             <div className="managed-giveaway__stat-card">
               <span>На проверке</span>
               <strong>{currentItem.pendingEntriesCount}</strong>
-              <small>ожидают проверки</small>
             </div>
             <div className="managed-giveaway__stat-card">
               <span>Победители</span>
               <strong>{currentItem.winnersCount}</strong>
-              <small>по местам</small>
             </div>
           </div>
 
@@ -320,7 +315,7 @@ export function ManagedGiveawayCard({
                 className="button button--ghost"
                 onClick={() => openMaxBotLink(currentItem.publicationUrl ?? '')}
               >
-                Пост
+                Публикация
               </button>
             ) : null}
 
@@ -339,8 +334,8 @@ export function ManagedGiveawayCard({
 
       {!listQuery.isLoading && !listQuery.error && !currentItem && historyItems.length === 0 ? (
         <div className="managed-giveaway__empty">
-          <strong>Активных розыгрышей пока нет</strong>
-          <p>Создайте первый сценарий и запустите его через личку бота.</p>
+          <strong>Пока пусто</strong>
+          <p>Создайте первый розыгрыш.</p>
         </div>
       ) : null}
 
@@ -354,7 +349,7 @@ export function ManagedGiveawayCard({
           >
             <span className="managed-giveaway__history-copy">
               <strong>История</strong>
-              <small>{historyItems.length} завершённых сценариев</small>
+              <small>{historyItems.length} записей</small>
             </span>
             <StepChevron isOpen={historyOpen} />
           </button>
