@@ -271,8 +271,8 @@ export function StickerLabPage() {
               </div>
               <p>
                 {iosDevice
-                  ? 'Если буфер iPhone не сработает сразу, откроется системное меню для «Скопировать».'
-                  : 'После кнопки вставьте изображение в диалог с ботом в MAX.'}
+                  ? 'Нажмите кнопку ниже, чтобы сразу попробовать скопировать PNG на iPhone.'
+                  : 'Нажмите кнопку ниже и вставьте PNG в диалог с ботом в MAX.'}
               </p>
             </div>
           </div>
@@ -280,19 +280,24 @@ export function StickerLabPage() {
 
         {pickerError ? <small className="field__hint">{pickerError}</small> : null}
 
-        <div className="sticker-lab-actions">
+        <div className="sticker-lab-primary-action">
           <button
             type="button"
-            className="button button--accent"
+            className="button button--accent sticker-lab-primary-action__button"
             onClick={() => void handleCopyPreparedImage()}
             disabled={!prepared || isPreparing || isCopying}
           >
-            {isCopying ? 'Копируем...' : 'Получить стикер'}
+            {isCopying ? 'Копируем...' : iosDevice ? 'Скопировать на iPhone' : 'Скопировать PNG'}
           </button>
-          <Link to="/" className="button button--ghost">
-            К чатам
-          </Link>
+          <small className="sticker-lab-primary-action__hint">
+            {iosDevice
+              ? 'Кнопка пробует прямое копирование PNG. Если iPhone не даст доступ к буферу, откроется системное меню.'
+              : 'Кнопка копирует PNG 512×512 в буфер обмена.'}
+          </small>
         </div>
+        <Link to="/" className="sticker-lab-backlink">
+          К чатам
+        </Link>
       </GlassCard>
     </div>
   );

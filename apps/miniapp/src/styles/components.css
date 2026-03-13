@@ -932,6 +932,34 @@
   width: 100%;
 }
 
+.sticker-lab-primary-action {
+  display: grid;
+  gap: 10px;
+}
+
+.sticker-lab-primary-action__button {
+  width: 100%;
+  min-height: 56px;
+  font-size: 1rem;
+}
+
+.sticker-lab-primary-action__hint {
+  color: var(--text-muted);
+  font-size: 0.83rem;
+  line-height: 1.35;
+}
+
+.sticker-lab-backlink {
+  justify-self: center;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+  text-decoration: none;
+}
+
+.sticker-lab-backlink:hover {
+  color: var(--text-primary);
+}
+
 @media (min-width: 720px) {
   .sticker-lab-entry {
     grid-template-columns: minmax(0, 1fr) auto;
@@ -950,6 +978,10 @@
 
   .sticker-lab-actions {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sticker-lab-primary-action__button {
+    min-height: 60px;
   }
 }
 
