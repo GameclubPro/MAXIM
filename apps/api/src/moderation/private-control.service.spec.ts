@@ -951,7 +951,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateTextUpdate('/modern'));
 
     const sentMessages = maxClient.sendMessage.mock.calls.map((call) => String(call[1]));
-    expect(sentMessages.some((text) => text.includes('Центр управления чатом'))).toBe(true);
+    expect(sentMessages.some((text) => text.includes('Чат:'))).toBe(true);
     expect(sentMessages.some((text) => text.includes('классический вид'))).toBe(false);
   });
 

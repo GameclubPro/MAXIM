@@ -284,6 +284,8 @@ const PAGE_SIZE_DOMAINS = 8;
 const PAGE_SIZE_EVENTS = 10;
 const PAGE_SIZE_MANUAL_USERS = 8;
 const SEARCH_RESULT_LIMIT = 8;
+const BUTTON_TEXT_MAX_SINGLE_COLUMN = 36;
+const BUTTON_TEXT_MAX_TWO_COLUMNS = 14;
 const SUPPORT_CHAT_URL = 'https://max.ru/join/qX7U_Hj-L-xMJG8V7wlF6dD-6a6cXIzTBGRtU2mRMzk';
 const STICKER_IMAGE_MAX_BYTES = 1_000_000;
 const MAX_CALLBACK_PREFIX = 'pc2';
@@ -4389,18 +4391,9 @@ export class PrivateControlService {
     if (entities.length === 0) {
       return {
         text: [
-          'Центр управления MAX',
+          entityType === 'channel' ? 'Каналы не найдены.' : 'Чаты не найдены.',
           '',
-          entityType === 'channel'
-            ? 'Пока не вижу доступных каналов.'
-            : 'Пока не вижу доступных чатов.',
-          '',
-          'Проверьте, пожалуйста:',
-          entityType === 'channel' ? '- бот добавлен в канал;' : '- бот добавлен в чат;',
-          '- у бота есть права администратора;',
-          '- у вас есть права администратора.',
-          '',
-          'Когда доступ появится, вернитесь сюда и выберите нужную сущность.',
+          'Добавьте бота админом и обновите экран.',
         ].join('\n'),
         options: {
           buttons: [
@@ -4415,7 +4408,6 @@ export class PrivateControlService {
               ),
             ],
             [this.callbackButton('Стикер из фото', this.cb('sticker_photo_prompt'), 'positive')],
-            [this.callbackButton('Помощь', this.cb('help'))],
             ...this.buildFooterButtons(),
           ],
         },
@@ -4426,13 +4418,8 @@ export class PrivateControlService {
     session.chatPage = pageInfo.page;
 
     const lines = [
-      'Центр управления MAX',
-      '',
-      `Выберите ${singleEntityWord} (${pageInfo.start + 1}-${pageInfo.end} из ${entities.length}):`,
-      `Текущая вкладка: ${pluralEntityWord}.`,
-      ...pageInfo.items.map((chat, index) => `${pageInfo.start + index + 1}. ${chat.title}`),
-      '',
-      `После выбора все действия будут применяться к этому ${singleEntityWord}у.`,
+      `Выберите ${singleEntityWord}`,
+      `${pageInfo.start + 1}-${pageInfo.end} из ${entities.length} (${pluralEntityWord})`,
     ];
 
     const rows: MaxMessageButton[][] = pageInfo.items.map((chat, index) => [
@@ -4454,7 +4441,6 @@ export class PrivateControlService {
     ]);
     rows.push(this.paginationButtons(pageInfo.page, pageInfo.pages, 'chat_page'));
     rows.push([this.callbackButton('Стикер из фото', this.cb('sticker_photo_prompt'), 'positive')]);
-    rows.push([this.callbackButton('Помощь', this.cb('help'))]);
     rows.push(...this.buildFooterButtons());
 
     return {
@@ -4558,20 +4544,14 @@ export class PrivateControlService {
     const settings = await this.adminService.getChannelSettings(selectedChannel.id, context.actor);
 
     const lines: string[] = [
-      'Центр управления каналом',
-      '',
       `Канал: ${selectedChannel.title}`,
-      `ID: ${selectedChannel.id}`,
-      '',
-      `Статус: предложка ${settings.postSuggestionsEnabled ? 'включена' : 'выключена'} • обсуждения ${settings.commentsEnabled ? 'включены' : 'выключены'}`,
-      'MAX не даёт нативные комментарии в канале: обсуждения и реакции ведём через бота/чат.',
-      '',
+      `Статус: предложка ${settings.postSuggestionsEnabled ? 'вкл' : 'выкл'} • обсуждение ${settings.commentsEnabled ? 'вкл' : 'выкл'}`,
       'Выберите действие.',
     ];
 
     const rows: MaxMessageButton[][] = [
       [
-        this.callbackButton('Обсуждение и реакции', this.cb('open_channel_section', 'comments')),
+        this.callbackButton('Обсуждение', this.cb('open_channel_section', 'comments')),
         this.callbackButton('Предложка', this.cb('open_channel_section', 'post_suggestions')),
       ],
       [
@@ -4584,7 +4564,6 @@ export class PrivateControlService {
       ],
       [this.callbackButton('Стикер из фото', this.cb('sticker_photo_prompt'), 'positive')],
       [this.callbackButton('Сменить канал', this.cb('change_chat'))],
-      [this.callbackButton('Помощь', this.cb('help'))],
       ...this.buildFooterButtons(),
     ];
 
@@ -4609,20 +4588,7 @@ export class PrivateControlService {
       session.selectedChatId,
       context.actor,
     );
-    const sectionHint =
-      section === 'post_suggestions'
-        ? 'Совет: ссылку для кнопки копируйте в MAX: канал → Поделиться → Скопировать ссылку.'
-        : 'Комментариев в канале MAX нет: включайте реакции в MAX и направляйте обсуждение в бота/чат.';
-
-    const lines: string[] = [
-      `${CHANNEL_SECTION_LABELS[section]}`,
-      '',
-      sectionHint,
-      '',
-      ...this.buildChannelSectionSummary(section, settings),
-      '',
-      'Сначала тумблеры и основные действия, затем тексты и ссылки.',
-    ];
+    const lines: string[] = [`${CHANNEL_SECTION_LABELS[section]}`, '', ...this.buildChannelSectionSummary(section, settings)];
 
     const rows = this.buildChannelSectionRows(section, settings);
 
@@ -4664,12 +4630,8 @@ export class PrivateControlService {
     const settings = await this.adminService.getSettings(selectedChat.id, context.actor);
 
     const lines: string[] = [
-      'Центр управления чатом',
-      '',
       `Чат: ${selectedChat.title}`,
-      `ID: ${selectedChat.id}`,
-      '',
-      `Статус: ссылки ${this.describeLinkPolicy(settings.linkPolicy)} • приветствие ${settings.greetingEnabled ? 'вкл' : 'выкл'} • ночь ${settings.nightModeEnabled ? 'вкл' : 'выкл'}`,
+      `Статус: ссылки ${this.describeLinkPolicy(settings.linkPolicy)} • приветствие ${settings.greetingEnabled ? 'вкл' : 'выкл'}`,
       'Выберите действие.',
     ];
 
@@ -4688,13 +4650,12 @@ export class PrivateControlService {
       ],
       [
         this.callbackButton('Поиск', this.cb('open_search')),
-        this.callbackButton('Ручные действия', this.cb('open_manual_users')),
+        this.callbackButton('Ручной бан', this.cb('open_manual_users')),
       ],
       [this.callbackButton('Стикер из фото', this.cb('sticker_photo_prompt'), 'positive')],
       [this.callbackButton('Сменить чат', this.cb('change_chat'))],
     ];
 
-    rows.push([this.callbackButton('Помощь', this.cb('help'))]);
     rows.push(...this.buildFooterButtons());
 
     return {
@@ -4713,23 +4674,19 @@ export class PrivateControlService {
       return this.renderChatSelection(context, session);
     }
 
-    const settings = await this.adminService.getSettings(session.selectedChatId, context.actor);
+    const chatTitle = await this.resolveManagedEntityTitle(
+      context.actor,
+      'chat',
+      session.selectedChatId,
+    );
     const lines: string[] = [
       'Разделы настроек',
-      '',
-      ...SECTION_ORDER.map(
-        (section, index) =>
-          `${index + 1}. ${SECTION_LABELS[section]} — ${this.describeSectionShortSummary(section, settings)}`,
-      ),
-      '',
-      'Rich-редактор правил и расширенные сценарии всегда доступны через приложение.',
+      `Чат: ${chatTitle}`,
+      'Выберите раздел.',
     ];
 
     const rows: MaxMessageButton[][] = SECTION_ORDER.map((section) => [
-      this.callbackButton(
-        `${SECTION_LABELS[section]} • ${this.compactText(this.describeSectionShortSummary(section, settings), 20)}`,
-        this.cb('open_section', section),
-      ),
+      this.callbackButton(SECTION_LABELS[section], this.cb('open_section', section)),
     ]);
 
     rows.push([
@@ -4760,8 +4717,6 @@ export class PrivateControlService {
       `${SECTION_LABELS[section]} • ${session.sectionView === 'basic' ? 'Основное' : 'Ещё параметры'}`,
       '',
       ...this.buildSectionSummaryLines(section, settings, session.sectionView),
-      '',
-      'Сначала основные тумблеры и санкции, затем тексты, кнопки и детальные параметры.',
     ];
 
     const rows = this.buildSectionActionRows(section, settings, session.sectionView);
@@ -4832,9 +4787,7 @@ export class PrivateControlService {
       'Панель управления (классический вид)',
       '',
       `Текущий чат: ${selectedChat.title}`,
-      `ID: ${selectedChat.id}`,
-      '',
-      'Классический режим. Для нового интерфейса нажмите «Новый вид».',
+      'Для нового интерфейса нажмите «Новый вид».',
     ].join('\n');
 
     const rows: MaxMessageButton[][] = [
@@ -4870,7 +4823,6 @@ export class PrivateControlService {
       [this.callbackButton('Ручной бан', this.cb('open_manual_users'))],
       [this.callbackButton('Другой чат', this.cb('change_chat'))],
       [this.callbackButton('Новый вид', this.cb('home'))],
-      [this.callbackButton('Помощь', this.cb('help'))],
       ...this.buildFooterButtons(),
     ];
 
@@ -5127,28 +5079,21 @@ export class PrivateControlService {
 
     const lines: string[] = [
       isChannel ? 'Рассылка в канал' : 'Рассылка',
-      '',
       `Контент: ${
         waitingForContent
-          ? 'жду следующее сообщение'
+          ? 'жду сообщение'
           : draft.text.trim() || draft.imageEnabled
             ? 'готов'
-            : 'не добавлен'
+            : 'пусто'
       }`,
-      `Текст: ${draft.text.trim() ? this.compactText(draft.text, 80) : 'не указан'}`,
-      ...(channelSettings
-        ? [`Комментарии: ${this.describeBooleanCompact(channelSettings.commentsEnabled)}`]
-        : []),
-      ...(!isChannel ? [`Во все чаты: ${applyToAllEnabled ? 'Да' : 'Нет'}`] : []),
-      `Кнопка рассылки: ${draft.buttonEnabled ? 'Да' : 'Нет'}`,
-      `Фото: ${draft.imageEnabled ? 'Да' : 'Нет'}`,
-      ...(!isChannel ? [`Таймер: ${timingSummary}`, `Цикл: ${cycleSummary}`] : []),
-      `Режим: ${session.broadcastView === 'basic' ? 'Основное' : 'Ещё параметры'}`,
-      ...(notice ? ['', `Статус: ${notice}`] : []),
-      '',
-      waitingForContent
-        ? 'Пришлите текст или фото следующим сообщением, затем нажмите «Отправить».'
-        : 'Настройте параметры и нажмите «Отправить».',
+      `Кнопка: ${draft.buttonEnabled ? 'да' : 'нет'}`,
+      `Фото: ${draft.imageEnabled ? 'да' : 'нет'}`,
+      ...(!isChannel ? [`Во все: ${applyToAllEnabled ? 'да' : 'нет'}`] : []),
+      ...(!isChannel ? [`Таймер: ${timingSummary}`] : []),
+      ...(!isChannel ? [`Цикл: ${cycleSummary}`] : []),
+      ...(channelSettings ? [`Комменты: ${this.describeBooleanCompact(channelSettings.commentsEnabled)}`] : []),
+      ...(notice ? [`Статус: ${notice}`] : []),
+      ...(waitingForContent ? ['Жду текст или фото.'] : []),
     ];
 
     const rows: MaxMessageButton[][] = [];
@@ -5262,6 +5207,11 @@ export class PrivateControlService {
     session.pollDraft = this.toPrivatePollDraft(poll);
 
     const entityLabel = session.selectedEntityType === 'channel' ? 'Канал' : 'Чат';
+    const entityTitle = await this.resolveManagedEntityTitle(
+      context.actor,
+      session.selectedEntityType,
+      session.selectedChatId,
+    );
     const statusLabel =
       poll.status === 'ACTIVE' ? 'Активен' : poll.status === 'CLOSED' ? 'Закрыт' : 'Черновик';
     const totalVotes = poll.totalVotes;
@@ -5269,7 +5219,7 @@ export class PrivateControlService {
     const lines: string[] = [
       'Опрос',
       '',
-      `${entityLabel}: ${session.selectedChatId}`,
+      `${entityLabel}: ${entityTitle}`,
       `Статус: ${statusLabel}`,
       `Всего голосов: ${totalVotes}`,
       `Пост: ${poll.publishedMessageId ? 'опубликован' : 'ещё нет'}`,
@@ -5391,36 +5341,18 @@ export class PrivateControlService {
     } else {
       const statusLabel = this.formatGiveawayStatusLabel(giveaway.status);
       lines.push(
-        '',
         `Название: ${giveaway.title}`,
         `Статус: ${statusLabel}`,
-        `Старт: ${giveaway.startsAt ? this.formatDateTimeLabel(giveaway.startsAt) : 'сразу'}`,
         `Финиш: ${this.formatDateTimeLabel(giveaway.endsAt)}`,
+        `Старт: ${giveaway.startsAt ? this.formatDateTimeLabel(giveaway.startsAt) : 'сразу'}`,
         `Подтверждение: ${giveaway.claimHours} ч`,
-        `Заявки: ${giveaway.entriesCount} • ОК ${giveaway.verifiedEntriesCount} • ждут ${giveaway.pendingEntriesCount}`,
+        `Мест: ${giveaway.prizes.length}`,
+        `Участники: ${giveaway.entriesCount}`,
         `Победители: ${giveaway.winnersCount}`,
       );
 
       if (waitingLabel && giveaway.status === 'DRAFT') {
-        lines.push(`Ввод: ${waitingLabel}`);
-      }
-
-      lines.push('', 'Призы');
-      lines.push(...giveaway.prizes.map((prize) => `${prize.position}. ${prize.title}`));
-
-      if (giveaway.winners.length > 0) {
-        lines.push('', 'Победители');
-        lines.push(
-          ...giveaway.winners.flatMap((winner) => {
-            const winnerLine = `${winner.prizePosition}. ${winner.prizeTitle} — ${
-              winner.displayName ?? winner.userId
-            } (${this.formatGiveawayWinnerStatusLabel(winner.status)})`;
-            if (!winner.claimDeadlineAt) {
-              return [winnerLine];
-            }
-            return [`${winnerLine}, до ${this.formatDateTimeLabel(winner.claimDeadlineAt)}`];
-          }),
-        );
+        lines.push(`Жду: ${waitingLabel}`);
       }
 
       if (giveaway.status === 'DRAFT') {
@@ -5556,21 +5488,6 @@ export class PrivateControlService {
     const selected = entities.find((entity) => entity.id === entityId);
     const normalizedTitle = selected?.title?.trim() ?? '';
     return normalizedTitle.length > 0 ? normalizedTitle : entityId;
-  }
-
-  private formatGiveawayWinnerStatusLabel(status: ManagedGiveawayWinner['status']): string {
-    switch (status) {
-      case 'CLAIMED':
-        return 'подтверждён';
-      case 'DELIVERED':
-        return 'приз выдан';
-      case 'EXPIRED':
-        return 'срок подтверждения истёк';
-      case 'REROLLED':
-        return 'перевыбран';
-      default:
-        return 'ждёт подтверждения';
-    }
   }
 
   private renderGiveawayClaimView(
@@ -6352,9 +6269,7 @@ export class PrivateControlService {
     const lines = [
       ...(prefix ? [prefix, ''] : []),
       'Управление через кнопки.',
-      'Выберите чат/канал и нужный раздел.',
-      'Фото можно отправить прямо в этот чат.',
-      'Для отмены используйте кнопку «Отмена».',
+      'Выберите чат и действие.',
     ];
 
     return {
@@ -6374,13 +6289,7 @@ export class PrivateControlService {
     const prompt = this.describeInputPrompt(input);
 
     return {
-      text: [
-        `Что нужно ввести: ${prompt.title}`,
-        '',
-        prompt.description,
-        '',
-        'Чтобы отменить, нажмите кнопку ниже.',
-      ].join('\n'),
+      text: [`Введите: ${prompt.title}`, '', prompt.description].join('\n'),
       options: {
         buttons: [
           [this.callbackButton('Отмена', this.cb('input_cancel'))],
@@ -6876,7 +6785,8 @@ export class PrivateControlService {
     await this.saveSession(context.actor.userId, session);
 
     const text = this.limitMessageText(view.text);
-    const options = this.withDebugContext(view.options, session, callback.notification);
+    const compactOptions = this.compactButtonLayout(view.options);
+    const options = this.withDebugContext(compactOptions, session, callback.notification);
 
     if (callback.callbackId) {
       const edited = await this.tryAnswerWithEdit(
@@ -6901,6 +6811,36 @@ export class PrivateControlService {
     options?: MaxSendMessageOptions,
   ): Promise<void> {
     await this.maxClient.sendMessage(chatId, text, options, { immediate: true });
+  }
+
+  private compactButtonLayout(
+    options: MaxSendMessageOptions | undefined,
+  ): MaxSendMessageOptions | undefined {
+    if (!options) {
+      return undefined;
+    }
+
+    const compactSingleButton = options.button
+      ? {
+          ...options.button,
+          text: this.compactText(options.button.text, BUTTON_TEXT_MAX_SINGLE_COLUMN),
+        }
+      : undefined;
+
+    const compactGrid = options.buttons?.map((row) => {
+      const maxLength =
+        row.length >= 2 ? BUTTON_TEXT_MAX_TWO_COLUMNS : BUTTON_TEXT_MAX_SINGLE_COLUMN;
+      return row.map((button) => ({
+        ...button,
+        text: this.compactText(button.text, maxLength),
+      }));
+    });
+
+    return {
+      ...options,
+      ...(compactSingleButton ? { button: compactSingleButton } : {}),
+      ...(compactGrid ? { buttons: compactGrid } : {}),
+    };
   }
 
   private withDebugContext(
@@ -6981,14 +6921,14 @@ export class PrivateControlService {
     if (miniappUrl && botContactId) {
       row.push({
         type: 'open_app',
-        text: 'Открыть приложение',
+        text: 'Мини-апп',
         webApp: miniappUrl,
         contactId: botContactId,
       });
     } else if (miniappUrl) {
       row.push({
         type: 'link',
-        text: 'Открыть приложение',
+        text: 'Мини-апп',
         url: miniappUrl,
       });
     }
