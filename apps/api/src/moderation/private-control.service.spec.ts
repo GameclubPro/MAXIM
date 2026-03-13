@@ -703,6 +703,32 @@ describe('PrivateControlService', () => {
     }
   });
 
+  it('reports image variant when MAX accepts only image payload with media_type=sticker', async () => {
+    const { service, maxClient } = createHarness();
+    const fetchControl = mockImageFetch();
+    maxClient.sendCustomMessageImmediate
+      .mockRejectedValueOnce(new Error('sticker rejected #1'))
+      .mockRejectedValueOnce(new Error('sticker rejected #2'))
+      .mockResolvedValueOnce({ message_id: 'msg-image-variant-1' });
+
+    try {
+      await service.handleUpdate(createPrivatePhotoUpdate());
+
+      expect(maxClient.sendCustomMessageImmediate).toHaveBeenCalledTimes(3);
+      expect(maxClient.sendCustomMessageImmediate).toHaveBeenLastCalledWith(
+        '152517912',
+        expect.objectContaining({
+          text: '',
+          attachments: [expect.objectContaining({ type: 'image' })],
+        }),
+      );
+      expect(getLastSentText(maxClient)).toContain('MAX принял только image-вариант');
+      expect(getLastSentText(maxClient)).not.toContain('sticker отправлен');
+    } finally {
+      fetchControl.restore();
+    }
+  });
+
   it('resends incoming sticker by code during sticker flow', async () => {
     const { service, maxClient } = createHarness();
 

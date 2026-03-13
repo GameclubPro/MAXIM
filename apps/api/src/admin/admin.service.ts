@@ -248,6 +248,17 @@ export class AdminService {
           },
         ],
       });
+      this.logger.log(
+        {
+          userId: user.userId,
+          privateChatId,
+          mid: sent.messageId,
+          messageUrl: sent.url,
+          attachmentType: 'image',
+          source: 'sticker_lab',
+        },
+        'Sticker lab asset delivered to private chat',
+      );
 
       return stickerLabShareResponseSchema.parse({
         mid: sent.messageId,

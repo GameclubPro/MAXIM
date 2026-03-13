@@ -222,7 +222,7 @@ type PreparedStickerAsset = {
   fileName: string;
 };
 
-type StickerDeliveryMode = 'sticker' | 'image_fallback';
+type StickerDeliveryMode = 'sticker' | 'image_variant' | 'image_fallback';
 
 const SESSION_TTL_SEC = 45 * 60;
 const SESSION_KEY_PREFIX = 'private-ui:v2';
@@ -3775,6 +3775,16 @@ export class PrivateControlService {
       preparedSticker.fileName,
       preparedSticker.mimeType,
     );
+    this.logger.log(
+      {
+        chatId: context.chatId,
+        preparedFileName: preparedSticker.fileName,
+        preparedMimeType: preparedSticker.mimeType,
+        preparedBytes: preparedSticker.buffer.length,
+        uploadPayloadKeys: Object.keys(uploadPayload).sort(),
+      },
+      'Prepared private sticker asset uploaded',
+    );
     const deliveryMode = await this.deliverPreparedSticker(context.chatId, uploadPayload);
 
     session.pendingInput = null;
@@ -3862,53 +3872,107 @@ export class PrivateControlService {
     chatId: string,
     uploadPayload: Record<string, unknown>,
   ): Promise<StickerDeliveryMode> {
-    const attempts: Array<Record<string, unknown>[]> = [
-      [
-        {
-          type: 'sticker',
-          payload: uploadPayload,
-        },
-      ],
-      [
-        {
-          type: 'sticker',
-          payload: {
-            ...uploadPayload,
-            mime_type: 'image/webp',
+    const attempts: Array<{
+      name: string;
+      deliveryMode: StickerDeliveryMode;
+      attachments: Record<string, unknown>[];
+    }> = [
+      {
+        name: 'sticker_payload',
+        deliveryMode: 'sticker',
+        attachments: [
+          {
+            type: 'sticker',
+            payload: uploadPayload,
           },
-        },
-      ],
-      [
-        {
-          type: 'image',
-          payload: {
-            ...uploadPayload,
-            mime_type: 'image/webp',
-            media_type: 'sticker',
+        ],
+      },
+      {
+        name: 'sticker_payload_with_mime',
+        deliveryMode: 'sticker',
+        attachments: [
+          {
+            type: 'sticker',
+            payload: {
+              ...uploadPayload,
+              mime_type: 'image/webp',
+            },
           },
-        },
-      ],
+        ],
+      },
+      {
+        name: 'image_payload_with_media_type_sticker',
+        deliveryMode: 'image_variant',
+        attachments: [
+          {
+            type: 'image',
+            payload: {
+              ...uploadPayload,
+              mime_type: 'image/webp',
+              media_type: 'sticker',
+            },
+          },
+        ],
+      },
     ];
+    const failedAttempts: Array<{
+      attempt: number;
+      name: string;
+      attachmentType: string;
+      error: string;
+    }> = [];
 
-    for (const [index, attachments] of attempts.entries()) {
+    for (const [index, attempt] of attempts.entries()) {
       try {
         await this.maxClient.sendCustomMessageImmediate(chatId, {
           text: '',
-          attachments,
+          attachments: attempt.attachments,
         });
-        return 'sticker';
-      } catch (error: unknown) {
-        this.logger.debug(
+
+        const attachmentType =
+          typeof attempt.attachments[0]?.type === 'string' ? attempt.attachments[0].type : 'unknown';
+
+        if (attempt.deliveryMode === 'sticker') {
+          this.logger.log(
+            {
+              chatId,
+              attempt: index + 1,
+              name: attempt.name,
+              attachmentType,
+            },
+            'MAX accepted sticker attachment',
+          );
+          return 'sticker';
+        }
+
+        this.logger.warn(
           {
             chatId,
             attempt: index + 1,
-            err: error instanceof Error ? error.message : String(error),
+            name: attempt.name,
+            attachmentType,
           },
-          'MAX rejected experimental sticker attachment',
+          'MAX accepted only image-based sticker variant',
         );
+        return 'image_variant';
+      } catch (error: unknown) {
+        failedAttempts.push({
+          attempt: index + 1,
+          name: attempt.name,
+          attachmentType:
+            typeof attempt.attachments[0]?.type === 'string' ? attempt.attachments[0].type : 'unknown',
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
 
+    this.logger.warn(
+      {
+        chatId,
+        failedAttempts,
+      },
+      'MAX rejected all sticker attachment variants, falling back to image',
+    );
     await this.maxClient.sendCustomMessageImmediate(chatId, {
       text: '',
       attachments: [
@@ -3934,6 +3998,14 @@ export class PrivateControlService {
             'Статус: sticker отправлен.',
             'Пришлите ещё фото или нажмите кнопку ниже.',
           ]
+        : deliveryMode === 'image_variant'
+          ? [
+              'Стикер из фото',
+              '',
+              'Статус: MAX принял только image-вариант.',
+              'В чате это может отображаться как обычная картинка, а не как настоящий sticker.',
+              'Пришлите ещё фото или нажмите кнопку ниже.',
+            ]
         : [
             'Стикер из фото',
             '',
