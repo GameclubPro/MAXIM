@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { GlassCard } from '../components/ui/glass-card';
 import { StatusState } from '../components/ui/status-state';
@@ -147,6 +147,14 @@ export function StickerLabPage() {
   const [fallbackPreviewSrc, setFallbackPreviewSrc] = useState<string | null>(null);
   const iosDevice = isIosDevice();
 
+  useEffect(() => {
+    return () => {
+      if (fallbackPreviewSrc?.startsWith('blob:')) {
+        URL.revokeObjectURL(fallbackPreviewSrc);
+      }
+    };
+  }, [fallbackPreviewSrc]);
+
   async function handleFilePick(file: File | null) {
     if (!file) {
       return;
@@ -207,7 +215,13 @@ export function StickerLabPage() {
           return;
         }
 
-        setFallbackPreviewSrc(clipboardAsset.dataUrl);
+        const objectUrl = URL.createObjectURL(clipboardAsset.blob);
+        setFallbackPreviewSrc((current) => {
+          if (current?.startsWith('blob:')) {
+            URL.revokeObjectURL(current);
+          }
+          return objectUrl;
+        });
         return;
       }
 
@@ -270,18 +284,32 @@ export function StickerLabPage() {
       </GlassCard>
 
       {fallbackPreviewSrc ? (
-        <div className="sticker-lab-viewer" role="dialog" aria-modal="true">
+        <div
+          className="sticker-lab-viewer"
+          role="dialog"
+          aria-modal="true"
+          onClick={() => setFallbackPreviewSrc(null)}
+        >
           <button
             type="button"
             className="sticker-lab-viewer__close"
-            onClick={() => setFallbackPreviewSrc(null)}
+            onClick={(event) => {
+              event.stopPropagation();
+              setFallbackPreviewSrc(null);
+            }}
             aria-label="Закрыть"
           >
             ×
           </button>
-          <div className="sticker-lab-viewer__surface">
+          <a
+            href={fallbackPreviewSrc}
+            target="_blank"
+            rel="noreferrer"
+            className="sticker-lab-viewer__surface"
+            onClick={(event) => event.stopPropagation()}
+          >
             <img src={fallbackPreviewSrc} alt="PNG" className="sticker-lab-viewer__image" />
-          </div>
+          </a>
         </div>
       ) : null}
     </div>

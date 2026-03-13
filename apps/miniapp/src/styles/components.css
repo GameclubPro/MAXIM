@@ -989,6 +989,7 @@
   place-items: center;
   width: min(100%, 560px);
   min-height: min(100vw, 560px);
+  text-decoration: none;
 }
 
 .sticker-lab-viewer__image {
@@ -996,8 +997,11 @@
   max-height: calc(100vh - 72px);
   aspect-ratio: 1 / 1;
   object-fit: contain;
-  user-select: none;
-  -webkit-user-drag: none;
+  pointer-events: auto;
+  user-select: auto;
+  -webkit-user-select: auto;
+  -webkit-user-drag: auto;
+  -webkit-touch-callout: default;
 }
 
 @media (min-width: 720px) {
