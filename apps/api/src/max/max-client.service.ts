@@ -562,9 +562,26 @@ export class MaxClientService implements OnModuleDestroy {
     fileName = 'broadcast-image.jpg',
     mimeType = 'image/jpeg',
   ): Promise<Record<string, unknown>> {
+    return this.uploadBinary('image', data, fileName, mimeType);
+  }
+
+  async uploadFile(
+    data: Buffer,
+    fileName = 'asset.bin',
+    mimeType = 'application/octet-stream',
+  ): Promise<Record<string, unknown>> {
+    return this.uploadBinary('file', data, fileName, mimeType);
+  }
+
+  private async uploadBinary(
+    uploadType: 'image' | 'file',
+    data: Buffer,
+    fileName: string,
+    mimeType: string,
+  ): Promise<Record<string, unknown>> {
     const uploadMeta = await this.request<Record<string, unknown>>('post', '/uploads', {
       params: {
-        type: 'image',
+        type: uploadType,
       },
     });
     const uploadUrl = typeof uploadMeta.url === 'string' ? uploadMeta.url.trim() : '';

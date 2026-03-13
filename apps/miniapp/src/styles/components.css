@@ -924,6 +924,12 @@
   box-shadow: 0 0 0 3px rgba(10, 121, 219, 0.12);
 }
 
+.sticker-lab-mode {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .sticker-lab-dropzone small {
   color: var(--text-muted);
   font-size: 0.83rem;

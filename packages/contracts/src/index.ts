@@ -998,6 +998,7 @@ export const stickerLabShareRequestSchema = z
     imageBase64: z.string().trim().min(1).max(2_000_000),
     imageMimeType: z.string().trim().min(1).max(128),
     imageFileName: z.string().trim().min(1).max(128),
+    deliveryType: z.enum(['image', 'file']).default('image'),
   })
   .superRefine((value, ctx) => {
     if (!value.imageMimeType.toLowerCase().startsWith('image/')) {

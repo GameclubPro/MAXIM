@@ -453,6 +453,66 @@ describe('AdminService.shareStickerLabAsset', () => {
     });
   });
 
+  it('sends file attachment when deliveryType is file', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      uploadImage: jest.fn(),
+      uploadFile: jest.fn().mockResolvedValue({ token: 'upload-token-file-1' }),
+      sendCustomMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'mid-file-1',
+        url: 'https://max.ru/c/152517912/file-mid',
+      }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.shareStickerLabAsset(
+      {
+        userId: '98315271',
+        username: 'alex',
+        displayName: 'Alex',
+        chatId: '152517912',
+        chatTitle: 'Личка с ботом',
+      },
+      {
+        imageBase64: Buffer.from('file-image').toString('base64'),
+        imageMimeType: 'image/webp',
+        imageFileName: 'sticker.webp',
+        deliveryType: 'file',
+      },
+    );
+
+    expect(maxClient.uploadImage).not.toHaveBeenCalled();
+    expect(maxClient.uploadFile).toHaveBeenCalledWith(
+      Buffer.from('file-image'),
+      'sticker.webp',
+      'image/webp',
+    );
+    expect(maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      '152517912',
+      {
+        attachments: [
+          {
+            type: 'file',
+            payload: { token: 'upload-token-file-1' },
+          },
+        ],
+      },
+    );
+    expect(result).toEqual({
+      mid: 'mid-file-1',
+      messageUrl: 'https://max.ru/c/152517912/file-mid',
+      privateChatId: '152517912',
+    });
+  });
+
   it('falls back to plain image when MAX rejects sticker attachment variants', async () => {
     const prisma = createPrismaMock();
     const sendCustomMessageImmediateWithResolvedLink = jest

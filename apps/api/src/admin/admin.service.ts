@@ -226,6 +226,7 @@ export class AdminService {
     if (!imageMimeType.startsWith('image/')) {
       throw new BadRequestException('Поддерживаются только изображения.');
     }
+    const deliveryType = parsed.data.deliveryType;
 
     const privateChatId = await this.resolvePrivateDialogChatId(user);
     if (!privateChatId) {
@@ -245,16 +246,16 @@ export class AdminService {
     );
     let uploadPayload: Record<string, unknown>;
     try {
-      uploadPayload = await this.maxClient.uploadImage(
-        imageBuffer,
-        normalizedImageFileName,
-        imageMimeType,
-      );
+      uploadPayload =
+        deliveryType === 'file'
+          ? await this.maxClient.uploadFile(imageBuffer, normalizedImageFileName, imageMimeType)
+          : await this.maxClient.uploadImage(imageBuffer, normalizedImageFileName, imageMimeType);
       const uploadPayloadKeys = Object.keys(uploadPayload).sort();
       this.logger.log(
         {
           userId: user.userId,
           privateChatId,
+          deliveryType,
           imageMimeType,
           imageFileName: normalizedImageFileName,
           uploadPayloadKeys,
@@ -263,7 +264,7 @@ export class AdminService {
           uploadHasPhotoId:
             typeof uploadPayload.photo_id === 'string' || typeof uploadPayload.photo_id === 'number',
         },
-        'Sticker lab image uploaded to MAX',
+        'Sticker lab asset uploaded to MAX',
       );
     } catch (error: unknown) {
       this.logger.warn(
@@ -272,14 +273,47 @@ export class AdminService {
           privateChatId,
           err: error instanceof Error ? error.message : String(error),
         },
-        'Sticker lab image upload failed',
+        'Sticker lab asset upload failed',
       );
       throw new BadRequestException(
-        'Не удалось отправить изображение в личный чат бота. Попробуйте ещё раз.',
+        'Не удалось отправить файл в личный чат бота. Попробуйте ещё раз.',
       );
     }
 
     try {
+      if (deliveryType === 'file') {
+        const sent = await this.maxClient.sendCustomMessageImmediateWithResolvedLink(privateChatId, {
+          attachments: [
+            {
+              type: 'file',
+              payload: uploadPayload,
+            },
+          ],
+        });
+        this.logger.log(
+          {
+            userId: user.userId,
+            privateChatId,
+            mid: sent.messageId,
+            messageUrl: sent.url,
+            attachmentType: 'file',
+            deliveryMode: 'file',
+            acceptedAttemptNumber: 1,
+            acceptedAttemptName: 'file_payload',
+            failedAttemptsCount: 0,
+            imageMimeType,
+            imageFileName: normalizedImageFileName,
+            source: 'sticker_lab',
+          },
+          'Sticker lab asset delivered to private chat',
+        );
+        return stickerLabShareResponseSchema.parse({
+          mid: sent.messageId,
+          messageUrl: sent.url,
+          privateChatId,
+        });
+      }
+
       const delivery = await this.deliverStickerLabAsset(
         privateChatId,
         uploadPayload,
@@ -319,12 +353,13 @@ export class AdminService {
         {
           userId: user.userId,
           privateChatId,
+          deliveryType,
           err: error instanceof Error ? error.message : String(error),
         },
-        'Sticker lab image delivery failed',
+        'Sticker lab asset delivery failed',
       );
       throw new BadRequestException(
-        'Не удалось отправить изображение в личный чат бота. Попробуйте ещё раз.',
+        'Не удалось отправить файл в личный чат бота. Попробуйте ещё раз.',
       );
     }
   }

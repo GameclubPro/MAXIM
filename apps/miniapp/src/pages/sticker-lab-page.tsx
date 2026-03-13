@@ -50,6 +50,7 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
   const { pushToast } = useToast();
   const [prepared, setPrepared] = useState<PreparedStickerImage | null>(null);
   const [sentAsset, setSentAsset] = useState<SentStickerLabAsset | null>(null);
+  const [deliveryType, setDeliveryType] = useState<'file' | 'image'>('file');
   const [isPreparing, setIsPreparing] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const [pickerError, setPickerError] = useState<string | null>(null);
@@ -181,6 +182,7 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
         imageBase64: prepared.base64,
         imageMimeType: prepared.mimeType,
         imageFileName: prepared.fileName,
+        deliveryType,
       });
       setSentAsset(result);
       pushToast({
@@ -231,6 +233,25 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
           />
         </div>
 
+        <div className="sticker-lab-mode">
+          <button
+            type="button"
+            className={deliveryType === 'file' ? 'button button--accent' : 'button button--ghost'}
+            onClick={() => setDeliveryType('file')}
+            disabled={isSending}
+          >
+            Как файл
+          </button>
+          <button
+            type="button"
+            className={deliveryType === 'image' ? 'button button--accent' : 'button button--ghost'}
+            onClick={() => setDeliveryType('image')}
+            disabled={isSending}
+          >
+            Как картинку
+          </button>
+        </div>
+
         {isPreparing ? (
           <StatusState tone="neutral" title="Готовим..." />
         ) : null}
@@ -255,8 +276,12 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
             {isSending
               ? 'Отправляем...'
               : bridgeAvailable
-                ? 'Отправить и открыть шеринг'
-                : 'Отправить боту'}
+                ? deliveryType === 'file'
+                  ? 'Отправить файлом и открыть шеринг'
+                  : 'Отправить картинкой и открыть шеринг'
+                : deliveryType === 'file'
+                  ? 'Отправить файлом боту'
+                  : 'Отправить картинкой боту'}
           </button>
           <Link to="/" className="button button--ghost">
             К чатам

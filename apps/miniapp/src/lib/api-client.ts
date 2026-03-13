@@ -141,6 +141,7 @@ export class ApiClient {
     imageBase64: string;
     imageMimeType: string;
     imageFileName: string;
+    deliveryType?: 'image' | 'file';
   }): Promise<StickerLabShareResponse> {
     const requestBody = stickerLabShareRequestSchema.parse(payload);
     const response = await this.request('/sticker-lab/share', {
