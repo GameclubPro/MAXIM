@@ -3,27 +3,11 @@ import { Link } from 'react-router-dom';
 import { GlassCard } from '../components/ui/glass-card';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
-import type { ApiClient } from '../lib/api-client';
-import { canShareMaxContent, openMaxBotLink, shareMaxContent } from '../lib/max-bridge';
 import {
   prepareStickerClipboardImage,
   prepareStickerImage,
   type PreparedStickerImage,
 } from '../lib/sticker-image';
-
-type StickerLabPageProps = {
-  api: ApiClient;
-};
-
-type SentStickerLabAsset = Awaited<ReturnType<ApiClient['shareStickerLabImage']>>;
-
-const SHARE_DELAY_MS = 250;
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    window.setTimeout(resolve, ms);
-  });
-}
 
 function normalizeErrorMessage(error: unknown, fallback: string): string {
   if (!(error instanceof Error)) {
@@ -82,22 +66,29 @@ async function writeImageToClipboard(blob: Blob, mimeType: string): Promise<bool
 
 function copyImageWithExecCommand(dataUrl: string): boolean {
   const container = document.createElement('div');
+  const imageHtml = `<img src="${dataUrl}" width="512" height="512" alt="sticker" />`;
   container.contentEditable = 'true';
   container.style.position = 'fixed';
   container.style.opacity = '0';
   container.style.left = '-9999px';
   container.style.top = '-9999px';
-
-  const image = document.createElement('img');
-  image.src = dataUrl;
-  image.width = 512;
-  image.height = 512;
-  image.alt = 'sticker';
-  container.appendChild(image);
-
+  container.innerHTML = imageHtml;
   document.body.appendChild(container);
+
+  const onCopy = (event: Event) => {
+    const clipboardEvent = event as ClipboardEvent;
+    if (!clipboardEvent.clipboardData) {
+      return;
+    }
+    clipboardEvent.clipboardData.setData('text/html', imageHtml);
+    clipboardEvent.clipboardData.setData('text/plain', ' ');
+    clipboardEvent.preventDefault();
+  };
+  container.addEventListener('copy', onCopy);
+
   const selection = window.getSelection();
   if (!selection) {
+    container.removeEventListener('copy', onCopy);
     document.body.removeChild(container);
     return false;
   }
@@ -114,22 +105,19 @@ function copyImageWithExecCommand(dataUrl: string): boolean {
     copied = false;
   } finally {
     selection.removeAllRanges();
+    container.removeEventListener('copy', onCopy);
     document.body.removeChild(container);
   }
 
   return copied;
 }
 
-export function StickerLabPage({ api }: StickerLabPageProps) {
+export function StickerLabPage() {
   const { pushToast } = useToast();
   const [prepared, setPrepared] = useState<PreparedStickerImage | null>(null);
-  const [sentAsset, setSentAsset] = useState<SentStickerLabAsset | null>(null);
-  const [deliveryType, setDeliveryType] = useState<'file' | 'image'>('file');
   const [isPreparing, setIsPreparing] = useState(false);
-  const [isSending, setIsSending] = useState(false);
   const [isCopying, setIsCopying] = useState(false);
   const [pickerError, setPickerError] = useState<string | null>(null);
-  const bridgeAvailable = canShareMaxContent();
 
   async function handleFilePick(file: File | null) {
     if (!file) {
@@ -142,11 +130,10 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
     try {
       const nextPrepared = await prepareStickerImage(file);
       setPrepared(nextPrepared);
-      setSentAsset(null);
       pushToast({
         tone: 'success',
-        title: 'Макет готов',
-        description: 'Теперь можно отправить его в личку с ботом и открыть native share.',
+        title: 'Готово',
+        description: 'Изображение подготовлено. Нажмите «Скопировать».',
       });
     } catch (error: unknown) {
       const message = normalizeErrorMessage(
@@ -154,7 +141,6 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
         'Не удалось подготовить изображение. Попробуйте другое фото.',
       );
       setPrepared(null);
-      setSentAsset(null);
       setPickerError(message);
     } finally {
       setIsPreparing(false);
@@ -210,82 +196,8 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
     await handleFilePick(fileFromHtml);
   }
 
-  async function handleShareOnceMore(asset: SentStickerLabAsset) {
-    if (!bridgeAvailable) {
-      if (asset.messageUrl) {
-        openMaxBotLink(asset.messageUrl);
-        return;
-      }
-
-      pushToast({
-        tone: 'info',
-        title: 'Native share недоступен',
-        description: 'Откройте MAX в приложении, чтобы поделиться сообщением от бота.',
-      });
-      return;
-    }
-
-    try {
-      await wait(SHARE_DELAY_MS);
-      await shareMaxContent({
-        mid: asset.mid,
-        chatType: 'DIALOG',
-      });
-    } catch (error: unknown) {
-      const message = normalizeErrorMessage(
-        error,
-        'MAX не открыл экран шеринга. Попробуйте ещё раз.',
-      );
-      pushToast({
-        tone: 'info',
-        title: 'Не удалось открыть шеринг',
-        description: message,
-      });
-    }
-  }
-
-  async function handleSend(): Promise<void> {
-    if (!prepared) {
-      return;
-    }
-
-    setIsSending(true);
-    setPickerError(null);
-
-    try {
-      const result = await api.shareStickerLabImage({
-        imageBase64: prepared.base64,
-        imageMimeType: prepared.mimeType,
-        imageFileName: prepared.fileName,
-        deliveryType,
-      });
-      setSentAsset(result);
-      pushToast({
-        tone: 'success',
-        title: 'Отправлено в личку с ботом',
-        description: bridgeAvailable
-          ? 'MAX сейчас откроет native share.'
-          : 'Сообщение уже у бота. Если нужно, откройте его вручную.',
-      });
-      await handleShareOnceMore(result);
-    } catch (error: unknown) {
-      const message = normalizeErrorMessage(
-        error,
-        'Не удалось отправить изображение боту. Попробуйте ещё раз.',
-      );
-      setPickerError(message);
-      pushToast({
-        tone: 'danger',
-        title: 'Отправка не удалась',
-        description: message,
-      });
-    } finally {
-      setIsSending(false);
-    }
-  }
-
   async function handleCopyPreparedImage(): Promise<void> {
-    if (!prepared || isCopying) {
+    if (!prepared || isCopying || isPreparing) {
       return;
     }
 
@@ -334,6 +246,21 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
           </div>
         </div>
 
+        <label className="sticker-lab-dropzone">
+          <span className="sticker-lab-dropzone__eyebrow">Загрузка</span>
+          <strong>Загрузите любое изображение</strong>
+          <small>Mini App подготовит PNG 512×512 для вставки в MAX.</small>
+          <input
+            type="file"
+            accept="image/*"
+            onChange={(event) => {
+              const file = event.target.files?.[0] ?? null;
+              void handleFilePick(file);
+              event.currentTarget.value = '';
+            }}
+          />
+        </label>
+
         <div className="sticker-lab-paste">
           <span className="sticker-lab-paste__label">Вставка</span>
           <div
@@ -342,35 +269,14 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
             aria-multiline="true"
             contentEditable
             suppressContentEditableWarning
-            data-placeholder="Вставьте текст или изображение из буфера"
+            data-placeholder="Вставьте изображение из буфера"
             onPaste={(event) => {
               void handlePaste(event);
             }}
           />
         </div>
 
-        <div className="sticker-lab-mode">
-          <button
-            type="button"
-            className={deliveryType === 'file' ? 'button button--accent' : 'button button--ghost'}
-            onClick={() => setDeliveryType('file')}
-            disabled={isSending}
-          >
-            Как файл
-          </button>
-          <button
-            type="button"
-            className={deliveryType === 'image' ? 'button button--accent' : 'button button--ghost'}
-            onClick={() => setDeliveryType('image')}
-            disabled={isSending}
-          >
-            Как картинку
-          </button>
-        </div>
-
-        {isPreparing ? (
-          <StatusState tone="neutral" title="Готовим..." />
-        ) : null}
+        {isPreparing ? <StatusState tone="neutral" title="Готовим..." /> : null}
 
         {prepared ? (
           <div className="sticker-lab-preview">
@@ -386,57 +292,16 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
           <button
             type="button"
             className="button button--accent"
-            onClick={() => void handleSend()}
-            disabled={!prepared || isPreparing || isSending || isCopying}
-          >
-            {isSending
-              ? 'Отправляем...'
-              : bridgeAvailable
-                ? deliveryType === 'file'
-                  ? 'Отправить файлом и открыть шеринг'
-                  : 'Отправить картинкой и открыть шеринг'
-                : deliveryType === 'file'
-                  ? 'Отправить файлом боту'
-                  : 'Отправить картинкой боту'}
-          </button>
-          <button
-            type="button"
-            className="button button--ghost"
             onClick={() => void handleCopyPreparedImage()}
-            disabled={!prepared || isPreparing || isSending || isCopying}
+            disabled={!prepared || isPreparing || isCopying}
           >
-            {isCopying ? 'Копируем...' : 'Скопировать для вставки в MAX'}
+            {isCopying ? 'Копируем...' : 'Скопировать'}
           </button>
           <Link to="/" className="button button--ghost">
             К чатам
           </Link>
         </div>
       </GlassCard>
-
-      {sentAsset ? (
-        <GlassCard className="sticker-lab-card" elevated>
-          <StatusState tone="success" title="Отправлено" />
-
-          <div className="sticker-lab-actions">
-            <button
-              type="button"
-              className="button button--accent"
-              onClick={() => void handleShareOnceMore(sentAsset)}
-            >
-              {bridgeAvailable ? 'Поделиться ещё раз' : 'Открыть в MAX'}
-            </button>
-            {sentAsset.messageUrl ? (
-              <button
-                type="button"
-                className="button button--ghost"
-                onClick={() => openMaxBotLink(sentAsset.messageUrl ?? '')}
-              >
-                Открыть сообщение
-              </button>
-            ) : null}
-          </div>
-        </GlassCard>
-      ) : null}
     </div>
   );
 }
