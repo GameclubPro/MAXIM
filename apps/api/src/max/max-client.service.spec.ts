@@ -211,6 +211,65 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('publishes custom attachment-only message and resolves post link', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            data: {
+              mid: 'mid-custom-1',
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            data: {
+              messages: [
+                {
+                  body: { mid: 'mid-custom-1' },
+                  message_url: 'https://max.ru/chats/chat-1/message/custom-1',
+                },
+              ],
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.sendCustomMessageImmediateWithResolvedLink('chat-1', {
+      attachments: [
+        {
+          type: 'image',
+          payload: { token: 'upload-token-1' },
+        },
+      ],
+    });
+
+    expect(result).toEqual({
+      messageId: 'mid-custom-1',
+      url: 'https://max.ru/chats/chat-1/message/custom-1',
+    });
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api.max.ru/messages',
+        params: { chat_id: 'chat-1' },
+        data: {
+          attachments: [
+            {
+              type: 'image',
+              payload: { token: 'upload-token-1' },
+            },
+          ],
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('does not fail when MAX omits a direct message url for chat posts', async () => {
     const httpService = {
       request: jest

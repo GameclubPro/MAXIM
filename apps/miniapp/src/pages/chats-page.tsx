@@ -82,6 +82,20 @@ export function ChatsPage({ api }: { api: ApiClient }) {
 
   return (
     <div className="page-stack page-enter">
+      <GlassCard className="sticker-lab-entry" elevated>
+        <div className="sticker-lab-entry__copy">
+          <span className="chip">Инструмент</span>
+          <h2>Стикер-лаб</h2>
+          <p>
+            Загрузите фото, соберите квадратный WEBP и сразу откройте native share в MAX через
+            личку с ботом.
+          </p>
+        </div>
+        <Link to="/sticker-lab" className="button button--accent sticker-lab-entry__action">
+          Открыть
+        </Link>
+      </GlassCard>
+
       {!isNoEntitiesForTab ? (
         <GlassCard
           className={cn(

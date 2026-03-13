@@ -14,6 +14,10 @@ type MaxWebAppBridge = {
   ready?: () => void;
   close?: () => void;
   openMaxLink?: (url: string) => void;
+  shareMaxContent?: (payload: {
+    mid: string;
+    chatType?: 'DIALOG' | 'CHAT';
+  }) => Promise<unknown> | void;
 };
 
 declare global {

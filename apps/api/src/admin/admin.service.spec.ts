@@ -394,6 +394,109 @@ describe('AdminService night mode settings normalization', () => {
   });
 });
 
+describe('AdminService.shareStickerLabAsset', () => {
+  it('sends prepared image into the current private dialog when init data already has dialog chat id', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-1' }),
+      sendCustomMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'mid-sticker-1',
+        url: 'https://max.ru/c/152517912/test-mid',
+      }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.shareStickerLabAsset(
+      {
+        userId: '98315271',
+        username: 'alex',
+        displayName: 'Alex',
+        chatId: '152517912',
+        chatTitle: 'Личка с ботом',
+      },
+      {
+        imageBase64: Buffer.from('sticker-image').toString('base64'),
+        imageMimeType: 'image/webp',
+        imageFileName: 'sticker.webp',
+      },
+    );
+
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    expect(maxClient.uploadImage).toHaveBeenCalledWith(
+      Buffer.from('sticker-image'),
+      'sticker.webp',
+      'image/webp',
+    );
+    expect(maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      '152517912',
+      {
+        attachments: [
+          {
+            type: 'image',
+            payload: { token: 'upload-token-1' },
+          },
+        ],
+      },
+    );
+    expect(result).toEqual({
+      mid: 'mid-sticker-1',
+      messageUrl: 'https://max.ru/c/152517912/test-mid',
+      privateChatId: '152517912',
+    });
+  });
+
+  it('falls back to the latest known private dialog when miniapp is opened outside the direct chat', async () => {
+    const prisma = createPrismaMock();
+    prisma.$queryRaw.mockResolvedValue([{ recipient_chat_id: '152517912' }]);
+    const maxClient = {
+      uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-2' }),
+      sendCustomMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'mid-sticker-2',
+        url: 'https://max.ru/c/152517912/test-mid-2',
+      }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.shareStickerLabAsset(
+      {
+        userId: '98315271',
+        username: 'alex',
+        displayName: 'Alex',
+        chatId: '-71527248136199',
+        chatTitle: 'MAXIM Test Chat',
+      },
+      {
+        imageBase64: Buffer.from('sticker-image-2').toString('base64'),
+        imageMimeType: 'image/webp',
+        imageFileName: 'miniapp-sticker.webp',
+      },
+    );
+
+    expect(prisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      '152517912',
+      expect.any(Object),
+    );
+    expect(result.privateChatId).toBe('152517912');
+  });
+});
+
 describe('AdminService managed polls', () => {
   it('publishes and closes a chat poll', async () => {
     const prisma = createPrismaMock();

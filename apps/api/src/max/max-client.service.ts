@@ -331,6 +331,28 @@ export class MaxClientService implements OnModuleDestroy {
     });
   }
 
+  async sendCustomMessageImmediateWithResolvedLink(
+    chatId: string,
+    payload: MaxCustomMessagePayload,
+  ): Promise<MaxPublishedMessage> {
+    const sendResponse = await this.sendCustomMessageImmediate(chatId, payload);
+    const messageId = this.extractMessageIdFromSendResponse(sendResponse);
+    if (!messageId) {
+      throw new Error('MAX send response is missing message id');
+    }
+
+    const directUrl = this.parseChatLink(sendResponse);
+    if (directUrl) {
+      return { messageId, url: directUrl };
+    }
+
+    const resolvedUrl = await this.resolveMessageLink(messageId);
+    return {
+      messageId,
+      url: resolvedUrl ?? null,
+    };
+  }
+
   async resolveMessageLink(messageId: string): Promise<string | null> {
     const sentMessage = await this.getMessageById(messageId);
     const batchLink = sentMessage ? this.parseChatLink(sentMessage) : null;

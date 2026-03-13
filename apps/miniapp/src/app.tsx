@@ -22,6 +22,7 @@ import { ChannelDialogPage } from './pages/channel-dialog-page';
 import { EventsPage } from './pages/events-page';
 import { GiveawayPage } from './pages/giveaway-page';
 import { SettingsPage } from './pages/settings-page';
+import { StickerLabPage } from './pages/sticker-lab-page';
 
 const queryClient = new QueryClient();
 const initData = getInitData();
@@ -97,6 +98,7 @@ export function App() {
               />
               <Route path="/chat/:chatId/events" element={<EventsPage api={apiClient} />} />
               <Route path="/giveaways/:giveawayId" element={<GiveawayPage api={apiClient} />} />
+              <Route path="/sticker-lab" element={<StickerLabPage api={apiClient} />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>

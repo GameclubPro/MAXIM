@@ -2,6 +2,8 @@ import {
   addGlobalUserBlacklistRequestSchema,
   addDomainRequestSchema,
   addAdminRequestSchema,
+  stickerLabShareRequestSchema,
+  stickerLabShareResponseSchema,
   chatRulesSchema,
   channelStatsQuerySchema,
   channelStatsResponseSchema,
@@ -37,6 +39,7 @@ import {
   type ManualModerationActionResult,
   type Me,
   type ModerationEvent,
+  type StickerLabShareResponse,
   publishChannelEngagementRequestSchema,
   publishChannelEngagementResultSchema,
   type UpdateChatRulesRequest,
@@ -190,6 +193,80 @@ export class AdminService {
       username: user.username,
       displayName: user.displayName,
     };
+  }
+
+  async shareStickerLabAsset(user: AuthUser, body: unknown): Promise<StickerLabShareResponse> {
+    const parsed = stickerLabShareRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const imageMimeType = parsed.data.imageMimeType.trim().toLowerCase();
+    if (!imageMimeType.startsWith('image/')) {
+      throw new BadRequestException('Поддерживаются только изображения.');
+    }
+
+    const privateChatId = await this.resolvePrivateDialogChatId(user);
+    if (!privateChatId) {
+      throw new BadRequestException(
+        'Сначала откройте личный чат с ботом и отправьте туда любое сообщение.',
+      );
+    }
+
+    const imageBuffer = this.decodeBroadcastImageBase64(parsed.data.imageBase64);
+    if (imageBuffer.length > BROADCAST_IMAGE_MAX_BYTES) {
+      throw new BadRequestException('Изображение слишком большое. Выберите другое фото.');
+    }
+
+    let uploadPayload: Record<string, unknown>;
+    try {
+      uploadPayload = await this.maxClient.uploadImage(
+        imageBuffer,
+        this.resolveBroadcastImageFileName(parsed.data.imageFileName, imageMimeType),
+        imageMimeType,
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          userId: user.userId,
+          privateChatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Sticker lab image upload failed',
+      );
+      throw new BadRequestException(
+        'Не удалось отправить изображение в личный чат бота. Попробуйте ещё раз.',
+      );
+    }
+
+    try {
+      const sent = await this.maxClient.sendCustomMessageImmediateWithResolvedLink(privateChatId, {
+        attachments: [
+          {
+            type: 'image',
+            payload: uploadPayload,
+          },
+        ],
+      });
+
+      return stickerLabShareResponseSchema.parse({
+        mid: sent.messageId,
+        messageUrl: sent.url,
+        privateChatId,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          userId: user.userId,
+          privateChatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Sticker lab image delivery failed',
+      );
+      throw new BadRequestException(
+        'Не удалось отправить изображение в личный чат бота. Попробуйте ещё раз.',
+      );
+    }
   }
 
   async listChats(user: AuthUser): Promise<ChatSummary[]> {
@@ -4763,6 +4840,15 @@ export class AdminService {
     }
 
     return rows[0].recipient_chat_id.trim();
+  }
+
+  private async resolvePrivateDialogChatId(user: AuthUser): Promise<string | null> {
+    const currentChatId = user.chatId?.trim() ?? '';
+    if (currentChatId && /^[0-9]+$/u.test(currentChatId)) {
+      return currentChatId;
+    }
+
+    return this.findLatestPrivateChatIdForUser(user.userId);
   }
 
   private async resolveChannelTitle(chatId: string): Promise<string> {
