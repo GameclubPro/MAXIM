@@ -209,6 +209,11 @@ type ParsedImageAttachment = {
   url: string;
   token: string | null;
   photoId: string | null;
+  width: number | null;
+  height: number | null;
+  mimeType: string | null;
+  mediaType: string | null;
+  payloadKeys: string[];
 };
 
 type ParsedStickerAttachment = {
@@ -3772,6 +3777,38 @@ export class PrivateControlService {
     session: PrivateSession,
     imageAttachment: ParsedImageAttachment,
   ): Promise<void> {
+    let imageUrlHost: string | null = null;
+    let imageUrlPath: string | null = null;
+    try {
+      const parsed = new URL(imageAttachment.url);
+      imageUrlHost = parsed.host || null;
+      imageUrlPath = parsed.pathname || null;
+    } catch {
+      imageUrlHost = null;
+      imageUrlPath = null;
+    }
+
+    this.logger.log(
+      {
+        chatId: context.chatId,
+        actorUserId: context.actor.userId,
+        actorDisplayName: context.actor.displayName ?? null,
+        messageId: context.update.message?.messageId ?? null,
+        pendingInputKind: session.pendingInput?.kind ?? null,
+        imageUrl: imageAttachment.url,
+        imageUrlHost,
+        imageUrlPath,
+        imageToken: imageAttachment.token,
+        imagePhotoId: imageAttachment.photoId,
+        imageWidth: imageAttachment.width,
+        imageHeight: imageAttachment.height,
+        imageMimeType: imageAttachment.mimeType,
+        imageMediaType: imageAttachment.mediaType,
+        imagePayloadKeys: imageAttachment.payloadKeys,
+      },
+      'Incoming image attachment for sticker flow',
+    );
+
     const downloaded = await this.downloadImageAttachment(imageAttachment, 'private-sticker-source');
     const preparedSticker = await this.prepareStickerAsset(
       Buffer.from(downloaded.base64, 'base64'),
@@ -7390,6 +7427,11 @@ export class PrivateControlService {
         url,
         token: this.readString(payload.token) ?? null,
         photoId: this.normalizeUserId(payload.photo_id ?? payload.photoId) ?? null,
+        width: this.readOptionalInteger(payload.width ?? payload.w),
+        height: this.readOptionalInteger(payload.height ?? payload.h),
+        mimeType: this.readLowerString(payload.mime_type ?? payload.mimeType),
+        mediaType: this.readLowerString(payload.media_type ?? payload.mediaType),
+        payloadKeys: Object.keys(payload).sort(),
       };
     }
 
