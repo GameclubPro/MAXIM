@@ -111,8 +111,10 @@ const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
 const CHANNEL_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
 const GLOBAL_SPAMMER_WINDOW_SEC = 2 * 60;
 const GLOBAL_SPAMMER_REDIS_TTL_SEC = GLOBAL_SPAMMER_WINDOW_SEC + 5;
-const GLOBAL_SPAMMER_SAME_PAYLOAD_MIN_CHATS = 3;
+const GLOBAL_SPAMMER_WARN_MIN_CHATS = 4;
 const GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS = 5;
+const GLOBAL_SPAMMER_WARN_THRESHOLD = 2;
+const GLOBAL_SPAMMER_WARN_COUNTER_TTL_SEC = 7 * 24 * 60 * 60;
 const CROSS_CHAT_SPAM_ALWAYS_IGNORED_KEYS = new Set([
   'chat_id',
   'chatid',
@@ -130,7 +132,6 @@ const CROSS_CHAT_SPAM_ALWAYS_IGNORED_KEYS = new Set([
   'seq',
   'mid',
 ]);
-const URL_IN_TEXT_PATTERN = /((https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,})(\/\S*)?/gi;
 const NON_SANCTION_RULE_CODES = new Set([
   'LINK_BLOCKED',
   'PROFANITY',
@@ -151,6 +152,10 @@ const MESSAGE_LIMITS_RULE_CODES = new Set([
   'PHOTO_RATE_LIMIT',
   'STICKER_RATE_LIMIT',
 ]);
+type GlobalSpammerTrackingResult = {
+  handled: boolean;
+  skipKnownSpammerCheck: boolean;
+};
 const TEXT_FILTER_RULE_CODES = new Set(['PROFANITY', 'COMMERCIAL_AD']);
 const TOPIC_FILTER_RULE_CODES = new Set(['TOPIC_FILTER_MISMATCH']);
 type PrivateControlCommand = 'menu' | 'chats' | 'channels' | 'help';
@@ -473,15 +478,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const mediaFlags = this.detectMediaFlags(update);
-    await this.trackAndRegisterGlobalSpammer({
+    const globalSpammerTracking = await this.trackAndRegisterGlobalSpammer({
       chatId,
       userId: senderId,
+      userLabel,
+      messageId,
       text,
-      update,
-      mediaFlags,
     });
+    if (globalSpammerTracking.handled) {
+      return;
+    }
 
-    if (settings.deleteSpammersEnabled) {
+    if (settings.deleteSpammersEnabled && !globalSpammerTracking.skipKnownSpammerCheck) {
       const handled = await this.handleKnownSpammerSenderMessage({
         chatId,
         userId: senderId,
@@ -3267,25 +3275,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private async trackAndRegisterGlobalSpammer(params: {
     chatId: string;
     userId: string;
+    userLabel: string;
+    messageId: string;
     text: string;
-    update: MaxUpdate;
-    mediaFlags: {
-      hasPhotoAttachment: boolean;
-      hasVideoAttachment: boolean;
-      hasFileAttachment: boolean;
-      hasVoiceAttachment: boolean;
+  }): Promise<GlobalSpammerTrackingResult> {
+    const baseResult: GlobalSpammerTrackingResult = {
+      handled: false,
+      skipKnownSpammerCheck: false,
     };
-  }) {
     if (!this.redisCounter) {
-      return;
+      return baseResult;
     }
 
-    const { chatId, userId, text, update, mediaFlags } = params;
-    const signature = this.buildGlobalSpammerSignature({
-      text,
-      update,
-      mediaFlags,
-    });
+    const { chatId, userId, userLabel, messageId, text } = params;
 
     try {
       const uniqueChatsState = await this.redisCounter.addToSetWithTtl(
@@ -3294,41 +3296,65 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         GLOBAL_SPAMMER_REDIS_TTL_SEC,
       );
 
-      let samePayloadState: { added: boolean; size: number } | null = null;
-      if (signature) {
-        samePayloadState = await this.redisCounter.addToSetWithTtl(
-          this.buildGlobalSpammerSignatureRedisKey(userId, signature),
+      if (!uniqueChatsState.added) {
+        return baseResult;
+      }
+
+      if (uniqueChatsState.size >= GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS) {
+        await this.upsertGlobalSpammerEntry({
+          userId,
+          sourceChatId: chatId,
+          reason: 'HIGH_FANOUT_5_CHATS_2M',
+          evidence: {
+            uniqueChats: uniqueChatsState.size,
+            windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
+          },
+        });
+        await this.deleteAndKickDetectedGlobalSpammer({
           chatId,
-          GLOBAL_SPAMMER_REDIS_TTL_SEC,
-        );
+          userId,
+          messageId,
+          text,
+          reason: 'Detected in 5 unique chats within 2 minutes',
+        });
+        return {
+          handled: true,
+          skipKnownSpammerCheck: true,
+        };
       }
 
-      const riskSignal = this.hasGlobalSpammerRiskSignal(text);
-      const hasSamePayloadSpike = Boolean(
-        samePayloadState?.added && samePayloadState.size >= GLOBAL_SPAMMER_SAME_PAYLOAD_MIN_CHATS,
+      if (uniqueChatsState.size < GLOBAL_SPAMMER_WARN_MIN_CHATS) {
+        return baseResult;
+      }
+
+      const warningCount = await this.redisCounter.incrementWithTtl(
+        this.buildGlobalSpammerWarnRedisKey(userId),
+        GLOBAL_SPAMMER_WARN_COUNTER_TTL_SEC,
       );
-      const highFanoutWithRisk =
-        uniqueChatsState.added &&
-        uniqueChatsState.size >= GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS &&
-        riskSignal;
+      await this.sendGlobalSpammerFanoutWarning({
+        chatId,
+        userLabel,
+        warningCount,
+      });
 
-      if (!hasSamePayloadSpike && !highFanoutWithRisk) {
-        return;
+      if (warningCount >= GLOBAL_SPAMMER_WARN_THRESHOLD) {
+        await this.upsertGlobalSpammerEntry({
+          userId,
+          sourceChatId: chatId,
+          reason: 'HIGH_FANOUT_4_CHATS_WARN_THRESHOLD',
+          evidence: {
+            uniqueChats: uniqueChatsState.size,
+            windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
+            warningCount,
+            warningThreshold: GLOBAL_SPAMMER_WARN_THRESHOLD,
+          },
+        });
       }
 
-      await this.upsertGlobalSpammerEntry({
-        userId,
-        sourceChatId: chatId,
-        reason: hasSamePayloadSpike ? 'CROSS_CHAT_SAME_PAYLOAD' : 'HIGH_FANOUT_RISK_SIGNAL',
-        evidence: {
-          signatureKind: signature?.kind ?? null,
-          signatureHash: signature?.hash ?? null,
-          samePayloadChats: samePayloadState?.size ?? 0,
-          uniqueChats: uniqueChatsState.size,
-          windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
-          riskSignal,
-        },
-      });
+      return {
+        handled: false,
+        skipKnownSpammerCheck: true,
+      };
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -3338,16 +3364,61 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         },
         'Failed to track global spammer state',
       );
+      return baseResult;
     }
   }
 
-  private hasGlobalSpammerRiskSignal(text: string): boolean {
-    URL_IN_TEXT_PATTERN.lastIndex = 0;
-    if (URL_IN_TEXT_PATTERN.test(text)) {
-      return true;
+  private async sendGlobalSpammerFanoutWarning(params: {
+    chatId: string;
+    userLabel: string;
+    warningCount: number;
+  }): Promise<void> {
+    const { chatId, userLabel, warningCount } = params;
+    const safeCount = Math.max(1, Math.min(warningCount, GLOBAL_SPAMMER_WARN_THRESHOLD));
+    const warningText = `Товарищ ${userLabel}, фиксирую предупреждение за массовую активность по чатам (${safeCount}/${GLOBAL_SPAMMER_WARN_THRESHOLD}).`;
+    try {
+      await this.maxClient.sendMessage(chatId, warningText);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          warningCount,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to send global spammer fanout warning',
+      );
+    }
+  }
+
+  private async deleteAndKickDetectedGlobalSpammer(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    text: string;
+    reason: string;
+  }): Promise<void> {
+    const { chatId, userId, messageId, text, reason } = params;
+    try {
+      await this.maxClient.deleteMessage(chatId, messageId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId,
+          messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to delete message from detected global spammer',
+      );
     }
 
-    return this.ruleEngine.hasCommercialSpamMarkers(text);
+    await this.kickAndLogKnownSpammerEvent({
+      chatId,
+      userId,
+      messageId,
+      text,
+      reason,
+    });
   }
 
   private buildGlobalSpammerSignature(params: {
@@ -3571,6 +3642,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private buildGlobalSpammerAnyRedisKey(userId: string): string {
     return `global-spammer:any:v1:${userId}`;
+  }
+
+  private buildGlobalSpammerWarnRedisKey(userId: string): string {
+    return `global-spammer:warn:v1:${userId}`;
   }
 
   private async isUserKnownGlobalSpammer(userId: string): Promise<boolean> {
