@@ -1351,6 +1351,7 @@ describe('ModerationService', () => {
       addToSetWithTtl: jest
         .fn()
         .mockResolvedValueOnce({ added: true, size: 1 })
+        .mockResolvedValueOnce({ added: true, size: 2 })
         .mockResolvedValueOnce({ added: true, size: 3 })
         .mockResolvedValueOnce({ added: true, size: 4 })
         .mockResolvedValueOnce({ added: true, size: 5 }),
