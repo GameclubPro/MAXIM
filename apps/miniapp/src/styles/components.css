@@ -888,6 +888,42 @@
   line-height: 1.2;
 }
 
+.sticker-lab-paste {
+  display: grid;
+  gap: 8px;
+}
+
+.sticker-lab-paste__label {
+  font-size: 0.74rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #0a79db;
+}
+
+.sticker-lab-paste__editor {
+  min-height: 128px;
+  padding: 14px;
+  border-radius: 18px;
+  border: 1px dashed rgba(95, 121, 145, 0.26);
+  background: rgba(255, 255, 255, 0.92);
+  font-size: 0.95rem;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  outline: none;
+}
+
+.sticker-lab-paste__editor:empty::before {
+  content: attr(data-placeholder);
+  color: var(--text-muted);
+}
+
+.sticker-lab-paste__editor:focus {
+  border-color: rgba(10, 121, 219, 0.58);
+  box-shadow: 0 0 0 3px rgba(10, 121, 219, 0.12);
+}
+
 .sticker-lab-dropzone small {
   color: var(--text-muted);
   font-size: 0.83rem;

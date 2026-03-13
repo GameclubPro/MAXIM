@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ClipboardEvent as ReactClipboardEvent } from 'react';
 import { Link } from 'react-router-dom';
 import { GlassCard } from '../components/ui/glass-card';
 import { StatusState } from '../components/ui/status-state';
@@ -85,6 +85,55 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
     }
   }
 
+  async function fileFromDataUrl(dataUrl: string): Promise<File | null> {
+    try {
+      const response = await fetch(dataUrl);
+      const blob = await response.blob();
+      if (!blob.type.toLowerCase().startsWith('image/')) {
+        return null;
+      }
+
+      const extension =
+        blob.type === 'image/png' ? 'png' : blob.type === 'image/webp' ? 'webp' : 'jpg';
+      return new File([blob], `pasted-image.${extension}`, { type: blob.type });
+    } catch {
+      return null;
+    }
+  }
+
+  function extractDataImageUrl(html: string): string | null {
+    const match = html.match(/src=["'](data:image\/[^"']+)["']/iu);
+    if (!match || typeof match[1] !== 'string') {
+      return null;
+    }
+
+    const dataUrl = match[1].trim();
+    return dataUrl.length > 0 ? dataUrl : null;
+  }
+
+  async function handlePaste(event: ReactClipboardEvent<HTMLDivElement>): Promise<void> {
+    const clipboard = event.clipboardData;
+    const imageItem = Array.from(clipboard.items).find(
+      (item) => item.kind === 'file' && item.type.toLowerCase().startsWith('image/'),
+    );
+
+    if (imageItem) {
+      event.preventDefault();
+      await handleFilePick(imageItem.getAsFile());
+      return;
+    }
+
+    const html = clipboard.getData('text/html');
+    const dataUrl = extractDataImageUrl(html);
+    if (!dataUrl) {
+      return;
+    }
+
+    event.preventDefault();
+    const fileFromHtml = await fileFromDataUrl(dataUrl);
+    await handleFilePick(fileFromHtml);
+  }
+
   async function handleShareOnceMore(asset: SentStickerLabAsset) {
     if (!bridgeAvailable) {
       if (asset.messageUrl) {
@@ -167,20 +216,20 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
           </div>
         </div>
 
-        <label className="sticker-lab-dropzone">
-          <input
-            type="file"
-            accept="image/*"
-            onChange={(event) => {
-              void handleFilePick(event.target.files?.[0] ?? null);
-              event.currentTarget.value = '';
+        <div className="sticker-lab-paste">
+          <span className="sticker-lab-paste__label">Вставка</span>
+          <div
+            className="sticker-lab-paste__editor"
+            role="textbox"
+            aria-multiline="true"
+            contentEditable
+            suppressContentEditableWarning
+            data-placeholder="Вставьте текст или изображение из буфера"
+            onPaste={(event) => {
+              void handlePaste(event);
             }}
           />
-          <span className="sticker-lab-dropzone__eyebrow">
-            {prepared ? 'Заменить изображение' : 'Загрузить изображение'}
-          </span>
-          <strong>{prepared ? 'Выбрать другое фото' : 'Нажмите, чтобы выбрать фото'}</strong>
-        </label>
+        </div>
 
         {isPreparing ? (
           <StatusState tone="neutral" title="Готовим..." />
