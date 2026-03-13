@@ -1,8 +1,4 @@
 const STICKER_CANVAS_SIZE = 512;
-const STICKER_FRAME_INSET = 28;
-const STICKER_FRAME_RADIUS = 96;
-const STICKER_IMAGE_INSET = 42;
-const STICKER_IMAGE_RADIUS = 78;
 
 export type PreparedStickerImage = {
   base64: string;
@@ -37,28 +33,6 @@ function loadImage(dataUrl: string): Promise<HTMLImageElement> {
     image.onerror = () => reject(new Error('Не удалось открыть изображение.'));
     image.src = dataUrl;
   });
-}
-
-function drawRoundedRect(
-  context: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  radius: number,
-): void {
-  const normalizedRadius = Math.max(0, Math.min(radius, width / 2, height / 2));
-  context.beginPath();
-  context.moveTo(x + normalizedRadius, y);
-  context.lineTo(x + width - normalizedRadius, y);
-  context.quadraticCurveTo(x + width, y, x + width, y + normalizedRadius);
-  context.lineTo(x + width, y + height - normalizedRadius);
-  context.quadraticCurveTo(x + width, y + height, x + width - normalizedRadius, y + height);
-  context.lineTo(x + normalizedRadius, y + height);
-  context.quadraticCurveTo(x, y + height, x, y + height - normalizedRadius);
-  context.lineTo(x, y + normalizedRadius);
-  context.quadraticCurveTo(x, y, x + normalizedRadius, y);
-  context.closePath();
 }
 
 function sanitizeStickerFileName(fileName: string, extension: 'png' | 'webp'): string {
@@ -126,60 +100,13 @@ export async function prepareStickerImage(file: File): Promise<PreparedStickerIm
   }
 
   context.clearRect(0, 0, canvas.width, canvas.height);
-  context.save();
-  context.shadowColor = 'rgba(19, 49, 73, 0.18)';
-  context.shadowBlur = 28;
-  context.shadowOffsetY = 14;
-  context.fillStyle = '#ffffff';
-  drawRoundedRect(
-    context,
-    STICKER_FRAME_INSET,
-    STICKER_FRAME_INSET,
-    STICKER_CANVAS_SIZE - STICKER_FRAME_INSET * 2,
-    STICKER_CANVAS_SIZE - STICKER_FRAME_INSET * 2,
-    STICKER_FRAME_RADIUS,
-  );
-  context.fill();
-  context.restore();
+  const scale = Math.min(STICKER_CANVAS_SIZE / sourceWidth, STICKER_CANVAS_SIZE / sourceHeight);
+  const targetWidth = Math.max(1, Math.round(sourceWidth * scale));
+  const targetHeight = Math.max(1, Math.round(sourceHeight * scale));
+  const targetX = Math.floor((STICKER_CANVAS_SIZE - targetWidth) / 2);
+  const targetY = Math.floor((STICKER_CANVAS_SIZE - targetHeight) / 2);
 
-  context.save();
-  drawRoundedRect(
-    context,
-    STICKER_IMAGE_INSET,
-    STICKER_IMAGE_INSET,
-    STICKER_CANVAS_SIZE - STICKER_IMAGE_INSET * 2,
-    STICKER_CANVAS_SIZE - STICKER_IMAGE_INSET * 2,
-    STICKER_IMAGE_RADIUS,
-  );
-  context.clip();
-
-  const sourceAspectRatio = sourceWidth / sourceHeight;
-  const targetAspectRatio = 1;
-  let cropWidth = sourceWidth;
-  let cropHeight = sourceHeight;
-  let cropX = 0;
-  let cropY = 0;
-
-  if (sourceAspectRatio > targetAspectRatio) {
-    cropWidth = Math.round(sourceHeight * targetAspectRatio);
-    cropX = Math.max(0, Math.round((sourceWidth - cropWidth) / 2));
-  } else if (sourceAspectRatio < targetAspectRatio) {
-    cropHeight = Math.round(sourceWidth / targetAspectRatio);
-    cropY = Math.max(0, Math.round((sourceHeight - cropHeight) / 2));
-  }
-
-  context.drawImage(
-    image,
-    cropX,
-    cropY,
-    cropWidth,
-    cropHeight,
-    STICKER_IMAGE_INSET,
-    STICKER_IMAGE_INSET,
-    STICKER_CANVAS_SIZE - STICKER_IMAGE_INSET * 2,
-    STICKER_CANVAS_SIZE - STICKER_IMAGE_INSET * 2,
-  );
-  context.restore();
+  context.drawImage(image, targetX, targetY, targetWidth, targetHeight);
 
   let blob = await canvasToBlob(canvas, 'image/png');
   let targetMimeType: 'image/png' | 'image/webp' = 'image/png';
