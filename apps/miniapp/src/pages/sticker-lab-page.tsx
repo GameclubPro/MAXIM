@@ -57,9 +57,14 @@ function copyImageWithExecCommand(dataUrl: string): boolean {
   const container = document.createElement('div');
   container.contentEditable = 'true';
   container.style.position = 'fixed';
-  container.style.opacity = '0';
-  container.style.left = '-9999px';
-  container.style.top = '-9999px';
+  container.style.opacity = '0.01';
+  container.style.left = '0';
+  container.style.top = '0';
+  container.style.width = '1px';
+  container.style.height = '1px';
+  container.style.overflow = 'hidden';
+  container.style.pointerEvents = 'none';
+  container.style.zIndex = '-1';
 
   const image = document.createElement('img');
   image.src = dataUrl;
@@ -75,8 +80,9 @@ function copyImageWithExecCommand(dataUrl: string): boolean {
     return false;
   }
 
+  container.focus();
   const range = document.createRange();
-  range.selectNode(image);
+  range.selectNodeContents(container);
   selection.removeAllRanges();
   selection.addRange(range);
 
@@ -110,6 +116,36 @@ async function writeImageToClipboard(blob: Blob, mimeType: string): Promise<bool
   try {
     await (navigator.clipboard as { write: (items: unknown[]) => Promise<void> }).write([
       new ClipboardItemCtor({ [mimeType]: blob }),
+    ]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function writeImageAndHtmlToClipboard(blob: Blob, dataUrl: string): Promise<boolean> {
+  if (!canWriteImageClipboard()) {
+    return false;
+  }
+
+  const ClipboardItemCtor = (
+    window as Window & {
+      ClipboardItem?: new (items: Record<string, Blob>) => unknown;
+    }
+  ).ClipboardItem;
+  if (!ClipboardItemCtor) {
+    return false;
+  }
+
+  try {
+    const htmlBlob = new Blob([`<img src="${dataUrl}" alt="sticker" />`], {
+      type: 'text/html',
+    });
+    await (navigator.clipboard as { write: (items: unknown[]) => Promise<void> }).write([
+      new ClipboardItemCtor({
+        'image/png': blob,
+        'text/html': htmlBlob,
+      }),
     ]);
     return true;
   } catch {
@@ -277,6 +313,21 @@ export function StickerLabPage() {
           description: 'Вставьте изображение в личку с ботом в MAX.',
         });
         return;
+      }
+
+      if (androidDevice) {
+        const copiedWithHtml = await writeImageAndHtmlToClipboard(
+          clipboardAsset.blob,
+          clipboardAsset.dataUrl,
+        );
+        if (copiedWithHtml) {
+          pushToast({
+            tone: 'success',
+            title: 'Скопировано',
+            description: 'Вставьте изображение в MAX.',
+          });
+          return;
+        }
       }
 
       const copiedByExecCommand = copyImageWithExecCommand(clipboardAsset.dataUrl);
