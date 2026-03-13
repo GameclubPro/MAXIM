@@ -389,6 +389,27 @@ export class RuleEngineService {
     };
   }
 
+  hasCommercialSpamMarkers(text: string): boolean {
+    const normalizedText = this.normalizeForDetection(text);
+    const rawLoweredText = text.toLowerCase();
+    if (!normalizedText) {
+      return false;
+    }
+
+    const hasMarker = (marker: string): boolean =>
+      normalizedText.includes(marker) || rawLoweredText.includes(marker);
+
+    return (
+      ADS_LINK_PATTERN.test(rawLoweredText) ||
+      ADS_PHONE_PATTERN.test(rawLoweredText) ||
+      ADS_PRICE_PATTERN.test(rawLoweredText) ||
+      ADS_TRANSACTIONAL_PATTERN.test(normalizedText) ||
+      ADS_INTENT_MARKERS.some((marker) => hasMarker(marker)) ||
+      ADS_PROMO_MARKERS.some((marker) => hasMarker(marker)) ||
+      ADS_CONTACT_MARKERS.some((marker) => hasMarker(marker))
+    );
+  }
+
   private async detectDuplicateState(params: {
     chatId: string;
     userId: string;

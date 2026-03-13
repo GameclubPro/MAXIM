@@ -1,7 +1,6 @@
 import {
   broadcastHandoffRequestSchema,
   broadcastHandoffResponseSchema,
-  addGlobalUserBlacklistRequestSchema,
   chatRulesSchema,
   channelStatsRangeSchema,
   channelStatsResponseSchema,
@@ -32,14 +31,12 @@ import {
   publishChannelEngagementRequestSchema,
   publishChannelEngagementResultSchema,
   chatSummarySchema,
-  globalUserBlacklistEntrySchema,
   meSchema,
   type ChannelSettings,
   type ChatSettings,
   type ChatRules,
   type ChatSummary,
   type DomainAllowlistEntry,
-  type GlobalUserBlacklistEntry,
   type Me,
   type ManagedBroadcastDetails,
   type ManagedBroadcastSummary,
@@ -429,7 +426,9 @@ export class ApiClient {
     entityType: 'chat' | 'channel',
     entityId: string,
   ): Promise<ManagedGiveawaySummary[]> {
-    const response = await this.request(`/${entityType === 'channel' ? 'channels' : 'chats'}/${entityId}/giveaways`);
+    const response = await this.request(
+      `/${entityType === 'channel' ? 'channels' : 'chats'}/${entityId}/giveaways`,
+    );
     if (!Array.isArray(response)) {
       throw new Error('Invalid managed giveaways response');
     }
@@ -684,28 +683,6 @@ export class ApiClient {
       },
     );
     return manualModerationActionResultSchema.parse(response);
-  }
-
-  async getGlobalUserBlacklist(chatId: string): Promise<GlobalUserBlacklistEntry[]> {
-    const response = await this.request(`/chats/${chatId}/global-user-blacklist`);
-    if (!Array.isArray(response)) {
-      throw new Error('Invalid global user blacklist response');
-    }
-    return response.map((item: unknown) => globalUserBlacklistEntrySchema.parse(item));
-  }
-
-  async addGlobalUserBlacklistUser(chatId: string, userId: string): Promise<void> {
-    const payload = addGlobalUserBlacklistRequestSchema.parse({ userId });
-    await this.request(`/chats/${chatId}/global-user-blacklist`, {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    });
-  }
-
-  async removeGlobalUserBlacklistUser(chatId: string, userId: string): Promise<void> {
-    await this.request(`/chats/${chatId}/global-user-blacklist/${encodeURIComponent(userId)}`, {
-      method: 'DELETE',
-    });
   }
 
   private async request(path: string, init: RequestInit = {}) {

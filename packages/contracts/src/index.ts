@@ -60,11 +60,7 @@ const managedPollOptionsDraftSchema = z
   .min(MANAGED_POLL_MIN_OPTIONS)
   .max(MANAGED_POLL_MAX_OPTIONS)
   .default(['', '']);
-const managedGiveawayTitleSchema = z
-  .string()
-  .trim()
-  .min(1)
-  .max(MANAGED_GIVEAWAY_TITLE_MAX_LENGTH);
+const managedGiveawayTitleSchema = z.string().trim().min(1).max(MANAGED_GIVEAWAY_TITLE_MAX_LENGTH);
 const managedGiveawayDescriptionSchema = z
   .string()
   .trim()
@@ -245,8 +241,7 @@ export const chatSettingsSchema = z
     deleteBotMessagesEnabled: z.boolean().default(true),
     deleteBotMessagesDelayMinutes: z.number().int().min(1).max(60).default(2),
     removeBotsFromGroupEnabled: z.boolean().default(false),
-    globalUserBlacklistEnabled: z.boolean().default(false),
-    globalCrossChatSpamEnabled: z.boolean().default(false),
+    deleteSpammersEnabled: z.boolean().default(false),
     antiSpamEnabled: z.boolean().default(true),
     maxMessageLengthEnabled: z.boolean().default(false),
     maxMessageLength: z.number().int().min(50).max(1500).default(1500),
@@ -744,10 +739,7 @@ export const updateManagedGiveawayRequestSchema = z
       .array(z.string().trim().min(1).max(128))
       .max(MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS)
       .default([]),
-    prizes: z
-      .array(managedGiveawayPrizeDraftSchema)
-      .min(1)
-      .max(MANAGED_GIVEAWAY_MAX_PRIZES),
+    prizes: z.array(managedGiveawayPrizeDraftSchema).min(1).max(MANAGED_GIVEAWAY_MAX_PRIZES),
   })
   .superRefine((value, ctx) => {
     const startsAt = value.startsAt ? Date.parse(value.startsAt) : Date.now();
@@ -954,9 +946,7 @@ export type MarkManagedGiveawayWinnerDeliveredRequest = z.infer<
 export const managedGiveawayHandoffRequestSchema = z.object({
   giveawayId: z.string().trim().min(1).nullable().default(null),
 });
-export type ManagedGiveawayHandoffRequest = z.infer<
-  typeof managedGiveawayHandoffRequestSchema
->;
+export type ManagedGiveawayHandoffRequest = z.infer<typeof managedGiveawayHandoffRequestSchema>;
 
 export const claimManagedGiveawayResponseSchema = z.object({
   ok: z.literal(true),
@@ -1245,16 +1235,6 @@ export const scheduleDomainRemovalRequestSchema = z.object({
   removeAfterAt: z.string().datetime().nullable(),
 });
 
-export const globalUserBlacklistEntrySchema = z.object({
-  userId: z.string().trim().min(1),
-  createdAt: z.string().datetime(),
-});
-export type GlobalUserBlacklistEntry = z.infer<typeof globalUserBlacklistEntrySchema>;
-
-export const addGlobalUserBlacklistRequestSchema = z.object({
-  userId: z.string().trim().min(1),
-});
-
 export const sendBroadcastRequestSchema = z
   .object({
     text: z.string().trim().max(1_000).default(''),
@@ -1269,7 +1249,12 @@ export const sendBroadcastRequestSchema = z
     imageFileName: z.string().trim().max(128).default(''),
     sendAt: z.string().datetime().nullable().default(null),
     cycleEnabled: z.boolean().default(false),
-    cycleEveryHours: z.number().int().min(1).max(14 * 24).optional(),
+    cycleEveryHours: z
+      .number()
+      .int()
+      .min(1)
+      .max(14 * 24)
+      .optional(),
     cycleEveryDays: z.number().int().min(1).max(14).optional(),
     cycleCount: z.number().int().min(1).max(100).default(1),
   })
@@ -1346,7 +1331,12 @@ export const broadcastHandoffRequestSchema = z
     buttonText: botButtonTextSchema,
     sendAt: z.string().datetime().nullable().default(null),
     cycleEnabled: z.boolean().default(false),
-    cycleEveryHours: z.number().int().min(1).max(14 * 24).optional(),
+    cycleEveryHours: z
+      .number()
+      .int()
+      .min(1)
+      .max(14 * 24)
+      .optional(),
     cycleEveryDays: z.number().int().min(1).max(14).optional(),
     cycleCount: z.number().int().min(1).max(100).default(1),
   })

@@ -401,9 +401,6 @@ function createHarness(
     addDomain: jest.fn().mockResolvedValue(undefined),
     removeDomain: jest.fn().mockResolvedValue(undefined),
     scheduleDomainRemoval: jest.fn().mockResolvedValue(undefined),
-    getGlobalUserBlacklist: jest.fn().mockResolvedValue([]),
-    addGlobalUserBlacklistUser: jest.fn().mockResolvedValue(undefined),
-    removeGlobalUserBlacklistUser: jest.fn().mockResolvedValue(undefined),
     sendBroadcast: jest.fn().mockResolvedValue({ targetChats: 1, sentChats: 1, failedChats: 0 }),
     sendChannelBroadcast: jest
       .fn()

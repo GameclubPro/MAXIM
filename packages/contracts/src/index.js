@@ -46,7 +46,7 @@ export const chatSettingsSchema = z
     duplicateBanWindowSec: duplicateWindowSecSchema.default(172800),
     duplicateBanMaxCount: duplicateMaxCountSchema.default(4),
     linkPolicy: linkPolicySchema.default('ALLOWLIST_ONLY'),
-    globalCrossChatSpamEnabled: z.boolean().default(false),
+    deleteSpammersEnabled: z.boolean().default(false),
     antiSpamEnabled: z.boolean().default(true),
     maxMessageLengthEnabled: z.boolean().default(false),
     maxMessageLength: z.number().int().min(50).max(1500).default(1500),

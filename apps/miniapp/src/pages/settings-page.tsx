@@ -5,7 +5,6 @@ import {
   type ChatRules,
   type ChatSettings,
   type DomainAllowlistEntry,
-  type GlobalUserBlacklistEntry,
   type ManagedBroadcastDetails,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -77,13 +76,7 @@ type MaxMessageLengthSliderProps = {
   onCommit: (value: ChatSettings['maxMessageLength']) => void;
 };
 
-function MaxMessageLengthSlider({
-  value,
-  min,
-  max,
-  step,
-  onCommit,
-}: MaxMessageLengthSliderProps) {
+function MaxMessageLengthSlider({ value, min, max, step, onCommit }: MaxMessageLengthSliderProps) {
   const [localValue, setLocalValue] = useState(value);
   const [isDragging, setIsDragging] = useState(false);
   const isDraggingRef = useRef(false);
@@ -171,7 +164,7 @@ type DuplicateMaxCountKey =
   | 'duplicateBanMaxCount';
 type HintKey =
   | 'antiSpam'
-  | 'globalCrossChatSpam'
+  | 'deleteSpammers'
   | 'linkBotMessage'
   | 'linkWarnMessage'
   | 'linkBotButton'
@@ -197,7 +190,6 @@ type HintKey =
   | 'nightBotButton'
   | 'deleteBotMessages'
   | 'removeBotsFromGroup'
-  | 'globalBlacklist'
   | 'mailingText'
   | 'mailingTargets'
   | 'mailingImage'
@@ -345,11 +337,10 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'nightModeBotButtonText',
   ],
   extra: [
-    'globalCrossChatSpamEnabled',
+    'deleteSpammersEnabled',
     'deleteBotMessagesEnabled',
     'deleteBotMessagesDelayMinutes',
     'removeBotsFromGroupEnabled',
-    'globalUserBlacklistEnabled',
   ],
 };
 
@@ -428,20 +419,19 @@ const DEFAULT_BOT_MESSAGE_TEMPLATES: Record<BotMessageEditorKey, string> = {
     'Товарищ {user}, Майор Максимов на связи 👮‍♂️ Повтор по базе: сообщение {duplicate_context}. {sanction} Дальше без серий, договорились.',
   messageLimits:
     'Товарищ {user}, Майор Максимов на связи 👮‍♂️ Сообщение {message_status}: {reason}. Поправьте и едем дальше.',
-  night: 'Ночной режим, граждане 🌙 Участок закрыт на {night_window} ({night_timezone}). {night_status}',
+  night:
+    'Ночной режим, граждане 🌙 Участок закрыт на {night_window} ({night_timezone}). {night_status}',
 };
 
 const DEFAULT_WARN_MESSAGE_TEMPLATES: Record<WarnMessageEditorKey, string> = {
-  linkWarn:
-    'Товарищ {user}, {warning}. 👮‍♂️ {reason}. Без повторов, и разойдёмся по-хорошему.',
+  linkWarn: 'Товарищ {user}, {warning}. 👮‍♂️ {reason}. Без повторов, и разойдёмся по-хорошему.',
   textFiltersWarn: 'Товарищ {user}, {warning}. Дальше держим порядок.',
 };
 
 const BOT_MESSAGE_TEMPLATE_HINTS: Record<BotMessageEditorKey, string> = {
   link: 'Плейсхолдеры: {user}, {message_status}, {reason}. Поддерживается Markdown MAX.',
   greeting: 'Плейсхолдеры: {user}, {greeting}. Поддерживается Markdown MAX.',
-  textFilters:
-    'Плейсхолдеры: {user}, {message_status}, {reason}. Поддерживается Markdown MAX.',
+  textFilters: 'Плейсхолдеры: {user}, {message_status}, {reason}. Поддерживается Markdown MAX.',
   duplicate:
     'Плейсхолдеры: {user}, {duplicate_context}, {sanction}, {ban_duration}. Поддерживается Markdown MAX.',
   messageLimits:
@@ -452,8 +442,7 @@ const BOT_MESSAGE_TEMPLATE_HINTS: Record<BotMessageEditorKey, string> = {
 
 const WARN_MESSAGE_TEMPLATE_HINTS: Record<WarnMessageEditorKey, string> = {
   linkWarn: 'Плейсхолдеры: {user}, {warning}, {reason}. Поддерживается Markdown MAX.',
-  textFiltersWarn:
-    'Плейсхолдеры: {user}, {warning}, {reason}. Поддерживается Markdown MAX.',
+  textFiltersWarn: 'Плейсхолдеры: {user}, {warning}, {reason}. Поддерживается Markdown MAX.',
 };
 
 const AUTO_RULES_FALLBACK_TEXT =
@@ -1056,8 +1045,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const [editingManagedBroadcast, setEditingManagedBroadcast] =
     useState<ManagedBroadcastDetails | null>(null);
   const [expandedManagedBroadcastId, setExpandedManagedBroadcastId] = useState<string | null>(null);
-  const [blacklistInput, setBlacklistInput] = useState('');
-  const [blacklistInputError, setBlacklistInputError] = useState('');
   const [duplicateWindowInputValues, setDuplicateWindowInputValues] = useState<
     Partial<Record<DuplicateWindowKey, string>>
   >({});
@@ -1176,13 +1163,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   const domainsQuery = useQuery({
     queryKey: ['domains', chatId],
     queryFn: () => api.getDomainAllowlistDetails(chatId ?? ''),
-    enabled: Boolean(chatId),
-    refetchOnWindowFocus: false,
-  });
-
-  const globalBlacklistQuery = useQuery({
-    queryKey: ['global-user-blacklist', chatId],
-    queryFn: () => api.getGlobalUserBlacklist(chatId ?? ''),
     enabled: Boolean(chatId),
     refetchOnWindowFocus: false,
   });
@@ -1562,38 +1542,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось обновить расписание удаления',
-        description: formatApiError(error),
-      });
-    },
-  });
-
-  const addGlobalBlacklistUserMutation = useMutation({
-    mutationFn: (userId: string) => api.addGlobalUserBlacklistUser(chatId ?? '', userId),
-    onSuccess: () => {
-      setBlacklistInput('');
-      setBlacklistInputError('');
-      void queryClient.invalidateQueries({ queryKey: ['global-user-blacklist', chatId] });
-      pushToast({ tone: 'success', title: 'Пользователь добавлен в черный список' });
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось добавить пользователя',
-        description: formatApiError(error),
-      });
-    },
-  });
-
-  const removeGlobalBlacklistUserMutation = useMutation({
-    mutationFn: (userId: string) => api.removeGlobalUserBlacklistUser(chatId ?? '', userId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ['global-user-blacklist', chatId] });
-      pushToast({ tone: 'success', title: 'Пользователь удален из черного списка' });
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось удалить пользователя',
         description: formatApiError(error),
       });
     },
@@ -2106,29 +2054,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     });
   }
 
-  function handleAddGlobalBlacklistUser() {
-    if (!chatId) {
-      return;
-    }
-
-    const normalized = blacklistInput.trim();
-    if (!normalized) {
-      setBlacklistInputError('Введите ID пользователя');
-      return;
-    }
-
-    const existing = (globalBlacklistQuery.data ?? []).some((item) => item.userId === normalized);
-    if (existing) {
-      setBlacklistInput('');
-      setBlacklistInputError('');
-      pushToast({ title: 'Пользователь уже в черном списке' });
-      return;
-    }
-
-    setBlacklistInputError('');
-    addGlobalBlacklistUserMutation.mutate(normalized);
-  }
-
   async function handleRulesImageChange(file: File | null) {
     if (!file) {
       return;
@@ -2504,7 +2429,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     addDomainMutation.isPending ||
     removeDomainMutation.isPending ||
     scheduleDomainRemovalMutation.isPending;
-  const globalBlacklistEntries: GlobalUserBlacklistEntry[] = globalBlacklistQuery.data ?? [];
   const isAllowlistMode = draft?.linkPolicy === 'ALLOWLIST_ONLY';
   const shouldShowLinkStages = draft?.linkPolicy !== 'ALERT_ONLY';
   const showLinkBotButtonErrors = Boolean(
@@ -2684,15 +2608,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     ? `код: ${draft?.thematicCodeword?.trim() || 'не задан'} · ${thematicFiltersStagesEnabledCount}/4 ступени`
     : 'Выключено';
   const extraEnabledCount = [
-    draft?.globalCrossChatSpamEnabled,
+    draft?.deleteSpammersEnabled,
     draft?.deleteBotMessagesEnabled,
     draft?.removeBotsFromGroupEnabled,
-    draft?.globalUserBlacklistEnabled,
   ].filter(Boolean).length;
   const extraHeaderSummary =
-    extraEnabledCount > 0
-      ? `${extraEnabledCount} опции · ${globalBlacklistEntries.length} в списке`
-      : `${globalBlacklistEntries.length} в списке`;
+    extraEnabledCount > 0 ? `${extraEnabledCount} опции включено` : 'Выключено';
   const chatsCount = chatsQuery.data?.length ?? 0;
   const canApplyToAllChats = chatsCount > 1;
   const managedBroadcasts = managedBroadcastsQuery.data ?? [];
@@ -5610,7 +5531,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         max={MESSAGE_LENGTH_MAX}
                         step={MESSAGE_LENGTH_STEP}
                         onCommit={(value) =>
-                          setFieldValue('maxMessageLength', value as ChatSettings['maxMessageLength'])
+                          setFieldValue(
+                            'maxMessageLength',
+                            value as ChatSettings['maxMessageLength'],
+                          )
                         }
                       />
                     ) : null}
@@ -6573,7 +6497,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             className={cn('managed-broadcast-card__body', isOpen && 'is-open')}
                           >
                             <div className="managed-broadcast-card__facts">
-                              <span>{broadcast.applyToAllChats ? 'Во все чаты' : 'Только этот чат'}</span>
+                              <span>
+                                {broadcast.applyToAllChats ? 'Во все чаты' : 'Только этот чат'}
+                              </span>
                               <span>{`Чатов: ${broadcast.targetChats}`}</span>
                               <span>{broadcast.hasImage ? 'С фото' : 'Без фото'}</span>
                               <span>{broadcast.buttonEnabled ? 'С кнопкой' : 'Без кнопки'}</span>
@@ -6601,9 +6527,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                               <button
                                 type="button"
                                 className="button button--ghost"
-                                onClick={() =>
-                                  cancelManagedBroadcastMutation.mutate(broadcast.id)
-                                }
+                                onClick={() => cancelManagedBroadcastMutation.mutate(broadcast.id)}
                                 disabled={isMailingBusy}
                               >
                                 Остановить
@@ -6632,7 +6556,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     <div className="mailing-target-card__row">
                       <div className="mailing-target-card__title-wrap">
                         <div className="mailing-card-title-row">
-                          <span className="mailing-target-card__title">Применить во всех чатах</span>
+                          <span className="mailing-target-card__title">
+                            Применить во всех чатах
+                          </span>
                           <SettingsHintAnchor
                             hintKey="mailingTargets"
                             openHintKey={openHintKey}
@@ -6670,7 +6596,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                   <div className="managed-broadcast-editor-note">
                     <strong>
-                      {editingManagedBroadcast ? 'Контент меняется в боте' : 'Контент собирается в боте'}
+                      {editingManagedBroadcast
+                        ? 'Контент меняется в боте'
+                        : 'Контент собирается в боте'}
                     </strong>
                     <small>
                       {editingManagedBroadcast
@@ -6680,7 +6608,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   </div>
 
                   <div className="mailing-options-grid">
-
                     <div
                       className={cn(
                         'mailing-option-card',
@@ -6801,8 +6728,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                               onToggleHint={toggleHint}
                               label="Пояснение для таймера рассылки"
                             >
-                              Отложенная отправка доступна до 14 дней вперёд. Если таймер
-                              выключен, сообщение уйдёт сразу.
+                              Отложенная отправка доступна до 14 дней вперёд. Если таймер выключен,
+                              сообщение уйдёт сразу.
                             </SettingsHintAnchor>
                           </div>
                         </div>
@@ -6888,8 +6815,8 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                               onToggleHint={toggleHint}
                               label="Пояснение для циклической рассылки"
                             >
-                              Интервал повторов задаётся в часах от 1 до 24. Максимум 100
-                              отправок, но весь цикл всё равно должен уместиться в 14 дней.
+                              Интервал повторов задаётся в часах от 1 до 24. Максимум 100 отправок,
+                              но весь цикл всё равно должен уместиться в 14 дней.
                             </SettingsHintAnchor>
                           </div>
                         </div>
@@ -7016,7 +6943,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                     <button
                       type="button"
                       className="button button--ghost mailing-action-bar__clear"
-                      onClick={editingManagedBroadcast ? handleCancelMailingEdit : resetMailingComposer}
+                      onClick={
+                        editingManagedBroadcast ? handleCancelMailingEdit : resetMailingComposer
+                      }
                       disabled={isMailingBusy}
                     >
                       {editingManagedBroadcast ? 'Отменить редактирование' : 'Очистить'}
@@ -7154,19 +7083,17 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                   <div className="settings-native-toggle">
                     <div className="settings-native-toggle__row">
                       <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">
-                          Анти-спам во всех чатах
-                        </span>
+                        <span className="settings-native-toggle__title">Удалять спаммеров</span>
                         <button
                           type="button"
                           className={cn(
                             'settings-info-button',
-                            openHintKey === 'globalCrossChatSpam' && 'is-open',
+                            openHintKey === 'deleteSpammers' && 'is-open',
                           )}
-                          aria-label="Пояснение для анти-спама во всех чатах"
-                          aria-controls="global-cross-chat-spam-hint"
-                          aria-expanded={openHintKey === 'globalCrossChatSpam'}
-                          onClick={() => toggleHint('globalCrossChatSpam')}
+                          aria-label="Пояснение для удаления спаммеров"
+                          aria-controls="delete-spammers-hint"
+                          aria-expanded={openHintKey === 'deleteSpammers'}
+                          onClick={() => toggleHint('deleteSpammers')}
                         >
                           <span aria-hidden>i</span>
                         </button>
@@ -7174,13 +7101,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
                       <label
                         className="settings-native-switch"
-                        aria-label="Включить анти-спам во всех чатах"
+                        aria-label="Включить удаление спаммеров"
                       >
                         <input
                           type="checkbox"
-                          checked={draft.globalCrossChatSpamEnabled}
+                          checked={draft.deleteSpammersEnabled}
                           onChange={(event) =>
-                            setFieldValue('globalCrossChatSpamEnabled', event.target.checked)
+                            setFieldValue('deleteSpammersEnabled', event.target.checked)
                           }
                         />
                         <span className="toggle-switch" aria-hidden>
@@ -7189,12 +7116,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       </label>
                     </div>
 
-                    {openHintKey === 'globalCrossChatSpam' ? (
-                      <p id="global-cross-chat-spam-hint" className="settings-native-toggle__hint">
-                        Если пользователь отправляет одинаковый текст/фото/пересланное в 3+ чата за
-                        2 минуты, бот удаляет сообщение и пишет предупреждение о спаме. Опция
-                        действует только в связке чатов с общим администратором и не пересекается с
-                        чужими чатами.
+                    {openHintKey === 'deleteSpammers' ? (
+                      <p id="delete-spammers-hint" className="settings-native-toggle__hint">
+                        База спаммеров ведется глобально. Когда тумблер включен, бот удаляет
+                        сообщение спаммера и удаляет участника из текущего чата.
                       </p>
                     ) : null}
                   </div>
@@ -7243,141 +7168,6 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                       </p>
                     ) : null}
                   </div>
-
-                  <div className="settings-native-toggle">
-                    <div className="settings-native-toggle__row">
-                      <div className="settings-native-toggle__title-wrap">
-                        <span className="settings-native-toggle__title">
-                          Удалять пользователей из черного списка
-                        </span>
-                        <button
-                          type="button"
-                          className={cn(
-                            'settings-info-button',
-                            openHintKey === 'globalBlacklist' && 'is-open',
-                          )}
-                          aria-label="Пояснение для глобального черного списка"
-                          aria-controls="global-blacklist-hint"
-                          aria-expanded={openHintKey === 'globalBlacklist'}
-                          onClick={() => toggleHint('globalBlacklist')}
-                        >
-                          <span aria-hidden>i</span>
-                        </button>
-                      </div>
-
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Включить удаление пользователей из черного списка"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={draft.globalUserBlacklistEnabled}
-                          onChange={(event) =>
-                            setFieldValue('globalUserBlacklistEnabled', event.target.checked)
-                          }
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
-                    </div>
-
-                    {openHintKey === 'globalBlacklist' ? (
-                      <p id="global-blacklist-hint" className="settings-native-toggle__hint">
-                        Если включить в любом чате, режим начнет действовать во всех чатах бота.
-                      </p>
-                    ) : null}
-                  </div>
-
-                  {draft.globalUserBlacklistEnabled ? (
-                    <div
-                      className={cn(
-                        'field',
-                        'allowlist-panel',
-                        blacklistInputError && 'allowlist-panel--error',
-                      )}
-                    >
-                      <div className="allowlist-panel__head">
-                        <span className="field__label">Черный список пользователей</span>
-                        <span className="chip">{globalBlacklistEntries.length}</span>
-                      </div>
-
-                      <p className="allowlist-panel__subtitle">
-                        Добавьте ID пользователя, которого нужно удалять автоматически.
-                      </p>
-
-                      <div className="allowlist-add-row">
-                        <input
-                          type="text"
-                          inputMode="text"
-                          value={blacklistInput}
-                          onChange={(event) => {
-                            setBlacklistInput(event.target.value);
-                            setBlacklistInputError('');
-                          }}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter') {
-                              event.preventDefault();
-                              handleAddGlobalBlacklistUser();
-                            }
-                          }}
-                          placeholder="user_id"
-                        />
-                        <button
-                          type="button"
-                          className="button button--accent allowlist-add-row__button"
-                          onClick={handleAddGlobalBlacklistUser}
-                          disabled={
-                            addGlobalBlacklistUserMutation.isPending ||
-                            removeGlobalBlacklistUserMutation.isPending
-                          }
-                        >
-                          {addGlobalBlacklistUserMutation.isPending ? 'Добавляем...' : 'Добавить'}
-                        </button>
-                      </div>
-
-                      {blacklistInputError ? (
-                        <small className="field__hint">{blacklistInputError}</small>
-                      ) : null}
-
-                      {globalBlacklistQuery.isLoading ? (
-                        <p className="allowlist-empty">Загрузка списка...</p>
-                      ) : null}
-
-                      {globalBlacklistQuery.error ? (
-                        <p className="allowlist-empty allowlist-empty--error">
-                          Ошибка: {formatApiError(globalBlacklistQuery.error)}
-                        </p>
-                      ) : null}
-
-                      {!globalBlacklistQuery.isLoading && !globalBlacklistQuery.error ? (
-                        globalBlacklistEntries.length > 0 ? (
-                          <ul className="allowlist-list" aria-label="Черный список пользователей">
-                            {globalBlacklistEntries.map((entry) => (
-                              <li key={entry.userId} className="allowlist-item">
-                                <span className="allowlist-item__domain">{entry.userId}</span>
-                                <button
-                                  type="button"
-                                  className="allowlist-item__remove"
-                                  onClick={() =>
-                                    removeGlobalBlacklistUserMutation.mutate(entry.userId)
-                                  }
-                                  disabled={
-                                    removeGlobalBlacklistUserMutation.isPending ||
-                                    addGlobalBlacklistUserMutation.isPending
-                                  }
-                                >
-                                  Удалить
-                                </button>
-                              </li>
-                            ))}
-                          </ul>
-                        ) : (
-                          <p className="allowlist-empty">Список пуст</p>
-                        )
-                      ) : null}
-                    </div>
-                  ) : null}
                   {renderSectionApplyControl('extra')}
                 </div>
               </div>

@@ -1,5 +1,4 @@
 import {
-  addGlobalUserBlacklistRequestSchema,
   addDomainRequestSchema,
   addAdminRequestSchema,
   stickerLabShareRequestSchema,
@@ -32,7 +31,6 @@ import {
   type ChatSettings,
   chatSettingsSchema,
   type DomainAllowlistEntry,
-  type GlobalUserBlacklistEntry,
   type LogsDashboardRange,
   type LogsDashboardResponse,
   type ManagedEntityType,
@@ -415,7 +413,8 @@ export class AdminService {
           uploadHasUrl: typeof uploadPayload.url === 'string',
           uploadHasToken: typeof uploadPayload.token === 'string',
           uploadHasPhotoId:
-            typeof uploadPayload.photo_id === 'string' || typeof uploadPayload.photo_id === 'number',
+            typeof uploadPayload.photo_id === 'string' ||
+            typeof uploadPayload.photo_id === 'number',
         },
         'Sticker lab asset uploaded to MAX',
       );
@@ -2455,7 +2454,9 @@ export class AdminService {
       orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'desc' }],
     });
 
-    return rows.map((row) => managedBroadcastSummarySchema.parse(this.mapManagedBroadcastSummary(row)));
+    return rows.map((row) =>
+      managedBroadcastSummarySchema.parse(this.mapManagedBroadcastSummary(row)),
+    );
   }
 
   async getManagedBroadcast(
@@ -3101,7 +3102,8 @@ export class AdminService {
       );
       if (occurrence.sentChatIds.length === 0 && occurrence.failedChatIds.length > 0) {
         const errorMessage =
-          this.extractMaxApiErrorMessage(occurrence.firstSendError) ?? 'Не удалось отправить рассылку.';
+          this.extractMaxApiErrorMessage(occurrence.firstSendError) ??
+          'Не удалось отправить рассылку.';
         await this.prisma.managedBroadcast.update({
           where: { id: row.id },
           data: {
@@ -3229,7 +3231,9 @@ export class AdminService {
     imagePayload?: Record<string, unknown>,
   ): Promise<{
     messageText: string;
-    messageOptions: Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'textFormat'> | undefined;
+    messageOptions:
+      | Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'textFormat'>
+      | undefined;
   }> {
     const broadcastButtons = await this.resolveBroadcastButtons(chatId, entityType, {
       includeCustomButton: payload.buttonEnabled,
@@ -3240,12 +3244,11 @@ export class AdminService {
       payload.textFormat === 'markdown' &&
       normalizedSourceText.length > 0 &&
       (entityType !== 'channel' || broadcastButtons.length > 0);
-    const renderedText =
-      shouldUseRichText
-        ? renderSupportedMarkdownAsHtml(normalizedSourceText)
-        : entityType === 'channel' && payload.textFormat === 'markdown'
-          ? stripSupportedMarkdownToPlainText(normalizedSourceText)
-          : normalizedSourceText;
+    const renderedText = shouldUseRichText
+      ? renderSupportedMarkdownAsHtml(normalizedSourceText)
+      : entityType === 'channel' && payload.textFormat === 'markdown'
+        ? stripSupportedMarkdownToPlainText(normalizedSourceText)
+        : normalizedSourceText;
     const messageText = renderedText || (payload.imageEnabled ? ' ' : '');
     const textFormat: MaxSendMessageOptions['textFormat'] = shouldUseRichText ? 'html' : undefined;
     const messageOptions =
@@ -3344,7 +3347,9 @@ export class AdminService {
       return [];
     }
 
-    return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+    return value.filter(
+      (item): item is string => typeof item === 'string' && item.trim().length > 0,
+    );
   }
 
   private normalizeBroadcastTextFormat(value: string): BroadcastTextFormat {
@@ -3412,7 +3417,8 @@ export class AdminService {
   private async sendBroadcastImageMessageWithRetry(
     chatId: string,
     text: string,
-    options: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'imagePayload' | 'textFormat'>
+    options:
+      | Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'imagePayload' | 'textFormat'>
       | undefined,
   ): Promise<void> {
     let lastError: unknown = null;
@@ -4787,100 +4793,6 @@ export class AdminService {
       },
     });
     await this.chatContextCache.invalidate(chatId);
-
-    return { ok: true };
-  }
-
-  async getGlobalUserBlacklist(
-    chatId: string,
-    user: AuthUser,
-  ): Promise<GlobalUserBlacklistEntry[]> {
-    await this.assertChatAdmin(chatId, user.userId);
-
-    const rows = await this.prisma.globalUserBlacklist.findMany({
-      orderBy: { createdAt: 'desc' },
-      select: {
-        userId: true,
-        createdAt: true,
-      },
-    });
-
-    return rows.map((row: { userId: string; createdAt: Date }) => ({
-      userId: row.userId,
-      createdAt: row.createdAt.toISOString(),
-    }));
-  }
-
-  async addGlobalUserBlacklistUser(
-    chatId: string,
-    user: AuthUser,
-    body: unknown,
-    source: AdminActionSource = 'miniapp',
-  ) {
-    await this.assertChatAdmin(chatId, user.userId);
-    const parsed = addGlobalUserBlacklistRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-
-    const normalizedUserId = parsed.data.userId.trim();
-
-    await this.prisma.globalUserBlacklist.upsert({
-      where: {
-        userId: normalizedUserId,
-      },
-      create: {
-        userId: normalizedUserId,
-        sourceChatId: chatId,
-        reason: 'MANUAL',
-      },
-      update: {
-        sourceChatId: chatId,
-        reason: 'MANUAL',
-      },
-    });
-
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: 'ADD_GLOBAL_USER_BLACKLIST',
-        payload: {
-          userId: normalizedUserId,
-          source,
-        },
-      },
-    });
-
-    return { ok: true };
-  }
-
-  async removeGlobalUserBlacklistUser(
-    chatId: string,
-    user: AuthUser,
-    targetUserId: string,
-    source: AdminActionSource = 'miniapp',
-  ) {
-    await this.assertChatAdmin(chatId, user.userId);
-    const normalizedUserId = targetUserId.trim();
-
-    await this.prisma.globalUserBlacklist.deleteMany({
-      where: {
-        userId: normalizedUserId,
-      },
-    });
-
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: 'REMOVE_GLOBAL_USER_BLACKLIST',
-        payload: {
-          userId: normalizedUserId,
-          source,
-        },
-      },
-    });
 
     return { ok: true };
   }

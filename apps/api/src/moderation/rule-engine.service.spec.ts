@@ -36,8 +36,8 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     deleteBotMessagesEnabled: true,
     deleteBotMessagesDelayMinutes: 2,
     removeBotsFromGroupEnabled: false,
-    globalUserBlacklistEnabled: false,
-    globalCrossChatSpamEnabled: false,
+    deleteSpammersEnabled: false,
+
     antiSpamEnabled: true,
     maxMessageLengthEnabled: false,
     maxMessageLength: 1500,

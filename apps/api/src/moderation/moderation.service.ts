@@ -109,10 +109,10 @@ const CHANNEL_AUTO_POST_SCAN_INTERVAL_MS = 5_000;
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
 const CHANNEL_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
-const GLOBAL_BLACKLIST_TOGGLE_CACHE_TTL_MS = 30_000;
-const GLOBAL_CROSS_CHAT_SPAM_SCOPE_CACHE_TTL_MS = 30_000;
-const GLOBAL_CROSS_CHAT_SPAM_WINDOW_SEC = 2 * 60;
-const GLOBAL_CROSS_CHAT_SPAM_MIN_CHATS = 3;
+const GLOBAL_SPAMMER_WINDOW_SEC = 2 * 60;
+const GLOBAL_SPAMMER_REDIS_TTL_SEC = GLOBAL_SPAMMER_WINDOW_SEC + 5;
+const GLOBAL_SPAMMER_SAME_PAYLOAD_MIN_CHATS = 3;
+const GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS = 5;
 const CROSS_CHAT_SPAM_ALWAYS_IGNORED_KEYS = new Set([
   'chat_id',
   'chatid',
@@ -130,6 +130,7 @@ const CROSS_CHAT_SPAM_ALWAYS_IGNORED_KEYS = new Set([
   'seq',
   'mid',
 ]);
+const URL_IN_TEXT_PATTERN = /((https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,})(\/\S*)?/gi;
 const NON_SANCTION_RULE_CODES = new Set([
   'LINK_BLOCKED',
   'PROFANITY',
@@ -157,14 +158,6 @@ type PrivateControlCommand = 'menu' | 'chats' | 'channels' | 'help';
 @Injectable()
 export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ModerationService.name);
-  private globalUserBlacklistEnabledCache: { value: boolean; checkedAt: number } | null = null;
-  private readonly globalCrossChatSpamScopeCache = new Map<
-    string,
-    {
-      expiresAt: number;
-      adminScopeIds: string[];
-    }
-  >();
   private readonly chatAdminCache = new Map<
     string,
     {
@@ -348,15 +341,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const settings = this.applyDegradeSettings(chat.settings, degradeMode);
     const rulesPublishedUrl = chat.rulesPublishedUrl;
     const rulesPublishedMessageId = chat.rulesPublishedMessageId;
-    const globalUserBlacklistEnabled = await this.isGlobalUserBlacklistEnabled(
-      settings.globalUserBlacklistEnabled,
-    );
-    const globalCrossChatSpamAdminScopeIds = await this.resolveGlobalCrossChatSpamAdminScopeIds({
-      chatId,
-      chatSettingEnabled: settings.globalCrossChatSpamEnabled,
-      localAdminUserIds: chat.adminUserIds,
-    });
-    const globalCrossChatSpamEnabled = globalCrossChatSpamAdminScopeIds.length > 0;
 
     const updateType = this.readLowerString(update.type);
     const senderIsOwnBotInMessage =
@@ -389,8 +373,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (serviceAuthored || serviceMembersEvent) {
       const excludedGreetingUserIds = new Set<string>();
 
-      if (globalUserBlacklistEnabled) {
-        const kickedUserIds = await this.handleServiceGloballyBlacklistedMembersEvent({
+      if (settings.deleteSpammersEnabled) {
+        const kickedUserIds = await this.handleServiceKnownSpammerMembersEvent({
           chatId,
           messageId,
           text,
@@ -488,8 +472,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    if (globalUserBlacklistEnabled) {
-      const handled = await this.handleGloballyBlacklistedSenderMessage({
+    const mediaFlags = this.detectMediaFlags(update);
+    await this.trackAndRegisterGlobalSpammer({
+      chatId,
+      userId: senderId,
+      text,
+      update,
+      mediaFlags,
+    });
+
+    if (settings.deleteSpammersEnabled) {
+      const handled = await this.handleKnownSpammerSenderMessage({
         chatId,
         userId: senderId,
         messageId,
@@ -528,26 +521,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const effectiveMessageLength = this.calculateEffectiveMessageLength(update);
-    const mediaFlags = this.detectMediaFlags(update);
-    if (globalCrossChatSpamEnabled) {
-      const handled = await this.handleGlobalCrossChatSpamMessage({
-        chatId,
-        userId: senderId,
-        userLabel,
-        messageId,
-        text,
-        createdAt,
-        update,
-        scopeAdminIds: globalCrossChatSpamAdminScopeIds,
-        deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
-        deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
-        mediaFlags,
-      });
-      if (handled) {
-        return;
-      }
-    }
-
     const detection = await this.ruleEngine.detect({
       chatId,
       userId: senderId,
@@ -1704,10 +1677,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       banNoticeText,
     } = params;
     if (action === SanctionAction.KICK) {
-      await this.upsertGlobalUserBlacklistEntry({
+      await this.upsertGlobalSpammerEntry({
         userId,
         sourceChatId: chatId,
-        reason: 'KICK_SANCTION',
+        reason: 'SANCTION_KICK',
+        evidence: {
+          action: 'KICK',
+          source: 'sanction',
+        },
       });
       try {
         await this.maxClient.kickMember(chatId, userId);
@@ -1728,6 +1705,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (action !== SanctionAction.BAN) {
       return;
     }
+
+    await this.upsertGlobalSpammerEntry({
+      userId,
+      sourceChatId: chatId,
+      reason: 'SANCTION_BAN',
+      evidence: {
+        action: 'BAN',
+        source: 'sanction',
+      },
+    });
 
     // Soft-ban mode: do not remove member from chat, enforce ban via active-ban auto-delete window.
     await this.sendBanNotice({
@@ -3163,15 +3150,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private async handleGloballyBlacklistedSenderMessage(params: {
+  private async handleKnownSpammerSenderMessage(params: {
     chatId: string;
     userId: string;
     messageId: string;
     text: string;
   }): Promise<boolean> {
     const { chatId, userId, messageId, text } = params;
-    const isBlacklisted = await this.isUserGloballyBlacklisted(userId);
-    if (!isBlacklisted) {
+    const isKnownSpammer = await this.isUserKnownGlobalSpammer(userId);
+    if (!isKnownSpammer) {
       return false;
     }
 
@@ -3185,21 +3172,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           messageId,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
-        'Failed to delete message from globally blacklisted user',
+        'Failed to delete message from known global spammer',
       );
     }
 
-    await this.kickAndLogGlobalBlacklistEvent({
+    await this.kickAndLogKnownSpammerEvent({
       chatId,
       userId,
       messageId,
       text,
-      reason: 'Sender is included in global user blacklist',
+      reason: 'Sender exists in global spammer registry',
     });
     return true;
   }
 
-  private async handleServiceGloballyBlacklistedMembersEvent(params: {
+  private async handleServiceKnownSpammerMembersEvent(params: {
     chatId: string;
     messageId: string;
     text: string;
@@ -3207,16 +3194,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }): Promise<string[]> {
     const { chatId, messageId, text, update } = params;
     const serviceMemberUserIds = this.extractServiceMemberUserIds(update);
-    const kickedUserIds = new Set<string>();
     if (serviceMemberUserIds.length === 0) {
       return [];
     }
 
-    if (!this.prisma.globalUserBlacklist?.findMany) {
-      return [];
-    }
-
-    const rows = await this.prisma.globalUserBlacklist.findMany({
+    const rows = await this.prisma.globalSpammer.findMany({
       where: {
         userId: {
           in: serviceMemberUserIds,
@@ -3231,20 +3213,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     for (const row of rows) {
-      kickedUserIds.add(row.userId);
-      await this.kickAndLogGlobalBlacklistEvent({
+      await this.kickAndLogKnownSpammerEvent({
         chatId,
         userId: row.userId,
         messageId,
         text,
-        reason: 'Member was added via service event and is globally blacklisted',
+        reason: 'Member joined via service event and exists in global spammer registry',
       });
     }
 
-    return [...kickedUserIds];
+    return rows.map((row) => row.userId);
   }
 
-  private async kickAndLogGlobalBlacklistEvent(params: {
+  private async kickAndLogKnownSpammerEvent(params: {
     chatId: string;
     userId: string;
     messageId: string;
@@ -3260,7 +3241,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           userId,
           messageId,
           eventType: EventType.MEMBER_ACTION,
-          ruleCode: 'GLOBAL_USER_BLACKLIST_KICK',
+          ruleCode: 'GLOBAL_SPAMMER_KICK',
           action: SanctionAction.KICK,
           maskedExcerpt: maskText(text),
           score: 0.95,
@@ -3278,170 +3259,98 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           messageId,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
-        'Failed to kick globally blacklisted user',
+        'Failed to kick known global spammer',
       );
     }
   }
 
-  private async handleGlobalCrossChatSpamMessage(params: {
+  private async trackAndRegisterGlobalSpammer(params: {
     chatId: string;
     userId: string;
-    userLabel: string;
-    messageId: string;
     text: string;
-    createdAt: string;
     update: MaxUpdate;
-    scopeAdminIds: string[];
-    deleteBotMessagesEnabled: boolean;
-    deleteBotMessagesDelayMinutes: number;
     mediaFlags: {
       hasPhotoAttachment: boolean;
       hasVideoAttachment: boolean;
       hasFileAttachment: boolean;
       hasVoiceAttachment: boolean;
     };
-  }): Promise<boolean> {
+  }) {
     if (!this.redisCounter) {
-      return false;
+      return;
     }
 
-    const {
-      chatId,
-      userId,
-      userLabel,
-      messageId,
-      text,
-      createdAt,
-      update,
-      scopeAdminIds,
-      deleteBotMessagesEnabled,
-      deleteBotMessagesDelayMinutes,
-      mediaFlags,
-    } = params;
-    if (scopeAdminIds.length === 0) {
-      return false;
-    }
-    const signature = this.buildGlobalCrossChatSpamSignature({
+    const { chatId, userId, text, update, mediaFlags } = params;
+    const signature = this.buildGlobalSpammerSignature({
       text,
       update,
       mediaFlags,
     });
-    if (!signature) {
-      return false;
-    }
-
-    let uniqueChatsCount: number;
 
     try {
-      const spreadStates = await Promise.all(
-        scopeAdminIds.map((scopeAdminId) =>
-          this.redisCounter!.addToSetWithTtl(
-            this.buildGlobalCrossChatSpamRedisKey(scopeAdminId, userId, signature),
-            chatId,
-            GLOBAL_CROSS_CHAT_SPAM_WINDOW_SEC + 5,
-          ),
-        ),
+      const uniqueChatsState = await this.redisCounter.addToSetWithTtl(
+        this.buildGlobalSpammerAnyRedisKey(userId),
+        chatId,
+        GLOBAL_SPAMMER_REDIS_TTL_SEC,
       );
-      uniqueChatsCount = spreadStates.reduce(
-        (max, spreadState) => Math.max(max, spreadState.size),
-        0,
-      );
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
+
+      let samePayloadState: { added: boolean; size: number } | null = null;
+      if (signature) {
+        samePayloadState = await this.redisCounter.addToSetWithTtl(
+          this.buildGlobalSpammerSignatureRedisKey(userId, signature),
           chatId,
-          userId,
-          messageId,
-          scopeAdminIds,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to evaluate global cross-chat spam state',
+          GLOBAL_SPAMMER_REDIS_TTL_SEC,
+        );
+      }
+
+      const riskSignal = this.hasGlobalSpammerRiskSignal(text);
+      const hasSamePayloadSpike = Boolean(
+        samePayloadState?.added && samePayloadState.size >= GLOBAL_SPAMMER_SAME_PAYLOAD_MIN_CHATS,
       );
-      return false;
-    }
+      const highFanoutWithRisk =
+        uniqueChatsState.added &&
+        uniqueChatsState.size >= GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS &&
+        riskSignal;
 
-    if (uniqueChatsCount < GLOBAL_CROSS_CHAT_SPAM_MIN_CHATS) {
-      return false;
-    }
+      if (!hasSamePayloadSpike && !highFanoutWithRisk) {
+        return;
+      }
 
-    const messageAgeMs = Date.now() - new Date(createdAt).getTime();
-    const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
-    if (!canDeleteMessage) {
-      return false;
-    }
-
-    try {
-      await this.maxClient.deleteMessage(chatId, messageId);
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          userId,
-          messageId,
-          uniqueChatsCount,
-          scopeAdminIds,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to delete global cross-chat spam message',
-      );
-      return false;
-    }
-
-    await this.prisma.violation.create({
-      data: {
-        chatId,
+      await this.upsertGlobalSpammerEntry({
         userId,
-        ruleCode: 'GLOBAL_CROSS_CHAT_SPAM',
-        score: 0.94,
-      },
-    });
-
-    await this.prisma.moderationEvent.create({
-      data: {
-        chatId,
-        userId,
-        messageId,
-        eventType: EventType.MESSAGE,
-        ruleCode: 'GLOBAL_CROSS_CHAT_SPAM_DELETE',
-        action: SanctionAction.DELETE_MESSAGE,
-        maskedExcerpt: maskText(text),
-        score: 0.94,
-        operator: Operator.BOT,
-        metadata: {
-          reason: 'Same payload was sent to multiple chats in a short window',
-          uniqueChatsCount,
-          windowSec: GLOBAL_CROSS_CHAT_SPAM_WINDOW_SEC,
-          signatureKind: signature.kind,
-          scopeAdminIds,
+        sourceChatId: chatId,
+        reason: hasSamePayloadSpike ? 'CROSS_CHAT_SAME_PAYLOAD' : 'HIGH_FANOUT_RISK_SIGNAL',
+        evidence: {
+          signatureKind: signature?.kind ?? null,
+          signatureHash: signature?.hash ?? null,
+          samePayloadChats: samePayloadState?.size ?? 0,
+          uniqueChats: uniqueChatsState.size,
+          windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
+          riskSignal,
         },
-      },
-    });
-
-    try {
-      await this.sendBotMessageWithOptionalAutoDelete({
-        chatId,
-        text: this.buildGlobalCrossChatSpamNotice(userLabel, uniqueChatsCount),
-        deleteBotMessagesEnabled,
-        deleteBotMessagesDelayMinutes,
       });
     } catch (error: unknown) {
       this.logger.warn(
         {
           chatId,
           userId,
-          messageId,
-          uniqueChatsCount,
-          scopeAdminIds,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
-        'Failed to send global cross-chat spam notice',
+        'Failed to track global spammer state',
       );
     }
-
-    return true;
   }
 
-  private buildGlobalCrossChatSpamSignature(params: {
+  private hasGlobalSpammerRiskSignal(text: string): boolean {
+    URL_IN_TEXT_PATTERN.lastIndex = 0;
+    if (URL_IN_TEXT_PATTERN.test(text)) {
+      return true;
+    }
+
+    return this.ruleEngine.hasCommercialSpamMarkers(text);
+  }
+
+  private buildGlobalSpammerSignature(params: {
     text: string;
     update: MaxUpdate;
     mediaFlags: {
@@ -3653,174 +3562,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
-  private buildGlobalCrossChatSpamRedisKey(
-    scopeAdminId: string,
+  private buildGlobalSpammerSignatureRedisKey(
     userId: string,
     signature: { kind: 'text' | 'photo' | 'forwarded'; hash: string },
   ): string {
-    return `cross-chat-spam:v2:${scopeAdminId}:${userId}:${signature.kind}:${signature.hash}`;
+    return `global-spammer:sig:v1:${userId}:${signature.kind}:${signature.hash}`;
   }
 
-  private buildGlobalCrossChatSpamNotice(userLabel: string, uniqueChatsCount: number): string {
-    return `Товарищ ${userLabel}, сообщение снято с линии: одинаковый текст или фото улетели в ${uniqueChatsCount} чатов за 2 минуты. Похоже на кросс-чат спам.`;
+  private buildGlobalSpammerAnyRedisKey(userId: string): string {
+    return `global-spammer:any:v1:${userId}`;
   }
 
-  private async resolveGlobalCrossChatSpamAdminScopeIds(params: {
-    chatId: string;
-    chatSettingEnabled: boolean;
-    localAdminUserIds: string[] | undefined;
-  }): Promise<string[]> {
-    const { chatId, chatSettingEnabled, localAdminUserIds } = params;
-    const currentAdminScopeIds = await this.resolveCurrentChatAdminScopeIds(
-      chatId,
-      localAdminUserIds,
-    );
-    if (currentAdminScopeIds.length === 0) {
-      return [];
-    }
-
-    if (chatSettingEnabled) {
-      return currentAdminScopeIds;
-    }
-
-    const cacheKey = `${chatId}:${currentAdminScopeIds.join(',')}`;
-    const now = Date.now();
-    const cached = this.globalCrossChatSpamScopeCache.get(cacheKey);
-    if (cached && cached.expiresAt > now) {
-      return cached.adminScopeIds;
-    }
-
-    const adminScopeIds =
-      await this.findEnabledGlobalCrossChatSpamAdminScopeIds(currentAdminScopeIds);
-    this.globalCrossChatSpamScopeCache.set(cacheKey, {
-      expiresAt: now + GLOBAL_CROSS_CHAT_SPAM_SCOPE_CACHE_TTL_MS,
-      adminScopeIds,
-    });
-    return adminScopeIds;
-  }
-
-  private async resolveCurrentChatAdminScopeIds(
-    chatId: string,
-    localAdminUserIds: string[] | undefined,
-  ): Promise<string[]> {
-    const remoteAdminIds = await this.getRemoteChatAdminIds(chatId);
-    const sourceAdminIds =
-      remoteAdminIds && remoteAdminIds.size > 0
-        ? Array.from(remoteAdminIds)
-        : Array.isArray(localAdminUserIds)
-          ? localAdminUserIds
-          : [];
-
-    const adminScopeIds = new Set<string>();
-    for (const adminUserId of sourceAdminIds) {
-      const canonical = this.normalizeCrossChatSpamAdminScopeId(adminUserId);
-      if (canonical) {
-        adminScopeIds.add(canonical);
-      }
-    }
-
-    return Array.from(adminScopeIds).sort();
-  }
-
-  private async findEnabledGlobalCrossChatSpamAdminScopeIds(
-    currentAdminScopeIds: readonly string[],
-  ): Promise<string[]> {
-    if (
-      currentAdminScopeIds.length === 0 ||
-      typeof this.prisma.chatAdminAllowlist?.findMany !== 'function'
-    ) {
-      return [];
-    }
-
-    const candidateUserIds = Array.from(
-      new Set(
-        currentAdminScopeIds.flatMap((adminScopeId) =>
-          Array.from(this.buildUserIdVariants(adminScopeId)),
-        ),
-      ),
-    );
-    const currentAdminScopeIdSet = new Set(currentAdminScopeIds);
-    const rows = await this.prisma.chatAdminAllowlist.findMany({
-      where: {
-        userId: {
-          in: candidateUserIds,
-        },
-        chat: {
-          settings: {
-            is: {
-              globalCrossChatSpamEnabled: true,
-            },
-          },
-        },
-      },
-      select: {
-        userId: true,
-      },
-    });
-
-    const enabledAdminScopeIds = new Set<string>();
-    for (const row of rows) {
-      const canonical = this.normalizeCrossChatSpamAdminScopeId(row.userId);
-      if (canonical && currentAdminScopeIdSet.has(canonical)) {
-        enabledAdminScopeIds.add(canonical);
-      }
-    }
-
-    return Array.from(enabledAdminScopeIds).sort();
-  }
-
-  private normalizeCrossChatSpamAdminScopeId(value: string | null | undefined): string | null {
-    if (typeof value !== 'string') {
-      return null;
-    }
-
-    const normalized = value.trim().toLowerCase();
-    if (!normalized) {
-      return null;
-    }
-
-    if (/^id\d+$/u.test(normalized)) {
-      return normalized.slice(2);
-    }
-
-    return normalized;
-  }
-
-  private async isGlobalUserBlacklistEnabled(chatSettingEnabled: boolean): Promise<boolean> {
-    if (chatSettingEnabled) {
-      this.globalUserBlacklistEnabledCache = {
-        value: true,
-        checkedAt: Date.now(),
-      };
-      return true;
-    }
-
-    const now = Date.now();
-    if (
-      this.globalUserBlacklistEnabledCache &&
-      now - this.globalUserBlacklistEnabledCache.checkedAt <= GLOBAL_BLACKLIST_TOGGLE_CACHE_TTL_MS
-    ) {
-      return this.globalUserBlacklistEnabledCache.value;
-    }
-
-    const enabledSomewhere = await this.prisma.chatSettings?.findFirst({
-      where: {
-        globalUserBlacklistEnabled: true,
-      },
-      select: {
-        chatId: true,
-      },
-    });
-    const value = Boolean(enabledSomewhere);
-    this.globalUserBlacklistEnabledCache = {
-      value,
-      checkedAt: now,
-    };
-    return value;
-  }
-
-  private async isUserGloballyBlacklisted(userId: string): Promise<boolean> {
-    const row = await this.prisma.globalUserBlacklist?.findUnique({
+  private async isUserKnownGlobalSpammer(userId: string): Promise<boolean> {
+    const row = await this.prisma.globalSpammer.findUnique({
       where: {
         userId,
       },
@@ -3831,29 +3585,32 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return Boolean(row);
   }
 
-  private async upsertGlobalUserBlacklistEntry(params: {
+  private async upsertGlobalSpammerEntry(params: {
     userId: string;
     sourceChatId: string;
     reason: string;
+    evidence?: Prisma.InputJsonValue;
   }) {
-    const { userId, sourceChatId, reason } = params;
-    if (!this.prisma.globalUserBlacklist?.upsert) {
-      return;
-    }
+    const { userId, sourceChatId, reason, evidence } = params;
 
     try {
-      await this.prisma.globalUserBlacklist.upsert({
+      await this.prisma.globalSpammer.upsert({
         where: {
           userId,
         },
         create: {
           userId,
-          sourceChatId,
-          reason,
+          lastReason: reason,
+          lastChatId: sourceChatId,
+          lastEvidence: evidence ?? Prisma.JsonNull,
         },
         update: {
-          sourceChatId,
-          reason,
+          detectionsCount: {
+            increment: 1,
+          },
+          lastReason: reason,
+          lastChatId: sourceChatId,
+          lastEvidence: evidence ?? Prisma.JsonNull,
         },
       });
     } catch (error: unknown) {
@@ -3864,7 +3621,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           reason,
           error: error instanceof Error ? error.message : 'Unknown error',
         },
-        'Failed to upsert global user blacklist entry',
+        'Failed to upsert global spammer entry',
       );
     }
   }

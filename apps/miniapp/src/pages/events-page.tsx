@@ -75,6 +75,7 @@ function formatViolationRule(ruleCode: string): string {
     GLOBAL_USER_BLACKLIST_KICK: 'Глобальный черный список',
     GLOBAL_CROSS_CHAT_SPAM: 'Кросс-чат спам',
     GLOBAL_CROSS_CHAT_SPAM_DELETE: 'Кросс-чат спам',
+    GLOBAL_SPAMMER_KICK: 'Глобальная база спаммеров',
     BAN_ACTIVE_DELETE: 'Активный бан',
     NIGHT_MODE_DELETE: 'Ночной режим',
   };
@@ -169,7 +170,9 @@ function resolveConfirmMessage(action: ManualModerationAction, banDurationHours:
 
 function isBanActiveFromViolation(violation: ViolationItem): boolean {
   const metadata =
-    violation.metadata && typeof violation.metadata === 'object' && !Array.isArray(violation.metadata)
+    violation.metadata &&
+    typeof violation.metadata === 'object' &&
+    !Array.isArray(violation.metadata)
       ? violation.metadata
       : null;
   const now = Date.now();
@@ -277,97 +280,97 @@ function ViolationModerationControls({
   return (
     <details className="logs-violation-item__moderation">
       <summary>Действия модератора</summary>
-        <div className="logs-violation-item__actions">
-          <p className="logs-violation-item__actions-caption">Нарушитель: {offenderName}</p>
-          <p className="logs-violation-item__actions-hint">
-            Выберите действие и нажмите «Применить».
-          </p>
+      <div className="logs-violation-item__actions">
+        <p className="logs-violation-item__actions-caption">Нарушитель: {offenderName}</p>
+        <p className="logs-violation-item__actions-hint">
+          Выберите действие и нажмите «Применить».
+        </p>
 
-          <div className="logs-violation-item__actions-row">
-            {actionOptions.map((option) => (
-              <button
-                key={option.value}
-                type="button"
-                className={`logs-violation-item__action-pill ${
-                  action === option.value ? 'is-active' : ''
-                }`}
-                onClick={() => {
-                  setAction(option.value);
-                  setStatus(null);
-                }}
-                disabled={applyMutation.isPending}
-              >
-                {option.label}
-              </button>
-            ))}
-          </div>
-
-          {isBanAction ? (
-            <div className="logs-violation-item__ban-config">
-              <div className="logs-violation-item__ban-config-controls">
-                <div className="ban-duration-stepper">
-                  <button
-                    type="button"
-                    className="ban-duration-stepper__button"
-                    onClick={() => setBanDurationHours((prev) => clampBanDurationHours(prev - 1))}
-                    disabled={applyMutation.isPending || banDurationHours <= BAN_DURATION_MIN_HOURS}
-                    aria-label="Уменьшить длительность бана"
-                  >
-                    -
-                  </button>
-                  <div className="ban-duration-stepper__value">{banDurationHours}ч</div>
-                  <button
-                    type="button"
-                    className="ban-duration-stepper__button"
-                    onClick={() => setBanDurationHours((prev) => clampBanDurationHours(prev + 1))}
-                    disabled={applyMutation.isPending || banDurationHours >= BAN_DURATION_MAX_HOURS}
-                    aria-label="Увеличить длительность бана"
-                  >
-                    +
-                  </button>
-                </div>
-
-                <label className="logs-violation-item__hours-input">
-                  <input
-                    type="number"
-                    min={BAN_DURATION_MIN_HOURS}
-                    max={BAN_DURATION_MAX_HOURS}
-                    step={1}
-                    value={banDurationHours}
-                    disabled={applyMutation.isPending}
-                    onChange={(event) =>
-                      setBanDurationHours(clampBanDurationHours(Number(event.target.value)))
-                    }
-                  />
-                  <small>1–336ч</small>
-                </label>
-              </div>
-            </div>
-          ) : null}
-
-          <button
-            type="button"
-            className="button button--accent logs-violation-item__apply-button"
-            disabled={applyMutation.isPending}
-            onClick={() => {
-              const confirmed = window.confirm(resolveConfirmMessage(action, banDurationHours));
-              if (!confirmed) {
-                return;
-              }
-
-              setStatus(null);
-              applyMutation.mutate();
-            }}
-          >
-            {applyMutation.isPending
-              ? 'Применяем…'
-              : `Применить: ${resolveApplyActionLabel(action, banDurationHours)}`}
-          </button>
-
-          {status ? (
-            <p className={`logs-violation-item__action-status is-${status.tone}`}>{status.text}</p>
-          ) : null}
+        <div className="logs-violation-item__actions-row">
+          {actionOptions.map((option) => (
+            <button
+              key={option.value}
+              type="button"
+              className={`logs-violation-item__action-pill ${
+                action === option.value ? 'is-active' : ''
+              }`}
+              onClick={() => {
+                setAction(option.value);
+                setStatus(null);
+              }}
+              disabled={applyMutation.isPending}
+            >
+              {option.label}
+            </button>
+          ))}
         </div>
+
+        {isBanAction ? (
+          <div className="logs-violation-item__ban-config">
+            <div className="logs-violation-item__ban-config-controls">
+              <div className="ban-duration-stepper">
+                <button
+                  type="button"
+                  className="ban-duration-stepper__button"
+                  onClick={() => setBanDurationHours((prev) => clampBanDurationHours(prev - 1))}
+                  disabled={applyMutation.isPending || banDurationHours <= BAN_DURATION_MIN_HOURS}
+                  aria-label="Уменьшить длительность бана"
+                >
+                  -
+                </button>
+                <div className="ban-duration-stepper__value">{banDurationHours}ч</div>
+                <button
+                  type="button"
+                  className="ban-duration-stepper__button"
+                  onClick={() => setBanDurationHours((prev) => clampBanDurationHours(prev + 1))}
+                  disabled={applyMutation.isPending || banDurationHours >= BAN_DURATION_MAX_HOURS}
+                  aria-label="Увеличить длительность бана"
+                >
+                  +
+                </button>
+              </div>
+
+              <label className="logs-violation-item__hours-input">
+                <input
+                  type="number"
+                  min={BAN_DURATION_MIN_HOURS}
+                  max={BAN_DURATION_MAX_HOURS}
+                  step={1}
+                  value={banDurationHours}
+                  disabled={applyMutation.isPending}
+                  onChange={(event) =>
+                    setBanDurationHours(clampBanDurationHours(Number(event.target.value)))
+                  }
+                />
+                <small>1–336ч</small>
+              </label>
+            </div>
+          </div>
+        ) : null}
+
+        <button
+          type="button"
+          className="button button--accent logs-violation-item__apply-button"
+          disabled={applyMutation.isPending}
+          onClick={() => {
+            const confirmed = window.confirm(resolveConfirmMessage(action, banDurationHours));
+            if (!confirmed) {
+              return;
+            }
+
+            setStatus(null);
+            applyMutation.mutate();
+          }}
+        >
+          {applyMutation.isPending
+            ? 'Применяем…'
+            : `Применить: ${resolveApplyActionLabel(action, banDurationHours)}`}
+        </button>
+
+        {status ? (
+          <p className={`logs-violation-item__action-status is-${status.tone}`}>{status.text}</p>
+        ) : null}
+      </div>
     </details>
   );
 }
@@ -603,7 +606,9 @@ export function EventsPage({ api }: { api: ApiClient }) {
               </div>
 
               <div className="logs-violation-item__tags">
-                <span className="logs-violation-item__rule">{formatViolationRule(violation.ruleCode)}</span>
+                <span className="logs-violation-item__rule">
+                  {formatViolationRule(violation.ruleCode)}
+                </span>
               </div>
 
               <p className="logs-violation-item__reason">{resolveViolationText(violation)}</p>

@@ -108,8 +108,8 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     deleteBotMessagesEnabled: false,
     deleteBotMessagesDelayMinutes: 2,
     removeBotsFromGroupEnabled: false,
-    globalUserBlacklistEnabled: false,
-    globalCrossChatSpamEnabled: false,
+    deleteSpammersEnabled: false,
+
     antiSpamEnabled: true,
     maxMessageLengthEnabled: false,
     maxMessageLength: 1500,
@@ -947,7 +947,7 @@ describe('ModerationService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
       },
-      globalUserBlacklist: {
+      globalSpammer: {
         upsert: jest.fn(),
       },
     };
@@ -1010,7 +1010,7 @@ describe('ModerationService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
       },
-      globalUserBlacklist: {
+      globalSpammer: {
         upsert: jest.fn(),
       },
     };
@@ -1088,7 +1088,7 @@ describe('ModerationService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
       },
-      globalUserBlacklist: {
+      globalSpammer: {
         upsert: jest.fn(),
       },
     };
@@ -1153,7 +1153,7 @@ describe('ModerationService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
       },
-      globalUserBlacklist: {
+      globalSpammer: {
         upsert: jest.fn(),
       },
     };
@@ -1223,7 +1223,7 @@ describe('ModerationService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
       },
-      globalUserBlacklist: {
+      globalSpammer: {
         upsert: jest.fn(),
       },
     };
@@ -1279,7 +1279,7 @@ describe('ModerationService', () => {
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
-  it('deletes cross-chat spam on the third chat within the same admin scope', async () => {
+  it('adds user to global spammer registry on same payload in third chat within 2 minutes', async () => {
     const nowIso = new Date().toISOString();
     const createSpamUpdate = (chatId: string, messageId: string): MaxUpdate => ({
       updateId: `upd-${chatId}-${messageId}`,
@@ -1311,16 +1311,11 @@ describe('ModerationService', () => {
           Promise.resolve({
             id: where.id,
             title: `Chat ${where.id}`,
-            settings: createSettings({
-              globalCrossChatSpamEnabled: false,
-            }),
+            settings: createSettings({ deleteSpammersEnabled: false }),
             domains: [],
             admins: [{ userId: 'owner-1' }],
           }),
         ),
-      },
-      chatAdminAllowlist: {
-        findMany: jest.fn().mockResolvedValue([{ userId: 'owner-1' }]),
       },
       violation: {
         create: jest.fn(),
@@ -1333,13 +1328,14 @@ describe('ModerationService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
       },
-      globalUserBlacklist: {
+      globalSpammer: {
         upsert: jest.fn(),
         findUnique: jest.fn().mockResolvedValue(null),
       },
     };
     const ruleEngine = {
       detect: jest.fn().mockResolvedValue({ violations: [] }),
+      hasCommercialSpamMarkers: jest.fn().mockReturnValue(false),
     };
     const sanctionService = {
       resolveAction: jest.fn(),
@@ -1355,7 +1351,10 @@ describe('ModerationService', () => {
       addToSetWithTtl: jest
         .fn()
         .mockResolvedValueOnce({ added: true, size: 1 })
+        .mockResolvedValueOnce({ added: true, size: 1 })
         .mockResolvedValueOnce({ added: true, size: 2 })
+        .mockResolvedValueOnce({ added: true, size: 2 })
+        .mockResolvedValueOnce({ added: true, size: 3 })
         .mockResolvedValueOnce({ added: true, size: 3 }),
     };
 
@@ -1376,26 +1375,25 @@ describe('ModerationService', () => {
     await service.handleUpdate(createSpamUpdate('chat-2', 'msg-2'));
     await service.handleUpdate(createSpamUpdate('chat-3', 'msg-3'));
 
-    expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
-    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-3', 'msg-3');
-    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
-      'chat-3',
-      expect.stringContaining('кросс-чат спам'),
-    );
-    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        chatId: 'chat-3',
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(prisma.globalSpammer.upsert).toHaveBeenCalledWith({
+      where: { userId: 'user-spam-1' },
+      create: expect.objectContaining({
         userId: 'user-spam-1',
-        messageId: 'msg-3',
-        ruleCode: 'GLOBAL_CROSS_CHAT_SPAM_DELETE',
-        action: SanctionAction.DELETE_MESSAGE,
+        lastReason: 'CROSS_CHAT_SAME_PAYLOAD',
+        lastChatId: 'chat-3',
+      }),
+      update: expect.objectContaining({
+        lastReason: 'CROSS_CHAT_SAME_PAYLOAD',
+        lastChatId: 'chat-3',
       }),
     });
   });
 
-  it('does not mix global cross-chat spam scopes across different admins', async () => {
+  it('adds user to global spammer registry on high fanout with risk signal', async () => {
     const nowIso = new Date().toISOString();
-    const createSpamUpdate = (chatId: string, messageId: string): MaxUpdate => ({
+    const createSpamUpdate = (chatId: string, messageId: string, text: string): MaxUpdate => ({
       updateId: `upd-${chatId}-${messageId}`,
       type: 'message_created',
       message: {
@@ -1403,7 +1401,7 @@ describe('ModerationService', () => {
         chatId,
         senderId: 'user-spam-1',
         senderName: 'Спамер',
-        text: 'Одинаковое сообщение для проверки scope',
+        text,
         createdAt: nowIso,
       },
       raw: {
@@ -1413,7 +1411,7 @@ describe('ModerationService', () => {
             type: 'user',
           },
           body: {
-            text: 'Одинаковое сообщение для проверки scope',
+            text,
           },
         },
       },
@@ -1425,19 +1423,11 @@ describe('ModerationService', () => {
           Promise.resolve({
             id: where.id,
             title: `Chat ${where.id}`,
-            settings: createSettings({
-              globalCrossChatSpamEnabled: false,
-            }),
+            settings: createSettings({ deleteSpammersEnabled: false }),
             domains: [],
             admins: [{ userId: 'owner-1' }],
           }),
         ),
-      },
-      chatSettings: {
-        findFirst: jest.fn().mockResolvedValue({ chatId: 'chat-other-owner-enabled' }),
-      },
-      chatAdminAllowlist: {
-        findMany: jest.fn().mockResolvedValue([]),
       },
       violation: {
         create: jest.fn(),
@@ -1450,13 +1440,14 @@ describe('ModerationService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
       },
-      globalUserBlacklist: {
+      globalSpammer: {
         upsert: jest.fn(),
         findUnique: jest.fn().mockResolvedValue(null),
       },
     };
     const ruleEngine = {
       detect: jest.fn().mockResolvedValue({ violations: [] }),
+      hasCommercialSpamMarkers: jest.fn().mockReturnValue(false),
     };
     const sanctionService = {
       resolveAction: jest.fn(),
@@ -1469,7 +1460,18 @@ describe('ModerationService', () => {
       notifyModerators: jest.fn(),
     };
     const redisCounter = {
-      addToSetWithTtl: jest.fn(),
+      addToSetWithTtl: jest
+        .fn()
+        .mockResolvedValueOnce({ added: true, size: 1 })
+        .mockResolvedValueOnce({ added: true, size: 1 })
+        .mockResolvedValueOnce({ added: true, size: 2 })
+        .mockResolvedValueOnce({ added: true, size: 1 })
+        .mockResolvedValueOnce({ added: true, size: 3 })
+        .mockResolvedValueOnce({ added: true, size: 1 })
+        .mockResolvedValueOnce({ added: true, size: 4 })
+        .mockResolvedValueOnce({ added: true, size: 1 })
+        .mockResolvedValueOnce({ added: true, size: 5 })
+        .mockResolvedValueOnce({ added: true, size: 1 }),
     };
 
     const service = new ModerationService(
@@ -1485,17 +1487,133 @@ describe('ModerationService', () => {
       redisCounter as never,
     );
 
-    await service.handleUpdate(createSpamUpdate('chat-1', 'msg-1'));
-    await service.handleUpdate(createSpamUpdate('chat-2', 'msg-2'));
-    await service.handleUpdate(createSpamUpdate('chat-3', 'msg-3'));
+    await service.handleUpdate(createSpamUpdate('chat-1', 'msg-1', 'Ссылка https://example.com/a'));
+    await service.handleUpdate(createSpamUpdate('chat-2', 'msg-2', 'Ссылка https://example.com/b'));
+    await service.handleUpdate(createSpamUpdate('chat-3', 'msg-3', 'Ссылка https://example.com/c'));
+    await service.handleUpdate(createSpamUpdate('chat-4', 'msg-4', 'Ссылка https://example.com/d'));
+    await service.handleUpdate(createSpamUpdate('chat-5', 'msg-5', 'Ссылка https://example.com/e'));
 
-    expect(redisCounter.addToSetWithTtl).not.toHaveBeenCalled();
-    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
-    expect(prisma.moderationEvent.create).not.toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        ruleCode: 'GLOBAL_CROSS_CHAT_SPAM_DELETE',
+    expect(prisma.globalSpammer.upsert).toHaveBeenCalledWith({
+      where: { userId: 'user-spam-1' },
+      create: expect.objectContaining({
+        userId: 'user-spam-1',
+        lastReason: 'HIGH_FANOUT_RISK_SIGNAL',
+        lastChatId: 'chat-5',
+      }),
+      update: expect.objectContaining({
+        lastReason: 'HIGH_FANOUT_RISK_SIGNAL',
+        lastChatId: 'chat-5',
       }),
     });
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+  });
+
+  it('does not add user to global spammer registry on high fanout without risk signal', async () => {
+    const nowIso = new Date().toISOString();
+    const createSpamUpdate = (chatId: string, messageId: string, text: string): MaxUpdate => ({
+      updateId: `upd-${chatId}-${messageId}`,
+      type: 'message_created',
+      message: {
+        messageId,
+        chatId,
+        senderId: 'user-spam-1',
+        senderName: 'Спамер',
+        text,
+        createdAt: nowIso,
+      },
+      raw: {
+        message: {
+          sender: {
+            id: 'user-spam-1',
+            type: 'user',
+          },
+          body: {
+            text,
+          },
+        },
+      },
+    });
+
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockImplementation(({ where }: { where: { id: string } }) =>
+          Promise.resolve({
+            id: where.id,
+            title: `Chat ${where.id}`,
+            settings: createSettings({ deleteSpammersEnabled: false }),
+            domains: [],
+            admins: [{ userId: 'owner-1' }],
+          }),
+        ),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalSpammer: {
+        upsert: jest.fn(),
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({ violations: [] }),
+      hasCommercialSpamMarkers: jest.fn().mockReturnValue(false),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const redisCounter = {
+      addToSetWithTtl: jest
+        .fn()
+        .mockResolvedValueOnce({ added: true, size: 1 })
+        .mockResolvedValueOnce({ added: true, size: 1 })
+        .mockResolvedValueOnce({ added: true, size: 2 })
+        .mockResolvedValueOnce({ added: true, size: 1 })
+        .mockResolvedValueOnce({ added: true, size: 3 })
+        .mockResolvedValueOnce({ added: true, size: 1 })
+        .mockResolvedValueOnce({ added: true, size: 4 })
+        .mockResolvedValueOnce({ added: true, size: 1 })
+        .mockResolvedValueOnce({ added: true, size: 5 })
+        .mockResolvedValueOnce({ added: true, size: 1 }),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn().mockReturnValue('bot-1'),
+      } as never,
+      redisCounter as never,
+    );
+
+    await service.handleUpdate(createSpamUpdate('chat-1', 'msg-1', 'Добрый день, команда 1'));
+    await service.handleUpdate(createSpamUpdate('chat-2', 'msg-2', 'Добрый день, команда 2'));
+    await service.handleUpdate(createSpamUpdate('chat-3', 'msg-3', 'Добрый день, команда 3'));
+    await service.handleUpdate(createSpamUpdate('chat-4', 'msg-4', 'Добрый день, команда 4'));
+    await service.handleUpdate(createSpamUpdate('chat-5', 'msg-5', 'Добрый день, команда 5'));
+
+    expect(prisma.globalSpammer.upsert).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
   });
 
   it('removes bot-authored accounts from group when toggle is enabled', async () => {
@@ -1520,7 +1638,7 @@ describe('ModerationService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
       },
-      globalUserBlacklist: {
+      globalSpammer: {
         upsert: jest.fn(),
       },
     };
@@ -2518,7 +2636,7 @@ describe('ModerationService', () => {
           id: 'chat-1',
           title: 'Chat 1',
           settings: createSettings({
-            globalUserBlacklistEnabled: true,
+            deleteSpammersEnabled: true,
             greetingEnabled: true,
             greetingBotMessageEnabled: true,
             greetingBotMessageText: 'Добро пожаловать, {user}! {greeting}.',
@@ -2527,7 +2645,7 @@ describe('ModerationService', () => {
           admins: [],
         }),
       },
-      globalUserBlacklist: {
+      globalSpammer: {
         findUnique: jest.fn().mockResolvedValue({ userId: 'user-1' }),
       },
       violation: {
@@ -2574,7 +2692,7 @@ describe('ModerationService', () => {
         chatId: 'chat-1',
         userId: 'user-1',
         messageId: 'msg-1',
-        ruleCode: 'GLOBAL_USER_BLACKLIST_KICK',
+        ruleCode: 'GLOBAL_SPAMMER_KICK',
         action: SanctionAction.KICK,
       }),
     });
@@ -2586,12 +2704,12 @@ describe('ModerationService', () => {
         upsert: jest.fn().mockResolvedValue({
           id: 'chat-1',
           title: 'Chat 1',
-          settings: createSettings({ globalUserBlacklistEnabled: true }),
+          settings: createSettings({ deleteSpammersEnabled: true }),
           domains: [],
           admins: [],
         }),
       },
-      globalUserBlacklist: {
+      globalSpammer: {
         findMany: jest.fn().mockResolvedValue([{ userId: 'user-black-2' }]),
       },
       violation: {
@@ -2639,7 +2757,7 @@ describe('ModerationService', () => {
         chatId: 'chat-1',
         userId: 'user-black-2',
         messageId: 'msg-service-user-join-1',
-        ruleCode: 'GLOBAL_USER_BLACKLIST_KICK',
+        ruleCode: 'GLOBAL_SPAMMER_KICK',
         action: SanctionAction.KICK,
       }),
     });
@@ -3871,7 +3989,7 @@ describe('ModerationService', () => {
   });
 
   it('kicks user on fourth text-filter violation in 24h when kick stage is enabled', async () => {
-    const globalUserBlacklist = {
+    const globalSpammer = {
       upsert: jest.fn(),
     };
     const prisma = {
@@ -3898,7 +4016,7 @@ describe('ModerationService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
       },
-      globalUserBlacklist,
+      globalSpammer,
     };
     const ruleEngine = {
       detect: jest.fn().mockResolvedValue({
@@ -3932,16 +4050,27 @@ describe('ModerationService', () => {
       'chat-1',
       'Товарищ **Алексей**, за повторную грубую лексику пришлось вывести вас из чата.',
     );
-    expect(globalUserBlacklist.upsert).toHaveBeenCalledWith({
+    expect(globalSpammer.upsert).toHaveBeenCalledWith({
       where: { userId: 'user-1' },
       create: {
         userId: 'user-1',
-        sourceChatId: 'chat-1',
-        reason: 'KICK_SANCTION',
+        lastReason: 'SANCTION_KICK',
+        lastChatId: 'chat-1',
+        lastEvidence: {
+          action: 'KICK',
+          source: 'sanction',
+        },
       },
       update: {
-        sourceChatId: 'chat-1',
-        reason: 'KICK_SANCTION',
+        detectionsCount: {
+          increment: 1,
+        },
+        lastReason: 'SANCTION_KICK',
+        lastChatId: 'chat-1',
+        lastEvidence: {
+          action: 'KICK',
+          source: 'sanction',
+        },
       },
     });
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
@@ -6641,7 +6770,7 @@ describe('ModerationService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
       },
-      globalUserBlacklist: {
+      globalSpammer: {
         upsert: jest.fn(),
       },
     };
@@ -6738,7 +6867,7 @@ describe('ModerationService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
       },
-      globalUserBlacklist: {
+      globalSpammer: {
         upsert: jest.fn(),
       },
     };
@@ -6800,7 +6929,7 @@ describe('ModerationService', () => {
         findUnique: jest.fn(),
         update: jest.fn(),
       },
-      globalUserBlacklist: {
+      globalSpammer: {
         upsert: jest.fn(),
       },
     };

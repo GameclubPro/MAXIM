@@ -75,8 +75,6 @@ type PendingInput =
   | { kind: 'search_settings' }
   | { kind: 'add_domain' }
   | { kind: 'schedule_domain'; domain: string }
-  | { kind: 'add_blacklist_user' }
-  | { kind: 'remove_blacklist_user' }
   | { kind: 'broadcast_content' }
   | { kind: 'broadcast_text' }
   | { kind: 'broadcast_button_url' }
@@ -136,7 +134,6 @@ type PrivateScreen =
   | 'section'
   | 'channel_section'
   | 'domains'
-  | 'global_blacklist'
   | 'broadcast'
   | 'poll'
   | 'giveaway'
@@ -310,10 +307,6 @@ const CHAT_ONLY_CALLBACK_ACTIONS = new Set<string>([
   'domain_add_prompt',
   'domain_remove',
   'domain_schedule_prompt',
-  'open_blacklist',
-  'blacklist_add_prompt',
-  'blacklist_remove_prompt',
-  'blacklist_remove',
   'open_events',
   'events_page',
   'open_logs',
@@ -651,11 +644,7 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'nightModeBotButtonText', label: 'Текст кнопки', type: 'text' },
   ],
   extra: [
-    {
-      key: 'globalCrossChatSpamEnabled',
-      label: 'Глобальный антиспам между чатами',
-      type: 'boolean',
-    },
+    { key: 'deleteSpammersEnabled', label: 'Удалять спаммеров', type: 'boolean' },
     { key: 'deleteBotMessagesEnabled', label: 'Удалять сообщения бота', type: 'boolean' },
     {
       key: 'deleteBotMessagesDelayMinutes',
@@ -667,11 +656,6 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
       presets: [1, 5, 15],
     },
     { key: 'removeBotsFromGroupEnabled', label: 'Удалять ботов из чата', type: 'boolean' },
-    {
-      key: 'globalUserBlacklistEnabled',
-      label: 'Включить глобальный чёрный список',
-      type: 'boolean',
-    },
   ],
 };
 
@@ -835,11 +819,10 @@ const SECTION_CARD_FIELDS: Record<
   },
   extra: {
     basic: [
-      'globalCrossChatSpamEnabled',
+      'deleteSpammersEnabled',
       'deleteBotMessagesEnabled',
       'deleteBotMessagesDelayMinutes',
       'removeBotsFromGroupEnabled',
-      'globalUserBlacklistEnabled',
     ],
     advanced: [],
   },
@@ -1969,66 +1952,6 @@ export class PrivateControlService {
         return;
       }
 
-      case 'open_blacklist': {
-        this.assertChatSelected(session);
-        this.pushHistory(session);
-        session.screen = 'global_blacklist';
-        const view = await this.renderGlobalBlacklistScreen(context, session);
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: 'Глобальный чёрный список',
-        });
-        return;
-      }
-
-      case 'blacklist_add_prompt': {
-        this.assertChatSelected(session);
-        session.pendingInput = { kind: 'add_blacklist_user' };
-        const view = this.renderInputPrompt(session.pendingInput);
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: 'Жду user_id',
-        });
-        return;
-      }
-
-      case 'blacklist_remove_prompt': {
-        this.assertChatSelected(session);
-        session.pendingInput = { kind: 'remove_blacklist_user' };
-        const view = this.renderInputPrompt(session.pendingInput);
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: 'Жду user_id',
-        });
-        return;
-      }
-
-      case 'blacklist_remove': {
-        this.assertChatSelected(session);
-        const index = this.toPositiveInt(callback.args[0], 1) - 1;
-        const entries = await this.adminService.getGlobalUserBlacklist(
-          session.selectedChatId!,
-          context.actor,
-        );
-        if (!entries[index]) {
-          throw new BadRequestException('Пользователь не найден в списке');
-        }
-
-        await this.adminService.removeGlobalUserBlacklistUser(
-          session.selectedChatId!,
-          context.actor,
-          entries[index].userId,
-          'private_bot',
-        );
-
-        const view = await this.renderGlobalBlacklistScreen(context, session);
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: `Удалён из ЧС: ${entries[index].userId}`,
-        });
-        return;
-      }
-
       case 'open_broadcast': {
         if (!session.selectedChatId) {
           throw new BadRequestException('Сначала выберите чат или канал.');
@@ -2913,15 +2836,6 @@ export class PrivateControlService {
           return;
         }
 
-        if (session.screen === 'global_blacklist') {
-          const view = await this.renderGlobalBlacklistScreen(context, session);
-          await this.respond(context, session, view, {
-            callbackId: context.callbackId,
-            notification: 'Отменено',
-          });
-          return;
-        }
-
         if (session.screen === 'manual_actions') {
           const view = this.renderManualActionsScreen(session.manualTargetUserId);
           await this.respond(context, session, view, {
@@ -3027,15 +2941,6 @@ export class PrivateControlService {
 
       if (session.screen === 'domains') {
         const view = await this.renderDomainsScreen(context, session);
-        await this.respond(context, session, view, {
-          callbackId: null,
-          notification: null,
-        });
-        return;
-      }
-
-      if (session.screen === 'global_blacklist') {
-        const view = await this.renderGlobalBlacklistScreen(context, session);
         await this.respond(context, session, view, {
           callbackId: null,
           notification: null,
@@ -3192,54 +3097,6 @@ export class PrivateControlService {
         session.pendingInput = null;
         session.screen = 'domains';
         const view = await this.renderDomainsScreen(context, session);
-        await this.respond(context, session, view, {
-          callbackId: null,
-          notification: null,
-        });
-        return;
-      }
-
-      case 'add_blacklist_user': {
-        this.assertChatSelected(session);
-        if (!rawText) {
-          throw new BadRequestException('Напишите user_id.');
-        }
-
-        await this.adminService.addGlobalUserBlacklistUser(
-          session.selectedChatId!,
-          context.actor,
-          {
-            userId: rawText,
-          },
-          'private_bot',
-        );
-
-        session.pendingInput = null;
-        session.screen = 'global_blacklist';
-        const view = await this.renderGlobalBlacklistScreen(context, session);
-        await this.respond(context, session, view, {
-          callbackId: null,
-          notification: null,
-        });
-        return;
-      }
-
-      case 'remove_blacklist_user': {
-        this.assertChatSelected(session);
-        if (!rawText) {
-          throw new BadRequestException('Напишите user_id.');
-        }
-
-        await this.adminService.removeGlobalUserBlacklistUser(
-          session.selectedChatId!,
-          context.actor,
-          rawText,
-          'private_bot',
-        );
-
-        session.pendingInput = null;
-        session.screen = 'global_blacklist';
-        const view = await this.renderGlobalBlacklistScreen(context, session);
         await this.respond(context, session, view, {
           callbackId: null,
           notification: null,
@@ -4496,9 +4353,6 @@ export class PrivateControlService {
     if (session.screen === 'domains') {
       return this.renderDomainsScreen(context, session);
     }
-    if (session.screen === 'global_blacklist') {
-      return this.renderGlobalBlacklistScreen(context, session);
-    }
     if (session.screen === 'broadcast') {
       return this.renderBroadcastScreen(context, session);
     }
@@ -4742,10 +4596,6 @@ export class PrivateControlService {
       rows.push([this.callbackButton('Разрешённые домены', this.cb('open_domains'))]);
     }
 
-    if (section === 'extra' && session.sectionView === 'advanced') {
-      rows.push([this.callbackButton('Глобальный чёрный список', this.cb('open_blacklist'))]);
-    }
-
     const hasAdvanced = SECTION_CARD_FIELDS[section].advanced.length > 0;
     if (hasAdvanced) {
       if (session.sectionView === 'basic') {
@@ -4908,10 +4758,6 @@ export class PrivateControlService {
       rows.push([this.callbackButton('Разрешённые домены', this.cb('open_domains'))]);
     }
 
-    if (section === 'extra') {
-      rows.push([this.callbackButton('Глобальный чёрный список', this.cb('open_blacklist'))]);
-    }
-
     rows.push([
       this.callbackButton(
         'Применить раздел ко всем чатам',
@@ -5004,71 +4850,6 @@ export class PrivateControlService {
     };
   }
 
-  private async renderGlobalBlacklistScreen(
-    context: PrivateContext,
-    session: PrivateSession,
-  ): Promise<PrivateView> {
-    if (!session.selectedChatId) {
-      return this.renderChatSelection(context, session);
-    }
-
-    const entries = await this.adminService.getGlobalUserBlacklist(
-      session.selectedChatId,
-      context.actor,
-    );
-    const preview = entries.slice(0, 12);
-
-    const lines: string[] = [
-      'Глобальный чёрный список (на все чаты)',
-      '',
-      `Всего пользователей: ${entries.length}`,
-      '',
-      ...preview.map(
-        (entry, index) => `${index + 1}. ${entry.userId} (${this.formatIsoDate(entry.createdAt)})`,
-      ),
-      ...(entries.length > preview.length
-        ? ['', `... и ещё ${entries.length - preview.length}.`]
-        : []),
-      '',
-      'Можно добавить или удалить пользователя по user_id.',
-    ];
-
-    const rows: MaxMessageButton[][] = [
-      [
-        this.callbackButton('Добавить user_id', this.cb('blacklist_add_prompt'), 'positive'),
-        this.callbackButton('Удалить user_id', this.cb('blacklist_remove_prompt')),
-      ],
-    ];
-
-    for (const [index, entry] of preview.entries()) {
-      rows.push([
-        this.callbackButton(
-          `❌ ${this.compactText(entry.userId, 22)}`,
-          this.cb('blacklist_remove', String(index + 1)),
-        ),
-      ]);
-    }
-
-    if (session.uiMode === 'modern') {
-      rows.push([
-        this.callbackButton('⬅️ Назад', this.cb('back')),
-        this.callbackButton('Главный экран', this.cb('home')),
-      ]);
-    } else {
-      rows.push([
-        this.callbackButton('⬅️ К разделу «Дополнительно»', this.cb('open_section', 'extra')),
-      ]);
-    }
-    rows.push(...this.buildFooterButtons());
-
-    return {
-      text: lines.join('\n'),
-      options: {
-        buttons: rows,
-      },
-    };
-  }
-
   private async renderBroadcastScreen(
     context: PrivateContext,
     session: PrivateSession,
@@ -5109,7 +4890,9 @@ export class PrivateControlService {
       ...(!isChannel ? [`Во все: ${applyToAllEnabled ? 'да' : 'нет'}`] : []),
       ...(!isChannel ? [`Таймер: ${timingSummary}`] : []),
       ...(!isChannel ? [`Цикл: ${cycleSummary}`] : []),
-      ...(channelSettings ? [`Комменты: ${this.describeBooleanCompact(channelSettings.commentsEnabled)}`] : []),
+      ...(channelSettings
+        ? [`Комменты: ${this.describeBooleanCompact(channelSettings.commentsEnabled)}`]
+        : []),
       ...(notice ? ['', `Статус: ${this.escapeMarkdown(notice)}`] : []),
       ...(waitingForContent ? ['', 'Жду текст или фото.'] : []),
     ];
@@ -5903,7 +5686,6 @@ export class PrivateControlService {
       duplicate: ['дубль', 'повтор'],
       spam: ['спам'],
       night: ['ночной', 'тишина'],
-      blacklist: ['черный список', 'чс'],
       broadcast: ['рассылка'],
       button: ['кнопка', 'url'],
       message: ['сообщение', 'текст'],
@@ -6000,9 +5782,9 @@ export class PrivateControlService {
         ];
       case 'extra':
         return [
-          `Межчатовый спам: ${this.describeBooleanCompact(settings.globalCrossChatSpamEnabled)}`,
+          `Удаление спаммеров: ${this.describeBooleanCompact(settings.deleteSpammersEnabled)}`,
           `Сообщения бота: ${this.describeBooleanCompact(settings.deleteBotMessagesEnabled)} • задержка ${settings.deleteBotMessagesDelayMinutes}м`,
-          `Удаление ботов: ${this.describeBooleanCompact(settings.removeBotsFromGroupEnabled)} • глобальный ЧС ${this.describeBooleanCompact(settings.globalUserBlacklistEnabled)}`,
+          `Удаление ботов: ${this.describeBooleanCompact(settings.removeBotsFromGroupEnabled)}`,
         ];
     }
   }
@@ -6174,7 +5956,7 @@ export class PrivateControlService {
           ? `${this.formatTime(settings.nightModeStartTimeMinutes)}-${this.formatTime(settings.nightModeEndTimeMinutes)}`
           : 'выключено';
       case 'extra':
-        return settings.globalUserBlacklistEnabled ? 'глобальный ЧС активен' : 'доп. опции';
+        return settings.deleteSpammersEnabled ? 'автоудаление спаммеров активно' : 'доп. опции';
     }
   }
 
@@ -6424,16 +6206,6 @@ export class PrivateControlService {
           title: `Дата удаления для ${input.domain}`,
           description:
             'Введите дату: ISO (2026-03-09T18:30:00+03:00) или ДД.ММ.ГГГГ ЧЧ:ММ. Чтобы убрать дату, отправьте `-`.',
-        };
-      case 'add_blacklist_user':
-        return {
-          title: 'Добавить пользователя в глобальный ЧС',
-          description: 'Введите user_id.',
-        };
-      case 'remove_blacklist_user':
-        return {
-          title: 'Удалить пользователя из глобального ЧС',
-          description: 'Введите user_id.',
         };
       case 'broadcast_text':
         return {
@@ -8202,8 +7974,6 @@ export class PrivateControlService {
     const allowedKinds: PendingInput['kind'][] = [
       'search_settings',
       'add_domain',
-      'add_blacklist_user',
-      'remove_blacklist_user',
       'broadcast_content',
       'broadcast_text',
       'broadcast_button_url',
@@ -8344,7 +8114,6 @@ export class PrivateControlService {
       value === 'section' ||
       value === 'channel_section' ||
       value === 'domains' ||
-      value === 'global_blacklist' ||
       value === 'broadcast' ||
       value === 'poll' ||
       value === 'giveaway' ||
