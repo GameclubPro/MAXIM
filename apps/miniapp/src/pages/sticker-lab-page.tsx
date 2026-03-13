@@ -40,6 +40,15 @@ function canWriteImageClipboard(): boolean {
   return typeof clipboard?.write === 'function' && typeof clipboardItemCtor === 'function';
 }
 
+function isIosDevice(): boolean {
+  const ua = navigator.userAgent || '';
+  const platform = navigator.platform || '';
+  const touchPoints = navigator.maxTouchPoints || 0;
+  const iOSByUA = /iPad|iPhone|iPod/u.test(ua);
+  const iPadDesktopMode = platform === 'MacIntel' && touchPoints > 1;
+  return iOSByUA || iPadDesktopMode;
+}
+
 async function writeImageToClipboard(blob: Blob, mimeType: string): Promise<boolean> {
   if (!canWriteImageClipboard()) {
     return false;
@@ -193,6 +202,25 @@ export function StickerLabPage() {
 
     try {
       const clipboardAsset = await prepareStickerClipboardImage(prepared);
+      const shareFile = new File([clipboardAsset.blob], clipboardAsset.fileName, {
+        type: clipboardAsset.mimeType,
+      });
+
+      if (isIosDevice()) {
+        const shared = await openNativeShare(shareFile);
+        if (!shared) {
+          throw new Error(
+            'На iPhone используйте системное меню Share и выберите «Скопировать».',
+          );
+        }
+        pushToast({
+          tone: 'info',
+          title: 'Открыт Share',
+          description: 'В системном меню выберите «Скопировать», затем вставьте в чат MAX.',
+        });
+        return;
+      }
+
       const copied = await writeImageToClipboard(
         clipboardAsset.blob,
         clipboardAsset.mimeType,
@@ -206,9 +234,6 @@ export function StickerLabPage() {
         return;
       }
 
-      const shareFile = new File([clipboardAsset.blob], clipboardAsset.fileName, {
-        type: clipboardAsset.mimeType,
-      });
       const shared = await openNativeShare(shareFile);
       if (shared) {
         pushToast({
@@ -285,8 +310,7 @@ export function StickerLabPage() {
               <img src={prepared.previewDataUrl} alt="Подготовленный макет стикера." />
             </div>
             <small className="field__hint">
-              Если после кнопки снова будет `OBJ`: нажмите и удерживайте картинку выше и выберите
-              «Скопировать».
+              iPhone: после кнопки выберите «Скопировать» в системном меню Share.
             </small>
           </div>
         ) : null}
