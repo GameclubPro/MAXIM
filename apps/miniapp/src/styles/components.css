@@ -5520,6 +5520,13 @@
   justify-content: flex-start;
 }
 
+.managed-giveaway__channel-action {
+  min-height: 36px;
+  padding-inline: 12px;
+  border-radius: 12px;
+  font-size: 0.82rem;
+}
+
 .managed-giveaway__channel-picker {
   display: grid;
   gap: 6px;

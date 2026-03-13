@@ -273,7 +273,7 @@ function validateDraft(draft: GiveawayEditorDraft): { valid: boolean; message: s
 
   const normalizedRequiredChannels = draft.requiredChannelIds.map((item) => normalizeChannelId(item));
   if (normalizedRequiredChannels.some((item) => !item)) {
-    return { valid: false, message: 'Заполните ID всех доп. каналов.' };
+    return { valid: false, message: 'Проверьте список доп. каналов.' };
   }
 
   if (
@@ -1150,7 +1150,7 @@ export function ManagedGiveawayCard({
             <div className="managed-giveaway__section-actions">
               <button
                 type="button"
-                className="button button--ghost"
+                className="button button--ghost managed-giveaway__channel-action"
                 disabled={isBusy || channelsQuery.isLoading}
                 onClick={() => setChannelPickerOpen((current) => !current)}
               >
@@ -1179,7 +1179,7 @@ export function ManagedGiveawayCard({
               <div className="managed-giveaway__section-actions managed-giveaway__section-actions--align-end">
                 <button
                   type="button"
-                  className="button button--ghost"
+                  className="button button--ghost managed-giveaway__channel-action"
                   disabled={isBusy}
                   onClick={addRequiredChannelByLink}
                 >
