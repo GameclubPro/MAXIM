@@ -318,6 +318,7 @@ function createGiveaway(overrides: Partial<ManagedGiveawayDetails> = {}): Manage
     imageMimeType: '',
     imageFileName: '',
     claimHours: 24,
+    requiredChannelIds: [],
     publicationMessageId: 'msg-1',
     publicationUrl: 'https://max.ru/chats/chat-1/message/1',
     resultsMessageId: null,

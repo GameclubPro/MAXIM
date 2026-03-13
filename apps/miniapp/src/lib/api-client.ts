@@ -727,6 +727,19 @@ export class ApiClient {
       throw new Error(`API request failed: ${response.status} ${payload}`);
     }
 
-    return response.json();
+    if (response.status === 204 || response.status === 205) {
+      return null;
+    }
+
+    const payload = await response.text();
+    if (!payload.trim()) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(payload);
+    } catch {
+      return payload;
+    }
   }
 }

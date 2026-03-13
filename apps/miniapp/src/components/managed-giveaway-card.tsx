@@ -1,6 +1,7 @@
 import {
   MANAGED_GIVEAWAY_DESCRIPTION_MAX_LENGTH,
   MANAGED_GIVEAWAY_MAX_PRIZES,
+  MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS,
   MANAGED_GIVEAWAY_PRIZE_TITLE_MAX_LENGTH,
   MANAGED_GIVEAWAY_TITLE_MAX_LENGTH,
   type ManagedGiveawayDetails,
@@ -26,6 +27,7 @@ type GiveawayEditorDraft = {
   startsAtLocal: string;
   endsAtLocal: string;
   claimHours: number;
+  requiredChannelIds: string[];
   prizes: string[];
   imageEnabled: boolean;
   imageBase64: string;
@@ -173,6 +175,7 @@ function createDefaultEditorDraft(): GiveawayEditorDraft {
     startsAtLocal: '',
     endsAtLocal: formatDateTimeInputValue(defaultEnd),
     claimHours: 24,
+    requiredChannelIds: [],
     prizes: ['1 место'],
     imageEnabled: false,
     imageBase64: '',
@@ -188,6 +191,7 @@ function toEditorDraft(giveaway: ManagedGiveawayDetails): GiveawayEditorDraft {
     startsAtLocal: toDateTimeInputFromIso(giveaway.startsAt),
     endsAtLocal: toDateTimeInputFromIso(giveaway.endsAt),
     claimHours: giveaway.claimHours,
+    requiredChannelIds: giveaway.requiredChannelIds,
     prizes: giveaway.prizes
       .slice()
       .sort((left, right) => left.position - right.position)
@@ -201,6 +205,10 @@ function toEditorDraft(giveaway: ManagedGiveawayDetails): GiveawayEditorDraft {
 
 function normalizePrizeKey(value: string): string {
   return value.trim().replace(/\s+/gu, ' ').toLowerCase().replace(/ё/gu, 'е');
+}
+
+function normalizeChannelId(value: string): string {
+  return value.trim().replace(/\s+/gu, '');
 }
 
 function validateDraft(draft: GiveawayEditorDraft): { valid: boolean; message: string } {
@@ -236,6 +244,25 @@ function validateDraft(draft: GiveawayEditorDraft): { valid: boolean; message: s
       valid: false,
       message: `Срок подтверждения: от ${MIN_CLAIM_HOURS} до ${MAX_CLAIM_HOURS} часов.`,
     };
+  }
+
+  if (draft.requiredChannelIds.length > MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS) {
+    return {
+      valid: false,
+      message: `Доп. каналов: максимум ${MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS}.`,
+    };
+  }
+
+  const normalizedRequiredChannels = draft.requiredChannelIds.map((item) => normalizeChannelId(item));
+  if (normalizedRequiredChannels.some((item) => !item)) {
+    return { valid: false, message: 'Заполните ID всех доп. каналов.' };
+  }
+
+  if (
+    new Set(normalizedRequiredChannels.map((item) => item.toLowerCase())).size !==
+    normalizedRequiredChannels.length
+  ) {
+    return { valid: false, message: 'Доп. каналы не должны повторяться.' };
   }
 
   if (draft.prizes.length < 1 || draft.prizes.length > MANAGED_GIVEAWAY_MAX_PRIZES) {
@@ -279,6 +306,7 @@ function toUpdatePayload(draft: GiveawayEditorDraft): UpdateManagedGiveawayPaylo
     startsAt: startsAtDate ? startsAtDate.toISOString() : null,
     endsAt: endsAtDate.toISOString(),
     claimHours: Math.max(MIN_CLAIM_HOURS, Math.min(MAX_CLAIM_HOURS, Math.round(draft.claimHours))),
+    requiredChannelIds: draft.requiredChannelIds.map((item) => normalizeChannelId(item)),
     prizes: draft.prizes.map((title, index) => ({
       position: index + 1,
       title: title.trim(),
@@ -936,6 +964,95 @@ export function ManagedGiveawayCard({
                   {hours}ч
                 </button>
               ))}
+            </div>
+          </div>
+
+          <div className="managed-giveaway__section">
+            <div className="managed-giveaway__section-head">
+              <div className="managed-giveaway__section-copy">
+                <strong>Условия участия</strong>
+                <small>
+                  Доп. каналы: {draft.requiredChannelIds.length}/{MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS}
+                </small>
+              </div>
+            </div>
+
+            <div className="managed-giveaway__chips">
+              <span className="managed-giveaway__chip">Подписка на источник обязательна</span>
+            </div>
+
+            {draft.requiredChannelIds.length > 0 ? (
+              <div className="managed-giveaway__prize-editor-list">
+                {draft.requiredChannelIds.map((channelId, index) => (
+                  <div key={`required-channel-${index}`} className="managed-giveaway__prize-editor-row">
+                    <span className="managed-giveaway__prize-position">{index + 1}</span>
+                    <label className="field">
+                      <input
+                        type="text"
+                        value={channelId}
+                        placeholder="ID канала"
+                        maxLength={128}
+                        onChange={(event) => {
+                          setDraft((current) => {
+                            if (!current) {
+                              return current;
+                            }
+                            const nextRequiredChannels = [...current.requiredChannelIds];
+                            nextRequiredChannels[index] = event.target.value;
+                            return {
+                              ...current,
+                              requiredChannelIds: nextRequiredChannels,
+                            };
+                          });
+                          setValidationHint('');
+                          setEditorError('');
+                        }}
+                        disabled={isBusy}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className="managed-giveaway__prize-remove"
+                      onClick={() =>
+                        setDraft((current) =>
+                          current
+                            ? {
+                                ...current,
+                                requiredChannelIds: current.requiredChannelIds.filter(
+                                  (_, channelIndex) => channelIndex !== index,
+                                ),
+                              }
+                            : current,
+                        )
+                      }
+                      disabled={isBusy}
+                      aria-label={`Удалить доп. канал ${index + 1}`}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            <div className="managed-giveaway__section-actions">
+              <button
+                type="button"
+                className="button button--ghost"
+                disabled={isBusy || draft.requiredChannelIds.length >= MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS}
+                onClick={() =>
+                  setDraft((current) =>
+                    current
+                      ? {
+                          ...current,
+                          requiredChannelIds: [...current.requiredChannelIds, ''],
+                        }
+                      : current,
+                  )
+                }
+              >
+                + Добавить канал
+              </button>
             </div>
           </div>
 

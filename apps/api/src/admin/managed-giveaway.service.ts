@@ -162,6 +162,7 @@ export class ManagedGiveawayService {
         startsAt: payload.startsAt ? new Date(payload.startsAt) : null,
         endsAt: new Date(payload.endsAt),
         claimHours: payload.claimHours,
+        requiredChannelIds: payload.requiredChannelIds,
         prizes: {
           create: payload.prizes.map((prize) => ({
             position: prize.position,
@@ -229,6 +230,7 @@ export class ManagedGiveawayService {
           startsAt: payload.startsAt ? new Date(payload.startsAt) : null,
           endsAt: new Date(payload.endsAt),
           claimHours: payload.claimHours,
+          requiredChannelIds: payload.requiredChannelIds,
         },
       });
 
@@ -1026,6 +1028,7 @@ export class ManagedGiveawayService {
       imageMimeType: row.imageMimeType,
       imageFileName: row.imageFileName,
       claimHours: row.claimHours,
+      requiredChannelIds: this.readRequiredChannelIds(row.requiredChannelIds),
       publicationMessageId: row.publicationMessageId ?? null,
       resultsMessageId: row.resultsMessageId ?? null,
       prizes: row.prizes.map((prize) => ({
@@ -1058,6 +1061,7 @@ export class ManagedGiveawayService {
       startsAt: row.startsAt?.toISOString() ?? null,
       endsAt: row.endsAt.toISOString(),
       claimHours: row.claimHours,
+      requiredChannelIds: this.readRequiredChannelIds(row.requiredChannelIds),
       entriesCount: row.entries.length,
       winnersCount: row.winners.filter(
         (winner) => winner.status !== ManagedGiveawayWinnerStatus.REROLLED,
@@ -1259,10 +1263,13 @@ export class ManagedGiveawayService {
   private buildGiveawayPublicationText(
     giveaway: Pick<
       PersistedGiveawayWithRelations,
-      'title' | 'description' | 'startsAt' | 'endsAt' | 'prizes'
+      'title' | 'description' | 'startsAt' | 'endsAt' | 'prizes' | 'sourceChatId' | 'requiredChannelIds'
     >,
     status: ManagedGiveawayStatus,
   ): string {
+    const requiredChannelIds = this.readRequiredChannelIds(giveaway.requiredChannelIds).filter(
+      (channelId) => channelId !== giveaway.sourceChatId,
+    );
     const lines: string[] = ['Розыгрыш', '', giveaway.title.trim()];
     if (giveaway.description.trim()) {
       lines.push('', giveaway.description.trim());
@@ -1275,6 +1282,11 @@ export class ManagedGiveawayService {
       lines.push(`Старт: ${this.formatIsoDateTime(giveaway.startsAt)}`);
     }
     lines.push(`Завершение: ${this.formatIsoDateTime(giveaway.endsAt)}`);
+    lines.push(
+      requiredChannelIds.length > 0
+        ? `Условия: подписка на источник и на ${requiredChannelIds.length} доп. канал(а).`
+        : 'Условие: подписка на источник.',
+    );
     lines.push(
       '',
       status === ManagedGiveawayStatus.SCHEDULED
@@ -1458,10 +1470,26 @@ export class ManagedGiveawayService {
     } = {},
   ): Promise<{ state: GiveawayEligibilityState; reason: string | null }> {
     const entityType = this.fromPrismaEntityType(giveaway.entityType);
+    const additionalRequiredChannels = this.readRequiredChannelIds(giveaway.requiredChannelIds).filter(
+      (channelId) => channelId !== giveaway.sourceChatId,
+    );
 
     try {
       const isMember = await this.maxClient.hasChatMember(giveaway.sourceChatId, userId);
       if (isMember) {
+        for (const channelId of additionalRequiredChannels) {
+          const hasAdditionalSubscription = await this.maxClient.hasChatMember(channelId, userId);
+          if (!hasAdditionalSubscription) {
+            return {
+              state: GiveawayEligibilityState.REJECTED,
+              reason:
+                additionalRequiredChannels.length > 1
+                  ? 'Подписка на обязательные каналы не подтверждена.'
+                  : 'Подписка на обязательный канал не подтверждена.',
+            };
+          }
+        }
+
         return { state: GiveawayEligibilityState.VERIFIED, reason: null };
       }
 
@@ -1497,6 +1525,18 @@ export class ManagedGiveawayService {
         reason: 'MAX пока не подтвердил участие. Проверим ещё раз при подведении итогов.',
       };
     }
+  }
+
+  private readRequiredChannelIds(value: Prisma.JsonValue): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    const normalized = value
+      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+      .filter((item) => item.length > 0);
+
+    return Array.from(new Set(normalized));
   }
 
   private async activateScheduledGiveawayIfDue(

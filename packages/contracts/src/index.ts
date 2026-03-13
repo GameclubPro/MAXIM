@@ -38,6 +38,7 @@ export const MANAGED_POLL_MAX_OPTIONS = 6;
 export const MANAGED_POLL_QUESTION_MAX_LENGTH = 280;
 export const MANAGED_POLL_OPTION_MAX_LENGTH = 80;
 export const MANAGED_GIVEAWAY_MAX_PRIZES = 10;
+export const MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS = 10;
 export const MANAGED_GIVEAWAY_TITLE_MAX_LENGTH = 120;
 export const MANAGED_GIVEAWAY_DESCRIPTION_MAX_LENGTH = 2_000;
 export const MANAGED_GIVEAWAY_PRIZE_TITLE_MAX_LENGTH = 120;
@@ -739,6 +740,10 @@ export const updateManagedGiveawayRequestSchema = z
     startsAt: z.string().datetime().nullable().default(null),
     endsAt: z.string().datetime(),
     claimHours: z.number().int().min(1).max(336).default(24),
+    requiredChannelIds: z
+      .array(z.string().trim().min(1).max(128))
+      .max(MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS)
+      .default([]),
     prizes: z
       .array(managedGiveawayPrizeDraftSchema)
       .min(1)
@@ -802,6 +807,19 @@ export const updateManagedGiveawayRequestSchema = z
       }
       normalizedTitles.add(titleKey);
     }
+
+    const normalizedRequiredChannels = new Set<string>();
+    for (const [index, channelId] of value.requiredChannelIds.entries()) {
+      const key = channelId.trim().toLowerCase().replace(/\s+/gu, '');
+      if (normalizedRequiredChannels.has(key)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['requiredChannelIds', index],
+          message: 'Каналы не должны повторяться.',
+        });
+      }
+      normalizedRequiredChannels.add(key);
+    }
   });
 export type UpdateManagedGiveawayRequest = z.infer<typeof updateManagedGiveawayRequestSchema>;
 
@@ -859,6 +877,7 @@ export const managedGiveawayDetailsSchema = managedGiveawaySummarySchema.extend(
   imageMimeType: z.string(),
   imageFileName: z.string(),
   claimHours: z.number().int().min(1).max(336),
+  requiredChannelIds: z.array(z.string()),
   publicationMessageId: z.string().nullable(),
   resultsMessageId: z.string().nullable(),
   prizes: z.array(managedGiveawayPrizeSchema),
@@ -889,6 +908,7 @@ export const managedGiveawayPublicSchema = z.object({
   startsAt: z.string().datetime().nullable(),
   endsAt: z.string().datetime(),
   claimHours: z.number().int().min(1).max(336),
+  requiredChannelIds: z.array(z.string()),
   entriesCount: z.number().int().min(0),
   winnersCount: z.number().int().min(0),
   publishedAt: z.string().datetime().nullable(),

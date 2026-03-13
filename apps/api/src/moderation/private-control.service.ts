@@ -4219,6 +4219,7 @@ export class PrivateControlService {
       startsAt: null,
       endsAt: new Date(Date.now() + 24 * 60 * 60 * 1_000).toISOString(),
       claimHours: 24,
+      requiredChannelIds: [],
       prizes: [
         {
           position: 1,
@@ -4239,6 +4240,7 @@ export class PrivateControlService {
       startsAt: giveaway.startsAt,
       endsAt: giveaway.endsAt,
       claimHours: giveaway.claimHours,
+      requiredChannelIds: giveaway.requiredChannelIds,
       prizes: giveaway.prizes.map((prize) => ({
         position: prize.position,
         title: prize.title,

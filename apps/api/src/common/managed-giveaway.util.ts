@@ -11,6 +11,13 @@ export function normalizeManagedGiveawayDraft(
     imageBase64: payload.imageEnabled ? payload.imageBase64.trim() : '',
     imageMimeType: payload.imageEnabled ? payload.imageMimeType.trim() : '',
     imageFileName: payload.imageEnabled ? payload.imageFileName.trim() : '',
+    requiredChannelIds: Array.from(
+      new Set(
+        payload.requiredChannelIds
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0),
+      ),
+    ),
     prizes: payload.prizes
       .map((prize) => ({
         position: Math.max(1, Math.trunc(prize.position)),

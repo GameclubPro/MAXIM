@@ -481,6 +481,7 @@ model ManagedGiveaway {
   startsAt             DateTime?             @map("starts_at")
   endsAt               DateTime              @map("ends_at")
   claimHours           Int                   @default(24) @map("claim_hours")
+  requiredChannelIds   Json                  @default("[]") @map("required_channel_ids")
   status               ManagedGiveawayStatus @default(DRAFT)
   publicationMessageId String?               @map("publication_message_id")
   publicationUrl       String?               @map("publication_url")
