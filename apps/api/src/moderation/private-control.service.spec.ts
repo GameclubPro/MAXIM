@@ -715,12 +715,42 @@ describe('PrivateControlService', () => {
       await service.handleUpdate(createPrivatePhotoUpdate());
 
       expect(maxClient.sendCustomMessageImmediate).toHaveBeenCalledTimes(3);
+      expect(maxClient.uploadImage).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        'private-sticker-source-photo-1.png',
+        'image/png',
+      );
       expect(maxClient.sendCustomMessageImmediate).toHaveBeenLastCalledWith(
         '152517912',
-        expect.objectContaining({
+        {
           text: '',
-          attachments: [expect.objectContaining({ type: 'image' })],
-        }),
+          attachments: [
+            {
+              type: 'image',
+              payload: {
+                media_type: 'sticker',
+                mime_type: 'image/png',
+                token: 'upload-token-1',
+              },
+            },
+          ],
+        },
+      );
+      expect(maxClient.sendCustomMessageImmediate).toHaveBeenNthCalledWith(
+        2,
+        '152517912',
+        {
+          text: '',
+          attachments: [
+            {
+              type: 'sticker',
+              payload: {
+                mime_type: 'image/png',
+                token: 'upload-token-1',
+              },
+            },
+          ],
+        },
       );
       expect(getLastSentText(maxClient)).toContain('MAX принял только image-вариант');
       expect(getLastSentText(maxClient)).not.toContain('sticker отправлен');

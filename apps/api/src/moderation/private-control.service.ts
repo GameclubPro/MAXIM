@@ -218,7 +218,7 @@ type ParsedStickerAttachment = {
 
 type PreparedStickerAsset = {
   buffer: Buffer<ArrayBufferLike>;
-  mimeType: 'image/webp';
+  mimeType: 'image/png' | 'image/webp';
   fileName: string;
 };
 
@@ -3785,7 +3785,11 @@ export class PrivateControlService {
       },
       'Prepared private sticker asset uploaded',
     );
-    const deliveryMode = await this.deliverPreparedSticker(context.chatId, uploadPayload);
+    const deliveryMode = await this.deliverPreparedSticker(
+      context.chatId,
+      uploadPayload,
+      preparedSticker.mimeType,
+    );
 
     session.pendingInput = null;
     const view = this.renderStickerResultView(session, deliveryMode);
@@ -3826,8 +3830,37 @@ export class PrivateControlService {
   ): Promise<PreparedStickerAsset> {
     const qualityLevels = [92, 84, 76, 68] as const;
     let outputBuffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+    const baseName = sourceFileName.replace(/\.[^.]+$/u, '').trim() || `sticker-${Date.now()}`;
 
     try {
+      const pngBuffer = await sharp(sourceBuffer)
+        .rotate()
+        .resize(512, 512, {
+          fit: 'contain',
+          background: {
+            r: 0,
+            g: 0,
+            b: 0,
+            alpha: 0,
+          },
+        })
+        .png({
+          compressionLevel: 9,
+          adaptiveFiltering: true,
+          palette: true,
+          quality: 100,
+          effort: 10,
+        })
+        .toBuffer();
+
+      if (pngBuffer.length > 0 && pngBuffer.length <= STICKER_IMAGE_MAX_BYTES) {
+        return {
+          buffer: pngBuffer,
+          mimeType: 'image/png',
+          fileName: `${baseName}.png`,
+        };
+      }
+
       for (const quality of qualityLevels) {
         outputBuffer = await sharp(sourceBuffer)
           .rotate()
@@ -3860,7 +3893,6 @@ export class PrivateControlService {
       throw new BadRequestException('Не удалось подготовить sticker из фото.');
     }
 
-    const baseName = sourceFileName.replace(/\.[^.]+$/u, '').trim() || `sticker-${Date.now()}`;
     return {
       buffer: outputBuffer,
       mimeType: 'image/webp',
@@ -3871,6 +3903,7 @@ export class PrivateControlService {
   private async deliverPreparedSticker(
     chatId: string,
     uploadPayload: Record<string, unknown>,
+    preparedMimeType: PreparedStickerAsset['mimeType'],
   ): Promise<StickerDeliveryMode> {
     const attempts: Array<{
       name: string;
@@ -3895,7 +3928,7 @@ export class PrivateControlService {
             type: 'sticker',
             payload: {
               ...uploadPayload,
-              mime_type: 'image/webp',
+              mime_type: preparedMimeType,
             },
           },
         ],
@@ -3908,7 +3941,7 @@ export class PrivateControlService {
             type: 'image',
             payload: {
               ...uploadPayload,
-              mime_type: 'image/webp',
+              mime_type: preparedMimeType,
               media_type: 'sticker',
             },
           },

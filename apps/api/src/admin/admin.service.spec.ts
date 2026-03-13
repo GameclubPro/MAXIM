@@ -424,16 +424,16 @@ describe('AdminService.shareStickerLabAsset', () => {
       },
       {
         imageBase64: Buffer.from('sticker-image').toString('base64'),
-        imageMimeType: 'image/webp',
-        imageFileName: 'sticker.webp',
+        imageMimeType: 'image/png',
+        imageFileName: 'sticker.png',
       },
     );
 
     expect(prisma.$queryRaw).not.toHaveBeenCalled();
     expect(maxClient.uploadImage).toHaveBeenCalledWith(
       Buffer.from('sticker-image'),
-      'sticker.webp',
-      'image/webp',
+      'sticker.png',
+      'image/png',
     );
     expect(maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       '152517912',
@@ -483,8 +483,8 @@ describe('AdminService.shareStickerLabAsset', () => {
       },
       {
         imageBase64: Buffer.from('sticker-image-2').toString('base64'),
-        imageMimeType: 'image/webp',
-        imageFileName: 'miniapp-sticker.webp',
+        imageMimeType: 'image/png',
+        imageFileName: 'miniapp-sticker.png',
       },
     );
 

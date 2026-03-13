@@ -46,6 +46,10 @@ function normalizeErrorMessage(error: unknown, fallback: string): string {
   return raw.replace(/^API request failed:\s*\d+\s*/u, '').trim() || fallback;
 }
 
+function formatPreparedMimeType(mimeType: PreparedStickerImage['mimeType']): string {
+  return mimeType === 'image/png' ? 'PNG' : 'WEBP';
+}
+
 export function StickerLabPage({ api }: StickerLabPageProps) {
   const { pushToast } = useToast();
   const [prepared, setPrepared] = useState<PreparedStickerImage | null>(null);
@@ -165,8 +169,9 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
           <span className="chip">MAX Bridge</span>
           <h1>Стикер-лаб</h1>
           <p>
-            Загружаете фото, mini app собирает квадратный WEBP 512×512, бот отправляет его в
-            личку, а MAX открывает native share.
+            Загружаете фото, mini app сначала собирает PNG 512×512 с прозрачностью, а если файл
+            выходит слишком тяжёлым, переключается на WEBP. Дальше бот отправляет его в личку, а
+            MAX открывает native share.
           </p>
         </div>
 
@@ -183,7 +188,11 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
             <h2>Макет</h2>
             <p>Лучше всего работают крупные портреты и фото с одним главным объектом.</p>
           </div>
-          {prepared ? <span className="chip chip--success">512×512 WEBP</span> : null}
+          {prepared ? (
+            <span className="chip chip--success">
+              512×512 {formatPreparedMimeType(prepared.mimeType)}
+            </span>
+          ) : null}
         </div>
 
         <label className="sticker-lab-dropzone">
@@ -219,6 +228,7 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
               <div className="sticker-lab-preview__meta-row">
                 <span className="chip">{prepared.fileName}</span>
                 <span className="chip">{prepared.width}×{prepared.height}</span>
+                <span className="chip">{formatPreparedMimeType(prepared.mimeType)}</span>
               </div>
               <p>
                 Это изображение бот отправит вам в личный чат. Дальше MAX откроет системный экран

@@ -6,7 +6,7 @@ const STICKER_IMAGE_RADIUS = 78;
 
 export type PreparedStickerImage = {
   base64: string;
-  mimeType: 'image/webp';
+  mimeType: 'image/png' | 'image/webp';
   fileName: string;
   previewDataUrl: string;
   width: number;
@@ -61,10 +61,10 @@ function drawRoundedRect(
   context.closePath();
 }
 
-function sanitizeStickerFileName(fileName: string): string {
+function sanitizeStickerFileName(fileName: string, extension: 'png' | 'webp'): string {
   const normalized = fileName.trim() || 'sticker-photo';
   const baseName = normalized.replace(/\.[^./\\]+$/u, '') || 'sticker-photo';
-  return `${baseName}.webp`;
+  return `${baseName}.${extension}`;
 }
 
 function blobToBase64(blob: Blob): Promise<string> {
@@ -78,7 +78,11 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
-function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
+function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  mimeType: 'image/png' | 'image/webp',
+  quality?: number,
+): Promise<Blob> {
   return new Promise((resolve, reject) => {
     canvas.toBlob(
       (blob) => {
@@ -89,11 +93,13 @@ function canvasToBlob(canvas: HTMLCanvasElement): Promise<Blob> {
 
         resolve(blob);
       },
-      'image/webp',
-      0.92,
+      mimeType,
+      quality,
     );
   });
 }
+
+const MAX_STICKER_IMAGE_BYTES = 1_000_000;
 
 export async function prepareStickerImage(file: File): Promise<PreparedStickerImage> {
   const mimeType = file.type.trim().toLowerCase();
@@ -175,14 +181,22 @@ export async function prepareStickerImage(file: File): Promise<PreparedStickerIm
   );
   context.restore();
 
-  const blob = await canvasToBlob(canvas);
+  let blob = await canvasToBlob(canvas, 'image/png');
+  let targetMimeType: 'image/png' | 'image/webp' = 'image/png';
+
+  if (blob.size > MAX_STICKER_IMAGE_BYTES) {
+    blob = await canvasToBlob(canvas, 'image/webp', 0.92);
+    targetMimeType = 'image/webp';
+  }
+
   const base64 = await blobToBase64(blob);
-  const previewDataUrl = `data:image/webp;base64,${base64}`;
+  const previewDataUrl = `data:${targetMimeType};base64,${base64}`;
+  const extension = targetMimeType === 'image/png' ? 'png' : 'webp';
 
   return {
     base64,
-    mimeType: 'image/webp',
-    fileName: sanitizeStickerFileName(file.name),
+    mimeType: targetMimeType,
+    fileName: sanitizeStickerFileName(file.name, extension),
     previewDataUrl,
     width: STICKER_CANVAS_SIZE,
     height: STICKER_CANVAS_SIZE,

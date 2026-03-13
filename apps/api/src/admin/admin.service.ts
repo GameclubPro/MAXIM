@@ -218,11 +218,15 @@ export class AdminService {
       throw new BadRequestException('Изображение слишком большое. Выберите другое фото.');
     }
 
+    const normalizedImageFileName = this.resolveBroadcastImageFileName(
+      parsed.data.imageFileName,
+      imageMimeType,
+    );
     let uploadPayload: Record<string, unknown>;
     try {
       uploadPayload = await this.maxClient.uploadImage(
         imageBuffer,
-        this.resolveBroadcastImageFileName(parsed.data.imageFileName, imageMimeType),
+        normalizedImageFileName,
         imageMimeType,
       );
     } catch (error: unknown) {
@@ -255,6 +259,8 @@ export class AdminService {
           mid: sent.messageId,
           messageUrl: sent.url,
           attachmentType: 'image',
+          imageMimeType,
+          imageFileName: normalizedImageFileName,
           source: 'sticker_lab',
         },
         'Sticker lab asset delivered to private chat',
