@@ -2,7 +2,7 @@ const STICKER_CANVAS_SIZE = 512;
 
 export type PreparedStickerImage = {
   base64: string;
-  mimeType: 'image/png' | 'image/webp';
+  mimeType: 'image/png';
   fileName: string;
   previewDataUrl: string;
   width: number;
@@ -42,10 +42,10 @@ function loadImage(dataUrl: string): Promise<HTMLImageElement> {
   });
 }
 
-function sanitizeStickerFileName(fileName: string, extension: 'png' | 'webp'): string {
+function sanitizeStickerFileName(fileName: string): string {
   const normalized = fileName.trim() || 'sticker-photo';
   const baseName = normalized.replace(/\.[^./\\]+$/u, '') || 'sticker-photo';
-  return `${baseName}.${extension}`;
+  return `${baseName}.png`;
 }
 
 function blobToBase64(blob: Blob): Promise<string> {
@@ -80,8 +80,6 @@ function canvasToBlob(
   });
 }
 
-const MAX_STICKER_IMAGE_BYTES = 1_000_000;
-
 export async function prepareStickerImage(file: File): Promise<PreparedStickerImage> {
   const mimeType = file.type.trim().toLowerCase();
   if (!mimeType.startsWith('image/')) {
@@ -115,22 +113,14 @@ export async function prepareStickerImage(file: File): Promise<PreparedStickerIm
 
   context.drawImage(image, targetX, targetY, targetWidth, targetHeight);
 
-  let blob = await canvasToBlob(canvas, 'image/png');
-  let targetMimeType: 'image/png' | 'image/webp' = 'image/png';
-
-  if (blob.size > MAX_STICKER_IMAGE_BYTES) {
-    blob = await canvasToBlob(canvas, 'image/webp', 0.92);
-    targetMimeType = 'image/webp';
-  }
-
+  const blob = await canvasToBlob(canvas, 'image/png');
   const base64 = await blobToBase64(blob);
-  const previewDataUrl = `data:${targetMimeType};base64,${base64}`;
-  const extension = targetMimeType === 'image/png' ? 'png' : 'webp';
+  const previewDataUrl = `data:image/png;base64,${base64}`;
 
   return {
     base64,
-    mimeType: targetMimeType,
-    fileName: sanitizeStickerFileName(file.name, extension),
+    mimeType: 'image/png',
+    fileName: sanitizeStickerFileName(file.name),
     previewDataUrl,
     width: STICKER_CANVAS_SIZE,
     height: STICKER_CANVAS_SIZE,
@@ -161,6 +151,6 @@ export async function prepareStickerClipboardImage(
     blob,
     dataUrl,
     mimeType: 'image/png',
-    fileName: sanitizeStickerFileName(prepared.fileName, 'png'),
+    fileName: sanitizeStickerFileName(prepared.fileName),
   };
 }

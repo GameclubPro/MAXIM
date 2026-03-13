@@ -103,7 +103,7 @@ function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
   if (pathname.includes('/sticker-lab')) {
     return {
       title: 'Стикеры',
-      subtitle: 'Загрузка и отправка',
+      subtitle: 'PNG 512×512 для iPhone',
     };
   }
 

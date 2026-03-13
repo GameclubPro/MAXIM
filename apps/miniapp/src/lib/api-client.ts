@@ -16,8 +16,6 @@ import {
   scheduleDomainRemovalRequestSchema,
   sendBroadcastRequestSchema,
   sendBroadcastResultSchema,
-  stickerLabShareRequestSchema,
-  stickerLabShareResponseSchema,
   moderationEventSchema,
   managedEntityHeaderSchema,
   managedBroadcastDetailsSchema,
@@ -64,7 +62,6 @@ import {
   type PublishChannelEngagementRequest,
   type PublishChannelEngagementResult,
   type PublishChatRulesResult,
-  type StickerLabShareResponse,
   type UpdateManagedGiveawayRequest,
   type BroadcastTextFormat,
   type BroadcastHandoffResponse,
@@ -135,20 +132,6 @@ export class ApiClient {
   async getMe(): Promise<Me> {
     const response = await this.request('/me');
     return meSchema.parse(response);
-  }
-
-  async shareStickerLabImage(payload: {
-    imageBase64: string;
-    imageMimeType: string;
-    imageFileName: string;
-    deliveryType?: 'image' | 'file';
-  }): Promise<StickerLabShareResponse> {
-    const requestBody = stickerLabShareRequestSchema.parse(payload);
-    const response = await this.request('/sticker-lab/share', {
-      method: 'POST',
-      body: JSON.stringify(requestBody),
-    });
-    return stickerLabShareResponseSchema.parse(response);
   }
 
   async getChats(): Promise<ChatSummary[]> {
