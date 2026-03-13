@@ -282,14 +282,7 @@ export class AdminService {
 
     try {
       if (deliveryType === 'file') {
-        const sent = await this.maxClient.sendCustomMessageImmediateWithResolvedLink(privateChatId, {
-          attachments: [
-            {
-              type: 'file',
-              payload: uploadPayload,
-            },
-          ],
-        });
+        const sent = await this.sendStickerLabFileMessageWithRetry(privateChatId, uploadPayload);
         this.logger.log(
           {
             userId: user.userId,
@@ -349,17 +342,19 @@ export class AdminService {
         privateChatId,
       });
     } catch (error: unknown) {
+      const maxApiMessage = this.extractMaxApiErrorMessage(error);
       this.logger.warn(
         {
           userId: user.userId,
           privateChatId,
           deliveryType,
           err: error instanceof Error ? error.message : String(error),
+          maxApiMessage: maxApiMessage || null,
         },
         'Sticker lab asset delivery failed',
       );
       throw new BadRequestException(
-        'Не удалось отправить файл в личный чат бота. Попробуйте ещё раз.',
+        maxApiMessage || 'Не удалось отправить файл в личный чат бота. Попробуйте ещё раз.',
       );
     }
   }
@@ -777,6 +772,40 @@ export class AdminService {
     } catch {
       return null;
     }
+  }
+
+  private async sendStickerLabFileMessageWithRetry(
+    chatId: string,
+    uploadPayload: Record<string, unknown>,
+  ): Promise<MaxPublishedMessage> {
+    let lastError: unknown = null;
+    const attempts = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length + 1;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      try {
+        return await this.maxClient.sendCustomMessageImmediateWithResolvedLink(chatId, {
+          attachments: [
+            {
+              type: 'file',
+              payload: uploadPayload,
+            },
+          ],
+        });
+      } catch (error: unknown) {
+        lastError = error;
+        if (!this.isAttachmentNotReadyError(error) || attempt >= attempts) {
+          throw error;
+        }
+        const delayMs = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS[attempt - 1] ?? 1_500;
+        await this.sleep(delayMs);
+      }
+    }
+
+    if (lastError) {
+      throw lastError;
+    }
+
+    throw new Error('Sticker lab file delivery failed without error details');
   }
 
   async listChats(user: AuthUser): Promise<ChatSummary[]> {
