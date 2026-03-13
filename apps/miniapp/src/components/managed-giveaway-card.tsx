@@ -28,6 +28,59 @@ function buildHistoryLabel(status: ManagedGiveawaySummary['status']): string {
   return status === 'CANCELED' ? 'Отменён' : 'Завершён';
 }
 
+function buildStatusLabel(status: ManagedGiveawaySummary['status']): string {
+  if (status === 'DRAFT') {
+    return 'Черновик';
+  }
+  if (status === 'SCHEDULED') {
+    return 'Запланирован';
+  }
+  if (status === 'ACTIVE') {
+    return 'Идёт';
+  }
+  if (status === 'DRAWING') {
+    return 'Подводим итоги';
+  }
+  if (status === 'COMPLETED') {
+    return 'Завершён';
+  }
+  return 'Отменён';
+}
+
+function buildStatusTone(
+  status: ManagedGiveawaySummary['status'],
+): 'is-success' | 'is-warning' | 'is-danger' | 'is-muted' {
+  if (status === 'ACTIVE' || status === 'COMPLETED') {
+    return 'is-success';
+  }
+  if (status === 'SCHEDULED' || status === 'DRAWING' || status === 'DRAFT') {
+    return 'is-warning';
+  }
+  if (status === 'CANCELED') {
+    return 'is-danger';
+  }
+  return 'is-muted';
+}
+
+function formatDateTime(value: string | null, fallback = 'не задано'): string {
+  if (!value) {
+    return fallback;
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return parsed.toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
 function formatCompactDate(value: string): string {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) {
@@ -39,6 +92,25 @@ function formatCompactDate(value: string): string {
     month: '2-digit',
     year: '2-digit',
   });
+}
+
+function buildCurrentSubtitle(item: ManagedGiveawaySummary): string {
+  if (item.status === 'DRAFT') {
+    return `Черновик готов. Финиш: ${formatDateTime(item.endsAt)}.`;
+  }
+  if (item.status === 'SCHEDULED') {
+    return `Старт: ${formatDateTime(item.startsAt, 'сразу')}. Финиш: ${formatDateTime(item.endsAt)}.`;
+  }
+  if (item.status === 'ACTIVE') {
+    return `Приём заявок открыт до ${formatDateTime(item.endsAt)}.`;
+  }
+  if (item.status === 'DRAWING') {
+    return 'Идёт проверка участников и фиксация победителей.';
+  }
+  if (item.status === 'COMPLETED') {
+    return `Итоги обновлены ${formatDateTime(item.completedAt ?? item.updatedAt)}.`;
+  }
+  return `Розыгрыш отменён ${formatDateTime(item.updatedAt)}.`;
 }
 
 function StepChevron({ isOpen }: { isOpen: boolean }) {
@@ -81,15 +153,29 @@ export function ManagedGiveawayCard({
     refetchOnWindowFocus: false,
   });
 
-  const historyItems = useMemo(
+  const sortedItems = useMemo(
     () =>
-      [...(listQuery.data ?? [])]
-        .filter((item) => item.status === 'COMPLETED' || item.status === 'CANCELED')
-        .sort(
-          (left, right) =>
-            new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
-        ),
+      [...(listQuery.data ?? [])].sort(
+        (left, right) => new Date(right.updatedAt).getTime() - new Date(left.updatedAt).getTime(),
+      ),
     [listQuery.data],
+  );
+
+  const currentItem = useMemo(
+    () =>
+      sortedItems.find(
+        (item) =>
+          item.status === 'DRAFT' ||
+          item.status === 'SCHEDULED' ||
+          item.status === 'ACTIVE' ||
+          item.status === 'DRAWING',
+      ) ?? null,
+    [sortedItems],
+  );
+
+  const historyItems = useMemo(
+    () => sortedItems.filter((item) => item.status === 'COMPLETED' || item.status === 'CANCELED'),
+    [sortedItems],
   );
 
   const handoffMutation = useMutation({
@@ -125,20 +211,138 @@ export function ManagedGiveawayCard({
     },
   });
 
+  const isBusy = handoffMutation.isPending || deleteMutation.isPending;
+
   return (
     <div className="managed-giveaway">
-      <div className="managed-giveaway__actions">
+      <div className="managed-giveaway__header">
+        <div className="managed-giveaway__header-copy">
+          <strong className="managed-giveaway__title">Гибридные розыгрыши</strong>
+          <small className="managed-giveaway__subtitle">
+            Miniapp для контроля, личка бота для детального управления и действий с победителями.
+          </small>
+        </div>
         <button
           type="button"
           className="button button--accent"
-          disabled={handoffMutation.isPending}
+          disabled={isBusy}
           onClick={() => {
             void handoffMutation.mutateAsync(null);
           }}
         >
-          {handoffMutation.isPending ? 'Открываем…' : 'Создать розыгрыш'}
+          {handoffMutation.isPending ? 'Открываем…' : 'Новый'}
         </button>
       </div>
+
+      {listQuery.isLoading ? (
+        <div className="managed-giveaway__empty">
+          <strong>Загружаем розыгрыши…</strong>
+          <p>Подтягиваем текущий статус и историю.</p>
+        </div>
+      ) : null}
+
+      {listQuery.error ? (
+        <div className="managed-giveaway__error-inline">
+          <span>{formatApiError(listQuery.error, 'Не удалось загрузить розыгрыши.')}</span>
+          <button
+            type="button"
+            className="button button--ghost"
+            onClick={() => {
+              void listQuery.refetch();
+            }}
+          >
+            Повторить
+          </button>
+        </div>
+      ) : null}
+
+      {!listQuery.isLoading && !listQuery.error && currentItem ? (
+        <div className={cn('managed-giveaway__panel', 'managed-giveaway__summary-card')}>
+          <div className="managed-giveaway__summary-topline">
+            <span className="managed-giveaway__eyebrow">Текущий розыгрыш</span>
+            <span className={cn('managed-giveaway__badge', buildStatusTone(currentItem.status))}>
+              {buildStatusLabel(currentItem.status)}
+            </span>
+          </div>
+
+          <div className="managed-giveaway__summary-copy">
+            <h4>{currentItem.title}</h4>
+            <p>{buildCurrentSubtitle(currentItem)}</p>
+          </div>
+
+          <div className="managed-giveaway__stat-grid">
+            <div className="managed-giveaway__stat-card">
+              <span>Заявки</span>
+              <strong>{currentItem.entriesCount}</strong>
+              <small>всего</small>
+            </div>
+            <div className="managed-giveaway__stat-card">
+              <span>Verified</span>
+              <strong>{currentItem.verifiedEntriesCount}</strong>
+              <small>допущены</small>
+            </div>
+            <div className="managed-giveaway__stat-card">
+              <span>Pending</span>
+              <strong>{currentItem.pendingEntriesCount}</strong>
+              <small>ожидают check</small>
+            </div>
+            <div className="managed-giveaway__stat-card">
+              <span>Победители</span>
+              <strong>{currentItem.winnersCount}</strong>
+              <small>по местам</small>
+            </div>
+          </div>
+
+          <div className="managed-giveaway__chips">
+            <span className="managed-giveaway__chip">
+              Старт: {formatDateTime(currentItem.startsAt, 'сразу')}
+            </span>
+            <span className="managed-giveaway__chip">
+              Финиш: {formatDateTime(currentItem.endsAt)}
+            </span>
+          </div>
+
+          <div className="managed-giveaway__actions">
+            <button
+              type="button"
+              className="button button--accent"
+              disabled={isBusy}
+              onClick={() => {
+                void handoffMutation.mutateAsync(currentItem.id);
+              }}
+            >
+              Открыть в боте
+            </button>
+
+            {currentItem.publicationUrl ? (
+              <button
+                type="button"
+                className="button button--ghost"
+                onClick={() => openMaxBotLink(currentItem.publicationUrl ?? '')}
+              >
+                Пост
+              </button>
+            ) : null}
+
+            {currentItem.resultsUrl ? (
+              <button
+                type="button"
+                className="button button--ghost"
+                onClick={() => openMaxBotLink(currentItem.resultsUrl ?? '')}
+              >
+                Итоги
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {!listQuery.isLoading && !listQuery.error && !currentItem && historyItems.length === 0 ? (
+        <div className="managed-giveaway__empty">
+          <strong>Активных розыгрышей пока нет</strong>
+          <p>Создайте первый сценарий и запустите его через личку бота.</p>
+        </div>
+      ) : null}
 
       {historyItems.length > 0 ? (
         <div className="managed-giveaway__history">
@@ -150,7 +354,7 @@ export function ManagedGiveawayCard({
           >
             <span className="managed-giveaway__history-copy">
               <strong>История</strong>
-              <small>{historyItems.length}</small>
+              <small>{historyItems.length} завершённых сценариев</small>
             </span>
             <StepChevron isOpen={historyOpen} />
           </button>
@@ -163,7 +367,7 @@ export function ManagedGiveawayCard({
                     <button
                       type="button"
                       className="managed-giveaway__history-item"
-                      disabled={handoffMutation.isPending}
+                      disabled={isBusy}
                       onClick={() => {
                         void handoffMutation.mutateAsync(item.id);
                       }}
@@ -186,7 +390,7 @@ export function ManagedGiveawayCard({
                       type="button"
                       className="managed-giveaway__history-delete"
                       aria-label={`Удалить розыгрыш ${item.title}`}
-                      disabled={deleteMutation.isPending}
+                      disabled={isBusy}
                       onClick={(event) => {
                         event.stopPropagation();
                         void deleteMutation.mutateAsync(item.id);
