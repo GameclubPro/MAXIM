@@ -144,6 +144,7 @@ export function StickerLabPage() {
   const [prepared, setPrepared] = useState<PreparedStickerImage | null>(null);
   const [isPreparing, setIsPreparing] = useState(false);
   const [isCopying, setIsCopying] = useState(false);
+  const [fallbackPreviewSrc, setFallbackPreviewSrc] = useState<string | null>(null);
   const iosDevice = isIosDevice();
 
   async function handleFilePick(file: File | null) {
@@ -205,6 +206,9 @@ export function StickerLabPage() {
           });
           return;
         }
+
+        setFallbackPreviewSrc(clipboardAsset.dataUrl);
+        return;
       }
 
       throw new Error('Не удалось скопировать');
@@ -264,6 +268,22 @@ export function StickerLabPage() {
           К чатам
         </Link>
       </GlassCard>
+
+      {fallbackPreviewSrc ? (
+        <div className="sticker-lab-viewer" role="dialog" aria-modal="true">
+          <button
+            type="button"
+            className="sticker-lab-viewer__close"
+            onClick={() => setFallbackPreviewSrc(null)}
+            aria-label="Закрыть"
+          >
+            ×
+          </button>
+          <div className="sticker-lab-viewer__surface">
+            <img src={fallbackPreviewSrc} alt="PNG" className="sticker-lab-viewer__image" />
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
