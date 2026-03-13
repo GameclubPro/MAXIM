@@ -1,4 +1,5 @@
 import {
+  type ChatSummary,
   MANAGED_GIVEAWAY_DESCRIPTION_MAX_LENGTH,
   MANAGED_GIVEAWAY_MAX_PRIZES,
   MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS,
@@ -191,7 +192,7 @@ function toEditorDraft(giveaway: ManagedGiveawayDetails): GiveawayEditorDraft {
     startsAtLocal: toDateTimeInputFromIso(giveaway.startsAt),
     endsAtLocal: toDateTimeInputFromIso(giveaway.endsAt),
     claimHours: giveaway.claimHours,
-    requiredChannelIds: giveaway.requiredChannelIds,
+    requiredChannelIds: giveaway.requiredChannelIds.filter((item) => item !== giveaway.sourceChatId),
     prizes: giveaway.prizes
       .slice()
       .sort((left, right) => left.position - right.position)
@@ -209,6 +210,23 @@ function normalizePrizeKey(value: string): string {
 
 function normalizeChannelId(value: string): string {
   return value.trim().replace(/\s+/gu, '');
+}
+
+function normalizeChannelLink(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  const withProtocol = /^https?:\/\//iu.test(trimmed) ? trimmed : `https://${trimmed}`;
+  try {
+    const parsed = new URL(withProtocol);
+    const host = parsed.hostname.toLowerCase().replace(/^www\./u, '');
+    const path = parsed.pathname.replace(/\/+$/u, '');
+    return `${host}${path}`.toLowerCase();
+  } catch {
+    return trimmed.toLowerCase();
+  }
 }
 
 function validateDraft(draft: GiveawayEditorDraft): { valid: boolean; message: string } {
@@ -306,7 +324,13 @@ function toUpdatePayload(draft: GiveawayEditorDraft): UpdateManagedGiveawayPaylo
     startsAt: startsAtDate ? startsAtDate.toISOString() : null,
     endsAt: endsAtDate.toISOString(),
     claimHours: Math.max(MIN_CLAIM_HOURS, Math.min(MAX_CLAIM_HOURS, Math.round(draft.claimHours))),
-    requiredChannelIds: draft.requiredChannelIds.map((item) => normalizeChannelId(item)),
+    requiredChannelIds: Array.from(
+      new Set(
+        draft.requiredChannelIds
+          .map((item) => normalizeChannelId(item))
+          .filter((item) => item.length > 0),
+      ),
+    ),
     prizes: draft.prizes.map((title, index) => ({
       position: index + 1,
       title: title.trim(),
@@ -396,6 +420,8 @@ export function ManagedGiveawayCard({
   const [savedSnapshot, setSavedSnapshot] = useState<GiveawayEditorDraft | null>(null);
   const [editorError, setEditorError] = useState('');
   const [validationHint, setValidationHint] = useState('');
+  const [channelPickerOpen, setChannelPickerOpen] = useState(false);
+  const [channelLinkValue, setChannelLinkValue] = useState('');
 
   const listQueryKey = useMemo(
     () => ['managed-giveaways', entityType, entityId] as const,
@@ -446,6 +472,13 @@ export function ManagedGiveawayCard({
     refetchOnWindowFocus: false,
   });
 
+  const channelsQuery = useQuery({
+    queryKey: ['giveaway-owned-channels'] as const,
+    queryFn: () => api.getChannels(),
+    enabled: editorMode !== 'closed',
+    refetchOnWindowFocus: false,
+  });
+
   useEffect(() => {
     if (!draftDetailsQuery.data) {
       return;
@@ -490,6 +523,53 @@ export function ManagedGiveawayCard({
     () => (draft ? validateDraft(draft) : { valid: false, message: 'Черновик не заполнен.' }),
     [draft],
   );
+
+  const ownedChannels = useMemo(
+    () => (channelsQuery.data ?? []).filter((item) => item.entityType === 'channel'),
+    [channelsQuery.data],
+  );
+
+  const channelById = useMemo(() => {
+    const map = new Map<string, ChatSummary>();
+    for (const channel of ownedChannels) {
+      map.set(channel.id, channel);
+    }
+    return map;
+  }, [ownedChannels]);
+
+  const channelByLink = useMemo(() => {
+    const map = new Map<string, ChatSummary>();
+    for (const channel of ownedChannels) {
+      if (channel.link) {
+        const normalized = normalizeChannelLink(channel.link);
+        if (normalized) {
+          map.set(normalized, channel);
+        }
+      }
+    }
+    return map;
+  }, [ownedChannels]);
+
+  const selectedRequiredChannels = useMemo(() => {
+    if (!draft) {
+      return [];
+    }
+    return draft.requiredChannelIds.map((channelId) => {
+      const channel = channelById.get(channelId);
+      return {
+        id: channelId,
+        title: channel?.title?.trim() || 'Канал из условий',
+      };
+    });
+  }, [channelById, draft]);
+
+  const availableOwnedChannels = useMemo(() => {
+    if (!draft) {
+      return [];
+    }
+    const selected = new Set(draft.requiredChannelIds);
+    return ownedChannels.filter((channel) => channel.id !== entityId && !selected.has(channel.id));
+  }, [draft, entityId, ownedChannels]);
 
   const handoffMutation = useMutation({
     mutationFn: (giveawayId: string | null) =>
@@ -557,6 +637,8 @@ export function ManagedGiveawayCard({
     setSavedSnapshot(null);
     setEditorError('');
     setValidationHint('');
+    setChannelPickerOpen(false);
+    setChannelLinkValue('');
   };
 
   const applyEditorPayload = (giveaway: ManagedGiveawayDetails) => {
@@ -567,6 +649,8 @@ export function ManagedGiveawayCard({
     setSavedSnapshot(nextDraft);
     setEditorError('');
     setValidationHint('');
+    setChannelPickerOpen(false);
+    setChannelLinkValue('');
   };
 
   const startCreate = () => {
@@ -577,6 +661,8 @@ export function ManagedGiveawayCard({
     setEditingGiveawayId(null);
     setEditorError('');
     setValidationHint('');
+    setChannelPickerOpen(false);
+    setChannelLinkValue('');
   };
 
   const startEditCurrentDraft = () => {
@@ -587,6 +673,62 @@ export function ManagedGiveawayCard({
     setEditingGiveawayId(currentItem.id);
     setEditorError('');
     setValidationHint('');
+    setChannelPickerOpen(false);
+    setChannelLinkValue('');
+  };
+
+  const addRequiredChannelById = (channelId: string) => {
+    setDraft((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const normalizedChannelId = normalizeChannelId(channelId);
+      if (!normalizedChannelId || normalizedChannelId === entityId) {
+        return current;
+      }
+
+      if (current.requiredChannelIds.includes(normalizedChannelId)) {
+        return current;
+      }
+
+      return {
+        ...current,
+        requiredChannelIds: [...current.requiredChannelIds, normalizedChannelId],
+      };
+    });
+    setChannelLinkValue('');
+    setValidationHint('');
+    setEditorError('');
+  };
+
+  const removeRequiredChannelById = (channelId: string) => {
+    setDraft((current) =>
+      current
+        ? {
+            ...current,
+            requiredChannelIds: current.requiredChannelIds.filter((item) => item !== channelId),
+          }
+        : current,
+    );
+    setValidationHint('');
+    setEditorError('');
+  };
+
+  const addRequiredChannelByLink = () => {
+    const normalized = normalizeChannelLink(channelLinkValue);
+    if (!normalized) {
+      setValidationHint('Вставьте ссылку канала.');
+      return;
+    }
+
+    const matched = channelByLink.get(normalized);
+    if (!matched) {
+      setValidationHint('Не нашли канал по ссылке. Используйте кнопку «Свой канал».');
+      return;
+    }
+
+    addRequiredChannelById(matched.id);
   };
 
   const refetchManagedGiveaways = async () => {
@@ -619,7 +761,11 @@ export function ManagedGiveawayCard({
     }
 
     try {
-      const payload = toUpdatePayload(draft);
+      const nextPayload = toUpdatePayload(draft);
+      const payload = {
+        ...nextPayload,
+        requiredChannelIds: nextPayload.requiredChannelIds.filter((item) => item !== entityId),
+      };
       const saved =
         editorMode === 'create' || !editingGiveawayId
           ? await createMutation.mutateAsync(payload)
@@ -981,50 +1127,16 @@ export function ManagedGiveawayCard({
               <span className="managed-giveaway__chip">Подписка на источник обязательна</span>
             </div>
 
-            {draft.requiredChannelIds.length > 0 ? (
+            {selectedRequiredChannels.length > 0 ? (
               <div className="managed-giveaway__prize-editor-list">
-                {draft.requiredChannelIds.map((channelId, index) => (
+                {selectedRequiredChannels.map((item, index) => (
                   <div key={`required-channel-${index}`} className="managed-giveaway__prize-editor-row">
                     <span className="managed-giveaway__prize-position">{index + 1}</span>
-                    <label className="field">
-                      <input
-                        type="text"
-                        value={channelId}
-                        placeholder="ID канала"
-                        maxLength={128}
-                        onChange={(event) => {
-                          setDraft((current) => {
-                            if (!current) {
-                              return current;
-                            }
-                            const nextRequiredChannels = [...current.requiredChannelIds];
-                            nextRequiredChannels[index] = event.target.value;
-                            return {
-                              ...current,
-                              requiredChannelIds: nextRequiredChannels,
-                            };
-                          });
-                          setValidationHint('');
-                          setEditorError('');
-                        }}
-                        disabled={isBusy}
-                      />
-                    </label>
+                    <span className="managed-giveaway__selected-channel">{item.title}</span>
                     <button
                       type="button"
                       className="managed-giveaway__prize-remove"
-                      onClick={() =>
-                        setDraft((current) =>
-                          current
-                            ? {
-                                ...current,
-                                requiredChannelIds: current.requiredChannelIds.filter(
-                                  (_, channelIndex) => channelIndex !== index,
-                                ),
-                              }
-                            : current,
-                        )
-                      }
+                      onClick={() => removeRequiredChannelById(item.id)}
                       disabled={isBusy}
                       aria-label={`Удалить доп. канал ${index + 1}`}
                     >
@@ -1039,21 +1151,70 @@ export function ManagedGiveawayCard({
               <button
                 type="button"
                 className="button button--ghost"
-                disabled={isBusy || draft.requiredChannelIds.length >= MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS}
-                onClick={() =>
-                  setDraft((current) =>
-                    current
-                      ? {
-                          ...current,
-                          requiredChannelIds: [...current.requiredChannelIds, ''],
-                        }
-                      : current,
-                  )
-                }
+                disabled={isBusy || channelsQuery.isLoading}
+                onClick={() => setChannelPickerOpen((current) => !current)}
               >
-                + Добавить канал
+                {channelPickerOpen ? 'Скрыть список' : 'Свой канал'}
               </button>
+              <span className="managed-giveaway__section-inline-note">
+                Добавьте канал по ссылке или кнопкой «Свой канал».
+              </span>
             </div>
+
+            <div className="managed-giveaway__editor-grid">
+              <label className="field">
+                <span>Ссылка канала</span>
+                <input
+                  type="text"
+                  value={channelLinkValue}
+                  onChange={(event) => {
+                    setChannelLinkValue(event.target.value);
+                    setValidationHint('');
+                    setEditorError('');
+                  }}
+                  placeholder="https://max.ru/..."
+                  disabled={isBusy}
+                />
+              </label>
+              <div className="managed-giveaway__section-actions managed-giveaway__section-actions--align-end">
+                <button
+                  type="button"
+                  className="button button--ghost"
+                  disabled={isBusy}
+                  onClick={addRequiredChannelByLink}
+                >
+                  Добавить по ссылке
+                </button>
+              </div>
+            </div>
+
+            {channelPickerOpen ? (
+              <div className="managed-giveaway__channel-picker">
+                {channelsQuery.isLoading ? <span>Загружаем ваши каналы...</span> : null}
+                {!channelsQuery.isLoading && availableOwnedChannels.length === 0 ? (
+                  <span>Нет доступных каналов для добавления.</span>
+                ) : null}
+                {!channelsQuery.isLoading
+                  ? availableOwnedChannels.map((channel) => (
+                      <button
+                        key={`channel-pick-${channel.id}`}
+                        type="button"
+                        className="managed-giveaway__channel-picker-item"
+                        disabled={isBusy}
+                        onClick={() => addRequiredChannelById(channel.id)}
+                      >
+                        {channel.title}
+                      </button>
+                    ))
+                  : null}
+              </div>
+            ) : null}
+
+            {channelsQuery.error ? (
+              <div className="managed-giveaway__error-inline">
+                {formatApiError(channelsQuery.error, 'Не удалось загрузить список каналов.')}
+              </div>
+            ) : null}
           </div>
 
           <div className="managed-giveaway__section">
