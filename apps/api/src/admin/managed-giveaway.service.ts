@@ -1325,8 +1325,8 @@ export class ManagedGiveawayService {
           : winner.status === ManagedGiveawayWinnerStatus.CLAIMED
             ? 'ожидает выдачи'
             : winner.status === ManagedGiveawayWinnerStatus.EXPIRED
-              ? 'claim истёк'
-              : 'ожидает claim';
+              ? 'срок подтверждения истёк'
+              : 'ожидает подтверждения';
       lines.push(
         `${winner.prize.position}. ${winner.prize.title} — ${this.formatPublicWinnerName(winner)} (${status})`,
       );

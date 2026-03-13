@@ -2170,7 +2170,7 @@ describe('ModerationService', () => {
       privateControlService as never,
     );
 
-    const update = createBotStartedPrivateHandoffUpdate('giveaway_handoff');
+    const update = createBotStartedPrivateHandoffUpdate('ggh-test-payload');
 
     await service.handleUpdate(update);
 

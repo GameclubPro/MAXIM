@@ -123,6 +123,7 @@ const PRIVATE_MENU_PROMPT_TEXT = [
 ].join('\n');
 const BROADCAST_HANDOFF_START_PAYLOAD = 'broadcast_handoff';
 const GIVEAWAY_HANDOFF_START_PAYLOAD = 'giveaway_handoff';
+const GIVEAWAY_HANDOFF_START_PAYLOAD_PREFIX = 'ggh-';
 const GIVEAWAY_CLAIM_START_PAYLOAD_PREFIX = 'ggc-';
 const PRIVATE_HELP_TEXT = [
   'Быстрый гайд:',
@@ -4127,6 +4128,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const skipLongInstruction =
       startPayload === BROADCAST_HANDOFF_START_PAYLOAD ||
       startPayload === GIVEAWAY_HANDOFF_START_PAYLOAD ||
+      Boolean(startPayload?.startsWith(GIVEAWAY_HANDOFF_START_PAYLOAD_PREFIX)) ||
       Boolean(startPayload?.startsWith(GIVEAWAY_CLAIM_START_PAYLOAD_PREFIX));
 
     try {
@@ -4229,10 +4231,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       const value =
-        candidate.start_payload ??
-        candidate.startPayload ??
-        candidate.payload ??
-        candidate.start;
+        candidate.start_payload ?? candidate.startPayload ?? candidate.payload ?? candidate.start;
 
       if (typeof value === 'string' && value.trim().length > 0) {
         return value.trim();

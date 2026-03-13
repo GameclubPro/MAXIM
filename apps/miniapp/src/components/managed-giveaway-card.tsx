@@ -277,14 +277,14 @@ export function ManagedGiveawayCard({
               <small>всего</small>
             </div>
             <div className="managed-giveaway__stat-card">
-              <span>Verified</span>
+              <span>Подтверждены</span>
               <strong>{currentItem.verifiedEntriesCount}</strong>
               <small>допущены</small>
             </div>
             <div className="managed-giveaway__stat-card">
-              <span>Pending</span>
+              <span>На проверке</span>
               <strong>{currentItem.pendingEntriesCount}</strong>
-              <small>ожидают check</small>
+              <small>ожидают проверки</small>
             </div>
             <div className="managed-giveaway__stat-card">
               <span>Победители</span>

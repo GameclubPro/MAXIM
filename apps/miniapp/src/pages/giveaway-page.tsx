@@ -98,7 +98,7 @@ function buildWinnerStatusLabel(status: string | null | undefined): string | nul
     return 'Приз выдан';
   }
   if (status === 'EXPIRED') {
-    return 'Claim истёк';
+    return 'Срок подтверждения истёк';
   }
   if (status === 'REROLLED') {
     return 'Перевыбран';
@@ -106,7 +106,9 @@ function buildWinnerStatusLabel(status: string | null | undefined): string | nul
   return null;
 }
 
-function buildWinnerStatusTone(status: string | null | undefined): 'success' | 'warning' | 'muted' | 'danger' {
+function buildWinnerStatusTone(
+  status: string | null | undefined,
+): 'success' | 'warning' | 'muted' | 'danger' {
   if (status === 'SELECTED' || status === 'CLAIMED' || status === 'DELIVERED') {
     return 'success';
   }
@@ -303,15 +305,15 @@ export function GiveawayPage({ api }: { api: ApiClient }) {
   const participantStatus = participantQuery.isLoading
     ? { label: 'Проверяем статус', tone: 'muted' as const }
     : participantQuery.error
-    ? { label: 'Статус недоступен', tone: 'warning' as const }
-    : buildParticipantStatus({
-        joined: Boolean(participant?.joined),
-        isWinner: Boolean(participant?.isWinner),
-        canClaim: Boolean(participant?.canClaim),
-        winnerStatus: participant?.winnerStatus,
-        eligibilityState: participant?.eligibilityState,
-        giveawayStatus: giveaway.status,
-      });
+      ? { label: 'Статус недоступен', tone: 'warning' as const }
+      : buildParticipantStatus({
+          joined: Boolean(participant?.joined),
+          isWinner: Boolean(participant?.isWinner),
+          canClaim: Boolean(participant?.canClaim),
+          winnerStatus: participant?.winnerStatus,
+          eligibilityState: participant?.eligibilityState,
+          giveawayStatus: giveaway.status,
+        });
   const participantSummary = participantQuery.error
     ? 'Не удалось загрузить персональный статус. Сам розыгрыш открыт, можно повторить проверку ниже.'
     : buildParticipantSummary({
@@ -325,32 +327,35 @@ export function GiveawayPage({ api }: { api: ApiClient }) {
         prizePosition: participant?.prizePosition,
         prizeTitle: participant?.prizeTitle,
       });
-  const eligibilityLabel = participantQuery.isLoading || participantQuery.error
-    ? null
-    : buildEligibilityLabel(participant?.eligibilityState);
-  const winnerStatusLabel = participantQuery.isLoading || participantQuery.error
-    ? null
-    : buildWinnerStatusLabel(participant?.winnerStatus);
+  const eligibilityLabel =
+    participantQuery.isLoading || participantQuery.error
+      ? null
+      : buildEligibilityLabel(participant?.eligibilityState);
+  const winnerStatusLabel =
+    participantQuery.isLoading || participantQuery.error
+      ? null
+      : buildWinnerStatusLabel(participant?.winnerStatus);
 
-  const primaryAction = participantQuery.isLoading || participantQuery.error
-    ? null
-    : !participant?.joined && giveaway.status === 'ACTIVE'
-      ? {
-          label: enterMutation.isPending ? 'Входим…' : 'Участвовать',
-          disabled: enterMutation.isPending,
-          onClick: () => {
-            void enterMutation.mutateAsync();
-          },
-        }
-      : participant?.canClaim
+  const primaryAction =
+    participantQuery.isLoading || participantQuery.error
+      ? null
+      : !participant?.joined && giveaway.status === 'ACTIVE'
         ? {
-            label: claimMutation.isPending ? 'Подтверждаем…' : 'Подтвердить приз',
-            disabled: claimMutation.isPending,
+            label: enterMutation.isPending ? 'Входим…' : 'Участвовать',
+            disabled: enterMutation.isPending,
             onClick: () => {
-              void claimMutation.mutateAsync();
+              void enterMutation.mutateAsync();
             },
           }
-        : null;
+        : participant?.canClaim
+          ? {
+              label: claimMutation.isPending ? 'Подтверждаем…' : 'Подтвердить приз',
+              disabled: claimMutation.isPending,
+              onClick: () => {
+                void claimMutation.mutateAsync();
+              },
+            }
+          : null;
 
   return (
     <div className="giveaway-page">
@@ -436,9 +441,11 @@ export function GiveawayPage({ api }: { api: ApiClient }) {
             <div className="giveaway-page__status-card">
               <strong>{participantSummary}</strong>
               <div className="giveaway-page__meta">
-                {participant?.joinedAt ? <span>Заявка: {formatDateTime(participant.joinedAt)}</span> : null}
+                {participant?.joinedAt ? (
+                  <span>Заявка: {formatDateTime(participant.joinedAt)}</span>
+                ) : null}
                 {participant?.claimDeadlineAt ? (
-                  <span>Claim до: {formatDateTime(participant.claimDeadlineAt)}</span>
+                  <span>Подтвердить до: {formatDateTime(participant.claimDeadlineAt)}</span>
                 ) : null}
                 {participant?.isWinner && participant?.prizeTitle ? (
                   <span>
@@ -504,7 +511,7 @@ export function GiveawayPage({ api }: { api: ApiClient }) {
                     {winner.prizePosition}. {winner.prizeTitle}
                   </strong>
                   <span className="giveaway-page__winner-name">
-                    {winner.displayName || 'Имя откроется после claim'}
+                    {winner.displayName || 'Имя откроется после подтверждения'}
                   </span>
                 </div>
                 <span

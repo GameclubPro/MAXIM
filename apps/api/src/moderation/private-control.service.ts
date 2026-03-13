@@ -923,10 +923,7 @@ export class PrivateControlService {
         'Private control flow failed',
       );
 
-      await this.sendImmediate(
-        context.chatId,
-        userMessage,
-      );
+      await this.sendImmediate(context.chatId, userMessage);
     }
   }
 
@@ -1032,7 +1029,8 @@ export class PrivateControlService {
       cycleEnabled: entityType === 'channel' ? false : parsed.data.cycleEnabled,
       cycleEveryHours:
         entityType === 'channel' || !parsed.data.cycleEnabled ? 24 : parsed.data.cycleEveryHours,
-      cycleCount: entityType === 'channel' || !parsed.data.cycleEnabled ? 1 : parsed.data.cycleCount,
+      cycleCount:
+        entityType === 'channel' || !parsed.data.cycleEnabled ? 1 : parsed.data.cycleCount,
     };
 
     await this.saveSession(user.userId, session);
@@ -1282,7 +1280,7 @@ export class PrivateControlService {
       const giveawayId = callback.args[0] ?? '';
       const winnerId = callback.args[1] ?? '';
       if (!giveawayId || !winnerId) {
-        throw new BadRequestException('Не удалось определить claim.');
+        throw new BadRequestException('Не удалось определить подтверждение приза.');
       }
 
       const currentClaim = await this.managedGiveawayService.getGiveawayClaimContext(
@@ -1294,7 +1292,7 @@ export class PrivateControlService {
         const view = this.renderUnavailableGiveawayClaimView();
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: 'Claim уже недоступен',
+          notification: 'Подтверждение уже недоступно',
         });
         return;
       }
@@ -1309,7 +1307,7 @@ export class PrivateControlService {
       const view = this.renderGiveawayClaimView(refreshedClaim, 'Приз подтверждён.');
       await this.respond(context, session, view, {
         callbackId: context.callbackId,
-        notification: 'Claim подтверждён',
+        notification: 'Приз подтверждён',
       });
       return;
     }
@@ -2305,7 +2303,9 @@ export class PrivateControlService {
 
         const draft = await this.getManagedGiveawayDraftForSession(context.actor, session);
         if (draft.prizes.length >= MANAGED_GIVEAWAY_MAX_PRIZES) {
-          throw new BadRequestException(`Можно добавить не больше ${MANAGED_GIVEAWAY_MAX_PRIZES} мест.`);
+          throw new BadRequestException(
+            `Можно добавить не больше ${MANAGED_GIVEAWAY_MAX_PRIZES} мест.`,
+          );
         }
 
         session.managedGiveawayId = draft.id;
@@ -3601,7 +3601,11 @@ export class PrivateControlService {
         session.managedGiveawayId = saved.id;
         session.pendingInput = null;
         session.screen = 'giveaway';
-        const view = await this.renderGiveawayScreen(context, session, 'Claim-окно обновлено.');
+        const view = await this.renderGiveawayScreen(
+          context,
+          session,
+          'Срок подтверждения обновлён.',
+        );
         await this.respond(context, session, view, {
           callbackId: null,
           notification: null,
@@ -4154,7 +4158,9 @@ export class PrivateControlService {
         });
 
         const attachmentType =
-          typeof attempt.attachments[0]?.type === 'string' ? attempt.attachments[0].type : 'unknown';
+          typeof attempt.attachments[0]?.type === 'string'
+            ? attempt.attachments[0].type
+            : 'unknown';
 
         if (attempt.deliveryMode === 'sticker') {
           this.logger.log(
@@ -4184,7 +4190,9 @@ export class PrivateControlService {
           attempt: index + 1,
           name: attempt.name,
           attachmentType:
-            typeof attempt.attachments[0]?.type === 'string' ? attempt.attachments[0].type : 'unknown',
+            typeof attempt.attachments[0]?.type === 'string'
+              ? attempt.attachments[0].type
+              : 'unknown',
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -4255,13 +4263,13 @@ export class PrivateControlService {
               'В чате это может отображаться как обычная картинка, а не как настоящий sticker.',
               'Пришлите ещё фото или нажмите кнопку ниже.',
             ]
-        : [
-            'Стикер из фото',
-            '',
-            'Статус: MAX не принял вложение как sticker.',
-            'Отправил подготовленное изображение как PNG-картинку.',
-            'Можно попробовать ещё одно фото.',
-          ];
+          : [
+              'Стикер из фото',
+              '',
+              'Статус: MAX не принял вложение как sticker.',
+              'Отправил подготовленное изображение как PNG-картинку.',
+              'Можно попробовать ещё одно фото.',
+            ];
 
     return {
       text: lines.join('\n'),
@@ -5227,7 +5235,11 @@ export class PrivateControlService {
       ? await this.adminService.getChannelSettings(session.selectedChatId, context.actor)
       : null;
     const applyToAllEnabled = !isChannel && draft.applyToAllChats;
-    const timingSummary = isChannel ? 'недоступен' : draft.sendAt ? this.formatIsoDate(draft.sendAt) : 'нет';
+    const timingSummary = isChannel
+      ? 'недоступен'
+      : draft.sendAt
+        ? this.formatIsoDate(draft.sendAt)
+        : 'нет';
     const cycleSummary = draft.cycleEnabled
       ? `каждые ${draft.cycleEveryHours} ч., ${draft.cycleCount} раз`
       : 'нет';
@@ -5303,9 +5315,7 @@ export class PrivateControlService {
       }
 
       if (draft.imageEnabled) {
-        rows.push([
-          this.callbackButton('🗑 Удалить фото', this.cb('broadcast_clear_photo')),
-        ]);
+        rows.push([this.callbackButton('🗑 Удалить фото', this.cb('broadcast_clear_photo'))]);
       }
 
       if (!isChannel) {
@@ -5490,7 +5500,9 @@ export class PrivateControlService {
     );
     const rows: MaxMessageButton[][] = [];
     const lines: string[] = ['Розыгрыш', '', `${entityLabel}: ${session.selectedChatId}`];
-    const waitingLabel = session.pendingInput ? this.describeInputPrompt(session.pendingInput).title : null;
+    const waitingLabel = session.pendingInput
+      ? this.describeInputPrompt(session.pendingInput).title
+      : null;
 
     if (!giveaway) {
       lines.push(
@@ -5513,8 +5525,8 @@ export class PrivateControlService {
             ? `${this.formatDateTimeLabel(giveaway.startsAt)} -> ${this.formatDateTimeLabel(giveaway.endsAt)}`
             : `сейчас -> ${this.formatDateTimeLabel(giveaway.endsAt)}`
         }`,
-        `Claim: ${giveaway.claimHours} ч`,
-        `Заявки: ${giveaway.entriesCount} / ok ${giveaway.verifiedEntriesCount} / pending ${giveaway.pendingEntriesCount}`,
+        `Срок подтверждения: ${giveaway.claimHours} ч`,
+        `Заявки: ${giveaway.entriesCount} / подтверждено ${giveaway.verifiedEntriesCount} / на проверке ${giveaway.pendingEntriesCount}`,
         `Победители: ${giveaway.winnersCount}`,
       );
 
@@ -5554,7 +5566,7 @@ export class PrivateControlService {
               winner.displayName ?? winner.userId
             } · ${this.formatGiveawayWinnerStatusLabel(winner.status)}`;
             return winner.claimDeadlineAt
-              ? [winnerLine, `Claim до: ${this.formatDateTimeLabel(winner.claimDeadlineAt)}`]
+              ? [winnerLine, `Подтвердить до: ${this.formatDateTimeLabel(winner.claimDeadlineAt)}`]
               : [winnerLine];
           }),
         );
@@ -5581,7 +5593,7 @@ export class PrivateControlService {
           rows.push([this.callbackButton('⏱ Финиш', this.cb('giveaway_input_prompt', 'end_at'))]);
         }
         rows.push([
-          this.callbackButton('⌛ Claim', this.cb('giveaway_input_prompt', 'claim_hours')),
+          this.callbackButton('⌛ Подтверждение', this.cb('giveaway_input_prompt', 'claim_hours')),
           this.callbackButton('➕ Добавить место', this.cb('giveaway_add_prize')),
         ]);
         if (giveaway.prizes.length > 1) {
@@ -5601,12 +5613,18 @@ export class PrivateControlService {
           ]),
         );
         rows.push([this.callbackButton('Опубликовать', this.cb('giveaway_publish'), 'positive')]);
-        rows.push([this.callbackButton('Отменить черновик', this.cb('giveaway_cancel'), 'negative')]);
+        rows.push([
+          this.callbackButton('Отменить черновик', this.cb('giveaway_cancel'), 'negative'),
+        ]);
       }
 
       if (giveaway.status === 'ACTIVE' || giveaway.status === 'SCHEDULED') {
-        rows.push([this.callbackButton('Завершить розыгрыш', this.cb('giveaway_close'), 'positive')]);
-        rows.push([this.callbackButton('Отменить розыгрыш', this.cb('giveaway_cancel'), 'negative')]);
+        rows.push([
+          this.callbackButton('Завершить розыгрыш', this.cb('giveaway_close'), 'positive'),
+        ]);
+        rows.push([
+          this.callbackButton('Отменить розыгрыш', this.cb('giveaway_cancel'), 'negative'),
+        ]);
       }
 
       const winnerActionRows = giveaway.winners.flatMap((winner) => {
@@ -5644,7 +5662,7 @@ export class PrivateControlService {
     }
 
     if (miniappUrl) {
-      rows.push([this.buildMiniappOpenButton('Открыть dashboard', miniappUrl)]);
+      rows.push([this.buildMiniappOpenButton('Открыть миниапп', miniappUrl)]);
     }
 
     rows.push([
@@ -5688,15 +5706,15 @@ export class PrivateControlService {
   private formatGiveawayWinnerStatusLabel(status: ManagedGiveawayWinner['status']): string {
     switch (status) {
       case 'CLAIMED':
-        return 'claim подтверждён';
+        return 'подтверждён';
       case 'DELIVERED':
         return 'приз выдан';
       case 'EXPIRED':
-        return 'claim истёк';
+        return 'срок подтверждения истёк';
       case 'REROLLED':
         return 'перевыбран';
       default:
-        return 'ждёт claim';
+        return 'ждёт подтверждения';
     }
   }
 
@@ -5714,7 +5732,7 @@ export class PrivateControlService {
         : winner.status === 'DELIVERED'
           ? 'Приз выдан'
           : winner.status === 'EXPIRED'
-            ? 'Claim истёк'
+            ? 'Срок подтверждения истёк'
             : 'Ждёт подтверждения';
     const lines = [
       'Розыгрыш',
@@ -5723,7 +5741,9 @@ export class PrivateControlService {
       `Приз: ${winner.prizePosition}. ${winner.prizeTitle}`,
       `Статус: ${statusLabel}`,
       `Пользователь: ${winner.displayName ?? winner.userId}`,
-      ...(winner.claimDeadlineAt ? [`Подтвердить до: ${this.formatDateTimeLabel(winner.claimDeadlineAt)}`] : []),
+      ...(winner.claimDeadlineAt
+        ? [`Подтвердить до: ${this.formatDateTimeLabel(winner.claimDeadlineAt)}`]
+        : []),
       ...(notice ? ['', `Статус: ${notice}`] : []),
     ];
 
@@ -5771,9 +5791,11 @@ export class PrivateControlService {
 
   private renderUnavailableGiveawayClaimView(): PrivateView {
     return {
-      text: ['Розыгрыш', '', 'Этот claim больше недоступен или победитель уже был перевыбран.'].join(
-        '\n',
-      ),
+      text: [
+        'Розыгрыш',
+        '',
+        'Подтверждение приза недоступно: место уже перевыбрано или срок истёк.',
+      ].join('\n'),
       options: {
         buttons: this.buildFooterButtons(),
       },
@@ -6698,7 +6720,7 @@ export class PrivateControlService {
         };
       case 'giveaway_claim_hours':
         return {
-          title: 'Claim-окно',
+          title: 'Срок подтверждения приза',
           description: 'Введите число часов от 1 до 336.',
         };
       case 'giveaway_photo':
@@ -7226,8 +7248,7 @@ export class PrivateControlService {
         Buffer.from(encodedPayload, 'base64url').toString('utf8'),
       ) as Partial<GiveawayHandoffStartPayload>;
       const chatId = typeof parsed.c === 'string' ? parsed.c.trim() : '';
-      const entityType =
-        parsed.e === 'channel' ? 'channel' : parsed.e === 'chat' ? 'chat' : null;
+      const entityType = parsed.e === 'channel' ? 'channel' : parsed.e === 'chat' ? 'chat' : null;
       const giveawayId =
         typeof parsed.g === 'string' && parsed.g.trim().length > 0 ? parsed.g.trim() : null;
 
@@ -7332,10 +7353,7 @@ export class PrivateControlService {
       }
 
       const value =
-        candidate.start_payload ??
-        candidate.startPayload ??
-        candidate.payload ??
-        candidate.start;
+        candidate.start_payload ?? candidate.startPayload ?? candidate.payload ?? candidate.start;
 
       if (typeof value === 'string' && value.trim().length > 0) {
         return value.trim();
@@ -7618,7 +7636,11 @@ export class PrivateControlService {
         continue;
       }
 
-      const resolvedMimeType = this.resolveImageMimeType(parsed.mimeType, parsed.fileName, parsed.url);
+      const resolvedMimeType = this.resolveImageMimeType(
+        parsed.mimeType,
+        parsed.fileName,
+        parsed.url,
+      );
       if (!resolvedMimeType) {
         continue;
       }
@@ -7774,7 +7796,7 @@ export class PrivateControlService {
       const mimeTypeHeader = response.headers.get('content-type') ?? '';
       const mimeType = mimeTypeHeader.toLowerCase().startsWith('image/')
         ? mimeTypeHeader.split(';')[0].trim().toLowerCase()
-        : imageAttachment.mimeType ?? 'image/jpeg';
+        : (imageAttachment.mimeType ?? 'image/jpeg');
 
       const arrayBuffer = await response.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
@@ -7914,8 +7936,7 @@ export class PrivateControlService {
             row.fileName ??
             row.filename ??
             row.name,
-        ) ??
-        null,
+        ) ?? null,
       size: this.readOptionalInteger(payload.size ?? row.size),
       mimeType: this.readLowerString(payload.mime_type ?? payload.mimeType ?? row.mime_type),
       mediaType: this.readLowerString(payload.media_type ?? payload.mediaType ?? row.media_type),
