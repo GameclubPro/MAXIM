@@ -7907,7 +7907,14 @@ export class PrivateControlService {
       token: this.readString(payload.token) ?? null,
       fileId: this.readString(payload.file_id ?? payload.fileId) ?? null,
       fileName:
-        this.readString(payload.file_name ?? payload.fileName ?? row.file_name ?? row.fileName) ??
+        this.readString(
+          payload.file_name ??
+            payload.fileName ??
+            row.file_name ??
+            row.fileName ??
+            row.filename ??
+            row.name,
+        ) ??
         null,
       size: this.readOptionalInteger(payload.size ?? row.size),
       mimeType: this.readLowerString(payload.mime_type ?? payload.mimeType ?? row.mime_type),

@@ -79,7 +79,6 @@ function createPrivatePhotoUpdate(): MaxUpdate {
 }
 
 function createPrivateFileUpdate(
-  mimeType = 'image/png',
   fileName = 'photo-as-file.png',
   url = 'https://example.test/photo-as-file.png',
 ): MaxUpdate {
@@ -102,11 +101,11 @@ function createPrivateFileUpdate(
             {
               type: 'file',
               size: 12345,
+              filename: fileName,
               payload: {
                 url,
-                file_id: 'file-1',
-                file_name: fileName,
-                mime_type: mimeType,
+                token: 'file-token-1',
+                fileId: 'file-1',
               },
             },
           ],
@@ -129,11 +128,7 @@ function createPrivateImageFileUpdate(): MaxUpdate {
 }
 
 function createPrivateNonImageFileUpdate(): MaxUpdate {
-  return createPrivateFileUpdate(
-    'application/pdf',
-    'notes.pdf',
-    'https://example.test/notes.pdf',
-  );
+  return createPrivateFileUpdate('notes.pdf', 'https://example.test/notes.pdf');
 }
 
 function createPrivateStickerUpdate(code = '1e1321f26'): MaxUpdate {
