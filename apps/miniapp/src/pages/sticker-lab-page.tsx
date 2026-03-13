@@ -40,9 +40,13 @@ function canWriteImageClipboard(): boolean {
   return typeof clipboard?.write === 'function' && typeof clipboardItemCtor === 'function';
 }
 
-async function writeImageToClipboard(blob: Blob, mimeType: string): Promise<boolean> {
+async function writeImageToClipboard(
+  blob: Blob,
+  mimeType: string,
+  dataUrl: string,
+): Promise<'rich' | 'image' | null> {
   if (!canWriteImageClipboard()) {
-    return false;
+    return null;
   }
 
   const ClipboardItemCtor = (
@@ -51,16 +55,28 @@ async function writeImageToClipboard(blob: Blob, mimeType: string): Promise<bool
     }
   ).ClipboardItem;
   if (!ClipboardItemCtor) {
-    return false;
+    return null;
   }
 
+  const html = `<img src="${dataUrl}" width="512" height="512" alt="sticker" />`;
   try {
     await (navigator.clipboard as { write: (items: unknown[]) => Promise<void> }).write([
-      new ClipboardItemCtor({ [mimeType]: blob }),
+      new ClipboardItemCtor({
+        [mimeType]: blob,
+        'text/html': new Blob([html], { type: 'text/html' }),
+        'text/plain': new Blob([' '], { type: 'text/plain' }),
+      }),
     ]);
-    return true;
+    return 'rich';
   } catch {
-    return false;
+    try {
+      await (navigator.clipboard as { write: (items: unknown[]) => Promise<void> }).write([
+        new ClipboardItemCtor({ [mimeType]: blob }),
+      ]);
+      return 'image';
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -206,12 +222,12 @@ export function StickerLabPage() {
 
     try {
       const clipboardAsset = await prepareStickerClipboardImage(prepared);
-      const copiedWithClipboardApi = await writeImageToClipboard(
+      const clipboardWriteMode = await writeImageToClipboard(
         clipboardAsset.blob,
         clipboardAsset.mimeType,
+        clipboardAsset.dataUrl,
       );
-      const copied =
-        copiedWithClipboardApi || copyImageWithExecCommand(clipboardAsset.dataUrl);
+      const copied = clipboardWriteMode !== null || copyImageWithExecCommand(clipboardAsset.dataUrl);
       if (!copied) {
         throw new Error('Не удалось скопировать изображение в буфер обмена.');
       }
@@ -219,7 +235,10 @@ export function StickerLabPage() {
       pushToast({
         tone: 'success',
         title: 'Скопировано',
-        description: 'Теперь вставьте изображение в личку с ботом в MAX.',
+        description:
+          clipboardWriteMode === 'rich'
+            ? 'Вставьте изображение в личку с ботом в MAX.'
+            : 'Вставьте в MAX. Если не вставилось, сделайте долгое нажатие по превью и «Скопировать».',
       });
     } catch (error: unknown) {
       const message = normalizeErrorMessage(
