@@ -707,10 +707,10 @@ function mockImageFetch(buffer: Buffer = TINY_PNG, mimeType = 'image/png') {
 }
 
 describe('PrivateControlService', () => {
-  it('renders the new entity picker for /menu in private dialog', async () => {
+  it('renders the entity picker for plain text in private dialog', async () => {
     const { service, maxClient, adminService } = createHarness();
 
-    await service.handleUpdate(createPrivateTextUpdate('/menu'));
+    await service.handleUpdate(createPrivateTextUpdate('привет'));
 
     expect(getLastSentText(maxClient)).toContain('Центр управления MAX');
     expect(getLastSentText(maxClient)).toContain('Выберите чат');
@@ -718,12 +718,12 @@ describe('PrivateControlService', () => {
     expect(adminService.listManagedEntities).toHaveBeenCalledTimes(1);
   });
 
-  it('starts sticker flow from command and sends experimental sticker attachment for a photo', async () => {
+  it('starts sticker flow from button and sends experimental sticker attachment for a photo', async () => {
     const { service, maxClient } = createHarness();
     const fetchControl = mockImageFetch();
 
     try {
-      await service.handleUpdate(createPrivateTextUpdate('/sticker'));
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|sticker_photo_prompt'));
 
       expect(getLastSentText(maxClient)).toContain('Фото, файл или sticker');
 
@@ -748,7 +748,7 @@ describe('PrivateControlService', () => {
     const fetchControl = mockImageFetch(TINY_PNG, 'application/octet-stream');
 
     try {
-      await service.handleUpdate(createPrivateTextUpdate('/sticker'));
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|sticker_photo_prompt'));
       await service.handleUpdate(createPrivateImageFileUpdate());
 
       expect(maxClient.uploadImage).toHaveBeenCalledWith(
@@ -873,7 +873,7 @@ describe('PrivateControlService', () => {
   it('rejects a non-image file in sticker flow with a clear error', async () => {
     const { service, maxClient } = createHarness();
 
-    await service.handleUpdate(createPrivateTextUpdate('/sticker'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|sticker_photo_prompt'));
     await service.handleUpdate(createPrivateNonImageFileUpdate());
 
     expect(getLastSentText(maxClient)).toContain(
@@ -884,7 +884,7 @@ describe('PrivateControlService', () => {
   it('resends incoming sticker by code during sticker flow', async () => {
     const { service, maxClient } = createHarness();
 
-    await service.handleUpdate(createPrivateTextUpdate('/sticker'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|sticker_photo_prompt'));
     await service.handleUpdate(createPrivateStickerUpdate());
 
     expect(maxClient.uploadImage).not.toHaveBeenCalled();
@@ -1480,7 +1480,7 @@ describe('PrivateControlService', () => {
   it('keeps key private screens under a safe inline-button count', async () => {
     const { service, maxClient, chats } = createHarness();
 
-    await service.handleUpdate(createPrivateTextUpdate('/menu'));
+    await service.handleUpdate(createPrivateTextUpdate('меню'));
     expect(getLastButtons(maxClient).flat().length).toBeLessThanOrEqual(20);
 
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));

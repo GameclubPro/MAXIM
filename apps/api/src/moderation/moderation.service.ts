@@ -87,28 +87,6 @@ const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
 const CHAT_ADMIN_CACHE_TTL_SEC = Math.ceil(CHAT_ADMIN_CACHE_TTL_MS / 1_000);
 const CHAT_ADMIN_SHARED_CACHE_KEY_PREFIX = 'chat-admins:v2';
 const SUPPORT_CHAT_URL = 'https://max.ru/join/qX7U_Hj-L-xMJG8V7wlF6dD-6a6cXIzTBGRtU2mRMzk';
-const BOT_STARTED_INSTRUCTION_OPTIONS: MaxSendMessageOptions = {
-  button: {
-    text: 'Поддержка',
-    url: SUPPORT_CHAT_URL,
-  },
-};
-const BOT_STARTED_INSTRUCTION_TEXT = [
-  'Отдел чат-порядка «Майор Максимов» на месте. Чат взят под контроль.',
-  '',
-  'Коротко по делу:',
-  '- Мат, реклама и мутные ссылки - под нож.',
-  '- Повторяешь одно и то же - сначала предупреждение, потом дверь.',
-  '- Слишком длинные простыни, лишние файлы и голосовые тоже ловлю.',
-  '- Ночью в чате тишина: шумных быстро успокаиваю.',
-  '- Новых людей встречаю, ботов из группы вывожу.',
-  '- Могу сделать рассылку: текст, кнопка, фото, сразу или по времени.',
-  '',
-  'Настройка во встроенном приложении: открой бота в MAX и нажми «Открыть».',
-  'Там включаешь правила и тексты так, как нужно вашему чату.',
-  '',
-  'Схема простая: сначала слово, потом протокол.',
-].join('\n');
 const PRIVATE_MENU_CALLBACK_MENU = 'private_menu:menu';
 const PRIVATE_MENU_CALLBACK_CHATS = 'private_menu:chats';
 const PRIVATE_MENU_CALLBACK_CHANNELS = 'private_menu:channels';
@@ -121,21 +99,10 @@ const PRIVATE_MENU_PROMPT_TEXT = [
   '- «Помощь» — короткий гайд по запуску и правам.',
   '- «Открыть приложение» — полный набор rich-настроек.',
 ].join('\n');
-const BROADCAST_HANDOFF_START_PAYLOAD = 'broadcast_handoff';
-const GIVEAWAY_HANDOFF_START_PAYLOAD = 'giveaway_handoff';
-const GIVEAWAY_HANDOFF_START_PAYLOAD_PREFIX = 'ggh-';
-const GIVEAWAY_CLAIM_START_PAYLOAD_PREFIX = 'ggc-';
 const PRIVATE_HELP_TEXT = [
-  'Быстрый гайд:',
-  '1) Добавьте бота в нужный чат.',
-  '2) Дайте боту права администратора.',
-  '3) Откройте приложение для тонкой настройки правил.',
-  '',
-  'Команды в личке:',
-  '- /menu',
-  '- /chats',
-  '- /channels',
-  '- /help',
+  'Управление через кнопки.',
+  'Добавьте бота в чат/канал и выдайте права администратора.',
+  'Для точной настройки используйте приложение.',
 ].join('\n');
 const MAX_FORWARD_SCAN_DEPTH = 8;
 const CHANNEL_AUTO_POST_SCAN_INTERVAL_MS = 5_000;
@@ -4124,21 +4091,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    const startPayload = this.extractBotStartedStartPayload(update);
-    const skipLongInstruction =
-      startPayload === BROADCAST_HANDOFF_START_PAYLOAD ||
-      startPayload === GIVEAWAY_HANDOFF_START_PAYLOAD ||
-      Boolean(startPayload?.startsWith(GIVEAWAY_HANDOFF_START_PAYLOAD_PREFIX)) ||
-      Boolean(startPayload?.startsWith(GIVEAWAY_CLAIM_START_PAYLOAD_PREFIX));
-
     try {
-      if (!skipLongInstruction) {
-        await this.maxClient.sendMessage(
-          chatId,
-          BOT_STARTED_INSTRUCTION_TEXT,
-          BOT_STARTED_INSTRUCTION_OPTIONS,
-        );
-      }
       if (this.privateControlService) {
         await this.privateControlService.handleBotStarted(update);
       } else {
@@ -4295,10 +4248,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (this.looksLikeSlashCommand(text)) {
-      await this.sendPrivateMenu(
-        chatId,
-        'Команду не понял. Нажмите кнопку ниже или используйте /menu.',
-      );
+      await this.sendPrivateMenu(chatId, 'Управление через кнопки ниже.');
       return;
     }
 

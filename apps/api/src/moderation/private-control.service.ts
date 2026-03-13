@@ -1101,125 +1101,11 @@ export class PrivateControlService {
 
   private async processTextMessage(context: PrivateContext): Promise<void> {
     const session = await this.loadSession(context.actor.userId);
-    const normalizedCommand = this.normalizeCommand(context.text);
     const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
     const stickerAttachment = this.extractFirstStickerAttachment(context.update);
 
-    if (normalizedCommand === '/reset') {
-      const resetSession = this.createDefaultSession();
-      const view = await this.renderChatSelection(context, resetSession);
-      await this.respond(context, resetSession, view, {
-        callbackId: null,
-        notification: null,
-      });
-      return;
-    }
-
     if (session.pendingInput) {
       await this.processPendingInput(context, session);
-      return;
-    }
-
-    if (normalizedCommand === '/help') {
-      const view = this.renderHelpView();
-      await this.respond(context, session, view, {
-        callbackId: null,
-        notification: null,
-      });
-      return;
-    }
-
-    if (normalizedCommand === '/sticker') {
-      session.pendingInput = { kind: 'sticker_photo' };
-      const view = this.renderInputPrompt(session.pendingInput);
-      await this.respond(context, session, view, {
-        callbackId: null,
-        notification: null,
-      });
-      return;
-    }
-
-    if (normalizedCommand === '/legacy') {
-      session.uiMode = 'modern';
-      session.screen = session.selectedChatId ? this.resolvePrimaryScreen(session) : 'chat_select';
-      session.section = null;
-      session.channelSection = null;
-      session.pendingInput = null;
-      session.pendingMassAction = null;
-      session.lastScreenStack = [];
-      const view = session.selectedChatId
-        ? await this.renderPrimaryScreen(context, session)
-        : await this.renderChatSelection(context, session);
-      await this.respond(context, session, view, {
-        callbackId: null,
-        notification: null,
-      });
-      return;
-    }
-
-    if (normalizedCommand === '/modern') {
-      session.uiMode = 'modern';
-      session.screen = session.selectedChatId ? this.resolvePrimaryScreen(session) : 'chat_select';
-      session.section = null;
-      session.channelSection = null;
-      session.pendingInput = null;
-      session.pendingMassAction = null;
-      session.lastScreenStack = [];
-      const view = session.selectedChatId
-        ? await this.renderPrimaryScreen(context, session)
-        : await this.renderChatSelection(context, session);
-      await this.respond(context, session, view, {
-        callbackId: null,
-        notification: null,
-      });
-      return;
-    }
-
-    if (normalizedCommand === '/chats') {
-      session.entityTab = 'chat';
-      session.screen = 'chat_select';
-      session.chatPage = 1;
-      session.pendingInput = null;
-      session.pendingMassAction = null;
-      const view = await this.renderChatSelection(context, session);
-      await this.respond(context, session, view, {
-        callbackId: null,
-        notification: null,
-      });
-      return;
-    }
-
-    if (normalizedCommand === '/channels') {
-      session.entityTab = 'channel';
-      session.screen = 'chat_select';
-      session.chatPage = 1;
-      session.pendingInput = null;
-      session.pendingMassAction = null;
-      const view = await this.renderChatSelection(context, session);
-      await this.respond(context, session, view, {
-        callbackId: null,
-        notification: null,
-      });
-      return;
-    }
-
-    if (normalizedCommand === '/menu' || normalizedCommand === '/start') {
-      const view = session.selectedChatId
-        ? await this.renderPrimaryScreen(context, session)
-        : await this.renderChatSelection(context, session);
-      await this.respond(context, session, view, {
-        callbackId: null,
-        notification: null,
-      });
-      return;
-    }
-
-    if (context.text.trim().startsWith('/')) {
-      const view = this.renderHelpView('Не понял команду. Нажмите кнопку ниже.');
-      await this.respond(context, session, view, {
-        callbackId: null,
-        notification: null,
-      });
       return;
     }
 
@@ -1246,6 +1132,18 @@ export class PrivateControlService {
 
     if (stickerAttachment) {
       await this.handleStickerAttachmentMessage(context, session, stickerAttachment);
+      return;
+    }
+
+    if (context.text.trim().startsWith('/')) {
+      const view = session.selectedChatId
+        ? await this.renderPrimaryScreen(context, session)
+        : await this.renderChatSelection(context, session);
+
+      await this.respond(context, session, view, {
+        callbackId: null,
+        notification: null,
+      });
       return;
     }
 
@@ -3073,7 +2971,7 @@ export class PrivateControlService {
     }
 
     const rawText = context.text.trim();
-    if (rawText.toLowerCase() === '/cancel' || rawText.toLowerCase() === 'отмена') {
+    if (rawText.toLowerCase() === 'отмена') {
       session.pendingInput = null;
 
       if (session.screen === 'channel_section' && session.channelSection) {
@@ -6453,17 +6351,10 @@ export class PrivateControlService {
   private renderHelpView(prefix: string | null = null): PrivateView {
     const lines = [
       ...(prefix ? [prefix, ''] : []),
-      'Полезные команды:',
-      '- /menu — открыть главное меню',
-      '- /chats — выбрать или сменить чат',
-      '- /channels — выбрать или сменить канал',
-      '- /sticker — включить режим фото -> sticker',
-      '- /help — подсказка по управлению',
-      '- /reset — сбросить текущую сессию',
-      '- /legacy и /modern — совместимые алиасы, оба открывают актуальный интерфейс',
-      '',
-      'Можно просто отправить фото в личку бота.',
-      'Если бот ждёт ввод, отправьте /cancel для отмены.',
+      'Управление через кнопки.',
+      'Выберите чат/канал и нужный раздел.',
+      'Фото можно отправить прямо в этот чат.',
+      'Для отмены используйте кнопку «Отмена».',
     ];
 
     return {
@@ -6488,7 +6379,7 @@ export class PrivateControlService {
         '',
         prompt.description,
         '',
-        'Чтобы отменить, нажмите кнопку ниже или отправьте /cancel.',
+        'Чтобы отменить, нажмите кнопку ниже.',
       ].join('\n'),
       options: {
         buttons: [
@@ -8014,15 +7905,6 @@ export class PrivateControlService {
           : 'Этот раздел доступен только для чатов.',
       );
     }
-  }
-
-  private normalizeCommand(text: string): string | null {
-    if (typeof text !== 'string') {
-      return null;
-    }
-
-    const normalized = text.trim().toLowerCase();
-    return normalized.length > 0 ? normalized : null;
   }
 
   private isPrivateDirectChat(chatId: string): boolean {

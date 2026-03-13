@@ -1995,7 +1995,7 @@ describe('ModerationService', () => {
     expect(maxClient.notifyModerators).not.toHaveBeenCalled();
   });
 
-  it('sends instruction for personal bot_started update and skips moderation flow', async () => {
+  it('opens private menu for personal bot_started update and skips moderation flow', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn(),
@@ -2035,30 +2035,12 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createBotStartedPrivateUpdate());
 
-    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
       '152517912',
-      [
-        'Отдел чат-порядка «Майор Максимов» на месте. Чат взят под контроль.',
-        '',
-        'Коротко по делу:',
-        '- Мат, реклама и мутные ссылки - под нож.',
-        '- Повторяешь одно и то же - сначала предупреждение, потом дверь.',
-        '- Слишком длинные простыни, лишние файлы и голосовые тоже ловлю.',
-        '- Ночью в чате тишина: шумных быстро успокаиваю.',
-        '- Новых людей встречаю, ботов из группы вывожу.',
-        '- Могу сделать рассылку: текст, кнопка, фото, сразу или по времени.',
-        '',
-        'Настройка во встроенном приложении: открой бота в MAX и нажми «Открыть».',
-        'Там включаешь правила и тексты так, как нужно вашему чату.',
-        '',
-        'Схема простая: сначала слово, потом протокол.',
-      ].join('\n'),
-      {
-        button: {
-          text: 'Поддержка',
-          url: 'https://max.ru/join/qX7U_Hj-L-xMJG8V7wlF6dD-6a6cXIzTBGRtU2mRMzk',
-        },
-      },
+      expect.stringContaining('Центр управления MAX'),
+      expect.objectContaining({
+        buttons: expect.any(Array),
+      }),
     );
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(prisma.chat.upsert).not.toHaveBeenCalled();
