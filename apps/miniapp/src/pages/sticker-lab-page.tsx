@@ -6,6 +6,7 @@ import { useToast } from '../components/ui/toast';
 import {
   prepareStickerClipboardImage,
   prepareStickerImage,
+  type PreparedStickerClipboardImage,
   type PreparedStickerImage,
 } from '../lib/sticker-image';
 
@@ -142,6 +143,9 @@ function copyImageWithExecCommand(dataUrl: string): boolean {
 export function StickerLabPage() {
   const { pushToast } = useToast();
   const [prepared, setPrepared] = useState<PreparedStickerImage | null>(null);
+  const [preparedClipboard, setPreparedClipboard] = useState<PreparedStickerClipboardImage | null>(
+    null,
+  );
   const [isPreparing, setIsPreparing] = useState(false);
   const [isCopying, setIsCopying] = useState(false);
   const [fallbackPreviewSrc, setFallbackPreviewSrc] = useState<string | null>(null);
@@ -161,16 +165,25 @@ export function StickerLabPage() {
     }
 
     setIsPreparing(true);
+    setFallbackPreviewSrc((current) => {
+      if (current?.startsWith('blob:')) {
+        URL.revokeObjectURL(current);
+      }
+      return null;
+    });
 
     try {
       const nextPrepared = await prepareStickerImage(file);
+      const nextPreparedClipboard = await prepareStickerClipboardImage(nextPrepared);
       setPrepared(nextPrepared);
+      setPreparedClipboard(nextPreparedClipboard);
       pushToast({
         tone: 'success',
         title: 'PNG готов',
       });
     } catch (error: unknown) {
       setPrepared(null);
+      setPreparedClipboard(null);
       pushToast({
         tone: 'danger',
         title: normalizeErrorMessage(error, 'Не удалось подготовить'),
@@ -181,23 +194,22 @@ export function StickerLabPage() {
   }
 
   async function handleCopyPreparedImage(): Promise<void> {
-    if (!prepared || isPreparing || isCopying) {
+    if (!prepared || !preparedClipboard || isPreparing || isCopying) {
       return;
     }
 
     setIsCopying(true);
 
     try {
-      const clipboardAsset = await prepareStickerClipboardImage(prepared);
-      const shareFile = new File([clipboardAsset.blob], clipboardAsset.fileName, {
-        type: clipboardAsset.mimeType,
+      const shareFile = new File([preparedClipboard.blob], preparedClipboard.fileName, {
+        type: preparedClipboard.mimeType,
       });
       const copied = await writeImageToClipboard(
-        clipboardAsset.blob,
-        clipboardAsset.mimeType,
+        preparedClipboard.blob,
+        preparedClipboard.mimeType,
       );
 
-      if (copied || copyImageWithExecCommand(clipboardAsset.dataUrl)) {
+      if (copied || copyImageWithExecCommand(preparedClipboard.dataUrl)) {
         pushToast({
           tone: 'success',
           title: 'Скопировано',
@@ -215,7 +227,7 @@ export function StickerLabPage() {
           return;
         }
 
-        const objectUrl = URL.createObjectURL(clipboardAsset.blob);
+        const objectUrl = URL.createObjectURL(preparedClipboard.blob);
         setFallbackPreviewSrc((current) => {
           if (current?.startsWith('blob:')) {
             URL.revokeObjectURL(current);
@@ -273,7 +285,7 @@ export function StickerLabPage() {
             type="button"
             className="button button--accent sticker-lab-primary-action__button"
             onClick={() => void handleCopyPreparedImage()}
-            disabled={!prepared || isPreparing || isCopying}
+            disabled={!prepared || !preparedClipboard || isPreparing || isCopying}
           >
             {isCopying ? 'Копируем...' : 'Копировать'}
           </button>
