@@ -298,11 +298,17 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
     setPickerError(null);
 
     try {
+      const clipboardAsset = await prepareStickerClipboardImage(prepared);
+      const payloadBase64 = clipboardAsset.dataUrl.split(',')[1] ?? '';
+      if (!payloadBase64) {
+        throw new Error('Не удалось подготовить PNG для отправки.');
+      }
+
       const sent = await api.shareStickerLabImage({
-        imageBase64: prepared.base64,
-        imageMimeType: prepared.mimeType,
-        imageFileName: prepared.fileName,
-        deliveryType: 'image',
+        imageBase64: payloadBase64,
+        imageMimeType: clipboardAsset.mimeType,
+        imageFileName: clipboardAsset.fileName,
+        deliveryType: 'file',
       });
 
       if (bridgeAvailable) {
@@ -513,7 +519,7 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
             onClick={() => void handleSendViaMax()}
             disabled={!prepared || isPreparing || isCopying || isSending}
           >
-            {isSending ? 'Отправляем...' : 'Отправить через MAX'}
+            {isSending ? 'Отправляем...' : 'Отправить PNG через MAX'}
           </button>
           <button
             type="button"
