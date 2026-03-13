@@ -82,6 +82,15 @@ export function ChatsPage({ api }: { api: ApiClient }) {
 
   return (
     <div className="page-stack page-enter">
+      <GlassCard className="sticker-lab-entry" elevated>
+        <div className="sticker-lab-entry__copy">
+          <h2>Стикеры</h2>
+        </div>
+        <Link to="/sticker-lab" className="button button--accent sticker-lab-entry__action">
+          Открыть
+        </Link>
+      </GlassCard>
+
       {!isNoEntitiesForTab ? (
         <GlassCard
           className={cn(

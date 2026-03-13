@@ -46,10 +46,6 @@ function normalizeErrorMessage(error: unknown, fallback: string): string {
   return raw.replace(/^API request failed:\s*\d+\s*/u, '').trim() || fallback;
 }
 
-function formatPreparedMimeType(mimeType: PreparedStickerImage['mimeType']): string {
-  return mimeType === 'image/png' ? 'PNG' : 'WEBP';
-}
-
 export function StickerLabPage({ api }: StickerLabPageProps) {
   const { pushToast } = useToast();
   const [prepared, setPrepared] = useState<PreparedStickerImage | null>(null);
@@ -164,35 +160,11 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
 
   return (
     <div className="page-stack page-enter sticker-lab-page">
-      <GlassCard className="sticker-lab-hero" elevated>
-        <div className="sticker-lab-hero__copy">
-          <span className="chip">MAX Bridge</span>
-          <h1>Стикер-лаб</h1>
-          <p>
-            Загружаете фото, mini app сначала собирает PNG 512×512 с прозрачностью, а если файл
-            выходит слишком тяжёлым, переключается на WEBP. Дальше бот отправляет его в личку, а
-            MAX открывает native share.
-          </p>
-        </div>
-
-        <ol className="sticker-lab-hero__steps">
-          <li>Выберите фото из галереи или камеры.</li>
-          <li>Проверьте превью и отправьте его боту.</li>
-          <li>Поделитесь сообщением от бота в нужный чат MAX.</li>
-        </ol>
-      </GlassCard>
-
       <GlassCard className="sticker-lab-card sticker-lab-card--upload" elevated>
         <div className="sticker-lab-card__head">
           <div>
-            <h2>Макет</h2>
-            <p>Лучше всего работают крупные портреты и фото с одним главным объектом.</p>
+            <h2>Стикеры</h2>
           </div>
-          {prepared ? (
-            <span className="chip chip--success">
-              512×512 {formatPreparedMimeType(prepared.mimeType)}
-            </span>
-          ) : null}
         </div>
 
         <label className="sticker-lab-dropzone">
@@ -208,32 +180,16 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
             {prepared ? 'Заменить изображение' : 'Загрузить изображение'}
           </span>
           <strong>{prepared ? 'Выбрать другое фото' : 'Нажмите, чтобы выбрать фото'}</strong>
-          <small>Поддерживаются обычные изображения. GIF и видео сюда не подойдут.</small>
         </label>
 
         {isPreparing ? (
-          <StatusState
-            tone="neutral"
-            title="Готовим превью"
-            description="Собираем sticker-like карточку для отправки в MAX."
-          />
+          <StatusState tone="neutral" title="Готовим..." />
         ) : null}
 
         {prepared ? (
           <div className="sticker-lab-preview">
             <div className="sticker-lab-preview__media">
               <img src={prepared.previewDataUrl} alt="Подготовленный макет стикера." />
-            </div>
-            <div className="sticker-lab-preview__meta">
-              <div className="sticker-lab-preview__meta-row">
-                <span className="chip">{prepared.fileName}</span>
-                <span className="chip">{prepared.width}×{prepared.height}</span>
-                <span className="chip">{formatPreparedMimeType(prepared.mimeType)}</span>
-              </div>
-              <p>
-                Это изображение бот отправит вам в личный чат. Дальше MAX откроет системный экран
-                шеринга.
-              </p>
             </div>
           </div>
         ) : null}
@@ -261,11 +217,7 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
 
       {sentAsset ? (
         <GlassCard className="sticker-lab-card" elevated>
-          <StatusState
-            tone="success"
-            title="Сообщение уже у бота"
-            description="Можно открыть это сообщение в MAX или заново вызвать native share."
-          />
+          <StatusState tone="success" title="Отправлено" />
 
           <div className="sticker-lab-actions">
             <button
@@ -287,14 +239,6 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
           </div>
         </GlassCard>
       ) : null}
-
-      <GlassCard className="sticker-lab-card" padding="sm">
-        <StatusState
-          tone="neutral"
-          title="Важно"
-          description="Если MAX ещё не знает вашу личку с ботом, сначала откройте её и отправьте боту любое сообщение."
-        />
-      </GlassCard>
     </div>
   );
 }

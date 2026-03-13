@@ -102,8 +102,8 @@ function BottomNavIcon({ name }: { name: BottomNavIconName }) {
 function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
   if (pathname.includes('/sticker-lab')) {
     return {
-      title: 'Стикер из фото',
-      subtitle: 'Подготовка изображения и native share через личку с ботом.',
+      title: 'Стикеры',
+      subtitle: 'Загрузка и отправка',
     };
   }
 

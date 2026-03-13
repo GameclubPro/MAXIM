@@ -796,24 +796,13 @@
 .sticker-lab-card {
   position: relative;
   overflow: hidden;
-  border-color: rgba(255, 255, 255, 0.84);
-  background:
-    radial-gradient(circle at top right, rgba(255, 165, 0, 0.16), transparent 34%),
-    linear-gradient(155deg, rgba(255, 255, 255, 0.94), rgba(244, 250, 255, 0.82)),
-    rgba(255, 255, 255, 0.86);
+  border-color: rgba(95, 121, 145, 0.18);
+  background: rgba(255, 255, 255, 0.9);
 }
 
 .sticker-lab-entry::after,
 .sticker-lab-hero::after {
-  content: '';
-  position: absolute;
-  inset: auto -20px -44px auto;
-  width: 132px;
-  height: 132px;
-  border-radius: 999px;
-  background: rgba(255, 177, 64, 0.18);
-  filter: blur(8px);
-  pointer-events: none;
+  display: none;
 }
 
 .sticker-lab-entry__copy,
@@ -873,11 +862,9 @@
   gap: 8px;
   min-height: 152px;
   padding: 18px;
-  border-radius: 24px;
-  border: 1px dashed rgba(11, 132, 255, 0.24);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(235, 246, 255, 0.72)),
-    rgba(255, 255, 255, 0.8);
+  border-radius: 18px;
+  border: 1px dashed rgba(95, 121, 145, 0.26);
+  background: rgba(255, 255, 255, 0.92);
   cursor: pointer;
 }
 
@@ -916,10 +903,9 @@
   display: flex;
   justify-content: center;
   padding: 14px;
-  border-radius: 26px;
-  background:
-    radial-gradient(circle at top, rgba(11, 132, 255, 0.14), transparent 40%),
-    rgba(236, 246, 255, 0.78);
+  border-radius: 18px;
+  border: 1px solid rgba(95, 121, 145, 0.14);
+  background: rgba(255, 255, 255, 0.95);
 }
 
 .sticker-lab-preview__media img {
