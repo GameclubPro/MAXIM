@@ -24,6 +24,51 @@ function canWriteImageClipboard(): boolean {
   return typeof clipboard?.write === 'function' && typeof clipboardItemCtor === 'function';
 }
 
+function isIosDevice(): boolean {
+  const ua = navigator.userAgent || '';
+  const platform = navigator.platform || '';
+  const touchPoints = navigator.maxTouchPoints || 0;
+  const iOSByUA = /iPad|iPhone|iPod/u.test(ua);
+  const iPadDesktopMode = platform === 'MacIntel' && touchPoints > 1;
+  return iOSByUA || iPadDesktopMode;
+}
+
+function canShareImageFile(file: File): boolean {
+  const shareFn = navigator.share;
+  const canShareFn = (navigator as Navigator & {
+    canShare?: (data?: ShareData) => boolean;
+  }).canShare;
+
+  if (typeof shareFn !== 'function') {
+    return false;
+  }
+
+  try {
+    if (typeof canShareFn !== 'function') {
+      return true;
+    }
+    return canShareFn({ files: [file] });
+  } catch {
+    return false;
+  }
+}
+
+async function openNativeShare(file: File): Promise<boolean> {
+  if (!canShareImageFile(file) || typeof navigator.share !== 'function') {
+    return false;
+  }
+
+  try {
+    await navigator.share({
+      title: 'Sticker PNG',
+      files: [file],
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function writeImageToClipboard(blob: Blob, mimeType: string): Promise<boolean> {
   if (!canWriteImageClipboard()) {
     return false;
@@ -100,6 +145,7 @@ export function StickerLabPage() {
   const [isPreparing, setIsPreparing] = useState(false);
   const [isCopying, setIsCopying] = useState(false);
   const [pickerError, setPickerError] = useState<string | null>(null);
+  const iosDevice = isIosDevice();
 
   async function handleFilePick(file: File | null) {
     if (!file) {
@@ -139,6 +185,9 @@ export function StickerLabPage() {
 
     try {
       const clipboardAsset = await prepareStickerClipboardImage(prepared);
+      const shareFile = new File([clipboardAsset.blob], clipboardAsset.fileName, {
+        type: clipboardAsset.mimeType,
+      });
       const copied = await writeImageToClipboard(
         clipboardAsset.blob,
         clipboardAsset.mimeType,
@@ -151,6 +200,18 @@ export function StickerLabPage() {
           description: 'Вставьте PNG в диалог MAX.',
         });
         return;
+      }
+
+      if (iosDevice) {
+        const shared = await openNativeShare(shareFile);
+        if (shared) {
+          pushToast({
+            tone: 'info',
+            title: 'Открыто меню iPhone',
+            description: 'В системном меню выберите «Скопировать».',
+          });
+          return;
+        }
       }
 
       throw new Error(
@@ -208,7 +269,11 @@ export function StickerLabPage() {
                 <span className="chip">PNG</span>
                 <span className="chip">512×512</span>
               </div>
-              <p>После кнопки вставьте изображение в диалог с ботом в MAX.</p>
+              <p>
+                {iosDevice
+                  ? 'Если буфер iPhone не сработает сразу, откроется системное меню для «Скопировать».'
+                  : 'После кнопки вставьте изображение в диалог с ботом в MAX.'}
+              </p>
             </div>
           </div>
         ) : null}
