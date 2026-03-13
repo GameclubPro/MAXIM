@@ -128,9 +128,18 @@ type StickerLabDeliveryAttempt = {
   deliveryMode: StickerLabDeliveryMode;
   attachments: Record<string, unknown>[];
 };
+type StickerLabFailedAttempt = {
+  attempt: number;
+  name: string;
+  attachmentType: string;
+  error: string;
+};
 type StickerLabDeliveryResult = {
   sent: MaxPublishedMessage;
   deliveryMode: StickerLabDeliveryMode;
+  attemptNumber: number;
+  attemptName: string;
+  failedAttempts: StickerLabFailedAttempt[];
 };
 
 const RULES_IMAGE_MAX_BYTES = 1_000_000;
@@ -241,6 +250,21 @@ export class AdminService {
         normalizedImageFileName,
         imageMimeType,
       );
+      const uploadPayloadKeys = Object.keys(uploadPayload).sort();
+      this.logger.log(
+        {
+          userId: user.userId,
+          privateChatId,
+          imageMimeType,
+          imageFileName: normalizedImageFileName,
+          uploadPayloadKeys,
+          uploadHasUrl: typeof uploadPayload.url === 'string',
+          uploadHasToken: typeof uploadPayload.token === 'string',
+          uploadHasPhotoId:
+            typeof uploadPayload.photo_id === 'string' || typeof uploadPayload.photo_id === 'number',
+        },
+        'Sticker lab image uploaded to MAX',
+      );
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -275,6 +299,9 @@ export class AdminService {
           messageUrl: delivery.sent.url,
           attachmentType,
           deliveryMode: delivery.deliveryMode,
+          acceptedAttemptNumber: delivery.attemptNumber,
+          acceptedAttemptName: delivery.attemptName,
+          failedAttemptsCount: delivery.failedAttempts.length,
           imageMimeType,
           imageFileName: normalizedImageFileName,
           source: 'sticker_lab',
@@ -307,59 +334,46 @@ export class AdminService {
     uploadPayload: Record<string, unknown>,
     preparedMimeType: string,
   ): Promise<StickerLabDeliveryResult> {
-    const attempts: StickerLabDeliveryAttempt[] = [
+    const attempts = this.buildStickerLabDeliveryAttempts(uploadPayload, preparedMimeType);
+    const failedAttempts: StickerLabFailedAttempt[] = [];
+    this.logger.log(
       {
-        name: 'sticker_payload',
-        deliveryMode: 'sticker',
-        attachments: [
-          {
-            type: 'sticker',
-            payload: uploadPayload,
-          },
-        ],
+        chatId,
+        preparedMimeType,
+        attemptsCount: attempts.length,
+        attempts: attempts.map((attempt, index) => {
+          const attachment = attempt.attachments[0];
+          const payload =
+            attachment && typeof attachment === 'object'
+              ? (attachment.payload as Record<string, unknown> | undefined)
+              : undefined;
+          return {
+            attempt: index + 1,
+            name: attempt.name,
+            attachmentType: typeof attachment?.type === 'string' ? attachment.type : 'unknown',
+            payloadKeys:
+              payload && typeof payload === 'object' && !Array.isArray(payload)
+                ? Object.keys(payload).sort()
+                : [],
+          };
+        }),
       },
-      {
-        name: 'sticker_payload_with_mime',
-        deliveryMode: 'sticker',
-        attachments: [
-          {
-            type: 'sticker',
-            payload: {
-              ...uploadPayload,
-              mime_type: preparedMimeType,
-            },
-          },
-        ],
-      },
-      {
-        name: 'image_payload_with_media_type_sticker',
-        deliveryMode: 'image_variant',
-        attachments: [
-          {
-            type: 'image',
-            payload: {
-              ...uploadPayload,
-              mime_type: preparedMimeType,
-              media_type: 'sticker',
-            },
-          },
-        ],
-      },
-    ];
-    const failedAttempts: Array<{
-      attempt: number;
-      name: string;
-      attachmentType: string;
-      error: string;
-    }> = [];
+      'Sticker lab delivery experiment matrix prepared',
+    );
 
     for (const [index, attempt] of attempts.entries()) {
+      const attachmentType =
+        typeof attempt.attachments[0]?.type === 'string' ? attempt.attachments[0].type : 'unknown';
+      const payload = attempt.attachments[0]?.payload;
+      const payloadKeys =
+        payload && typeof payload === 'object' && !Array.isArray(payload)
+          ? Object.keys(payload as Record<string, unknown>).sort()
+          : [];
+
       try {
         const sent = await this.maxClient.sendCustomMessageImmediateWithResolvedLink(chatId, {
           attachments: attempt.attachments,
         });
-        const attachmentType =
-          typeof attempt.attachments[0]?.type === 'string' ? attempt.attachments[0].type : 'unknown';
         if (attempt.deliveryMode === 'sticker') {
           this.logger.log(
             {
@@ -367,12 +381,16 @@ export class AdminService {
               attempt: index + 1,
               name: attempt.name,
               attachmentType,
+              payloadKeys,
             },
             'MAX accepted sticker attachment from sticker lab',
           );
           return {
             sent,
             deliveryMode: 'sticker',
+            attemptNumber: index + 1,
+            attemptName: attempt.name,
+            failedAttempts,
           };
         }
 
@@ -382,43 +400,348 @@ export class AdminService {
             attempt: index + 1,
             name: attempt.name,
             attachmentType,
+            payloadKeys,
           },
           'MAX accepted only image-based sticker variant from sticker lab',
         );
         return {
           sent,
           deliveryMode: 'image_variant',
+          attemptNumber: index + 1,
+          attemptName: attempt.name,
+          failedAttempts,
         };
       } catch (error: unknown) {
+        const errorMessage =
+          this.extractMaxApiErrorMessage(error) ||
+          (error instanceof Error ? error.message : String(error));
         failedAttempts.push({
           attempt: index + 1,
           name: attempt.name,
-          attachmentType:
-            typeof attempt.attachments[0]?.type === 'string' ? attempt.attachments[0].type : 'unknown',
-          error: error instanceof Error ? error.message : String(error),
+          attachmentType,
+          error: errorMessage,
         });
+        this.logger.warn(
+          {
+            chatId,
+            attempt: index + 1,
+            name: attempt.name,
+            attachmentType,
+            payloadKeys,
+            error: errorMessage,
+          },
+          'Sticker lab attempt failed',
+        );
       }
     }
 
     this.logger.warn(
       {
         chatId,
+        attemptsCount: attempts.length,
         failedAttempts,
       },
       'MAX rejected all sticker attachment variants from sticker lab, falling back to image',
     );
-    const sent = await this.maxClient.sendCustomMessageImmediateWithResolvedLink(chatId, {
+    const fallbackAttemptNumber = attempts.length + 1;
+    try {
+      const sent = await this.maxClient.sendCustomMessageImmediateWithResolvedLink(chatId, {
+        attachments: [
+          {
+            type: 'image',
+            payload: uploadPayload,
+          },
+        ],
+      });
+      return {
+        sent,
+        deliveryMode: 'image_fallback',
+        attemptNumber: fallbackAttemptNumber,
+        attemptName: 'image_fallback_plain',
+        failedAttempts,
+      };
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          attempt: fallbackAttemptNumber,
+          name: 'image_fallback_plain',
+          attachmentType: 'image',
+          error: this.extractMaxApiErrorMessage(error) || String(error),
+          failedAttempts,
+        },
+        'Sticker lab fallback image delivery failed',
+      );
+      throw error;
+    }
+  }
+
+  private buildStickerLabDeliveryAttempts(
+    uploadPayload: Record<string, unknown>,
+    preparedMimeType: string,
+  ): StickerLabDeliveryAttempt[] {
+    const attempts: StickerLabDeliveryAttempt[] = [];
+    const fingerprints = new Set<string>();
+    const normalizedMimeType = preparedMimeType.trim().toLowerCase();
+    const uploadToken = this.readStickerLabPayloadString(uploadPayload.token);
+    const uploadUrl = this.readStickerLabPayloadString(uploadPayload.url);
+    const uploadPhotoId = this.readStickerLabPayloadString(uploadPayload.photo_id);
+    const smileIdFromUrl = this.parseSmileIdFromStickerUrl(uploadUrl);
+    const codeCandidates = this.readStickerLabPayloadCodeCandidates(uploadPayload, {
+      smileIdFromUrl,
+      uploadToken,
+      uploadPhotoId,
+    }).slice(0, 4);
+
+    this.pushUniqueStickerLabAttempt(attempts, fingerprints, {
+      name: 'sticker_payload',
+      deliveryMode: 'sticker',
       attachments: [
         {
-          type: 'image',
+          type: 'sticker',
           payload: uploadPayload,
         },
       ],
     });
-    return {
-      sent,
-      deliveryMode: 'image_fallback',
-    };
+
+    if (normalizedMimeType) {
+      this.pushUniqueStickerLabAttempt(attempts, fingerprints, {
+        name: 'sticker_payload_with_mime',
+        deliveryMode: 'sticker',
+        attachments: [
+          {
+            type: 'sticker',
+            payload: {
+              ...uploadPayload,
+              mime_type: normalizedMimeType,
+            },
+          },
+        ],
+      });
+      this.pushUniqueStickerLabAttempt(attempts, fingerprints, {
+        name: 'sticker_payload_with_mime_and_media_type',
+        deliveryMode: 'sticker',
+        attachments: [
+          {
+            type: 'sticker',
+            payload: {
+              ...uploadPayload,
+              mime_type: normalizedMimeType,
+              media_type: 'sticker',
+            },
+          },
+        ],
+      });
+    }
+
+    this.pushUniqueStickerLabAttempt(attempts, fingerprints, {
+      name: 'sticker_payload_with_media_type',
+      deliveryMode: 'sticker',
+      attachments: [
+        {
+          type: 'sticker',
+          payload: {
+            ...uploadPayload,
+            media_type: 'sticker',
+          },
+        },
+      ],
+    });
+
+    if (uploadToken) {
+      this.pushUniqueStickerLabAttempt(attempts, fingerprints, {
+        name: 'sticker_payload_token_only',
+        deliveryMode: 'sticker',
+        attachments: [
+          {
+            type: 'sticker',
+            payload: {
+              token: uploadToken,
+            },
+          },
+        ],
+      });
+    }
+
+    if (uploadUrl) {
+      this.pushUniqueStickerLabAttempt(attempts, fingerprints, {
+        name: 'sticker_payload_url_only',
+        deliveryMode: 'sticker',
+        attachments: [
+          {
+            type: 'sticker',
+            payload: {
+              url: uploadUrl,
+            },
+          },
+        ],
+      });
+    }
+
+    if (uploadToken && uploadUrl) {
+      this.pushUniqueStickerLabAttempt(attempts, fingerprints, {
+        name: 'sticker_payload_token_and_url',
+        deliveryMode: 'sticker',
+        attachments: [
+          {
+            type: 'sticker',
+            payload: {
+              token: uploadToken,
+              url: uploadUrl,
+            },
+          },
+        ],
+      });
+    }
+
+    if (uploadPhotoId) {
+      this.pushUniqueStickerLabAttempt(attempts, fingerprints, {
+        name: 'sticker_payload_photo_id',
+        deliveryMode: 'sticker',
+        attachments: [
+          {
+            type: 'sticker',
+            payload: {
+              photo_id: uploadPhotoId,
+            },
+          },
+        ],
+      });
+    }
+
+    if (smileIdFromUrl) {
+      this.pushUniqueStickerLabAttempt(attempts, fingerprints, {
+        name: 'sticker_payload_smile_id',
+        deliveryMode: 'sticker',
+        attachments: [
+          {
+            type: 'sticker',
+            payload: {
+              smile_id: smileIdFromUrl,
+              smileId: smileIdFromUrl,
+            },
+          },
+        ],
+      });
+    }
+
+    for (const [index, code] of codeCandidates.entries()) {
+      this.pushUniqueStickerLabAttempt(attempts, fingerprints, {
+        name: `sticker_code_candidate_${index + 1}`,
+        deliveryMode: 'sticker',
+        attachments: [
+          {
+            type: 'sticker',
+            payload: {
+              code,
+            },
+          },
+        ],
+      });
+    }
+
+    this.pushUniqueStickerLabAttempt(attempts, fingerprints, {
+      name: 'image_payload_with_media_type_sticker',
+      deliveryMode: 'image_variant',
+      attachments: [
+        {
+          type: 'image',
+          payload: {
+            ...uploadPayload,
+            media_type: 'sticker',
+          },
+        },
+      ],
+    });
+
+    if (normalizedMimeType) {
+      this.pushUniqueStickerLabAttempt(attempts, fingerprints, {
+        name: 'image_payload_with_media_type_sticker_and_mime',
+        deliveryMode: 'image_variant',
+        attachments: [
+          {
+            type: 'image',
+            payload: {
+              ...uploadPayload,
+              mime_type: normalizedMimeType,
+              media_type: 'sticker',
+            },
+          },
+        ],
+      });
+    }
+
+    return attempts;
+  }
+
+  private pushUniqueStickerLabAttempt(
+    attempts: StickerLabDeliveryAttempt[],
+    fingerprints: Set<string>,
+    attempt: StickerLabDeliveryAttempt,
+  ): void {
+    const fingerprint = JSON.stringify(attempt.attachments);
+    if (fingerprints.has(fingerprint)) {
+      return;
+    }
+    fingerprints.add(fingerprint);
+    attempts.push(attempt);
+  }
+
+  private readStickerLabPayloadString(value: unknown): string | null {
+    if (typeof value === 'string') {
+      const normalized = value.trim();
+      return normalized.length > 0 ? normalized : null;
+    }
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return String(value);
+    }
+    return null;
+  }
+
+  private readStickerLabPayloadCodeCandidates(
+    uploadPayload: Record<string, unknown>,
+    options: {
+      smileIdFromUrl: string | null;
+      uploadToken: string | null;
+      uploadPhotoId: string | null;
+    },
+  ): string[] {
+    const candidates = [
+      this.readStickerLabPayloadString(uploadPayload.code),
+      this.readStickerLabPayloadString(uploadPayload.smile_id),
+      this.readStickerLabPayloadString(uploadPayload.smileId),
+      options.smileIdFromUrl,
+      options.uploadToken,
+      options.uploadPhotoId,
+    ];
+    const unique = new Set<string>();
+    const normalized: string[] = [];
+    for (const candidate of candidates) {
+      if (!candidate || unique.has(candidate)) {
+        continue;
+      }
+      unique.add(candidate);
+      normalized.push(candidate);
+    }
+    return normalized;
+  }
+
+  private parseSmileIdFromStickerUrl(url: string | null): string | null {
+    if (!url) {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(url);
+      const smileId = parsed.searchParams.get('smileId');
+      if (!smileId) {
+        return null;
+      }
+      const normalized = smileId.trim();
+      return normalized.length > 0 ? normalized : null;
+    } catch {
+      return null;
+    }
   }
 
   async listChats(user: AuthUser): Promise<ChatSummary[]> {

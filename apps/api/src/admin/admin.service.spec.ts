@@ -460,6 +460,10 @@ describe('AdminService.shareStickerLabAsset', () => {
       .mockRejectedValueOnce(new Error('sticker rejected #1'))
       .mockRejectedValueOnce(new Error('sticker rejected #2'))
       .mockRejectedValueOnce(new Error('sticker rejected #3'))
+      .mockRejectedValueOnce(new Error('sticker rejected #4'))
+      .mockRejectedValueOnce(new Error('sticker rejected #5'))
+      .mockRejectedValueOnce(new Error('sticker rejected #6'))
+      .mockRejectedValueOnce(new Error('sticker rejected #7'))
       .mockResolvedValueOnce({
         messageId: 'mid-fallback-1',
         url: 'https://max.ru/c/152517912/fallback-mid',
@@ -493,7 +497,7 @@ describe('AdminService.shareStickerLabAsset', () => {
       },
     );
 
-    expect(sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(4);
+    expect(sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(8);
     expect(sendCustomMessageImmediateWithResolvedLink).toHaveBeenNthCalledWith(1, '152517912', {
       attachments: [
         {
@@ -513,7 +517,7 @@ describe('AdminService.shareStickerLabAsset', () => {
     expect(sendCustomMessageImmediateWithResolvedLink).toHaveBeenNthCalledWith(3, '152517912', {
       attachments: [
         {
-          type: 'image',
+          type: 'sticker',
           payload: {
             token: 'upload-token-fallback',
             mime_type: 'image/png',
@@ -523,6 +527,50 @@ describe('AdminService.shareStickerLabAsset', () => {
       ],
     });
     expect(sendCustomMessageImmediateWithResolvedLink).toHaveBeenNthCalledWith(4, '152517912', {
+      attachments: [
+        {
+          type: 'sticker',
+          payload: {
+            token: 'upload-token-fallback',
+            media_type: 'sticker',
+          },
+        },
+      ],
+    });
+    expect(sendCustomMessageImmediateWithResolvedLink).toHaveBeenNthCalledWith(5, '152517912', {
+      attachments: [
+        {
+          type: 'sticker',
+          payload: {
+            code: 'upload-token-fallback',
+          },
+        },
+      ],
+    });
+    expect(sendCustomMessageImmediateWithResolvedLink).toHaveBeenNthCalledWith(6, '152517912', {
+      attachments: [
+        {
+          type: 'image',
+          payload: {
+            token: 'upload-token-fallback',
+            media_type: 'sticker',
+          },
+        },
+      ],
+    });
+    expect(sendCustomMessageImmediateWithResolvedLink).toHaveBeenNthCalledWith(7, '152517912', {
+      attachments: [
+        {
+          type: 'image',
+          payload: {
+            token: 'upload-token-fallback',
+            mime_type: 'image/png',
+            media_type: 'sticker',
+          },
+        },
+      ],
+    });
+    expect(sendCustomMessageImmediateWithResolvedLink).toHaveBeenNthCalledWith(8, '152517912', {
       attachments: [
         {
           type: 'image',
