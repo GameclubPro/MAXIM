@@ -1038,6 +1038,7 @@ export class AdminService {
     candidates: StickerLabUploadCandidate[],
   ): StickerLabUploadCandidate {
     return (
+      candidates.find((candidate) => candidate.name === 'square_webp_512') ??
       candidates.find((candidate) => candidate.name === 'square_png_512') ??
       candidates.find((candidate) => candidate.name === 'original') ??
       candidates[0]

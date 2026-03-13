@@ -15,6 +15,8 @@ type StickerLabPageProps = {
   api: ApiClient;
 };
 
+type MaxSendMode = 'image' | 'file';
+
 const SHARE_DELAY_MS = 250;
 
 function wait(ms: number): Promise<void> {
@@ -289,7 +291,7 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
     await handleFilePick(fileFromHtml);
   }
 
-  async function handleSendViaMax(): Promise<void> {
+  async function handleSendViaMax(mode: MaxSendMode): Promise<void> {
     if (!prepared || isPreparing || isCopying || isSending) {
       return;
     }
@@ -298,18 +300,27 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
     setPickerError(null);
 
     try {
-      const clipboardAsset = await prepareStickerClipboardImage(prepared);
-      const payloadBase64 = clipboardAsset.dataUrl.split(',')[1] ?? '';
-      if (!payloadBase64) {
-        throw new Error('Не удалось подготовить PNG для отправки.');
-      }
-
-      const sent = await api.shareStickerLabImage({
-        imageBase64: payloadBase64,
-        imageMimeType: clipboardAsset.mimeType,
-        imageFileName: clipboardAsset.fileName,
-        deliveryType: 'file',
-      });
+      const sent =
+        mode === 'file'
+          ? await (async () => {
+              const clipboardAsset = await prepareStickerClipboardImage(prepared);
+              const payloadBase64 = clipboardAsset.dataUrl.split(',')[1] ?? '';
+              if (!payloadBase64) {
+                throw new Error('Не удалось подготовить PNG для отправки.');
+              }
+              return api.shareStickerLabImage({
+                imageBase64: payloadBase64,
+                imageMimeType: clipboardAsset.mimeType,
+                imageFileName: clipboardAsset.fileName,
+                deliveryType: 'file',
+              });
+            })()
+          : await api.shareStickerLabImage({
+              imageBase64: prepared.base64,
+              imageMimeType: prepared.mimeType,
+              imageFileName: prepared.fileName,
+              deliveryType: 'image',
+            });
 
       if (bridgeAvailable) {
         await wait(SHARE_DELAY_MS);
@@ -320,7 +331,10 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
         pushToast({
           tone: 'success',
           title: 'Открыт MAX Share',
-          description: 'Выберите чат для отправки.',
+          description:
+            mode === 'file'
+              ? 'Отправится как файл. Для изображения используйте соседнюю кнопку.'
+              : 'Выберите чат для отправки.',
         });
         return;
       }
@@ -516,10 +530,18 @@ export function StickerLabPage({ api }: StickerLabPageProps) {
           <button
             type="button"
             className="button button--accent"
-            onClick={() => void handleSendViaMax()}
+            onClick={() => void handleSendViaMax('image')}
             disabled={!prepared || isPreparing || isCopying || isSending}
           >
-            {isSending ? 'Отправляем...' : 'Отправить PNG через MAX'}
+            {isSending ? 'Отправляем...' : 'Отправить как изображение'}
+          </button>
+          <button
+            type="button"
+            className="button button--ghost"
+            onClick={() => void handleSendViaMax('file')}
+            disabled={!prepared || isPreparing || isCopying || isSending}
+          >
+            {isSending ? 'Отправляем...' : 'Отправить PNG файлом'}
           </button>
           <button
             type="button"
