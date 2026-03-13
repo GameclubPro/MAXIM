@@ -3,11 +3,25 @@ import { Link } from 'react-router-dom';
 import { GlassCard } from '../components/ui/glass-card';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
+import type { ApiClient } from '../lib/api-client';
+import { canShareMaxContent, openMaxBotLink, shareMaxContent } from '../lib/max-bridge';
 import {
   prepareStickerClipboardImage,
   prepareStickerImage,
   type PreparedStickerImage,
 } from '../lib/sticker-image';
+
+type StickerLabPageProps = {
+  api: ApiClient;
+};
+
+const SHARE_DELAY_MS = 250;
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
+}
 
 function normalizeErrorMessage(error: unknown, fallback: string): string {
   if (!(error instanceof Error)) {
@@ -188,13 +202,15 @@ async function openNativeShare(file: File): Promise<boolean> {
   }
 }
 
-export function StickerLabPage() {
+export function StickerLabPage({ api }: StickerLabPageProps) {
   const { pushToast } = useToast();
   const [prepared, setPrepared] = useState<PreparedStickerImage | null>(null);
   const [isPreparing, setIsPreparing] = useState(false);
+  const [isSending, setIsSending] = useState(false);
   const [isCopying, setIsCopying] = useState(false);
   const [pickerError, setPickerError] = useState<string | null>(null);
   const androidDevice = isAndroidDevice();
+  const bridgeAvailable = canShareMaxContent();
 
   async function handleFilePick(file: File | null) {
     if (!file) {
@@ -273,8 +289,69 @@ export function StickerLabPage() {
     await handleFilePick(fileFromHtml);
   }
 
+  async function handleSendViaMax(): Promise<void> {
+    if (!prepared || isPreparing || isCopying || isSending) {
+      return;
+    }
+
+    setIsSending(true);
+    setPickerError(null);
+
+    try {
+      const sent = await api.shareStickerLabImage({
+        imageBase64: prepared.base64,
+        imageMimeType: prepared.mimeType,
+        imageFileName: prepared.fileName,
+        deliveryType: 'image',
+      });
+
+      if (bridgeAvailable) {
+        await wait(SHARE_DELAY_MS);
+        await shareMaxContent({
+          mid: sent.mid,
+          chatType: 'DIALOG',
+        });
+        pushToast({
+          tone: 'success',
+          title: 'Открыт MAX Share',
+          description: 'Выберите чат для отправки.',
+        });
+        return;
+      }
+
+      if (sent.messageUrl) {
+        openMaxBotLink(sent.messageUrl);
+        pushToast({
+          tone: 'info',
+          title: 'Открыт чат с ботом',
+          description: 'Перешлите сообщение вручную.',
+        });
+        return;
+      }
+
+      pushToast({
+        tone: 'info',
+        title: 'Отправлено боту',
+        description: 'Откройте личку с ботом и перешлите сообщение.',
+      });
+    } catch (error: unknown) {
+      const message = normalizeErrorMessage(
+        error,
+        'Не удалось отправить изображение через MAX.',
+      );
+      setPickerError(message);
+      pushToast({
+        tone: 'danger',
+        title: 'Отправка не удалась',
+        description: message,
+      });
+    } finally {
+      setIsSending(false);
+    }
+  }
+
   async function handleCopyPreparedImage(): Promise<void> {
-    if (!prepared || isCopying || isPreparing) {
+    if (!prepared || isCopying || isPreparing || isSending) {
       return;
     }
 
@@ -433,8 +510,16 @@ export function StickerLabPage() {
           <button
             type="button"
             className="button button--accent"
+            onClick={() => void handleSendViaMax()}
+            disabled={!prepared || isPreparing || isCopying || isSending}
+          >
+            {isSending ? 'Отправляем...' : 'Отправить через MAX'}
+          </button>
+          <button
+            type="button"
+            className="button button--ghost"
             onClick={() => void handleCopyPreparedImage()}
-            disabled={!prepared || isPreparing || isCopying}
+            disabled={!prepared || isPreparing || isCopying || isSending}
           >
             {isCopying ? 'Копируем...' : 'Скопировать'}
           </button>

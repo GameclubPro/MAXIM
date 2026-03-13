@@ -98,7 +98,7 @@ export function App() {
               />
               <Route path="/chat/:chatId/events" element={<EventsPage api={apiClient} />} />
               <Route path="/giveaways/:giveawayId" element={<GiveawayPage api={apiClient} />} />
-              <Route path="/sticker-lab" element={<StickerLabPage />} />
+              <Route path="/sticker-lab" element={<StickerLabPage api={apiClient} />} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Routes>
