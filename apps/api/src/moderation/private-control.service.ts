@@ -214,6 +214,13 @@ type ParsedImageAttachment = {
 type ParsedStickerAttachment = {
   code: string;
   url: string | null;
+  smileId: string | null;
+  smileType: string | null;
+  width: number | null;
+  height: number | null;
+  mimeType: string | null;
+  mediaType: string | null;
+  payloadKeys: string[];
 };
 
 type PreparedStickerAsset = {
@@ -3804,6 +3811,36 @@ export class PrivateControlService {
     session: PrivateSession,
     stickerAttachment: ParsedStickerAttachment,
   ): Promise<void> {
+    const urlMetadata = this.parseStickerUrlMetadata(stickerAttachment.url);
+    const stickerSmileId = stickerAttachment.smileId ?? urlMetadata.smileId;
+    const stickerSmileType = stickerAttachment.smileType ?? urlMetadata.smileType;
+    const likelyPasteFlow = urlMetadata.isGetSmile && Boolean(stickerSmileId);
+
+    this.logger.log(
+      {
+        chatId: context.chatId,
+        actorUserId: context.actor.userId,
+        actorDisplayName: context.actor.displayName ?? null,
+        messageId: context.update.message?.messageId ?? null,
+        pendingInputKind: session.pendingInput?.kind ?? null,
+        stickerCode: stickerAttachment.code,
+        stickerUrl: stickerAttachment.url,
+        stickerUrlHost: urlMetadata.host,
+        stickerUrlPath: urlMetadata.path,
+        stickerSmileId,
+        stickerSmileType,
+        stickerWidth: stickerAttachment.width,
+        stickerHeight: stickerAttachment.height,
+        stickerMimeType: stickerAttachment.mimeType,
+        stickerMediaType: stickerAttachment.mediaType,
+        stickerPayloadKeys: stickerAttachment.payloadKeys,
+        likelyPasteFlow,
+      },
+      likelyPasteFlow
+        ? 'Incoming sticker likely produced by client copy/paste flow'
+        : 'Incoming sticker attachment observed',
+    );
+
     await this.maxClient.sendCustomMessageImmediate(context.chatId, {
       text: '',
       attachments: [
@@ -7372,13 +7409,66 @@ export class PrivateControlService {
         continue;
       }
 
+      const url = this.readString(payload?.url) ?? null;
+      const urlMetadata = this.parseStickerUrlMetadata(url);
+
       return {
         code,
-        url: this.readString(payload?.url) ?? null,
+        url,
+        smileId: this.readString(payload?.smile_id ?? payload?.smileId) ?? urlMetadata.smileId,
+        smileType:
+          this.readString(payload?.smile_type ?? payload?.smileType) ?? urlMetadata.smileType,
+        width: this.readOptionalInteger(payload?.width ?? payload?.w),
+        height: this.readOptionalInteger(payload?.height ?? payload?.h),
+        mimeType: this.readLowerString(payload?.mime_type ?? payload?.mimeType),
+        mediaType: this.readLowerString(payload?.media_type ?? payload?.mediaType),
+        payloadKeys: payload ? Object.keys(payload).sort() : [],
       };
     }
 
     return null;
+  }
+
+  private parseStickerUrlMetadata(url: string | null): {
+    host: string | null;
+    path: string | null;
+    smileId: string | null;
+    smileType: string | null;
+    isGetSmile: boolean;
+  } {
+    if (!url) {
+      return {
+        host: null,
+        path: null,
+        smileId: null,
+        smileType: null,
+        isGetSmile: false,
+      };
+    }
+
+    try {
+      const parsed = new URL(url);
+      const smileId = this.readString(parsed.searchParams.get('smileId'));
+      const smileType = this.readString(parsed.searchParams.get('smileType'));
+      const path = parsed.pathname || null;
+      const isGetSmile = path ? path.toLowerCase().includes('getsmile') : false;
+
+      return {
+        host: parsed.hostname || null,
+        path,
+        smileId,
+        smileType,
+        isGetSmile,
+      };
+    } catch {
+      return {
+        host: null,
+        path: null,
+        smileId: null,
+        smileType: null,
+        isGetSmile: false,
+      };
+    }
   }
 
   private hasVideoAttachment(update: MaxUpdate): boolean {
@@ -8123,5 +8213,20 @@ export class PrivateControlService {
 
     const normalized = value.trim();
     return normalized.length > 0 ? normalized : null;
+  }
+
+  private readOptionalInteger(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return Math.trunc(value);
+    }
+
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Number.parseInt(value, 10);
+      if (Number.isFinite(parsed)) {
+        return parsed;
+      }
+    }
+
+    return null;
   }
 }
