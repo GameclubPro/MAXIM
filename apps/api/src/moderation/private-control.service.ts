@@ -4391,7 +4391,7 @@ export class PrivateControlService {
     if (entities.length === 0) {
       return {
         text: [
-          entityType === 'channel' ? 'Каналы не найдены.' : 'Чаты не найдены.',
+          this.markdownTitle(entityType === 'channel' ? 'Каналы не найдены' : 'Чаты не найдены'),
           '',
           'Добавьте бота админом и обновите экран.',
         ].join('\n'),
@@ -4418,8 +4418,10 @@ export class PrivateControlService {
     session.chatPage = pageInfo.page;
 
     const lines = [
-      `Выберите ${singleEntityWord}`,
+      this.markdownTitle(`Выбор: ${singleEntityWord}`),
+      '',
       `${pageInfo.start + 1}-${pageInfo.end} из ${entities.length} (${pluralEntityWord})`,
+      `Нажмите на нужный ${singleEntityWord}.`,
     ];
 
     const rows: MaxMessageButton[][] = pageInfo.items.map((chat, index) => [
@@ -4544,8 +4546,11 @@ export class PrivateControlService {
     const settings = await this.adminService.getChannelSettings(selectedChannel.id, context.actor);
 
     const lines: string[] = [
-      `Канал: ${selectedChannel.title}`,
+      this.markdownTitle('Панель канала'),
+      '',
+      `Канал: ${this.escapeMarkdown(selectedChannel.title)}`,
       `Статус: предложка ${settings.postSuggestionsEnabled ? 'вкл' : 'выкл'} • обсуждение ${settings.commentsEnabled ? 'вкл' : 'выкл'}`,
+      '',
       'Выберите действие.',
     ];
 
@@ -4588,7 +4593,11 @@ export class PrivateControlService {
       session.selectedChatId,
       context.actor,
     );
-    const lines: string[] = [`${CHANNEL_SECTION_LABELS[section]}`, '', ...this.buildChannelSectionSummary(section, settings)];
+    const lines: string[] = [
+      this.markdownTitle(CHANNEL_SECTION_LABELS[section]),
+      '',
+      ...this.buildChannelSectionSummary(section, settings),
+    ];
 
     const rows = this.buildChannelSectionRows(section, settings);
 
@@ -4630,8 +4639,11 @@ export class PrivateControlService {
     const settings = await this.adminService.getSettings(selectedChat.id, context.actor);
 
     const lines: string[] = [
-      `Чат: ${selectedChat.title}`,
+      this.markdownTitle('Панель чата'),
+      '',
+      `Чат: ${this.escapeMarkdown(selectedChat.title)}`,
       `Статус: ссылки ${this.describeLinkPolicy(settings.linkPolicy)} • приветствие ${settings.greetingEnabled ? 'вкл' : 'выкл'}`,
+      '',
       'Выберите действие.',
     ];
 
@@ -4680,8 +4692,9 @@ export class PrivateControlService {
       session.selectedChatId,
     );
     const lines: string[] = [
-      'Разделы настроек',
-      `Чат: ${chatTitle}`,
+      this.markdownTitle('Разделы настроек'),
+      '',
+      `Чат: ${this.escapeMarkdown(chatTitle)}`,
       'Выберите раздел.',
     ];
 
@@ -4714,7 +4727,9 @@ export class PrivateControlService {
 
     const settings = await this.adminService.getSettings(session.selectedChatId, context.actor);
     const lines: string[] = [
-      `${SECTION_LABELS[section]} • ${session.sectionView === 'basic' ? 'Основное' : 'Ещё параметры'}`,
+      this.markdownTitle(SECTION_LABELS[section]),
+      '',
+      `Режим: ${session.sectionView === 'basic' ? 'Основное' : 'Ещё параметры'}`,
       '',
       ...this.buildSectionSummaryLines(section, settings, session.sectionView),
     ];
@@ -5078,7 +5093,8 @@ export class PrivateControlService {
     const waitingForContent = session.pendingInput?.kind === 'broadcast_content';
 
     const lines: string[] = [
-      isChannel ? 'Рассылка в канал' : 'Рассылка',
+      this.markdownTitle(isChannel ? 'Рассылка в канал' : 'Рассылка'),
+      '',
       `Контент: ${
         waitingForContent
           ? 'жду сообщение'
@@ -5092,8 +5108,8 @@ export class PrivateControlService {
       ...(!isChannel ? [`Таймер: ${timingSummary}`] : []),
       ...(!isChannel ? [`Цикл: ${cycleSummary}`] : []),
       ...(channelSettings ? [`Комменты: ${this.describeBooleanCompact(channelSettings.commentsEnabled)}`] : []),
-      ...(notice ? [`Статус: ${notice}`] : []),
-      ...(waitingForContent ? ['Жду текст или фото.'] : []),
+      ...(notice ? ['', `Статус: ${this.escapeMarkdown(notice)}`] : []),
+      ...(waitingForContent ? ['', 'Жду текст или фото.'] : []),
     ];
 
     const rows: MaxMessageButton[][] = [];
@@ -5217,9 +5233,9 @@ export class PrivateControlService {
     const totalVotes = poll.totalVotes;
 
     const lines: string[] = [
-      'Опрос',
+      this.markdownTitle('Опрос'),
       '',
-      `${entityLabel}: ${entityTitle}`,
+      `${entityLabel}: ${this.escapeMarkdown(entityTitle)}`,
       `Статус: ${statusLabel}`,
       `Всего голосов: ${totalVotes}`,
       `Пост: ${poll.publishedMessageId ? 'опубликован' : 'ещё нет'}`,
@@ -5330,7 +5346,11 @@ export class PrivateControlService {
       session.selectedChatId,
     );
     const rows: MaxMessageButton[][] = [];
-    const lines: string[] = ['Розыгрыш', '', `${entityLabel}: ${entityTitle}`];
+    const lines: string[] = [
+      this.markdownTitle('Розыгрыш'),
+      '',
+      `${entityLabel}: ${this.escapeMarkdown(entityTitle)}`,
+    ];
     const waitingLabel = session.pendingInput
       ? this.describeInputPrompt(session.pendingInput).title
       : null;
@@ -5341,7 +5361,7 @@ export class PrivateControlService {
     } else {
       const statusLabel = this.formatGiveawayStatusLabel(giveaway.status);
       lines.push(
-        `Название: ${giveaway.title}`,
+        `Название: ${this.escapeMarkdown(giveaway.title)}`,
         `Статус: ${statusLabel}`,
         `Финиш: ${this.formatDateTimeLabel(giveaway.endsAt)}`,
         `Старт: ${giveaway.startsAt ? this.formatDateTimeLabel(giveaway.startsAt) : 'сразу'}`,
@@ -5439,7 +5459,7 @@ export class PrivateControlService {
     }
 
     if (notice) {
-      lines.push('', `Статус: ${notice}`);
+      lines.push('', `Статус: ${this.escapeMarkdown(notice)}`);
     }
 
     rows.push([
@@ -5507,16 +5527,16 @@ export class PrivateControlService {
             ? 'Срок подтверждения истёк'
             : 'Ждёт подтверждения';
     const lines = [
-      'Розыгрыш',
+      this.markdownTitle('Розыгрыш'),
       '',
-      giveaway.title,
-      `${winner.prizePosition}. ${winner.prizeTitle}`,
+      this.escapeMarkdown(giveaway.title),
+      `${winner.prizePosition}. ${this.escapeMarkdown(winner.prizeTitle)}`,
       `Статус: ${statusLabel}`,
-      `Победитель: ${winner.displayName ?? winner.userId}`,
+      `Победитель: ${this.escapeMarkdown(winner.displayName ?? winner.userId)}`,
       ...(winner.claimDeadlineAt
         ? [`Подтвердить до: ${this.formatDateTimeLabel(winner.claimDeadlineAt)}`]
         : []),
-      ...(notice ? ['', `Статус: ${notice}`] : []),
+      ...(notice ? ['', `Статус: ${this.escapeMarkdown(notice)}`] : []),
     ];
 
     const rows: MaxMessageButton[][] = [];
@@ -5560,7 +5580,7 @@ export class PrivateControlService {
   private renderUnavailableGiveawayClaimView(): PrivateView {
     return {
       text: [
-        'Розыгрыш',
+        this.markdownTitle('Розыгрыш'),
         '',
         'Подтверждение приза недоступно: место уже перевыбрано или срок истёк.',
       ].join('\n'),
@@ -6267,7 +6287,9 @@ export class PrivateControlService {
 
   private renderHelpView(prefix: string | null = null): PrivateView {
     const lines = [
-      ...(prefix ? [prefix, ''] : []),
+      ...(prefix ? [this.escapeMarkdown(prefix), ''] : []),
+      this.markdownTitle('Быстрый старт'),
+      '',
       'Управление через кнопки.',
       'Выберите чат и действие.',
     ];
@@ -6289,7 +6311,11 @@ export class PrivateControlService {
     const prompt = this.describeInputPrompt(input);
 
     return {
-      text: [`Введите: ${prompt.title}`, '', prompt.description].join('\n'),
+      text: [
+        this.markdownTitle(`Введите: ${prompt.title}`),
+        '',
+        this.escapeMarkdown(prompt.description),
+      ].join('\n'),
       options: {
         buttons: [
           [this.callbackButton('Отмена', this.cb('input_cancel'))],
@@ -6303,7 +6329,7 @@ export class PrivateControlService {
     const text =
       pendingMassAction.kind === 'apply_section'
         ? [
-            'Подтвердите применение для всех чатов',
+            this.markdownTitle('Подтвердите применение для всех чатов'),
             '',
             `Раздел: ${SECTION_LABELS[pendingMassAction.section]}`,
             `Количество чатов: ${pendingMassAction.targetChats}`,
@@ -6311,7 +6337,7 @@ export class PrivateControlService {
             'Применить эти настройки во всех доступных чатах?',
           ].join('\n')
         : [
-            'Подтвердите массовую рассылку',
+            this.markdownTitle('Подтвердите массовую рассылку'),
             '',
             `Количество чатов: ${pendingMassAction.targetChats}`,
             '',
@@ -6786,7 +6812,12 @@ export class PrivateControlService {
 
     const text = this.limitMessageText(view.text);
     const compactOptions = this.compactButtonLayout(view.options);
-    const options = this.withDebugContext(compactOptions, session, callback.notification);
+    const inferredTextFormat =
+      compactOptions?.textFormat ?? (this.shouldUseMarkdown(text) ? 'markdown' : undefined);
+    const optionsWithFormat = inferredTextFormat
+      ? { ...(compactOptions ?? {}), textFormat: inferredTextFormat }
+      : compactOptions;
+    const options = this.withDebugContext(optionsWithFormat, session, callback.notification);
 
     if (callback.callbackId) {
       const edited = await this.tryAnswerWithEdit(
@@ -6841,6 +6872,10 @@ export class PrivateControlService {
       ...(compactSingleButton ? { button: compactSingleButton } : {}),
       ...(compactGrid ? { buttons: compactGrid } : {}),
     };
+  }
+
+  private shouldUseMarkdown(text: string): boolean {
+    return text.includes('**');
   }
 
   private withDebugContext(
@@ -8413,6 +8448,14 @@ export class PrivateControlService {
     }
 
     return `${normalized.slice(0, Math.max(1, maxLength - 1)).trimEnd()}…`;
+  }
+
+  private markdownTitle(title: string): string {
+    return `**${this.escapeMarkdown(title)}**`;
+  }
+
+  private escapeMarkdown(value: string): string {
+    return value.replace(/([\\_*[\]()`])/g, '\\$1');
   }
 
   private formatIsoDate(iso: string): string {

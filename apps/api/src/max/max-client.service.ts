@@ -1293,6 +1293,7 @@ export class MaxClientService implements OnModuleDestroy {
       const attachments = this.buildMessageAttachments(messageEdit?.options);
       callbackData.message = {
         text: messageEdit!.text.trim(),
+        ...(messageEdit?.options?.textFormat ? { format: messageEdit.options.textFormat } : {}),
         ...(attachments.length > 0 ? { attachments } : {}),
       };
     }
