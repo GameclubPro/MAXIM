@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { GlassCard } from '../components/ui/glass-card';
 import { StatusState } from '../components/ui/status-state';
@@ -23,15 +23,6 @@ function canWriteImageClipboard(): boolean {
   const clipboard = navigator.clipboard;
   const clipboardItemCtor = (window as Window & { ClipboardItem?: unknown }).ClipboardItem;
   return typeof clipboard?.write === 'function' && typeof clipboardItemCtor === 'function';
-}
-
-function isIosDevice(): boolean {
-  const ua = navigator.userAgent || '';
-  const platform = navigator.platform || '';
-  const touchPoints = navigator.maxTouchPoints || 0;
-  const iOSByUA = /iPad|iPhone|iPod/u.test(ua);
-  const iPadDesktopMode = platform === 'MacIntel' && touchPoints > 1;
-  return iOSByUA || iPadDesktopMode;
 }
 
 function isPngMimeType(value: string | null | undefined): boolean {
@@ -112,7 +103,7 @@ function copyImageWithExecCommand(dataUrl: string): boolean {
   }
 
   const range = document.createRange();
-  range.selectNodeContents(container);
+  range.selectNode(image);
   selection.removeAllRanges();
   selection.addRange(range);
   container.focus();
@@ -138,16 +129,6 @@ export function StickerLabPage() {
   );
   const [isPreparing, setIsPreparing] = useState(false);
   const [isCopying, setIsCopying] = useState(false);
-  const [fallbackPreviewSrc, setFallbackPreviewSrc] = useState<string | null>(null);
-  const iosDevice = isIosDevice();
-
-  useEffect(() => {
-    return () => {
-      if (fallbackPreviewSrc?.startsWith('blob:')) {
-        URL.revokeObjectURL(fallbackPreviewSrc);
-      }
-    };
-  }, [fallbackPreviewSrc]);
 
   async function handleFilePick(file: File | null) {
     if (!file) {
@@ -155,12 +136,6 @@ export function StickerLabPage() {
     }
 
     setIsPreparing(true);
-    setFallbackPreviewSrc((current) => {
-      if (current?.startsWith('blob:')) {
-        URL.revokeObjectURL(current);
-      }
-      return null;
-    });
 
     try {
       const nextPrepared = await prepareStickerImage(file);
@@ -191,10 +166,7 @@ export function StickerLabPage() {
     setIsCopying(true);
 
     try {
-      const copied =
-        (await writePngToClipboard(preparedClipboard.blob, preparedClipboard.dataUrl)) ||
-        copyImageWithExecCommand(preparedClipboard.dataUrl);
-      if (copied) {
+      if (copyImageWithExecCommand(preparedClipboard.dataUrl)) {
         pushToast({
           tone: 'success',
           title: 'Скопировано',
@@ -202,26 +174,19 @@ export function StickerLabPage() {
         return;
       }
 
-      if (iosDevice) {
-        const objectUrl = URL.createObjectURL(preparedClipboard.blob);
-        setFallbackPreviewSrc((current) => {
-          if (current?.startsWith('blob:')) {
-            URL.revokeObjectURL(current);
-          }
-          return objectUrl;
-        });
+      if (await writePngToClipboard(preparedClipboard.blob, preparedClipboard.dataUrl)) {
         pushToast({
-          tone: 'info',
-          title: 'iOS WebView не дал скопировать PNG',
+          tone: 'success',
+          title: 'Скопировано',
         });
         return;
       }
 
-      throw new Error('Не удалось скопировать');
+      throw new Error('Не удалось скопировать PNG');
     } catch (error: unknown) {
       pushToast({
         tone: 'danger',
-        title: normalizeErrorMessage(error, 'Не удалось скопировать'),
+        title: normalizeErrorMessage(error, 'Не удалось скопировать PNG'),
       });
     } finally {
       setIsCopying(false);
@@ -275,35 +240,6 @@ export function StickerLabPage() {
         </Link>
       </GlassCard>
 
-      {fallbackPreviewSrc ? (
-        <div
-          className="sticker-lab-viewer"
-          role="dialog"
-          aria-modal="true"
-          onClick={() => setFallbackPreviewSrc(null)}
-        >
-          <button
-            type="button"
-            className="sticker-lab-viewer__close"
-            onClick={(event) => {
-              event.stopPropagation();
-              setFallbackPreviewSrc(null);
-            }}
-            aria-label="Закрыть"
-          >
-            ×
-          </button>
-          <a
-            href={fallbackPreviewSrc}
-            target="_blank"
-            rel="noreferrer"
-            className="sticker-lab-viewer__surface"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <img src={fallbackPreviewSrc} alt="PNG" className="sticker-lab-viewer__image" />
-          </a>
-        </div>
-      ) : null}
     </div>
   );
 }
