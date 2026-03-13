@@ -5311,6 +5311,96 @@
   background: rgba(255, 255, 255, 0.98);
 }
 
+.managed-giveaway__editor-card {
+  gap: 12px;
+  padding: 16px;
+  background:
+    radial-gradient(circle at top right, rgba(66, 145, 233, 0.1), transparent 42%),
+    rgba(255, 255, 255, 0.98);
+}
+
+.managed-giveaway__editor-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.managed-giveaway__editor-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.managed-giveaway__preset-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.managed-giveaway__preset-row > span {
+  color: var(--text-secondary);
+  font-size: 0.79rem;
+  line-height: 1.3;
+}
+
+.managed-giveaway__preset-row--inline {
+  align-content: flex-start;
+}
+
+.managed-giveaway__preset-button {
+  min-height: 36px;
+  padding-inline: 12px;
+}
+
+.managed-giveaway__prize-editor-list {
+  display: grid;
+  gap: 8px;
+}
+
+.managed-giveaway__prize-editor-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.managed-giveaway__prize-editor-row .field {
+  margin: 0;
+}
+
+.managed-giveaway__prize-remove {
+  border: 1px solid rgba(68, 91, 117, 0.14);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--text-secondary);
+  border-radius: 14px;
+  min-width: 44px;
+  min-height: 44px;
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.managed-giveaway__prize-remove:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.managed-giveaway__prize-remove:hover {
+  color: var(--text-primary);
+}
+
+.managed-giveaway__editor-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.managed-giveaway__editor-actions .button {
+  min-height: 44px;
+}
+
 .managed-giveaway__summary-topline {
   display: flex;
   align-items: center;
@@ -5682,6 +5772,8 @@
   }
 
   .managed-giveaway__stat-grid,
+  .managed-giveaway__editor-grid,
+  .managed-giveaway__editor-actions,
   .giveaway-page__winner-row,
   .managed-giveaway__winner-row {
     grid-template-columns: 1fr;
