@@ -7,7 +7,6 @@ import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import type { ApiClient } from '../lib/api-client';
-import { cn } from '../lib/cn';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import {
   normalizeEntityType,
@@ -75,22 +74,13 @@ export function ChatsPage({ api }: { api: ApiClient }) {
   }, [activeTab]);
 
   const tabLabel = activeTab === 'chat' ? 'Чаты' : 'Каналы';
-  const searchLabel = activeTab === 'chat' ? 'Поиск по чатам' : 'Поиск по каналам';
-  const searchPlaceholder = activeTab === 'chat' ? 'Поиск чата или ID' : 'Поиск канала или ID';
-  const tabSubtitle =
-    activeTab === 'chat' ? 'Настройки и события' : 'Посты, реакции и обсуждения';
+  const searchLabel = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
+  const searchPlaceholder = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
 
   return (
     <div className="page-stack page-enter">
       {!isNoEntitiesForTab ? (
-        <GlassCard
-          className={cn(
-            'chats-search-card',
-            activeTab === 'channel' && 'chats-search-card--channel',
-          )}
-          padding="sm"
-          elevated
-        >
+        <GlassCard className="chats-search-card" padding="sm" elevated>
           <div className="chats-search-card__head">
             <div className="chats-search-card__title">
               <div className="chats-search-card__title-row">
@@ -102,7 +92,6 @@ export function ChatsPage({ api }: { api: ApiClient }) {
                   {filteredEntities.length}
                 </span>
               </div>
-              <p>{tabSubtitle}</p>
             </div>
           </div>
 
@@ -270,17 +259,7 @@ export function ChatsPage({ api }: { api: ApiClient }) {
             >
               <div className="chat-card__header">
                 <h3>{entity.title}</h3>
-                <span className="chip">ID: {entity.id}</span>
               </div>
-
-              <p className="chat-card__created">
-                Создан:{' '}
-                {new Date(entity.createdAt).toLocaleDateString('ru-RU', {
-                  day: '2-digit',
-                  month: 'long',
-                  year: 'numeric',
-                })}
-              </p>
 
               {activeTab === 'chat' ? (
                 <div className="chat-card__actions">

@@ -95,10 +95,8 @@
 
 .channel-settings-card {
   display: grid;
-  gap: 12px;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(246, 249, 253, 0.9)),
-    rgba(255, 255, 255, 0.8);
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.9);
 }
 
 .channel-settings-header__top {
@@ -389,7 +387,7 @@
 
 .channel-settings-stack {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .channel-settings-stack--tight {
@@ -397,24 +395,23 @@
 }
 
 .channel-settings-toggle-card {
-  border-radius: 16px;
+  border-radius: 14px;
   border: 1px solid rgba(62, 96, 127, 0.12);
-  background: rgba(255, 255, 255, 0.82);
-  padding: 12px;
+  background: rgba(255, 255, 255, 0.88);
+  padding: 10px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   cursor: pointer;
   transition:
     border-color 0.2s ease,
-    box-shadow 0.2s ease,
-    transform 0.16s ease;
+    background-color 0.2s ease;
 }
 
 .channel-settings-toggle-card:hover {
   border-color: rgba(11, 132, 255, 0.22);
-  box-shadow: 0 10px 22px rgba(25, 67, 101, 0.08);
+  background: rgba(255, 255, 255, 0.94);
 }
 
 .channel-settings-toggle-card.is-disabled {
@@ -770,9 +767,8 @@
 
 .chat-card {
   position: relative;
-  border-color: rgba(255, 255, 255, 0.76);
-  background:
-    linear-gradient(170deg, rgba(255, 255, 255, 0.85), rgba(236, 247, 255, 0.55)), var(--glass-bg);
+  border-color: rgba(62, 96, 127, 0.12);
+  background: rgba(255, 255, 255, 0.9);
 }
 
 .chat-card__header h3 {
@@ -2422,9 +2418,9 @@
 .settings-section__toggle-main small {
   font-size: 0.71rem;
   color: var(--text-muted);
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0.01em;
 }
 
 .settings-section__chevron {

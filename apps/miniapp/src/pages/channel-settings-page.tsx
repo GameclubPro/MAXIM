@@ -789,8 +789,8 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
           ? 'Черновик'
           : 'Сохранено';
   const channelMetaLabel =
-    resolvedTitle && resolvedTitle !== chatId
-      ? resolvedChannelLink || `ID ${chatId}`
+    resolvedTitle && resolvedTitle !== chatId && resolvedChannelLink
+      ? resolvedChannelLink
       : 'Настройки канала';
   const showHeaderStatus = headerStatusTone !== 'saved';
   const participantsCountLabel = formatParticipantsCount(
@@ -802,18 +802,18 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   const canPublishEngagement =
     publishButtons.includeCommentsButton || publishButtons.includeSuggestButton;
   const publishHint = !canPublishEngagement
-    ? 'Включите хотя бы один сценарий, чтобы публиковать пост с кнопками.'
+    ? 'Включите хотя бы один сценарий.'
     : draft.postSuggestionsEnabled
       ? publishButtons.includeCommentsButton
-        ? 'На новых постах предложка появится автоматически. В этом сообщении будут кнопки «Комментарии» и «Предложить пост».'
-        : 'На новых постах предложка появится автоматически. В этом сообщении будет кнопка «Предложить пост».'
+        ? 'Опубликуем кнопки «Комментарии» и «Предложить пост».'
+        : 'Опубликуем кнопку «Предложить пост».'
       : publishButtons.includeCommentsButton
-        ? 'Автопредложка выключена. Кнопка «Предложить пост» появится только под этим сообщением, вместе с кнопкой «Комментарии».'
-        : 'Автопредложка выключена. Кнопка «Предложить пост» появится только под этим сообщением.';
+        ? 'Кнопки будут только в этом посте.'
+        : 'Кнопка будет только в этом посте.';
   const broadcastHasButton = broadcastButtonEnabled && Boolean(broadcastButtonText.trim());
   const broadcastHeaderSummary = broadcastHasButton
-    ? 'КОНТЕНТ В БОТЕ · CTA ГОТОВА'
-    : 'КОНТЕНТ В БОТЕ';
+    ? 'контент в боте · CTA'
+    : 'контент в боте';
 
   function resetBroadcastComposer() {
     setBroadcastText('');
@@ -934,9 +934,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
           >
             <span className="settings-section__toggle-main">
               <h3>Комментарии</h3>
-              <small>
-                {draft.commentsEnabled ? 'ОБСУЖДЕНИЕ ВКЛЮЧЕНО' : 'ОБСУЖДЕНИЕ ВЫКЛЮЧЕНО'}
-              </small>
+              <small>{draft.commentsEnabled ? 'включены' : 'выключены'}</small>
             </span>
             <SectionChevron isOpen={expandedSections.comments} />
           </button>
@@ -949,7 +947,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
           <div className="settings-section__collapse-inner">
             <ChannelSettingsToggleCard
               title="Включить комментарии"
-              description="Открывает обсуждение под постами канала."
+              description="Обсуждение под постами."
               hintKey="commentsEnabled"
               openHintKey={openHintKey}
               onToggleHint={toggleHint}
@@ -961,7 +959,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
               <div className="channel-settings-stack">
                 <ChannelSettingsToggleCard
                   title="Модерация"
-                  description="Бот следит за сообщениями в комментариях."
+                  description="Проверка комментариев."
                   hintKey="commentsModerationEnabled"
                   openHintKey={openHintKey}
                   onToggleHint={toggleHint}
@@ -973,7 +971,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                   <div className="channel-settings-stack">
                     <ChannelSettingsToggleCard
                       title="Запретить ссылки"
-                      description="Комментарий со ссылкой сразу отклоняется."
+                      description="Ссылки в комментариях блокируются."
                       hintKey="commentsBlockLinksEnabled"
                       openHintKey={openHintKey}
                       onToggleHint={toggleHint}
@@ -983,7 +981,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
 
                     <ChannelSettingsToggleCard
                       title="Антиспам"
-                      description="Блокирует частые и повторяющиеся комментарии."
+                      description="Блок частых повторов."
                       hintKey="commentsAntiSpamEnabled"
                       openHintKey={openHintKey}
                       onToggleHint={toggleHint}
@@ -993,7 +991,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
 
                     <ChannelSettingsToggleCard
                       title="Не больше двух подряд"
-                      description="Третий комментарий подряд от одного автора отклоняется."
+                      description="Третий подряд блокируется."
                       hintKey="commentsLimitTwoInRowEnabled"
                       openHintKey={openHintKey}
                       onToggleHint={toggleHint}
@@ -1021,9 +1019,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
           >
             <span className="settings-section__toggle-main">
               <h3>Предложить пост</h3>
-              <small>
-                {draft.postSuggestionsEnabled ? 'ПОД КАЖДЫМ ПОСТОМ' : 'ТОЛЬКО РУЧНАЯ ПУБЛИКАЦИЯ'}
-              </small>
+              <small>{draft.postSuggestionsEnabled ? 'авто' : 'вручную'}</small>
             </span>
             <SectionChevron isOpen={expandedSections.postSuggestions} />
           </button>
@@ -1039,7 +1035,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
           <div className="settings-section__collapse-inner">
             <ChannelSettingsToggleCard
               title="Разрешить предложения"
-              description="Автоматически добавляет предложку под каждым новым постом. Если выключить, кнопку можно опубликовать вручную только для одного сообщения."
+              description="Кнопка предложки под новыми постами."
               hintKey="postSuggestionsEnabled"
               openHintKey={openHintKey}
               onToggleHint={toggleHint}
@@ -1057,7 +1053,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                     onToggleHint={toggleHint}
                     label="Пояснение для текста публикации"
                   >
-                    Этот текст будет опубликован в канале над кнопками.
+                    Текст поста перед кнопками.
                   </ChannelSettingsHintAnchor>
                 </div>
                 <textarea
@@ -1142,11 +1138,8 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
             <div className="channel-broadcast-studio">
               <div className="mailing-options-grid">
                 <div className="managed-broadcast-editor-note">
-                  <strong>Контент собирается в боте</strong>
-                  <small>
-                    В miniapp остаётся только CTA-кнопка. После кнопки ниже откроется личка бота,
-                    где можно отправить текст или фото обычным сообщением.
-                  </small>
+                  <strong>Контент в боте</strong>
+                  <small>Текст и фото отправляются в личке бота.</small>
                 </div>
 
                 <div
@@ -1166,8 +1159,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
                           onToggleHint={toggleHint}
                           label="Пояснение для кнопки в рассылке"
                         >
-                          Добавляйте CTA, когда нужно перевести пользователя в канал, пост или на
-                          внешнюю страницу одним нажатием.
+                          Кнопка для перехода в канал, пост или ссылку.
                         </ChannelSettingsHintAnchor>
                       </div>
                       <small className="mailing-option-card__subtitle">
@@ -1288,7 +1280,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
             >
               <span className="settings-section__toggle-main">
                 <h3>Опрос</h3>
-                <small>ГОЛОСОВАНИЕ В ОТДЕЛЬНОМ ПОСТЕ</small>
+                <small>отдельный пост</small>
               </span>
               <SectionChevron isOpen={expandedSections.poll} />
             </button>
@@ -1317,7 +1309,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
             >
               <span className="settings-section__toggle-main">
                 <h3>Розыгрыши</h3>
-                <small>СОЗДАНИЕ И УПРАВЛЕНИЕ В ЛИЧКЕ БОТА</small>
+                <small>управление в боте</small>
               </span>
               <SectionChevron isOpen={expandedSections.giveaway} />
             </button>
