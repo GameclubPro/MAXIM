@@ -4365,24 +4365,6 @@ export class PrivateControlService {
     return 'Черновик';
   }
 
-  private buildGiveawayDraftGuideLines(giveaway: ManagedGiveawayDetails): string[] {
-    const contentState = giveaway.imageEnabled
-      ? 'название + описание + фото'
-      : giveaway.description.trim()
-        ? 'название + описание'
-        : 'минимум: название';
-
-    return [
-      'Шаги',
-      `1. Контент: ${contentState}`,
-      `2. Призы: ${giveaway.prizes.length} мест`,
-      `3. Тайминг: ${
-        giveaway.startsAt ? this.formatDateTimeLabel(giveaway.startsAt) : 'старт сразу'
-      } -> ${this.formatDateTimeLabel(giveaway.endsAt)}`,
-      `4. Публикация: ${giveaway.prizes.length > 0 ? 'можно публиковать' : 'нужно добавить место'}`,
-    ];
-  }
-
   private async createManagedGiveawayDraftForSession(
     chatId: string,
     actor: AuthUser,
@@ -5494,65 +5476,35 @@ export class PrivateControlService {
 
     const giveaway = await this.getManagedGiveawayForSession(context.actor, session);
     const entityLabel = session.selectedEntityType === 'channel' ? 'Канал' : 'Чат';
-    const miniappUrl = this.managedGiveawayService.getGiveawaySettingsMiniappUrl(
-      session.selectedChatId,
+    const entityTitle = await this.resolveManagedEntityTitle(
+      context.actor,
       session.selectedEntityType,
+      session.selectedChatId,
     );
     const rows: MaxMessageButton[][] = [];
-    const lines: string[] = ['Розыгрыш', '', `${entityLabel}: ${session.selectedChatId}`];
+    const lines: string[] = ['Розыгрыш', '', `${entityLabel}: ${entityTitle}`];
     const waitingLabel = session.pendingInput
       ? this.describeInputPrompt(session.pendingInput).title
       : null;
 
     if (!giveaway) {
-      lines.push(
-        '',
-        'Состояние: пусто',
-        'Создание, фото, текст и публикация идут прямо здесь, в боте.',
-        'Нажмите «Создать черновик».',
-      );
+      lines.push('', 'Черновик не создан.');
       rows.push([this.callbackButton('Создать черновик', this.cb('giveaway_create'), 'positive')]);
     } else {
       const statusLabel = this.formatGiveawayStatusLabel(giveaway.status);
       lines.push(
         '',
-        giveaway.status === 'DRAFT' ? 'Черновик' : 'Текущий слот',
         `Название: ${giveaway.title}`,
         `Статус: ${statusLabel}`,
-        `Фото: ${giveaway.imageEnabled ? 'добавлено' : 'нет'}`,
-        `Период: ${
-          giveaway.startsAt
-            ? `${this.formatDateTimeLabel(giveaway.startsAt)} -> ${this.formatDateTimeLabel(giveaway.endsAt)}`
-            : `сейчас -> ${this.formatDateTimeLabel(giveaway.endsAt)}`
-        }`,
-        `Срок подтверждения: ${giveaway.claimHours} ч`,
-        `Заявки: ${giveaway.entriesCount} / подтверждено ${giveaway.verifiedEntriesCount} / на проверке ${giveaway.pendingEntriesCount}`,
+        `Старт: ${giveaway.startsAt ? this.formatDateTimeLabel(giveaway.startsAt) : 'сразу'}`,
+        `Финиш: ${this.formatDateTimeLabel(giveaway.endsAt)}`,
+        `Подтверждение: ${giveaway.claimHours} ч`,
+        `Заявки: ${giveaway.entriesCount} • ОК ${giveaway.verifiedEntriesCount} • ждут ${giveaway.pendingEntriesCount}`,
         `Победители: ${giveaway.winnersCount}`,
       );
 
-      if (giveaway.description.trim()) {
-        lines.push('', `Описание: ${this.compactText(giveaway.description, 220)}`);
-      }
-
-      const linkLines: string[] = [];
-      if (giveaway.publicationUrl) {
-        linkLines.push(`Пост: ${giveaway.publicationUrl}`);
-      }
-      if (giveaway.resultsUrl) {
-        linkLines.push(`Итоги: ${giveaway.resultsUrl}`);
-      }
-      if (linkLines.length > 0) {
-        lines.push('', 'Ссылки', ...linkLines);
-      }
-
-      if (giveaway.status === 'DRAFT') {
-        lines.push('', ...this.buildGiveawayDraftGuideLines(giveaway));
-        lines.push(
-          '',
-          waitingLabel
-            ? `Сейчас: жду ввод для «${waitingLabel}».`
-            : 'Сейчас: выберите следующий шаг кнопками ниже.',
-        );
+      if (waitingLabel && giveaway.status === 'DRAFT') {
+        lines.push(`Ввод: ${waitingLabel}`);
       }
 
       lines.push('', 'Призы');
@@ -5564,50 +5516,49 @@ export class PrivateControlService {
           ...giveaway.winners.flatMap((winner) => {
             const winnerLine = `${winner.prizePosition}. ${winner.prizeTitle} — ${
               winner.displayName ?? winner.userId
-            } · ${this.formatGiveawayWinnerStatusLabel(winner.status)}`;
-            return winner.claimDeadlineAt
-              ? [winnerLine, `Подтвердить до: ${this.formatDateTimeLabel(winner.claimDeadlineAt)}`]
-              : [winnerLine];
+            } (${this.formatGiveawayWinnerStatusLabel(winner.status)})`;
+            if (!winner.claimDeadlineAt) {
+              return [winnerLine];
+            }
+            return [`${winnerLine}, до ${this.formatDateTimeLabel(winner.claimDeadlineAt)}`];
           }),
         );
       }
 
       if (giveaway.status === 'DRAFT') {
         rows.push([
-          this.callbackButton('✏️ Название', this.cb('giveaway_input_prompt', 'title')),
-          this.callbackButton('📝 Описание', this.cb('giveaway_input_prompt', 'description')),
+          this.callbackButton('Название', this.cb('giveaway_input_prompt', 'title')),
+          this.callbackButton('Описание', this.cb('giveaway_input_prompt', 'description')),
         ]);
+
+        const photoRow: MaxMessageButton[] = [
+          this.callbackButton('Фото', this.cb('giveaway_input_prompt', 'photo')),
+        ];
+        if (giveaway.imageEnabled) {
+          photoRow.push(this.callbackButton('Убрать фото', this.cb('giveaway_clear_photo')));
+        }
+        rows.push(photoRow);
+
         rows.push([
-          this.callbackButton('🖼 Фото', this.cb('giveaway_input_prompt', 'photo')),
-          giveaway.imageEnabled
-            ? this.callbackButton('🗑 Убрать фото', this.cb('giveaway_clear_photo'))
-            : this.callbackButton('⬜ Без фото', this.cb('noop')),
-        ]);
-        rows.push([
-          this.callbackButton('🕒 Старт', this.cb('giveaway_input_prompt', 'start_at')),
+          this.callbackButton('Старт', this.cb('giveaway_input_prompt', 'start_at')),
           giveaway.startsAt
-            ? this.callbackButton('🧹 Убрать старт', this.cb('giveaway_clear_start'))
-            : this.callbackButton('⏱ Финиш', this.cb('giveaway_input_prompt', 'end_at')),
+            ? this.callbackButton('Убрать старт', this.cb('giveaway_clear_start'))
+            : this.callbackButton('Финиш', this.cb('giveaway_input_prompt', 'end_at')),
         ]);
         if (giveaway.startsAt) {
-          rows.push([this.callbackButton('⏱ Финиш', this.cb('giveaway_input_prompt', 'end_at'))]);
+          rows.push([this.callbackButton('Финиш', this.cb('giveaway_input_prompt', 'end_at'))]);
         }
         rows.push([
-          this.callbackButton('⌛ Подтверждение', this.cb('giveaway_input_prompt', 'claim_hours')),
-          this.callbackButton('➕ Добавить место', this.cb('giveaway_add_prize')),
+          this.callbackButton('Подтверждение', this.cb('giveaway_input_prompt', 'claim_hours')),
+          this.callbackButton('+ Место', this.cb('giveaway_add_prize')),
         ]);
         if (giveaway.prizes.length > 1) {
-          rows.push([
-            this.callbackButton(
-              `🗑 Удалить место ${giveaway.prizes.length}`,
-              this.cb('giveaway_remove_last_prize'),
-            ),
-          ]);
+          rows.push([this.callbackButton('- Место', this.cb('giveaway_remove_last_prize'))]);
         }
         rows.push(
           ...giveaway.prizes.map((prize) => [
             this.callbackButton(
-              `🏆 ${prize.position}. ${this.compactText(prize.title, 24)}`,
+              `Место ${prize.position}`,
               this.cb('giveaway_input_prompt', 'prize', String(prize.position)),
             ),
           ]),
@@ -5661,15 +5612,10 @@ export class PrivateControlService {
       lines.push('', `Статус: ${notice}`);
     }
 
-    if (miniappUrl) {
-      rows.push([this.buildMiniappOpenButton('Открыть миниапп', miniappUrl)]);
-    }
-
     rows.push([
       this.callbackButton('Обновить', this.cb('refresh_giveaway')),
       this.callbackButton('Главный экран', this.cb('home')),
     ]);
-    rows.push(...this.buildFooterButtons());
 
     return {
       text: lines.join('\n'),
@@ -5701,6 +5647,17 @@ export class PrivateControlService {
       user,
       session.selectedEntityType,
     );
+  }
+
+  private async resolveManagedEntityTitle(
+    actor: AuthUser,
+    entityType: ManagedEntityType,
+    entityId: string,
+  ): Promise<string> {
+    const entities = await this.adminService.listManagedEntities(actor, entityType);
+    const selected = entities.find((entity) => entity.id === entityId);
+    const normalizedTitle = selected?.title?.trim() ?? '';
+    return normalizedTitle.length > 0 ? normalizedTitle : entityId;
   }
 
   private formatGiveawayWinnerStatusLabel(status: ManagedGiveawayWinner['status']): string {
@@ -5737,10 +5694,10 @@ export class PrivateControlService {
     const lines = [
       'Розыгрыш',
       '',
-      `Название: ${giveaway.title}`,
-      `Приз: ${winner.prizePosition}. ${winner.prizeTitle}`,
+      giveaway.title,
+      `${winner.prizePosition}. ${winner.prizeTitle}`,
       `Статус: ${statusLabel}`,
-      `Пользователь: ${winner.displayName ?? winner.userId}`,
+      `Победитель: ${winner.displayName ?? winner.userId}`,
       ...(winner.claimDeadlineAt
         ? [`Подтвердить до: ${this.formatDateTimeLabel(winner.claimDeadlineAt)}`]
         : []),
@@ -5756,10 +5713,6 @@ export class PrivateControlService {
           'positive',
         ),
       ]);
-    }
-    const giveawayMiniappUrl = this.managedGiveawayService.getGiveawayPublicMiniappUrl(giveaway.id);
-    if (giveawayMiniappUrl) {
-      rows.push([this.buildMiniappOpenButton('Открыть розыгрыш', giveawayMiniappUrl)]);
     }
     const linkRow: MaxMessageButton[] = [];
     if (giveaway.publicationUrl) {
@@ -5779,7 +5732,7 @@ export class PrivateControlService {
     if (linkRow.length > 0) {
       rows.push(linkRow);
     }
-    rows.push(...this.buildFooterButtons());
+    rows.push([this.callbackButton('Главный экран', this.cb('home'))]);
 
     return {
       text: lines.join('\n'),
@@ -5797,7 +5750,7 @@ export class PrivateControlService {
         'Подтверждение приза недоступно: место уже перевыбрано или срок истёк.',
       ].join('\n'),
       options: {
-        buttons: this.buildFooterButtons(),
+        buttons: [[this.callbackButton('Главный экран', this.cb('home'))]],
       },
     };
   }
@@ -6699,40 +6652,37 @@ export class PrivateControlService {
       case 'giveaway_title':
         return {
           title: 'Название розыгрыша',
-          description: 'Введите короткое название для поста и экрана розыгрыша.',
+          description: 'Введите название.',
         };
       case 'giveaway_description':
         return {
           title: 'Описание розыгрыша',
-          description: 'Введите описание. Чтобы очистить, отправьте `-`.',
+          description: 'Введите описание или `-` для очистки.',
         };
       case 'giveaway_start_at':
         return {
           title: 'Время старта',
-          description:
-            'Введите ISO (2026-03-09T18:30:00+03:00) или ДД.ММ.ГГГГ ЧЧ:ММ. Чтобы старт был сразу после публикации, отправьте `-`.',
+          description: 'Введите дату/время или `-` для старта сразу.',
         };
       case 'giveaway_end_at':
         return {
           title: 'Время завершения',
-          description:
-            'Введите ISO (2026-03-09T18:30:00+03:00) или ДД.ММ.ГГГГ ЧЧ:ММ. Это обязательное поле.',
+          description: 'Введите дату и время завершения.',
         };
       case 'giveaway_claim_hours':
         return {
           title: 'Срок подтверждения приза',
-          description: 'Введите число часов от 1 до 336.',
+          description: 'Введите часы (1-336).',
         };
       case 'giveaway_photo':
         return {
           title: 'Фото розыгрыша',
-          description: 'Отправьте фото следующим сообщением. Бот добавит его в черновик.',
+          description: 'Отправьте фото.',
         };
       case 'giveaway_prize':
         return {
           title: `Приз ${input.index + 1}`,
-          description:
-            'Введите название приза для этого места. Если место новое, оно будет добавлено после сообщения.',
+          description: 'Введите название приза.',
         };
       case 'poll_question':
         return {

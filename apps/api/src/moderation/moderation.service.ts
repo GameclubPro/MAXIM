@@ -4759,7 +4759,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       const preview = entities.slice(0, PRIVATE_BOT_CHATS_PREVIEW_LIMIT);
       const lines = preview.map((chat, index) => {
         const title = (chat.title ?? `Чат ${chat.chatId}`).replace(/\s+/g, ' ').trim();
-        return `${index + 1}. ${title} (${chat.chatId})`;
+        return `${index + 1}. ${title}`;
       });
 
       const moreCount = entities.length - preview.length;
@@ -4778,7 +4778,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             ]
           : []),
         '',
-        'Для подробной настройки откройте приложение или используйте приватную панель.',
+        'Для настройки откройте приложение.',
       ].join('\n');
 
       await this.sendPrivateMenu(chatId, message);

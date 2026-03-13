@@ -1234,8 +1234,14 @@ describe('PrivateControlService', () => {
       expect.objectContaining({ userId: 'user-1' }),
       'chat',
     );
+    expect(getLastSentText(maxClient)).toContain('Чат: Тестовый чат 1');
     expect(getLastSentText(maxClient)).toContain('Название: Весенний розыгрыш');
-    expect(getLastSentText(maxClient)).toContain('Фото: нет');
+    expect(getLastSentText(maxClient)).toContain('Финиш:');
+    const buttonTexts = getLastButtons(maxClient)
+      .flat()
+      .map((button) => String((button as { text?: string }).text ?? ''));
+    expect(buttonTexts).not.toContain('Открыть приложение');
+    expect(buttonTexts).not.toContain('Поддержка');
   });
 
   it('starts a new giveaway draft in private bot when there is no current giveaway', async () => {
@@ -1246,7 +1252,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
 
-    expect(getLastEditedText(maxClient)).toContain('Состояние: пусто');
+    expect(getLastEditedText(maxClient)).toContain('Черновик не создан.');
     expect(
       getLastButtons(maxClient)
         .flat()
@@ -1451,7 +1457,7 @@ describe('PrivateControlService', () => {
             'text' in button &&
             button.text === 'Открыть розыгрыш',
         ),
-    ).toBe(true);
+    ).toBe(false);
 
     await service.handleUpdate(
       createPrivateCallbackUpdate('pc2|giveaway_claim_confirm|giveaway-1|winner-1'),
