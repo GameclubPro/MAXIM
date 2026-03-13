@@ -83,6 +83,7 @@ import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   MaxClientService,
   type MaxMessageButton,
+  type MaxPublishedMessage,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
 import {
@@ -119,6 +120,17 @@ type BroadcastOccurrenceResult = {
   sentChatIds: string[];
   failedChatIds: string[];
   firstSendError: unknown;
+};
+
+type StickerLabDeliveryMode = 'sticker' | 'image_variant' | 'image_fallback';
+type StickerLabDeliveryAttempt = {
+  name: string;
+  deliveryMode: StickerLabDeliveryMode;
+  attachments: Record<string, unknown>[];
+};
+type StickerLabDeliveryResult = {
+  sent: MaxPublishedMessage;
+  deliveryMode: StickerLabDeliveryMode;
 };
 
 const RULES_IMAGE_MAX_BYTES = 1_000_000;
@@ -244,21 +256,25 @@ export class AdminService {
     }
 
     try {
-      const sent = await this.maxClient.sendCustomMessageImmediateWithResolvedLink(privateChatId, {
-        attachments: [
-          {
-            type: 'image',
-            payload: uploadPayload,
-          },
-        ],
-      });
+      const delivery = await this.deliverStickerLabAsset(
+        privateChatId,
+        uploadPayload,
+        imageMimeType,
+      );
+      const attachmentType =
+        delivery.deliveryMode === 'sticker'
+          ? 'sticker'
+          : delivery.deliveryMode === 'image_variant'
+            ? 'image_variant'
+            : 'image';
       this.logger.log(
         {
           userId: user.userId,
           privateChatId,
-          mid: sent.messageId,
-          messageUrl: sent.url,
-          attachmentType: 'image',
+          mid: delivery.sent.messageId,
+          messageUrl: delivery.sent.url,
+          attachmentType,
+          deliveryMode: delivery.deliveryMode,
           imageMimeType,
           imageFileName: normalizedImageFileName,
           source: 'sticker_lab',
@@ -267,8 +283,8 @@ export class AdminService {
       );
 
       return stickerLabShareResponseSchema.parse({
-        mid: sent.messageId,
-        messageUrl: sent.url,
+        mid: delivery.sent.messageId,
+        messageUrl: delivery.sent.url,
         privateChatId,
       });
     } catch (error: unknown) {
@@ -284,6 +300,125 @@ export class AdminService {
         'Не удалось отправить изображение в личный чат бота. Попробуйте ещё раз.',
       );
     }
+  }
+
+  private async deliverStickerLabAsset(
+    chatId: string,
+    uploadPayload: Record<string, unknown>,
+    preparedMimeType: string,
+  ): Promise<StickerLabDeliveryResult> {
+    const attempts: StickerLabDeliveryAttempt[] = [
+      {
+        name: 'sticker_payload',
+        deliveryMode: 'sticker',
+        attachments: [
+          {
+            type: 'sticker',
+            payload: uploadPayload,
+          },
+        ],
+      },
+      {
+        name: 'sticker_payload_with_mime',
+        deliveryMode: 'sticker',
+        attachments: [
+          {
+            type: 'sticker',
+            payload: {
+              ...uploadPayload,
+              mime_type: preparedMimeType,
+            },
+          },
+        ],
+      },
+      {
+        name: 'image_payload_with_media_type_sticker',
+        deliveryMode: 'image_variant',
+        attachments: [
+          {
+            type: 'image',
+            payload: {
+              ...uploadPayload,
+              mime_type: preparedMimeType,
+              media_type: 'sticker',
+            },
+          },
+        ],
+      },
+    ];
+    const failedAttempts: Array<{
+      attempt: number;
+      name: string;
+      attachmentType: string;
+      error: string;
+    }> = [];
+
+    for (const [index, attempt] of attempts.entries()) {
+      try {
+        const sent = await this.maxClient.sendCustomMessageImmediateWithResolvedLink(chatId, {
+          attachments: attempt.attachments,
+        });
+        const attachmentType =
+          typeof attempt.attachments[0]?.type === 'string' ? attempt.attachments[0].type : 'unknown';
+        if (attempt.deliveryMode === 'sticker') {
+          this.logger.log(
+            {
+              chatId,
+              attempt: index + 1,
+              name: attempt.name,
+              attachmentType,
+            },
+            'MAX accepted sticker attachment from sticker lab',
+          );
+          return {
+            sent,
+            deliveryMode: 'sticker',
+          };
+        }
+
+        this.logger.warn(
+          {
+            chatId,
+            attempt: index + 1,
+            name: attempt.name,
+            attachmentType,
+          },
+          'MAX accepted only image-based sticker variant from sticker lab',
+        );
+        return {
+          sent,
+          deliveryMode: 'image_variant',
+        };
+      } catch (error: unknown) {
+        failedAttempts.push({
+          attempt: index + 1,
+          name: attempt.name,
+          attachmentType:
+            typeof attempt.attachments[0]?.type === 'string' ? attempt.attachments[0].type : 'unknown',
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    this.logger.warn(
+      {
+        chatId,
+        failedAttempts,
+      },
+      'MAX rejected all sticker attachment variants from sticker lab, falling back to image',
+    );
+    const sent = await this.maxClient.sendCustomMessageImmediateWithResolvedLink(chatId, {
+      attachments: [
+        {
+          type: 'image',
+          payload: uploadPayload,
+        },
+      ],
+    });
+    return {
+      sent,
+      deliveryMode: 'image_fallback',
+    };
   }
 
   async listChats(user: AuthUser): Promise<ChatSummary[]> {

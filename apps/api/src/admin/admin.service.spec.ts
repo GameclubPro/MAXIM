@@ -395,7 +395,7 @@ describe('AdminService night mode settings normalization', () => {
 });
 
 describe('AdminService.shareStickerLabAsset', () => {
-  it('sends prepared image into the current private dialog when init data already has dialog chat id', async () => {
+  it('prefers sticker attachment in the current private dialog when init data already has dialog chat id', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-1' }),
@@ -440,7 +440,7 @@ describe('AdminService.shareStickerLabAsset', () => {
       {
         attachments: [
           {
-            type: 'image',
+            type: 'sticker',
             payload: { token: 'upload-token-1' },
           },
         ],
@@ -449,6 +449,90 @@ describe('AdminService.shareStickerLabAsset', () => {
     expect(result).toEqual({
       mid: 'mid-sticker-1',
       messageUrl: 'https://max.ru/c/152517912/test-mid',
+      privateChatId: '152517912',
+    });
+  });
+
+  it('falls back to plain image when MAX rejects sticker attachment variants', async () => {
+    const prisma = createPrismaMock();
+    const sendCustomMessageImmediateWithResolvedLink = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('sticker rejected #1'))
+      .mockRejectedValueOnce(new Error('sticker rejected #2'))
+      .mockRejectedValueOnce(new Error('sticker rejected #3'))
+      .mockResolvedValueOnce({
+        messageId: 'mid-fallback-1',
+        url: 'https://max.ru/c/152517912/fallback-mid',
+      });
+    const maxClient = {
+      uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-fallback' }),
+      sendCustomMessageImmediateWithResolvedLink,
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.shareStickerLabAsset(
+      {
+        userId: '98315271',
+        username: 'alex',
+        displayName: 'Alex',
+        chatId: '152517912',
+        chatTitle: 'Личка с ботом',
+      },
+      {
+        imageBase64: Buffer.from('sticker-image').toString('base64'),
+        imageMimeType: 'image/png',
+        imageFileName: 'sticker.png',
+      },
+    );
+
+    expect(sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(4);
+    expect(sendCustomMessageImmediateWithResolvedLink).toHaveBeenNthCalledWith(1, '152517912', {
+      attachments: [
+        {
+          type: 'sticker',
+          payload: { token: 'upload-token-fallback' },
+        },
+      ],
+    });
+    expect(sendCustomMessageImmediateWithResolvedLink).toHaveBeenNthCalledWith(2, '152517912', {
+      attachments: [
+        {
+          type: 'sticker',
+          payload: { token: 'upload-token-fallback', mime_type: 'image/png' },
+        },
+      ],
+    });
+    expect(sendCustomMessageImmediateWithResolvedLink).toHaveBeenNthCalledWith(3, '152517912', {
+      attachments: [
+        {
+          type: 'image',
+          payload: {
+            token: 'upload-token-fallback',
+            mime_type: 'image/png',
+            media_type: 'sticker',
+          },
+        },
+      ],
+    });
+    expect(sendCustomMessageImmediateWithResolvedLink).toHaveBeenNthCalledWith(4, '152517912', {
+      attachments: [
+        {
+          type: 'image',
+          payload: { token: 'upload-token-fallback' },
+        },
+      ],
+    });
+    expect(result).toEqual({
+      mid: 'mid-fallback-1',
+      messageUrl: 'https://max.ru/c/152517912/fallback-mid',
       privateChatId: '152517912',
     });
   });
