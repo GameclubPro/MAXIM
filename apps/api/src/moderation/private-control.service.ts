@@ -216,6 +216,38 @@ type ParsedImageAttachment = {
   payloadKeys: string[];
 };
 
+type ParsedImageFileAttachment = {
+  url: string;
+  token: string | null;
+  fileId: string | null;
+  fileName: string | null;
+  size: number | null;
+  mimeType: string | null;
+  mediaType: string | null;
+  payloadKeys: string[];
+};
+
+type ParsedImageSourceAttachment =
+  | {
+      kind: 'image';
+      attachment: ParsedImageAttachment;
+    }
+  | {
+      kind: 'file';
+      attachment: ParsedImageFileAttachment;
+    };
+
+type ParsedFileAttachment = {
+  url: string | null;
+  token: string | null;
+  fileId: string | null;
+  fileName: string | null;
+  size: number | null;
+  mimeType: string | null;
+  mediaType: string | null;
+  payloadKeys: string[];
+};
+
 type ParsedStickerAttachment = {
   code: string;
   url: string | null;
@@ -231,6 +263,12 @@ type ParsedStickerAttachment = {
 type PreparedStickerAsset = {
   buffer: Buffer<ArrayBufferLike>;
   mimeType: 'image/png' | 'image/webp';
+  fileName: string;
+};
+
+type DownloadedImageAsset = {
+  base64: string;
+  mimeType: string;
   fileName: string;
 };
 
@@ -869,6 +907,13 @@ export class PrivateControlService {
 
       await this.processTextMessage(context);
     } catch (error: unknown) {
+      const userMessage =
+        error instanceof BadRequestException &&
+        typeof error.message === 'string' &&
+        error.message.trim().length > 0
+          ? error.message
+          : 'Что-то пошло не так. Попробуйте ещё раз через несколько секунд.';
+
       this.logger.warn(
         {
           chatId: context.chatId,
@@ -880,7 +925,7 @@ export class PrivateControlService {
 
       await this.sendImmediate(
         context.chatId,
-        'Что-то пошло не так. Попробуйте ещё раз через несколько секунд.',
+        userMessage,
       );
     }
   }
@@ -1059,7 +1104,7 @@ export class PrivateControlService {
   private async processTextMessage(context: PrivateContext): Promise<void> {
     const session = await this.loadSession(context.actor.userId);
     const normalizedCommand = this.normalizeCommand(context.text);
-    const imageAttachment = this.extractFirstImageAttachment(context.update);
+    const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
     const stickerAttachment = this.extractFirstStickerAttachment(context.update);
 
     if (normalizedCommand === '/reset') {
@@ -1184,7 +1229,7 @@ export class PrivateControlService {
       session.screen === 'broadcast' &&
       session.selectedChatId &&
       (context.text.trim().length > 0 ||
-        imageAttachment !== null ||
+        imageSourceAttachment !== null ||
         this.hasVideoAttachment(context.update))
     ) {
       await this.captureBroadcastContent(context, session, context.text);
@@ -1196,8 +1241,8 @@ export class PrivateControlService {
       return;
     }
 
-    if (imageAttachment) {
-      await this.handleStickerPhotoMessage(context, session, imageAttachment);
+    if (imageSourceAttachment) {
+      await this.handleStickerImageSourceMessage(context, session, imageSourceAttachment);
       return;
     }
 
@@ -3387,12 +3432,14 @@ export class PrivateControlService {
       }
 
       case 'broadcast_photo': {
-        const imageAttachment = this.extractFirstImageAttachment(context.update);
-        if (!imageAttachment) {
-          throw new BadRequestException('Отправьте фото отдельным сообщением.');
+        const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
+        if (!imageSourceAttachment) {
+          throw new BadRequestException(
+            'Отправьте фото или PNG/WebP/JPG файлом отдельным сообщением.',
+          );
         }
 
-        const downloaded = await this.downloadImageAttachment(imageAttachment);
+        const downloaded = await this.downloadImageSourceAttachment(imageSourceAttachment);
         session.broadcastDraft.imageEnabled = true;
         session.broadcastDraft.imageBase64 = downloaded.base64;
         session.broadcastDraft.imageMimeType = downloaded.mimeType;
@@ -3413,9 +3460,9 @@ export class PrivateControlService {
       }
 
       case 'sticker_photo': {
-        const imageAttachment = this.extractFirstImageAttachment(context.update);
-        if (imageAttachment) {
-          await this.handleStickerPhotoMessage(context, session, imageAttachment);
+        const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
+        if (imageSourceAttachment) {
+          await this.handleStickerImageSourceMessage(context, session, imageSourceAttachment);
           return;
         }
 
@@ -3429,7 +3476,15 @@ export class PrivateControlService {
           throw new BadRequestException('Нужно фото или sticker, не видео.');
         }
 
-        throw new BadRequestException('Отправьте фото или sticker отдельным сообщением.');
+        if (this.extractFirstFileAttachment(context.update)) {
+          throw new BadRequestException(
+            'Нужен PNG/WebP/JPG файлом, фото или sticker отдельным сообщением.',
+          );
+        }
+
+        throw new BadRequestException(
+          'Отправьте фото, PNG/WebP/JPG файлом или sticker отдельным сообщением.',
+        );
       }
 
       case 'giveaway_title': {
@@ -3556,12 +3611,17 @@ export class PrivateControlService {
 
       case 'giveaway_photo': {
         this.assertSelectedEntityType(session, session.selectedEntityType ?? 'chat');
-        const imageAttachment = this.extractFirstImageAttachment(context.update);
-        if (!imageAttachment) {
-          throw new BadRequestException('Отправьте фото отдельным сообщением.');
+        const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
+        if (!imageSourceAttachment) {
+          throw new BadRequestException(
+            'Отправьте фото или PNG/WebP/JPG файлом отдельным сообщением.',
+          );
         }
 
-        const downloaded = await this.downloadImageAttachment(imageAttachment, 'private-giveaway');
+        const downloaded = await this.downloadImageSourceAttachment(
+          imageSourceAttachment,
+          'private-giveaway',
+        );
         const draft = await this.getManagedGiveawayDraftForSession(context.actor, session);
         const saved = await this.updateManagedGiveawayDraftForSession(
           session.selectedChatId,
@@ -3745,23 +3805,23 @@ export class PrivateControlService {
     rawText: string,
   ): Promise<void> {
     const normalizedText = rawText.trim();
-    const imageAttachment = this.extractFirstImageAttachment(context.update);
+    const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
 
-    if (!normalizedText && !imageAttachment) {
+    if (!normalizedText && !imageSourceAttachment) {
       if (this.hasVideoAttachment(context.update)) {
         throw new BadRequestException(
-          'Видео в рассылке пока не поддерживается. Отправьте текст или фото.',
+          'Видео в рассылке пока не поддерживается. Отправьте текст или изображение.',
         );
       }
-      throw new BadRequestException('Отправьте текст или фото отдельным сообщением.');
+      throw new BadRequestException('Отправьте текст или изображение отдельным сообщением.');
     }
 
     if (normalizedText) {
       session.broadcastDraft.text = rawText;
     }
 
-    if (imageAttachment) {
-      const downloaded = await this.downloadImageAttachment(imageAttachment);
+    if (imageSourceAttachment) {
+      const downloaded = await this.downloadImageSourceAttachment(imageSourceAttachment);
       session.broadcastDraft.imageEnabled = true;
       session.broadcastDraft.imageBase64 = downloaded.base64;
       session.broadcastDraft.imageMimeType = downloaded.mimeType;
@@ -3772,48 +3832,71 @@ export class PrivateControlService {
     session.screen = 'broadcast';
   }
 
-  private async handleStickerPhotoMessage(
+  private async handleStickerImageSourceMessage(
     context: PrivateContext,
     session: PrivateSession,
-    imageAttachment: ParsedImageAttachment,
+    imageSourceAttachment: ParsedImageSourceAttachment,
   ): Promise<void> {
-    let imageUrlHost: string | null = null;
-    let imageUrlPath: string | null = null;
-    try {
-      const parsed = new URL(imageAttachment.url);
-      imageUrlHost = parsed.host || null;
-      imageUrlPath = parsed.pathname || null;
-    } catch {
-      imageUrlHost = null;
-      imageUrlPath = null;
+    if (imageSourceAttachment.kind === 'image') {
+      const imageAttachment = imageSourceAttachment.attachment;
+      const imageUrlMetadata = this.parseAttachmentUrlMetadata(imageAttachment.url);
+      this.logger.log(
+        {
+          chatId: context.chatId,
+          actorUserId: context.actor.userId,
+          actorDisplayName: context.actor.displayName ?? null,
+          messageId: context.update.message?.messageId ?? null,
+          pendingInputKind: session.pendingInput?.kind ?? null,
+          sourceType: 'image',
+          imageUrl: imageAttachment.url,
+          imageUrlHost: imageUrlMetadata.host,
+          imageUrlPath: imageUrlMetadata.path,
+          imageToken: imageAttachment.token,
+          imagePhotoId: imageAttachment.photoId,
+          imageWidth: imageAttachment.width,
+          imageHeight: imageAttachment.height,
+          imageMimeType: imageAttachment.mimeType,
+          imageMediaType: imageAttachment.mediaType,
+          imagePayloadKeys: imageAttachment.payloadKeys,
+        },
+        'Incoming image attachment for sticker flow',
+      );
+    } else {
+      const fileAttachment = imageSourceAttachment.attachment;
+      const fileUrlMetadata = this.parseAttachmentUrlMetadata(fileAttachment.url);
+      this.logger.log(
+        {
+          chatId: context.chatId,
+          actorUserId: context.actor.userId,
+          actorDisplayName: context.actor.displayName ?? null,
+          messageId: context.update.message?.messageId ?? null,
+          pendingInputKind: session.pendingInput?.kind ?? null,
+          sourceType: 'file',
+          fileUrl: fileAttachment.url,
+          fileUrlHost: fileUrlMetadata.host,
+          fileUrlPath: fileUrlMetadata.path,
+          fileToken: fileAttachment.token,
+          fileId: fileAttachment.fileId,
+          fileName: fileAttachment.fileName,
+          fileSize: fileAttachment.size,
+          fileMimeType: fileAttachment.mimeType,
+          fileMediaType: fileAttachment.mediaType,
+          filePayloadKeys: fileAttachment.payloadKeys,
+        },
+        'Incoming image file attachment for sticker flow',
+      );
     }
 
-    this.logger.log(
-      {
-        chatId: context.chatId,
-        actorUserId: context.actor.userId,
-        actorDisplayName: context.actor.displayName ?? null,
-        messageId: context.update.message?.messageId ?? null,
-        pendingInputKind: session.pendingInput?.kind ?? null,
-        imageUrl: imageAttachment.url,
-        imageUrlHost,
-        imageUrlPath,
-        imageToken: imageAttachment.token,
-        imagePhotoId: imageAttachment.photoId,
-        imageWidth: imageAttachment.width,
-        imageHeight: imageAttachment.height,
-        imageMimeType: imageAttachment.mimeType,
-        imageMediaType: imageAttachment.mediaType,
-        imagePayloadKeys: imageAttachment.payloadKeys,
-      },
-      'Incoming image attachment for sticker flow',
+    const downloaded = await this.downloadImageSourceAttachment(
+      imageSourceAttachment,
+      'private-sticker-source',
     );
-
-    const downloaded = await this.downloadImageAttachment(imageAttachment, 'private-sticker-source');
-    const preparedSticker = await this.prepareStickerAsset(
-      Buffer.from(downloaded.base64, 'base64'),
-      downloaded.fileName,
-    );
+    const sourceBuffer = Buffer.from(downloaded.base64, 'base64');
+    const preparedSticker = await this.prepareStickerAsset(sourceBuffer, downloaded.fileName);
+    const fallbackPng =
+      preparedSticker.mimeType === 'image/png'
+        ? preparedSticker
+        : await this.preparePngStickerFallbackAsset(sourceBuffer, downloaded.fileName);
     const uploadPayload = await this.maxClient.uploadImage(
       preparedSticker.buffer,
       preparedSticker.fileName,
@@ -3833,6 +3916,7 @@ export class PrivateControlService {
       context.chatId,
       uploadPayload,
       preparedSticker.mimeType,
+      fallbackPng,
     );
 
     session.pendingInput = null;
@@ -3907,25 +3991,7 @@ export class PrivateControlService {
     const baseName = sourceFileName.replace(/\.[^.]+$/u, '').trim() || `sticker-${Date.now()}`;
 
     try {
-      const pngBuffer = await sharp(sourceBuffer)
-        .rotate()
-        .resize(512, 512, {
-          fit: 'contain',
-          background: {
-            r: 0,
-            g: 0,
-            b: 0,
-            alpha: 0,
-          },
-        })
-        .png({
-          compressionLevel: 9,
-          adaptiveFiltering: true,
-          palette: true,
-          quality: 100,
-          effort: 10,
-        })
-        .toBuffer();
+      const pngBuffer = await this.renderSquareStickerPng(sourceBuffer);
 
       if (pngBuffer.length > 0 && pngBuffer.length <= STICKER_IMAGE_MAX_BYTES) {
         return {
@@ -3974,10 +4040,59 @@ export class PrivateControlService {
     };
   }
 
+  private async preparePngStickerFallbackAsset(
+    sourceBuffer: Buffer,
+    sourceFileName: string,
+  ): Promise<PreparedStickerAsset> {
+    const baseName = sourceFileName.replace(/\.[^.]+$/u, '').trim() || `sticker-${Date.now()}`;
+
+    try {
+      const pngBuffer = await this.renderSquareStickerPng(sourceBuffer);
+      if (pngBuffer.length === 0) {
+        throw new BadRequestException('Не удалось подготовить PNG из фото.');
+      }
+
+      return {
+        buffer: pngBuffer,
+        mimeType: 'image/png',
+        fileName: `${baseName}.png`,
+      };
+    } catch (error: unknown) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
+      throw new BadRequestException('Не удалось подготовить PNG из фото.');
+    }
+  }
+
+  private async renderSquareStickerPng(sourceBuffer: Buffer): Promise<Buffer<ArrayBufferLike>> {
+    return sharp(sourceBuffer)
+      .rotate()
+      .resize(512, 512, {
+        fit: 'contain',
+        background: {
+          r: 0,
+          g: 0,
+          b: 0,
+          alpha: 0,
+        },
+      })
+      .png({
+        compressionLevel: 9,
+        adaptiveFiltering: true,
+        palette: true,
+        quality: 100,
+        effort: 10,
+      })
+      .toBuffer();
+  }
+
   private async deliverPreparedSticker(
     chatId: string,
     uploadPayload: Record<string, unknown>,
     preparedMimeType: PreparedStickerAsset['mimeType'],
+    fallbackPngAsset: PreparedStickerAsset,
   ): Promise<StickerDeliveryMode> {
     const attempts: Array<{
       name: string;
@@ -4007,7 +4122,9 @@ export class PrivateControlService {
           },
         ],
       },
-      {
+    ];
+    if (preparedMimeType === 'image/png') {
+      attempts.push({
         name: 'image_payload_with_media_type_sticker',
         deliveryMode: 'image_variant',
         attachments: [
@@ -4020,8 +4137,8 @@ export class PrivateControlService {
             },
           },
         ],
-      },
-    ];
+      });
+    }
     const failedAttempts: Array<{
       attempt: number;
       name: string;
@@ -4076,16 +4193,41 @@ export class PrivateControlService {
     this.logger.warn(
       {
         chatId,
+        preparedMimeType,
+        fallbackMimeType: fallbackPngAsset.mimeType,
+        fallbackFileName: fallbackPngAsset.fileName,
         failedAttempts,
       },
-      'MAX rejected all sticker attachment variants, falling back to image',
+      'MAX rejected all sticker attachment variants, falling back to PNG image',
     );
+    const fallbackUploadPayload =
+      preparedMimeType === 'image/png'
+        ? uploadPayload
+        : await this.maxClient.uploadImage(
+            fallbackPngAsset.buffer,
+            fallbackPngAsset.fileName,
+            fallbackPngAsset.mimeType,
+          );
+
+    if (preparedMimeType !== 'image/png') {
+      this.logger.log(
+        {
+          chatId,
+          fallbackFileName: fallbackPngAsset.fileName,
+          fallbackMimeType: fallbackPngAsset.mimeType,
+          fallbackBytes: fallbackPngAsset.buffer.length,
+          uploadPayloadKeys: Object.keys(fallbackUploadPayload).sort(),
+        },
+        'Prepared PNG fallback uploaded for private sticker flow',
+      );
+    }
+
     await this.maxClient.sendCustomMessageImmediate(chatId, {
       text: '',
       attachments: [
         {
           type: 'image',
-          payload: uploadPayload,
+          payload: fallbackUploadPayload,
         },
       ],
     });
@@ -4109,7 +4251,7 @@ export class PrivateControlService {
           ? [
               'Стикер из фото',
               '',
-              'Статус: MAX принял только image-вариант.',
+              'Статус: MAX принял только PNG image-вариант.',
               'В чате это может отображаться как обычная картинка, а не как настоящий sticker.',
               'Пришлите ещё фото или нажмите кнопку ниже.',
             ]
@@ -4117,7 +4259,7 @@ export class PrivateControlService {
             'Стикер из фото',
             '',
             'Статус: MAX не принял вложение как sticker.',
-            'Отправил подготовленное изображение как обычную картинку.',
+            'Отправил подготовленное изображение как PNG-картинку.',
             'Можно попробовать ещё одно фото.',
           ];
 
@@ -6528,9 +6670,9 @@ export class PrivateControlService {
         };
       case 'sticker_photo':
         return {
-          title: 'Фото или sticker',
+          title: 'Фото, файл или sticker',
           description:
-            'Отправьте фото или готовый sticker следующим сообщением. Фото бот попробует превратить в sticker, а готовый sticker вернёт по его коду.',
+            'Отправьте фото, PNG/WebP/JPG файлом или готовый sticker. Бот сначала попробует отправить настоящий sticker, а если MAX не примет его, отправит PNG.',
         };
       case 'giveaway_title':
         return {
@@ -7406,6 +7548,26 @@ export class PrivateControlService {
     return attachments;
   }
 
+  private extractFirstImageSourceAttachment(update: MaxUpdate): ParsedImageSourceAttachment | null {
+    const imageAttachment = this.extractFirstImageAttachment(update);
+    if (imageAttachment) {
+      return {
+        kind: 'image',
+        attachment: imageAttachment,
+      };
+    }
+
+    const imageFileAttachment = this.extractFirstImageFileAttachment(update);
+    if (!imageFileAttachment) {
+      return null;
+    }
+
+    return {
+      kind: 'file',
+      attachment: imageFileAttachment,
+    };
+  }
+
   private extractFirstImageAttachment(update: MaxUpdate): ParsedImageAttachment | null {
     for (const row of this.collectMessageAttachments(update)) {
       const type = this.readLowerString(row.type);
@@ -7432,6 +7594,44 @@ export class PrivateControlService {
         mimeType: this.readLowerString(payload.mime_type ?? payload.mimeType),
         mediaType: this.readLowerString(payload.media_type ?? payload.mediaType),
         payloadKeys: Object.keys(payload).sort(),
+      };
+    }
+
+    return null;
+  }
+
+  private extractFirstFileAttachment(update: MaxUpdate): ParsedFileAttachment | null {
+    for (const row of this.collectMessageAttachments(update)) {
+      const parsed = this.parseFileAttachment(row);
+      if (parsed) {
+        return parsed;
+      }
+    }
+
+    return null;
+  }
+
+  private extractFirstImageFileAttachment(update: MaxUpdate): ParsedImageFileAttachment | null {
+    for (const row of this.collectMessageAttachments(update)) {
+      const parsed = this.parseFileAttachment(row);
+      if (!parsed?.url) {
+        continue;
+      }
+
+      const resolvedMimeType = this.resolveImageMimeType(parsed.mimeType, parsed.fileName, parsed.url);
+      if (!resolvedMimeType) {
+        continue;
+      }
+
+      return {
+        url: parsed.url,
+        token: parsed.token,
+        fileId: parsed.fileId,
+        fileName: parsed.fileName,
+        size: parsed.size,
+        mimeType: resolvedMimeType,
+        mediaType: parsed.mediaType,
+        payloadKeys: parsed.payloadKeys,
       };
     }
 
@@ -7513,6 +7713,31 @@ export class PrivateControlService {
     }
   }
 
+  private parseAttachmentUrlMetadata(url: string | null): {
+    host: string | null;
+    path: string | null;
+  } {
+    if (!url) {
+      return {
+        host: null,
+        path: null,
+      };
+    }
+
+    try {
+      const parsed = new URL(url);
+      return {
+        host: parsed.host || null,
+        path: parsed.pathname || null,
+      };
+    } catch {
+      return {
+        host: null,
+        path: null,
+      };
+    }
+  }
+
   private hasVideoAttachment(update: MaxUpdate): boolean {
     for (const row of this.collectMessageAttachments(update)) {
       const type = this.readLowerString(row.type);
@@ -7530,7 +7755,7 @@ export class PrivateControlService {
   private async downloadImageAttachment(
     imageAttachment: ParsedImageAttachment,
     filePrefix = 'private-broadcast',
-  ): Promise<{ base64: string; mimeType: string; fileName: string }> {
+  ): Promise<DownloadedImageAsset> {
     const timeout = setTimeout(() => {
       controller.abort();
     }, 10_000);
@@ -7549,7 +7774,7 @@ export class PrivateControlService {
       const mimeTypeHeader = response.headers.get('content-type') ?? '';
       const mimeType = mimeTypeHeader.toLowerCase().startsWith('image/')
         ? mimeTypeHeader.split(';')[0].trim().toLowerCase()
-        : 'image/jpeg';
+        : imageAttachment.mimeType ?? 'image/jpeg';
 
       const arrayBuffer = await response.arrayBuffer();
       const buffer = Buffer.from(arrayBuffer);
@@ -7578,6 +7803,77 @@ export class PrivateControlService {
     }
   }
 
+  private async downloadImageSourceAttachment(
+    imageSourceAttachment: ParsedImageSourceAttachment,
+    filePrefix = 'private-broadcast',
+  ): Promise<DownloadedImageAsset> {
+    if (imageSourceAttachment.kind === 'image') {
+      return this.downloadImageAttachment(imageSourceAttachment.attachment, filePrefix);
+    }
+
+    return this.downloadImageFileAttachment(imageSourceAttachment.attachment, filePrefix);
+  }
+
+  private async downloadImageFileAttachment(
+    imageFileAttachment: ParsedImageFileAttachment,
+    filePrefix = 'private-broadcast',
+  ): Promise<DownloadedImageAsset> {
+    const timeout = setTimeout(() => {
+      controller.abort();
+    }, 10_000);
+    const controller = new AbortController();
+
+    try {
+      const response = await fetch(imageFileAttachment.url, {
+        method: 'GET',
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        throw new BadRequestException(`Не удалось загрузить файл (${response.status}).`);
+      }
+
+      const mimeTypeHeader = response.headers.get('content-type') ?? '';
+      const mimeType = this.resolveImageMimeType(
+        mimeTypeHeader.toLowerCase().startsWith('image/')
+          ? mimeTypeHeader.split(';')[0].trim().toLowerCase()
+          : imageFileAttachment.mimeType,
+        imageFileAttachment.fileName,
+        imageFileAttachment.url,
+      );
+      if (!mimeType) {
+        throw new BadRequestException('Файл должен быть изображением.');
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      if (buffer.length === 0) {
+        throw new BadRequestException('Файл оказался пустым.');
+      }
+
+      const fileName = this.buildDownloadedFileName(
+        filePrefix,
+        imageFileAttachment.fileName ?? this.fileNameFromUrl(imageFileAttachment.url),
+        imageFileAttachment.fileId,
+        mimeType,
+      );
+
+      return {
+        base64: buffer.toString('base64'),
+        mimeType,
+        fileName,
+      };
+    } catch (error: unknown) {
+      if (error instanceof BadRequestException) {
+        throw error;
+      }
+
+      throw new BadRequestException('Не удалось загрузить изображение из файла.');
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
   private extensionFromMimeType(mimeType: string): string {
     if (mimeType === 'image/png') {
       return 'png';
@@ -7593,6 +7889,118 @@ export class PrivateControlService {
     }
 
     return 'jpg';
+  }
+
+  private parseFileAttachment(row: Record<string, unknown>): ParsedFileAttachment | null {
+    const type = this.readLowerString(row.type);
+    if (type !== 'file') {
+      return null;
+    }
+
+    const payload = this.asRecord(row.payload);
+    if (!payload) {
+      return null;
+    }
+
+    return {
+      url: this.readString(payload.url) ?? null,
+      token: this.readString(payload.token) ?? null,
+      fileId: this.readString(payload.file_id ?? payload.fileId) ?? null,
+      fileName:
+        this.readString(payload.file_name ?? payload.fileName ?? row.file_name ?? row.fileName) ??
+        null,
+      size: this.readOptionalInteger(payload.size ?? row.size),
+      mimeType: this.readLowerString(payload.mime_type ?? payload.mimeType ?? row.mime_type),
+      mediaType: this.readLowerString(payload.media_type ?? payload.mediaType ?? row.media_type),
+      payloadKeys: Object.keys(payload).sort(),
+    };
+  }
+
+  private resolveImageMimeType(
+    mimeType: string | null,
+    fileName: string | null,
+    url: string | null,
+  ): string | null {
+    if (mimeType?.startsWith('image/')) {
+      return mimeType;
+    }
+
+    return (
+      this.inferImageMimeTypeFromFileName(fileName) ??
+      this.inferImageMimeTypeFromFileName(this.fileNameFromUrl(url))
+    );
+  }
+
+  private inferImageMimeTypeFromFileName(fileName: string | null): string | null {
+    if (!fileName) {
+      return null;
+    }
+
+    const normalized = fileName.trim().toLowerCase();
+    if (normalized.endsWith('.png')) {
+      return 'image/png';
+    }
+    if (normalized.endsWith('.webp')) {
+      return 'image/webp';
+    }
+    if (normalized.endsWith('.jpg') || normalized.endsWith('.jpeg')) {
+      return 'image/jpeg';
+    }
+    if (normalized.endsWith('.gif')) {
+      return 'image/gif';
+    }
+    if (normalized.endsWith('.heic')) {
+      return 'image/heic';
+    }
+
+    return null;
+  }
+
+  private fileNameFromUrl(url: string | null): string | null {
+    if (!url) {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(url);
+      const lastSegment = parsed.pathname.split('/').filter(Boolean).pop();
+      if (!lastSegment) {
+        return null;
+      }
+
+      const decoded = decodeURIComponent(lastSegment).trim();
+      return decoded.length > 0 ? decoded : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private buildDownloadedFileName(
+    filePrefix: string,
+    preferredFileName: string | null,
+    fallbackId: string | null,
+    mimeType: string,
+  ): string {
+    const normalizedFileName = this.normalizeDownloadedFileName(preferredFileName);
+    if (normalizedFileName) {
+      return normalizedFileName;
+    }
+
+    const extension = this.extensionFromMimeType(mimeType);
+    return `${filePrefix}-${fallbackId ?? Date.now()}.${extension}`;
+  }
+
+  private normalizeDownloadedFileName(fileName: string | null): string | null {
+    if (!fileName) {
+      return null;
+    }
+
+    const sanitized = fileName
+      .trim()
+      .replace(/[/\\?%*:|"<>]/gu, '-')
+      .replace(/\s+/gu, ' ');
+
+    return sanitized.length > 0 ? sanitized : null;
   }
 
   private resolvePrimaryScreen(session: PrivateSession): PrivateScreen {

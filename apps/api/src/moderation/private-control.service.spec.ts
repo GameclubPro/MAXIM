@@ -78,6 +78,64 @@ function createPrivatePhotoUpdate(): MaxUpdate {
   };
 }
 
+function createPrivateFileUpdate(
+  mimeType = 'image/png',
+  fileName = 'photo-as-file.png',
+  url = 'https://example.test/photo-as-file.png',
+): MaxUpdate {
+  return {
+    updateId: `upd-file-${Date.now()}`,
+    type: 'message_created',
+    message: {
+      messageId: `msg-file-${Date.now()}`,
+      chatId: '152517912',
+      senderId: 'user-1',
+      senderName: 'Тестовый пользователь',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'message_created',
+      message: {
+        body: {
+          attachments: [
+            {
+              type: 'file',
+              size: 12345,
+              payload: {
+                url,
+                file_id: 'file-1',
+                file_name: fileName,
+                mime_type: mimeType,
+              },
+            },
+          ],
+        },
+        sender: {
+          user_id: 'user-1',
+          name: 'Тестовый пользователь',
+        },
+        recipient: {
+          chat_id: 152517912,
+          chat_type: 'dialog',
+        },
+      },
+    },
+  };
+}
+
+function createPrivateImageFileUpdate(): MaxUpdate {
+  return createPrivateFileUpdate();
+}
+
+function createPrivateNonImageFileUpdate(): MaxUpdate {
+  return createPrivateFileUpdate(
+    'application/pdf',
+    'notes.pdf',
+    'https://example.test/notes.pdf',
+  );
+}
+
 function createPrivateStickerUpdate(code = '1e1321f26'): MaxUpdate {
   return {
     updateId: `upd-sticker-${Date.now()}`,
@@ -659,11 +717,37 @@ describe('PrivateControlService', () => {
     try {
       await service.handleUpdate(createPrivateTextUpdate('/sticker'));
 
-      expect(getLastSentText(maxClient)).toContain('Фото или sticker');
+      expect(getLastSentText(maxClient)).toContain('Фото, файл или sticker');
 
       await service.handleUpdate(createPrivatePhotoUpdate());
 
       expect(maxClient.uploadImage).toHaveBeenCalledTimes(1);
+      expect(maxClient.sendCustomMessageImmediate).toHaveBeenCalledWith(
+        '152517912',
+        expect.objectContaining({
+          text: '',
+          attachments: [expect.objectContaining({ type: 'sticker' })],
+        }),
+      );
+      expect(getLastSentText(maxClient)).toContain('sticker отправлен');
+    } finally {
+      fetchControl.restore();
+    }
+  });
+
+  it('accepts an image file in sticker flow and preserves png fallback metadata', async () => {
+    const { service, maxClient } = createHarness();
+    const fetchControl = mockImageFetch(TINY_PNG, 'application/octet-stream');
+
+    try {
+      await service.handleUpdate(createPrivateTextUpdate('/sticker'));
+      await service.handleUpdate(createPrivateImageFileUpdate());
+
+      expect(maxClient.uploadImage).toHaveBeenCalledWith(
+        expect.any(Buffer),
+        'photo-as-file.png',
+        'image/png',
+      );
       expect(maxClient.sendCustomMessageImmediate).toHaveBeenCalledWith(
         '152517912',
         expect.objectContaining({
@@ -698,6 +782,32 @@ describe('PrivateControlService', () => {
         }),
       );
       expect(getLastSentText(maxClient)).toContain('MAX не принял вложение как sticker');
+    } finally {
+      fetchControl.restore();
+    }
+  });
+
+  it('falls back to png image when MAX rejects sticker variants for an image file', async () => {
+    const { service, maxClient } = createHarness();
+    const fetchControl = mockImageFetch(TINY_PNG, 'application/octet-stream');
+    maxClient.sendCustomMessageImmediate
+      .mockRejectedValueOnce(new Error('sticker rejected #1'))
+      .mockRejectedValueOnce(new Error('sticker rejected #2'))
+      .mockRejectedValueOnce(new Error('sticker rejected #3'))
+      .mockResolvedValueOnce({ message_id: 'msg-image-fallback-file-1' });
+
+    try {
+      await service.handleUpdate(createPrivateImageFileUpdate());
+
+      expect(maxClient.sendCustomMessageImmediate).toHaveBeenCalledTimes(4);
+      expect(maxClient.sendCustomMessageImmediate).toHaveBeenLastCalledWith(
+        '152517912',
+        expect.objectContaining({
+          text: '',
+          attachments: [expect.objectContaining({ type: 'image' })],
+        }),
+      );
+      expect(getLastSentText(maxClient)).toContain('PNG-картинку');
     } finally {
       fetchControl.restore();
     }
@@ -752,11 +862,22 @@ describe('PrivateControlService', () => {
           ],
         },
       );
-      expect(getLastSentText(maxClient)).toContain('MAX принял только image-вариант');
+      expect(getLastSentText(maxClient)).toContain('MAX принял только PNG image-вариант');
       expect(getLastSentText(maxClient)).not.toContain('sticker отправлен');
     } finally {
       fetchControl.restore();
     }
+  });
+
+  it('rejects a non-image file in sticker flow with a clear error', async () => {
+    const { service, maxClient } = createHarness();
+
+    await service.handleUpdate(createPrivateTextUpdate('/sticker'));
+    await service.handleUpdate(createPrivateNonImageFileUpdate());
+
+    expect(getLastSentText(maxClient)).toContain(
+      'Нужен PNG/WebP/JPG файлом, фото или sticker отдельным сообщением.',
+    );
   });
 
   it('resends incoming sticker by code during sticker flow', async () => {
