@@ -53,6 +53,46 @@ function isAndroidDevice(): boolean {
   return /Android/u.test(navigator.userAgent || '');
 }
 
+function copyImageWithExecCommand(dataUrl: string): boolean {
+  const container = document.createElement('div');
+  container.contentEditable = 'true';
+  container.style.position = 'fixed';
+  container.style.opacity = '0';
+  container.style.left = '-9999px';
+  container.style.top = '-9999px';
+
+  const image = document.createElement('img');
+  image.src = dataUrl;
+  image.width = 512;
+  image.height = 512;
+  image.alt = 'sticker';
+  container.appendChild(image);
+  document.body.appendChild(container);
+
+  const selection = window.getSelection();
+  if (!selection) {
+    document.body.removeChild(container);
+    return false;
+  }
+
+  const range = document.createRange();
+  range.selectNode(image);
+  selection.removeAllRanges();
+  selection.addRange(range);
+
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } catch {
+    copied = false;
+  } finally {
+    selection.removeAllRanges();
+    document.body.removeChild(container);
+  }
+
+  return copied;
+}
+
 async function writeImageToClipboard(blob: Blob, mimeType: string): Promise<boolean> {
   if (!canWriteImageClipboard()) {
     return false;
@@ -226,19 +266,6 @@ export function StickerLabPage() {
         return;
       }
 
-      if (androidDevice) {
-        const shared = await openNativeShare(shareFile);
-        if (shared) {
-          pushToast({
-            tone: 'info',
-            title: 'Открыт Share',
-            description:
-              'На Android вставка изображения из буфера часто не работает. Отправьте файл через Share в MAX.',
-          });
-          return;
-        }
-      }
-
       const copied = await writeImageToClipboard(
         clipboardAsset.blob,
         clipboardAsset.mimeType,
@@ -250,6 +277,22 @@ export function StickerLabPage() {
           description: 'Вставьте изображение в личку с ботом в MAX.',
         });
         return;
+      }
+
+      const copiedByExecCommand = copyImageWithExecCommand(clipboardAsset.dataUrl);
+      if (copiedByExecCommand) {
+        pushToast({
+          tone: 'success',
+          title: 'Скопировано',
+          description: 'Перейдите в MAX и вставьте изображение в поле ввода.',
+        });
+        return;
+      }
+
+      if (androidDevice) {
+        throw new Error(
+          'Копирование в буфер не поддерживается этой версией WebView. Нужна актуальная версия MAX/Android System WebView.',
+        );
       }
 
       const shared = await openNativeShare(shareFile);
@@ -328,8 +371,7 @@ export function StickerLabPage() {
               <img src={prepared.previewDataUrl} alt="Подготовленный макет стикера." />
             </div>
             <small className="field__hint">
-              iPhone: после кнопки выберите «Скопировать» в системном меню Share. Android: лучше
-              отправлять через Share.
+              iPhone: после кнопки выберите «Скопировать» в системном меню Share.
             </small>
           </div>
         ) : null}
@@ -343,7 +385,7 @@ export function StickerLabPage() {
             onClick={() => void handleCopyPreparedImage()}
             disabled={!prepared || isPreparing || isCopying}
           >
-            {isCopying ? 'Готовим...' : androidDevice ? 'Поделиться в MAX' : 'Скопировать'}
+            {isCopying ? 'Копируем...' : 'Скопировать'}
           </button>
           <Link to="/" className="button button--ghost">
             К чатам
