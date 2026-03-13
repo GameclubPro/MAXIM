@@ -34,47 +34,11 @@ function isIosDevice(): boolean {
   return iOSByUA || iPadDesktopMode;
 }
 
-function canShareImageFile(file: File): boolean {
-  const shareFn = navigator.share;
-  const canShareFn = (navigator as Navigator & {
-    canShare?: (data?: ShareData) => boolean;
-  }).canShare;
-
-  if (typeof shareFn !== 'function') {
-    return false;
-  }
-
-  try {
-    if (typeof canShareFn !== 'function') {
-      return true;
-    }
-    return canShareFn({ files: [file] });
-  } catch {
-    return false;
-  }
-}
-
-async function openNativeShare(file: File): Promise<boolean> {
-  if (!canShareImageFile(file) || typeof navigator.share !== 'function') {
-    return false;
-  }
-
-  try {
-    await navigator.share({
-      title: 'Sticker PNG',
-      files: [file],
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function isPngMimeType(value: string | null | undefined): boolean {
   return (value ?? '').trim().toLowerCase() === 'image/png';
 }
 
-async function writePngToClipboard(blob: Blob): Promise<boolean> {
+async function writePngToClipboard(blob: Blob, dataUrl: string): Promise<boolean> {
   if (!canWriteImageClipboard()) {
     return false;
   }
@@ -91,21 +55,33 @@ async function writePngToClipboard(blob: Blob): Promise<boolean> {
     return false;
   }
 
-  try {
-    await (navigator.clipboard as { write: (items: unknown[]) => Promise<void> }).write([
-      new ClipboardItemCtor({ 'image/png': blob }),
-    ]);
-    return true;
-  } catch {
+  const clipboard = navigator.clipboard as { write: (items: unknown[]) => Promise<void> };
+  const html = `<img src="${dataUrl}" alt="Sticker PNG" width="512" height="512">`;
+  const attempts: Array<Record<string, Blob | Promise<Blob>>> = [
+    { 'image/png': blob },
+    { 'image/png': Promise.resolve(blob) },
+    {
+      'image/png': blob,
+      'text/html': new Blob([html], { type: 'text/html' }),
+      'text/plain': new Blob([dataUrl], { type: 'text/plain' }),
+    },
+    {
+      'image/png': Promise.resolve(blob),
+      'text/html': Promise.resolve(new Blob([html], { type: 'text/html' })),
+      'text/plain': Promise.resolve(new Blob([dataUrl], { type: 'text/plain' })),
+    },
+  ];
+
+  for (const payload of attempts) {
     try {
-      await (navigator.clipboard as { write: (items: unknown[]) => Promise<void> }).write([
-        new ClipboardItemCtor({ 'image/png': Promise.resolve(blob) }),
-      ]);
+      await clipboard.write([new ClipboardItemCtor(payload)]);
       return true;
     } catch {
-      return false;
+      // Try next payload variant for better browser compatibility.
     }
   }
+
+  return false;
 }
 
 function copyImageWithExecCommand(dataUrl: string): boolean {
@@ -215,29 +191,18 @@ export function StickerLabPage() {
     setIsCopying(true);
 
     try {
-      const shareFile = new File([preparedClipboard.blob], preparedClipboard.fileName, {
-        type: preparedClipboard.mimeType,
-      });
+      const copied =
+        (await writePngToClipboard(preparedClipboard.blob, preparedClipboard.dataUrl)) ||
+        copyImageWithExecCommand(preparedClipboard.dataUrl);
+      if (copied) {
+        pushToast({
+          tone: 'success',
+          title: 'Скопировано',
+        });
+        return;
+      }
 
       if (iosDevice) {
-        const shared = await openNativeShare(shareFile);
-        if (shared) {
-          pushToast({
-            tone: 'info',
-            title: 'Открыто меню',
-          });
-          return;
-        }
-
-        const copied = await writePngToClipboard(preparedClipboard.blob);
-        if (copied) {
-          pushToast({
-            tone: 'success',
-            title: 'Скопировано',
-          });
-          return;
-        }
-
         const objectUrl = URL.createObjectURL(preparedClipboard.blob);
         setFallbackPreviewSrc((current) => {
           if (current?.startsWith('blob:')) {
@@ -245,14 +210,9 @@ export function StickerLabPage() {
           }
           return objectUrl;
         });
-        return;
-      }
-
-      const copied = await writePngToClipboard(preparedClipboard.blob);
-      if (copied || copyImageWithExecCommand(preparedClipboard.dataUrl)) {
         pushToast({
-          tone: 'success',
-          title: 'Скопировано',
+          tone: 'info',
+          title: 'iOS WebView не дал скопировать PNG',
         });
         return;
       }
