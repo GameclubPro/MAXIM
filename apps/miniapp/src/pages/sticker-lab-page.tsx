@@ -49,6 +49,10 @@ function isIosDevice(): boolean {
   return iOSByUA || iPadDesktopMode;
 }
 
+function isAndroidDevice(): boolean {
+  return /Android/u.test(navigator.userAgent || '');
+}
+
 async function writeImageToClipboard(blob: Blob, mimeType: string): Promise<boolean> {
   if (!canWriteImageClipboard()) {
     return false;
@@ -114,6 +118,7 @@ export function StickerLabPage() {
   const [isPreparing, setIsPreparing] = useState(false);
   const [isCopying, setIsCopying] = useState(false);
   const [pickerError, setPickerError] = useState<string | null>(null);
+  const androidDevice = isAndroidDevice();
 
   async function handleFilePick(file: File | null) {
     if (!file) {
@@ -221,6 +226,19 @@ export function StickerLabPage() {
         return;
       }
 
+      if (androidDevice) {
+        const shared = await openNativeShare(shareFile);
+        if (shared) {
+          pushToast({
+            tone: 'info',
+            title: 'Открыт Share',
+            description:
+              'На Android вставка изображения из буфера часто не работает. Отправьте файл через Share в MAX.',
+          });
+          return;
+        }
+      }
+
       const copied = await writeImageToClipboard(
         clipboardAsset.blob,
         clipboardAsset.mimeType,
@@ -310,7 +328,8 @@ export function StickerLabPage() {
               <img src={prepared.previewDataUrl} alt="Подготовленный макет стикера." />
             </div>
             <small className="field__hint">
-              iPhone: после кнопки выберите «Скопировать» в системном меню Share.
+              iPhone: после кнопки выберите «Скопировать» в системном меню Share. Android: лучше
+              отправлять через Share.
             </small>
           </div>
         ) : null}
@@ -324,7 +343,7 @@ export function StickerLabPage() {
             onClick={() => void handleCopyPreparedImage()}
             disabled={!prepared || isPreparing || isCopying}
           >
-            {isCopying ? 'Копируем...' : 'Скопировать'}
+            {isCopying ? 'Готовим...' : androidDevice ? 'Поделиться в MAX' : 'Скопировать'}
           </button>
           <Link to="/" className="button button--ghost">
             К чатам
