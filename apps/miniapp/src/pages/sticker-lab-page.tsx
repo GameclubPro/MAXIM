@@ -144,7 +144,6 @@ export function StickerLabPage() {
   const [prepared, setPrepared] = useState<PreparedStickerImage | null>(null);
   const [isPreparing, setIsPreparing] = useState(false);
   const [isCopying, setIsCopying] = useState(false);
-  const [pickerError, setPickerError] = useState<string | null>(null);
   const iosDevice = isIosDevice();
 
   async function handleFilePick(file: File | null) {
@@ -153,7 +152,6 @@ export function StickerLabPage() {
     }
 
     setIsPreparing(true);
-    setPickerError(null);
 
     try {
       const nextPrepared = await prepareStickerImage(file);
@@ -161,15 +159,13 @@ export function StickerLabPage() {
       pushToast({
         tone: 'success',
         title: 'PNG готов',
-        description: 'Теперь нажмите «Получить стикер».',
       });
     } catch (error: unknown) {
-      const message = normalizeErrorMessage(
-        error,
-        'Не удалось подготовить PNG. Попробуйте другое изображение.',
-      );
       setPrepared(null);
-      setPickerError(message);
+      pushToast({
+        tone: 'danger',
+        title: normalizeErrorMessage(error, 'Не удалось подготовить'),
+      });
     } finally {
       setIsPreparing(false);
     }
@@ -181,7 +177,6 @@ export function StickerLabPage() {
     }
 
     setIsCopying(true);
-    setPickerError(null);
 
     try {
       const clipboardAsset = await prepareStickerClipboardImage(prepared);
@@ -197,7 +192,6 @@ export function StickerLabPage() {
         pushToast({
           tone: 'success',
           title: 'Скопировано',
-          description: 'Вставьте PNG в диалог MAX.',
         });
         return;
       }
@@ -207,26 +201,17 @@ export function StickerLabPage() {
         if (shared) {
           pushToast({
             tone: 'info',
-            title: 'Открыто меню iPhone',
-            description: 'В системном меню выберите «Скопировать».',
+            title: 'Открыто меню',
           });
           return;
         }
       }
 
-      throw new Error(
-        'Буфер обмена не дал записать PNG. Нажмите и удерживайте превью ниже и выберите «Скопировать».',
-      );
+      throw new Error('Не удалось скопировать');
     } catch (error: unknown) {
-      const message = normalizeErrorMessage(
-        error,
-        'Не удалось скопировать PNG. Попробуйте ещё раз.',
-      );
-      setPickerError(message);
       pushToast({
         tone: 'danger',
-        title: 'Копирование не удалось',
-        description: message,
+        title: normalizeErrorMessage(error, 'Не удалось скопировать'),
       });
     } finally {
       setIsCopying(false);
@@ -238,14 +223,12 @@ export function StickerLabPage() {
       <GlassCard className="sticker-lab-card" elevated>
         <div className="sticker-lab-card__head">
           <div>
-            <h2>Получить стикер</h2>
-            <p>Загрузите картинку и скопируйте PNG 512×512.</p>
+            <h2>Стикеры</h2>
           </div>
         </div>
 
         <label className="sticker-lab-dropzone">
-          <strong>{prepared ? 'Загрузить другую картинку' : 'Загрузить картинку'}</strong>
-          <small>Mini App соберет PNG 512×512 для вставки в MAX.</small>
+          <strong>{prepared ? 'Загрузить другую' : 'Загрузить'}</strong>
           <input
             type="file"
             accept="image/*"
@@ -264,21 +247,8 @@ export function StickerLabPage() {
             <div className="sticker-lab-preview__media">
               <img src={prepared.previewDataUrl} alt="Подготовленный PNG для вставки в MAX." />
             </div>
-            <div className="sticker-lab-preview__meta">
-              <div className="sticker-lab-preview__badges">
-                <span className="chip">PNG</span>
-                <span className="chip">512×512</span>
-              </div>
-              <p>
-                {iosDevice
-                  ? 'Нажмите кнопку ниже, чтобы сразу попробовать скопировать PNG на iPhone.'
-                  : 'Нажмите кнопку ниже и вставьте PNG в диалог с ботом в MAX.'}
-              </p>
-            </div>
           </div>
         ) : null}
-
-        {pickerError ? <small className="field__hint">{pickerError}</small> : null}
 
         <div className="sticker-lab-primary-action">
           <button
@@ -287,13 +257,8 @@ export function StickerLabPage() {
             onClick={() => void handleCopyPreparedImage()}
             disabled={!prepared || isPreparing || isCopying}
           >
-            {isCopying ? 'Копируем...' : iosDevice ? 'Скопировать на iPhone' : 'Скопировать PNG'}
+            {isCopying ? 'Копируем...' : 'Копировать'}
           </button>
-          <small className="sticker-lab-primary-action__hint">
-            {iosDevice
-              ? 'Кнопка пробует прямое копирование PNG. Если iPhone не даст доступ к буферу, откроется системное меню.'
-              : 'Кнопка копирует PNG 512×512 в буфер обмена.'}
-          </small>
         </div>
         <Link to="/" className="sticker-lab-backlink">
           К чатам

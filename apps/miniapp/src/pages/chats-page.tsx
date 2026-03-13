@@ -85,7 +85,6 @@ export function ChatsPage({ api }: { api: ApiClient }) {
       <GlassCard className="sticker-lab-entry" elevated>
         <div className="sticker-lab-entry__copy">
           <h2>Стикеры</h2>
-          <p>PNG 512×512 для копирования в MAX.</p>
         </div>
         <Link to="/sticker-lab" className="button button--accent sticker-lab-entry__action">
           Открыть

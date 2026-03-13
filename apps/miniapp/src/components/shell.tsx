@@ -103,7 +103,7 @@ function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
   if (pathname.includes('/sticker-lab')) {
     return {
       title: 'Стикеры',
-      subtitle: 'PNG 512×512 для iPhone',
+      subtitle: '',
     };
   }
 
@@ -320,7 +320,7 @@ export function Shell() {
           </div>
           <div className="shell-topbar__content">
             <h2>{screen.title}</h2>
-            <p>{screen.subtitle}</p>
+            {screen.subtitle ? <p>{screen.subtitle}</p> : null}
           </div>
         </header>
       ) : null}
