@@ -70,14 +70,21 @@ async function openNativeShare(file: File): Promise<boolean> {
   }
 }
 
-async function writeImageToClipboard(blob: Blob, mimeType: string): Promise<boolean> {
+function isPngMimeType(value: string | null | undefined): boolean {
+  return (value ?? '').trim().toLowerCase() === 'image/png';
+}
+
+async function writePngToClipboard(blob: Blob): Promise<boolean> {
   if (!canWriteImageClipboard()) {
+    return false;
+  }
+  if (!isPngMimeType(blob.type)) {
     return false;
   }
 
   const ClipboardItemCtor = (
     window as Window & {
-      ClipboardItem?: new (items: Record<string, Blob>) => unknown;
+      ClipboardItem?: new (items: Record<string, unknown>) => unknown;
     }
   ).ClipboardItem;
   if (!ClipboardItemCtor) {
@@ -86,11 +93,18 @@ async function writeImageToClipboard(blob: Blob, mimeType: string): Promise<bool
 
   try {
     await (navigator.clipboard as { write: (items: unknown[]) => Promise<void> }).write([
-      new ClipboardItemCtor({ [mimeType]: blob }),
+      new ClipboardItemCtor({ 'image/png': blob }),
     ]);
     return true;
   } catch {
-    return false;
+    try {
+      await (navigator.clipboard as { write: (items: unknown[]) => Promise<void> }).write([
+        new ClipboardItemCtor({ 'image/png': Promise.resolve(blob) }),
+      ]);
+      return true;
+    } catch {
+      return false;
+    }
   }
 }
 
@@ -204,12 +218,17 @@ export function StickerLabPage() {
       const shareFile = new File([preparedClipboard.blob], preparedClipboard.fileName, {
         type: preparedClipboard.mimeType,
       });
-      const copied = await writeImageToClipboard(
-        preparedClipboard.blob,
-        preparedClipboard.mimeType,
-      );
+      const copied = await writePngToClipboard(preparedClipboard.blob);
 
-      if (copied || copyImageWithExecCommand(preparedClipboard.dataUrl)) {
+      if (copied) {
+        pushToast({
+          tone: 'success',
+          title: 'Скопировано',
+        });
+        return;
+      }
+
+      if (!iosDevice && copyImageWithExecCommand(preparedClipboard.dataUrl)) {
         pushToast({
           tone: 'success',
           title: 'Скопировано',
