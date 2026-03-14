@@ -1010,12 +1010,10 @@ export class PrivateControlService {
       buttonText: parsed.data.buttonEnabled
         ? parsed.data.buttonText.trim() || 'Открыть'
         : DEFAULT_BROADCAST_DRAFT.buttonText,
-      sendAt: entityType === 'channel' ? null : parsed.data.sendAt,
-      cycleEnabled: entityType === 'channel' ? false : parsed.data.cycleEnabled,
-      cycleEveryHours:
-        entityType === 'channel' || !parsed.data.cycleEnabled ? 24 : parsed.data.cycleEveryHours,
-      cycleCount:
-        entityType === 'channel' || !parsed.data.cycleEnabled ? 1 : parsed.data.cycleCount,
+      sendAt: parsed.data.sendAt,
+      cycleEnabled: parsed.data.cycleEnabled,
+      cycleEveryHours: !parsed.data.cycleEnabled ? 24 : parsed.data.cycleEveryHours,
+      cycleCount: !parsed.data.cycleEnabled ? 1 : parsed.data.cycleCount,
     };
 
     await this.saveSession(user.userId, session);
@@ -3176,7 +3174,7 @@ export class PrivateControlService {
       }
 
       case 'broadcast_cycle_count': {
-        const parsedCount = this.parseIntInput(rawText, 1, 14);
+        const parsedCount = this.parseIntInput(rawText, 1, 100);
         session.broadcastDraft.cycleCount = parsedCount;
         session.pendingInput = null;
         session.screen = 'broadcast';
@@ -4865,11 +4863,7 @@ export class PrivateControlService {
       ? await this.adminService.getChannelSettings(session.selectedChatId, context.actor)
       : null;
     const applyToAllEnabled = !isChannel && draft.applyToAllChats;
-    const timingSummary = isChannel
-      ? 'недоступен'
-      : draft.sendAt
-        ? this.formatIsoDate(draft.sendAt)
-        : 'нет';
+    const timingSummary = draft.sendAt ? this.formatIsoDate(draft.sendAt) : 'нет';
     const cycleSummary = draft.cycleEnabled
       ? `каждые ${draft.cycleEveryHours} ч., ${draft.cycleCount} раз`
       : 'нет';
@@ -4888,8 +4882,8 @@ export class PrivateControlService {
       `Кнопка: ${draft.buttonEnabled ? 'да' : 'нет'}`,
       `Фото: ${draft.imageEnabled ? 'да' : 'нет'}`,
       ...(!isChannel ? [`Во все: ${applyToAllEnabled ? 'да' : 'нет'}`] : []),
-      ...(!isChannel ? [`Таймер: ${timingSummary}`] : []),
-      ...(!isChannel ? [`Цикл: ${cycleSummary}`] : []),
+      `Таймер: ${timingSummary}`,
+      `Цикл: ${cycleSummary}`,
       ...(channelSettings
         ? [`Комменты: ${this.describeBooleanCompact(channelSettings.commentsEnabled)}`]
         : []),
@@ -4944,30 +4938,28 @@ export class PrivateControlService {
         rows.push([this.callbackButton('🗑 Удалить фото', this.cb('broadcast_clear_photo'))]);
       }
 
-      if (!isChannel) {
-        rows.push([
-          this.callbackButton('🕒 Время отправки', this.cb('broadcast_input_prompt', 'send_at')),
-          this.callbackButton('🧹 Убрать таймер', this.cb('broadcast_clear_timer')),
-        ]);
+      rows.push([
+        this.callbackButton('🕒 Время отправки', this.cb('broadcast_input_prompt', 'send_at')),
+        this.callbackButton('🧹 Убрать таймер', this.cb('broadcast_clear_timer')),
+      ]);
 
+      rows.push([
+        this.callbackButton(
+          `${draft.cycleEnabled ? '✅' : '⬜'} Цикл`,
+          this.cb('broadcast_toggle', 'cycle_enabled'),
+        ),
+      ]);
+
+      if (draft.cycleEnabled) {
         rows.push([
           this.callbackButton(
-            `${draft.cycleEnabled ? '✅' : '⬜'} Цикл`,
-            this.cb('broadcast_toggle', 'cycle_enabled'),
+            '🔁 Шаг цикла (часы)',
+            this.cb('broadcast_input_prompt', 'cycle_hours'),
           ),
         ]);
-
-        if (draft.cycleEnabled) {
-          rows.push([
-            this.callbackButton(
-              '🔁 Шаг цикла (часы)',
-              this.cb('broadcast_input_prompt', 'cycle_hours'),
-            ),
-          ]);
-          rows.push([
-            this.callbackButton('🔢 Повторов', this.cb('broadcast_input_prompt', 'cycle_count')),
-          ]);
-        }
+        rows.push([
+          this.callbackButton('🔢 Повторов', this.cb('broadcast_input_prompt', 'cycle_count')),
+        ]);
       }
 
       rows.push([this.callbackButton('⬅️ Основное', this.cb('broadcast_view', 'basic'))]);
@@ -6236,7 +6228,7 @@ export class PrivateControlService {
       case 'broadcast_cycle_count':
         return {
           title: 'Количество повторов цикла',
-          description: 'Введите число от 1 до 14.',
+          description: 'Введите число от 1 до 100.',
         };
       case 'broadcast_photo':
         return {

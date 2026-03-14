@@ -661,6 +661,10 @@ function getLastEditedText(maxClient: { answerCallback: jest.Mock }): string {
   return call?.[2]?.text ? String(call[2].text) : '';
 }
 
+function getLastUiText(maxClient: { sendMessage: jest.Mock; answerCallback: jest.Mock }): string {
+  return getLastSentText(maxClient) || getLastEditedText(maxClient);
+}
+
 function getLastButtons(maxClient: { sendMessage: jest.Mock; answerCallback: jest.Mock }) {
   const sendButtons = maxClient.sendMessage.mock.calls.at(-1)?.[2]?.buttons;
   if (sendButtons) {
@@ -710,8 +714,8 @@ describe('PrivateControlService', () => {
 
     await service.handleUpdate(createPrivateTextUpdate('привет'));
 
-    expect(getLastSentText(maxClient)).toContain('Центр управления MAX');
-    expect(getLastSentText(maxClient)).toContain('Выберите чат');
+    expect(getLastUiText(maxClient)).toContain('Выбор: чат');
+    expect(getLastUiText(maxClient)).toContain('Нажмите на нужный чат');
     expect(getLastButtons(maxClient).length).toBeGreaterThan(0);
     expect(adminService.listManagedEntities).toHaveBeenCalledTimes(1);
   });
@@ -723,7 +727,7 @@ describe('PrivateControlService', () => {
     try {
       await service.handleUpdate(createPrivateCallbackUpdate('pc2|sticker_photo_prompt'));
 
-      expect(getLastSentText(maxClient)).toContain('Фото, файл или sticker');
+      expect(getLastUiText(maxClient)).toContain('Введите: Фото, файл или sticker');
 
       await service.handleUpdate(createPrivatePhotoUpdate());
 
@@ -1068,7 +1072,7 @@ describe('PrivateControlService', () => {
     await service.handleBotStarted(createBotStartedPrivateUpdate());
 
     expect(getLastSentText(maxClient)).toContain('Рассылка');
-    expect(getLastSentText(maxClient)).toContain('Контент: жду следующее сообщение');
+    expect(getLastSentText(maxClient)).toContain('Контент: жду сообщение');
 
     await service.handleUpdate(createPrivateTextUpdate('Контент из лички бота'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
@@ -1127,7 +1131,7 @@ describe('PrivateControlService', () => {
     await service.handleBotStarted(createBotStartedPrivateUpdate());
 
     expect(getLastSentText(maxClient)).toContain('Рассылка в канал');
-    expect(getLastSentText(maxClient)).toContain('Комментарии: вкл');
+    expect(getLastSentText(maxClient)).toContain('Комменты: вкл');
     expect(getLastSentText(maxClient)).not.toContain('Предложка:');
     expect(getLastSentText(maxClient)).not.toContain('Кнопка предложки:');
 
@@ -1137,6 +1141,50 @@ describe('PrivateControlService', () => {
 
     expect(buttonTexts).not.toContain('Открыть приложение');
     expect(buttonTexts).not.toContain('Поддержка');
+  });
+
+  it('preserves channel timer and cycle from miniapp handoff', async () => {
+    const { service, adminService, channels } = createHarness();
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: channels[0].id,
+      chatTitle: channels[0].title,
+    };
+
+    await service.handoffBroadcastFromMiniapp(
+      channels[0].id,
+      actor,
+      {
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        sendAt: '2026-03-20T12:00:00.000Z',
+        cycleEnabled: true,
+        cycleEveryHours: 24,
+        cycleCount: 3,
+      },
+      'channel',
+    );
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate());
+    await service.handleUpdate(createPrivateTextUpdate('Контент для канала по таймеру'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+
+    expect(adminService.sendChannelBroadcast).toHaveBeenCalledWith(
+      channels[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        text: 'Контент для канала по таймеру',
+        sendAt: '2026-03-20T12:00:00.000Z',
+        cycleEnabled: true,
+        cycleEveryHours: 24,
+        cycleCount: 3,
+      }),
+      'private_bot',
+    );
   });
 
   it('allows adding photo after text on the broadcast screen without extra button press', async () => {

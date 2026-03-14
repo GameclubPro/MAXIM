@@ -202,6 +202,17 @@ export async function cancelManagedBroadcast(
   return managedBroadcastDetailsSchema.parse(response);
 }
 
+export async function retryManagedBroadcast(
+  api: ApiTransport,
+  chatId: string,
+  broadcastId: string,
+): Promise<ManagedBroadcastDetails> {
+  const response = await api.request(`/chats/${chatId}/broadcasts/${broadcastId}/retry`, {
+    method: 'POST',
+  });
+  return managedBroadcastDetailsSchema.parse(response);
+}
+
 export async function getDomainAllowlistDetails(
   api: ApiTransport,
   chatId: string,

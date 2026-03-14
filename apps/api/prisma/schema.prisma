@@ -94,8 +94,17 @@ enum ManagedGiveawayWinnerStatus {
 
 enum ManagedBroadcastStatus {
   ACTIVE
+  PARTIAL
   FAILED
   COMPLETED
+  CANCELED
+}
+
+enum ManagedBroadcastDeliveryStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
   CANCELED
 }
 
@@ -461,11 +470,33 @@ model ManagedBroadcast {
   createdAt      DateTime               @default(now()) @map("created_at")
   updatedAt      DateTime               @updatedAt @map("updated_at")
 
-  chat Chat @relation(fields: [sourceChatId], references: [id], onDelete: Cascade)
+  chat       Chat                       @relation(fields: [sourceChatId], references: [id], onDelete: Cascade)
+  deliveries ManagedBroadcastDelivery[]
 
   @@index([sourceChatId, status, nextSendAt], map: "managed_broadcasts_source_chat_id_status_next_send_at_idx")
   @@index([status, nextSendAt], map: "managed_broadcasts_status_next_send_at_idx")
   @@map("managed_broadcasts")
+}
+
+model ManagedBroadcastDelivery {
+  id              String                        @id @default(cuid())
+  broadcastId     String                        @map("broadcast_id")
+  occurrenceIndex Int                           @map("occurrence_index")
+  targetChatId    String                        @map("target_chat_id")
+  status          ManagedBroadcastDeliveryStatus @default(PENDING)
+  attemptCount    Int                           @default(0) @map("attempt_count")
+  lastError       String?                       @map("last_error")
+  sentAt          DateTime?                     @map("sent_at")
+  lockedAt        DateTime?                     @map("locked_at")
+  createdAt       DateTime                      @default(now()) @map("created_at")
+  updatedAt       DateTime                      @updatedAt @map("updated_at")
+
+  broadcast ManagedBroadcast @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+
+  @@unique([broadcastId, occurrenceIndex, targetChatId], map: "managed_broadcast_deliveries_broadcast_occurrence_target_key")
+  @@index([broadcastId, occurrenceIndex, status], map: "managed_broadcast_deliveries_broadcast_occurrence_status_idx")
+  @@index([status, lockedAt], map: "managed_broadcast_deliveries_status_locked_at_idx")
+  @@map("managed_broadcast_deliveries")
 }
 
 model ManagedGiveaway {

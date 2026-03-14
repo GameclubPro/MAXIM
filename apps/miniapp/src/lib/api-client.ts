@@ -398,6 +398,13 @@ export class ApiClient {
     return managedBroadcastDetailsSchema.parse(response);
   }
 
+  async retryManagedBroadcast(chatId: string, broadcastId: string): Promise<ManagedBroadcastDetails> {
+    const response = await this.request(`/chats/${chatId}/broadcasts/${broadcastId}/retry`, {
+      method: 'POST',
+    });
+    return managedBroadcastDetailsSchema.parse(response);
+  }
+
   async sendChannelBroadcast(
     chatId: string,
     payload: SendBroadcastPayload,

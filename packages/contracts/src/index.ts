@@ -1427,7 +1427,13 @@ export const sendBroadcastResultSchema = z.object({
 });
 export type SendBroadcastResult = z.infer<typeof sendBroadcastResultSchema>;
 
-export const managedBroadcastStatusSchema = z.enum(['ACTIVE', 'FAILED', 'COMPLETED', 'CANCELED']);
+export const managedBroadcastStatusSchema = z.enum([
+  'ACTIVE',
+  'PARTIAL',
+  'FAILED',
+  'COMPLETED',
+  'CANCELED',
+]);
 export type ManagedBroadcastStatus = z.infer<typeof managedBroadcastStatusSchema>;
 
 export const managedBroadcastSummarySchema = z.object({
@@ -1444,6 +1450,11 @@ export const managedBroadcastSummarySchema = z.object({
   cycleEveryHours: z.number().int().min(1),
   cycleCount: z.number().int().min(1),
   sentCount: z.number().int().min(0),
+  currentOccurrence: z.number().int().min(1),
+  deliveredChats: z.number().int().min(0),
+  failedChats: z.number().int().min(0),
+  pendingChats: z.number().int().min(0),
+  canRetry: z.boolean(),
   remainingCount: z.number().int().min(0),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),
@@ -1470,6 +1481,11 @@ export const managedBroadcastDetailsSchema = z.object({
   cycleEveryHours: z.number().int().min(1),
   cycleCount: z.number().int().min(1),
   sentCount: z.number().int().min(0),
+  currentOccurrence: z.number().int().min(1),
+  deliveredChats: z.number().int().min(0),
+  failedChats: z.number().int().min(0),
+  pendingChats: z.number().int().min(0),
+  canRetry: z.boolean(),
   remainingCount: z.number().int().min(0),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime(),

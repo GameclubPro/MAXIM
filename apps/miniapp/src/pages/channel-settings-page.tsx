@@ -46,6 +46,72 @@ type ChannelSettingsHintKey =
 const AUTOSAVE_DELAY_MS = 700;
 const AUTOSAVE_SAVED_HIDE_MS = 1600;
 const MAX_BROADCAST_TEXT_LENGTH = 1_000;
+const MAX_BROADCAST_SCHEDULE_DAYS = 14;
+const MIN_BROADCAST_CYCLE_HOURS = 1;
+const MAX_BROADCAST_CYCLE_HOURS = 14 * 24;
+const MAX_BROADCAST_CYCLE_COUNT = 100;
+const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
+const BROADCAST_DAY_MS = 24 * 60 * 60 * 1_000;
+
+function buildBroadcastScheduleIso(days: number, time: string): string | null {
+  if (!Number.isInteger(days) || days < 0 || days > MAX_BROADCAST_SCHEDULE_DAYS) {
+    return null;
+  }
+
+  const [hoursRaw, minutesRaw] = time.split(':');
+  const hours = Number.parseInt(hoursRaw ?? '', 10);
+  const minutes = Number.parseInt(minutesRaw ?? '', 10);
+  if (
+    Number.isNaN(hours) ||
+    Number.isNaN(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return null;
+  }
+
+  const scheduledAt = new Date();
+  scheduledAt.setDate(scheduledAt.getDate() + days);
+  scheduledAt.setHours(hours, minutes, 0, 0);
+  return scheduledAt.toISOString();
+}
+
+function clampBroadcastCycleHours(value: number): number {
+  if (!Number.isFinite(value)) {
+    return MIN_BROADCAST_CYCLE_HOURS;
+  }
+
+  return Math.max(
+    MIN_BROADCAST_CYCLE_HOURS,
+    Math.min(MAX_BROADCAST_CYCLE_HOURS, Math.round(value)),
+  );
+}
+
+function toLocalTimeInputValue(value: Date): string {
+  const hours = String(value.getHours()).padStart(2, '0');
+  const minutes = String(value.getMinutes()).padStart(2, '0');
+  return `${hours}:${minutes}`;
+}
+
+function formatBroadcastDateTime(value: string | null): string {
+  if (!value) {
+    return '';
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return '';
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(parsed);
+}
 
 function buildAutoPostButtonsMode(
   includeComments: boolean,
@@ -388,6 +454,18 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [broadcastImageMimeType, setBroadcastImageMimeType] = useState('');
   const [broadcastImageFileName, setBroadcastImageFileName] = useState('');
   const [broadcastImageError, setBroadcastImageError] = useState('');
+  const [broadcastScheduleEnabled, setBroadcastScheduleEnabled] = useState(false);
+  const [broadcastScheduleDays, setBroadcastScheduleDays] = useState(0);
+  const [broadcastScheduleTime, setBroadcastScheduleTime] = useState(
+    toLocalTimeInputValue(new Date(Date.now() + BROADCAST_HOUR_MS)),
+  );
+  const [broadcastScheduleError, setBroadcastScheduleError] = useState('');
+  const [broadcastCycleEnabled, setBroadcastCycleEnabled] = useState(false);
+  const [broadcastCycleEveryHours, setBroadcastCycleEveryHours] = useState(
+    MIN_BROADCAST_CYCLE_HOURS,
+  );
+  const [broadcastCycleCount, setBroadcastCycleCount] = useState(2);
+  const [broadcastCycleError, setBroadcastCycleError] = useState('');
 
   const settingsScreenQuery = useQuery({
     queryKey: ['channel-settings-screen', chatId],
@@ -437,6 +515,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastImageMimeType('');
     setBroadcastImageFileName('');
     setBroadcastImageError('');
+    setBroadcastScheduleEnabled(false);
+    setBroadcastScheduleDays(0);
+    setBroadcastScheduleTime(toLocalTimeInputValue(new Date(Date.now() + BROADCAST_HOUR_MS)));
+    setBroadcastScheduleError('');
+    setBroadcastCycleEnabled(false);
+    setBroadcastCycleEveryHours(MIN_BROADCAST_CYCLE_HOURS);
+    setBroadcastCycleCount(2);
+    setBroadcastCycleError('');
   }, [chatId]);
 
   useEffect(() => {
@@ -834,9 +920,19 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         ? 'Кнопки будут только в этом посте.'
         : 'Кнопка будет только в этом посте.';
   const broadcastHasButton = broadcastButtonEnabled && Boolean(broadcastButtonText.trim());
-  const broadcastHeaderSummary = broadcastHasButton
-    ? 'контент в боте · CTA'
-    : 'контент в боте';
+  const broadcastSchedulePreview = broadcastScheduleEnabled
+    ? formatBroadcastDateTime(buildBroadcastScheduleIso(broadcastScheduleDays, broadcastScheduleTime))
+    : '';
+  const broadcastHeaderSummary = [
+    'контент в боте',
+    broadcastHasButton ? 'CTA' : null,
+    broadcastScheduleEnabled && broadcastSchedulePreview
+      ? `таймер ${broadcastSchedulePreview}`
+      : null,
+    broadcastCycleEnabled ? `цикл ${broadcastCycleCount}x` : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
   function resetBroadcastComposer() {
     setBroadcastText('');
@@ -851,14 +947,29 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastImageMimeType('');
     setBroadcastImageFileName('');
     setBroadcastImageError('');
+    setBroadcastScheduleEnabled(false);
+    setBroadcastScheduleDays(0);
+    setBroadcastScheduleTime(toLocalTimeInputValue(new Date(Date.now() + BROADCAST_HOUR_MS)));
+    setBroadcastScheduleError('');
+    setBroadcastCycleEnabled(false);
+    setBroadcastCycleEveryHours(MIN_BROADCAST_CYCLE_HOURS);
+    setBroadcastCycleCount(2);
+    setBroadcastCycleError('');
   }
 
   function handleSendChannelBroadcast() {
     const normalizedButtonUrl = broadcastButtonUrl.trim();
     const normalizedButtonText = broadcastButtonText.trim() || 'Открыть';
+    const scheduleIso = broadcastScheduleEnabled
+      ? buildBroadcastScheduleIso(broadcastScheduleDays, broadcastScheduleTime)
+      : null;
+    const cycleEveryHours = clampBroadcastCycleHours(broadcastCycleEveryHours);
+    const cycleCount = Math.max(2, Math.min(MAX_BROADCAST_CYCLE_COUNT, broadcastCycleCount));
 
     setBroadcastButtonUrlError('');
     setBroadcastButtonTextError('');
+    setBroadcastScheduleError('');
+    setBroadcastCycleError('');
 
     let hasError = false;
 
@@ -873,6 +984,30 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       }
     }
 
+    if (broadcastScheduleEnabled) {
+      if (!scheduleIso) {
+        setBroadcastScheduleError('Проверьте день и время отправки.');
+        hasError = true;
+      } else if (new Date(scheduleIso).getTime() <= Date.now() + 30_000) {
+        setBroadcastScheduleError('Выберите время минимум через 30 секунд.');
+        hasError = true;
+      }
+    }
+
+    if (broadcastCycleEnabled) {
+      const firstDelayMs = scheduleIso ? new Date(scheduleIso).getTime() - Date.now() : 0;
+      if (firstDelayMs < 0) {
+        setBroadcastCycleError('Проверьте стартовое время цикла.');
+        hasError = true;
+      } else {
+        const totalDelayMs = firstDelayMs + (cycleCount - 1) * cycleEveryHours * BROADCAST_HOUR_MS;
+        if (totalDelayMs > MAX_BROADCAST_SCHEDULE_DAYS * BROADCAST_DAY_MS) {
+          setBroadcastCycleError('Все циклы должны уместиться в 14 дней.');
+          hasError = true;
+        }
+      }
+    }
+
     if (hasError) {
       return;
     }
@@ -882,10 +1017,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       buttonEnabled: broadcastButtonEnabled,
       buttonUrl: normalizedButtonUrl,
       buttonText: normalizedButtonText,
-      sendAt: null,
-      cycleEnabled: false,
-      cycleEveryHours: 1,
-      cycleCount: 1,
+      sendAt: broadcastScheduleEnabled ? scheduleIso : null,
+      cycleEnabled: broadcastCycleEnabled,
+      cycleEveryHours: broadcastCycleEnabled ? cycleEveryHours : 1,
+      cycleCount: broadcastCycleEnabled ? cycleCount : 1,
     });
   }
 
@@ -1261,6 +1396,196 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                           <small className="field__hint">{broadcastButtonTextError}</small>
                         ) : null}
                       </label>
+                    </div>
+                  ) : null}
+                </div>
+
+                <div
+                  className={cn(
+                    'mailing-option-card',
+                    broadcastScheduleEnabled && 'is-enabled',
+                    broadcastScheduleError && 'field--error',
+                  )}
+                >
+                  <div className="mailing-option-card__head">
+                    <div className="mailing-option-card__title-wrap">
+                      <div className="channel-settings-field-label">
+                        <span className="mailing-option-card__title">Таймер</span>
+                        <ChannelSettingsHintAnchor
+                          hintKey="broadcastText"
+                          openHintKey={openHintKey}
+                          onToggleHint={toggleHint}
+                          label="Пояснение для таймера рассылки"
+                        >
+                          Можно отложить пост в канал максимум на 14 дней.
+                        </ChannelSettingsHintAnchor>
+                      </div>
+                      <small className="mailing-option-card__subtitle">
+                        {broadcastScheduleEnabled && broadcastSchedulePreview
+                          ? broadcastSchedulePreview
+                          : 'Отправка сразу'}
+                      </small>
+                    </div>
+
+                    <label
+                      className="settings-native-switch"
+                      aria-label="Включить таймер для рассылки в канал"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={broadcastScheduleEnabled}
+                        onChange={(event) => {
+                          setBroadcastScheduleEnabled(event.target.checked);
+                          if (!event.target.checked) {
+                            setBroadcastScheduleError('');
+                          }
+                        }}
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                    </label>
+                  </div>
+
+                  {broadcastScheduleEnabled ? (
+                    <div className="mailing-option-card__body">
+                      <label className="field settings-text-field mailing-inline-field">
+                        <span className="field__label">Через дней</span>
+                        <input
+                          type="number"
+                          min={0}
+                          max={MAX_BROADCAST_SCHEDULE_DAYS}
+                          value={broadcastScheduleDays}
+                          onChange={(event) => {
+                            const nextValue = Number.parseInt(event.target.value, 10);
+                            setBroadcastScheduleDays(
+                              Number.isNaN(nextValue)
+                                ? 0
+                                : Math.max(0, Math.min(MAX_BROADCAST_SCHEDULE_DAYS, nextValue)),
+                            );
+                            if (broadcastScheduleError) {
+                              setBroadcastScheduleError('');
+                            }
+                          }}
+                        />
+                      </label>
+
+                      <label className="field settings-text-field mailing-inline-field">
+                        <span className="field__label">Время</span>
+                        <input
+                          type="time"
+                          value={broadcastScheduleTime}
+                          onChange={(event) => {
+                            setBroadcastScheduleTime(event.target.value);
+                            if (broadcastScheduleError) {
+                              setBroadcastScheduleError('');
+                            }
+                          }}
+                        />
+                      </label>
+
+                      {broadcastScheduleError ? (
+                        <small className="field__hint">{broadcastScheduleError}</small>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+
+                <div
+                  className={cn(
+                    'mailing-option-card',
+                    broadcastCycleEnabled && 'is-enabled',
+                    broadcastCycleError && 'field--error',
+                  )}
+                >
+                  <div className="mailing-option-card__head">
+                    <div className="mailing-option-card__title-wrap">
+                      <div className="channel-settings-field-label">
+                        <span className="mailing-option-card__title">Цикл</span>
+                        <ChannelSettingsHintAnchor
+                          hintKey="broadcastImage"
+                          openHintKey={openHintKey}
+                          onToggleHint={toggleHint}
+                          label="Пояснение для цикла рассылки"
+                        >
+                          Повторяет отправку в канал через заданный интервал. Общая длина цикла не
+                          должна превышать 14 дней.
+                        </ChannelSettingsHintAnchor>
+                      </div>
+                      <small className="mailing-option-card__subtitle">
+                        {broadcastCycleEnabled
+                          ? `${broadcastCycleCount} отправок / ${broadcastCycleEveryHours}ч`
+                          : 'Выключено'}
+                      </small>
+                    </div>
+
+                    <label
+                      className="settings-native-switch"
+                      aria-label="Включить циклическую рассылку в канал"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={broadcastCycleEnabled}
+                        onChange={(event) => {
+                          setBroadcastCycleEnabled(event.target.checked);
+                          if (!event.target.checked) {
+                            setBroadcastCycleError('');
+                          }
+                        }}
+                      />
+                      <span className="toggle-switch" aria-hidden>
+                        <span className="toggle-switch__thumb" />
+                      </span>
+                    </label>
+                  </div>
+
+                  {broadcastCycleEnabled ? (
+                    <div className="mailing-option-card__body">
+                      <label className="field settings-text-field mailing-inline-field">
+                        <span className="field__label">Интервал, часов</span>
+                        <input
+                          type="number"
+                          min={MIN_BROADCAST_CYCLE_HOURS}
+                          max={MAX_BROADCAST_CYCLE_HOURS}
+                          value={broadcastCycleEveryHours}
+                          onChange={(event) => {
+                            const nextValue = Number.parseInt(event.target.value, 10);
+                            setBroadcastCycleEveryHours(
+                              clampBroadcastCycleHours(
+                                Number.isNaN(nextValue) ? MIN_BROADCAST_CYCLE_HOURS : nextValue,
+                              ),
+                            );
+                            if (broadcastCycleError) {
+                              setBroadcastCycleError('');
+                            }
+                          }}
+                        />
+                      </label>
+
+                      <label className="field settings-text-field mailing-inline-field">
+                        <span className="field__label">Количество</span>
+                        <input
+                          type="number"
+                          min={2}
+                          max={MAX_BROADCAST_CYCLE_COUNT}
+                          value={broadcastCycleCount}
+                          onChange={(event) => {
+                            const nextValue = Number.parseInt(event.target.value, 10);
+                            setBroadcastCycleCount(
+                              Number.isNaN(nextValue)
+                                ? 2
+                                : Math.max(2, Math.min(MAX_BROADCAST_CYCLE_COUNT, nextValue)),
+                            );
+                            if (broadcastCycleError) {
+                              setBroadcastCycleError('');
+                            }
+                          }}
+                        />
+                      </label>
+
+                      {broadcastCycleError ? (
+                        <small className="field__hint">{broadcastCycleError}</small>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>

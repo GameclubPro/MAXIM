@@ -31,8 +31,8 @@ import {
   publishRules,
   removeDomain,
   resetPublishedRules,
+  retryManagedBroadcast,
   scheduleDomainRemoval,
-  sendBroadcast,
   updateManagedBroadcast,
   updateRules,
   updateSettings,
@@ -73,7 +73,7 @@ const DOMAIN_REMOVAL_MIN_FUTURE_MS = 30_000;
 const MAX_BROADCAST_TEXT_LENGTH = 1_000;
 const MAX_BROADCAST_SCHEDULE_DAYS = 14;
 const MIN_BROADCAST_CYCLE_HOURS = 1;
-const MAX_BROADCAST_CYCLE_HOURS = 24;
+const MAX_BROADCAST_CYCLE_HOURS = 14 * 24;
 const MAX_BROADCAST_CYCLE_COUNT = 100;
 const MAX_RULES_IMAGE_SIZE_BYTES = 1_000_000;
 const MAX_CHAT_RULES_TEXT_LENGTH = 2_000;
@@ -1656,6 +1656,30 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     },
   });
 
+  const retryManagedBroadcastMutation = useMutation({
+    mutationFn: (broadcastId: string) => retryManagedBroadcast(api, chatId ?? '', broadcastId),
+    onSuccess: (broadcast) => {
+      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
+      pushToast({
+        tone: broadcast.status === 'FAILED' || broadcast.status === 'PARTIAL' ? 'info' : 'success',
+        title:
+          broadcast.status === 'FAILED' || broadcast.status === 'PARTIAL'
+            ? 'Часть чатов все еще с ошибкой'
+            : 'Повтор выполнен',
+        description: broadcast.nextSendAt
+          ? `Следующая отправка: ${formatRemovalDateTime(broadcast.nextSendAt)}.`
+          : 'Ошибка закрыта.',
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось повторить рассылку',
+        description: formatApiError(error),
+      });
+    },
+  });
+
   function clearFieldError(key: keyof ChatSettings) {
     setFieldErrors((current) => {
       if (!current[key]) {
@@ -2653,7 +2677,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const isMailingBusy =
     handoffBroadcastMutation.isPending ||
     isUpdatingManagedBroadcast ||
-    cancelManagedBroadcastMutation.isPending;
+    cancelManagedBroadcastMutation.isPending ||
+    retryManagedBroadcastMutation.isPending;
   const mailingTargetLabel =
     mailingApplyToAllChats && canApplyToAllChats
       ? `Во все чаты (${chatsCount})`
@@ -6477,7 +6502,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         {managedBroadcastsQuery.isLoading
                           ? 'Загрузка...'
                           : managedBroadcasts.length > 0
-                            ? `${managedBroadcasts.length} активных`
+                            ? `${managedBroadcasts.length} в работе`
                             : 'Нет активных рассылок'}
                       </small>
                     </div>
@@ -6488,6 +6513,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       const nextLabel = broadcast.nextSendAt
                         ? formatRemovalDateTime(broadcast.nextSendAt)
                         : 'ожидает правки';
+                      const deliveryLabel =
+                        broadcast.failedChats > 0
+                          ? `${broadcast.deliveredChats}/${broadcast.targetChats} доставлено · ошибок ${broadcast.failedChats}`
+                          : `${broadcast.deliveredChats}/${broadcast.targetChats} доставлено`;
 
                       return (
                         <div
@@ -6495,7 +6524,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           className={cn(
                             'managed-broadcast-card',
                             isOpen && 'is-open',
-                            broadcast.status === 'FAILED' && 'is-failed',
+                            (broadcast.status === 'FAILED' || broadcast.status === 'PARTIAL') &&
+                              'is-failed',
                           )}
                         >
                           <button
@@ -6511,14 +6541,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           >
                             <span className="managed-broadcast-card__main">
                               <strong>
-                                {broadcast.status === 'FAILED'
-                                  ? 'Ошибка рассылки'
-                                  : `Следующая: ${nextLabel}`}
+                                {broadcast.status === 'PARTIAL'
+                                  ? `Частично доставлено · повторить ${broadcast.failedChats}`
+                                  : broadcast.status === 'FAILED'
+                                    ? `Не доставлено · ошибок ${broadcast.failedChats}`
+                                    : `Следующая: ${nextLabel}`}
                               </strong>
                               <small>{broadcast.textPreview}</small>
                             </span>
                             <span className="managed-broadcast-card__aside">
-                              <small>{`Прогресс ${progressLabel}`}</small>
+                              <small>{`Цикл ${progressLabel}`}</small>
                               <SectionChevron isOpen={isOpen} />
                             </span>
                           </button>
@@ -6539,16 +6571,34 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   ? `Каждые ${broadcast.cycleEveryHours}ч`
                                   : 'Одна отправка'}
                               </span>
+                              <span>{deliveryLabel}</span>
+                              {broadcast.pendingChats > 0 ? (
+                                <span>{`Ожидают: ${broadcast.pendingChats}`}</span>
+                              ) : null}
                             </div>
                             {broadcast.lastError ? (
                               <small className="field__hint">{broadcast.lastError}</small>
                             ) : null}
                             <div className="managed-broadcast-card__actions">
+                              {broadcast.canRetry ? (
+                                <button
+                                  type="button"
+                                  className="button button--accent"
+                                  onClick={() => retryManagedBroadcastMutation.mutate(broadcast.id)}
+                                  disabled={isMailingBusy}
+                                >
+                                  Повторить ошибки
+                                </button>
+                              ) : null}
                               <button
                                 type="button"
                                 className="button button--ghost"
                                 onClick={() => handleEditManagedBroadcast(broadcast.id)}
-                                disabled={isMailingBusy || loadManagedBroadcastMutation.isPending}
+                                disabled={
+                                  isMailingBusy ||
+                                  loadManagedBroadcastMutation.isPending ||
+                                  broadcast.canRetry
+                                }
                               >
                                 {loadManagedBroadcastMutation.isPending &&
                                 expandedManagedBroadcastId === broadcast.id

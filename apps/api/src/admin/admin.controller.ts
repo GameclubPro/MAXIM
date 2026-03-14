@@ -259,6 +259,15 @@ export class AdminController {
     return this.adminService.cancelManagedBroadcast(chatId, broadcastId, user);
   }
 
+  @Post('chats/:chatId/broadcasts/:broadcastId/retry')
+  retryManagedBroadcast(
+    @Param('chatId') chatId: string,
+    @Param('broadcastId') broadcastId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.adminService.retryManagedBroadcast(chatId, broadcastId, user);
+  }
+
   @Get('chats/:chatId/giveaways')
   getChatGiveaways(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.managedGiveawayService.listManagedGiveaways(chatId, user, 'chat');
