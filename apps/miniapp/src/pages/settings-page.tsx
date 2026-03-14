@@ -448,6 +448,38 @@ const WARN_MESSAGE_TEMPLATE_HINTS: Record<WarnMessageEditorKey, string> = {
 const AUTO_RULES_FALLBACK_TEXT =
   'Пожалуйста, уважайте участников чата и соблюдайте порядок в обсуждении.';
 
+function formatWindowHoursLabel(seconds: number): string {
+  const hours = Math.max(1, Math.round(seconds / 3_600));
+  return `${hours} ч.`;
+}
+
+function resolveDuplicateWindowSeconds(settings: ChatSettings): number {
+  const enabledWindows: number[] = [];
+  if (settings.duplicateWarnEnabled) {
+    enabledWindows.push(settings.duplicateWarnWindowSec);
+  }
+  if (settings.duplicateKickEnabled) {
+    enabledWindows.push(settings.duplicateKickWindowSec);
+  }
+  if (settings.duplicateBanEnabled) {
+    enabledWindows.push(settings.duplicateBanWindowSec);
+  }
+  return enabledWindows.length > 0 ? Math.min(...enabledWindows) : settings.duplicateWarnWindowSec;
+}
+
+function serializeRulesDraftPayload(
+  value:
+    | Pick<ChatRules, 'text' | 'imageBase64' | 'imageMimeType' | 'imageFileName'>
+    | Pick<UpdateChatRulesPayload, 'text' | 'imageBase64' | 'imageMimeType' | 'imageFileName'>,
+): string {
+  return JSON.stringify({
+    text: value.text,
+    imageBase64: value.imageBase64,
+    imageMimeType: value.imageMimeType,
+    imageFileName: value.imageFileName,
+  });
+}
+
 function buildAutoRulesText(settings: ChatSettings): string {
   const lines: string[] = [];
 
@@ -469,7 +501,10 @@ function buildAutoRulesText(settings: ChatSettings): string {
   }
 
   if (settings.antiDuplicateEnabled) {
-    lines.push('Не отправляйте одно и то же сообщение повторно.');
+    const duplicateWindowLabel = formatWindowHoursLabel(resolveDuplicateWindowSeconds(settings));
+    lines.push(
+      `Не отправляйте одно и то же сообщение повторно. Интервал проверки дублей: ${duplicateWindowLabel}`,
+    );
   }
 
   if (settings.maxMessageLengthEnabled) {
@@ -1230,7 +1265,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   }, [draft, settingsQuery.data]);
 
   useEffect(() => {
-    if (!rulesQuery.data) {
+    if (!rulesQuery.data || rulesDraft) {
       return;
     }
 
@@ -1245,7 +1280,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     setRulesAutoFillSeedText(null);
     setRulesTextError('');
     setRulesImageError('');
-  }, [rulesQuery.data]);
+  }, [rulesDraft, rulesQuery.data]);
 
   useEffect(() => {
     if (!scheduleDomain) {
@@ -1261,15 +1296,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
   const draftSnapshot = useMemo(() => (draft ? JSON.stringify(draft) : ''), [draft]);
   const rulesDraftSnapshot = useMemo(
-    () =>
-      rulesDraft
-        ? JSON.stringify({
-            text: rulesDraft.text,
-            imageBase64: rulesDraft.imageBase64,
-            imageMimeType: rulesDraft.imageMimeType,
-            imageFileName: rulesDraft.imageFileName,
-          })
-        : '',
+    () => (rulesDraft ? serializeRulesDraftPayload(rulesDraft) : ''),
     [rulesDraft],
   );
 
@@ -1278,15 +1305,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     [settingsQuery.data],
   );
   const rulesServerSnapshot = useMemo(
-    () =>
-      rulesQuery.data
-        ? JSON.stringify({
-            text: rulesQuery.data.text,
-            imageBase64: rulesQuery.data.imageBase64,
-            imageMimeType: rulesQuery.data.imageMimeType,
-            imageFileName: rulesQuery.data.imageFileName,
-          })
-        : '',
+    () => (rulesQuery.data ? serializeRulesDraftPayload(rulesQuery.data) : ''),
     [rulesQuery.data],
   );
 
@@ -1329,8 +1348,15 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
   const saveRulesMutation = useMutation({
     mutationFn: (payload: UpdateChatRulesPayload) => api.updateRules(chatId ?? '', payload),
-    onSuccess: (saved) => {
-      setRulesDraft(saved);
+    onSuccess: (saved, payload) => {
+      const payloadSnapshot = serializeRulesDraftPayload(payload);
+      setRulesDraft((current) => {
+        if (!current) {
+          return saved;
+        }
+        const currentSnapshot = serializeRulesDraftPayload(current);
+        return currentSnapshot === payloadSnapshot ? saved : current;
+      });
       setRulesAutoFillSeedText(null);
       setRulesTextError('');
       setRulesImageError('');
