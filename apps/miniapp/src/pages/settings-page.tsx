@@ -546,6 +546,7 @@ function resolveBotMessageTemplate(customValue: string, fallbackTemplate: string
 function formatApiError(error: unknown): string {
   const rawMessage = error instanceof Error ? error.message : '';
   const normalized = rawMessage.toLowerCase();
+  const trimmedMessage = rawMessage.trim();
 
   const statusMatch = rawMessage.match(/api request failed:\s*(\d+)/i);
   const statusCode = statusMatch ? Number.parseInt(statusMatch[1], 10) : null;
@@ -569,13 +570,27 @@ function formatApiError(error: unknown): string {
 
   if (
     normalized.includes('failed to fetch') ||
+    normalized.includes('load failed') ||
     normalized.includes('networkerror') ||
     normalized.includes('network error')
   ) {
     return 'Нет соединения с сервером.';
   }
 
-  return rawMessage.trim() ? 'Не удалось выполнить запрос.' : 'Неизвестная ошибка.';
+  if (
+    normalized.includes('aborterror') ||
+    normalized.includes('aborted') ||
+    normalized.includes('signal is aborted') ||
+    normalized.includes('cancelled')
+  ) {
+    return 'Запрос был прерван. Повторите попытку.';
+  }
+
+  if (trimmedMessage && !normalized.startsWith('api request failed:')) {
+    return trimmedMessage;
+  }
+
+  return trimmedMessage ? 'Не удалось выполнить запрос.' : 'Неизвестная ошибка.';
 }
 
 function isValidHttpUrl(value: string): boolean {
