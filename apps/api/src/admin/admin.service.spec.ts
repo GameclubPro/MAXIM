@@ -1,4 +1,5 @@
 import { chatRulesSchema, chatSettingsSchema } from '@maxim/contracts';
+import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
 import { AdminService } from './admin.service';
 
 function createPrismaMock() {
@@ -52,6 +53,7 @@ function createPrismaMock() {
     chatAdminAllowlist: {
       upsert: jest.fn().mockResolvedValue(undefined),
       findMany: jest.fn().mockResolvedValue([]),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
     domainAllowlist: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -1383,6 +1385,139 @@ describe('AdminService settings screen endpoints', () => {
       updatedChats: 2,
       appliedChatIds: ['chat-1', 'chat-2'],
     });
+  });
+});
+
+describe('AdminService admin access validation', () => {
+  const user = {
+    userId: 'admin-1',
+    username: null,
+    displayName: null,
+    chatTitle: null,
+  };
+
+  it('deduplicates concurrent admin checks for the same chat and user', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    let resolveAdminIds!: (value: string[]) => void;
+    const maxClient = {
+      getChatEditableAdminIds: jest.fn().mockImplementation(
+        () =>
+          new Promise<string[]>((resolve) => {
+            resolveAdminIds = resolve;
+          }),
+      ),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const pending = [
+      service.assertChatAdmin('chat-1', user.userId, 'chat'),
+      service.assertChatAdmin('chat-1', user.userId, 'chat'),
+      service.assertChatAdmin('chat-1', user.userId, 'chat'),
+    ];
+
+    await Promise.resolve();
+
+    expect(maxClient.getChatEditableAdminIds).toHaveBeenCalledTimes(1);
+
+    resolveAdminIds(['admin-1']);
+    await expect(Promise.all(pending)).resolves.toEqual([undefined, undefined, undefined]);
+  });
+
+  it('falls back to persisted allowlist on transient MAX admin check failures', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ chatId: 'chat-1' }]);
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatEditableAdminIds: jest.fn().mockRejectedValue(
+        Object.assign(new Error('timeout of 5000ms exceeded'), {
+          code: 'ECONNABORTED',
+        }),
+      ),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(service.assertChatAdmin('chat-1', user.userId, 'chat')).resolves.toBeUndefined();
+    expect(chatContextCache.setAdminAccess).not.toHaveBeenCalled();
+    expect(prisma.chatAdminAllowlist.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('returns 503 instead of false 403 when MAX admin check transiently fails without fallback', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatEditableAdminIds: jest.fn().mockRejectedValue(
+        Object.assign(new Error('timeout of 5000ms exceeded'), {
+          code: 'ECONNABORTED',
+        }),
+      ),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(service.assertChatAdmin('chat-1', user.userId, 'chat')).rejects.toThrow(
+      ServiceUnavailableException,
+    );
+    expect(chatContextCache.setAdminAccess).not.toHaveBeenCalled();
+  });
+
+  it('cleans stale allowlist rows when MAX says bot no longer has access to the chat', async () => {
+    const prisma = createPrismaMock();
+    let accessState: 'bot_denied' | null = null;
+    const chatContextCache = createChatContextCacheMock({
+      getAdminAccess: jest.fn().mockImplementation(async () => accessState),
+      setAdminAccess: jest.fn().mockImplementation(
+        async (_chatId: string, _userId: string, state: 'bot_denied') => {
+          accessState = state;
+        },
+      ),
+    });
+    const maxClient = {
+      getChatEditableAdminIds: jest.fn().mockRejectedValue({
+        response: {
+          status: 403,
+          data: {
+            code: 'chat.denied',
+            message: 'Bot is not a chat member',
+          },
+        },
+      }),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(service.assertChatAdmin('chat-1', user.userId, 'chat')).rejects.toThrow(
+      ForbiddenException,
+    );
+    await expect(service.assertChatAdmin('chat-1', user.userId, 'chat')).rejects.toThrow(
+      'Бот больше не состоит в этом чате MAX или не является его администратором.',
+    );
+    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('chat-1', 'admin-1', 'bot_denied');
+    expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        userId: 'admin-1',
+      },
+    });
+    expect(maxClient.getChatEditableAdminIds).toHaveBeenCalledTimes(1);
   });
 });
 

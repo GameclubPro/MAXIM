@@ -186,16 +186,16 @@ describe('ChatContextCacheService', () => {
       get: jest.Mock;
     };
 
-    await service.setAdminAccess('chat-1', 'user-1', true);
+    await service.setAdminAccess('chat-1', 'user-1', 'granted');
     expect(redisInstance.set).toHaveBeenCalledWith(
       ChatContextCacheService.adminAccessKey('chat-1', 'user-1'),
-      '1',
+      'granted',
       'EX',
       60,
     );
 
-    redisInstance.get.mockResolvedValueOnce('0');
-    await expect(service.getAdminAccess('chat-1', 'user-1')).resolves.toBe(false);
+    redisInstance.get.mockResolvedValueOnce('bot_denied');
+    await expect(service.getAdminAccess('chat-1', 'user-1')).resolves.toBe('bot_denied');
   });
 
   it('stores and invalidates managed entity header cache entries', async () => {

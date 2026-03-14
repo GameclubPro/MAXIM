@@ -5,6 +5,8 @@ import { Prisma, type ChatSettings } from '@prisma/client';
 import Redis from 'ioredis';
 import { PrismaService } from '../prisma/prisma.service';
 
+export type ChatAdminAccessState = 'granted' | 'user_denied' | 'bot_denied';
+
 export type ChatContext = {
   chatId: string;
   title: string;
@@ -38,7 +40,7 @@ export class ChatContextCacheService implements OnModuleDestroy {
   }
 
   static adminAccessKey(chatId: string, userId: string): string {
-    return `chat:admin-access:v1:${chatId}:${userId}`;
+    return `chat:admin-access:v2:${chatId}:${userId}`;
   }
 
   static managedEntityHeaderKey(chatId: string, entityType: ManagedEntityType): string {
@@ -71,19 +73,35 @@ export class ChatContextCacheService implements OnModuleDestroy {
     await this.redis.del(ChatContextCacheService.cacheKey(chatId));
   }
 
-  async getAdminAccess(chatId: string, userId: string): Promise<boolean | null> {
+  async getAdminAccess(chatId: string, userId: string): Promise<ChatAdminAccessState | null> {
     const raw = await this.redis.get(ChatContextCacheService.adminAccessKey(chatId, userId));
     if (raw === null) {
       return null;
     }
 
-    return raw === '1';
+    if (raw === 'granted' || raw === 'user_denied' || raw === 'bot_denied') {
+      return raw;
+    }
+
+    if (raw === '1') {
+      return 'granted';
+    }
+
+    if (raw === '0') {
+      return 'user_denied';
+    }
+
+    return null;
   }
 
-  async setAdminAccess(chatId: string, userId: string, hasAccess: boolean): Promise<void> {
+  async setAdminAccess(
+    chatId: string,
+    userId: string,
+    state: ChatAdminAccessState,
+  ): Promise<void> {
     await this.redis.set(
       ChatContextCacheService.adminAccessKey(chatId, userId),
-      hasAccess ? '1' : '0',
+      state,
       'EX',
       this.ttlSec,
     );

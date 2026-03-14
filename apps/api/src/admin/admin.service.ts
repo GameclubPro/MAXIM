@@ -81,10 +81,14 @@ import {
   Injectable,
   Logger,
   Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import sharp from 'sharp';
-import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
+import {
+  ChatContextCacheService,
+  type ChatAdminAccessState,
+} from '../chat-context/chat-context-cache.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   MaxClientService,
@@ -113,6 +117,21 @@ type ApplySettingsToAllChatsResult = {
 };
 
 type ManagedEntityTypeFilter = ManagedEntityType | 'all';
+
+type AdminAccessResolution =
+  | {
+      status: 'granted';
+      source: 'cache' | 'remote' | 'allowlist_fallback';
+    }
+  | {
+      status: 'denied';
+      source: 'cache' | 'remote';
+      reason: 'user_not_admin' | 'bot_not_admin';
+    }
+  | {
+      status: 'unknown';
+      error: unknown;
+    };
 
 export type AdminActionSource = 'miniapp' | 'private_bot';
 
@@ -317,6 +336,7 @@ export class AdminService {
   private readonly explicitBotContactId: string | null;
   private readonly ownBotUserId: string | null;
   private readonly maxBotToken: string;
+  private readonly adminAccessChecks = new Map<string, Promise<AdminAccessResolution>>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -1239,11 +1259,11 @@ export class AdminService {
         remoteChats,
         LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
         async (remoteChat) => {
-          const hasAdminAccess = await this.hasUserAndBotAdminAccess(
+          const access = await this.resolveUserAndBotAdminAccess(
             remoteChat.chatId,
             user.userId,
           );
-          if (!hasAdminAccess) {
+          if (access.status !== 'granted') {
             return null;
           }
 
@@ -4999,9 +5019,21 @@ export class AdminService {
     userId: string,
     entityType: ManagedEntityType | null = null,
   ) {
-    const hasAdminAccess = await this.hasUserAndBotAdminAccess(chatId, userId);
-    if (!hasAdminAccess) {
-      throw new ForbiddenException('User is not chat admin');
+    const access = await this.resolveUserAndBotAdminAccess(chatId, userId);
+    if (access.status === 'denied') {
+      if (access.reason === 'bot_not_admin') {
+        throw new ForbiddenException(
+          'Бот больше не состоит в этом чате MAX или не является его администратором.',
+        );
+      }
+
+      throw new ForbiddenException('Пользователь не является администратором чата.');
+    }
+
+    if (access.status === 'unknown') {
+      throw new ServiceUnavailableException(
+        'Не удалось проверить права администратора в MAX. Повторите попытку.',
+      );
     }
 
     await this.upsertUserChatAccess(chatId, userId, null, entityType);
@@ -6039,12 +6071,7 @@ export class AdminService {
     return normalized === `Chat ${chatId}` || normalized === `Channel ${chatId}`;
   }
 
-  private async hasUserAndBotAdminAccess(chatId: string, userId: string): Promise<boolean> {
-    const cached = (await this.chatContextCache.getAdminAccess?.(chatId, userId)) ?? null;
-    if (cached !== null) {
-      return cached;
-    }
-
+  private async loadRemoteAdminAccess(chatId: string, userId: string): Promise<AdminAccessResolution> {
     try {
       const maxClientWithEditAccess = this.maxClient as MaxClientService & {
         getChatEditableAdminIds?: (chatId: string) => Promise<string[]>;
@@ -6054,9 +6081,33 @@ export class AdminService {
           ? await maxClientWithEditAccess.getChatEditableAdminIds(chatId)
           : await this.maxClient.getChatAdminIds(chatId);
       const hasAccess = adminIds.includes(userId);
-      await this.chatContextCache.setAdminAccess?.(chatId, userId, hasAccess);
-      return hasAccess;
+      const cacheState: ChatAdminAccessState = hasAccess ? 'granted' : 'user_denied';
+      await this.chatContextCache.setAdminAccess?.(chatId, userId, cacheState);
+
+      if (!hasAccess) {
+        await this.prunePersistedChatAccess(chatId, userId);
+        return {
+          status: 'denied',
+          source: 'remote',
+          reason: 'user_not_admin',
+        };
+      }
+
+      return {
+        status: 'granted',
+        source: 'remote',
+      };
     } catch (error: unknown) {
+      if (this.isBotAdminLookupDeniedError(error)) {
+        await this.chatContextCache.setAdminAccess?.(chatId, userId, 'bot_denied');
+        await this.prunePersistedChatAccess(chatId, userId);
+        return {
+          status: 'denied',
+          source: 'remote',
+          reason: 'bot_not_admin',
+        };
+      }
+
       this.logger.warn(
         {
           chatId,
@@ -6065,9 +6116,150 @@ export class AdminService {
         },
         'Chat hidden: failed to validate bot/user admin access',
       );
-      await this.chatContextCache.setAdminAccess?.(chatId, userId, false);
+      return {
+        status: 'unknown',
+        error,
+      };
+    }
+  }
+
+  private async resolveUserAndBotAdminAccess(
+    chatId: string,
+    userId: string,
+  ): Promise<AdminAccessResolution> {
+    const cached = (await this.chatContextCache.getAdminAccess?.(chatId, userId)) ?? null;
+    if (cached === 'granted') {
+      return {
+        status: 'granted',
+        source: 'cache',
+      };
+    }
+
+    if (cached === 'user_denied') {
+      return {
+        status: 'denied',
+        source: 'cache',
+        reason: 'user_not_admin',
+      };
+    }
+
+    if (cached === 'bot_denied') {
+      return {
+        status: 'denied',
+        source: 'cache',
+        reason: 'bot_not_admin',
+      };
+    }
+
+    const key = `${chatId}:${userId}`;
+    const inFlight = this.adminAccessChecks.get(key);
+    if (inFlight) {
+      return this.withAllowlistFallback(chatId, userId, inFlight);
+    }
+
+    const pending = this.loadRemoteAdminAccess(chatId, userId);
+    this.adminAccessChecks.set(key, pending);
+
+    try {
+      return await this.withAllowlistFallback(chatId, userId, pending);
+    } finally {
+      this.adminAccessChecks.delete(key);
+    }
+  }
+
+  private async withAllowlistFallback(
+    chatId: string,
+    userId: string,
+    resolutionPromise: Promise<AdminAccessResolution>,
+  ): Promise<AdminAccessResolution> {
+    const resolution = await resolutionPromise;
+    if (resolution.status !== 'unknown') {
+      return resolution;
+    }
+
+    if (!(await this.hasPersistedChatAccess(chatId, userId))) {
+      return resolution;
+    }
+
+    this.logger.warn(
+      {
+        chatId,
+        userId,
+      },
+      'Using persisted admin access allowlist after transient MAX API failure',
+    );
+    return {
+      status: 'granted',
+      source: 'allowlist_fallback',
+    };
+  }
+
+  private extractMaxErrorStatus(error: unknown): number | null {
+    const maybeStatus = (error as { response?: { status?: number } })?.response?.status;
+    return typeof maybeStatus === 'number' ? maybeStatus : null;
+  }
+
+  private extractMaxErrorCode(error: unknown): string | null {
+    const maybeCode = (error as { response?: { data?: { code?: unknown } } })?.response?.data?.code;
+    return typeof maybeCode === 'string' && maybeCode.trim() ? maybeCode.trim().toLowerCase() : null;
+  }
+
+  private extractMaxErrorMessage(error: unknown): string {
+    const responseMessage = (error as { response?: { data?: { message?: unknown } } })?.response?.data
+      ?.message;
+    if (typeof responseMessage === 'string' && responseMessage.trim()) {
+      return responseMessage.trim().toLowerCase();
+    }
+
+    if (error instanceof Error && error.message.trim()) {
+      return error.message.trim().toLowerCase();
+    }
+
+    return String(error).trim().toLowerCase();
+  }
+
+  private isBotAdminLookupDeniedError(error: unknown): boolean {
+    const status = this.extractMaxErrorStatus(error);
+    const code = this.extractMaxErrorCode(error);
+    if (code === 'chat.denied' || code === 'chat.not.found') {
+      return true;
+    }
+
+    if (status !== 400 && status !== 403) {
       return false;
     }
+
+    const message = this.extractMaxErrorMessage(error);
+    return (
+      message.includes('method is available only for chat administrator') ||
+      message.includes('bot is not a chat member') ||
+      message.includes('not accessible') ||
+      message.includes('chat not found')
+    );
+  }
+
+  private async hasPersistedChatAccess(chatId: string, userId: string): Promise<boolean> {
+    const rows = await this.prisma.chatAdminAllowlist.findMany({
+      where: {
+        chatId,
+        userId,
+      },
+      select: {
+        chatId: true,
+      },
+      take: 1,
+    });
+
+    return rows.length > 0;
+  }
+
+  private async prunePersistedChatAccess(chatId: string, userId: string): Promise<void> {
+    await this.prisma.chatAdminAllowlist.deleteMany({
+      where: {
+        chatId,
+        userId,
+      },
+    });
   }
 
   private async refreshChatTitle(chat: ChatSummary): Promise<void> {
@@ -6248,8 +6440,8 @@ export class AdminService {
       return null;
     }
 
-    const hasAdminAccess = await this.hasUserAndBotAdminAccess(user.chatId, user.userId);
-    if (!hasAdminAccess) {
+    const access = await this.resolveUserAndBotAdminAccess(user.chatId, user.userId);
+    if (access.status !== 'granted') {
       return null;
     }
 
