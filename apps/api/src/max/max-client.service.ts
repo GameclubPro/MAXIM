@@ -843,6 +843,33 @@ export class MaxClientService implements OnModuleDestroy {
       .filter((value): value is string => value !== null);
   }
 
+  async getChatEditableAdminIds(chatId: string): Promise<string[]> {
+    const data = await this.request<Record<string, unknown>>(
+      'get',
+      `/chats/${chatId}/members/admins`,
+    );
+    const members = Array.isArray(data.members) ? data.members : [];
+
+    return members
+      .map((member) => {
+        if (!member || typeof member !== 'object') {
+          return null;
+        }
+
+        const row = member as Record<string, unknown>;
+        if (!this.isChatAdminMemberRow(row) || !this.canChatAdminEditChat(row)) {
+          return null;
+        }
+
+        const value = row.user_id ?? row.userId ?? row.id;
+        if (typeof value === 'number' || typeof value === 'string') {
+          return String(value);
+        }
+        return null;
+      })
+      .filter((value): value is string => value !== null);
+  }
+
   async hasChatMember(chatId: string, userId: string): Promise<boolean> {
     const normalizedUserId = userId.trim();
     if (!normalizedUserId) {
@@ -1896,6 +1923,133 @@ export class MaxClientService implements OnModuleDestroy {
 
     // Backward compatibility: keep old behavior when API does not expose roles/flags.
     return true;
+  }
+
+  private canChatAdminEditChat(row: Record<string, unknown>): boolean {
+    const roleValue = this.readLowerString(
+      row.role ??
+        row.member_role ??
+        row.memberRole ??
+        row.chat_role ??
+        row.chatRole ??
+        row.status ??
+        row.member_status ??
+        row.memberStatus,
+    );
+
+    const isOwnerLikeRole =
+      roleValue?.includes('owner') === true || roleValue?.includes('creator') === true;
+    const isOwnerLikeFlag =
+      row.is_owner === true ||
+      row.isOwner === true ||
+      row.owner === true ||
+      row.is_creator === true ||
+      row.isCreator === true ||
+      row.creator === true;
+
+    if (isOwnerLikeRole || isOwnerLikeFlag) {
+      return true;
+    }
+
+    const permissions = this.readChatAdminPermissions(row);
+    if (permissions.length > 0) {
+      const hasEditPermission = permissions.some((permission) =>
+        this.isChatEditPermission(permission),
+      );
+      if (!hasEditPermission) {
+        return false;
+      }
+      return true;
+    }
+
+    const explicitEditFlags = [
+      row.can_manage_chat,
+      row.canManageChat,
+      row.can_manage_info,
+      row.canManageInfo,
+      row.can_change_info,
+      row.canChangeInfo,
+      row.can_change_chat_info,
+      row.canChangeChatInfo,
+      row.can_edit_chat,
+      row.canEditChat,
+      row.can_edit_info,
+      row.canEditInfo,
+      row.can_edit_link,
+      row.canEditLink,
+    ]
+      .map((value) => this.readBoolean(value))
+      .filter((value): value is boolean => value !== null);
+
+    if (explicitEditFlags.length > 0) {
+      return explicitEditFlags.some((value) => value === true);
+    }
+
+    // Backward compatibility for chats where MAX payload has no granular permissions.
+    return true;
+  }
+
+  private readChatAdminPermissions(row: Record<string, unknown>): string[] {
+    const sources = [
+      row.permissions,
+      row.rights,
+      row.admin_permissions,
+      row.adminPermissions,
+      row.chat_permissions,
+      row.chatPermissions,
+    ];
+
+    const normalized = new Set<string>();
+    for (const source of sources) {
+      const list = this.readPermissionList(source);
+      for (const item of list) {
+        normalized.add(item);
+      }
+    }
+
+    return [...normalized];
+  }
+
+  private readPermissionList(source: unknown): string[] {
+    if (Array.isArray(source)) {
+      return source
+        .map((item) => this.readLowerString(item))
+        .filter((item): item is string => item !== null)
+        .map((item) => item.replace(/[-\s]+/gu, '_'));
+    }
+
+    if (!source || typeof source !== 'object') {
+      return [];
+    }
+
+    const row = source as Record<string, unknown>;
+    return Object.entries(row)
+      .map(([key, value]) => ({ key, value: this.readBoolean(value) }))
+      .filter((item) => item.value === true)
+      .map((item) => item.key.toLowerCase().replace(/[-\s]+/gu, '_'));
+  }
+
+  private isChatEditPermission(permission: string): boolean {
+    return (
+      permission === 'change_chat_info' ||
+      permission === 'edit_chat_info' ||
+      permission === 'manage_chat_info' ||
+      permission === 'can_change_chat_info' ||
+      permission === 'can_edit_chat_info' ||
+      permission === 'can_manage_chat_info' ||
+      permission === 'edit_chat' ||
+      permission === 'can_edit_chat' ||
+      permission === 'manage_chat' ||
+      permission === 'can_manage_chat' ||
+      permission === 'change_info' ||
+      permission === 'can_change_info' ||
+      permission === 'edit_info' ||
+      permission === 'can_edit_info' ||
+      permission === 'manage_info' ||
+      permission === 'can_manage_info' ||
+      permission === 'edit_link' ||
+      permission === 'can_edit_link'
+    );
   }
 
   private asRecord(value: unknown): Record<string, unknown> | null {

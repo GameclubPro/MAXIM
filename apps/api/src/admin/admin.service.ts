@@ -5844,7 +5844,13 @@ export class AdminService {
 
   private async hasUserAndBotAdminAccess(chatId: string, userId: string): Promise<boolean> {
     try {
-      const adminIds = await this.maxClient.getChatAdminIds(chatId);
+      const maxClientWithEditAccess = this.maxClient as MaxClientService & {
+        getChatEditableAdminIds?: (chatId: string) => Promise<string[]>;
+      };
+      const adminIds =
+        typeof maxClientWithEditAccess.getChatEditableAdminIds === 'function'
+          ? await maxClientWithEditAccess.getChatEditableAdminIds(chatId)
+          : await this.maxClient.getChatAdminIds(chatId);
       return adminIds.includes(userId);
     } catch (error: unknown) {
       this.logger.warn(

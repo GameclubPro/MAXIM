@@ -593,6 +593,76 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('returns only admins with chat edit permission from members/admins payload', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          data: {
+            members: [
+              {
+                user_id: 'admin-readonly',
+                role: 'admin',
+                permissions: ['delete_messages'],
+              },
+              {
+                user_id: 'admin-editor',
+                role: 'admin',
+                permissions: ['change_chat_info'],
+              },
+              {
+                user_id: 'owner-1',
+                role: 'owner',
+                permissions: ['delete_messages'],
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.getChatEditableAdminIds('chat-1');
+
+    expect(result).toEqual(['admin-editor', 'owner-1']);
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api.max.ru/chats/chat-1/members/admins',
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('treats explicit can_manage_chat=false as no edit access', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          data: {
+            members: [
+              {
+                user_id: 'admin-readonly',
+                role: 'admin',
+                can_manage_chat: false,
+              },
+              {
+                user_id: 'admin-editor',
+                role: 'admin',
+                can_manage_chat: true,
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.getChatEditableAdminIds('chat-1');
+
+    expect(result).toEqual(['admin-editor']);
+    await service.onModuleDestroy();
+  });
+
   it('extends webhook subscriptions with churn update types', async () => {
     const httpService = {
       request: jest
