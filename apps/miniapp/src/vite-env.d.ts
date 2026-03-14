@@ -1,6 +1,8 @@
 /// <reference types="vite/client" />
 
 type MaxWebAppBridge = {
+  version?: string;
+  platform?: string;
   initData?: string;
   init_data?: string;
   initDataUnsafe?: {
@@ -14,6 +16,21 @@ type MaxWebAppBridge = {
   ready?: () => void;
   close?: () => void;
   openMaxLink?: (url: string) => void;
+  enableClosingConfirmation?: () => void;
+  disableClosingConfirmation?: () => void;
+  isClosingConfirmationEnabled?: boolean;
+  BackButton?: {
+    isVisible?: boolean;
+    show?: () => void;
+    hide?: () => void;
+    onClick?: (callback: () => void) => void;
+    offClick?: (callback: () => void) => void;
+  };
+  HapticFeedback?: {
+    impactOccurred?: (style?: 'light' | 'medium' | 'heavy' | 'rigid' | 'soft') => void;
+    notificationOccurred?: (type: 'error' | 'success' | 'warning') => void;
+    selectionChanged?: () => void;
+  };
   shareMaxContent?: (payload: {
     mid: string;
     chatType?: 'DIALOG' | 'CHAT';

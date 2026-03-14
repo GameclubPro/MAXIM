@@ -6,8 +6,9 @@ import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
+import { getChannelStats } from '../lib/api/channel-stats-client';
+import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
-import type { ApiClient } from '../lib/api-client';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 
@@ -423,7 +424,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   );
 }
 
-export function ChannelStatsPage({ api }: { api: ApiClient }) {
+export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   const { chatId = '' } = useParams();
   const location = useLocation();
   const routeState = getRouteState(location.state);
@@ -432,7 +433,7 @@ export function ChannelStatsPage({ api }: { api: ApiClient }) {
 
   const statsQuery = useQuery({
     queryKey: ['channel-stats', chatId, range],
-    queryFn: () => api.getChannelStats(chatId, range),
+    queryFn: () => getChannelStats(api, chatId, range),
     enabled: Boolean(chatId),
   });
 

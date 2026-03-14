@@ -8,7 +8,7 @@ import {
   type ManagedBroadcastDetails,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { MaxMarkdownEditor } from '../components/max-markdown-editor';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
@@ -18,14 +18,34 @@ import { BackChevronIcon, ParticipantsIcon } from '../components/ui/entity-heade
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
-import { cn } from '../lib/cn';
-import { openMaxBotLink } from '../lib/max-bridge';
+import {
+  addDomain,
+  applySettingsSectionToAll,
+  cancelManagedBroadcast,
+  getDomainAllowlistDetails,
+  getManagedBroadcast,
+  getManagedBroadcasts,
+  getRules,
+  getSettingsScreen,
+  handoffBroadcast,
+  publishRules,
+  removeDomain,
+  resetPublishedRules,
+  scheduleDomainRemoval,
+  sendBroadcast,
+  updateManagedBroadcast,
+  updateRules,
+  updateSettings,
+} from '../lib/api/chat-settings-client';
+import { getChats } from '../lib/api/root-client';
+import type { ApiTransport } from '../lib/api/transport';
 import type {
-  ApiClient,
   BroadcastHandoffPayload,
   SendBroadcastPayload,
   UpdateChatRulesPayload,
-} from '../lib/api-client';
+} from '../lib/api/shared-types';
+import { cn } from '../lib/cn';
+import { maxNotify, openMaxBotLink, setMaxClosingConfirmation } from '../lib/max-bridge';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
@@ -1024,7 +1044,7 @@ function WarnMessageEditor({ editorKey, value, onChange, onReset }: WarnMessageE
   );
 }
 
-export function SettingsPage({ api }: { api: ApiClient }) {
+export function SettingsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
@@ -1147,49 +1167,44 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     setDuplicateWindowInputValues({});
   }, [chatId]);
 
-  const settingsQuery = useQuery({
-    queryKey: ['settings', chatId],
-    queryFn: () => api.getSettings(chatId ?? ''),
-    enabled: Boolean(chatId),
-    refetchOnWindowFocus: false,
-  });
-
-  const rulesQuery = useQuery({
-    queryKey: ['rules', chatId],
-    queryFn: () => api.getRules(chatId ?? ''),
+  const settingsScreenQuery = useQuery({
+    queryKey: ['settings-screen', chatId],
+    queryFn: () => getSettingsScreen(api, chatId ?? ''),
     enabled: Boolean(chatId),
     refetchOnWindowFocus: false,
   });
 
   const chatsQuery = useQuery({
     queryKey: ['chats'],
-    queryFn: () => api.getChats(),
+    queryFn: () => getChats(api),
     enabled: Boolean(chatId),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
-
-  const managedBroadcastsQuery = useQuery({
-    queryKey: ['managed-broadcasts', chatId],
-    queryFn: () => api.getManagedBroadcasts(chatId ?? ''),
-    enabled: Boolean(chatId),
-    refetchOnWindowFocus: false,
-  });
-
-  const chatHeaderQuery = useQuery({
-    queryKey: ['chat-header', chatId],
-    queryFn: () => api.getChatHeader(chatId ?? ''),
-    enabled: Boolean(chatId),
-    staleTime: 30_000,
-    refetchOnWindowFocus: false,
-  });
-
-  const domainsQuery = useQuery({
-    queryKey: ['domains', chatId],
-    queryFn: () => api.getDomainAllowlistDetails(chatId ?? ''),
-    enabled: Boolean(chatId),
-    refetchOnWindowFocus: false,
-  });
+  const settingsQuery = {
+    data: settingsScreenQuery.data?.settings,
+    isLoading: settingsScreenQuery.isLoading,
+    error: settingsScreenQuery.error,
+    refetch: settingsScreenQuery.refetch,
+  };
+  const rulesQuery = {
+    data: settingsScreenQuery.data?.rules,
+    isLoading: settingsScreenQuery.isLoading,
+    error: settingsScreenQuery.error,
+  };
+  const managedBroadcastsQuery = {
+    data: settingsScreenQuery.data?.managedBroadcasts,
+    isLoading: settingsScreenQuery.isLoading,
+    error: settingsScreenQuery.error,
+  };
+  const chatHeaderQuery = {
+    data: settingsScreenQuery.data?.header,
+  };
+  const domainsQuery = {
+    data: settingsScreenQuery.data?.domains,
+    isLoading: settingsScreenQuery.isLoading,
+    error: settingsScreenQuery.error,
+  };
 
   const chatTitle = useMemo(() => {
     if (!chatId) {
@@ -1310,12 +1325,12 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   );
 
   const saveMutation = useMutation({
-    mutationFn: (payload: ChatSettings) => api.updateSettings(chatId ?? '', payload),
+    mutationFn: (payload: ChatSettings) => updateSettings(api, chatId ?? '', payload),
     onSuccess: (saved) => {
       setDraft(saved);
       setFieldErrors({});
       setFailedSnapshot('');
-      queryClient.setQueryData(['settings', chatId], saved);
+      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
     },
     onError: (error, payload) => {
       setFailedSnapshot(JSON.stringify(payload));
@@ -1324,13 +1339,14 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         title: 'Не удалось сохранить настройки',
         description: formatApiError(error),
       });
+      maxNotify('error');
     },
   });
   const isSavingSettings = saveMutation.isPending;
   const mutateSettings = saveMutation.mutate;
 
   const saveRulesMutation = useMutation({
-    mutationFn: (payload: UpdateChatRulesPayload) => api.updateRules(chatId ?? '', payload),
+    mutationFn: (payload: UpdateChatRulesPayload) => updateRules(api, chatId ?? '', payload),
     onSuccess: (saved, payload) => {
       const payloadSnapshot = serializeRulesDraftPayload(payload);
       setRulesDraft((current) => {
@@ -1344,7 +1360,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       setRulesTextError('');
       setRulesImageError('');
       setRulesFailedSnapshot('');
-      queryClient.setQueryData(['rules', chatId], saved);
+      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
     },
     onError: (error, payload) => {
       setRulesFailedSnapshot(JSON.stringify(payload));
@@ -1353,6 +1369,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         title: 'Не удалось сохранить черновик правил',
         description: formatApiError(error),
       });
+      maxNotify('error');
     },
   });
   const isSavingRules = saveRulesMutation.isPending;
@@ -1372,7 +1389,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   );
 
   const publishRulesMutation = useMutation({
-    mutationFn: () => api.publishRules(chatId ?? ''),
+    mutationFn: () => publishRules(api, chatId ?? ''),
     onSuccess: (result) => {
       const updated = chatRulesSchema.parse({
         ...(rulesDraft ?? rulesQuery.data ?? {}),
@@ -1381,12 +1398,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         publishedAt: result.publishedAt,
       });
       setRulesDraft(updated);
-      queryClient.setQueryData(['rules', chatId], updated);
+      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
       pushToast({
         tone: 'success',
         title: 'Правила опубликованы',
         description: 'Пост опубликован.',
       });
+      maxNotify('success');
     },
     onError: (error) => {
       pushToast({
@@ -1394,12 +1412,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         title: 'Не удалось опубликовать правила',
         description: formatApiError(error),
       });
+      maxNotify('error');
     },
   });
   const isPublishingRules = publishRulesMutation.isPending;
 
   const resetPublishedRulesMutation = useMutation({
-    mutationFn: () => api.resetPublishedRules(chatId ?? ''),
+    mutationFn: () => resetPublishedRules(api, chatId ?? ''),
     onSuccess: (updated) => {
       const nextDraft = chatRulesSchema.parse({
         ...(rulesDraft ?? updated),
@@ -1408,7 +1427,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         publishedAt: null,
       });
       setRulesDraft(nextDraft);
-      queryClient.setQueryData(['rules', chatId], nextDraft);
+      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
       pushToast({
         tone: 'success',
         title: 'Публикация правил сброшена',
@@ -1437,33 +1456,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         throw new Error('Чат не выбран');
       }
 
-      const savedSourceSettings = await api.updateSettings(chatId, sourceSettings);
-      const chats = chatsQuery.data ?? (await api.getChats());
-      const targetChatIds = Array.from(
-        new Set(chats.map((chat) => chat.id).filter((id) => id !== chatId)),
-      );
-
-      const updated: Array<{ chatId: string; settings: ChatSettings }> = [];
-      const failedChatIds: string[] = [];
-
-      for (const targetChatId of targetChatIds) {
-        try {
-          const targetSettings = await api.getSettings(targetChatId);
-          const mergedSettings = mergeSectionSettings(targetSettings, savedSourceSettings, section);
-          const parsedSettings = chatSettingsSchema.parse(mergedSettings);
-          const savedSettings = await api.updateSettings(targetChatId, parsedSettings);
-          updated.push({ chatId: targetChatId, settings: savedSettings });
-        } catch {
-          failedChatIds.push(targetChatId);
-        }
-      }
-
+      const savedSourceSettings = await updateSettings(api, chatId, sourceSettings);
+      const result = await applySettingsSectionToAll(api, chatId, section);
       return {
-        section,
+        ...result,
         sourceSettings: savedSourceSettings,
-        updated,
-        failedChatIds,
-        totalChats: targetChatIds.length + 1,
       };
     },
     onSuccess: (result) => {
@@ -1471,24 +1468,13 @@ export function SettingsPage({ api }: { api: ApiClient }) {
       setFieldErrors({});
       setFailedSnapshot('');
       setOpenSectionApplyConfirm(null);
-      if (chatId) {
-        queryClient.setQueryData(['settings', chatId], result.sourceSettings);
-      }
-      for (const item of result.updated) {
-        queryClient.setQueryData(['settings', item.chatId], item.settings);
-      }
-
-      const syncedChats = result.updated.length + 1;
-      const hasFailures = result.failedChatIds.length > 0;
+      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
       pushToast({
-        tone: hasFailures ? 'info' : 'success',
-        title: hasFailures
-          ? `Блок «${SECTION_LABELS[result.section]}» применен частично`
-          : `Блок «${SECTION_LABELS[result.section]}» применен`,
-        description: hasFailures
-          ? `Успешно: ${syncedChats}/${result.totalChats} чатов.`
-          : `Обновлено чатов: ${syncedChats}.`,
+        tone: 'success',
+        title: `Блок «${SECTION_LABELS[result.section]}» применен`,
+        description: `Обновлено чатов: ${result.updatedChats}.`,
       });
+      maxNotify('success');
     },
     onError: (error) => {
       pushToast({
@@ -1496,17 +1482,26 @@ export function SettingsPage({ api }: { api: ApiClient }) {
         title: 'Не удалось применить блок ко всем чатам',
         description: formatApiError(error),
       });
+      maxNotify('error');
     },
   });
   const isApplyingSectionToAll = applySectionToAllMutation.isPending;
   const applyingSection = applySectionToAllMutation.variables?.section ?? null;
 
+  useEffect(() => {
+    const shouldBlockClose = hasPendingHeaderChanges || isHeaderSaving || isApplyingSectionToAll;
+    setMaxClosingConfirmation(shouldBlockClose);
+    return () => {
+      setMaxClosingConfirmation(false);
+    };
+  }, [hasPendingHeaderChanges, isApplyingSectionToAll, isHeaderSaving]);
+
   const addDomainMutation = useMutation({
-    mutationFn: (domain: string) => api.addDomain(chatId ?? '', domain),
+    mutationFn: (domain: string) => addDomain(api, chatId ?? '', domain),
     onSuccess: () => {
       setDomainInput('');
       setDomainInputError('');
-      void queryClient.invalidateQueries({ queryKey: ['domains', chatId] });
+      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
       pushToast({ tone: 'success', title: 'Ссылка добавлена в разрешенные' });
     },
     onError: (error) => {
@@ -1519,11 +1514,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   });
 
   const removeDomainMutation = useMutation({
-    mutationFn: (domain: string) => api.removeDomain(chatId ?? '', domain),
+    mutationFn: (domain: string) => removeDomain(api, chatId ?? '', domain),
     onSuccess: () => {
       setScheduleDomain(null);
       setScheduleError('');
-      void queryClient.invalidateQueries({ queryKey: ['domains', chatId] });
+      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
       pushToast({ tone: 'success', title: 'Ссылка удалена из разрешенных' });
     },
     onError: (error) => {
@@ -1537,11 +1532,11 @@ export function SettingsPage({ api }: { api: ApiClient }) {
 
   const scheduleDomainRemovalMutation = useMutation({
     mutationFn: (payload: { domain: string; removeAfterAt: string | null }) =>
-      api.scheduleDomainRemoval(chatId ?? '', payload.domain, payload.removeAfterAt),
+      scheduleDomainRemoval(api, chatId ?? '', payload.domain, payload.removeAfterAt),
     onSuccess: (_, payload) => {
       setScheduleError('');
       setScheduleDomain(null);
-      void queryClient.invalidateQueries({ queryKey: ['domains', chatId] });
+      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
       if (payload.removeAfterAt) {
         pushToast({
           tone: 'success',
@@ -1563,7 +1558,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   });
 
   const handoffBroadcastMutation = useMutation({
-    mutationFn: (payload: BroadcastHandoffPayload) => api.handoffBroadcast(chatId ?? '', payload),
+    mutationFn: (payload: BroadcastHandoffPayload) => handoffBroadcast(api, chatId ?? '', payload),
     onSuccess: (result) => {
       pushToast({
         tone: 'info',
@@ -1582,7 +1577,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   });
 
   const loadManagedBroadcastMutation = useMutation({
-    mutationFn: (broadcastId: string) => api.getManagedBroadcast(chatId ?? '', broadcastId),
+    mutationFn: (broadcastId: string) => getManagedBroadcast(api, chatId ?? '', broadcastId),
     onSuccess: (broadcast) => {
       applyManagedBroadcastToComposer(broadcast);
       setExpandedSections((current) => ({ ...current, mailing: true }));
@@ -1604,9 +1599,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
     }: {
       broadcastId: string;
       payload: SendBroadcastPayload;
-    }) => api.updateManagedBroadcast(chatId ?? '', broadcastId, payload),
+    }) => updateManagedBroadcast(api, chatId ?? '', broadcastId, payload),
     onSuccess: (broadcast) => {
-      void queryClient.invalidateQueries({ queryKey: ['managed-broadcasts', chatId] });
+      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
       resetMailingComposer();
       pushToast({
         tone: broadcast.status === 'FAILED' ? 'info' : 'success',
@@ -1626,9 +1621,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   });
 
   const cancelManagedBroadcastMutation = useMutation({
-    mutationFn: (broadcastId: string) => api.cancelManagedBroadcast(chatId ?? '', broadcastId),
+    mutationFn: (broadcastId: string) => cancelManagedBroadcast(api, chatId ?? '', broadcastId),
     onSuccess: (broadcast) => {
-      void queryClient.invalidateQueries({ queryKey: ['managed-broadcasts', chatId] });
+      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
       if (editingManagedBroadcast?.id === broadcast.id) {
         resetMailingComposer();
       }
@@ -2383,7 +2378,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   }
 
   function toggleSection(section: SettingsSectionKey) {
-    setExpandedSections((current) => ({ ...current, [section]: !current[section] }));
+    startTransition(() => {
+      setExpandedSections((current) => ({ ...current, [section]: !current[section] }));
+    });
   }
 
   function toggleSectionApplyConfirm(section: ApplySectionKey) {

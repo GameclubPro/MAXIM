@@ -10,7 +10,9 @@ import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
-import type { ApiClient } from '../lib/api-client';
+import { applyManualModerationAction, getLogsDashboard } from '../lib/api/events-client';
+import { getChats } from '../lib/api/root-client';
+import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 
@@ -244,7 +246,7 @@ function ViolationModerationControls({
   violation,
   onApplied,
 }: {
-  api: ApiClient;
+  api: ApiTransport;
   chatId: string;
   violation: ViolationItem;
   onApplied: () => void;
@@ -263,7 +265,7 @@ function ViolationModerationControls({
 
   const applyMutation = useMutation({
     mutationFn: async () =>
-      api.applyManualModerationAction(chatId, violation.userId, {
+      applyManualModerationAction(api, chatId, violation.userId, {
         action,
         ...(isBanAction ? { banDurationHours } : {}),
       }),
@@ -385,7 +387,7 @@ function formatViolationDate(value: string): string {
   });
 }
 
-export function EventsPage({ api }: { api: ApiClient }) {
+export function EventsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
   const [range, setRange] = useState<LogsDashboardRange>('7d');
@@ -400,7 +402,7 @@ export function EventsPage({ api }: { api: ApiClient }) {
 
   const chatsQuery = useQuery({
     queryKey: ['chats'],
-    queryFn: () => api.getChats(),
+    queryFn: () => getChats(api),
     enabled: Boolean(chatId),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
@@ -408,7 +410,7 @@ export function EventsPage({ api }: { api: ApiClient }) {
 
   const dashboardQuery = useQuery({
     queryKey: ['logs-dashboard', chatId, range],
-    queryFn: () => api.getLogsDashboard(chatId ?? '', range),
+    queryFn: () => getLogsDashboard(api, chatId ?? '', range),
     enabled: Boolean(chatId),
     refetchInterval: () => (document.hidden ? false : 10_000),
     refetchOnWindowFocus: true,

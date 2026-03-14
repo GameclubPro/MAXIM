@@ -1,9 +1,13 @@
 import {
+  applySectionToAllRequestSchema,
+  applySectionToAllResponseSchema,
   addDomainRequestSchema,
   addAdminRequestSchema,
   stickerLabShareRequestSchema,
   stickerLabShareResponseSchema,
+  chatSettingsScreenResponseSchema,
   chatRulesSchema,
+  channelSettingsScreenResponseSchema,
   channelStatsQuerySchema,
   channelStatsResponseSchema,
   channelDialogResponseSchema,
@@ -22,14 +26,17 @@ import {
   type ChannelStatsRange,
   type ChannelStatsResponse,
   type ChannelOverview,
+  type ApplySectionToAllResponse,
   type ManagedBroadcastDetails,
   managedBroadcastDetailsSchema,
   type ManagedBroadcastSummary,
   managedBroadcastSummarySchema,
   type ChannelSettings,
+  type ChatSettingsScreenResponse,
   type ChatRules,
   type ChatSettings,
   chatSettingsSchema,
+  type ChannelSettingsScreenResponse,
   type DomainAllowlistEntry,
   type LogsDashboardRange,
   type LogsDashboardResponse,
@@ -172,6 +179,117 @@ const MANAGED_POLL_ACTION_CLOSE = 'CLOSE_MANAGED_POLL';
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
 const DEFAULT_CHANNEL_SETTINGS = channelSettingsSchema.parse({});
+const SETTINGS_SECTION_KEYS = {
+  links: [
+    'linkPolicy',
+    'linkBotMessageEnabled',
+    'linkBotMessageText',
+    'linkWarnEnabled',
+    'linkWarnMessageText',
+    'linkBanEnabled',
+    'linkKickEnabled',
+    'linkBotButtonEnabled',
+    'linkBotButtonUrl',
+    'linkBotButtonText',
+  ],
+  greeting: [
+    'greetingEnabled',
+    'greetingBotMessageEnabled',
+    'greetingBotMessageText',
+    'greetingBotButtonEnabled',
+    'greetingBotButtonUrl',
+    'greetingBotButtonText',
+  ],
+  profanityFilter: [
+    'russianProfanityFilterEnabled',
+    'profanityBotMessageEnabled',
+    'profanityWarnEnabled',
+    'profanityBanEnabled',
+    'profanityKickEnabled',
+  ],
+  commercialFilter: [
+    'commercialAdsFilterEnabled',
+    'commercialAdsSensitivity',
+    'commercialAdsWarnThreshold',
+    'commercialAdsDeleteThreshold',
+    'textFiltersBotMessageEnabled',
+    'textFiltersBotMessageText',
+    'textFiltersWarnEnabled',
+    'textFiltersWarnMessageText',
+    'textFiltersBanEnabled',
+    'textFiltersKickEnabled',
+    'textFiltersBotButtonEnabled',
+    'textFiltersBotButtonUrl',
+    'textFiltersBotButtonText',
+  ],
+  thematicFilters: [
+    'thematicCodewordEnabled',
+    'thematicCodeword',
+    'thematicFiltersBotMessageEnabled',
+    'thematicFiltersWarnEnabled',
+    'thematicFiltersBanEnabled',
+    'thematicFiltersKickEnabled',
+    'thematicFiltersBotButtonEnabled',
+    'thematicFiltersBotButtonUrl',
+    'thematicFiltersBotButtonText',
+  ],
+  duplicates: [
+    'antiDuplicateEnabled',
+    'duplicateWarnEnabled',
+    'duplicateKickEnabled',
+    'duplicateBanEnabled',
+    'duplicateWarnWindowSec',
+    'duplicateWarnMaxCount',
+    'duplicateKickWindowSec',
+    'duplicateKickMaxCount',
+    'duplicateBanWindowSec',
+    'duplicateBanMaxCount',
+    'duplicateBotMessageEnabled',
+    'duplicateBotMessageText',
+    'duplicateBotButtonEnabled',
+    'duplicateBotButtonUrl',
+    'duplicateBotButtonText',
+    'banDurationHours',
+  ],
+  limits: [
+    'antiSpamEnabled',
+    'maxMessageLengthEnabled',
+    'maxMessageLength',
+    'photoMessageCooldownEnabled',
+    'photoMessageCooldownHours',
+    'stickerMessageCooldownEnabled',
+    'stickerMessageCooldownMinutes',
+    'videoMessagesEnabled',
+    'fileMessagesEnabled',
+    'voiceMessagesEnabled',
+    'messageLimitsBotMessageEnabled',
+    'messageLimitsBotMessageText',
+    'messageLimitsWarnEnabled',
+    'messageLimitsBanEnabled',
+    'messageLimitsKickEnabled',
+    'messageLimitsBotButtonEnabled',
+    'messageLimitsBotButtonUrl',
+    'messageLimitsBotButtonText',
+    'banDurationHours',
+  ],
+  night: [
+    'nightModeEnabled',
+    'nightModeStartTimeMinutes',
+    'nightModeEndTimeMinutes',
+    'nightModeTimezone',
+    'nightModeBotMessageEnabled',
+    'nightModeBotMessageText',
+    'nightModeBotButtonEnabled',
+    'nightModeBotButtonUrl',
+    'nightModeBotButtonText',
+  ],
+  extra: [
+    'deleteSpammersEnabled',
+    'deleteBotMessagesEnabled',
+    'deleteBotMessagesDelayMinutes',
+    'removeBotsFromGroupEnabled',
+  ],
+} as const satisfies Record<string, readonly (keyof ChatSettings)[]>;
 const CHANNEL_STATS_POST_ACTIONS = [
   CHANNEL_DIALOG_ACTION_PUBLISH,
   CHANNEL_DIALOG_ACTION_AUTO_ATTACH,
@@ -1078,12 +1196,18 @@ export class AdminService {
     throw new Error('Sticker lab file delivery failed without error details');
   }
 
-  async listChats(user: AuthUser): Promise<ChatSummary[]> {
-    return this.listManagedEntities(user, 'chat');
+  async listChats(
+    user: AuthUser,
+    options: { refresh?: boolean } = {},
+  ): Promise<ChatSummary[]> {
+    return this.listManagedEntities(user, 'chat', options);
   }
 
-  async listChannels(user: AuthUser): Promise<ChatSummary[]> {
-    return this.listManagedEntities(user, 'channel');
+  async listChannels(
+    user: AuthUser,
+    options: { refresh?: boolean } = {},
+  ): Promise<ChatSummary[]> {
+    return this.listManagedEntities(user, 'channel', options);
   }
 
   async getChatHeader(chatId: string, user: AuthUser): Promise<ManagedEntityHeader> {
@@ -1097,7 +1221,18 @@ export class AdminService {
   async listManagedEntities(
     user: AuthUser,
     entityType: ManagedEntityTypeFilter = 'all',
+    options: { refresh?: boolean } = {},
   ): Promise<ChatSummary[]> {
+    if (options.refresh !== true) {
+      const cached = await this.listChatsFromAllowlist(user.userId, entityType);
+      if (cached.length > 0) {
+        return this.attachChannelOverview(cached);
+      }
+
+      const bootstrapped = await this.bootstrapCurrentChat(user, entityType);
+      return bootstrapped ? this.attachChannelOverview([bootstrapped]) : [];
+    }
+
     try {
       const remoteChats = await this.maxClient.listBotChats();
       const resolvedChats = await this.mapWithConcurrencyLimit(
@@ -1533,6 +1668,27 @@ export class AdminService {
     return fallback;
   }
 
+  async getChatSettingsScreen(
+    chatId: string,
+    user: AuthUser,
+  ): Promise<ChatSettingsScreenResponse> {
+    const [settings, rules, header, domains, managedBroadcasts] = await Promise.all([
+      this.getSettings(chatId, user),
+      this.getRules(chatId, user),
+      this.getChatHeader(chatId, user),
+      this.getDomainAllowlistDetails(chatId, user),
+      this.listManagedBroadcasts(chatId, user),
+    ]);
+
+    return chatSettingsScreenResponseSchema.parse({
+      settings,
+      rules,
+      header,
+      domains,
+      managedBroadcasts,
+    });
+  }
+
   async updateSettings(
     chatId: string,
     user: AuthUser,
@@ -1911,6 +2067,21 @@ export class AdminService {
     });
 
     return fallback;
+  }
+
+  async getChannelSettingsScreen(
+    chatId: string,
+    user: AuthUser,
+  ): Promise<ChannelSettingsScreenResponse> {
+    const [settings, header] = await Promise.all([
+      this.getChannelSettings(chatId, user),
+      this.getChannelHeader(chatId, user),
+    ]);
+
+    return channelSettingsScreenResponseSchema.parse({
+      settings,
+      header,
+    });
   }
 
   async updateChannelSettings(
@@ -2349,6 +2520,32 @@ export class AdminService {
       updatedChats: appliedChatIds.length,
       appliedChatIds,
     };
+  }
+
+  async applySettingsSectionToAllChats(
+    sourceChatId: string,
+    user: AuthUser,
+    body: unknown,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ApplySectionToAllResponse> {
+    const parsed = applySectionToAllRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const sourceSettings = await this.getSettings(sourceChatId, user);
+    const result = await this.applySettingsToAllChats(
+      sourceChatId,
+      user,
+      sourceSettings,
+      source,
+      SETTINGS_SECTION_KEYS[parsed.data.section],
+    );
+
+    return applySectionToAllResponseSchema.parse({
+      section: parsed.data.section,
+      ...result,
+    });
   }
 
   private normalizeChatSettings(settings: ChatSettings): ChatSettings {
@@ -5843,6 +6040,11 @@ export class AdminService {
   }
 
   private async hasUserAndBotAdminAccess(chatId: string, userId: string): Promise<boolean> {
+    const cached = (await this.chatContextCache.getAdminAccess?.(chatId, userId)) ?? null;
+    if (cached !== null) {
+      return cached;
+    }
+
     try {
       const maxClientWithEditAccess = this.maxClient as MaxClientService & {
         getChatEditableAdminIds?: (chatId: string) => Promise<string[]>;
@@ -5851,7 +6053,9 @@ export class AdminService {
         typeof maxClientWithEditAccess.getChatEditableAdminIds === 'function'
           ? await maxClientWithEditAccess.getChatEditableAdminIds(chatId)
           : await this.maxClient.getChatAdminIds(chatId);
-      return adminIds.includes(userId);
+      const hasAccess = adminIds.includes(userId);
+      await this.chatContextCache.setAdminAccess?.(chatId, userId, hasAccess);
+      return hasAccess;
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -5861,6 +6065,7 @@ export class AdminService {
         },
         'Chat hidden: failed to validate bot/user admin access',
       );
+      await this.chatContextCache.setAdminAccess?.(chatId, userId, false);
       return false;
     }
   }
@@ -5879,6 +6084,7 @@ export class AdminService {
           title: refreshedTitle,
         },
       });
+      await this.chatContextCache.invalidateManagedEntityHeader?.(chat.id);
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -6023,6 +6229,10 @@ export class AdminService {
       update: {},
     });
 
+    if (normalizedTitle || updateEntityType) {
+      await this.chatContextCache.invalidateManagedEntityHeader?.(chatId);
+    }
+
     return persistedChat;
   }
 
@@ -6116,6 +6326,11 @@ export class AdminService {
     await this.assertChatAdmin(chatId, user.userId, entityType);
     await this.ensureEntityType(chatId, user.userId, entityType);
 
+    const cached = await this.chatContextCache.getManagedEntityHeader?.(chatId, entityType);
+    if (cached) {
+      return cached;
+    }
+
     const persistedChat = await this.prisma.chat.findUnique({
       where: { id: chatId },
       select: {
@@ -6140,13 +6355,15 @@ export class AdminService {
         });
       }
 
-      return {
+      const header: ManagedEntityHeader = {
         id: chatId,
         title,
         entityType,
         link: snapshot.link,
         participantsCount: snapshot.participantsCount,
       };
+      await this.chatContextCache.setManagedEntityHeader?.(header);
+      return header;
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -6158,13 +6375,15 @@ export class AdminService {
       );
     }
 
-    return {
+    const fallbackHeader: ManagedEntityHeader = {
       id: chatId,
       title: persistedChat?.title?.trim() || chatId,
       entityType,
       link: null,
       participantsCount: null,
     };
+    await this.chatContextCache.setManagedEntityHeader?.(fallbackHeader);
+    return fallbackHeader;
   }
 
   private toPrismaEntityType(entityType: ManagedEntityType): ChatEntityType {

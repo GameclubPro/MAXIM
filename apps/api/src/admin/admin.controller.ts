@@ -23,8 +23,8 @@ export class AdminController {
   }
 
   @Get('chats')
-  getChats(@CurrentUser() user: AuthUser) {
-    return this.adminService.listChats(user);
+  getChats(@CurrentUser() user: AuthUser, @Query('refresh') refresh: string | undefined) {
+    return this.adminService.listChats(user, { refresh: refresh === '1' });
   }
 
   @Get('chats/:chatId/header')
@@ -33,8 +33,8 @@ export class AdminController {
   }
 
   @Get('channels')
-  getChannels(@CurrentUser() user: AuthUser) {
-    return this.adminService.listChannels(user);
+  getChannels(@CurrentUser() user: AuthUser, @Query('refresh') refresh: string | undefined) {
+    return this.adminService.listChannels(user, { refresh: refresh === '1' });
   }
 
   @Get('channels/:chatId/header')
@@ -54,6 +54,11 @@ export class AdminController {
   @Get('chats/:chatId/settings')
   getSettings(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.adminService.getSettings(chatId, user);
+  }
+
+  @Get('chats/:chatId/settings-screen')
+  getChatSettingsScreen(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.adminService.getChatSettingsScreen(chatId, user);
   }
 
   @Put('chats/:chatId/settings')
@@ -116,6 +121,11 @@ export class AdminController {
   @Get('channels/:chatId/settings')
   getChannelSettings(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.adminService.getChannelSettings(chatId, user);
+  }
+
+  @Get('channels/:chatId/settings-screen')
+  getChannelSettingsScreen(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.adminService.getChannelSettingsScreen(chatId, user);
   }
 
   @Put('channels/:chatId/settings')
@@ -196,6 +206,15 @@ export class AdminController {
     @Body() body: unknown,
   ) {
     return this.adminService.applySettingsToAllChats(chatId, user, body);
+  }
+
+  @Post('chats/:chatId/settings/apply-section-to-all')
+  applySettingsSectionToAllChats(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.applySettingsSectionToAllChats(chatId, user, body);
   }
 
   @Post('chats/:chatId/broadcast')

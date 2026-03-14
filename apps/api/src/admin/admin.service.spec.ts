@@ -1,3 +1,4 @@
+import { chatRulesSchema, chatSettingsSchema } from '@maxim/contracts';
 import { AdminService } from './admin.service';
 
 function createPrismaMock() {
@@ -216,6 +217,18 @@ function createConfigMock() {
       }
       return null;
     }),
+  };
+}
+
+function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
+  return {
+    invalidate: jest.fn().mockResolvedValue(undefined),
+    getAdminAccess: jest.fn().mockResolvedValue(null),
+    setAdminAccess: jest.fn().mockResolvedValue(undefined),
+    getManagedEntityHeader: jest.fn().mockResolvedValue(null),
+    setManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+    invalidateManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+    ...overrides,
   };
 }
 
@@ -1147,12 +1160,15 @@ describe('AdminService.listChannels', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.listChannels({
-      userId: 'admin-1',
-      username: null,
-      displayName: null,
-      chatTitle: null,
-    });
+    const result = await service.listChannels(
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { refresh: true },
+    );
 
     expect(result).toEqual([
       {
@@ -1194,6 +1210,178 @@ describe('AdminService.listChannels', () => {
         postSuggestionsEnabled: true,
         commentsModerationEnabled: true,
       },
+    });
+  });
+
+  it('uses allowlist cache by default and skips remote MAX discovery', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'channel-1',
+          title: 'Кэш канала',
+          createdAt: new Date('2026-03-02T10:00:00.000Z'),
+          entityType: 'CHANNEL',
+        },
+      },
+    ]);
+    prisma.channelSettings.findMany.mockResolvedValue([
+      {
+        chatId: 'channel-1',
+        commentsEnabled: false,
+        postSuggestionsEnabled: true,
+        commentsModerationEnabled: false,
+      },
+    ]);
+
+    const maxClient = {
+      listBotChats: jest.fn(),
+      getChatAdminIds: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.listChannels({
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(result).toEqual([
+      {
+        id: 'channel-1',
+        title: 'Кэш канала',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'channel',
+        link: null,
+        channelOverview: {
+          enabledScenariosCount: 1,
+          commentsEnabled: false,
+          postSuggestionsEnabled: true,
+          commentsModerationEnabled: false,
+        },
+      },
+    ]);
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
+  });
+});
+
+describe('AdminService settings screen endpoints', () => {
+  it('aggregates chat settings screen data in one response', async () => {
+    const service = new AdminService(
+      createPrismaMock() as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const settings = chatSettingsSchema.parse({
+      linkPolicy: 'BLOCKLIST_ONLY',
+      greetingEnabled: true,
+    });
+    const rules = chatRulesSchema.parse({
+      text: 'Правила чата',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      autoTextEnabled: false,
+    });
+
+    jest.spyOn(service, 'getSettings').mockResolvedValue(settings);
+    jest.spyOn(service, 'getRules').mockResolvedValue(rules);
+    jest.spyOn(service, 'getChatHeader').mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      entityType: 'chat',
+      link: null,
+      participantsCount: 128,
+    });
+    jest.spyOn(service, 'getDomainAllowlistDetails').mockResolvedValue([
+      {
+        domain: 'https://example.com',
+        removeAfterAt: null,
+      },
+    ]);
+    jest.spyOn(service, 'listManagedBroadcasts').mockResolvedValue([]);
+
+    const result = await service.getChatSettingsScreen('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(result).toEqual({
+      settings,
+      rules,
+      header: {
+        id: 'chat-1',
+        title: 'Команда MAX',
+        entityType: 'chat',
+        link: null,
+        participantsCount: 128,
+      },
+      domains: [
+        {
+          domain: 'https://example.com',
+          removeAfterAt: null,
+        },
+      ],
+      managedBroadcasts: [],
+    });
+  });
+
+  it('routes section apply-to-all through partial settings keys', async () => {
+    const service = new AdminService(
+      createPrismaMock() as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const settings = chatSettingsSchema.parse({
+      linkPolicy: 'BLOCKLIST_ONLY',
+      greetingEnabled: true,
+    });
+
+    jest.spyOn(service, 'getSettings').mockResolvedValue(settings);
+    const applySpy = jest
+      .spyOn(service as any, 'applySettingsToAllChats')
+      .mockResolvedValue({
+        sourceChatId: 'chat-1',
+        updatedChats: 2,
+        appliedChatIds: ['chat-1', 'chat-2'],
+      });
+
+    const result = await service.applySettingsSectionToAllChats(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { section: 'links' },
+    );
+
+    expect(applySpy).toHaveBeenCalledWith(
+      'chat-1',
+      expect.objectContaining({ userId: 'admin-1' }),
+      settings,
+      'miniapp',
+      expect.arrayContaining(['linkPolicy', 'linkBotMessageEnabled', 'linkBotButtonText']),
+    );
+    expect(result).toEqual({
+      section: 'links',
+      sourceChatId: 'chat-1',
+      updatedChats: 2,
+      appliedChatIds: ['chat-1', 'chat-2'],
     });
   });
 });

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, NavLink, Outlet, useLocation, useParams } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { cn } from '../lib/cn';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
+import { bindMaxBackButton, maxImpact, setMaxBackButtonVisible } from '../lib/max-bridge';
 import {
   buildManagedEntitiesRoute,
   normalizeEntityType,
@@ -163,6 +164,7 @@ function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
 export function Shell() {
   const { chatId = '' } = useParams();
   const location = useLocation();
+  const navigate = useNavigate();
   const [lastEntityIds, setLastEntityIds] = useState<Record<LastEntityType, string>>(() => ({
     chat: readLastEntityId('chat'),
     channel: readLastEntityId('channel'),
@@ -301,6 +303,32 @@ export function Shell() {
       window.removeEventListener('focusout', updateKeyboardState);
     };
   }, []);
+
+  useEffect(() => {
+    const shouldShowNativeBack = !isChatsRoute;
+    setMaxBackButtonVisible(shouldShowNativeBack);
+
+    if (!shouldShowNativeBack) {
+      return () => {
+        setMaxBackButtonVisible(false);
+      };
+    }
+
+    const cleanup = bindMaxBackButton(() => {
+      maxImpact('light');
+      if (window.history.length > 1) {
+        navigate(-1);
+        return;
+      }
+
+      navigate(homeRoute, { replace: true });
+    });
+
+    return () => {
+      cleanup();
+      setMaxBackButtonVisible(false);
+    };
+  }, [homeRoute, isChatsRoute, navigate]);
 
   return (
     <div

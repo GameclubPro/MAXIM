@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { useEffect, useRef } from 'react';
+import { Suspense, useEffect, useRef } from 'react';
 import {
   BrowserRouter as Router,
   Navigate,
@@ -10,22 +10,46 @@ import {
 } from 'react-router-dom';
 import { Shell } from './components/shell';
 import { GlassCard } from './components/ui/glass-card';
+import { SkeletonCard } from './components/ui/skeleton';
 import { StatusState } from './components/ui/status-state';
 import { ToastProvider } from './components/ui/toast';
-import { ApiClient } from './lib/api-client';
+import { createApiTransport } from './lib/api/transport';
 import { getInitData } from './lib/init-data';
 import { resolveLaunchRoute } from './lib/launch-route';
-import { ChatsPage } from './pages/chats-page';
-import { ChannelSettingsPage } from './pages/channel-settings-page';
-import { ChannelStatsPage } from './pages/channel-stats-page';
-import { ChannelDialogPage } from './pages/channel-dialog-page';
-import { EventsPage } from './pages/events-page';
-import { GiveawayPage } from './pages/giveaway-page';
-import { SettingsPage } from './pages/settings-page';
+import { readyMaxMiniApp } from './lib/max-bridge';
+import {
+  LazyChannelDialogPage,
+  LazyChannelSettingsPage,
+  LazyChannelStatsPage,
+  LazyChatsPage,
+  LazyEventsPage,
+  LazyGiveawayPage,
+  LazySettingsPage,
+} from './pages/lazy-pages';
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 30_000,
+      gcTime: 5 * 60_000,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: true,
+      retry: 1,
+    },
+  },
+});
 const initData = getInitData();
-const apiClient = initData ? new ApiClient(initData) : null;
+const apiClient = initData ? createApiTransport(initData) : null;
+
+function RouteFallback() {
+  return (
+    <div className="page-stack page-enter">
+      <GlassCard className="settings-section">
+        <SkeletonCard lines={5} />
+      </GlassCard>
+    </div>
+  );
+}
 
 function LaunchRouteSync({ launchInitData }: { launchInitData: string }) {
   const location = useLocation();
@@ -50,8 +74,7 @@ function LaunchRouteSync({ launchInitData }: { launchInitData: string }) {
 
 export function App() {
   useEffect(() => {
-    window.WebApp?.ready?.();
-    window.MAX?.WebApp?.ready?.();
+    readyMaxMiniApp();
   }, []);
 
   if (!initData || !apiClient) {
@@ -82,24 +105,29 @@ export function App() {
       <ToastProvider>
         <Router basename="/app">
           <LaunchRouteSync launchInitData={initData} />
-          <Routes>
-            <Route element={<Shell />}>
-              <Route path="/" element={<ChatsPage api={apiClient} />} />
-              <Route path="/chat/:chatId/settings" element={<SettingsPage api={apiClient} />} />
-              <Route
-                path="/channel/:chatId/settings"
-                element={<ChannelSettingsPage api={apiClient} />}
-              />
-              <Route path="/channel/:chatId/stats" element={<ChannelStatsPage api={apiClient} />} />
-              <Route
-                path="/channel/:chatId/dialog/:mode"
-                element={<ChannelDialogPage api={apiClient} />}
-              />
-              <Route path="/chat/:chatId/events" element={<EventsPage api={apiClient} />} />
-              <Route path="/giveaways/:giveawayId" element={<GiveawayPage api={apiClient} />} />
-              <Route path="*" element={<Navigate to="/" replace />} />
-            </Route>
-          </Routes>
+          <Suspense fallback={<RouteFallback />}>
+            <Routes>
+              <Route element={<Shell />}>
+                <Route path="/" element={<LazyChatsPage api={apiClient} />} />
+                <Route path="/chat/:chatId/settings" element={<LazySettingsPage api={apiClient} />} />
+                <Route
+                  path="/channel/:chatId/settings"
+                  element={<LazyChannelSettingsPage api={apiClient} />}
+                />
+                <Route
+                  path="/channel/:chatId/stats"
+                  element={<LazyChannelStatsPage api={apiClient} />}
+                />
+                <Route
+                  path="/channel/:chatId/dialog/:mode"
+                  element={<LazyChannelDialogPage api={apiClient} />}
+                />
+                <Route path="/chat/:chatId/events" element={<LazyEventsPage api={apiClient} />} />
+                <Route path="/giveaways/:giveawayId" element={<LazyGiveawayPage api={apiClient} />} />
+                <Route path="*" element={<Navigate to="/" replace />} />
+              </Route>
+            </Routes>
+          </Suspense>
         </Router>
       </ToastProvider>
     </QueryClientProvider>

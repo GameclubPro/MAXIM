@@ -7,11 +7,23 @@ import {
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  closeChatPoll,
+  getChatPoll,
+  publishChatPoll,
+  updateChatPoll,
+} from '../lib/api/chat-settings-client';
+import {
+  closeChannelPoll,
+  getChannelPoll,
+  publishChannelPoll,
+  updateChannelPoll,
+} from '../lib/api/channel-settings-client';
+import type { ApiTransport } from '../lib/api/transport';
+import { cn } from '../lib/cn';
+import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { GlassCard } from './ui/glass-card';
 import { useToast } from './ui/toast';
-import { cn } from '../lib/cn';
-import type { ApiClient } from '../lib/api-client';
-import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 
 const AUTOSAVE_DELAY_MS = 650;
 const AUTOSAVE_SAVED_HIDE_MS = 1600;
@@ -157,7 +169,7 @@ export function ManagedPollCard({
   entityType,
   entityId,
 }: {
-  api: ApiClient;
+  api: ApiTransport;
   entityType: 'chat' | 'channel';
   entityId: string;
 }) {
@@ -185,7 +197,7 @@ export function ManagedPollCard({
   const pollQuery = useQuery({
     queryKey,
     queryFn: () =>
-      entityType === 'channel' ? api.getChannelPoll(entityId) : api.getChatPoll(entityId),
+      entityType === 'channel' ? getChannelPoll(api, entityId) : getChatPoll(api, entityId),
     enabled: Boolean(entityId),
     refetchOnWindowFocus: false,
   });
@@ -287,8 +299,8 @@ export function ManagedPollCard({
 
     const request =
       (entityType === 'channel'
-        ? api.updateChannelPoll(entityId, payload)
-        : api.updateChatPoll(entityId, payload))
+        ? updateChannelPoll(api, entityId, payload)
+        : updateChatPoll(api, entityId, payload))
         .then((saved) => {
           lastFailedDraftKeyRef.current = null;
           applyPollResponse(saved, payloadKey);
@@ -348,7 +360,9 @@ export function ManagedPollCard({
         await saveDraftNow({ force: true });
       }
 
-      return entityType === 'channel' ? api.publishChannelPoll(entityId) : api.publishChatPoll(entityId);
+      return entityType === 'channel'
+        ? publishChannelPoll(api, entityId)
+        : publishChatPoll(api, entityId);
     },
     onSuccess: (nextPoll) => {
       applyPollResponse(nextPoll);
@@ -368,7 +382,8 @@ export function ManagedPollCard({
   });
 
   const closeMutation = useMutation({
-    mutationFn: () => (entityType === 'channel' ? api.closeChannelPoll(entityId) : api.closeChatPoll(entityId)),
+    mutationFn: () =>
+      entityType === 'channel' ? closeChannelPoll(api, entityId) : closeChatPoll(api, entityId),
     onSuccess: (nextPoll) => {
       applyPollResponse(nextPoll);
       pushToast({

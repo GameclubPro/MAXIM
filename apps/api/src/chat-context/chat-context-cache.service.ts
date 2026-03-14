@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type { ManagedEntityHeader, ManagedEntityType } from '@maxim/contracts';
 import { Prisma, type ChatSettings } from '@prisma/client';
 import Redis from 'ioredis';
 import { PrismaService } from '../prisma/prisma.service';
@@ -36,6 +37,14 @@ export class ChatContextCacheService implements OnModuleDestroy {
     return `chat:context:v3:${chatId}`;
   }
 
+  static adminAccessKey(chatId: string, userId: string): string {
+    return `chat:admin-access:v1:${chatId}:${userId}`;
+  }
+
+  static managedEntityHeaderKey(chatId: string, entityType: ManagedEntityType): string {
+    return `chat:managed-header:v1:${entityType}:${chatId}`;
+  }
+
   async getChatContext(chatId: string, chatTitle?: string | null): Promise<ChatContext> {
     const key = ChatContextCacheService.cacheKey(chatId);
     const cached = await this.redis.get(key);
@@ -60,6 +69,68 @@ export class ChatContextCacheService implements OnModuleDestroy {
 
   async invalidate(chatId: string) {
     await this.redis.del(ChatContextCacheService.cacheKey(chatId));
+  }
+
+  async getAdminAccess(chatId: string, userId: string): Promise<boolean | null> {
+    const raw = await this.redis.get(ChatContextCacheService.adminAccessKey(chatId, userId));
+    if (raw === null) {
+      return null;
+    }
+
+    return raw === '1';
+  }
+
+  async setAdminAccess(chatId: string, userId: string, hasAccess: boolean): Promise<void> {
+    await this.redis.set(
+      ChatContextCacheService.adminAccessKey(chatId, userId),
+      hasAccess ? '1' : '0',
+      'EX',
+      this.ttlSec,
+    );
+  }
+
+  async getManagedEntityHeader(
+    chatId: string,
+    entityType: ManagedEntityType,
+  ): Promise<ManagedEntityHeader | null> {
+    const cached = await this.redis.get(ChatContextCacheService.managedEntityHeaderKey(chatId, entityType));
+    if (!cached) {
+      return null;
+    }
+
+    try {
+      return JSON.parse(cached) as ManagedEntityHeader;
+    } catch (error: unknown) {
+      this.logger.warn(
+        { chatId, entityType, err: error instanceof Error ? error.message : String(error) },
+        'Failed to parse managed entity header cache',
+      );
+      return null;
+    }
+  }
+
+  async setManagedEntityHeader(header: ManagedEntityHeader): Promise<void> {
+    await this.redis.set(
+      ChatContextCacheService.managedEntityHeaderKey(header.id, header.entityType),
+      JSON.stringify(header),
+      'EX',
+      this.ttlSec,
+    );
+  }
+
+  async invalidateManagedEntityHeader(
+    chatId: string,
+    entityType?: ManagedEntityType,
+  ): Promise<void> {
+    if (entityType) {
+      await this.redis.del(ChatContextCacheService.managedEntityHeaderKey(chatId, entityType));
+      return;
+    }
+
+    await this.redis.del(
+      ChatContextCacheService.managedEntityHeaderKey(chatId, 'chat'),
+      ChatContextCacheService.managedEntityHeaderKey(chatId, 'channel'),
+    );
   }
 
   private async loadAndCache(chatId: string, chatTitle?: string | null): Promise<ChatContext> {

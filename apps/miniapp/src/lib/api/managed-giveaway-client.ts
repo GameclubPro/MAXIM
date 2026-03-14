@@ -1,0 +1,163 @@
+import {
+  broadcastHandoffResponseSchema,
+  managedBroadcastSummarySchema,
+  managedGiveawayDetailsSchema,
+  managedGiveawayHandoffRequestSchema,
+  managedGiveawaySummarySchema,
+  markManagedGiveawayWinnerDeliveredRequestSchema,
+  rerollManagedGiveawayWinnerRequestSchema,
+  updateManagedGiveawayRequestSchema,
+  type ManagedBroadcastSummary,
+  type ManagedGiveawayDetails,
+  type ManagedGiveawaySummary,
+} from '@maxim/contracts';
+import type { ManagedGiveawayHandoffPayload, UpdateManagedGiveawayPayload } from './shared-types';
+import type { ApiTransport } from './transport';
+
+function resolveEntityBase(entityType: 'chat' | 'channel', entityId: string): string {
+  return `/${entityType === 'channel' ? 'channels' : 'chats'}/${entityId}`;
+}
+
+export async function getManagedGiveaways(
+  api: ApiTransport,
+  entityType: 'chat' | 'channel',
+  entityId: string,
+): Promise<ManagedGiveawaySummary[]> {
+  const response = await api.request(`${resolveEntityBase(entityType, entityId)}/giveaways`);
+  if (!Array.isArray(response)) {
+    throw new Error('Invalid managed giveaways response');
+  }
+
+  return response.map((item: unknown) => managedGiveawaySummarySchema.parse(item));
+}
+
+export async function createManagedGiveaway(
+  api: ApiTransport,
+  entityType: 'chat' | 'channel',
+  entityId: string,
+  payload: UpdateManagedGiveawayPayload,
+): Promise<ManagedGiveawayDetails> {
+  const requestBody = updateManagedGiveawayRequestSchema.parse(payload);
+  const response = await api.request(`${resolveEntityBase(entityType, entityId)}/giveaways`, {
+    method: 'POST',
+    body: JSON.stringify(requestBody),
+  });
+  return managedGiveawayDetailsSchema.parse(response);
+}
+
+export async function getManagedGiveaway(
+  api: ApiTransport,
+  entityType: 'chat' | 'channel',
+  entityId: string,
+  giveawayId: string,
+): Promise<ManagedGiveawayDetails> {
+  const response = await api.request(
+    `${resolveEntityBase(entityType, entityId)}/giveaways/${giveawayId}`,
+  );
+  return managedGiveawayDetailsSchema.parse(response);
+}
+
+export async function updateManagedGiveaway(
+  api: ApiTransport,
+  entityType: 'chat' | 'channel',
+  entityId: string,
+  giveawayId: string,
+  payload: UpdateManagedGiveawayPayload,
+): Promise<ManagedGiveawayDetails> {
+  const requestBody = updateManagedGiveawayRequestSchema.parse(payload);
+  const response = await api.request(
+    `${resolveEntityBase(entityType, entityId)}/giveaways/${giveawayId}`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(requestBody),
+    },
+  );
+  return managedGiveawayDetailsSchema.parse(response);
+}
+
+export async function publishManagedGiveaway(
+  api: ApiTransport,
+  entityType: 'chat' | 'channel',
+  entityId: string,
+  giveawayId: string,
+): Promise<ManagedGiveawayDetails> {
+  const response = await api.request(
+    `${resolveEntityBase(entityType, entityId)}/giveaways/${giveawayId}/publish`,
+    { method: 'POST' },
+  );
+  return managedGiveawayDetailsSchema.parse(response);
+}
+
+export async function cancelManagedGiveaway(
+  api: ApiTransport,
+  entityType: 'chat' | 'channel',
+  entityId: string,
+  giveawayId: string,
+): Promise<ManagedGiveawayDetails> {
+  const response = await api.request(
+    `${resolveEntityBase(entityType, entityId)}/giveaways/${giveawayId}/cancel`,
+    { method: 'POST' },
+  );
+  return managedGiveawayDetailsSchema.parse(response);
+}
+
+export async function deleteManagedGiveaway(
+  api: ApiTransport,
+  entityType: 'chat' | 'channel',
+  entityId: string,
+  giveawayId: string,
+): Promise<void> {
+  await api.request(`${resolveEntityBase(entityType, entityId)}/giveaways/${giveawayId}`, {
+    method: 'DELETE',
+  });
+}
+
+export async function handoffManagedGiveaway(
+  api: ApiTransport,
+  entityType: 'chat' | 'channel',
+  entityId: string,
+  payload: ManagedGiveawayHandoffPayload,
+) {
+  const requestBody = managedGiveawayHandoffRequestSchema.parse(payload);
+  const response = await api.request(`${resolveEntityBase(entityType, entityId)}/giveaway/handoff`, {
+    method: 'POST',
+    body: JSON.stringify(requestBody),
+  });
+  return broadcastHandoffResponseSchema.parse(response);
+}
+
+export async function rerollManagedGiveawayWinner(
+  api: ApiTransport,
+  entityType: 'chat' | 'channel',
+  entityId: string,
+  giveawayId: string,
+  winnerId: string,
+): Promise<ManagedGiveawayDetails> {
+  const requestBody = rerollManagedGiveawayWinnerRequestSchema.parse({ winnerId });
+  const response = await api.request(
+    `${resolveEntityBase(entityType, entityId)}/giveaways/${giveawayId}/reroll`,
+    {
+      method: 'POST',
+      body: JSON.stringify(requestBody),
+    },
+  );
+  return managedGiveawayDetailsSchema.parse(response);
+}
+
+export async function markManagedGiveawayWinnerDelivered(
+  api: ApiTransport,
+  entityType: 'chat' | 'channel',
+  entityId: string,
+  giveawayId: string,
+  winnerId: string,
+): Promise<ManagedGiveawayDetails> {
+  const requestBody = markManagedGiveawayWinnerDeliveredRequestSchema.parse({ winnerId });
+  const response = await api.request(
+    `${resolveEntityBase(entityType, entityId)}/giveaways/${giveawayId}/deliver`,
+    {
+      method: 'POST',
+      body: JSON.stringify(requestBody),
+    },
+  );
+  return managedGiveawayDetailsSchema.parse(response);
+}

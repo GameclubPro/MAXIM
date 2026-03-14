@@ -3,8 +3,14 @@ export type MaxSharePayload = {
   chatType?: 'DIALOG' | 'CHAT';
 };
 
+type MaxBackButtonHandler = () => void;
+
 function resolveBridge() {
   return window.MAX?.WebApp ?? window.WebApp;
+}
+
+export function readyMaxMiniApp(): void {
+  resolveBridge()?.ready?.();
 }
 
 export function openMaxBotLink(url: string): void {
@@ -29,4 +35,56 @@ export async function shareMaxContent(payload: MaxSharePayload): Promise<void> {
   }
 
   await Promise.resolve(bridge.shareMaxContent(payload));
+}
+
+export function setMaxClosingConfirmation(enabled: boolean): void {
+  const bridge = resolveBridge();
+  if (!bridge) {
+    return;
+  }
+
+  if (enabled) {
+    bridge.enableClosingConfirmation?.();
+    return;
+  }
+
+  bridge.disableClosingConfirmation?.();
+}
+
+export function setMaxBackButtonVisible(visible: boolean): void {
+  const backButton = resolveBridge()?.BackButton;
+  if (!backButton) {
+    return;
+  }
+
+  if (visible) {
+    backButton.show?.();
+    return;
+  }
+
+  backButton.hide?.();
+}
+
+export function bindMaxBackButton(handler: MaxBackButtonHandler): () => void {
+  const backButton = resolveBridge()?.BackButton;
+  if (!backButton?.onClick) {
+    return () => undefined;
+  }
+
+  backButton.onClick(handler);
+  return () => {
+    backButton.offClick?.(handler);
+  };
+}
+
+export function maxImpact(style: 'light' | 'medium' | 'heavy' | 'rigid' | 'soft' = 'light'): void {
+  resolveBridge()?.HapticFeedback?.impactOccurred?.(style);
+}
+
+export function maxNotify(type: 'error' | 'success' | 'warning'): void {
+  resolveBridge()?.HapticFeedback?.notificationOccurred?.(type);
+}
+
+export function maxSelectionChanged(): void {
+  resolveBridge()?.HapticFeedback?.selectionChanged?.();
 }

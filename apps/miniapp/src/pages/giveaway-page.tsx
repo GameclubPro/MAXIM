@@ -4,8 +4,14 @@ import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
+import {
+  claimGiveaway,
+  enterGiveaway,
+  getGiveawayParticipantState,
+  getPublicGiveaway,
+} from '../lib/api/giveaway-client';
+import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
-import type { ApiClient } from '../lib/api-client';
 import { openMaxBotLink } from '../lib/max-bridge';
 
 function formatApiError(error: unknown): string {
@@ -209,27 +215,27 @@ function buildParticipantSummary(params: {
   return 'Идёт подведение итогов.';
 }
 
-export function GiveawayPage({ api }: { api: ApiClient }) {
+export function GiveawayPage({ api }: { api: ApiTransport }) {
   const { giveawayId = '' } = useParams();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
 
   const giveawayQuery = useQuery({
     queryKey: ['public-giveaway', giveawayId] as const,
-    queryFn: () => api.getPublicGiveaway(giveawayId),
+    queryFn: () => getPublicGiveaway(api, giveawayId),
     enabled: Boolean(giveawayId),
     refetchOnWindowFocus: false,
   });
 
   const participantQuery = useQuery({
     queryKey: ['public-giveaway-participant', giveawayId] as const,
-    queryFn: () => api.getGiveawayParticipantState(giveawayId),
+    queryFn: () => getGiveawayParticipantState(api, giveawayId),
     enabled: Boolean(giveawayId),
     refetchOnWindowFocus: false,
   });
 
   const enterMutation = useMutation({
-    mutationFn: () => api.enterGiveaway(giveawayId),
+    mutationFn: () => enterGiveaway(api, giveawayId),
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['public-giveaway', giveawayId] }),
@@ -251,7 +257,7 @@ export function GiveawayPage({ api }: { api: ApiClient }) {
   });
 
   const claimMutation = useMutation({
-    mutationFn: () => api.claimGiveaway(giveawayId),
+    mutationFn: () => claimGiveaway(api, giveawayId),
     onSuccess: async () => {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ['public-giveaway', giveawayId] }),

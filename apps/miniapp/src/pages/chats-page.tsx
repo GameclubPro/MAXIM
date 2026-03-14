@@ -1,12 +1,12 @@
-import { useQuery } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import addBotToChatImage from '../assets/onboarding/add-bot-to-chat.jpg';
 import grantBotAdminRightsImage from '../assets/onboarding/grant-bot-admin-rights.jpg';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
-import type { ApiClient } from '../lib/api-client';
+import { getChannels, getChats } from '../lib/api/root-client';
+import type { ApiTransport } from '../lib/api/transport';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import {
   normalizeEntityType,
@@ -14,42 +14,82 @@ import {
   saveLastEntityId,
   saveLastEntityType,
 } from '../lib/last-chat';
+import {
+  preloadChannelSettingsPage,
+  preloadChannelStatsPage,
+  preloadEventsPage,
+  preloadSettingsPage,
+} from './lazy-pages';
 
 type ManagedTab = 'chat' | 'channel';
 
-export function ChatsPage({ api }: { api: ApiClient }) {
+export function ChatsPage({ api }: { api: ApiTransport }) {
   const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
+  const [refreshNonce, setRefreshNonce] = useState(0);
+  const [entities, setEntities] = useState<{ chats: Awaited<ReturnType<typeof getChats>>; channels: Awaited<ReturnType<typeof getChannels>> } | null>(null);
+  const [loadingState, setLoadingState] = useState<'idle' | 'loading' | 'refreshing' | 'error'>(
+    'loading',
+  );
+  const [loadError, setLoadError] = useState<Error | null>(null);
+  const requestIdRef = useRef(0);
+  const deferredQuery = useDeferredValue(query);
   const activeTab = normalizeEntityType(
     searchParams.get('view'),
     readLastEntityType(),
   ) as ManagedTab;
 
-  const entitiesQuery = useQuery({
-    queryKey: ['managed-entities'],
-    queryFn: async () => {
-      const [chats, channels] = await Promise.all([api.getChats(), api.getChannels()]);
-      return {
-        chats,
-        channels,
-      };
-    },
-  });
+  useEffect(() => {
+    let cancelled = false;
+    const requestId = requestIdRef.current + 1;
+    requestIdRef.current = requestId;
+    const refresh = refreshNonce > 0;
+    const hasEntities = entities !== null;
+
+    setLoadingState(hasEntities ? 'refreshing' : 'loading');
+
+    void Promise.all([getChats(api, { refresh }), getChannels(api, { refresh })])
+      .then(([chats, channels]) => {
+        if (cancelled || requestId !== requestIdRef.current) {
+          return;
+        }
+
+        setEntities({ chats, channels });
+        setLoadError(null);
+        setLoadingState('idle');
+      })
+      .catch((error: unknown) => {
+        if (cancelled || requestId !== requestIdRef.current) {
+          return;
+        }
+
+        setLoadError(error instanceof Error ? error : new Error('Не удалось загрузить список.'));
+        setLoadingState(hasEntities ? 'idle' : 'error');
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [api, refreshNonce]);
 
   const activeEntities = useMemo(() => {
-    const data = entitiesQuery.data;
+    const data = entities;
     if (!data) {
       return [];
     }
 
     return activeTab === 'chat' ? data.chats : data.channels;
-  }, [activeTab, entitiesQuery.data]);
+  }, [activeTab, entities]);
+
+  const isLoading = loadingState === 'loading' && !entities;
+  const isFetching = loadingState === 'refreshing';
+  const queryError = !entities && loadingState === 'error' ? loadError : null;
 
   const isNoEntitiesForTab =
-    !entitiesQuery.isLoading && !entitiesQuery.error && activeEntities.length === 0;
+    !isLoading && !queryError && activeEntities.length === 0;
 
   const filteredEntities = useMemo(() => {
-    const normalized = query.trim().toLowerCase();
+    const normalized = deferredQuery.trim().toLowerCase();
 
     if (!normalized) {
       return activeEntities;
@@ -59,15 +99,21 @@ export function ChatsPage({ api }: { api: ApiClient }) {
       const haystack = `${entity.title} ${entity.id}`.toLowerCase();
       return haystack.includes(normalized);
     });
-  }, [activeEntities, query]);
+  }, [activeEntities, deferredQuery]);
+
+  function handleRefresh() {
+    startTransition(() => {
+      setRefreshNonce((current) => current + 1);
+    });
+  }
 
   useEffect(() => {
-    if (!entitiesQuery.data) {
+    if (!entities) {
       return;
     }
 
-    saveChatTitles([...entitiesQuery.data.chats, ...entitiesQuery.data.channels]);
-  }, [entitiesQuery.data]);
+    saveChatTitles([...entities.chats, ...entities.channels]);
+  }, [entities]);
 
   useEffect(() => {
     saveLastEntityType(activeTab);
@@ -108,7 +154,7 @@ export function ChatsPage({ api }: { api: ApiClient }) {
         </GlassCard>
       ) : null}
 
-      {entitiesQuery.isLoading ? (
+      {isLoading ? (
         <section className="chat-grid" aria-label="Загрузка">
           {Array.from({ length: 4 }).map((_, index) => (
             <GlassCard key={index} as="article" className="chat-card">
@@ -118,17 +164,17 @@ export function ChatsPage({ api }: { api: ApiClient }) {
         </section>
       ) : null}
 
-      {entitiesQuery.error ? (
+      {queryError ? (
         <GlassCard>
           <StatusState
             tone="danger"
             title="Не удалось загрузить список"
-            description={(entitiesQuery.error as Error).message}
+            description={queryError.message}
             action={
               <button
                 type="button"
                 className="button button--danger"
-                onClick={() => void entitiesQuery.refetch()}
+                onClick={handleRefresh}
               >
                 Повторить
               </button>
@@ -204,10 +250,10 @@ export function ChatsPage({ api }: { api: ApiClient }) {
           <button
             type="button"
             className="button button--accent onboarding-refresh"
-            onClick={() => void entitiesQuery.refetch()}
-            disabled={entitiesQuery.isFetching}
+            onClick={handleRefresh}
+            disabled={isFetching}
           >
-            {entitiesQuery.isFetching ? 'Обновляем...' : 'Я добавил бота, обновить'}
+            {isFetching ? 'Обновляем...' : 'Я добавил бота, обновить'}
           </button>
         </section>
       ) : null}
@@ -222,18 +268,18 @@ export function ChatsPage({ api }: { api: ApiClient }) {
               <button
                 type="button"
                 className="button button--accent"
-                onClick={() => void entitiesQuery.refetch()}
-                disabled={entitiesQuery.isFetching}
+                onClick={handleRefresh}
+                disabled={isFetching}
               >
-                {entitiesQuery.isFetching ? 'Обновляем...' : 'Обновить'}
+                {isFetching ? 'Обновляем...' : 'Обновить'}
               </button>
             }
           />
         </GlassCard>
       ) : null}
 
-      {!entitiesQuery.isLoading &&
-      !entitiesQuery.error &&
+      {!isLoading &&
+      !queryError &&
       !isNoEntitiesForTab &&
       filteredEntities.length === 0 ? (
         <GlassCard>
@@ -245,8 +291,8 @@ export function ChatsPage({ api }: { api: ApiClient }) {
         </GlassCard>
       ) : null}
 
-      {!entitiesQuery.isLoading &&
-      !entitiesQuery.error &&
+      {!isLoading &&
+      !queryError &&
       !isNoEntitiesForTab &&
       filteredEntities.length > 0 ? (
         <section className="chat-grid" aria-label="Список">
@@ -271,6 +317,8 @@ export function ChatsPage({ api }: { api: ApiClient }) {
                       saveLastEntityId('chat', entity.id);
                       saveChatTitle(entity.id, entity.title);
                     }}
+                    onPointerEnter={preloadSettingsPage}
+                    onTouchStart={preloadSettingsPage}
                   >
                     Настройки
                   </Link>
@@ -282,6 +330,8 @@ export function ChatsPage({ api }: { api: ApiClient }) {
                       saveLastEntityId('chat', entity.id);
                       saveChatTitle(entity.id, entity.title);
                     }}
+                    onPointerEnter={preloadEventsPage}
+                    onTouchStart={preloadEventsPage}
                   >
                     События
                   </Link>
@@ -296,6 +346,8 @@ export function ChatsPage({ api }: { api: ApiClient }) {
                       saveLastEntityId('channel', entity.id);
                       saveChatTitle(entity.id, entity.title);
                     }}
+                    onPointerEnter={preloadChannelSettingsPage}
+                    onTouchStart={preloadChannelSettingsPage}
                   >
                     Настройки
                   </Link>
@@ -307,6 +359,8 @@ export function ChatsPage({ api }: { api: ApiClient }) {
                       saveLastEntityId('channel', entity.id);
                       saveChatTitle(entity.id, entity.title);
                     }}
+                    onPointerEnter={preloadChannelStatsPage}
+                    onTouchStart={preloadChannelStatsPage}
                   >
                     Статистика
                   </Link>

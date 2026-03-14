@@ -4,8 +4,13 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
+import {
+  createChannelDialogMessage,
+  getChannelDialog,
+} from '../lib/api/channel-dialog-client';
+import { getMe } from '../lib/api/root-client';
+import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
-import type { ApiClient } from '../lib/api-client';
 import { readChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute } from '../lib/last-chat';
 
@@ -82,7 +87,7 @@ function buildViewModel(dialogType: ChannelDialogType): DialogViewModel {
   };
 }
 
-export function ChannelDialogPage({ api }: { api: ApiClient }) {
+export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const { chatId = '', mode } = useParams();
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token')?.trim() ?? '';
@@ -98,12 +103,12 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
   const showTopbar = dialogType !== 'comments';
   const meQuery = useQuery({
     queryKey: ['me'],
-    queryFn: () => api.getMe(),
+    queryFn: () => getMe(api),
   });
 
   const dialogQuery = useQuery({
     queryKey: ['channel-dialog', chatId, dialogType, token],
-    queryFn: () => api.getChannelDialog(chatId, dialogType, token),
+    queryFn: () => getChannelDialog(api, chatId, dialogType, token),
     enabled: Boolean(chatId && token),
     refetchInterval: dialogType === 'comments' ? 8_000 : false,
   });
@@ -137,7 +142,7 @@ export function ChannelDialogPage({ api }: { api: ApiClient }) {
 
   const sendMutation = useMutation({
     mutationFn: (text: string) =>
-      api.createChannelDialogMessage(chatId, dialogType, {
+      createChannelDialogMessage(api, chatId, dialogType, {
         token,
         text,
       }),

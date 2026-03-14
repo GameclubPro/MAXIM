@@ -10,8 +10,20 @@ import {
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
+import { getChannels } from '../lib/api/root-client';
+import {
+  cancelManagedGiveaway,
+  createManagedGiveaway,
+  deleteManagedGiveaway,
+  getManagedGiveaway,
+  getManagedGiveaways,
+  handoffManagedGiveaway,
+  publishManagedGiveaway,
+  updateManagedGiveaway,
+} from '../lib/api/managed-giveaway-client';
+import type { ApiTransport } from '../lib/api/transport';
+import type { UpdateManagedGiveawayPayload } from '../lib/api/shared-types';
 import { cn } from '../lib/cn';
-import type { ApiClient, UpdateManagedGiveawayPayload } from '../lib/api-client';
 import { openMaxBotLink } from '../lib/max-bridge';
 import { useToast } from './ui/toast';
 
@@ -407,7 +419,7 @@ export function ManagedGiveawayCard({
   entityType,
   entityId,
 }: {
-  api: ApiClient;
+  api: ApiTransport;
   entityType: 'chat' | 'channel';
   entityId: string;
 }) {
@@ -430,7 +442,7 @@ export function ManagedGiveawayCard({
 
   const listQuery = useQuery({
     queryKey: listQueryKey,
-    queryFn: () => api.getManagedGiveaways(entityType, entityId),
+    queryFn: () => getManagedGiveaways(api, entityType, entityId),
     enabled: Boolean(entityId),
     refetchOnWindowFocus: false,
   });
@@ -466,7 +478,7 @@ export function ManagedGiveawayCard({
       if (!editingGiveawayId) {
         throw new Error('Черновик не выбран.');
       }
-      return api.getManagedGiveaway(entityType, entityId, editingGiveawayId);
+      return getManagedGiveaway(api, entityType, entityId, editingGiveawayId);
     },
     enabled: editorMode === 'edit' && Boolean(entityId) && Boolean(editingGiveawayId),
     refetchOnWindowFocus: false,
@@ -474,7 +486,7 @@ export function ManagedGiveawayCard({
 
   const channelsQuery = useQuery({
     queryKey: ['giveaway-owned-channels'] as const,
-    queryFn: () => api.getChannels(),
+    queryFn: () => getChannels(api),
     enabled: editorMode !== 'closed',
     refetchOnWindowFocus: false,
   });
@@ -573,7 +585,7 @@ export function ManagedGiveawayCard({
 
   const handoffMutation = useMutation({
     mutationFn: (giveawayId: string | null) =>
-      api.handoffManagedGiveaway(entityType, entityId, { giveawayId }),
+      handoffManagedGiveaway(api, entityType, entityId, { giveawayId }),
     onSuccess: (result) => {
       openMaxBotLink(result.botUrl);
     },
@@ -587,7 +599,8 @@ export function ManagedGiveawayCard({
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (giveawayId: string) => api.deleteManagedGiveaway(entityType, entityId, giveawayId),
+    mutationFn: (giveawayId: string) =>
+      deleteManagedGiveaway(api, entityType, entityId, giveawayId),
     onSuccess: async () => {
       await listQuery.refetch();
       pushToast({
@@ -606,20 +619,22 @@ export function ManagedGiveawayCard({
 
   const createMutation = useMutation({
     mutationFn: (payload: UpdateManagedGiveawayPayload) =>
-      api.createManagedGiveaway(entityType, entityId, payload),
+      createManagedGiveaway(api, entityType, entityId, payload),
   });
 
   const updateMutation = useMutation({
     mutationFn: (params: { giveawayId: string; payload: UpdateManagedGiveawayPayload }) =>
-      api.updateManagedGiveaway(entityType, entityId, params.giveawayId, params.payload),
+      updateManagedGiveaway(api, entityType, entityId, params.giveawayId, params.payload),
   });
 
   const publishMutation = useMutation({
-    mutationFn: (giveawayId: string) => api.publishManagedGiveaway(entityType, entityId, giveawayId),
+    mutationFn: (giveawayId: string) =>
+      publishManagedGiveaway(api, entityType, entityId, giveawayId),
   });
 
   const cancelMutation = useMutation({
-    mutationFn: (giveawayId: string) => api.cancelManagedGiveaway(entityType, entityId, giveawayId),
+    mutationFn: (giveawayId: string) =>
+      cancelManagedGiveaway(api, entityType, entityId, giveawayId),
   });
 
   const isBusy =

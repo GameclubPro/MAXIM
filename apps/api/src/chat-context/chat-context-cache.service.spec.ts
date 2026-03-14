@@ -174,4 +174,65 @@ describe('ChatContextCacheService', () => {
     });
     expect(redisInstance.set).toHaveBeenCalledTimes(1);
   });
+
+  it('stores admin access decisions in redis with ttl', async () => {
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
+    };
+
+    const service = new ChatContextCacheService({} as never, config as never);
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      set: jest.Mock;
+      get: jest.Mock;
+    };
+
+    await service.setAdminAccess('chat-1', 'user-1', true);
+    expect(redisInstance.set).toHaveBeenCalledWith(
+      ChatContextCacheService.adminAccessKey('chat-1', 'user-1'),
+      '1',
+      'EX',
+      60,
+    );
+
+    redisInstance.get.mockResolvedValueOnce('0');
+    await expect(service.getAdminAccess('chat-1', 'user-1')).resolves.toBe(false);
+  });
+
+  it('stores and invalidates managed entity header cache entries', async () => {
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
+    };
+
+    const service = new ChatContextCacheService({} as never, config as never);
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      set: jest.Mock;
+      get: jest.Mock;
+      del: jest.Mock;
+    };
+
+    const header = {
+      id: 'chat-1',
+      title: 'Команда MAX',
+      entityType: 'chat' as const,
+      link: 'https://max.ru/team',
+      participantsCount: 42,
+    };
+
+    await service.setManagedEntityHeader(header);
+    expect(redisInstance.set).toHaveBeenCalledWith(
+      ChatContextCacheService.managedEntityHeaderKey('chat-1', 'chat'),
+      JSON.stringify(header),
+      'EX',
+      60,
+    );
+
+    redisInstance.get.mockResolvedValueOnce(JSON.stringify(header));
+    await expect(service.getManagedEntityHeader('chat-1', 'chat')).resolves.toEqual(header);
+
+    await service.invalidateManagedEntityHeader('chat-1');
+    expect(redisInstance.del).toHaveBeenCalledWith(
+      ChatContextCacheService.managedEntityHeaderKey('chat-1', 'chat'),
+      ChatContextCacheService.managedEntityHeaderKey('chat-1', 'channel'),
+    );
+  });
 });

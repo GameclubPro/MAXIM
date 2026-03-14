@@ -6,6 +6,17 @@ export type SanctionAction = z.infer<typeof sanctionActionSchema>;
 export const linkPolicySchema = z.enum(['ALLOWLIST_ONLY', 'BLOCKLIST_ONLY', 'ALERT_ONLY']);
 export const commercialAdsSensitivitySchema = z.enum(['BALANCED', 'STRICT']);
 export const managedEntityTypeSchema = z.enum(['chat', 'channel']);
+export const applySettingsSectionSchema = z.enum([
+  'links',
+  'greeting',
+  'profanityFilter',
+  'commercialFilter',
+  'thematicFilters',
+  'duplicates',
+  'limits',
+  'night',
+  'extra',
+]);
 export const channelAutoPostButtonsModeSchema = z.enum(['OFF', 'COMMENTS', 'SUGGEST', 'BOTH']);
 export const managedPollStatusSchema = z.enum(['DRAFT', 'ACTIVE', 'CLOSED']);
 export const managedGiveawayStatusSchema = z.enum([
@@ -26,6 +37,7 @@ export const managedGiveawayWinnerStatusSchema = z.enum([
 ]);
 export const broadcastTextFormatSchema = z.enum(['plain', 'markdown']);
 export type ManagedEntityType = z.infer<typeof managedEntityTypeSchema>;
+export type ApplySettingsSection = z.infer<typeof applySettingsSectionSchema>;
 export type ChannelAutoPostButtonsMode = z.infer<typeof channelAutoPostButtonsModeSchema>;
 export type ManagedPollStatus = z.infer<typeof managedPollStatusSchema>;
 export type ManagedGiveawayStatus = z.infer<typeof managedGiveawayStatusSchema>;
@@ -996,6 +1008,19 @@ export const managedEntityHeaderSchema = z.object({
 });
 export type ManagedEntityHeader = z.infer<typeof managedEntityHeaderSchema>;
 
+export const applySectionToAllRequestSchema = z.object({
+  section: applySettingsSectionSchema,
+});
+export type ApplySectionToAllRequest = z.infer<typeof applySectionToAllRequestSchema>;
+
+export const applySectionToAllResponseSchema = z.object({
+  section: applySettingsSectionSchema,
+  sourceChatId: z.string(),
+  updatedChats: z.number().int().min(0),
+  appliedChatIds: z.array(z.string()),
+});
+export type ApplySectionToAllResponse = z.infer<typeof applySectionToAllResponseSchema>;
+
 export const meSchema = z.object({
   userId: z.string(),
   username: z.string().nullable(),
@@ -1451,6 +1476,21 @@ export const managedBroadcastDetailsSchema = z.object({
   lastError: z.string().nullable(),
 });
 export type ManagedBroadcastDetails = z.infer<typeof managedBroadcastDetailsSchema>;
+
+export const chatSettingsScreenResponseSchema = z.object({
+  settings: chatSettingsSchema,
+  rules: chatRulesSchema,
+  header: managedEntityHeaderSchema,
+  domains: z.array(domainAllowlistEntrySchema),
+  managedBroadcasts: z.array(managedBroadcastSummarySchema),
+});
+export type ChatSettingsScreenResponse = z.infer<typeof chatSettingsScreenResponseSchema>;
+
+export const channelSettingsScreenResponseSchema = z.object({
+  settings: channelSettingsSchema,
+  header: managedEntityHeaderSchema,
+});
+export type ChannelSettingsScreenResponse = z.infer<typeof channelSettingsScreenResponseSchema>;
 
 export const channelDialogTypeSchema = z.enum(['comments', 'suggest']);
 export type ChannelDialogType = z.infer<typeof channelDialogTypeSchema>;

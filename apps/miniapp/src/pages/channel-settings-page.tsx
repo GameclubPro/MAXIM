@@ -1,6 +1,6 @@
 import type { ChannelAutoPostButtonsMode, ChannelSettings } from '@maxim/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { BackChevronIcon, ParticipantsIcon } from '../components/ui/entity-header-icons';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
@@ -10,9 +10,16 @@ import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
+import {
+  getChannelSettingsScreen,
+  handoffChannelBroadcast,
+  publishChannelEngagement,
+  updateChannelSettings,
+} from '../lib/api/channel-settings-client';
+import type { ApiTransport } from '../lib/api/transport';
+import type { BroadcastHandoffPayload } from '../lib/api/shared-types';
 import { cn } from '../lib/cn';
-import { openMaxBotLink } from '../lib/max-bridge';
-import type { ApiClient, BroadcastHandoffPayload } from '../lib/api-client';
+import { maxNotify, openMaxBotLink, setMaxClosingConfirmation } from '../lib/max-bridge';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
@@ -342,7 +349,7 @@ function normalizeChannelSettingsDraft(
   };
 }
 
-export function ChannelSettingsPage({ api }: { api: ApiClient }) {
+export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const { chatId = '' } = useParams();
   const location = useLocation();
   const routeState = getRouteState(location.state);
@@ -382,10 +389,11 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   const [broadcastImageFileName, setBroadcastImageFileName] = useState('');
   const [broadcastImageError, setBroadcastImageError] = useState('');
 
-  const settingsQuery = useQuery({
-    queryKey: ['channel-settings', chatId],
-    queryFn: () => api.getChannelSettings(chatId),
+  const settingsScreenQuery = useQuery({
+    queryKey: ['channel-settings-screen', chatId],
+    queryFn: () => getChannelSettingsScreen(api, chatId),
     enabled: Boolean(chatId),
+    refetchOnWindowFocus: false,
   });
 
   useEffect(() => {
@@ -397,13 +405,13 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     setExpandedSections((current) => ({ ...current, giveaway: true }));
   }, [location.search]);
 
-  const channelHeaderQuery = useQuery({
-    queryKey: ['channel-header', chatId],
-    queryFn: () => api.getChannelHeader(chatId),
-    enabled: Boolean(chatId),
-    staleTime: 30_000,
-    refetchOnWindowFocus: false,
-  });
+  const settingsQuery = {
+    data: settingsScreenQuery.data?.settings,
+    isLoading: settingsScreenQuery.isLoading,
+    error: settingsScreenQuery.error,
+    refetch: settingsScreenQuery.refetch,
+  };
+  const channelHeader = settingsScreenQuery.data?.header ?? null;
 
   useEffect(() => {
     if (!settingsQuery.data) {
@@ -443,7 +451,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   }, [chatId, routeChatTitle]);
 
   const resolvedTitle = useMemo(() => {
-    const fromHeader = channelHeaderQuery.data?.title?.trim();
+    const fromHeader = channelHeader?.title?.trim();
     if (fromHeader) {
       return fromHeader;
     }
@@ -453,7 +461,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     }
 
     return readChatTitle(chatId);
-  }, [channelHeaderQuery.data?.title, chatId, routeChatTitle]);
+  }, [channelHeader?.title, chatId, routeChatTitle]);
 
   useEffect(() => {
     if (!chatId || !resolvedTitle) {
@@ -464,7 +472,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   }, [chatId, resolvedTitle]);
 
   const resolvedChannelLink = useMemo(() => {
-    const fromHeader = channelHeaderQuery.data?.link?.trim() ?? '';
+    const fromHeader = channelHeader?.link?.trim() ?? '';
     if (isHttpUrl(fromHeader)) {
       return fromHeader;
     }
@@ -474,13 +482,15 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     }
 
     return '';
-  }, [channelHeaderQuery.data?.link, routeChatLink]);
+  }, [channelHeader?.link, routeChatLink]);
 
   function toggleSection(section: ChannelSettingsSectionKey) {
-    setExpandedSections((current) => ({
-      ...current,
-      [section]: !current[section],
-    }));
+    startTransition(() => {
+      setExpandedSections((current) => ({
+        ...current,
+        [section]: !current[section],
+      }));
+    });
   }
 
   function toggleHint(hintKey: ChannelSettingsHintKey) {
@@ -515,6 +525,14 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
 
     return normalizedDraftKey !== normalizedSavedSnapshotKey;
   }, [normalizedDraft, normalizedDraftKey, normalizedSavedSnapshot, normalizedSavedSnapshotKey]);
+
+  useEffect(() => {
+    const shouldBlockClose = isDirty || autosaveState === 'saving';
+    setMaxClosingConfirmation(shouldBlockClose);
+    return () => {
+      setMaxClosingConfirmation(false);
+    };
+  }, [autosaveState, isDirty]);
 
   const patchDraft = <K extends keyof ChannelSettings>(key: K, value: ChannelSettings[K]) => {
     setDraft((current) => {
@@ -590,8 +608,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
     clearAutosaveHideTimer();
     setAutosaveState('saving');
 
-    const request = api
-      .updateChannelSettings(chatId, payload)
+    const request = updateChannelSettings(api, chatId, payload)
       .then((saved) => {
         lastFailedDraftKeyRef.current = null;
         setSavedSnapshot(saved);
@@ -613,6 +630,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
       .catch((error: unknown) => {
         lastFailedDraftKeyRef.current = payloadKey;
         setAutosaveState('error');
+        maxNotify('error');
         throw error;
       })
       .finally(() => {
@@ -650,13 +668,15 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
   }, [chatId, isDirty, normalizedDraft, normalizedDraftKey, normalizedSavedSnapshot]);
 
   const handoffBroadcastMutation = useMutation({
-    mutationFn: (payload: BroadcastHandoffPayload) => api.handoffChannelBroadcast(chatId, payload),
+    mutationFn: (payload: BroadcastHandoffPayload) =>
+      handoffChannelBroadcast(api, chatId, payload),
     onSuccess: (result) => {
       pushToast({
         tone: 'info',
         title: 'Открываем личный чат бота',
         description: 'Отправьте там текст или фото, затем подтвердите публикацию.',
       });
+      maxNotify('success');
       openMaxBotLink(result.botUrl);
     },
     onError: (error) => {
@@ -665,6 +685,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
         title: 'Не удалось открыть сбор контента',
         description: normalizeApiError(error),
       });
+      maxNotify('error');
     },
   });
 
@@ -680,7 +701,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
       }
 
       const { includeCommentsButton, includeSuggestButton } = resolveManualPublishButtons(payload);
-      return api.publishChannelEngagement(chatId, {
+      return publishChannelEngagement(api, chatId, {
         text:
           payload.engagementMessageText.trim() ||
           'Есть идея или обратная связь? Нажмите кнопку ниже.',
@@ -698,6 +719,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
           ? 'Текст и кнопки обновлены в уже опубликованном сообщении.'
           : 'Сообщение с кнопками отправлено в канал.',
       });
+      maxNotify('success');
     },
     onError: (error) => {
       pushToast({
@@ -705,6 +727,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
         title: 'Ошибка публикации',
         description: normalizeApiError(error),
       });
+      maxNotify('error');
     },
   });
 
@@ -794,7 +817,7 @@ export function ChannelSettingsPage({ api }: { api: ApiClient }) {
       : 'Настройки канала';
   const showHeaderStatus = headerStatusTone !== 'saved';
   const participantsCountLabel = formatParticipantsCount(
-    channelHeaderQuery.data?.participantsCount ?? null,
+    channelHeader?.participantsCount ?? null,
   );
   const publishButtons = resolveManualPublishButtons(
     normalizedDraft ?? normalizeChannelSettingsDraft(draft, resolvedChannelLink),
