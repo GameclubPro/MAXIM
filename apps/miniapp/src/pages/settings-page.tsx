@@ -476,6 +476,12 @@ function buildAutoRulesText(settings: ChatSettings): string {
     lines.push(`Сообщения должны быть не длиннее ${settings.maxMessageLength} символов.`);
   }
 
+  if (settings.photoMessageCooldownEnabled) {
+    lines.push(
+      `Майор Максимов: фото отправляйте одним сообщением. Если фото несколько — выберите все сразу и отправьте один раз (не чаще 1 раза в ${settings.photoMessageCooldownHours} ч.).`,
+    );
+  }
+
   if (!settings.videoMessagesEnabled) {
     lines.push('Видео в этом чате отключены.');
   }
@@ -1654,9 +1660,10 @@ export function SettingsPage({ api }: { api: ApiClient }) {
   ) {
     if (key === 'text') {
       const nextText = String(value);
-      setRulesAutoFillSeedText((current) =>
-        current !== null && current !== nextText ? null : current,
-      );
+      if (rulesAutoFillSeedText !== null && rulesAutoFillSeedText !== nextText) {
+        setRulesAutoFillSeedText(null);
+        setRulesAutoFillEnabled(false);
+      }
     }
 
     setRulesDraft((current) => {
@@ -3512,7 +3519,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                           </div>
                         ) : null}
 
-                        <label
+                        <div
                           className={cn(
                             'field settings-text-field mailing-message-field',
                             'rules-editor-field',
@@ -3521,7 +3528,9 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                         >
                           <div className="mailing-message-field__meta rules-editor-field__meta">
                             <span className="rules-editor-field__title-group">
-                              <span className="field__label">Текст правил</span>
+                              <label className="field__label" htmlFor="rules-text">
+                                Текст правил
+                              </label>
                               <span className="chip">
                                 {rulesDraft.text.length}/{MAX_CHAT_RULES_TEXT_LENGTH}
                               </span>
@@ -3550,6 +3559,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                             </div>
                           </div>
                           <textarea
+                            id="rules-text"
                             rows={7}
                             value={rulesDraft.text}
                             onChange={(event) => setRulesFieldValue('text', event.target.value)}
@@ -3563,7 +3573,7 @@ export function SettingsPage({ api }: { api: ApiClient }) {
                               редактировать вручную.
                             </small>
                           ) : null}
-                        </label>
+                        </div>
 
                         <div
                           className={cn(
