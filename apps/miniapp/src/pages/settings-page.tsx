@@ -453,20 +453,6 @@ function formatWindowHoursLabel(seconds: number): string {
   return `${hours} ч.`;
 }
 
-function resolveDuplicateWindowSeconds(settings: ChatSettings): number {
-  const enabledWindows: number[] = [];
-  if (settings.duplicateWarnEnabled) {
-    enabledWindows.push(settings.duplicateWarnWindowSec);
-  }
-  if (settings.duplicateKickEnabled) {
-    enabledWindows.push(settings.duplicateKickWindowSec);
-  }
-  if (settings.duplicateBanEnabled) {
-    enabledWindows.push(settings.duplicateBanWindowSec);
-  }
-  return enabledWindows.length > 0 ? Math.min(...enabledWindows) : settings.duplicateWarnWindowSec;
-}
-
 function serializeRulesDraftPayload(
   value:
     | Pick<ChatRules, 'text' | 'imageBase64' | 'imageMimeType' | 'imageFileName'>
@@ -501,9 +487,9 @@ function buildAutoRulesText(settings: ChatSettings): string {
   }
 
   if (settings.antiDuplicateEnabled) {
-    const duplicateWindowLabel = formatWindowHoursLabel(resolveDuplicateWindowSeconds(settings));
+    const duplicateWindowLabel = formatWindowHoursLabel(settings.duplicateWarnWindowSec);
     lines.push(
-      `Не отправляйте одно и то же сообщение повторно. Интервал проверки дублей: ${duplicateWindowLabel}`,
+      `Не отправляйте одно и то же сообщение повторно. Интервал до первого предупреждения: ${duplicateWindowLabel}`,
     );
   }
 
