@@ -354,12 +354,12 @@ function buildEditorStatusLabel(params: {
     return 'Сохраняем…';
   }
   if (params.mode === 'create') {
-    return 'Создайте и опубликуйте';
+    return 'Заполните и публикуйте';
   }
   if (params.isDirty) {
     return 'Есть изменения';
   }
-  return 'Все сохранено';
+  return 'Сохранено';
 }
 
 function buildCurrentSubtitle(item: ManagedGiveawaySummary): string {
@@ -884,19 +884,27 @@ export function ManagedGiveawayCard({
   const canSaveEditor = Boolean(draft) && validation.valid && (editorMode === 'create' || isDirty);
   const canPublishEditor = Boolean(draft) && validation.valid;
   const shouldShowCurrentSummary = Boolean(currentItem) && (currentItem?.status !== 'DRAFT' || !isEditingOpen);
+  const totalItemsCount = sortedItems.length;
 
   return (
     <div className="managed-giveaway">
       <div className="managed-giveaway__header">
         <div className="managed-giveaway__header-copy">
           <strong className="managed-giveaway__title">Розыгрыши</strong>
-          <small className="managed-giveaway__subtitle">
-            Заполните поля и нажмите «Опубликовать».
-          </small>
+          <small className="managed-giveaway__subtitle">Управление запуском, статусами и итогами.</small>
+          <div className="managed-giveaway__chips managed-giveaway__chips--header">
+            <span className={cn('managed-giveaway__badge', currentItem ? buildStatusTone(currentItem.status) : 'is-muted')}>
+              {currentItem ? buildStatusLabel(currentItem.status) : 'Нет активного'}
+            </span>
+            <span className="managed-giveaway__chip">{totalItemsCount} всего</span>
+            {historyItems.length > 0 ? (
+              <span className="managed-giveaway__chip">{historyItems.length} в архиве</span>
+            ) : null}
+          </div>
         </div>
         {isEditingOpen ? (
           <button type="button" className="button button--ghost" disabled={isBusy} onClick={clearEditor}>
-            Закрыть
+            Свернуть
           </button>
         ) : currentItem?.status === 'DRAFT' ? (
           <button type="button" className="button button--accent" disabled={isBusy} onClick={startEditCurrentDraft}>
@@ -904,7 +912,7 @@ export function ManagedGiveawayCard({
           </button>
         ) : !currentItem ? (
           <button type="button" className="button button--accent" disabled={isBusy} onClick={startCreate}>
-            Новый
+            Создать
           </button>
         ) : (
           <button
@@ -925,8 +933,8 @@ export function ManagedGiveawayCard({
           <div className={cn('managed-giveaway__panel', 'managed-giveaway__editor-card')}>
             <div className="managed-giveaway__editor-head">
               <div className="managed-giveaway__section-copy">
-                <strong>Создание розыгрыша</strong>
-                <small>{draftDetailsQuery.isLoading ? 'Загружаем...' : 'Готовим форму...'}</small>
+                <strong>Черновик</strong>
+                <small>{draftDetailsQuery.isLoading ? 'Загружаем форму…' : 'Готовим форму…'}</small>
               </div>
               <span className="managed-giveaway__badge is-warning">Форма</span>
             </div>
@@ -935,16 +943,16 @@ export function ManagedGiveawayCard({
         <div className={cn('managed-giveaway__panel', 'managed-giveaway__editor-card')}>
           <div className="managed-giveaway__editor-head">
             <div className="managed-giveaway__section-copy">
-              <strong>Создание розыгрыша</strong>
+              <strong>Черновик</strong>
               <small>{editorStatusLabel}</small>
             </div>
             <span className={cn('managed-giveaway__badge', editorMode === 'create' ? 'is-warning' : 'is-muted')}>
-              {editorMode === 'create' ? 'Новый' : 'Редактирование'}
+              {editorMode === 'create' ? 'Новый' : 'Правка'}
             </span>
           </div>
 
           <div className="managed-giveaway__preset-row">
-            <span>Быстрый старт:</span>
+            <span>Финиш через</span>
             {QUICK_DURATION_HOURS.map((hours) => (
               <button
                 key={`duration-${hours}`}
@@ -1064,7 +1072,7 @@ export function ManagedGiveawayCard({
 
           <div className="managed-giveaway__editor-grid">
             <label className="field">
-              <span>Срок подтверждения (ч)</span>
+              <span>Подтверждение, ч</span>
               <input
                 type="number"
                 min={MIN_CLAIM_HOURS}
@@ -1087,7 +1095,7 @@ export function ManagedGiveawayCard({
             </label>
 
             <div className="managed-giveaway__preset-row managed-giveaway__preset-row--inline">
-              <span>Готово:</span>
+              <span>Пресет</span>
               {QUICK_CLAIM_HOURS.map((hours) => (
                 <button
                   key={`claim-${hours}`}
@@ -1157,7 +1165,7 @@ export function ManagedGiveawayCard({
                 {channelPickerOpen ? 'Скрыть список' : 'Свой канал'}
               </button>
               <span className="managed-giveaway__section-inline-note">
-                Добавьте канал по ссылке или кнопкой «Свой канал».
+                Ссылка или выбор из списка.
               </span>
             </div>
 
@@ -1220,7 +1228,7 @@ export function ManagedGiveawayCard({
           <div className="managed-giveaway__section">
             <div className="managed-giveaway__section-head">
               <div className="managed-giveaway__section-copy">
-                <strong>Призы и места</strong>
+                <strong>Призы</strong>
                 <small>
                   {draft.prizes.length}/{MANAGED_GIVEAWAY_MAX_PRIZES} мест
                 </small>
@@ -1439,8 +1447,7 @@ export function ManagedGiveawayCard({
 
       {!listQuery.isLoading && !listQuery.error && !currentItem && historyItems.length === 0 ? (
         <div className="managed-giveaway__empty">
-          <strong>Пока пусто</strong>
-          <p>Создайте первый розыгрыш прямо здесь.</p>
+          <strong>Пока пусто. Создайте первый розыгрыш.</strong>
         </div>
       ) : null}
 
