@@ -484,6 +484,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       userLabel,
       messageId,
       text,
+      deleteSpammersEnabled: settings.deleteSpammersEnabled,
     });
     if (globalSpammerTracking.handled) {
       return;
@@ -3278,6 +3279,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userLabel: string;
     messageId: string;
     text: string;
+    deleteSpammersEnabled: boolean;
   }): Promise<GlobalSpammerTrackingResult> {
     const baseResult: GlobalSpammerTrackingResult = {
       handled: false,
@@ -3287,7 +3289,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return baseResult;
     }
 
-    const { chatId, userId, userLabel, messageId, text } = params;
+    const { chatId, userId, userLabel, messageId, text, deleteSpammersEnabled } = params;
 
     try {
       const uniqueChatsState = await this.redisCounter.addToSetWithTtl(
@@ -3310,16 +3312,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
           },
         });
-        await this.deleteAndKickDetectedGlobalSpammer({
-          chatId,
-          userId,
-          messageId,
-          text,
-          reason: 'Detected in 5 unique chats within 2 minutes',
-        });
+        if (deleteSpammersEnabled) {
+          await this.deleteAndKickDetectedGlobalSpammer({
+            chatId,
+            userId,
+            messageId,
+            text,
+            reason: 'Detected in 5 unique chats within 2 minutes',
+          });
+          return {
+            handled: true,
+            skipKnownSpammerCheck: true,
+          };
+        }
+
         return {
-          handled: true,
-          skipKnownSpammerCheck: true,
+          handled: false,
+          skipKnownSpammerCheck: false,
         };
       }
 
@@ -3331,11 +3340,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         this.buildGlobalSpammerWarnRedisKey(userId),
         GLOBAL_SPAMMER_WARN_COUNTER_TTL_SEC,
       );
-      await this.sendGlobalSpammerFanoutWarning({
-        chatId,
-        userLabel,
-        warningCount,
-      });
+      if (deleteSpammersEnabled) {
+        await this.sendGlobalSpammerFanoutWarning({
+          chatId,
+          userLabel,
+          warningCount,
+        });
+      }
 
       if (warningCount >= GLOBAL_SPAMMER_WARN_THRESHOLD) {
         await this.upsertGlobalSpammerEntry({
@@ -3353,7 +3364,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       return {
         handled: false,
-        skipKnownSpammerCheck: true,
+        skipKnownSpammerCheck: deleteSpammersEnabled,
       };
     } catch (error: unknown) {
       this.logger.warn(
