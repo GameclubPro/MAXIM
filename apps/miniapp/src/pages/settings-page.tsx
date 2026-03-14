@@ -448,11 +448,6 @@ const WARN_MESSAGE_TEMPLATE_HINTS: Record<WarnMessageEditorKey, string> = {
 const AUTO_RULES_FALLBACK_TEXT =
   'Пожалуйста, уважайте участников чата и соблюдайте порядок в обсуждении.';
 
-function formatWindowHoursLabel(seconds: number): string {
-  const hours = Math.max(1, Math.round(seconds / 3_600));
-  return `${hours} ч.`;
-}
-
 function serializeRulesDraftPayload(
   value:
     | Pick<ChatRules, 'text' | 'imageBase64' | 'imageMimeType' | 'imageFileName'>
@@ -487,9 +482,11 @@ function buildAutoRulesText(settings: ChatSettings): string {
   }
 
   if (settings.antiDuplicateEnabled) {
-    const duplicateWindowLabel = formatWindowHoursLabel(settings.duplicateWarnWindowSec);
+    const duplicateWarnHours = Math.max(1, Math.round(settings.duplicateWarnWindowSec / 3_600));
+    const duplicateIntervalLabel =
+      duplicateWarnHours >= 24 ? 'в сутки' : `в ${duplicateWarnHours} ч.`;
     lines.push(
-      `Не отправляйте одно и то же сообщение повторно. Интервал до первого предупреждения: ${duplicateWindowLabel}`,
+      `Не отправляйте повторные сообщения чаще 1 раза ${duplicateIntervalLabel}.`,
     );
   }
 
@@ -499,7 +496,7 @@ function buildAutoRulesText(settings: ChatSettings): string {
 
   if (settings.photoMessageCooldownEnabled) {
     lines.push(
-      `Майор Максимов: фото отправляйте одним сообщением. Если фото несколько — выберите все сразу и отправьте один раз (не чаще 1 раза в ${settings.photoMessageCooldownHours} ч.).`,
+      `Фото отправляйте одним сообщением. Если фото несколько — выберите все сразу и отправьте один раз (не чаще 1 раза в ${settings.photoMessageCooldownHours} ч.).`,
     );
   }
 
