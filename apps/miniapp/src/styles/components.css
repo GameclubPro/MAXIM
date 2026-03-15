@@ -54,16 +54,11 @@
 
 .channel-settings-screen {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 166px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 152px), 1fr));
   align-items: start;
-  gap: 10px;
+  gap: 8px;
   width: min(100%, 880px);
   margin: 0 auto;
-}
-
-.channel-settings-header,
-.channel-settings-card {
-  border-color: rgba(255, 255, 255, 0.82);
 }
 
 .channel-settings-header,
@@ -102,14 +97,19 @@
 
 .channel-settings-card {
   display: grid;
-  gap: 8px;
-  background: rgba(255, 255, 255, 0.9);
+  gap: 0;
+  background: transparent;
   min-width: 0;
 }
 
 .glass-card.settings-section,
 .glass-card.channel-settings-card {
-  padding: var(--space-3);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .channel-settings-header__top {

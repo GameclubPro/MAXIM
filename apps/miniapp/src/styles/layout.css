@@ -305,13 +305,18 @@ body.settings-drilldown-open .bottom-nav {
 
 .settings-sections-shell {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 166px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 152px), 1fr));
   align-items: start;
-  gap: 10px;
+  gap: 8px;
 }
 
 .settings-section--wide {
   grid-column: 1 / -1;
+}
+
+.settings-sections-shell > .settings-section {
+  gap: 0;
+  min-width: 0;
 }
 
 .logs-head {
