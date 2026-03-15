@@ -306,7 +306,7 @@ body.settings-drilldown-open .bottom-nav {
 .settings-sections-shell {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 152px), 1fr));
-  align-items: start;
+  align-items: stretch;
   gap: 8px;
 }
 
