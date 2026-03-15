@@ -2487,6 +2487,131 @@
   overflow: visible;
 }
 
+.settings-section:has(.settings-section__toggle[aria-expanded='true']),
+.channel-settings-card:has(.settings-section__toggle[aria-expanded='true']) {
+  position: fixed;
+  inset: max(10px, env(safe-area-inset-top)) 10px max(10px, env(safe-area-inset-bottom)) 10px;
+  z-index: 90;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 28px;
+  border: 1px solid rgba(87, 117, 145, 0.22);
+  background:
+    radial-gradient(140% 120% at 0% 0%, rgba(11, 132, 255, 0.18), transparent 54%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(242, 248, 255, 0.95));
+  box-shadow:
+    0 28px 80px rgba(20, 39, 64, 0.2),
+    0 0 0 9999px rgba(8, 18, 30, 0.24);
+  backdrop-filter: blur(22px) saturate(140%);
+  -webkit-backdrop-filter: blur(22px) saturate(140%);
+  animation: settings-drilldown-panel-enter 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.settings-section:has(.settings-section__toggle[aria-expanded='true']) .settings-section__head,
+.channel-settings-card:has(.settings-section__toggle[aria-expanded='true']) .settings-section__head {
+  margin: 0;
+}
+
+.settings-section:has(.settings-section__toggle[aria-expanded='true']) .settings-section__toggle,
+.channel-settings-card:has(.settings-section__toggle[aria-expanded='true']) .settings-section__toggle {
+  position: relative;
+  z-index: 1;
+  padding: calc(18px + env(safe-area-inset-top)) 16px 14px;
+  border: 0;
+  border-radius: 0;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(233, 244, 255, 0.92)),
+    rgba(255, 255, 255, 0.95);
+  box-shadow: inset 0 -1px 0 rgba(115, 142, 168, 0.18);
+}
+
+.settings-section:has(.settings-section__toggle[aria-expanded='true']) .settings-section__toggle-main,
+.channel-settings-card:has(.settings-section__toggle[aria-expanded='true'])
+  .settings-section__toggle-main {
+  gap: 4px;
+  padding-right: 6px;
+}
+
+.settings-section:has(.settings-section__toggle[aria-expanded='true']) .settings-section__toggle-main h3,
+.channel-settings-card:has(.settings-section__toggle[aria-expanded='true'])
+  .settings-section__toggle-main
+  h3 {
+  font-size: 1.12rem;
+}
+
+.settings-section:has(.settings-section__toggle[aria-expanded='true'])
+  .settings-section__toggle-main
+  small,
+.channel-settings-card:has(.settings-section__toggle[aria-expanded='true'])
+  .settings-section__toggle-main
+  small {
+  font-size: 0.78rem;
+  letter-spacing: 0.01em;
+}
+
+.settings-section:has(.settings-section__toggle[aria-expanded='true']) .settings-section__chevron,
+.channel-settings-card:has(.settings-section__toggle[aria-expanded='true'])
+  .settings-section__chevron {
+  width: 36px;
+  height: 36px;
+  border-color: rgba(11, 132, 255, 0.24);
+  background:
+    radial-gradient(120% 130% at 30% 20%, rgba(255, 255, 255, 0.96), rgba(218, 237, 255, 0.92)),
+    rgba(255, 255, 255, 0.95);
+  box-shadow: 0 8px 22px rgba(36, 76, 108, 0.12);
+}
+
+.settings-section:has(.settings-section__toggle[aria-expanded='true']) .settings-section__chevron.is-open,
+.channel-settings-card:has(.settings-section__toggle[aria-expanded='true'])
+  .settings-section__chevron.is-open {
+  transform: rotate(90deg);
+}
+
+.settings-section:has(.settings-section__toggle[aria-expanded='true']) .settings-section__collapse,
+.channel-settings-card:has(.settings-section__toggle[aria-expanded='true'])
+  .settings-section__collapse {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  grid-template-rows: 1fr;
+  opacity: 1;
+}
+
+.settings-section:has(.settings-section__toggle[aria-expanded='true'])
+  .settings-section__collapse-inner,
+.channel-settings-card:has(.settings-section__toggle[aria-expanded='true'])
+  .settings-section__collapse-inner {
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 14px 16px calc(26px + env(safe-area-inset-bottom));
+  gap: 10px;
+}
+
+@keyframes settings-drilldown-panel-enter {
+  from {
+    transform: translate3d(28px, 0, 0);
+    opacity: 0;
+  }
+
+  to {
+    transform: translate3d(0, 0, 0);
+    opacity: 1;
+  }
+}
+
+@media (min-width: 960px) {
+  .settings-section:has(.settings-section__toggle[aria-expanded='true']),
+  .channel-settings-card:has(.settings-section__toggle[aria-expanded='true']) {
+    inset: 18px 18px 18px auto;
+    width: min(720px, calc(100vw - 36px));
+  }
+}
+
 .settings-policy {
   display: grid;
   gap: 8px;

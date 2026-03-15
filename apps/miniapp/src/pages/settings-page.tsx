@@ -240,6 +240,22 @@ type SettingsSectionKey =
   | 'extra';
 type ApplySectionKey = Exclude<SettingsSectionKey, 'mailing' | 'rules' | 'poll' | 'giveaway'>;
 
+const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
+  links: false,
+  rules: false,
+  poll: false,
+  giveaway: false,
+  greeting: false,
+  profanityFilter: false,
+  commercialFilter: false,
+  thematicFilters: false,
+  duplicates: false,
+  limits: false,
+  night: false,
+  mailing: false,
+  extra: false,
+};
+
 const SECTION_LABELS: Record<ApplySectionKey, string> = {
   links: 'Модерация ссылок',
   greeting: 'Приветствие',
@@ -1113,21 +1129,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [openHintKey, setOpenHintKey] = useState<HintKey | null>(null);
   const [openBotEditorKey, setOpenBotEditorKey] = useState<BotMessageEditorKey | null>(null);
   const [openWarnEditorKey, setOpenWarnEditorKey] = useState<WarnMessageEditorKey | null>(null);
-  const [expandedSections, setExpandedSections] = useState<Record<SettingsSectionKey, boolean>>({
-    links: false,
-    rules: false,
-    poll: false,
-    giveaway: false,
-    greeting: false,
-    profanityFilter: false,
-    commercialFilter: false,
-    thematicFilters: false,
-    duplicates: false,
-    limits: false,
-    night: false,
-    mailing: false,
-    extra: false,
-  });
+  const [expandedSections, setExpandedSections] = useState<Record<SettingsSectionKey, boolean>>(
+    INITIAL_EXPANDED_SECTIONS,
+  );
 
   const routeChatTitle = getRouteChatTitle(location.state);
   const focusSection = new URLSearchParams(location.search).get('focus');
@@ -1137,8 +1141,29 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    setExpandedSections((current) => ({ ...current, giveaway: true }));
+    setExpandedSections({ ...INITIAL_EXPANDED_SECTIONS, giveaway: true });
   }, [focusSection]);
+
+  const hasExpandedSection = Object.values(expandedSections).some(Boolean);
+
+  useEffect(() => {
+    if (!hasExpandedSection) {
+      return undefined;
+    }
+
+    const { style: bodyStyle } = document.body;
+    const { style: documentStyle } = document.documentElement;
+    const previousBodyOverflow = bodyStyle.overflow;
+    const previousDocumentOverflow = documentStyle.overflow;
+
+    bodyStyle.overflow = 'hidden';
+    documentStyle.overflow = 'hidden';
+
+    return () => {
+      bodyStyle.overflow = previousBodyOverflow;
+      documentStyle.overflow = previousDocumentOverflow;
+    };
+  }, [hasExpandedSection]);
 
   useEffect(() => {
     if (chatId) {
@@ -2416,7 +2441,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   function toggleSection(section: SettingsSectionKey) {
     startTransition(() => {
-      setExpandedSections((current) => ({ ...current, [section]: !current[section] }));
+      setExpandedSections((current) => {
+        const shouldOpen = !current[section];
+        return shouldOpen
+          ? { ...INITIAL_EXPANDED_SECTIONS, [section]: true }
+          : INITIAL_EXPANDED_SECTIONS;
+      });
     });
   }
 

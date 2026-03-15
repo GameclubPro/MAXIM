@@ -52,6 +52,13 @@ const MAX_BROADCAST_CYCLE_HOURS = 14 * 24;
 const MAX_BROADCAST_CYCLE_COUNT = 100;
 const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
 const BROADCAST_DAY_MS = 24 * 60 * 60 * 1_000;
+const INITIAL_EXPANDED_CHANNEL_SECTIONS: Record<ChannelSettingsSectionKey, boolean> = {
+  comments: false,
+  postSuggestions: false,
+  broadcast: false,
+  poll: false,
+  giveaway: false,
+};
 
 function buildBroadcastScheduleIso(days: number, time: string): string | null {
   if (!Number.isInteger(days) || days < 0 || days > MAX_BROADCAST_SCHEDULE_DAYS) {
@@ -433,13 +440,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const isDirtyRef = useRef(false);
   const [expandedSections, setExpandedSections] = useState<
     Record<ChannelSettingsSectionKey, boolean>
-  >({
-    comments: false,
-    postSuggestions: false,
-    broadcast: false,
-    poll: false,
-    giveaway: false,
-  });
+  >(INITIAL_EXPANDED_CHANNEL_SECTIONS);
   const [openHintKey, setOpenHintKey] = useState<ChannelSettingsHintKey | null>(null);
   const { pushToast } = useToast();
   const [broadcastText, setBroadcastText] = useState('');
@@ -454,6 +455,26 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [broadcastImageMimeType, setBroadcastImageMimeType] = useState('');
   const [broadcastImageFileName, setBroadcastImageFileName] = useState('');
   const [broadcastImageError, setBroadcastImageError] = useState('');
+  const hasExpandedSection = Object.values(expandedSections).some(Boolean);
+
+  useEffect(() => {
+    if (!hasExpandedSection) {
+      return undefined;
+    }
+
+    const { style: bodyStyle } = document.body;
+    const { style: documentStyle } = document.documentElement;
+    const previousBodyOverflow = bodyStyle.overflow;
+    const previousDocumentOverflow = documentStyle.overflow;
+
+    bodyStyle.overflow = 'hidden';
+    documentStyle.overflow = 'hidden';
+
+    return () => {
+      bodyStyle.overflow = previousBodyOverflow;
+      documentStyle.overflow = previousDocumentOverflow;
+    };
+  }, [hasExpandedSection]);
   const [broadcastScheduleEnabled, setBroadcastScheduleEnabled] = useState(false);
   const [broadcastScheduleDays, setBroadcastScheduleDays] = useState(0);
   const [broadcastScheduleTime, setBroadcastScheduleTime] = useState(
@@ -572,8 +593,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   function toggleSection(section: ChannelSettingsSectionKey) {
     startTransition(() => {
       setExpandedSections((current) => ({
-        ...current,
-        [section]: !current[section],
+        ...INITIAL_EXPANDED_CHANNEL_SECTIONS,
+        ...(current[section] ? {} : { [section]: true }),
       }));
     });
   }
