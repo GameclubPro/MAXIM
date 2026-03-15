@@ -137,8 +137,31 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                     className="button button--ghost chats-search-card__refresh"
                     onClick={handleRefresh}
                     disabled={isFetching}
+                    aria-label={isFetching ? 'Обновляем список' : 'Обновить список'}
+                    title={isFetching ? 'Обновляем список' : 'Обновить список'}
                   >
-                    {isFetching ? 'Обновляем...' : 'Обновить'}
+                    <svg
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                      className={isFetching ? 'is-spinning' : undefined}
+                    >
+                      <path
+                        d="M20 12a8 8 0 1 1-2.34-5.66"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth="1.8"
+                      />
+                      <path
+                        d="M20 4v5h-5"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth="1.8"
+                      />
+                    </svg>
                   </button>
                   <span
                     className="chats-search-card__count"

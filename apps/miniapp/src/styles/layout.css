@@ -233,7 +233,20 @@ body.settings-drilldown-open .bottom-nav {
 }
 
 .chats-search-card__refresh {
-  white-space: nowrap;
+  min-width: 42px;
+  width: 42px;
+  padding: 0;
+  border-radius: 999px;
+  flex: 0 0 auto;
+}
+
+.chats-search-card__refresh svg {
+  width: 18px;
+  height: 18px;
+}
+
+.chats-search-card__refresh svg.is-spinning {
+  animation: chats-refresh-spin 0.9s linear infinite;
 }
 
 .chats-search-card__count {
@@ -249,6 +262,16 @@ body.settings-drilldown-open .bottom-nav {
   color: #086cc6;
   background: rgba(11, 132, 255, 0.08);
   border: 1px solid rgba(11, 132, 255, 0.12);
+}
+
+@keyframes chats-refresh-spin {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .chats-search-card__title h1 {
