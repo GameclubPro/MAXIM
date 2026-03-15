@@ -13,7 +13,6 @@ const CHANNEL_STATS_STALE_MS = 2 * 60 * 60 * 1000;
 const CHANNEL_STATS_ALL_LOCK_TTL_MS = 30 * 60 * 1000;
 const CHANNEL_STATS_CHAT_LOCK_TTL_MS = 10 * 60 * 1000;
 const CHANNEL_STATS_SUBSCRIPTIONS_LOCK_TTL_MS = 60 * 1000;
-const CHANNEL_STATS_MISSING_CHAT_BACKOFF_SEC = 6 * 60 * 60;
 const CHANNEL_STATS_REQUIRED_UPDATE_TYPES = [
   'message_created',
   'message_callback',
@@ -162,54 +161,38 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         const ensuredCoverageFrom = await this.ensureWebhookCoverage();
 
         let audienceSynced = false;
-        if (!(await this.isAudienceSnapshotBackoffActive(chatId))) {
-          try {
-            const snapshot = await this.maxClient.getChatSnapshot(chatId);
-            await this.prisma.$transaction([
-              this.prisma.chat.update({
-                where: { id: chatId },
-                data: {
-                  title: snapshot.title?.trim() || `Канал ${chatId}`,
-                  entityType: ChatEntityType.CHANNEL,
-                },
-              }),
-              this.prisma.channelAudienceSnapshot.create({
-                data: {
-                  chatId,
-                  participantsCount: snapshot.participantsCount,
-                  status: snapshot.status,
-                  isPublic: snapshot.isPublic,
-                  link: snapshot.link,
-                  lastEventAt: snapshot.lastEventAt ? new Date(snapshot.lastEventAt) : null,
-                  capturedAt: now,
-                },
-              }),
-            ]);
-            audienceSynced = true;
-            await this.clearAudienceSnapshotBackoff(chatId);
-          } catch (error: unknown) {
-            if (this.isMissingChatSnapshotError(error)) {
-              await this.markAudienceSnapshotBackoff(chatId);
-              this.logger.log(
-                {
-                  chatId,
-                  reason: options?.reason ?? 'manual',
-                  err: error instanceof Error ? error.message : String(error),
-                  backoffSec: CHANNEL_STATS_MISSING_CHAT_BACKOFF_SEC,
-                },
-                'Skipping official channel audience snapshot sync after MAX chat.not.found',
-              );
-            } else {
-              this.logger.warn(
-                {
-                  chatId,
-                  reason: options?.reason ?? 'manual',
-                  err: error instanceof Error ? error.message : String(error),
-                },
-                'Failed to sync official channel audience snapshot',
-              );
-            }
-          }
+        try {
+          const snapshot = await this.maxClient.getChatSnapshot(chatId);
+          await this.prisma.$transaction([
+            this.prisma.chat.update({
+              where: { id: chatId },
+              data: {
+                title: snapshot.title?.trim() || `Канал ${chatId}`,
+                entityType: ChatEntityType.CHANNEL,
+              },
+            }),
+            this.prisma.channelAudienceSnapshot.create({
+              data: {
+                chatId,
+                participantsCount: snapshot.participantsCount,
+                status: snapshot.status,
+                isPublic: snapshot.isPublic,
+                link: snapshot.link,
+                lastEventAt: snapshot.lastEventAt ? new Date(snapshot.lastEventAt) : null,
+                capturedAt: now,
+              },
+            }),
+          ]);
+          audienceSynced = true;
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              reason: options?.reason ?? 'manual',
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Failed to sync official channel audience snapshot',
+          );
         }
 
         let viewsSynced = false;
@@ -364,45 +347,5 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         token,
       );
     }
-  }
-
-  private audienceSnapshotBackoffKey(chatId: string): string {
-    return `channel-stats:audience-missing:${chatId}`;
-  }
-
-  private async isAudienceSnapshotBackoffActive(chatId: string): Promise<boolean> {
-    return (await this.redis.get(this.audienceSnapshotBackoffKey(chatId))) !== null;
-  }
-
-  private async markAudienceSnapshotBackoff(chatId: string): Promise<void> {
-    await this.redis.set(
-      this.audienceSnapshotBackoffKey(chatId),
-      '1',
-      'EX',
-      CHANNEL_STATS_MISSING_CHAT_BACKOFF_SEC,
-    );
-  }
-
-  private async clearAudienceSnapshotBackoff(chatId: string): Promise<void> {
-    await this.redis.del(this.audienceSnapshotBackoffKey(chatId));
-  }
-
-  private isMissingChatSnapshotError(error: unknown): boolean {
-    const status = (error as { response?: { status?: unknown } })?.response?.status;
-    const code = (error as { response?: { data?: { code?: unknown } } })?.response?.data?.code;
-    const responseMessage = (error as { response?: { data?: { message?: unknown } } })?.response
-      ?.data?.message;
-    const normalizedMessage =
-      typeof responseMessage === 'string' && responseMessage.trim()
-        ? responseMessage.trim().toLowerCase()
-        : error instanceof Error
-          ? error.message.trim().toLowerCase()
-          : String(error).trim().toLowerCase();
-
-    return (
-      status === 404 ||
-      code === 'chat.not.found' ||
-      normalizedMessage.includes('chat not found')
-    );
   }
 }

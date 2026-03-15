@@ -2,41 +2,11 @@ import { ChannelStatsCollectorService } from './channel-stats-collector.service'
 
 jest.mock('ioredis', () => ({
   __esModule: true,
-  default: jest.fn().mockImplementation(() => {
-    const store = new Map<string, string>();
-    return {
-      set: jest.fn().mockImplementation(async (key: string, value: string, mode?: string) => {
-        if (mode === 'PX') {
-          if (store.has(key)) {
-            return null;
-          }
-          store.set(key, String(value));
-          return 'OK';
-        }
-
-        store.set(key, String(value));
-        return 'OK';
-      }),
-      get: jest.fn().mockImplementation(async (key: string) => store.get(key) ?? null),
-      del: jest.fn().mockImplementation(async (...keys: string[]) => {
-        let deleted = 0;
-        for (const key of keys) {
-          if (store.delete(key)) {
-            deleted += 1;
-          }
-        }
-        return deleted;
-      }),
-      eval: jest.fn().mockImplementation(async (_script: string, _keyCount: number, key: string) => {
-        if (store.has(key)) {
-          store.delete(key);
-          return 1;
-        }
-        return 0;
-      }),
-      quit: jest.fn().mockResolvedValue(undefined),
-    };
-  }),
+  default: jest.fn().mockImplementation(() => ({
+    set: jest.fn().mockResolvedValue('OK'),
+    eval: jest.fn().mockResolvedValue(1),
+    quit: jest.fn().mockResolvedValue(undefined),
+  })),
 }));
 
 function createPrismaMock() {
@@ -220,43 +190,6 @@ describe('ChannelStatsCollectorService', () => {
     await service.syncChannelIfStale('channel-1');
 
     expect(syncSpy).not.toHaveBeenCalled();
-    await service.onModuleDestroy();
-  });
-
-  it('backs off repeated audience snapshot sync when MAX reports chat.not.found', async () => {
-    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
-
-    const prisma = createPrismaMock();
-    const maxClient = {
-      getChatSnapshot: jest.fn().mockRejectedValue({
-        response: {
-          status: 404,
-          data: {
-            code: 'chat.not.found',
-            message: 'Chat channel-404 not found',
-          },
-        },
-      }),
-      listMessageSnapshots: jest.fn().mockResolvedValue([]),
-      ensureWebhookSubscription: jest.fn().mockResolvedValue({
-        url: 'https://maxim.play-team.ru/api/webhook/max/test/secret',
-        updateTypes: ['message_created', 'user_added', 'user_removed'],
-      }),
-    };
-
-    const service = new ChannelStatsCollectorService(
-      prisma as never,
-      maxClient as never,
-      createConfigMock() as never,
-    );
-
-    await service.syncChannel('channel-404', { reason: 'manual' });
-    await service.syncChannel('channel-404', { reason: 'manual' });
-
-    expect(maxClient.getChatSnapshot).toHaveBeenCalledTimes(1);
-    expect(maxClient.listMessageSnapshots).toHaveBeenCalledTimes(2);
-    expect(prisma.channelAudienceSnapshot.create).not.toHaveBeenCalled();
-
     await service.onModuleDestroy();
   });
 });

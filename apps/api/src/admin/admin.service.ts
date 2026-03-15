@@ -123,7 +123,7 @@ type AdminAccessResolution =
   | {
       status: 'denied';
       source: 'cache' | 'remote';
-      reason: 'user_not_admin' | 'bot_not_admin' | 'dialog_not_supported';
+      reason: 'user_not_admin' | 'bot_not_admin';
     }
   | {
       status: 'unknown';
@@ -4569,10 +4569,6 @@ export class AdminService {
         );
       }
 
-      if (access.reason === 'dialog_not_supported') {
-        throw new ForbiddenException('Личный диалог с ботом MAX нельзя управлять как чат.');
-      }
-
       throw new ForbiddenException('Пользователь не является администратором чата.');
     }
 
@@ -5635,16 +5631,6 @@ export class AdminService {
         source: 'remote',
       };
     } catch (error: unknown) {
-      if (this.isDialogAdminLookupUnsupportedError(error)) {
-        await this.chatContextCache.setAdminAccess?.(chatId, userId, 'user_denied');
-        await this.prunePersistedChatAccess(chatId, userId);
-        return {
-          status: 'denied',
-          source: 'remote',
-          reason: 'dialog_not_supported',
-        };
-      }
-
       if (this.isBotAdminLookupDeniedError(error)) {
         await this.chatContextCache.setAdminAccess?.(chatId, userId, 'bot_denied');
         await this.prunePersistedChatAccess(chatId, userId);
@@ -5782,18 +5768,6 @@ export class AdminService {
       message.includes('bot is not a chat member') ||
       message.includes('not accessible') ||
       message.includes('chat not found')
-    );
-  }
-
-  private isDialogAdminLookupUnsupportedError(error: unknown): boolean {
-    const status = this.extractMaxErrorStatus(error);
-    const code = this.extractMaxErrorCode(error);
-    const message = this.extractMaxErrorMessage(error);
-
-    return (
-      status === 400 &&
-      code === 'proto.payload' &&
-      message.includes('method is not available for dialogs')
     );
   }
 

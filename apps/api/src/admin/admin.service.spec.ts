@@ -1308,43 +1308,6 @@ describe('AdminService admin access validation', () => {
     });
     expect(maxClient.getChatEditableAdminIds).toHaveBeenCalledTimes(1);
   });
-
-  it('treats personal dialog admin lookup as denied instead of transient failure', async () => {
-    const prisma = createPrismaMock();
-    const chatContextCache = createChatContextCacheMock();
-    const maxClient = {
-      getChatEditableAdminIds: jest.fn().mockRejectedValue({
-        response: {
-          status: 400,
-          data: {
-            code: 'proto.payload',
-            message: 'Method is not available for dialogs',
-          },
-        },
-      }),
-    };
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock() as never,
-    );
-
-    await expect(service.assertChatAdmin('152517912', user.userId, 'chat')).rejects.toThrow(
-      'Личный диалог с ботом MAX нельзя управлять как чат.',
-    );
-    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith(
-      '152517912',
-      'admin-1',
-      'user_denied',
-    );
-    expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
-      where: {
-        chatId: '152517912',
-        userId: 'admin-1',
-      },
-    });
-  });
 });
 
 describe('AdminService.getChannelStats', () => {
