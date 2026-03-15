@@ -3528,7 +3528,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   tone="ink"
                   open={expandedSections.rules}
                   controls="settings-rules-content"
-                  hideChevron
                   onClick={() => toggleSection('rules')}
                 />
               </div>

@@ -27,30 +27,8 @@ type SettingsSectionToggleProps = {
   tone: SettingsSectionTone;
   open: boolean;
   controls: string;
-  hideChevron?: boolean;
   onClick: () => void;
 };
-
-function SectionChevron({ isOpen }: { isOpen: boolean }) {
-  return (
-    <span className={cn('settings-section__chevron', isOpen && 'is-open')} aria-hidden>
-      <svg
-        className="settings-section__chevron-icon"
-        viewBox="0 0 20 20"
-        fill="none"
-        focusable="false"
-      >
-        <path
-          d="M5.5 7.75L10 12.25L14.5 7.75"
-          stroke="currentColor"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    </span>
-  );
-}
 
 function SettingsSectionIcon({ name }: { name: SettingsSectionIconName }) {
   if (name === 'links') {
@@ -361,7 +339,6 @@ export function SettingsSectionToggle({
   tone,
   open,
   controls,
-  hideChevron = false,
   onClick,
 }: SettingsSectionToggleProps) {
   const trimmedSummary = summary?.trim() ?? '';
@@ -375,18 +352,16 @@ export function SettingsSectionToggle({
       aria-controls={controls}
       onClick={onClick}
     >
-      <span className={cn('settings-section__icon-badge', `is-${tone}`)} aria-hidden>
-        <SettingsSectionIcon name={icon} />
+      <span className="settings-section__toggle-top">
+        <span className={cn('settings-section__icon-badge', `is-${tone}`)} aria-hidden>
+          <SettingsSectionIcon name={icon} />
+        </span>
+        <span className={cn('settings-section__status-chip', `is-${tone}`)}>{status}</span>
       </span>
 
       <span className="settings-section__toggle-main">
         <h3>{title}</h3>
         {hasSummary ? <small>{trimmedSummary}</small> : null}
-      </span>
-
-      <span className="settings-section__toggle-side">
-        <span className={cn('settings-section__status-chip', `is-${tone}`)}>{status}</span>
-        {!hideChevron ? <SectionChevron isOpen={open} /> : null}
       </span>
     </button>
   );
