@@ -6928,6 +6928,10 @@ export class AdminService {
       return null;
     }
 
+    if (this.isPrivateDirectChat(user.chatId)) {
+      return null;
+    }
+
     const access = await this.resolveUserAndBotAdminAccess(user.chatId, user.userId);
     if (access.status !== 'granted') {
       return null;
@@ -6954,6 +6958,28 @@ export class AdminService {
     }
 
     return chat;
+  }
+
+  private isPrivateDirectChat(chatId: string): boolean {
+    const numericChatId = this.parseChatIdAsBigInt(chatId);
+    return numericChatId !== null && numericChatId > 0n;
+  }
+
+  private parseChatIdAsBigInt(chatId: string): bigint | null {
+    if (typeof chatId !== 'string') {
+      return null;
+    }
+
+    const normalized = chatId.trim();
+    if (!/^-?\d+$/u.test(normalized)) {
+      return null;
+    }
+
+    try {
+      return BigInt(normalized);
+    } catch {
+      return null;
+    }
   }
 
   private async ensureEntityType(

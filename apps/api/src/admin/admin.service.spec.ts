@@ -1749,6 +1749,38 @@ describe('AdminService.listChats', () => {
     ]);
     expect(maxClient.listBotChats).not.toHaveBeenCalled();
   });
+
+  it('does not bootstrap a private direct dialog into managed chats', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+
+    const maxClient = {
+      listBotChats: jest.fn(),
+      getChatEditableAdminIds: jest.fn(),
+      getChatAdminIds: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.listChats({
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatId: '152517912',
+      chatTitle: 'Личка с ботом',
+    });
+
+    expect(result).toEqual([]);
+    expect(maxClient.getChatEditableAdminIds).not.toHaveBeenCalled();
+    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
+    expect(prisma.chat.upsert).not.toHaveBeenCalled();
+    expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
+  });
 });
 
 describe('AdminService settings screen endpoints', () => {
