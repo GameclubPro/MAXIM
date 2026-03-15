@@ -5023,6 +5023,8 @@ export class AdminService {
     } as const;
 
     if (parsed.data.action === 'KICK') {
+      await this.maxClient.cancelScheduledUnban(chatId, targetUserId);
+
       try {
         await this.maxClient.kickMember(chatId, targetUserId, { immediate: true });
       } catch (error: unknown) {
@@ -5030,30 +5032,20 @@ export class AdminService {
         throw new BadRequestException(maxApiMessage || 'Не удалось удалить участника из чата.');
       }
 
-      await this.prisma.moderationEvent.create({
-        data: {
-          chatId,
-          userId: targetUserId,
-          eventType: EventType.MEMBER_ACTION,
-          ruleCode: 'MANUAL_KICK',
-          action: SanctionAction.KICK,
-          operator: Operator.ADMIN,
-          metadata: {
-            ...metadataBase,
-            reason: 'Ручное удаление участника через miniapp',
-          },
+      await this.recordManualModerationAction({
+        chatId,
+        targetUserId,
+        actorUserId: user.userId,
+        ruleCode: 'MANUAL_KICK',
+        sanctionAction: SanctionAction.KICK,
+        auditAction: 'MANUAL_KICK_MEMBER',
+        metadata: {
+          ...metadataBase,
+          reason: 'Ручное удаление участника через miniapp',
         },
-      });
-
-      await this.prisma.auditLog.create({
-        data: {
-          chatId,
-          actorUserId: user.userId,
-          action: 'MANUAL_KICK_MEMBER',
-          payload: {
-            userId: targetUserId,
-            source,
-          },
+        auditPayload: {
+          userId: targetUserId,
+          source,
         },
       });
 
@@ -5077,6 +5069,7 @@ export class AdminService {
       try {
         await this.maxClient.banMember(chatId, targetUserId, { immediate: true });
         try {
+          await this.maxClient.cancelScheduledUnban(chatId, targetUserId);
           await this.maxClient.unbanMember(chatId, targetUserId, {
             delayMs: banDurationHours * ONE_HOUR_MS,
           });
@@ -5101,35 +5094,25 @@ export class AdminService {
         throw new BadRequestException(maxApiMessage || 'Не удалось применить временный бан.');
       }
 
-      await this.prisma.moderationEvent.create({
-        data: {
-          chatId,
-          userId: targetUserId,
-          eventType: EventType.MEMBER_ACTION,
-          ruleCode: 'MANUAL_BAN',
-          action: SanctionAction.BAN,
-          operator: Operator.ADMIN,
-          metadata: {
-            ...metadataBase,
-            reason: 'Ручной бан участника через miniapp',
-            banDurationHours,
-            unbanScheduledAt: unbanScheduledAt.toISOString(),
-            mode: 'MAX_BLOCK',
-          },
+      await this.recordManualModerationAction({
+        chatId,
+        targetUserId,
+        actorUserId: user.userId,
+        ruleCode: 'MANUAL_BAN',
+        sanctionAction: SanctionAction.BAN,
+        auditAction: 'MANUAL_BAN_MEMBER',
+        metadata: {
+          ...metadataBase,
+          reason: 'Ручной бан участника через miniapp',
+          banDurationHours,
+          unbanScheduledAt: unbanScheduledAt.toISOString(),
+          mode: 'MAX_BLOCK',
         },
-      });
-
-      await this.prisma.auditLog.create({
-        data: {
-          chatId,
-          actorUserId: user.userId,
-          action: 'MANUAL_BAN_MEMBER',
-          payload: {
-            userId: targetUserId,
-            banDurationHours,
-            unbanScheduledAt: unbanScheduledAt.toISOString(),
-            source,
-          },
+        auditPayload: {
+          userId: targetUserId,
+          banDurationHours,
+          unbanScheduledAt: unbanScheduledAt.toISOString(),
+          source,
         },
       });
 
@@ -5143,6 +5126,8 @@ export class AdminService {
       });
     }
 
+    await this.maxClient.cancelScheduledUnban(chatId, targetUserId);
+
     try {
       await this.maxClient.unbanMember(chatId, targetUserId, { immediate: true });
     } catch (error: unknown) {
@@ -5150,31 +5135,21 @@ export class AdminService {
       throw new BadRequestException(maxApiMessage || 'Не удалось вернуть участника в чат.');
     }
 
-    await this.prisma.moderationEvent.create({
-      data: {
-        chatId,
-        userId: targetUserId,
-        eventType: EventType.MEMBER_ACTION,
-        ruleCode: 'MANUAL_UNBAN',
-        action: SanctionAction.NONE,
-        operator: Operator.ADMIN,
-        metadata: {
-          ...metadataBase,
-          reason: 'Ручной разбан участника через miniapp',
-          mode: 'MAX_UNBLOCK',
-        },
+    await this.recordManualModerationAction({
+      chatId,
+      targetUserId,
+      actorUserId: user.userId,
+      ruleCode: 'MANUAL_UNBAN',
+      sanctionAction: SanctionAction.NONE,
+      auditAction: 'MANUAL_UNBAN_MEMBER',
+      metadata: {
+        ...metadataBase,
+        reason: 'Ручной разбан участника через miniapp',
+        mode: 'MAX_UNBLOCK',
       },
-    });
-
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: 'MANUAL_UNBAN_MEMBER',
-        payload: {
-          userId: targetUserId,
-          source,
-        },
+      auditPayload: {
+        userId: targetUserId,
+        source,
       },
     });
 
@@ -5186,6 +5161,50 @@ export class AdminService {
       unbanScheduledAt: null,
       message: 'Участник возвращён в чат и разблокирован.',
     });
+  }
+
+  private async recordManualModerationAction(params: {
+    chatId: string;
+    targetUserId: string;
+    actorUserId: string;
+    ruleCode: 'MANUAL_KICK' | 'MANUAL_BAN' | 'MANUAL_UNBAN';
+    sanctionAction: SanctionAction;
+    auditAction: 'MANUAL_KICK_MEMBER' | 'MANUAL_BAN_MEMBER' | 'MANUAL_UNBAN_MEMBER';
+    metadata: Record<string, unknown>;
+    auditPayload: Record<string, unknown>;
+  }) {
+    const {
+      chatId,
+      targetUserId,
+      actorUserId,
+      ruleCode,
+      sanctionAction,
+      auditAction,
+      metadata,
+      auditPayload,
+    } = params;
+
+    await this.prisma.$transaction([
+      this.prisma.moderationEvent.create({
+        data: {
+          chatId,
+          userId: targetUserId,
+          eventType: EventType.MEMBER_ACTION,
+          ruleCode,
+          action: sanctionAction,
+          operator: Operator.ADMIN,
+          metadata: metadata as Prisma.InputJsonValue,
+        },
+      }),
+      this.prisma.auditLog.create({
+        data: {
+          chatId,
+          actorUserId,
+          action: auditAction,
+          payload: auditPayload as Prisma.InputJsonValue,
+        },
+      }),
+    ]);
   }
 
   async getEvents(chatId: string, user: AuthUser, query: unknown): Promise<ModerationEvent[]> {

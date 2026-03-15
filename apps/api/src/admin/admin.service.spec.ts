@@ -170,6 +170,7 @@ function createPrismaMock() {
       upsert: jest.fn().mockResolvedValue(undefined),
     },
     moderationEvent: {
+      create: jest.fn().mockResolvedValue(undefined),
       count: jest.fn(),
       findMany: jest.fn(),
     },
@@ -1277,6 +1278,244 @@ describe('AdminService.getLogsDashboard', () => {
     const createdAt = countArgs.where.createdAt;
     expect(createdAt.gte.toISOString()).toBe('2026-03-01T12:00:00.000Z');
     expect(createdAt.lte.toISOString()).toBe('2026-03-02T12:00:00.000Z');
+  });
+});
+
+describe('AdminService.applyManualModerationAction', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('cancels pending auto-unban before manual kick and records the action', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      kickMember: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.applyManualModerationAction(
+      'chat-1',
+      'user-2',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { action: 'KICK' },
+    );
+
+    expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-2');
+    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-2', { immediate: true });
+    expect(maxClient.cancelScheduledUnban.mock.invocationCallOrder[0]).toBeLessThan(
+      maxClient.kickMember.mock.invocationCallOrder[0],
+    );
+    expect(prisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'user-2',
+          ruleCode: 'MANUAL_KICK',
+          action: 'KICK',
+          operator: 'ADMIN',
+        }),
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          chatId: 'chat-1',
+          actorUserId: 'admin-1',
+          action: 'MANUAL_KICK_MEMBER',
+        }),
+      }),
+    );
+    expect(result).toEqual({
+      ok: true,
+      action: 'KICK',
+      userId: 'user-2',
+      banDurationHours: null,
+      unbanScheduledAt: null,
+      message: 'Участник удалён из чата.',
+    });
+  });
+
+  it('replaces previous auto-unban schedule on manual ban and records new schedule', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-15T14:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      banMember: jest.fn().mockResolvedValue(undefined),
+      unbanMember: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.applyManualModerationAction(
+      'chat-1',
+      'user-3',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { action: 'BAN', banDurationHours: 6 },
+    );
+
+    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-3', { immediate: true });
+    expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-3');
+    expect(maxClient.unbanMember).toHaveBeenCalledWith('chat-1', 'user-3', {
+      delayMs: 6 * 60 * 60 * 1000,
+    });
+    expect(maxClient.banMember.mock.invocationCallOrder[0]).toBeLessThan(
+      maxClient.cancelScheduledUnban.mock.invocationCallOrder[0],
+    );
+    expect(maxClient.cancelScheduledUnban.mock.invocationCallOrder[0]).toBeLessThan(
+      maxClient.unbanMember.mock.invocationCallOrder[0],
+    );
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'user-3',
+          ruleCode: 'MANUAL_BAN',
+          action: 'BAN',
+          operator: 'ADMIN',
+          metadata: expect.objectContaining({
+            banDurationHours: 6,
+            unbanScheduledAt: '2026-03-15T20:00:00.000Z',
+            mode: 'MAX_BLOCK',
+          }),
+        }),
+      }),
+    );
+    expect(result).toEqual({
+      ok: true,
+      action: 'BAN',
+      userId: 'user-3',
+      banDurationHours: 6,
+      unbanScheduledAt: '2026-03-15T20:00:00.000Z',
+      message: 'Участник забанен на 6ч. Авторазбан запланирован.',
+    });
+  });
+
+  it('rolls back manual ban when replacing auto-unban schedule fails', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      cancelScheduledUnban: jest.fn().mockRejectedValue({
+        response: { data: { message: 'Не удалось заменить старый авторазбан.' } },
+      }),
+      banMember: jest.fn().mockResolvedValue(undefined),
+      unbanMember: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.applyManualModerationAction(
+        'chat-1',
+        'user-rollback',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { action: 'BAN', banDurationHours: 6 },
+      ),
+    ).rejects.toThrow('Не удалось заменить старый авторазбан.');
+
+    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-rollback', {
+      immediate: true,
+    });
+    expect(maxClient.unbanMember).toHaveBeenCalledWith('chat-1', 'user-rollback', {
+      immediate: true,
+    });
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('cancels pending auto-unban before manual unban and records the action', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      unbanMember: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.applyManualModerationAction(
+      'chat-1',
+      'user-4',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { action: 'UNBAN' },
+    );
+
+    expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-4');
+    expect(maxClient.unbanMember).toHaveBeenCalledWith('chat-1', 'user-4', { immediate: true });
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          chatId: 'chat-1',
+          userId: 'user-4',
+          ruleCode: 'MANUAL_UNBAN',
+          action: 'NONE',
+          operator: 'ADMIN',
+          metadata: expect.objectContaining({
+            mode: 'MAX_UNBLOCK',
+          }),
+        }),
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'MANUAL_UNBAN_MEMBER',
+        }),
+      }),
+    );
+    expect(result).toEqual({
+      ok: true,
+      action: 'UNBAN',
+      userId: 'user-4',
+      banDurationHours: null,
+      unbanScheduledAt: null,
+      message: 'Участник возвращён в чат и разблокирован.',
+    });
   });
 });
 

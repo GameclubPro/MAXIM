@@ -182,6 +182,7 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly limiterRedis: Redis;
   private readonly criticalFailuresMs: number[] = [];
   private readonly pendingTimeouts = new Set<NodeJS.Timeout>();
+  private readonly keyedActionTimeouts = new Map<string, NodeJS.Timeout>();
   private circuitOpenUntilMs = 0;
 
   constructor(
@@ -215,10 +216,14 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async onModuleDestroy() {
-    for (const timeout of this.pendingTimeouts) {
+    for (const timeout of new Set([
+      ...this.pendingTimeouts,
+      ...this.keyedActionTimeouts.values(),
+    ])) {
       clearTimeout(timeout);
     }
     this.pendingTimeouts.clear();
+    this.keyedActionTimeouts.clear();
     await this.limiterRedis.quit();
   }
 
@@ -648,6 +653,24 @@ export class MaxClientService implements OnModuleDestroy {
       },
       options,
     );
+  }
+
+  async cancelScheduledUnban(chatId: string, userId: string) {
+    const jobId = this.buildScheduledMemberActionJobId('UNBAN_MEMBER', chatId, userId);
+    if (!jobId) {
+      return;
+    }
+
+    const timeout = this.keyedActionTimeouts.get(jobId);
+    if (timeout) {
+      clearTimeout(timeout);
+      this.pendingTimeouts.delete(timeout);
+      this.keyedActionTimeouts.delete(jobId);
+    }
+
+    if (this.dispatchEnabled && this.actionQueue) {
+      await this.removeQueuedActionJob(jobId);
+    }
   }
 
   async notifyModerators(chatId: string, text: string) {
@@ -1338,17 +1361,21 @@ export class MaxClientService implements OnModuleDestroy {
     options?: MaxActionDispatchOptions,
   ) {
     const autoDeleteDelayMs = this.normalizeDelayMs(options?.autoDeleteDelayMs);
+    const delayMs = this.normalizeDelayMs(options?.delayMs);
+    const immediate = options?.immediate === true;
+    const scheduledJobId =
+      delayMs > 0
+        ? this.buildScheduledMemberActionJobId(payload.actionType, payload.chatId, payload.userId)
+        : null;
     const job: MaxActionJob = {
       ...payload,
       ...(payload.actionType === 'SEND_MESSAGE' && autoDeleteDelayMs > 0
         ? { autoDeleteDelayMs }
         : {}),
       attempt: 1,
-      idempotencyKey: randomUUID(),
+      idempotencyKey: scheduledJobId ?? randomUUID(),
       createdAt: new Date().toISOString(),
     };
-    const delayMs = this.normalizeDelayMs(options?.delayMs);
-    const immediate = options?.immediate === true;
 
     if (immediate && delayMs > 0) {
       throw new Error('Immediate dispatch cannot be combined with delay');
@@ -1360,6 +1387,10 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     if (this.dispatchEnabled && this.actionQueue) {
+      if (scheduledJobId) {
+        await this.removeQueuedActionJob(scheduledJobId);
+      }
+
       await this.actionQueue.add('execute-max-action', job, {
         jobId: job.idempotencyKey,
         attempts: 5,
@@ -1375,8 +1406,19 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     if (delayMs > 0) {
+      if (scheduledJobId) {
+        const existingTimeout = this.keyedActionTimeouts.get(scheduledJobId);
+        if (existingTimeout) {
+          clearTimeout(existingTimeout);
+          this.pendingTimeouts.delete(existingTimeout);
+        }
+      }
+
       const timeout = setTimeout(() => {
         this.pendingTimeouts.delete(timeout);
+        if (scheduledJobId) {
+          this.keyedActionTimeouts.delete(scheduledJobId);
+        }
         void this.executeActionJob(job).catch((error: unknown) => {
           this.logger.warn(
             {
@@ -1391,10 +1433,38 @@ export class MaxClientService implements OnModuleDestroy {
         });
       }, delayMs);
       this.pendingTimeouts.add(timeout);
+      if (scheduledJobId) {
+        this.keyedActionTimeouts.set(scheduledJobId, timeout);
+      }
       return;
     }
 
     await this.executeActionJob(job);
+  }
+
+  private buildScheduledMemberActionJobId(
+    actionType: MaxActionType,
+    chatId: string,
+    userId: string | undefined,
+  ): string | null {
+    if (actionType !== 'UNBAN_MEMBER' || !userId) {
+      return null;
+    }
+
+    return `member-action:${actionType}:${chatId}:${userId}`;
+  }
+
+  private async removeQueuedActionJob(jobId: string) {
+    if (!this.actionQueue) {
+      return;
+    }
+
+    const existingJob = await this.actionQueue.getJob(jobId);
+    if (!existingJob) {
+      return;
+    }
+
+    await existingJob.remove();
   }
 
   private normalizeDelayMs(value: number | undefined): number {

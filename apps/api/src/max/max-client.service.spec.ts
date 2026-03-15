@@ -14,6 +14,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
   function createService(
     httpService: { request?: jest.Mock } = {},
     configOverrides: Partial<Record<string, string>> = {},
+    actionQueue?: { add: jest.Mock; getJob: jest.Mock },
   ) {
     const configService = {
       getOrThrow: jest.fn((key: string) => {
@@ -44,7 +45,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
       httpService as never,
       configService as never,
       actionHealthService as never,
-      undefined,
+      actionQueue as never,
     );
   }
 
@@ -726,6 +727,80 @@ describe('MaxClientService inline keyboard guardrails', () => {
         },
       }),
     );
+
+    await service.onModuleDestroy();
+  });
+});
+
+describe('MaxClientService delayed member actions', () => {
+  function createServiceWithQueue(queue: { add: jest.Mock; getJob: jest.Mock }) {
+    const configService = {
+      getOrThrow: jest.fn((key: string) => {
+        if (key === 'MAX_API_BASE_URL') {
+          return 'https://platform-api.max.ru';
+        }
+        if (key === 'MAX_BOT_TOKEN') {
+          return 'test-token';
+        }
+        if (key === 'REDIS_URL') {
+          return 'redis://localhost:6379/0';
+        }
+        throw new Error(`Unexpected key ${key}`);
+      }),
+      get: jest.fn((key: string, fallback?: unknown) => fallback),
+    };
+    const actionHealthService = {
+      recordSuccess: jest.fn(),
+      recordFailure: jest.fn(),
+    };
+
+    return new MaxClientService(
+      {} as never,
+      configService as never,
+      actionHealthService as never,
+      queue as never,
+    );
+  }
+
+  it('uses deterministic queue job id for delayed unban', async () => {
+    const queue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue(null),
+    };
+    const service = createServiceWithQueue(queue);
+
+    await service.unbanMember('chat-1', 'user-1', { delayMs: 60_000 });
+
+    expect(queue.getJob).toHaveBeenCalledWith('member-action:UNBAN_MEMBER:chat-1:user-1');
+    expect(queue.add).toHaveBeenCalledWith(
+      'execute-max-action',
+      expect.objectContaining({
+        actionType: 'UNBAN_MEMBER',
+        chatId: 'chat-1',
+        userId: 'user-1',
+        idempotencyKey: 'member-action:UNBAN_MEMBER:chat-1:user-1',
+      }),
+      expect.objectContaining({
+        jobId: 'member-action:UNBAN_MEMBER:chat-1:user-1',
+        delay: 60_000,
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('removes queued delayed unban when cancelling manual override', async () => {
+    const remove = jest.fn().mockResolvedValue(undefined);
+    const queue = {
+      add: jest.fn().mockResolvedValue(undefined),
+      getJob: jest.fn().mockResolvedValue({ remove }),
+    };
+    const service = createServiceWithQueue(queue);
+
+    await service.cancelScheduledUnban('chat-1', 'user-2');
+
+    expect(queue.getJob).toHaveBeenCalledWith('member-action:UNBAN_MEMBER:chat-1:user-2');
+    expect(remove).toHaveBeenCalledTimes(1);
 
     await service.onModuleDestroy();
   });
