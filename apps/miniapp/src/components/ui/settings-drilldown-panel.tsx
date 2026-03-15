@@ -1,7 +1,6 @@
 import { useEffect, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../../lib/cn';
-import { BackChevronIcon } from './entity-header-icons';
 
 type SettingsDrilldownPanelProps = {
   id: string;
@@ -11,6 +10,7 @@ type SettingsDrilldownPanelProps = {
   onClose: () => void;
   children: ReactNode;
   className?: string;
+  footer?: ReactNode;
 };
 
 function CloseIcon() {
@@ -35,6 +35,7 @@ export function SettingsDrilldownPanel({
   onClose,
   children,
   className,
+  footer,
 }: SettingsDrilldownPanelProps) {
   useEffect(() => {
     if (!open) {
@@ -87,16 +88,6 @@ export function SettingsDrilldownPanel({
         aria-describedby={summaryId}
       >
         <header className="settings-drilldown__header">
-          <button
-            type="button"
-            className="settings-drilldown__back"
-            onClick={onClose}
-            aria-label="Назад к списку настроек"
-          >
-            <BackChevronIcon />
-            <span>Назад</span>
-          </button>
-
           <div className="settings-drilldown__title-wrap">
             <h3 id={titleId} className="settings-drilldown__title">
               {title}
@@ -118,7 +109,10 @@ export function SettingsDrilldownPanel({
           </button>
         </header>
 
-        <div className="settings-drilldown__body">{children}</div>
+        <div className="settings-drilldown__content">
+          <div className="settings-drilldown__body">{children}</div>
+          {footer ? <div className="settings-drilldown__footer">{footer}</div> : null}
+        </div>
       </section>
     </div>,
     document.body,

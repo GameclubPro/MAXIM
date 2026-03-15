@@ -44,8 +44,6 @@ type ChannelSettingsHintKey =
   | 'broadcastImage'
   | 'broadcastButton';
 
-const AUTOSAVE_DELAY_MS = 700;
-const AUTOSAVE_SAVED_HIDE_MS = 1600;
 const MAX_BROADCAST_TEXT_LENGTH = 1_000;
 const MAX_BROADCAST_SCHEDULE_DAYS = 14;
 const MIN_BROADCAST_CYCLE_HOURS = 1;
@@ -432,8 +430,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [draft, setDraft] = useState<ChannelSettings | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState<ChannelSettings | null>(null);
   const [autosaveState, setAutosaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
-  const autosaveTimerRef = useRef<number | null>(null);
-  const autosaveHideTimerRef = useRef<number | null>(null);
   const saveInFlightRef = useRef<Promise<ChannelSettings> | null>(null);
   const lastFailedDraftKeyRef = useRef<string | null>(null);
   const latestNormalizedDraftRef = useRef<ChannelSettings | null>(null);
@@ -584,6 +580,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setOpenHintKey((current) => (current === hintKey ? null : hintKey));
   }
 
+  function closeSection(section: ChannelSettingsSectionKey) {
+    setExpandedSections((current) =>
+      current[section] ? INITIAL_EXPANDED_CHANNEL_SECTIONS : current,
+    );
+  }
+
   const normalizedDraft = useMemo(
     () => (draft ? normalizeChannelSettingsDraft(draft, resolvedChannelLink) : null),
     [draft, resolvedChannelLink],
@@ -648,27 +650,16 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     isDirtyRef.current = isDirty;
   }, [isDirty, normalizedDraft, normalizedDraftKey]);
 
-  const clearAutosaveTimer = () => {
-    if (autosaveTimerRef.current !== null) {
-      window.clearTimeout(autosaveTimerRef.current);
-      autosaveTimerRef.current = null;
+  useEffect(() => {
+    if (autosaveState === 'error' && normalizedDraftKey !== lastFailedDraftKeyRef.current) {
+      setAutosaveState('idle');
+      return;
     }
-  };
 
-  const clearAutosaveHideTimer = () => {
-    if (autosaveHideTimerRef.current !== null) {
-      window.clearTimeout(autosaveHideTimerRef.current);
-      autosaveHideTimerRef.current = null;
+    if (autosaveState === 'saved' && isDirty) {
+      setAutosaveState('idle');
     }
-  };
-
-  useEffect(
-    () => () => {
-      clearAutosaveTimer();
-      clearAutosaveHideTimer();
-    },
-    [],
-  );
+  }, [autosaveState, isDirty, normalizedDraftKey]);
 
   const saveCurrentDraft = async ({
     force = false,
@@ -691,8 +682,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       return saveInFlightRef.current;
     }
 
-    clearAutosaveTimer();
-    clearAutosaveHideTimer();
     setAutosaveState('saving');
 
     const request = updateChannelSettings(api, chatId, payload)
@@ -708,10 +697,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           return JSON.stringify(currentNormalized) === payloadKey ? saved : current;
         });
         setAutosaveState('saved');
-        autosaveHideTimerRef.current = window.setTimeout(() => {
-          setAutosaveState((current) => (current === 'saved' ? 'idle' : current));
-          autosaveHideTimerRef.current = null;
-        }, AUTOSAVE_SAVED_HIDE_MS);
         return saved;
       })
       .catch((error: unknown) => {
@@ -727,32 +712,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     saveInFlightRef.current = request;
     return request;
   };
-
-  useEffect(() => {
-    clearAutosaveTimer();
-
-    if (!chatId || !normalizedDraft || !normalizedSavedSnapshot || !isDirty) {
-      return;
-    }
-
-    if (saveInFlightRef.current) {
-      setAutosaveState('saving');
-      return;
-    }
-
-    if (normalizedDraftKey === lastFailedDraftKeyRef.current) {
-      setAutosaveState('error');
-      return;
-    }
-
-    clearAutosaveHideTimer();
-    setAutosaveState('saving');
-    autosaveTimerRef.current = window.setTimeout(() => {
-      void saveCurrentDraft();
-    }, AUTOSAVE_DELAY_MS);
-
-    return clearAutosaveTimer;
-  }, [chatId, isDirty, normalizedDraft, normalizedDraftKey, normalizedSavedSnapshot]);
 
   const handoffBroadcastMutation = useMutation({
     mutationFn: (payload: BroadcastHandoffPayload) => handoffChannelBroadcast(api, chatId, payload),
@@ -886,9 +845,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       ? 'error'
       : autosaveState === 'saving'
         ? 'saving'
-        : autosaveState === 'saved' || !isDirty
-          ? 'saved'
-          : 'draft';
+        : isDirty
+          ? 'draft'
+          : 'saved';
   const headerStatusLabel =
     headerStatusTone === 'error'
       ? 'Ошибка'
@@ -955,6 +914,37 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastCycleEveryHours(MIN_BROADCAST_CYCLE_HOURS);
     setBroadcastCycleCount(2);
     setBroadcastCycleError('');
+  }
+
+  async function handleSaveChannelSection(section: ChannelSettingsSectionKey) {
+    if (!isDirty) {
+      closeSection(section);
+      return;
+    }
+
+    try {
+      const saved = await saveCurrentDraft({ force: true });
+      if (saved) {
+        closeSection(section);
+      }
+    } catch {
+      // Error state is handled in saveCurrentDraft.
+    }
+  }
+
+  function renderChannelSectionFooter(section: ChannelSettingsSectionKey) {
+    return (
+      <div className="settings-drilldown__footer-actions is-single-action">
+        <button
+          type="button"
+          className="button button--accent"
+          onClick={() => void handleSaveChannelSection(section)}
+          disabled={autosaveState === 'saving' || !isDirty}
+        >
+          {autosaveState === 'saving' ? 'Сохраняем...' : 'Сохранить'}
+        </button>
+      </div>
+    );
   }
 
   function handleSendChannelBroadcast() {
@@ -1104,6 +1094,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           title="Комментарии"
           summary={draft.commentsEnabled ? 'включены' : 'выключены'}
           onClose={() => toggleSection('comments')}
+          footer={renderChannelSectionFooter('comments')}
         >
           <div
             id="channel-settings-comments"
@@ -1199,6 +1190,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           title="Предложить пост"
           summary={draft.postSuggestionsEnabled ? 'авто' : 'вручную'}
           onClose={() => toggleSection('postSuggestions')}
+          footer={renderChannelSectionFooter('postSuggestions')}
         >
           <div
             id="channel-settings-post-suggestions"

@@ -4,6 +4,7 @@ import {
   normalizeAllowlistLink,
   type ChatRules,
   type ChatSettings,
+  type ChatSettingsScreenResponse,
   type DomainAllowlistEntry,
   type ManagedBroadcastDetails,
 } from '@maxim/contracts';
@@ -1122,11 +1123,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [duplicateWindowInputValues, setDuplicateWindowInputValues] = useState<
     Partial<Record<DuplicateWindowKey, string>>
   >({});
-  const [failedSnapshot, setFailedSnapshot] = useState<string>('');
   const [rulesFailedSnapshot, setRulesFailedSnapshot] = useState('');
-  const [openSectionApplyConfirm, setOpenSectionApplyConfirm] = useState<ApplySectionKey | null>(
-    null,
-  );
   const [openHintKey, setOpenHintKey] = useState<HintKey | null>(null);
   const [openBotEditorKey, setOpenBotEditorKey] = useState<BotMessageEditorKey | null>(null);
   const [openWarnEditorKey, setOpenWarnEditorKey] = useState<WarnMessageEditorKey | null>(null);
@@ -1152,7 +1149,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }, [chatId]);
 
   useEffect(() => {
-    setOpenSectionApplyConfirm(null);
     setRulesDraft(null);
     setRulesAutoFillEnabled(false);
     setRulesAutoFillSeedText(null);
@@ -1342,26 +1338,29 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     rulesDraft.imageFileName === (rulesQuery.data?.imageFileName ?? ''),
   );
 
-  const saveMutation = useMutation({
-    mutationFn: (payload: ChatSettings) => updateSettings(api, chatId ?? '', payload),
-    onSuccess: (saved) => {
-      setDraft(saved);
-      setFieldErrors({});
-      setFailedSnapshot('');
-      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
+  const saveSectionMutation = useMutation({
+    mutationFn: ({ payload }: { section: ApplySectionKey; payload: ChatSettings }) =>
+      updateSettings(api, chatId ?? '', payload),
+    onSuccess: (saved, variables) => {
+      syncSavedSectionSettings(variables.section, saved);
+      pushToast({
+        tone: 'success',
+        title: `Блок «${SECTION_LABELS[variables.section]}» сохранен`,
+      });
+      maxNotify('success');
     },
-    onError: (error, payload) => {
-      setFailedSnapshot(JSON.stringify(payload));
+    onError: (error, variables) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось сохранить настройки',
+        title: `Не удалось сохранить блок «${SECTION_LABELS[variables.section]}»`,
         description: formatApiError(error),
       });
       maxNotify('error');
     },
   });
-  const isSavingSettings = saveMutation.isPending;
-  const mutateSettings = saveMutation.mutate;
+  const isSavingSettings = saveSectionMutation.isPending;
+  const savingSection = saveSectionMutation.variables?.section ?? null;
+  const mutateSettingsAsync = saveSectionMutation.mutateAsync;
 
   const saveRulesMutation = useMutation({
     mutationFn: (payload: UpdateChatRulesPayload) => updateRules(api, chatId ?? '', payload),
@@ -1482,11 +1481,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       };
     },
     onSuccess: (result) => {
-      setDraft(result.sourceSettings);
-      setFieldErrors({});
-      setFailedSnapshot('');
-      setOpenSectionApplyConfirm(null);
-      void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
+      syncSavedSectionSettings(result.section, result.sourceSettings);
       pushToast({
         tone: 'success',
         title: `Блок «${SECTION_LABELS[result.section]}» применен`,
@@ -1698,6 +1693,39 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   function setFieldValue<K extends keyof ChatSettings>(key: K, value: ChatSettings[K]) {
     setDraft((current) => (current ? { ...current, [key]: value } : current));
     clearFieldError(key);
+  }
+
+  function clearSectionErrors(section: ApplySectionKey) {
+    setFieldErrors((current) => {
+      let changed = false;
+      const next = { ...current };
+
+      for (const key of SECTION_SETTING_KEYS[section]) {
+        if (!next[key]) {
+          continue;
+        }
+
+        delete next[key];
+        changed = true;
+      }
+
+      return changed ? next : current;
+    });
+  }
+
+  function syncSavedSectionSettings(section: ApplySectionKey, saved: ChatSettings) {
+    setDraft((current) => (current ? mergeSectionSettings(current, saved, section) : saved));
+    clearSectionErrors(section);
+    queryClient.setQueryData<ChatSettingsScreenResponse | undefined>(
+      ['settings-screen', chatId],
+      (current) =>
+        current
+          ? {
+              ...current,
+              settings: mergeSectionSettings(current.settings, saved, section),
+            }
+          : current,
+    );
   }
 
   function setRulesFieldValue<K extends keyof UpdateChatRulesPayload>(
@@ -1938,52 +1966,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   useEffect(() => {
-    if (!failedSnapshot || failedSnapshot === draftSnapshot) {
-      return;
-    }
-
-    setFailedSnapshot('');
-  }, [draftSnapshot, failedSnapshot]);
-
-  useEffect(() => {
     if (!rulesFailedSnapshot || rulesFailedSnapshot === rulesDraftSnapshot) {
       return;
     }
 
     setRulesFailedSnapshot('');
   }, [rulesDraftSnapshot, rulesFailedSnapshot]);
-
-  useEffect(() => {
-    if (!chatId || !draft || !hasChanges || isSavingSettings || isApplyingSectionToAll) {
-      return;
-    }
-
-    if (failedSnapshot && failedSnapshot === draftSnapshot) {
-      return;
-    }
-
-    const parsed = validateDraft(draft);
-    if (!parsed) {
-      return;
-    }
-
-    const timeoutId = window.setTimeout(() => {
-      mutateSettings(parsed);
-    }, AUTO_SAVE_DELAY_MS);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [
-    chatId,
-    draft,
-    draftSnapshot,
-    failedSnapshot,
-    hasChanges,
-    isSavingSettings,
-    isApplyingSectionToAll,
-    mutateSettings,
-  ]);
 
   useEffect(() => {
     if (
@@ -2419,6 +2407,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setOpenWarnEditorKey((current) => (current === key ? null : key));
   }
 
+  function closeSection(section: SettingsSectionKey) {
+    setExpandedSections((current) => (current[section] ? INITIAL_EXPANDED_SECTIONS : current));
+  }
+
   function toggleSection(section: SettingsSectionKey) {
     startTransition(() => {
       setExpandedSections((current) => {
@@ -2427,41 +2419,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           ? { ...INITIAL_EXPANDED_SECTIONS, [section]: true }
           : INITIAL_EXPANDED_SECTIONS;
       });
-    });
-  }
-
-  function toggleSectionApplyConfirm(section: ApplySectionKey) {
-    setOpenSectionApplyConfirm((current) => (current === section ? null : section));
-  }
-
-  function handleApplySectionToAllChats(section: ApplySectionKey) {
-    if (!chatId || !draft) {
-      return;
-    }
-
-    const chatsCount = chatsQuery.data?.length ?? 0;
-    if (chatsCount <= 1) {
-      pushToast({
-        title: 'Нет других чатов для применения',
-        description: 'Откройте миниапп в другом чате, чтобы добавить его в список.',
-      });
-      setOpenSectionApplyConfirm(null);
-      return;
-    }
-
-    const parsed = validateDraft(draft);
-    if (!parsed) {
-      pushToast({
-        tone: 'danger',
-        title: 'Исправьте настройки перед применением',
-        description: 'В форме есть ошибки, их нужно исправить.',
-      });
-      return;
-    }
-
-    applySectionToAllMutation.mutate({
-      section,
-      sourceSettings: parsed,
     });
   }
 
@@ -2711,64 +2668,115 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   useHintPopoverAutoPosition(openHintKey !== null);
 
-  function renderSectionApplyControl(section: ApplySectionKey) {
-    const isConfirmOpen = openSectionApplyConfirm === section;
-    const isThisSectionApplying = isApplyingSectionToAll && applyingSection === section;
-    const sectionLabel = SECTION_LABELS[section];
+  function isSectionDirty(section: ApplySectionKey) {
+    if (!draft || !settingsQuery.data) {
+      return false;
+    }
+
+    const savedSettings = settingsQuery.data;
+    return SECTION_SETTING_KEYS[section].some((key) => draft[key] !== savedSettings[key]);
+  }
+
+  function buildSectionPayload(section: ApplySectionKey) {
+    if (!draft || !settingsQuery.data) {
+      return null;
+    }
+
+    return validateDraft(mergeSectionSettings(settingsQuery.data, draft, section));
+  }
+
+  async function handleSaveSection(section: ApplySectionKey) {
+    if (!chatId) {
+      return;
+    }
+
+    if (!isSectionDirty(section)) {
+      closeSection(section);
+      return;
+    }
+
+    const payload = buildSectionPayload(section);
+    if (!payload) {
+      pushToast({
+        tone: 'danger',
+        title: `Исправьте блок «${SECTION_LABELS[section]}»`,
+        description: 'В блоке есть ошибки, их нужно исправить перед сохранением.',
+      });
+      return;
+    }
+
+    try {
+      await mutateSettingsAsync({ section, payload });
+      closeSection(section);
+    } catch {
+      // Errors are handled by the mutation.
+    }
+  }
+
+  async function handleSaveSectionToAllChats(section: ApplySectionKey) {
+    if (!chatId || !draft) {
+      return;
+    }
+
+    if (!canApplyToAllChats) {
+      pushToast({
+        title: 'Нет других чатов для применения',
+        description: 'Откройте миниапп в другом чате, чтобы добавить его в список.',
+      });
+      return;
+    }
+
+    const payload = buildSectionPayload(section);
+    if (!payload) {
+      pushToast({
+        tone: 'danger',
+        title: `Исправьте блок «${SECTION_LABELS[section]}»`,
+        description: 'В блоке есть ошибки, их нужно исправить перед сохранением.',
+      });
+      return;
+    }
+
+    try {
+      await applySectionToAllMutation.mutateAsync({
+        section,
+        sourceSettings: payload,
+      });
+      closeSection(section);
+    } catch {
+      // Errors are handled by the mutation.
+    }
+  }
+
+  function renderSectionSaveFooter(section: ApplySectionKey) {
+    const isCurrentSectionSaving = isSavingSettings && savingSection === section;
+    const isCurrentSectionApplying = isApplyingSectionToAll && applyingSection === section;
 
     return (
-      <div className={cn('settings-section-apply', !canApplyToAllChats && 'is-disabled')}>
-        <button
-          type="button"
-          className="button button--accent settings-section-apply__cta"
-          onClick={() => toggleSectionApplyConfirm(section)}
-          disabled={!canApplyToAllChats || isApplyingSectionToAll}
-          aria-expanded={isConfirmOpen}
-          aria-controls={`apply-section-${section}-confirm`}
-        >
-          {isThisSectionApplying ? 'Применяем...' : 'Применить этот блок ко всем чатам'}
-        </button>
-
-        <small className="settings-section-apply__meta">
+      <>
+        <p className="settings-drilldown__footer-note">
           {canApplyToAllChats
-            ? `Синхронизация «${sectionLabel}» в ${chatsCount} чатах.`
-            : 'Пока доступен только текущий чат.'}
-        </small>
-
-        {isConfirmOpen ? (
-          <div
-            id={`apply-section-${section}-confirm`}
-            className="settings-section-apply__confirm"
-            role="group"
-            aria-label={`Подтверждение применения блока ${sectionLabel}`}
+            ? 'Сохраняется только текущий блок. При необходимости его можно сразу применить во все чаты.'
+            : 'Пока доступен только текущий чат. Для массового применения нужен хотя бы ещё один чат.'}
+        </p>
+        <div className="settings-drilldown__footer-actions">
+          <button
+            type="button"
+            className="button button--ghost"
+            onClick={() => void handleSaveSection(section)}
+            disabled={isCurrentSectionSaving || isCurrentSectionApplying || !isSectionDirty(section)}
           >
-            <p className="settings-section-apply__confirm-title">
-              Применить блок «{sectionLabel}» ко всем чатам?
-            </p>
-            <p className="settings-section-apply__confirm-description">
-              Будут обновлены только настройки выбранного блока.
-            </p>
-            <div className="settings-section-apply__confirm-actions">
-              <button
-                type="button"
-                className="button button--ghost"
-                onClick={() => setOpenSectionApplyConfirm(null)}
-                disabled={isApplyingSectionToAll}
-              >
-                Отмена
-              </button>
-              <button
-                type="button"
-                className="button button--accent"
-                onClick={() => handleApplySectionToAllChats(section)}
-                disabled={isApplyingSectionToAll}
-              >
-                Применить сейчас
-              </button>
-            </div>
-          </div>
-        ) : null}
-      </div>
+            {isCurrentSectionSaving ? 'Сохраняем...' : 'Сохранить'}
+          </button>
+          <button
+            type="button"
+            className="button button--accent"
+            onClick={() => void handleSaveSectionToAllChats(section)}
+            disabled={isCurrentSectionSaving || isCurrentSectionApplying || !canApplyToAllChats}
+          >
+            {isCurrentSectionApplying ? 'Сохраняем...' : 'Сохранить во всех чатах'}
+          </button>
+        </div>
+      </>
     );
   }
 
@@ -2869,6 +2877,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 title="Модерация ссылок"
                 summary={linksHeaderSummary}
                 onClose={() => toggleSection('links')}
+                footer={renderSectionSaveFooter('links')}
               >
                 <div
                   id="settings-links-content"
@@ -3462,7 +3471,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         </div>
                       )}
                     </div>
-                    {renderSectionApplyControl('links')}
                   </div>
                 ) : null}
                 </div>
@@ -3865,6 +3873,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 title="Приветствие"
                 summary={greetingHeaderSummary}
                 onClose={() => toggleSection('greeting')}
+                footer={renderSectionSaveFooter('greeting')}
               >
                 <div
                   id="settings-greeting-content"
@@ -4117,7 +4126,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         ) : null}
                       </>
                     ) : null}
-                    {renderSectionApplyControl('greeting')}
                   </div>
                 ) : null}
                 </div>
@@ -4151,6 +4159,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 title="Фильтр нецензурной лексики"
                 summary={profanityFilterHeaderSummary}
                 onClose={() => toggleSection('profanityFilter')}
+                footer={renderSectionSaveFooter('profanityFilter')}
               >
                 <div
                   id="settings-profanity-filter-content"
@@ -4328,7 +4337,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         </div>
                       </>
                     ) : null}
-                    {renderSectionApplyControl('profanityFilter')}
                   </div>
                 ) : null}
                 </div>
@@ -4362,6 +4370,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 title="Фильтр комерции"
                 summary={commercialFilterHeaderSummary}
                 onClose={() => toggleSection('commercialFilter')}
+                footer={renderSectionSaveFooter('commercialFilter')}
               >
                 <div
                   id="settings-commercial-filter-content"
@@ -4814,7 +4823,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         ) : null}
                       </>
                     ) : null}
-                    {renderSectionApplyControl('commercialFilter')}
                   </div>
                 ) : null}
                 </div>
@@ -4848,6 +4856,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 title="Тематические фильтры"
                 summary={thematicFiltersHeaderSummary}
                 onClose={() => toggleSection('thematicFilters')}
+                footer={renderSectionSaveFooter('thematicFilters')}
               >
                 <div
                   id="settings-thematic-filters-content"
@@ -5127,7 +5136,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         </div>
                       </>
                     ) : null}
-                    {renderSectionApplyControl('thematicFilters')}
                   </div>
                 ) : null}
                 </div>
@@ -5161,6 +5169,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 title="Дубли сообщений"
                 summary={duplicatesHeaderSummary}
                 onClose={() => toggleSection('duplicates')}
+                footer={renderSectionSaveFooter('duplicates')}
               >
                 <div
                   id="settings-duplicates-content"
@@ -5592,7 +5601,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         ) : null}
                       </div>
                     ) : null}
-                    {renderSectionApplyControl('duplicates')}
                   </div>
                 ) : null}
                 </div>
@@ -5626,6 +5634,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 title="Ограничения сообщений"
                 summary={`${limitsRulesEnabledCount} ограничений активно`}
                 onClose={() => toggleSection('limits')}
+                footer={renderSectionSaveFooter('limits')}
               >
                 <div
                   id="settings-limits-content"
@@ -6269,7 +6278,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         ) : null}
                       </div>
                     ) : null}
-                    {renderSectionApplyControl('limits')}
                   </div>
                 ) : null}
                 </div>
@@ -6309,6 +6317,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   draft.nightModeEnabled ? `${nightWindowLabel} • ${nightTimezoneLabel}` : 'Выключено'
                 }
                 onClose={() => toggleSection('night')}
+                footer={renderSectionSaveFooter('night')}
               >
                 <div
                   id="settings-night-content"
@@ -6631,7 +6640,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         ) : null}
                       </>
                     ) : null}
-                    {renderSectionApplyControl('night')}
                   </div>
                 ) : null}
                 </div>
@@ -7257,6 +7265,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 title="Дополнительно"
                 summary={extraHeaderSummary}
                 onClose={() => toggleSection('extra')}
+                footer={renderSectionSaveFooter('extra')}
               >
                 <div
                   id="settings-extra-content"
@@ -7454,7 +7463,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         </p>
                       ) : null}
                     </div>
-                    {renderSectionApplyControl('extra')}
                   </div>
                 ) : null}
                 </div>
