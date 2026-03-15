@@ -263,7 +263,7 @@ const SECTION_LABELS: Record<ApplySectionKey, string> = {
   links: 'Ссылки',
   greeting: 'Приветствие',
   profanityFilter: 'Мат и грубость',
-  commercialFilter: 'Реклама и продажи',
+  commercialFilter: 'Комерция',
   thematicFilters: 'Объявления по теме',
   duplicates: 'Повторы',
   limits: 'Ограничения',
@@ -3517,17 +3517,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <GlassCard
               className="settings-section settings-section--wide stagger-in"
               style={{ animationDelay: '45ms' }}
-              aria-label="Правила чата"
+              aria-label="Правила"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
-                  title="Правила чата"
+                  title="Правила"
                   summary={rulesHeaderSummary}
                   status={rulesCardStatus}
                   icon="rules"
                   tone="ink"
                   open={expandedSections.rules}
                   controls="settings-rules-content"
+                  hideChevron
                   onClick={() => toggleSection('rules')}
                 />
               </div>
@@ -3535,7 +3536,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <SettingsDrilldownPanel
                 id="settings-rules-content"
                 open={expandedSections.rules}
-                title="Правила чата"
+                title="Правила"
                 summary={rulesHeaderSummary}
                 onClose={() => toggleSection('rules')}
               >
@@ -4368,11 +4369,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <GlassCard
               className="settings-section stagger-in"
               style={{ animationDelay: '135ms' }}
-              aria-label="Реклама и продажи"
+              aria-label="Комерция"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
-                  title="Реклама и продажи"
+                  title="Комерция"
                   summary=""
                   status={commercialCardStatus}
                   icon="ads"
@@ -4386,7 +4387,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <SettingsDrilldownPanel
                 id="settings-commercial-filter-content"
                 open={expandedSections.commercialFilter}
-                title="Реклама и продажи"
+                title="Комерция"
                 summary={commercialFilterHeaderSummary}
                 onClose={() => toggleSection('commercialFilter')}
                 footer={renderSectionSaveFooter('commercialFilter')}

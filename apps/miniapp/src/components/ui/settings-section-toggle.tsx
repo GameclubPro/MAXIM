@@ -27,6 +27,7 @@ type SettingsSectionToggleProps = {
   tone: SettingsSectionTone;
   open: boolean;
   controls: string;
+  hideChevron?: boolean;
   onClick: () => void;
 };
 
@@ -360,6 +361,7 @@ export function SettingsSectionToggle({
   tone,
   open,
   controls,
+  hideChevron = false,
   onClick,
 }: SettingsSectionToggleProps) {
   const trimmedSummary = summary?.trim() ?? '';
@@ -384,7 +386,7 @@ export function SettingsSectionToggle({
 
       <span className="settings-section__toggle-side">
         <span className={cn('settings-section__status-chip', `is-${tone}`)}>{status}</span>
-        <SectionChevron isOpen={open} />
+        {!hideChevron ? <SectionChevron isOpen={open} /> : null}
       </span>
     </button>
   );
