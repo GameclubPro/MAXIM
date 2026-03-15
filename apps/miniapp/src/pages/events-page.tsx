@@ -64,7 +64,7 @@ function formatViolationRule(ruleCode: string): string {
   const labels: Record<string, string> = {
     LINK_BLOCKED: 'Ссылки запрещены',
     PROFANITY: 'Нецензурная лексика',
-    COMMERCIAL_AD: 'Комерция',
+    COMMERCIAL_AD: 'Коммерция',
     MESSAGE_TOO_LONG: 'Слишком длинное сообщение',
     VIDEO_BLOCKED: 'Видео запрещено',
     FILE_BLOCKED: 'Файлы запрещены',

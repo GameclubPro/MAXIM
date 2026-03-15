@@ -264,7 +264,7 @@ const SECTION_LABELS: Record<ApplySectionKey, string> = {
   links: 'Ссылки',
   greeting: 'Приветствие',
   profanityFilter: 'Мат и грубость',
-  commercialFilter: 'Комерция',
+  commercialFilter: 'Коммерция',
   thematicFilters: 'Объявления по теме',
   duplicates: 'Повторы',
   limits: 'Ограничения',
@@ -4376,11 +4376,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <GlassCard
               className="settings-section stagger-in"
               style={{ animationDelay: '135ms' }}
-              aria-label="Комерция"
+              aria-label="Коммерция"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
-                  title="Комерция"
+                  title="Коммерция"
                   summary=""
                   status={commercialCardStatus}
                   icon="ads"
@@ -4394,7 +4394,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <SettingsDrilldownPanel
                 id="settings-commercial-filter-content"
                 open={expandedSections.commercialFilter}
-                title="Комерция"
+                title="Коммерция"
                 summary={commercialFilterHeaderSummary}
                 onClose={() => toggleSection('commercialFilter')}
                 footer={renderSectionSaveFooter('commercialFilter')}
