@@ -661,6 +661,11 @@ function getLastEditedText(maxClient: { answerCallback: jest.Mock }): string {
   return call?.[2]?.text ? String(call[2].text) : '';
 }
 
+function getLastEditedButtons(maxClient: { answerCallback: jest.Mock }) {
+  const call = maxClient.answerCallback.mock.calls.at(-1);
+  return (call?.[2]?.options?.buttons ?? []) as Array<Array<unknown>>;
+}
+
 function getLastUiText(maxClient: { sendMessage: jest.Mock; answerCallback: jest.Mock }): string {
   return getLastSentText(maxClient) || getLastEditedText(maxClient);
 }
@@ -718,6 +723,64 @@ describe('PrivateControlService', () => {
     expect(getLastUiText(maxClient)).toContain('Нажмите на нужный чат');
     expect(getLastButtons(maxClient).length).toBeGreaterThan(0);
     expect(adminService.listManagedEntities).toHaveBeenCalledTimes(1);
+  });
+
+  it('refreshes inline chat picker and shows newly discovered chats', async () => {
+    const staleChats = [
+      {
+        id: '-70000000000001',
+        title: 'Тестовый чат 1',
+        createdAt: new Date('2026-03-15T17:00:00.000Z').toISOString(),
+        entityType: 'chat' as const,
+      },
+    ];
+    const freshChats = [
+      ...staleChats,
+      {
+        id: '-70000000000002',
+        title: 'Новый чат',
+        createdAt: new Date('2026-03-15T17:05:00.000Z').toISOString(),
+        entityType: 'chat' as const,
+      },
+    ];
+    const listManagedEntities = jest.fn().mockImplementation(
+      async (_actor, entityType = 'all', options?: { refresh?: boolean }) => {
+        if (entityType === 'channel') {
+          return [];
+        }
+        if (entityType === 'chat') {
+          return options?.refresh === true ? freshChats : staleChats;
+        }
+        return options?.refresh === true ? freshChats : staleChats;
+      },
+    );
+    const { service, maxClient } = createHarness({
+      adminService: {
+        listManagedEntities,
+        listChats: jest.fn().mockResolvedValue(freshChats),
+      },
+    });
+
+    await service.handleUpdate(createPrivateTextUpdate('меню'));
+
+    let buttonTexts = getLastButtons(maxClient)
+      .flat()
+      .map((button) => String((button as { text?: string }).text ?? ''));
+    expect(buttonTexts.some((text) => text.includes('Обновить'))).toBe(true);
+    expect(buttonTexts.some((text) => text.includes('Новый чат'))).toBe(false);
+
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|chat_refresh'));
+
+    expect(listManagedEntities).toHaveBeenLastCalledWith(
+      expect.objectContaining({ userId: 'user-1' }),
+      'chat',
+      { refresh: true },
+    );
+    expect(getLastEditedText(maxClient)).toContain('1-2 из 2 (чаты)');
+    buttonTexts = getLastEditedButtons(maxClient)
+      .flat()
+      .map((button) => String((button as { text?: string }).text ?? ''));
+    expect(buttonTexts.some((text) => text.includes('Обновить'))).toBe(true);
   });
 
   it('starts sticker flow from button and sends experimental sticker attachment for a photo', async () => {

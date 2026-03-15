@@ -1322,6 +1322,18 @@ export class PrivateControlService {
         return;
       }
 
+      case 'chat_refresh': {
+        session.chatPage = 1;
+        session.screen = 'chat_select';
+        const view = await this.renderChatSelection(context, session, { refresh: true });
+        await this.respond(context, session, view, {
+          callbackId: context.callbackId,
+          notification:
+            session.entityTab === 'channel' ? 'Список каналов обновлён' : 'Список чатов обновлён',
+        });
+        return;
+      }
+
       case 'chat_select': {
         const hasExplicitType = callback.args.length >= 2;
         const selectedEntityType: ManagedEntityType =
@@ -1374,7 +1386,7 @@ export class PrivateControlService {
           ...DEFAULT_POLL_DRAFT,
           options: [...DEFAULT_POLL_DRAFT.options],
         };
-        const view = await this.renderChatSelection(context, session);
+        const view = await this.renderChatSelection(context, session, { refresh: true });
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: session.entityTab === 'channel' ? 'Выберите канал' : 'Выберите чат',
@@ -4239,9 +4251,12 @@ export class PrivateControlService {
   private async renderChatSelection(
     context: PrivateContext,
     session: PrivateSession,
+    options: { refresh?: boolean } = {},
   ): Promise<PrivateView> {
     const entityType = session.entityTab;
-    const entities = await this.adminService.listManagedEntities(context.actor, entityType);
+    const entities = await this.adminService.listManagedEntities(context.actor, entityType, {
+      refresh: options.refresh === true,
+    });
     const singleEntityWord = entityType === 'channel' ? 'канал' : 'чат';
     const pluralEntityWord = entityType === 'channel' ? 'каналы' : 'чаты';
 
@@ -4264,6 +4279,7 @@ export class PrivateControlService {
                 this.cb('entity_tab', 'channel'),
               ),
             ],
+            [this.callbackButton('Обновить', this.cb('chat_refresh'), 'positive')],
             [this.callbackButton('Стикер из фото', this.cb('sticker_photo_prompt'), 'positive')],
             ...this.buildFooterButtons(),
           ],
@@ -4297,6 +4313,7 @@ export class PrivateControlService {
         `${session.entityTab === 'channel' ? '✅' : '◻️'} Каналы`,
         this.cb('entity_tab', 'channel'),
       ),
+      this.callbackButton('Обновить', this.cb('chat_refresh'), 'positive'),
     ]);
     rows.push(this.paginationButtons(pageInfo.page, pageInfo.pages, 'chat_page'));
     rows.push([this.callbackButton('Стикер из фото', this.cb('sticker_photo_prompt'), 'positive')]);
