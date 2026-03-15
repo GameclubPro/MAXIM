@@ -352,19 +352,21 @@ function ViolationModerationControls({
         >
           Кик
         </button>
-        <button
-          type="button"
-          className={`logs-violation-item__quick-button logs-violation-item__quick-button--warning ${
-            banExpanded ? 'is-active' : ''
-          }`}
-          disabled={applyMutation.isPending}
-          onClick={() => {
-            setStatus(null);
-            setBanExpanded((current) => !current);
-          }}
-        >
-          Бан
-        </button>
+        {!canUnban ? (
+          <button
+            type="button"
+            className={`logs-violation-item__quick-button logs-violation-item__quick-button--warning ${
+              banExpanded ? 'is-active' : ''
+            }`}
+            disabled={applyMutation.isPending}
+            onClick={() => {
+              setStatus(null);
+              setBanExpanded((current) => !current);
+            }}
+          >
+            Бан
+          </button>
+        ) : null}
         {canUnban ? (
           <button
             type="button"
@@ -377,7 +379,7 @@ function ViolationModerationControls({
         ) : null}
       </div>
 
-      {banExpanded ? (
+      {!canUnban && banExpanded ? (
         <div className="logs-violation-item__ban-config">
           <div className="logs-violation-item__ban-presets">
             {banPresets.map((hours) => (
