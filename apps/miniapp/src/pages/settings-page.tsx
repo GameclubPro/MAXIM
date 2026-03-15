@@ -1133,7 +1133,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   const routeChatTitle = getRouteChatTitle(location.state);
   const focusSection = new URLSearchParams(location.search).get('focus');
-  const requestedSection = new URLSearchParams(location.search).get('section');
 
   useEffect(() => {
     if (focusSection !== 'giveaway') {
@@ -1142,23 +1141,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     setExpandedSections((current) => ({ ...current, giveaway: true }));
   }, [focusSection]);
-
-  useEffect(() => {
-    if (!requestedSection) {
-      return;
-    }
-
-    setExpandedSections((current) => {
-      if (!(requestedSection in current)) {
-        return current;
-      }
-
-      return {
-        ...current,
-        [requestedSection]: true,
-      };
-    });
-  }, [requestedSection]);
 
   useEffect(() => {
     if (chatId) {

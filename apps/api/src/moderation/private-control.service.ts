@@ -16,16 +16,10 @@ import {
   type ManagedEntityType,
   type ManagedPoll,
   type MaxUpdate,
-  surfaceEntryRequestSchema,
-  type SurfaceEntryResponse,
   type UpdateManagedGiveawayRequest,
 } from '@maxim/contracts';
 import { AdminService } from '../admin/admin.service';
 import { ManagedGiveawayService } from '../admin/managed-giveaway.service';
-import {
-  SurfaceOrchestratorService,
-  SURFACE_WORKBENCH_START_PREFIX,
-} from '../admin/surface-orchestrator.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   MaxClientService,
@@ -132,7 +126,6 @@ type PrivatePollDraft = {
 };
 
 type PrivateScreen =
-  | 'welcome'
   | 'chat_select'
   | 'home'
   | 'settings_hub'
@@ -205,15 +198,6 @@ type GiveawayHandoffStartPayload = {
   c: string;
   e: ManagedEntityType;
   g: string | null;
-};
-
-type WorkbenchStartPayload = {
-  v: 1;
-  k: 'workbench';
-  c: string;
-  e: ManagedEntityType;
-  s: string | null;
-  screen: string | null;
 };
 
 type ParsedImageAttachment = {
@@ -338,8 +322,6 @@ const ENTITY_CALLBACK_ACTIONS = new Set<string>([
   'broadcast_clear_timer',
   'broadcast_clear_photo',
   'broadcast_send',
-  'open_activation',
-  'open_quick_actions',
 ]);
 
 const SECTION_LABELS: Record<PrivateSectionKey, string> = {
@@ -863,7 +845,6 @@ export class PrivateControlService {
     private readonly managedGiveawayService: ManagedGiveawayService,
     @Optional() private readonly redisCounter?: RedisCounterService,
     @Optional() configService?: ConfigService,
-    @Optional() private readonly surfaceOrchestrator?: SurfaceOrchestratorService,
   ) {
     this.appBaseUrl = this.normalizeAppBaseUrl(configService?.get<string>('APP_BASE_URL'));
     this.botDeepLinkId = this.normalizeBotDeepLinkId(configService?.get<string>('MAX_BOT_ID'));
@@ -934,20 +915,6 @@ export class PrivateControlService {
     }
 
     const session = await this.loadSession(context.actor.userId);
-    const workbenchPayload = this.parseWorkbenchStartPayload(startPayload);
-    if (workbenchPayload) {
-      session.selectedChatId = workbenchPayload.chatId;
-      session.selectedEntityType = workbenchPayload.entityType;
-      session.entityTab = workbenchPayload.entityType;
-      session.uiMode = 'modern';
-      session.screen = workbenchPayload.screen ?? 'home';
-      session.section = null;
-      session.channelSection = null;
-      session.searchQuery = null;
-      session.pendingInput = null;
-      session.pendingMassAction = null;
-      session.lastScreenStack = [];
-    }
     const handoffPayload = this.parseGiveawayHandoffStartPayload(startPayload);
     if (handoffPayload) {
       session.selectedChatId = handoffPayload.chatId;
@@ -965,8 +932,8 @@ export class PrivateControlService {
     }
     session.screen =
       session.selectedChatId === null
-        ? 'welcome'
-        : session.screen === 'chat_select' || session.screen === 'welcome'
+        ? 'chat_select'
+        : session.screen === 'chat_select'
           ? this.resolvePrimaryScreen(session)
           : session.screen;
     if (session.pendingInput?.kind !== 'broadcast_content') {
@@ -1033,24 +1000,7 @@ export class PrivateControlService {
       throw new BadRequestException('Ссылка на личный чат бота не настроена.');
     }
 
-    const orchestration = this.resolveSurfaceEntryResponse({
-      intent: 'broadcast_confirm',
-      entityType,
-      entityId: sourceChatId,
-      section: null,
-      dialogType: null,
-      resourceId: null,
-      sourceSurface: 'legacy_handoff',
-    });
-
-    return broadcastHandoffResponseSchema.parse({
-      botUrl,
-      targetSurface: 'private_bot',
-      miniappUrl: orchestration.miniappUrl,
-      startParam: BROADCAST_HANDOFF_START_PAYLOAD,
-      resumeToken: null,
-      fallbackUrl: botUrl,
-    });
+    return broadcastHandoffResponseSchema.parse({ botUrl });
   }
 
   async handoffGiveawayFromMiniapp(
@@ -1106,64 +1056,7 @@ export class PrivateControlService {
       throw new BadRequestException('Ссылка на личный чат бота не настроена.');
     }
 
-    const orchestration = this.resolveSurfaceEntryResponse({
-      intent: 'giveaway_manage',
-      entityType,
-      entityId: sourceChatId,
-      section: null,
-      dialogType: null,
-      resourceId: parsed.data.giveawayId,
-      sourceSurface: 'legacy_handoff',
-    });
-
-    return broadcastHandoffResponseSchema.parse({
-      botUrl,
-      targetSurface: 'private_bot',
-      miniappUrl: orchestration.miniappUrl,
-      startParam: this.buildGiveawayHandoffStartPayload({
-        chatId: sourceChatId,
-        entityType,
-        giveawayId: parsed.data.giveawayId,
-      }),
-      resumeToken: null,
-      fallbackUrl: botUrl,
-    });
-  }
-
-  async createSurfaceEntrypoint(
-    sourceChatId: string,
-    user: AuthUser,
-    body: unknown,
-    entityType: ManagedEntityType,
-  ): Promise<SurfaceEntryResponse> {
-    const mergedBody =
-      body && typeof body === 'object' && !Array.isArray(body)
-        ? {
-            ...body,
-            entityId: sourceChatId,
-            entityType,
-          }
-        : {
-            entityId: sourceChatId,
-            entityType,
-          };
-    const parsed = surfaceEntryRequestSchema.safeParse(mergedBody);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-
-    if (entityType === 'channel') {
-      await this.adminService.getChannelHeader(sourceChatId, user);
-    } else {
-      await this.adminService.getChatHeader(sourceChatId, user);
-    }
-
-    const response = this.resolveSurfaceEntryResponse(parsed.data);
-    if (response.targetSurface === 'private_bot') {
-      await this.prepareSurfaceEntrypointSession(user.userId, parsed.data);
-    }
-
-    return response;
+    return broadcastHandoffResponseSchema.parse({ botUrl });
   }
 
   private async processTextMessage(context: PrivateContext): Promise<void> {
@@ -1304,50 +1197,6 @@ export class PrivateControlService {
     }
 
     switch (callback.action) {
-      case 'open_activation': {
-        session.selectedChatId = null;
-        session.selectedEntityType = null;
-        session.screen = 'chat_select';
-        session.entityTab = 'chat';
-        session.chatPage = 1;
-        const view = await this.renderChatSelection(context, session);
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: 'Подключение чата или канала',
-        });
-        return;
-      }
-
-      case 'open_quick_actions': {
-        const entities = await this.adminService.listManagedEntities(context.actor, 'all');
-        const preferred =
-          entities.find((item) => item.id === context.actor.chatId) ??
-          entities.find((item) => item.entityType === 'chat') ??
-          entities[0] ??
-          null;
-
-        if (!preferred) {
-          session.screen = 'chat_select';
-          const view = await this.renderChatSelection(context, session);
-          await this.respond(context, session, view, {
-            callbackId: context.callbackId,
-            notification: 'Сначала подключите чат или канал',
-          });
-          return;
-        }
-
-        session.selectedChatId = preferred.id;
-        session.selectedEntityType = preferred.entityType;
-        session.entityTab = preferred.entityType;
-        session.screen = this.resolvePrimaryScreen(session);
-        const view = await this.renderPrimaryScreen(context, session);
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: 'Быстрые действия',
-        });
-        return;
-      }
-
       case 'home': {
         session.uiMode = 'modern';
         session.pendingInput = null;
@@ -3868,37 +3717,6 @@ export class PrivateControlService {
     };
   }
 
-  private renderWelcomeScreen(): PrivateView {
-    const rows: MaxMessageButton[][] = [];
-    const miniappUrl = this.resolveMiniappUrl();
-    if (miniappUrl) {
-      rows.push([this.buildMiniappOpenButton('Открыть mini app', miniappUrl)]);
-    }
-
-    rows.push([
-      this.callbackButton('Подключить чат/канал', this.cb('open_activation'), 'positive'),
-    ]);
-    rows.push([this.callbackButton('Быстрые действия', this.cb('open_quick_actions'))]);
-    rows.push([this.callbackButton('Помощь', this.cb('help'))]);
-    rows.push(...this.buildFooterButtons());
-
-    return {
-      text: [
-        this.markdownTitle('MAXIM'),
-        '',
-        'Центр управления для админов и модераторов.',
-        '',
-        'Выберите вход:',
-        '• mini app для полной настройки и rich-сценариев;',
-        '• быстрые действия в личке бота;',
-        '• подключение нового чата или канала.',
-      ].join('\n'),
-      options: {
-        buttons: rows,
-      },
-    };
-  }
-
   private async renderChatSelection(
     context: PrivateContext,
     session: PrivateSession,
@@ -3990,10 +3808,6 @@ export class PrivateControlService {
     context: PrivateContext,
     session: PrivateSession,
   ): Promise<PrivateView> {
-    if (session.screen === 'welcome') {
-      return this.renderWelcomeScreen();
-    }
-
     if (!session.selectedChatId) {
       return this.renderChatSelection(context, session);
     }
@@ -4070,12 +3884,14 @@ export class PrivateControlService {
       `Канал: ${this.escapeMarkdown(selectedChannel.title)}`,
       `Статус: предложка ${settings.postSuggestionsEnabled ? 'вкл' : 'выкл'} • обсуждение ${settings.commentsEnabled ? 'вкл' : 'выкл'}`,
       '',
-      'Быстрые действия и безопасные переходы.',
+      'Выберите действие.',
     ];
 
-    const workbenchUrl = this.resolveEntityMiniappUrl('channel', selectedChannel.id, 'comments');
-
     const rows: MaxMessageButton[][] = [
+      [
+        this.callbackButton('Обсуждение', this.cb('open_channel_section', 'comments')),
+        this.callbackButton('Предложка', this.cb('open_channel_section', 'post_suggestions')),
+      ],
       [
         this.callbackButton('Рассылка', this.cb('open_broadcast')),
         this.callbackButton('Опрос', this.cb('open_poll')),
@@ -4084,7 +3900,6 @@ export class PrivateControlService {
         this.callbackButton('Розыгрыш', this.cb('open_giveaway')),
         this.callbackButton('Пост с кнопками', this.cb('publish_channel_engagement')),
       ],
-      ...(workbenchUrl ? [[this.buildMiniappOpenButton('Открыть mini app', workbenchUrl)]] : []),
       [this.callbackButton('Сменить канал', this.cb('change_chat'))],
       ...this.buildFooterButtons(),
     ];
@@ -4161,25 +3976,26 @@ export class PrivateControlService {
       `Чат: ${this.escapeMarkdown(selectedChat.title)}`,
       `Статус: ссылки ${this.describeLinkPolicy(settings.linkPolicy)} • приветствие ${settings.greetingEnabled ? 'вкл' : 'выкл'}`,
       '',
-      'Быстрые действия и безопасные переходы.',
+      'Выберите действие.',
     ];
-
-    const workbenchUrl = this.resolveEntityMiniappUrl('chat', selectedChat.id, 'links');
 
     const rows: MaxMessageButton[][] = [
       [
-        this.callbackButton('События', this.cb('open_events')),
-        this.callbackButton('Ручной бан', this.cb('open_manual_users')),
-      ],
-      [
+        this.callbackButton('Настройки', this.cb('open_settings_hub')),
         this.callbackButton('Рассылка', this.cb('open_broadcast')),
-        this.callbackButton('Опрос', this.cb('open_poll')),
       ],
       [
+        this.callbackButton('Опрос', this.cb('open_poll')),
         this.callbackButton('Розыгрыш', this.cb('open_giveaway')),
+      ],
+      [
+        this.callbackButton('События', this.cb('open_events')),
         this.callbackButton('Статистика', this.cb('open_logs')),
       ],
-      ...(workbenchUrl ? [[this.buildMiniappOpenButton('Открыть mini app', workbenchUrl)]] : []),
+      [
+        this.callbackButton('Поиск', this.cb('open_search')),
+        this.callbackButton('Ручной бан', this.cb('open_manual_users')),
+      ],
       [this.callbackButton('Сменить чат', this.cb('change_chat'))],
     ];
 
@@ -6414,123 +6230,6 @@ export class PrivateControlService {
     };
   }
 
-  private resolveEntityMiniappUrl(
-    entityType: ManagedEntityType,
-    chatId: string,
-    section: string | null = null,
-  ): string | null {
-    if (this.surfaceOrchestrator) {
-      return (
-        this.surfaceOrchestrator.buildMiniappStartUrl(
-          this.surfaceOrchestrator.buildMiniappStartParam({
-            entityType,
-            entityId: chatId,
-            section,
-          }),
-        ) ??
-        this.surfaceOrchestrator.buildMiniappDirectUrl({
-          entityType,
-          entityId: chatId,
-          section,
-        })
-      );
-    }
-
-    return this.resolveMiniappUrl();
-  }
-
-  private resolveSurfaceEntryResponse(
-    request: Parameters<SurfaceOrchestratorService['resolveEntry']>[0],
-  ): SurfaceEntryResponse {
-    if (this.surfaceOrchestrator) {
-      return this.surfaceOrchestrator.resolveEntry(request);
-    }
-
-    const botUrl = this.buildBotStartUrl(
-      this.buildWorkbenchStartPayload({
-        chatId: request.entityId,
-        entityType: request.entityType,
-        screen:
-          request.intent === 'events'
-            ? 'events'
-            : request.intent === 'manual_action'
-              ? 'manual_users'
-              : request.intent === 'broadcast_confirm'
-                ? 'broadcast'
-                : null,
-      }),
-    );
-
-    return {
-      targetSurface:
-        request.intent === 'events' ||
-        request.intent === 'manual_action' ||
-        request.intent === 'broadcast_confirm'
-          ? 'private_bot'
-          : 'miniapp',
-      botUrl,
-      miniappUrl: this.resolveMiniappUrl(),
-      startParam: null,
-      resumeToken: null,
-      fallbackUrl: botUrl ?? this.resolveMiniappUrl() ?? 'https://max.ru',
-    };
-  }
-
-  private async prepareSurfaceEntrypointSession(
-    userId: string,
-    request: Parameters<SurfaceOrchestratorService['resolveEntry']>[0],
-  ): Promise<void> {
-    const session = await this.loadSession(userId);
-    session.selectedChatId = request.entityId;
-    session.selectedEntityType = request.entityType;
-    session.entityTab = request.entityType;
-    session.uiMode = 'modern';
-    session.section = null;
-    session.channelSection = null;
-    session.searchQuery = null;
-    session.pendingInput = null;
-    session.pendingMassAction = null;
-    session.lastScreenStack = [];
-
-    if (request.intent === 'events') {
-      session.screen = 'events';
-      session.eventsPage = 1;
-    } else if (request.intent === 'manual_action') {
-      session.screen = 'manual_users';
-      session.manualPage = 1;
-      session.manualTargetUserId = null;
-    } else if (request.intent === 'broadcast_confirm') {
-      session.screen = 'broadcast';
-    } else if (request.intent === 'giveaway_manage') {
-      session.screen = 'giveaway';
-      session.managedGiveawayId = request.resourceId ?? null;
-    } else {
-      session.screen = request.entityType === 'channel' ? 'home' : 'home';
-    }
-
-    await this.saveSession(userId, session);
-  }
-
-  private buildWorkbenchStartPayload(params: {
-    chatId: string;
-    entityType: ManagedEntityType;
-    screen: string | null;
-  }): string {
-    const payload = Buffer.from(
-      JSON.stringify({
-        v: 1,
-        k: 'workbench',
-        e: params.entityType,
-        c: params.chatId,
-        s: null,
-        screen: params.screen,
-      }),
-      'utf8',
-    ).toString('base64url');
-
-    return `${SURFACE_WORKBENCH_START_PREFIX}${payload}`;
-  }
-
   private paginationButtons(page: number, pages: number, action: string): MaxMessageButton[] {
     return [
       this.callbackButton('⬅️', this.cb(action, String(Math.max(1, page - 1)))),
@@ -6612,53 +6311,6 @@ export class PrivateControlService {
         chatId,
         entityType,
         giveawayId,
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  private parseWorkbenchStartPayload(
-    startPayload: string | null,
-  ): { chatId: string; entityType: ManagedEntityType; screen: PrivateScreen | null } | null {
-    if (!startPayload || !startPayload.startsWith(SURFACE_WORKBENCH_START_PREFIX)) {
-      return null;
-    }
-
-    const encodedPayload = startPayload.slice(SURFACE_WORKBENCH_START_PREFIX.length);
-    if (!encodedPayload) {
-      return null;
-    }
-
-    try {
-      const parsed = JSON.parse(
-        Buffer.from(encodedPayload, 'base64url').toString('utf8'),
-      ) as Partial<WorkbenchStartPayload>;
-      const chatId = typeof parsed.c === 'string' ? parsed.c.trim() : '';
-      const entityType = parsed.e === 'channel' ? 'channel' : parsed.e === 'chat' ? 'chat' : null;
-      const screen =
-        parsed.screen === 'events'
-          ? 'events'
-          : parsed.screen === 'manual_users'
-            ? 'manual_users'
-            : parsed.screen === 'broadcast'
-              ? 'broadcast'
-              : parsed.screen === 'giveaway'
-                ? 'giveaway'
-                : parsed.screen === 'poll'
-                  ? 'poll'
-                  : parsed.screen === 'home'
-                    ? 'home'
-                    : null;
-
-      if (parsed.v !== 1 || parsed.k !== 'workbench' || !chatId || !entityType) {
-        return null;
-      }
-
-      return {
-        chatId,
-        entityType,
-        screen,
       };
     } catch {
       return null;
@@ -7841,7 +7493,6 @@ export class PrivateControlService {
 
   private parseScreen(value: unknown): PrivateScreen {
     if (
-      value === 'welcome' ||
       value === 'chat_select' ||
       value === 'home' ||
       value === 'settings_hub' ||

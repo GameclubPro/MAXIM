@@ -8,24 +8,6 @@ import { PrivateControlService } from './private-control.service';
 export class PrivateControlController {
   constructor(private readonly privateControlService: PrivateControlService) {}
 
-  @Post('chats/:chatId/entrypoint')
-  createChatEntrypoint(
-    @Param('chatId') chatId: string,
-    @CurrentUser() user: AuthUser,
-    @Body() body: unknown,
-  ) {
-    return this.privateControlService.createSurfaceEntrypoint(chatId, user, body, 'chat');
-  }
-
-  @Post('channels/:chatId/entrypoint')
-  createChannelEntrypoint(
-    @Param('chatId') chatId: string,
-    @CurrentUser() user: AuthUser,
-    @Body() body: unknown,
-  ) {
-    return this.privateControlService.createSurfaceEntrypoint(chatId, user, body, 'channel');
-  }
-
   @Post('chats/:chatId/broadcast/handoff')
   handoffChatBroadcast(
     @Param('chatId') chatId: string,

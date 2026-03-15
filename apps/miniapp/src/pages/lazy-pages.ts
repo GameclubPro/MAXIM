@@ -16,7 +16,6 @@ function lazyPage<TProps>(
 }
 
 export const preloadChatsPage = () => import('./chats-page');
-export const preloadEntityWorkbenchPage = () => import('./entity-workbench-page');
 export const preloadSettingsPage = () => import('./settings-page');
 export const preloadChannelSettingsPage = () => import('./channel-settings-page');
 export const preloadChannelStatsPage = () => import('./channel-stats-page');
@@ -25,14 +24,6 @@ export const preloadEventsPage = () => import('./events-page');
 export const preloadGiveawayPage = () => import('./giveaway-page');
 
 export const LazyChatsPage = lazyPage<RoutedPageProps>(preloadChatsPage, 'ChatsPage');
-export const LazyChatWorkbenchPage = lazyPage<RoutedPageProps>(
-  preloadEntityWorkbenchPage,
-  'ChatWorkbenchPage',
-);
-export const LazyChannelWorkbenchPage = lazyPage<RoutedPageProps>(
-  preloadEntityWorkbenchPage,
-  'ChannelWorkbenchPage',
-);
 export const LazySettingsPage = lazyPage<RoutedPageProps>(preloadSettingsPage, 'SettingsPage');
 export const LazyChannelSettingsPage = lazyPage<RoutedPageProps>(
   preloadChannelSettingsPage,

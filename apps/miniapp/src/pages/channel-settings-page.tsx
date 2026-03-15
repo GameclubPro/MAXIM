@@ -483,24 +483,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setExpandedSections((current) => ({ ...current, giveaway: true }));
   }, [location.search]);
 
-  useEffect(() => {
-    const requestedSection = new URLSearchParams(location.search).get('section');
-    if (!requestedSection) {
-      return;
-    }
-
-    setExpandedSections((current) => {
-      if (!(requestedSection in current)) {
-        return current;
-      }
-
-      return {
-        ...current,
-        [requestedSection]: true,
-      };
-    });
-  }, [location.search]);
-
   const settingsQuery = {
     data: settingsScreenQuery.data?.settings,
     isLoading: settingsScreenQuery.isLoading,

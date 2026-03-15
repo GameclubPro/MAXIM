@@ -27,11 +27,6 @@ export class AdminController {
     return this.adminService.getChatHeader(chatId, user);
   }
 
-  @Get('chats/:chatId/workbench')
-  getChatWorkbench(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.getChatWorkbench(chatId, user);
-  }
-
   @Get('channels')
   getChannels(@CurrentUser() user: AuthUser, @Query('refresh') refresh: string | undefined) {
     return this.adminService.listChannels(user, { refresh: refresh === '1' });
@@ -40,11 +35,6 @@ export class AdminController {
   @Get('channels/:chatId/header')
   getChannelHeader(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.adminService.getChannelHeader(chatId, user);
-  }
-
-  @Get('channels/:chatId/workbench')
-  getChannelWorkbench(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
-    return this.adminService.getChannelWorkbench(chatId, user);
   }
 
   @Get('channels/:chatId/stats')
