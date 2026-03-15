@@ -8,6 +8,7 @@ import { MaxMarkdownEditor } from '../components/max-markdown-editor';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
+import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import {
@@ -455,26 +456,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [broadcastImageMimeType, setBroadcastImageMimeType] = useState('');
   const [broadcastImageFileName, setBroadcastImageFileName] = useState('');
   const [broadcastImageError, setBroadcastImageError] = useState('');
-  const hasExpandedSection = Object.values(expandedSections).some(Boolean);
-
-  useEffect(() => {
-    if (!hasExpandedSection) {
-      return undefined;
-    }
-
-    const { style: bodyStyle } = document.body;
-    const { style: documentStyle } = document.documentElement;
-    const previousBodyOverflow = bodyStyle.overflow;
-    const previousDocumentOverflow = documentStyle.overflow;
-
-    bodyStyle.overflow = 'hidden';
-    documentStyle.overflow = 'hidden';
-
-    return () => {
-      bodyStyle.overflow = previousBodyOverflow;
-      documentStyle.overflow = previousDocumentOverflow;
-    };
-  }, [hasExpandedSection]);
   const [broadcastScheduleEnabled, setBroadcastScheduleEnabled] = useState(false);
   const [broadcastScheduleDays, setBroadcastScheduleDays] = useState(0);
   const [broadcastScheduleTime, setBroadcastScheduleTime] = useState(
@@ -1117,10 +1098,17 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           </button>
         </div>
 
-        <div
+        <SettingsDrilldownPanel
           id="channel-settings-comments"
-          className={cn('settings-section__collapse', expandedSections.comments && 'is-open')}
+          open={expandedSections.comments}
+          title="Комментарии"
+          summary={draft.commentsEnabled ? 'включены' : 'выключены'}
+          onClose={() => toggleSection('comments')}
         >
+          <div
+            id="channel-settings-comments"
+            className={cn('settings-section__collapse', expandedSections.comments && 'is-open')}
+          >
           {expandedSections.comments ? (
             <div className="settings-section__collapse-inner">
               <ChannelSettingsToggleCard
@@ -1184,7 +1172,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
               ) : null}
             </div>
           ) : null}
-        </div>
+          </div>
+        </SettingsDrilldownPanel>
       </GlassCard>
 
       <GlassCard className="channel-settings-card" elevated>
@@ -1204,13 +1193,20 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           </button>
         </div>
 
-        <div
+        <SettingsDrilldownPanel
           id="channel-settings-post-suggestions"
-          className={cn(
-            'settings-section__collapse',
-            expandedSections.postSuggestions && 'is-open',
-          )}
+          open={expandedSections.postSuggestions}
+          title="Предложить пост"
+          summary={draft.postSuggestionsEnabled ? 'авто' : 'вручную'}
+          onClose={() => toggleSection('postSuggestions')}
         >
+          <div
+            id="channel-settings-post-suggestions"
+            className={cn(
+              'settings-section__collapse',
+              expandedSections.postSuggestions && 'is-open',
+            )}
+          >
           {expandedSections.postSuggestions ? (
             <div className="settings-section__collapse-inner">
               <ChannelSettingsToggleCard
@@ -1293,7 +1289,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
               </div>
             </div>
           ) : null}
-        </div>
+          </div>
+        </SettingsDrilldownPanel>
       </GlassCard>
 
       <GlassCard className="channel-settings-card" elevated>
@@ -1313,10 +1310,17 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           </button>
         </div>
 
-        <div
+        <SettingsDrilldownPanel
           id="channel-settings-broadcast"
-          className={cn('settings-section__collapse', expandedSections.broadcast && 'is-open')}
+          open={expandedSections.broadcast}
+          title="Рассылка"
+          summary={broadcastHeaderSummary}
+          onClose={() => toggleSection('broadcast')}
         >
+          <div
+            id="channel-settings-broadcast"
+            className={cn('settings-section__collapse', expandedSections.broadcast && 'is-open')}
+          >
           {expandedSections.broadcast ? (
             <div className="settings-section__collapse-inner">
               <div className="channel-broadcast-studio">
@@ -1638,7 +1642,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
               </div>
             </div>
           ) : null}
-        </div>
+          </div>
+        </SettingsDrilldownPanel>
       </GlassCard>
 
       {chatId ? (
@@ -1659,16 +1664,24 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             </button>
           </div>
 
-          <div
+          <SettingsDrilldownPanel
             id="channel-settings-poll"
-            className={cn('settings-section__collapse', expandedSections.poll && 'is-open')}
+            open={expandedSections.poll}
+            title="Опрос"
+            summary="отдельный пост"
+            onClose={() => toggleSection('poll')}
           >
+            <div
+              id="channel-settings-poll"
+              className={cn('settings-section__collapse', expandedSections.poll && 'is-open')}
+            >
             {expandedSections.poll ? (
               <div className="settings-section__collapse-inner">
                 <ManagedPollCard api={api} entityType="channel" entityId={chatId} />
               </div>
             ) : null}
-          </div>
+            </div>
+          </SettingsDrilldownPanel>
         </GlassCard>
       ) : null}
 
@@ -1690,16 +1703,24 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             </button>
           </div>
 
-          <div
+          <SettingsDrilldownPanel
             id="channel-settings-giveaway"
-            className={cn('settings-section__collapse', expandedSections.giveaway && 'is-open')}
+            open={expandedSections.giveaway}
+            title="Розыгрыши"
+            summary="управление в боте"
+            onClose={() => toggleSection('giveaway')}
           >
+            <div
+              id="channel-settings-giveaway"
+              className={cn('settings-section__collapse', expandedSections.giveaway && 'is-open')}
+            >
             {expandedSections.giveaway ? (
               <div className="settings-section__collapse-inner">
                 <ManagedGiveawayCard api={api} entityType="channel" entityId={chatId} />
               </div>
             ) : null}
-          </div>
+            </div>
+          </SettingsDrilldownPanel>
         </GlassCard>
       ) : null}
     </div>

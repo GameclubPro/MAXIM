@@ -111,6 +111,12 @@
   transform: translate(-50%, calc(100% + var(--space-6)));
 }
 
+body.settings-drilldown-open .bottom-nav {
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, calc(100% + var(--space-6)));
+}
+
 .bottom-nav__item {
   min-height: 62px;
   border-radius: 18px;

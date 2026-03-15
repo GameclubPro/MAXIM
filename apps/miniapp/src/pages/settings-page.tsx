@@ -15,6 +15,7 @@ import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import { GlassCard } from '../components/ui/glass-card';
 import { BackChevronIcon, ParticipantsIcon } from '../components/ui/entity-header-icons';
+import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
@@ -1143,27 +1144,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     setExpandedSections({ ...INITIAL_EXPANDED_SECTIONS, giveaway: true });
   }, [focusSection]);
-
-  const hasExpandedSection = Object.values(expandedSections).some(Boolean);
-
-  useEffect(() => {
-    if (!hasExpandedSection) {
-      return undefined;
-    }
-
-    const { style: bodyStyle } = document.body;
-    const { style: documentStyle } = document.documentElement;
-    const previousBodyOverflow = bodyStyle.overflow;
-    const previousDocumentOverflow = documentStyle.overflow;
-
-    bodyStyle.overflow = 'hidden';
-    documentStyle.overflow = 'hidden';
-
-    return () => {
-      bodyStyle.overflow = previousBodyOverflow;
-      documentStyle.overflow = previousDocumentOverflow;
-    };
-  }, [hasExpandedSection]);
 
   useEffect(() => {
     if (chatId) {
@@ -2883,10 +2863,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 </button>
               </div>
 
-              <div
+              <SettingsDrilldownPanel
                 id="settings-links-content"
-                className={cn('settings-section__collapse', expandedSections.links && 'is-open')}
+                open={expandedSections.links}
+                title="Модерация ссылок"
+                summary={linksHeaderSummary}
+                onClose={() => toggleSection('links')}
               >
+                <div
+                  id="settings-links-content"
+                  className={cn('settings-section__collapse', expandedSections.links && 'is-open')}
+                >
                 {expandedSections.links ? (
                   <div className="settings-section__collapse-inner">
                     <div className="settings-grid settings-grid--single">
@@ -3478,7 +3465,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     {renderSectionApplyControl('links')}
                   </div>
                 ) : null}
-              </div>
+                </div>
+              </SettingsDrilldownPanel>
             </GlassCard>
 
             <GlassCard
@@ -3502,10 +3490,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 </button>
               </div>
 
-              <div
+              <SettingsDrilldownPanel
                 id="settings-rules-content"
-                className={cn('settings-section__collapse', expandedSections.rules && 'is-open')}
+                open={expandedSections.rules}
+                title="Правила"
+                summary={rulesHeaderSummary}
+                onClose={() => toggleSection('rules')}
               >
+                <div
+                  id="settings-rules-content"
+                  className={cn('settings-section__collapse', expandedSections.rules && 'is-open')}
+                >
                 {expandedSections.rules ? (
                   <div className="settings-section__collapse-inner">
                     <div className="rules-panel">
@@ -3746,7 +3741,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     </div>
                   </div>
                 ) : null}
-              </div>
+                </div>
+              </SettingsDrilldownPanel>
             </GlassCard>
 
             {chatId ? (
@@ -3773,16 +3769,24 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   </button>
                 </div>
 
-                <div
+                <SettingsDrilldownPanel
                   id="settings-poll-content"
-                  className={cn('settings-section__collapse', expandedSections.poll && 'is-open')}
+                  open={expandedSections.poll}
+                  title="Опрос"
+                  summary="Голосование в отдельном посте"
+                  onClose={() => toggleSection('poll')}
                 >
+                  <div
+                    id="settings-poll-content"
+                    className={cn('settings-section__collapse', expandedSections.poll && 'is-open')}
+                  >
                   {expandedSections.poll ? (
                     <div className="settings-section__collapse-inner">
                       <ManagedPollCard api={api} entityType="chat" entityId={chatId} />
                     </div>
                   ) : null}
-                </div>
+                  </div>
+                </SettingsDrilldownPanel>
               </GlassCard>
             ) : null}
 
@@ -3810,19 +3814,27 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   </button>
                 </div>
 
-                <div
+                <SettingsDrilldownPanel
                   id="settings-giveaway-content"
-                  className={cn(
-                    'settings-section__collapse',
-                    expandedSections.giveaway && 'is-open',
-                  )}
+                  open={expandedSections.giveaway}
+                  title="Розыгрыши"
+                  summary="Создание и управление в личке бота"
+                  onClose={() => toggleSection('giveaway')}
                 >
+                  <div
+                    id="settings-giveaway-content"
+                    className={cn(
+                      'settings-section__collapse',
+                      expandedSections.giveaway && 'is-open',
+                    )}
+                  >
                   {expandedSections.giveaway ? (
                     <div className="settings-section__collapse-inner">
                       <ManagedGiveawayCard api={api} entityType="chat" entityId={chatId} />
                     </div>
                   ) : null}
-                </div>
+                  </div>
+                </SettingsDrilldownPanel>
               </GlassCard>
             ) : null}
 
@@ -3847,10 +3859,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 </button>
               </div>
 
-              <div
+              <SettingsDrilldownPanel
                 id="settings-greeting-content"
-                className={cn('settings-section__collapse', expandedSections.greeting && 'is-open')}
+                open={expandedSections.greeting}
+                title="Приветствие"
+                summary={greetingHeaderSummary}
+                onClose={() => toggleSection('greeting')}
               >
+                <div
+                  id="settings-greeting-content"
+                  className={cn('settings-section__collapse', expandedSections.greeting && 'is-open')}
+                >
                 {expandedSections.greeting ? (
                   <div className="settings-section__collapse-inner">
                     <div className="settings-native-toggle">
@@ -4101,7 +4120,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     {renderSectionApplyControl('greeting')}
                   </div>
                 ) : null}
-              </div>
+                </div>
+              </SettingsDrilldownPanel>
             </GlassCard>
 
             <GlassCard
@@ -4125,13 +4145,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 </button>
               </div>
 
-              <div
+              <SettingsDrilldownPanel
                 id="settings-profanity-filter-content"
-                className={cn(
-                  'settings-section__collapse',
-                  expandedSections.profanityFilter && 'is-open',
-                )}
+                open={expandedSections.profanityFilter}
+                title="Фильтр нецензурной лексики"
+                summary={profanityFilterHeaderSummary}
+                onClose={() => toggleSection('profanityFilter')}
               >
+                <div
+                  id="settings-profanity-filter-content"
+                  className={cn(
+                    'settings-section__collapse',
+                    expandedSections.profanityFilter && 'is-open',
+                  )}
+                >
                 {expandedSections.profanityFilter ? (
                   <div className="settings-section__collapse-inner">
                     <div className="settings-native-toggle text-filter-card">
@@ -4304,7 +4331,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     {renderSectionApplyControl('profanityFilter')}
                   </div>
                 ) : null}
-              </div>
+                </div>
+              </SettingsDrilldownPanel>
             </GlassCard>
 
             <GlassCard
@@ -4328,13 +4356,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 </button>
               </div>
 
-              <div
+              <SettingsDrilldownPanel
                 id="settings-commercial-filter-content"
-                className={cn(
-                  'settings-section__collapse',
-                  expandedSections.commercialFilter && 'is-open',
-                )}
+                open={expandedSections.commercialFilter}
+                title="Фильтр комерции"
+                summary={commercialFilterHeaderSummary}
+                onClose={() => toggleSection('commercialFilter')}
               >
+                <div
+                  id="settings-commercial-filter-content"
+                  className={cn(
+                    'settings-section__collapse',
+                    expandedSections.commercialFilter && 'is-open',
+                  )}
+                >
                 {expandedSections.commercialFilter ? (
                   <div className="settings-section__collapse-inner">
                     <div className="settings-native-toggle text-filter-card">
@@ -4782,7 +4817,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     {renderSectionApplyControl('commercialFilter')}
                   </div>
                 ) : null}
-              </div>
+                </div>
+              </SettingsDrilldownPanel>
             </GlassCard>
 
             <GlassCard
@@ -4806,13 +4842,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 </button>
               </div>
 
-              <div
+              <SettingsDrilldownPanel
                 id="settings-thematic-filters-content"
-                className={cn(
-                  'settings-section__collapse',
-                  expandedSections.thematicFilters && 'is-open',
-                )}
+                open={expandedSections.thematicFilters}
+                title="Тематические фильтры"
+                summary={thematicFiltersHeaderSummary}
+                onClose={() => toggleSection('thematicFilters')}
               >
+                <div
+                  id="settings-thematic-filters-content"
+                  className={cn(
+                    'settings-section__collapse',
+                    expandedSections.thematicFilters && 'is-open',
+                  )}
+                >
                 {expandedSections.thematicFilters ? (
                   <div className="settings-section__collapse-inner">
                     <p className="settings-native-toggle__hint">
@@ -5087,7 +5130,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     {renderSectionApplyControl('thematicFilters')}
                   </div>
                 ) : null}
-              </div>
+                </div>
+              </SettingsDrilldownPanel>
             </GlassCard>
 
             <GlassCard
@@ -5111,13 +5155,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 </button>
               </div>
 
-              <div
+              <SettingsDrilldownPanel
                 id="settings-duplicates-content"
-                className={cn(
-                  'settings-section__collapse',
-                  expandedSections.duplicates && 'is-open',
-                )}
+                open={expandedSections.duplicates}
+                title="Дубли сообщений"
+                summary={duplicatesHeaderSummary}
+                onClose={() => toggleSection('duplicates')}
               >
+                <div
+                  id="settings-duplicates-content"
+                  className={cn(
+                    'settings-section__collapse',
+                    expandedSections.duplicates && 'is-open',
+                  )}
+                >
                 {expandedSections.duplicates ? (
                   <div className="settings-section__collapse-inner">
                     <div className="settings-native-toggle">
@@ -5544,7 +5595,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     {renderSectionApplyControl('duplicates')}
                   </div>
                 ) : null}
-              </div>
+                </div>
+              </SettingsDrilldownPanel>
             </GlassCard>
 
             <GlassCard
@@ -5568,10 +5620,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 </button>
               </div>
 
-              <div
+              <SettingsDrilldownPanel
                 id="settings-limits-content"
-                className={cn('settings-section__collapse', expandedSections.limits && 'is-open')}
+                open={expandedSections.limits}
+                title="Ограничения сообщений"
+                summary={`${limitsRulesEnabledCount} ограничений активно`}
+                onClose={() => toggleSection('limits')}
               >
+                <div
+                  id="settings-limits-content"
+                  className={cn('settings-section__collapse', expandedSections.limits && 'is-open')}
+                >
                 {expandedSections.limits ? (
                   <div className="settings-section__collapse-inner">
                     <div className="settings-native-toggle">
@@ -6213,7 +6272,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     {renderSectionApplyControl('limits')}
                   </div>
                 ) : null}
-              </div>
+                </div>
+              </SettingsDrilldownPanel>
             </GlassCard>
 
             <GlassCard
@@ -6241,10 +6301,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 </button>
               </div>
 
-              <div
+              <SettingsDrilldownPanel
                 id="settings-night-content"
-                className={cn('settings-section__collapse', expandedSections.night && 'is-open')}
+                open={expandedSections.night}
+                title="Закрытие чата на ночь"
+                summary={
+                  draft.nightModeEnabled ? `${nightWindowLabel} • ${nightTimezoneLabel}` : 'Выключено'
+                }
+                onClose={() => toggleSection('night')}
               >
+                <div
+                  id="settings-night-content"
+                  className={cn('settings-section__collapse', expandedSections.night && 'is-open')}
+                >
                 {expandedSections.night ? (
                   <div className="settings-section__collapse-inner">
                     <div className="settings-native-toggle">
@@ -6565,7 +6634,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     {renderSectionApplyControl('night')}
                   </div>
                 ) : null}
-              </div>
+                </div>
+              </SettingsDrilldownPanel>
             </GlassCard>
 
             <GlassCard
@@ -6589,10 +6659,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 </button>
               </div>
 
-              <div
+              <SettingsDrilldownPanel
                 id="settings-mailing-content"
-                className={cn('settings-section__collapse', expandedSections.mailing && 'is-open')}
+                open={expandedSections.mailing}
+                title="Рассылка"
+                summary={mailingHeaderSummary}
+                onClose={() => toggleSection('mailing')}
               >
+                <div
+                  id="settings-mailing-content"
+                  className={cn('settings-section__collapse', expandedSections.mailing && 'is-open')}
+                >
                 {expandedSections.mailing ? (
                   <div className="settings-section__collapse-inner settings-mailing">
                     <div className="managed-broadcasts-list">
@@ -7149,7 +7226,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     </div>
                   </div>
                 ) : null}
-              </div>
+                </div>
+              </SettingsDrilldownPanel>
             </GlassCard>
 
             <GlassCard
@@ -7173,10 +7251,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 </button>
               </div>
 
-              <div
+              <SettingsDrilldownPanel
                 id="settings-extra-content"
-                className={cn('settings-section__collapse', expandedSections.extra && 'is-open')}
+                open={expandedSections.extra}
+                title="Дополнительно"
+                summary={extraHeaderSummary}
+                onClose={() => toggleSection('extra')}
               >
+                <div
+                  id="settings-extra-content"
+                  className={cn('settings-section__collapse', expandedSections.extra && 'is-open')}
+                >
                 {expandedSections.extra ? (
                   <div className="settings-section__collapse-inner">
                     <div className="settings-native-toggle">
@@ -7372,7 +7457,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     {renderSectionApplyControl('extra')}
                   </div>
                 ) : null}
-              </div>
+                </div>
+              </SettingsDrilldownPanel>
             </GlassCard>
           </GlassCard>
         </section>
