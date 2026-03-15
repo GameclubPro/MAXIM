@@ -9,6 +9,7 @@ import { ManagedPollCard } from '../components/managed-poll-card';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
+import { SettingsSectionToggle } from '../components/ui/settings-section-toggle';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import {
@@ -219,27 +220,6 @@ function normalizeApiError(error: unknown): string {
   }
 
   return text;
-}
-
-function SectionChevron({ isOpen }: { isOpen: boolean }) {
-  return (
-    <span className={cn('settings-section__chevron', isOpen && 'is-open')} aria-hidden>
-      <svg
-        className="settings-section__chevron-icon"
-        viewBox="0 0 20 20"
-        fill="none"
-        focusable="false"
-      >
-        <path
-          d="M5.5 7.75L10 12.25L14.5 7.75"
-          stroke="currentColor"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    </span>
-  );
 }
 
 function ChannelSettingsInfoButton({
@@ -892,6 +872,27 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   ]
     .filter(Boolean)
     .join(' · ');
+  const commentsCardSummary = !draft.commentsEnabled
+    ? 'обсуждение выключено'
+    : draft.commentsModerationEnabled
+      ? 'обсуждение с модерацией'
+      : 'обсуждение без модерации';
+  const commentsCardStatus = !draft.commentsEnabled
+    ? 'Выкл'
+    : draft.commentsModerationEnabled
+      ? 'Модер'
+      : 'Вкл';
+  const postSuggestionsCardSummary = draft.postSuggestionsEnabled
+    ? 'авто-кнопка под новыми постами'
+    : 'ручная публикация кнопки';
+  const postSuggestionsCardStatus = draft.postSuggestionsEnabled ? 'Авто' : 'Ручн';
+  const broadcastCardStatus = broadcastCycleEnabled
+    ? 'Цикл'
+    : broadcastScheduleEnabled
+      ? 'Таймер'
+      : broadcastHasButton
+        ? 'CTA'
+        : 'Бот';
 
   function resetBroadcastComposer() {
     setBroadcastText('');
@@ -1073,26 +1074,23 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
       <GlassCard className="channel-settings-card" elevated>
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-          <button
-            type="button"
-            className="settings-section__toggle"
+          <SettingsSectionToggle
+            title="Комментарии"
+            summary={commentsCardSummary}
+            status={commentsCardStatus}
+            icon="comments"
+            tone="sky"
+            open={expandedSections.comments}
+            controls="channel-settings-comments"
             onClick={() => toggleSection('comments')}
-            aria-expanded={expandedSections.comments}
-            aria-controls="channel-settings-comments"
-          >
-            <span className="settings-section__toggle-main">
-              <h3>Комментарии</h3>
-              <small>{draft.commentsEnabled ? 'включены' : 'выключены'}</small>
-            </span>
-            <SectionChevron isOpen={expandedSections.comments} />
-          </button>
+          />
         </div>
 
         <SettingsDrilldownPanel
           id="channel-settings-comments"
           open={expandedSections.comments}
           title="Комментарии"
-          summary={draft.commentsEnabled ? 'включены' : 'выключены'}
+          summary={commentsCardSummary}
           onClose={() => toggleSection('comments')}
           footer={renderChannelSectionFooter('comments')}
         >
@@ -1169,26 +1167,23 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
       <GlassCard className="channel-settings-card" elevated>
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-          <button
-            type="button"
-            className="settings-section__toggle"
+          <SettingsSectionToggle
+            title="Предложка"
+            summary={postSuggestionsCardSummary}
+            status={postSuggestionsCardStatus}
+            icon="spark"
+            tone="mint"
+            open={expandedSections.postSuggestions}
+            controls="channel-settings-post-suggestions"
             onClick={() => toggleSection('postSuggestions')}
-            aria-expanded={expandedSections.postSuggestions}
-            aria-controls="channel-settings-post-suggestions"
-          >
-            <span className="settings-section__toggle-main">
-              <h3>Предложить пост</h3>
-              <small>{draft.postSuggestionsEnabled ? 'авто' : 'вручную'}</small>
-            </span>
-            <SectionChevron isOpen={expandedSections.postSuggestions} />
-          </button>
+          />
         </div>
 
         <SettingsDrilldownPanel
           id="channel-settings-post-suggestions"
           open={expandedSections.postSuggestions}
-          title="Предложить пост"
-          summary={draft.postSuggestionsEnabled ? 'авто' : 'вручную'}
+          title="Предложка"
+          summary={postSuggestionsCardSummary}
           onClose={() => toggleSection('postSuggestions')}
           footer={renderChannelSectionFooter('postSuggestions')}
         >
@@ -1285,27 +1280,24 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         </SettingsDrilldownPanel>
       </GlassCard>
 
-      <GlassCard className="channel-settings-card" elevated>
+      <GlassCard className="channel-settings-card channel-settings-card--wide" elevated>
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-          <button
-            type="button"
-            className="settings-section__toggle"
+          <SettingsSectionToggle
+            title="Рассылки"
+            summary={broadcastHeaderSummary}
+            status={broadcastCardStatus}
+            icon="send"
+            tone="sky"
+            open={expandedSections.broadcast}
+            controls="channel-settings-broadcast"
             onClick={() => toggleSection('broadcast')}
-            aria-expanded={expandedSections.broadcast}
-            aria-controls="channel-settings-broadcast"
-          >
-            <span className="settings-section__toggle-main">
-              <h3>Рассылка</h3>
-              <small>{broadcastHeaderSummary}</small>
-            </span>
-            <SectionChevron isOpen={expandedSections.broadcast} />
-          </button>
+          />
         </div>
 
         <SettingsDrilldownPanel
           id="channel-settings-broadcast"
           open={expandedSections.broadcast}
-          title="Рассылка"
+          title="Рассылки"
           summary={broadcastHeaderSummary}
           onClose={() => toggleSection('broadcast')}
         >
@@ -1641,26 +1633,23 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       {chatId ? (
         <GlassCard className="channel-settings-card" elevated>
           <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-            <button
-              type="button"
-              className="settings-section__toggle"
+            <SettingsSectionToggle
+              title="Опросы"
+              summary="Голосование отдельным постом"
+              status="Пост"
+              icon="poll"
+              tone="ink"
+              open={expandedSections.poll}
+              controls="channel-settings-poll"
               onClick={() => toggleSection('poll')}
-              aria-expanded={expandedSections.poll}
-              aria-controls="channel-settings-poll"
-            >
-              <span className="settings-section__toggle-main">
-                <h3>Опрос</h3>
-                <small>отдельный пост</small>
-              </span>
-              <SectionChevron isOpen={expandedSections.poll} />
-            </button>
+            />
           </div>
 
           <SettingsDrilldownPanel
             id="channel-settings-poll"
             open={expandedSections.poll}
-            title="Опрос"
-            summary="отдельный пост"
+            title="Опросы"
+            summary="Голосование отдельным постом"
             onClose={() => toggleSection('poll')}
           >
             <div
@@ -1680,26 +1669,23 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       {chatId ? (
         <GlassCard className="channel-settings-card" elevated>
           <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-            <button
-              type="button"
-              className="settings-section__toggle"
+            <SettingsSectionToggle
+              title="Розыгрыши"
+              summary="Управление через бота"
+              status="Бот"
+              icon="gift"
+              tone="amber"
+              open={expandedSections.giveaway}
+              controls="channel-settings-giveaway"
               onClick={() => toggleSection('giveaway')}
-              aria-expanded={expandedSections.giveaway}
-              aria-controls="channel-settings-giveaway"
-            >
-              <span className="settings-section__toggle-main">
-                <h3>Розыгрыши</h3>
-                <small>управление в боте</small>
-              </span>
-              <SectionChevron isOpen={expandedSections.giveaway} />
-            </button>
+            />
           </div>
 
           <SettingsDrilldownPanel
             id="channel-settings-giveaway"
             open={expandedSections.giveaway}
             title="Розыгрыши"
-            summary="управление в боте"
+            summary="Управление через бота"
             onClose={() => toggleSection('giveaway')}
           >
             <div

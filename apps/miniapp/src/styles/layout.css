@@ -305,22 +305,19 @@ body.settings-drilldown-open .bottom-nav {
 
 .settings-sections-shell {
   display: grid;
-  gap: var(--space-1);
-}
-
-.settings-sections-shell > .settings-section {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+  align-items: start;
+  gap: var(--space-3);
   padding: 0;
   border: 0;
-  border-radius: 0;
+  background: transparent;
   box-shadow: none;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
-  background: transparent;
 }
 
-.settings-sections-shell > .settings-section + .settings-section {
-  padding-top: var(--space-2);
-  border-top: 1px solid rgba(62, 96, 127, 0.12);
+.settings-section--wide {
+  grid-column: 1 / -1;
 }
 
 .logs-head {

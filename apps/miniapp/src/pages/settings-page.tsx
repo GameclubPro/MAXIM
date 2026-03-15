@@ -17,6 +17,7 @@ import { ManagedPollCard } from '../components/managed-poll-card';
 import { GlassCard } from '../components/ui/glass-card';
 import { BackChevronIcon, ParticipantsIcon } from '../components/ui/entity-header-icons';
 import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
+import { SettingsSectionToggle } from '../components/ui/settings-section-toggle';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
@@ -259,15 +260,15 @@ const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
 };
 
 const SECTION_LABELS: Record<ApplySectionKey, string> = {
-  links: 'Модерация ссылок',
+  links: 'Ссылки',
   greeting: 'Приветствие',
-  profanityFilter: 'Фильтр нецензурной лексики',
-  commercialFilter: 'Фильтр коммерции',
-  thematicFilters: 'Тематические фильтры',
-  duplicates: 'Дубли сообщений',
-  limits: 'Ограничения сообщений',
-  night: 'Закрытие чата на ночь',
-  extra: 'Дополнительно',
+  profanityFilter: 'Мат и грубость',
+  commercialFilter: 'Реклама и продажи',
+  thematicFilters: 'Объявления по теме',
+  duplicates: 'Повторы',
+  limits: 'Ограничения',
+  night: 'Ночной режим',
+  extra: 'Сервисные',
 };
 
 const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings)[]> = {
@@ -2542,6 +2543,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       : draft?.linkPolicy === 'ALLOWLIST_ONLY'
         ? `Разрешено: ${allowlistDomains.length}`
         : `${linkStagesEnabledCount}/4 ступени включено`;
+  const linksCardStatus =
+    draft?.linkPolicy === 'ALERT_ONLY'
+      ? 'Мягко'
+      : draft?.linkPolicy === 'ALLOWLIST_ONLY'
+        ? 'Список'
+        : 'Блок';
   const rulesPublishedAtLabel = formatRemovalDateTime(
     rulesDraft?.publishedAt ?? rulesQuery.data?.publishedAt ?? null,
   );
@@ -2552,6 +2559,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : rulesDraft?.text.trim()
       ? `Черновик · ${rulesDraft.text.trim().length}/${MAX_CHAT_RULES_TEXT_LENGTH}`
       : 'Не настроено';
+  const rulesCardStatus = hasPublishedRules
+    ? 'Пост'
+    : rulesDraft?.text.trim()
+      ? 'Черновик'
+      : 'Пусто';
   const greetingHeaderSummary = draft?.greetingEnabled
     ? draft?.greetingBotMessageEnabled
       ? draft?.greetingBotButtonEnabled
@@ -2559,6 +2571,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         : 'Только сообщение'
       : 'Сообщение выключено'
     : 'Выключено';
+  const greetingCardStatus = draft?.greetingEnabled ? 'Вкл' : 'Выкл';
   const duplicateStagesEnabledCount = [
     draft?.duplicateWarnEnabled,
     draft?.duplicateBanEnabled,
@@ -2567,6 +2580,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const duplicatesHeaderSummary = draft?.antiDuplicateEnabled
     ? `${duplicateStagesEnabledCount}/3 ступени включено`
     : 'Выключено';
+  const duplicatesCardStatus = draft?.antiDuplicateEnabled
+    ? `${duplicateStagesEnabledCount}/3`
+    : 'Выкл';
   const profanityStagesEnabledCount = draft?.russianProfanityFilterEnabled
     ? [
         draft?.profanityBotMessageEnabled,
@@ -2615,15 +2631,27 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         draft.nightModeEndTimeMinutes,
       )}`
     : '23:00-08:00';
+  const nightHeaderSummary = draft?.nightModeEnabled
+    ? `${nightWindowLabel} • ${nightTimezoneLabel}`
+    : 'Выключено';
   const profanityFilterHeaderSummary = draft?.russianProfanityFilterEnabled
     ? `${profanityStagesEnabledCount}/4 ступени включено`
     : 'Выключено';
+  const profanityCardStatus = draft?.russianProfanityFilterEnabled
+    ? `${profanityStagesEnabledCount}/4`
+    : 'Выкл';
   const commercialFilterHeaderSummary = draft?.commercialAdsFilterEnabled
     ? `${textFiltersStagesEnabledCount}/4 ступени · ${commercialSensitivityLabel.toLowerCase()}`
     : 'Выключено';
+  const commercialCardStatus = draft?.commercialAdsFilterEnabled
+    ? commercialSensitivityLabel
+    : 'Выкл';
   const thematicFiltersHeaderSummary = thematicFiltersEnabledCount
     ? `код: ${draft?.thematicCodeword?.trim() || 'не задан'} · ${thematicFiltersStagesEnabledCount}/4 ступени`
     : 'Выключено';
+  const thematicFiltersCardStatus = thematicFiltersEnabledCount
+    ? `${thematicFiltersStagesEnabledCount}/4`
+    : 'Выкл';
   const extraEnabledCount = [
     draft?.deleteSpammersEnabled,
     draft?.deleteBotMessagesEnabled,
@@ -2631,6 +2659,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   ].filter(Boolean).length;
   const extraHeaderSummary =
     extraEnabledCount > 0 ? `${extraEnabledCount} опции включено` : 'Выключено';
+  const extraCardStatus = extraEnabledCount > 0 ? `${extraEnabledCount}` : 'Выкл';
+  const limitsCardStatus = limitsRulesEnabledCount > 0 ? `${limitsRulesEnabledCount}` : 'Выкл';
+  const nightCardStatus = draft?.nightModeEnabled ? 'Ночь' : 'Выкл';
   const chatsCount = chatsQuery.data?.length ?? 0;
   const canApplyToAllChats = chatsCount > 1;
   const managedBroadcasts = managedBroadcastsQuery.data ?? [];
@@ -2664,6 +2695,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingHeaderSummary = `${mailingTargetLabel} · ${mailingContentLabel}${
     mailingScheduleEnabled ? ' · по таймеру' : ''
   }${mailingCycleEnabled ? ` · ${mailingCycleSummary}` : ''}`;
+  const mailingCardStatus = editingManagedBroadcast
+    ? 'Черновик'
+    : mailingCycleEnabled
+      ? 'Цикл'
+      : mailingScheduleEnabled
+        ? 'Таймер'
+        : mailingApplyToAllChats && canApplyToAllChats
+          ? 'Все'
+          : 'Бот';
   const mailingSendDisabled = isMailingBusy;
 
   useHintPopoverAutoPosition(openHintKey !== null);
@@ -2854,27 +2894,24 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           </header>
 
           <GlassCard className="settings-sections-shell" padding="sm">
-            <GlassCard className="settings-section stagger-in">
+            <GlassCard className="settings-section settings-section--wide stagger-in">
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <button
-                  type="button"
-                  className="settings-section__toggle"
-                  aria-expanded={expandedSections.links}
-                  aria-controls="settings-links-content"
+                <SettingsSectionToggle
+                  title="Ссылки"
+                  summary={linksHeaderSummary}
+                  status={linksCardStatus}
+                  icon="links"
+                  tone="sky"
+                  open={expandedSections.links}
+                  controls="settings-links-content"
                   onClick={() => toggleSection('links')}
-                >
-                  <span className="settings-section__toggle-main">
-                    <h3>Модерация ссылок</h3>
-                    <small>{linksHeaderSummary}</small>
-                  </span>
-                  <SectionChevron isOpen={expandedSections.links} />
-                </button>
+                />
               </div>
 
               <SettingsDrilldownPanel
                 id="settings-links-content"
                 open={expandedSections.links}
-                title="Модерация ссылок"
+                title="Ссылки"
                 summary={linksHeaderSummary}
                 onClose={() => toggleSection('links')}
                 footer={renderSectionSaveFooter('links')}
@@ -3478,30 +3515,27 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
 
             <GlassCard
-              className="settings-section stagger-in"
+              className="settings-section settings-section--wide stagger-in"
               style={{ animationDelay: '45ms' }}
               aria-label="Правила чата"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <button
-                  type="button"
-                  className="settings-section__toggle"
-                  aria-expanded={expandedSections.rules}
-                  aria-controls="settings-rules-content"
+                <SettingsSectionToggle
+                  title="Правила чата"
+                  summary={rulesHeaderSummary}
+                  status={rulesCardStatus}
+                  icon="rules"
+                  tone="ink"
+                  open={expandedSections.rules}
+                  controls="settings-rules-content"
                   onClick={() => toggleSection('rules')}
-                >
-                  <span className="settings-section__toggle-main">
-                    <h3>Правила</h3>
-                    <small>{rulesHeaderSummary}</small>
-                  </span>
-                  <SectionChevron isOpen={expandedSections.rules} />
-                </button>
+                />
               </div>
 
               <SettingsDrilldownPanel
                 id="settings-rules-content"
                 open={expandedSections.rules}
-                title="Правила"
+                title="Правила чата"
                 summary={rulesHeaderSummary}
                 onClose={() => toggleSection('rules')}
               >
@@ -3762,25 +3796,22 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 <div
                   className={cn('settings-section__head', 'settings-section__head--interactive')}
                 >
-                  <button
-                    type="button"
-                    className="settings-section__toggle"
-                    aria-expanded={expandedSections.poll}
-                    aria-controls="settings-poll-content"
+                  <SettingsSectionToggle
+                    title="Опросы"
+                    summary="Голосование в отдельном посте"
+                    status="Пост"
+                    icon="poll"
+                    tone="ink"
+                    open={expandedSections.poll}
+                    controls="settings-poll-content"
                     onClick={() => toggleSection('poll')}
-                  >
-                    <span className="settings-section__toggle-main">
-                      <h3>Опрос</h3>
-                      <small>Голосование в отдельном посте</small>
-                    </span>
-                    <SectionChevron isOpen={expandedSections.poll} />
-                  </button>
+                  />
                 </div>
 
                 <SettingsDrilldownPanel
                   id="settings-poll-content"
                   open={expandedSections.poll}
-                  title="Опрос"
+                  title="Опросы"
                   summary="Голосование в отдельном посте"
                   onClose={() => toggleSection('poll')}
                 >
@@ -3807,19 +3838,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 <div
                   className={cn('settings-section__head', 'settings-section__head--interactive')}
                 >
-                  <button
-                    type="button"
-                    className="settings-section__toggle"
-                    aria-expanded={expandedSections.giveaway}
-                    aria-controls="settings-giveaway-content"
+                  <SettingsSectionToggle
+                    title="Розыгрыши"
+                    summary="Создание и управление в личке бота"
+                    status="Бот"
+                    icon="gift"
+                    tone="amber"
+                    open={expandedSections.giveaway}
+                    controls="settings-giveaway-content"
                     onClick={() => toggleSection('giveaway')}
-                  >
-                    <span className="settings-section__toggle-main">
-                      <h3>Розыгрыши</h3>
-                      <small>Создание и управление в личке бота</small>
-                    </span>
-                    <SectionChevron isOpen={expandedSections.giveaway} />
-                  </button>
+                  />
                 </div>
 
                 <SettingsDrilldownPanel
@@ -3852,19 +3880,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               aria-label="Приветствие новых участников"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <button
-                  type="button"
-                  className="settings-section__toggle"
-                  aria-expanded={expandedSections.greeting}
-                  aria-controls="settings-greeting-content"
+                <SettingsSectionToggle
+                  title="Приветствие"
+                  summary={greetingHeaderSummary}
+                  status={greetingCardStatus}
+                  icon="greeting"
+                  tone="mint"
+                  open={expandedSections.greeting}
+                  controls="settings-greeting-content"
                   onClick={() => toggleSection('greeting')}
-                >
-                  <span className="settings-section__toggle-main">
-                    <h3>Приветствие</h3>
-                    <small>{greetingHeaderSummary}</small>
-                  </span>
-                  <SectionChevron isOpen={expandedSections.greeting} />
-                </button>
+                />
               </div>
 
               <SettingsDrilldownPanel
@@ -4135,28 +4160,25 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <GlassCard
               className="settings-section stagger-in"
               style={{ animationDelay: '90ms' }}
-              aria-label="Фильтр нецензурной лексики"
+              aria-label="Мат и грубость"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <button
-                  type="button"
-                  className="settings-section__toggle"
-                  aria-expanded={expandedSections.profanityFilter}
-                  aria-controls="settings-profanity-filter-content"
+                <SettingsSectionToggle
+                  title="Мат и грубость"
+                  summary={profanityFilterHeaderSummary}
+                  status={profanityCardStatus}
+                  icon="warning"
+                  tone="rose"
+                  open={expandedSections.profanityFilter}
+                  controls="settings-profanity-filter-content"
                   onClick={() => toggleSection('profanityFilter')}
-                >
-                  <span className="settings-section__toggle-main">
-                    <h3>Фильтр нецензурной лексики</h3>
-                    <small>{profanityFilterHeaderSummary}</small>
-                  </span>
-                  <SectionChevron isOpen={expandedSections.profanityFilter} />
-                </button>
+                />
               </div>
 
               <SettingsDrilldownPanel
                 id="settings-profanity-filter-content"
                 open={expandedSections.profanityFilter}
-                title="Фильтр нецензурной лексики"
+                title="Мат и грубость"
                 summary={profanityFilterHeaderSummary}
                 onClose={() => toggleSection('profanityFilter')}
                 footer={renderSectionSaveFooter('profanityFilter')}
@@ -4346,28 +4368,25 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <GlassCard
               className="settings-section stagger-in"
               style={{ animationDelay: '135ms' }}
-              aria-label="Фильтр комерции"
+              aria-label="Реклама и продажи"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <button
-                  type="button"
-                  className="settings-section__toggle"
-                  aria-expanded={expandedSections.commercialFilter}
-                  aria-controls="settings-commercial-filter-content"
+                <SettingsSectionToggle
+                  title="Реклама и продажи"
+                  summary={commercialFilterHeaderSummary}
+                  status={commercialCardStatus}
+                  icon="ads"
+                  tone="amber"
+                  open={expandedSections.commercialFilter}
+                  controls="settings-commercial-filter-content"
                   onClick={() => toggleSection('commercialFilter')}
-                >
-                  <span className="settings-section__toggle-main">
-                    <h3>Фильтр комерции</h3>
-                    <small>{commercialFilterHeaderSummary}</small>
-                  </span>
-                  <SectionChevron isOpen={expandedSections.commercialFilter} />
-                </button>
+                />
               </div>
 
               <SettingsDrilldownPanel
                 id="settings-commercial-filter-content"
                 open={expandedSections.commercialFilter}
-                title="Фильтр комерции"
+                title="Реклама и продажи"
                 summary={commercialFilterHeaderSummary}
                 onClose={() => toggleSection('commercialFilter')}
                 footer={renderSectionSaveFooter('commercialFilter')}
@@ -4832,28 +4851,25 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <GlassCard
               className="settings-section stagger-in"
               style={{ animationDelay: '157ms' }}
-              aria-label="Тематические фильтры"
+              aria-label="Объявления по теме"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <button
-                  type="button"
-                  className="settings-section__toggle"
-                  aria-expanded={expandedSections.thematicFilters}
-                  aria-controls="settings-thematic-filters-content"
+                <SettingsSectionToggle
+                  title="Объявления по теме"
+                  summary={thematicFiltersHeaderSummary}
+                  status={thematicFiltersCardStatus}
+                  icon="topic"
+                  tone="sky"
+                  open={expandedSections.thematicFilters}
+                  controls="settings-thematic-filters-content"
                   onClick={() => toggleSection('thematicFilters')}
-                >
-                  <span className="settings-section__toggle-main">
-                    <h3>Тематические фильтры</h3>
-                    <small>{thematicFiltersHeaderSummary}</small>
-                  </span>
-                  <SectionChevron isOpen={expandedSections.thematicFilters} />
-                </button>
+                />
               </div>
 
               <SettingsDrilldownPanel
                 id="settings-thematic-filters-content"
                 open={expandedSections.thematicFilters}
-                title="Тематические фильтры"
+                title="Объявления по теме"
                 summary={thematicFiltersHeaderSummary}
                 onClose={() => toggleSection('thematicFilters')}
                 footer={renderSectionSaveFooter('thematicFilters')}
@@ -5145,28 +5161,25 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <GlassCard
               className="settings-section stagger-in"
               style={{ animationDelay: '180ms' }}
-              aria-label="Настройки дублей"
+              aria-label="Повторы"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <button
-                  type="button"
-                  className="settings-section__toggle"
-                  aria-expanded={expandedSections.duplicates}
-                  aria-controls="settings-duplicates-content"
+                <SettingsSectionToggle
+                  title="Повторы"
+                  summary={duplicatesHeaderSummary}
+                  status={duplicatesCardStatus}
+                  icon="repeat"
+                  tone="rose"
+                  open={expandedSections.duplicates}
+                  controls="settings-duplicates-content"
                   onClick={() => toggleSection('duplicates')}
-                >
-                  <span className="settings-section__toggle-main">
-                    <h3>Дубли сообщений</h3>
-                    <small>{duplicatesHeaderSummary}</small>
-                  </span>
-                  <SectionChevron isOpen={expandedSections.duplicates} />
-                </button>
+                />
               </div>
 
               <SettingsDrilldownPanel
                 id="settings-duplicates-content"
                 open={expandedSections.duplicates}
-                title="Дубли сообщений"
+                title="Повторы"
                 summary={duplicatesHeaderSummary}
                 onClose={() => toggleSection('duplicates')}
                 footer={renderSectionSaveFooter('duplicates')}
@@ -5608,30 +5621,27 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
 
             <GlassCard
-              className="settings-section stagger-in"
+              className="settings-section settings-section--wide stagger-in"
               style={{ animationDelay: '225ms' }}
-              aria-label="Ограничения сообщений"
+              aria-label="Ограничения"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <button
-                  type="button"
-                  className="settings-section__toggle"
-                  aria-expanded={expandedSections.limits}
-                  aria-controls="settings-limits-content"
+                <SettingsSectionToggle
+                  title="Ограничения"
+                  summary={`${limitsRulesEnabledCount} ограничений активно`}
+                  status={limitsCardStatus}
+                  icon="shield"
+                  tone="ink"
+                  open={expandedSections.limits}
+                  controls="settings-limits-content"
                   onClick={() => toggleSection('limits')}
-                >
-                  <span className="settings-section__toggle-main">
-                    <h3>Ограничения сообщений</h3>
-                    <small>{limitsRulesEnabledCount} ограничений активно</small>
-                  </span>
-                  <SectionChevron isOpen={expandedSections.limits} />
-                </button>
+                />
               </div>
 
               <SettingsDrilldownPanel
                 id="settings-limits-content"
                 open={expandedSections.limits}
-                title="Ограничения сообщений"
+                title="Ограничения"
                 summary={`${limitsRulesEnabledCount} ограничений активно`}
                 onClose={() => toggleSection('limits')}
                 footer={renderSectionSaveFooter('limits')}
@@ -6287,35 +6297,26 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <GlassCard
               className="settings-section stagger-in"
               style={{ animationDelay: '270ms' }}
-              aria-label="Закрытие чата на ночь"
+              aria-label="Ночной режим"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <button
-                  type="button"
-                  className="settings-section__toggle"
-                  aria-expanded={expandedSections.night}
-                  aria-controls="settings-night-content"
+                <SettingsSectionToggle
+                  title="Ночной режим"
+                  summary={nightHeaderSummary}
+                  status={nightCardStatus}
+                  icon="moon"
+                  tone="ink"
+                  open={expandedSections.night}
+                  controls="settings-night-content"
                   onClick={() => toggleSection('night')}
-                >
-                  <span className="settings-section__toggle-main">
-                    <h3>Закрытие чата на ночь</h3>
-                    <small>
-                      {draft.nightModeEnabled
-                        ? `${nightWindowLabel} • ${nightTimezoneLabel}`
-                        : 'Выключено'}
-                    </small>
-                  </span>
-                  <SectionChevron isOpen={expandedSections.night} />
-                </button>
+                />
               </div>
 
               <SettingsDrilldownPanel
                 id="settings-night-content"
                 open={expandedSections.night}
-                title="Закрытие чата на ночь"
-                summary={
-                  draft.nightModeEnabled ? `${nightWindowLabel} • ${nightTimezoneLabel}` : 'Выключено'
-                }
+                title="Ночной режим"
+                summary={nightHeaderSummary}
                 onClose={() => toggleSection('night')}
                 footer={renderSectionSaveFooter('night')}
               >
@@ -6647,30 +6648,27 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
 
             <GlassCard
-              className="settings-section stagger-in"
+              className="settings-section settings-section--wide stagger-in"
               style={{ animationDelay: '315ms' }}
-              aria-label="Рассылка"
+              aria-label="Рассылки"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <button
-                  type="button"
-                  className="settings-section__toggle"
-                  aria-expanded={expandedSections.mailing}
-                  aria-controls="settings-mailing-content"
+                <SettingsSectionToggle
+                  title="Рассылки"
+                  summary={mailingHeaderSummary}
+                  status={mailingCardStatus}
+                  icon="send"
+                  tone="sky"
+                  open={expandedSections.mailing}
+                  controls="settings-mailing-content"
                   onClick={() => toggleSection('mailing')}
-                >
-                  <span className="settings-section__toggle-main">
-                    <h3>Рассылка</h3>
-                    <small>{mailingHeaderSummary}</small>
-                  </span>
-                  <SectionChevron isOpen={expandedSections.mailing} />
-                </button>
+                />
               </div>
 
               <SettingsDrilldownPanel
                 id="settings-mailing-content"
                 open={expandedSections.mailing}
-                title="Рассылка"
+                title="Рассылки"
                 summary={mailingHeaderSummary}
                 onClose={() => toggleSection('mailing')}
               >
@@ -7241,28 +7239,25 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <GlassCard
               className="settings-section stagger-in"
               style={{ animationDelay: '360ms' }}
-              aria-label="Дополнительные настройки"
+              aria-label="Сервисные настройки"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <button
-                  type="button"
-                  className="settings-section__toggle"
-                  aria-expanded={expandedSections.extra}
-                  aria-controls="settings-extra-content"
+                <SettingsSectionToggle
+                  title="Сервисные"
+                  summary={extraHeaderSummary}
+                  status={extraCardStatus}
+                  icon="tools"
+                  tone="amber"
+                  open={expandedSections.extra}
+                  controls="settings-extra-content"
                   onClick={() => toggleSection('extra')}
-                >
-                  <span className="settings-section__toggle-main">
-                    <h3>Дополнительно</h3>
-                    <small>{extraHeaderSummary}</small>
-                  </span>
-                  <SectionChevron isOpen={expandedSections.extra} />
-                </button>
+                />
               </div>
 
               <SettingsDrilldownPanel
                 id="settings-extra-content"
                 open={expandedSections.extra}
-                title="Дополнительно"
+                title="Сервисные"
                 summary={extraHeaderSummary}
                 onClose={() => toggleSection('extra')}
                 footer={renderSectionSaveFooter('extra')}
