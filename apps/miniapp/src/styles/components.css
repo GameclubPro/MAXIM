@@ -4906,15 +4906,12 @@
   white-space: nowrap;
 }
 
-.logs-violation-item__reason {
+.logs-violation-item__summary {
   margin: 0;
-  color: #29465c;
-  font-size: 0.84rem;
-  line-height: 1.45;
-  border-radius: 12px;
-  border: 1px solid rgba(62, 96, 127, 0.14);
-  background: rgba(255, 255, 255, 0.58);
-  padding: 9px 10px;
+  color: #3b5a72;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  font-weight: 700;
 }
 
 .logs-violation-item__excerpt-inline {
@@ -4949,41 +4946,39 @@
   padding: 10px;
 }
 
-.logs-violation-item__moderation summary {
-  cursor: pointer;
-  font-size: 0.82rem;
-  color: var(--text-secondary);
-  font-weight: 700;
-}
-
-.logs-violation-item__actions {
-  display: grid;
+.logs-violation-item__moderation-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  padding-top: 10px;
+  margin-bottom: 8px;
 }
 
-.logs-violation-item__actions-caption {
-  margin: 0;
+.logs-violation-item__moderation-head span {
+  font-size: 0.76rem;
+  color: var(--text-secondary);
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.logs-violation-item__moderation-head small {
+  font-size: 0.7rem;
   color: var(--text-muted);
   font-size: 0.74rem;
   font-weight: 700;
 }
 
-.logs-violation-item__actions-hint {
-  margin: 0;
-  font-size: 0.74rem;
-  color: #456179;
-  font-weight: 600;
-}
-
-.logs-violation-item__actions-row {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.logs-violation-item__quick-actions {
+  display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
-.logs-violation-item__action-pill {
+.logs-violation-item__quick-button {
+  flex: 1 1 0;
   min-height: 38px;
+  min-width: 0;
   border-radius: 10px;
   border: 1px solid rgba(62, 96, 127, 0.2);
   background: rgba(255, 255, 255, 0.7);
@@ -4998,23 +4993,71 @@
     box-shadow 0.2s ease;
 }
 
-.logs-violation-item__action-pill:disabled {
+.logs-violation-item__quick-button:disabled {
   opacity: 0.55;
   cursor: not-allowed;
 }
 
-.logs-violation-item__action-pill.is-active {
-  color: #0a5ea9;
-  border-color: rgba(11, 132, 255, 0.4);
-  background:
-    linear-gradient(154deg, rgba(11, 132, 255, 0.2), rgba(255, 255, 255, 0.9)),
-    rgba(255, 255, 255, 0.76);
+.logs-violation-item__quick-button.is-active {
   box-shadow: 0 8px 16px rgba(11, 132, 255, 0.14);
+}
+
+.logs-violation-item__quick-button--danger {
+  color: #8f2742;
+  border-color: rgba(228, 83, 99, 0.26);
+  background: rgba(255, 244, 246, 0.88);
+}
+
+.logs-violation-item__quick-button--warning {
+  color: #8f5c06;
+  border-color: rgba(240, 164, 43, 0.3);
+  background: rgba(255, 248, 235, 0.9);
+}
+
+.logs-violation-item__quick-button--warning.is-active {
+  color: #8f5c06;
+  border-color: rgba(240, 164, 43, 0.42);
+  background:
+    linear-gradient(154deg, rgba(240, 164, 43, 0.2), rgba(255, 255, 255, 0.9)),
+    rgba(255, 248, 235, 0.92);
+}
+
+.logs-violation-item__quick-button--success {
+  color: #157456;
+  border-color: rgba(39, 181, 124, 0.28);
+  background: rgba(241, 255, 249, 0.9);
 }
 
 .logs-violation-item__ban-config {
   display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.logs-violation-item__ban-presets {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
+}
+
+.logs-violation-item__ban-preset {
+  min-height: 34px;
+  border-radius: 10px;
+  border: 1px solid rgba(62, 96, 127, 0.18);
+  background: rgba(255, 255, 255, 0.84);
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.logs-violation-item__ban-preset.is-active {
+  background:
+    linear-gradient(154deg, rgba(11, 132, 255, 0.2), rgba(255, 255, 255, 0.9)),
+    rgba(255, 255, 255, 0.76);
+  color: #0a5ea9;
+  border-color: rgba(11, 132, 255, 0.36);
+  box-shadow: 0 8px 16px rgba(11, 132, 255, 0.14);
 }
 
 .logs-violation-item__ban-config-controls {
@@ -5065,68 +5108,6 @@
 
 .logs-violation-item__action-status.is-danger {
   color: #a22f3f;
-}
-
-.logs-violation-item__details {
-  border-radius: 12px;
-  border: 1px solid rgba(62, 96, 127, 0.18);
-  background: rgba(255, 255, 255, 0.65);
-  padding: 8px 10px;
-}
-
-.logs-violation-item__details summary {
-  cursor: pointer;
-  font-size: 0.82rem;
-  font-weight: 700;
-  color: var(--text-secondary);
-}
-
-.logs-violation-item__details-grid {
-  margin-top: 8px;
-  display: grid;
-  gap: 10px;
-}
-
-.logs-violation-item__details-grid > div {
-  display: grid;
-  gap: 5px;
-}
-
-.logs-violation-item__details-grid span {
-  font-size: 0.68rem;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  font-weight: 700;
-}
-
-.logs-violation-item__details-grid code {
-  margin: 0;
-  padding: 8px 10px;
-  border-radius: 10px;
-  border: 1px solid rgba(62, 96, 127, 0.16);
-  background: rgba(255, 255, 255, 0.86);
-  color: #1a3f5c;
-  font-size: 0.81rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  overflow-wrap: anywhere;
-}
-
-.logs-violation-item__excerpt {
-  display: grid;
-  gap: 6px;
-  border-radius: 10px;
-  border: 1px dashed rgba(62, 96, 127, 0.2);
-  padding: 10px;
-  background: rgba(255, 255, 255, 0.72);
-}
-
-.logs-violation-item__excerpt p {
-  margin: 0;
-  font-size: 0.86rem;
-  color: var(--text-secondary);
-  line-height: 1.45;
-  overflow-wrap: anywhere;
 }
 
 .badge-action {
@@ -6056,6 +6037,14 @@
 
   .logs-violation-item__hours-input {
     justify-items: start;
+  }
+
+  .logs-violation-item__quick-button {
+    flex-basis: calc(50% - 3px);
+  }
+
+  .logs-violation-item__ban-presets {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
