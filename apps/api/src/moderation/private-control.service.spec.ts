@@ -584,18 +584,6 @@ function extractStartPayload(url: string): string {
   return parsed.searchParams.get('start') ?? '';
 }
 
-function findButtonByText(
-  maxClient: { sendMessage: jest.Mock; answerCallback: jest.Mock },
-  text: string,
-) {
-  return getLastButtons(maxClient)
-    .flat()
-    .find(
-      (button) =>
-        typeof button === 'object' && button !== null && 'text' in button && button.text === text,
-    ) as Record<string, unknown> | undefined;
-}
-
 describe('PrivateControlService', () => {
   it('renders the entity picker for plain text in private dialog', async () => {
     const { service, maxClient, adminService } = createHarness();
@@ -606,74 +594,6 @@ describe('PrivateControlService', () => {
     expect(getLastUiText(maxClient)).toContain('Нажмите на нужный чат');
     expect(getLastButtons(maxClient).length).toBeGreaterThan(0);
     expect(adminService.listManagedEntities).toHaveBeenCalledTimes(1);
-  });
-
-  it('renders a compact chat home with a contextual mini app button', async () => {
-    const { service, maxClient, chats } = createHarness();
-
-    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-
-    const buttonTexts = getLastButtons(maxClient)
-      .flat()
-      .map((button) => String((button as { text?: string }).text ?? ''));
-
-    expect(buttonTexts).toEqual(
-      expect.arrayContaining([
-        'Настройки',
-        'События',
-        'Рассылка',
-        'Опрос',
-        'Ещё',
-        'Сменить чат',
-        'Mini App',
-        'Поддержка',
-      ]),
-    );
-    expect(buttonTexts).not.toContain('Ручной бан');
-    expect(buttonTexts).not.toContain('Статистика');
-
-    expect(findButtonByText(maxClient, 'Mini App')).toMatchObject({
-      type: 'open_app',
-      webApp: `https://maxim.play-team.ru/app/chat/${encodeURIComponent(chats[0].id)}/settings`,
-      contactId: '777000',
-    });
-  });
-
-  it('routes the section footer mini app button to the focused settings section', async () => {
-    const { service, maxClient, chats } = createHarness();
-
-    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_settings_hub'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_section|greeting'));
-
-    expect(findButtonByText(maxClient, 'Mini App')).toMatchObject({
-      type: 'open_app',
-      webApp: `https://maxim.play-team.ru/app/chat/${encodeURIComponent(chats[0].id)}/settings/greeting`,
-      contactId: '777000',
-    });
-  });
-
-  it('opens channel secondary actions with a direct mini app stats button', async () => {
-    const { service, maxClient, channels } = createHarness();
-
-    await service.handleUpdate(
-      createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
-    );
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_more'));
-
-    const buttonTexts = getLastButtons(maxClient)
-      .flat()
-      .map((button) => String((button as { text?: string }).text ?? ''));
-
-    expect(buttonTexts).toEqual(
-      expect.arrayContaining(['Опрос', 'Розыгрыш', 'Статистика', 'Mini App']),
-    );
-    expect(buttonTexts.some((text) => text.startsWith('Пост с кноп'))).toBe(true);
-    expect(findButtonByText(maxClient, 'Статистика')).toMatchObject({
-      type: 'open_app',
-      webApp: `https://maxim.play-team.ru/app/channel/${encodeURIComponent(channels[0].id)}/stats`,
-      contactId: '777000',
-    });
   });
 
   it('opens chat home, settings hub, and toggles a section setting via callback edit', async () => {

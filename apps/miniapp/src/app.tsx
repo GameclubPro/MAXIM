@@ -109,20 +109,9 @@ export function App() {
             <Routes>
               <Route element={<Shell />}>
                 <Route path="/" element={<LazyChatsPage api={apiClient} />} />
-                <Route
-                  path="/chat/:chatId/settings"
-                  element={<LazySettingsPage api={apiClient} />}
-                />
-                <Route
-                  path="/chat/:chatId/settings/:section"
-                  element={<LazySettingsPage api={apiClient} />}
-                />
+                <Route path="/chat/:chatId/settings" element={<LazySettingsPage api={apiClient} />} />
                 <Route
                   path="/channel/:chatId/settings"
-                  element={<LazyChannelSettingsPage api={apiClient} />}
-                />
-                <Route
-                  path="/channel/:chatId/settings/:section"
                   element={<LazyChannelSettingsPage api={apiClient} />}
                 />
                 <Route
@@ -134,10 +123,7 @@ export function App() {
                   element={<LazyChannelDialogPage api={apiClient} />}
                 />
                 <Route path="/chat/:chatId/events" element={<LazyEventsPage api={apiClient} />} />
-                <Route
-                  path="/giveaways/:giveawayId"
-                  element={<LazyGiveawayPage api={apiClient} />}
-                />
+                <Route path="/giveaways/:giveawayId" element={<LazyGiveawayPage api={apiClient} />} />
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Route>
             </Routes>
