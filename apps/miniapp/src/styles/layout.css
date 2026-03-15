@@ -305,9 +305,9 @@ body.settings-drilldown-open .bottom-nav {
 
 .settings-sections-shell {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
   align-items: start;
-  gap: 10px;
+  gap: var(--space-3);
   padding: 0;
   border: 0;
   background: transparent;
@@ -318,18 +318,6 @@ body.settings-drilldown-open .bottom-nav {
 
 .settings-section--wide {
   grid-column: 1 / -1;
-}
-
-@media (min-width: 375px) {
-  .settings-sections-shell {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (min-width: 720px) {
-  .settings-sections-shell {
-    gap: var(--space-3);
-  }
 }
 
 .logs-head {
