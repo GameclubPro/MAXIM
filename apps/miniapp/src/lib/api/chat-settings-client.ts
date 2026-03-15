@@ -14,8 +14,11 @@ import {
   scheduleDomainRemovalRequestSchema,
   sendBroadcastRequestSchema,
   sendBroadcastResultSchema,
+  surfaceEntryRequestSchema,
+  surfaceEntryResponseSchema,
   updateChatRulesRequestSchema,
   updateManagedPollRequestSchema,
+  workbenchSummarySchema,
   type ApplySectionToAllResponse,
   type ChatRules,
   type ChatSettings,
@@ -27,6 +30,9 @@ import {
   type ManagedPoll,
   type PublishChatRulesResult,
   type SendBroadcastResult,
+  type SurfaceEntryRequest,
+  type SurfaceEntryResponse,
+  type WorkbenchSummary,
 } from '@maxim/contracts';
 import type { BroadcastHandoffPayload, SendBroadcastPayload, UpdateChatRulesPayload } from './shared-types';
 import type { ApiTransport } from './transport';
@@ -50,6 +56,31 @@ export async function getSettingsScreen(
 ): Promise<ChatSettingsScreenResponse> {
   const response = await api.request(`/chats/${chatId}/settings-screen`);
   return chatSettingsScreenResponseSchema.parse(response);
+}
+
+export async function getChatWorkbench(
+  api: ApiTransport,
+  chatId: string,
+): Promise<WorkbenchSummary> {
+  const response = await api.request(`/chats/${chatId}/workbench`);
+  return workbenchSummarySchema.parse(response);
+}
+
+export async function openChatEntrypoint(
+  api: ApiTransport,
+  chatId: string,
+  payload: Omit<SurfaceEntryRequest, 'entityId' | 'entityType'>,
+): Promise<SurfaceEntryResponse> {
+  const requestBody = surfaceEntryRequestSchema.parse({
+    ...payload,
+    entityId: chatId,
+    entityType: 'chat',
+  });
+  const response = await api.request(`/chats/${chatId}/entrypoint`, {
+    method: 'POST',
+    body: JSON.stringify(requestBody),
+  });
+  return surfaceEntryResponseSchema.parse(response);
 }
 
 export async function updateSettings(

@@ -1,4 +1,4 @@
-import { chatRulesSchema, chatSettingsSchema } from '@maxim/contracts';
+import { chatRulesSchema, chatSettingsSchema, channelSettingsSchema } from '@maxim/contracts';
 import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
 import { AdminService } from './admin.service';
 
@@ -159,6 +159,9 @@ function createPrismaMock() {
         ...data,
       })),
       findUnique: jest.fn().mockResolvedValue(defaultManagedPoll),
+    },
+    managedGiveaway: {
+      findMany: jest.fn().mockResolvedValue([]),
     },
     managedPollVote: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -755,6 +758,169 @@ describe('AdminService managed polls', () => {
         closedAt: null,
       }),
     });
+  });
+});
+
+describe('AdminService workbench summary', () => {
+  it('builds chat workbench with activation, attention and drafts', async () => {
+    const prisma = createPrismaMock();
+    prisma.moderationEvent.count.mockResolvedValue(4);
+    prisma.managedGiveaway.findMany.mockResolvedValue([
+      {
+        id: 'giveaway-1',
+        title: 'Весенний розыгрыш',
+        status: 'ACTIVE',
+        createdAt: new Date('2026-03-12T10:00:00.000Z'),
+        updatedAt: new Date('2026-03-12T11:00:00.000Z'),
+      },
+    ]);
+    prisma.$queryRaw.mockResolvedValue([{ ok: 1 }]);
+
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    jest.spyOn(service, 'getChatHeader').mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      entityType: 'chat',
+      link: 'https://max.ru/chat/chat-1',
+      participantsCount: 42,
+    });
+    jest.spyOn(service, 'getSettings').mockResolvedValue(
+      chatSettingsSchema.parse({
+        greetingEnabled: true,
+      }),
+    );
+    jest.spyOn(service, 'listManagedBroadcasts').mockResolvedValue([
+      {
+        id: 'broadcast-1',
+        status: 'ACTIVE',
+        textPreview: 'Анонс обновления',
+        textLength: 16,
+        applyToAllChats: false,
+        targetChats: 1,
+        hasImage: false,
+        buttonEnabled: false,
+        nextSendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 24,
+        cycleCount: 1,
+        sentCount: 0,
+        currentOccurrence: 1,
+        deliveredChats: 0,
+        failedChats: 0,
+        pendingChats: 2,
+        canRetry: false,
+        remainingCount: 1,
+        createdAt: '2026-03-12T10:00:00.000Z',
+        updatedAt: '2026-03-12T11:00:00.000Z',
+        lastError: null,
+      },
+    ]);
+    jest.spyOn(service, 'getChatPoll').mockResolvedValue({
+      question: 'Оставить текущий режим?',
+      options: ['Да', 'Нет'],
+      status: 'DRAFT',
+      activeVersion: 0,
+      publishedMessageId: null,
+      publishedUrl: null,
+      publishedAt: null,
+      closedAt: null,
+      totalVotes: 0,
+      optionResults: [],
+    });
+
+    const result = await service.getChatWorkbench('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(result.header.title).toBe('Команда MAX');
+    expect(result.activation.completed).toBe(true);
+    expect(result.attention).toEqual({
+      moderationEvents24h: 4,
+      activeBroadcasts: 1,
+      pendingBroadcastDeliveries: 2,
+      activeGiveaways: 1,
+      hasPollDraft: true,
+    });
+    expect(result.quickActions.map((action) => action.key)).toEqual(
+      expect.arrayContaining([
+        'open_settings',
+        'open_events',
+        'manual_action',
+        'broadcast',
+        'poll',
+        'giveaway',
+        'share_bot',
+      ]),
+    );
+    expect(result.activeDrafts.map((draft) => draft.kind)).toEqual(
+      expect.arrayContaining(['broadcast', 'poll', 'giveaway']),
+    );
+  });
+
+  it('builds channel workbench and exposes activation completion', async () => {
+    const prisma = createPrismaMock();
+    prisma.managedGiveaway.findMany.mockResolvedValue([]);
+    prisma.$queryRaw.mockResolvedValue([{ ok: 1 }]);
+
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    jest.spyOn(service, 'getChannelHeader').mockResolvedValue({
+      id: 'channel-1',
+      title: 'MAX Канал',
+      entityType: 'channel',
+      link: 'https://max.ru/channel/channel-1',
+      participantsCount: 1250,
+    });
+    jest.spyOn(service, 'getChannelSettings').mockResolvedValue(
+      channelSettingsSchema.parse({
+        postSuggestionsEnabled: true,
+      }),
+    );
+    (
+      service as unknown as {
+        listManagedChannelBroadcasts: jest.Mock;
+      }
+    ).listManagedChannelBroadcasts = jest.fn().mockResolvedValue([]);
+    jest.spyOn(service, 'getChannelPoll').mockResolvedValue({
+      question: '',
+      options: ['', ''],
+      status: 'DRAFT',
+      activeVersion: 0,
+      publishedMessageId: null,
+      publishedUrl: null,
+      publishedAt: null,
+      closedAt: null,
+      totalVotes: 0,
+      optionResults: [],
+    });
+
+    const result = await service.getChannelWorkbench('channel-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(result.activation.completed).toBe(true);
+    expect(result.quickActions.map((action) => action.key)).toEqual(
+      expect.arrayContaining(['open_settings', 'broadcast', 'poll', 'giveaway', 'share_bot']),
+    );
+    expect(result.defaultSection).toBe('comments');
+    expect(result.legacyInlineFallbackAvailable).toBe(true);
   });
 });
 

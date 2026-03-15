@@ -18,7 +18,9 @@ import { getInitData } from './lib/init-data';
 import { resolveLaunchRoute } from './lib/launch-route';
 import { readyMaxMiniApp } from './lib/max-bridge';
 import {
+  LazyChatWorkbenchPage,
   LazyChannelDialogPage,
+  LazyChannelWorkbenchPage,
   LazyChannelSettingsPage,
   LazyChannelStatsPage,
   LazyChatsPage,
@@ -109,6 +111,11 @@ export function App() {
             <Routes>
               <Route element={<Shell />}>
                 <Route path="/" element={<LazyChatsPage api={apiClient} />} />
+                <Route path="/chat/:chatId" element={<LazyChatWorkbenchPage api={apiClient} />} />
+                <Route
+                  path="/channel/:chatId"
+                  element={<LazyChannelWorkbenchPage api={apiClient} />}
+                />
                 <Route path="/chat/:chatId/settings" element={<LazySettingsPage api={apiClient} />} />
                 <Route
                   path="/channel/:chatId/settings"

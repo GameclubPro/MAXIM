@@ -7,13 +7,19 @@ import {
   managedPollSchema,
   publishChannelEngagementRequestSchema,
   publishChannelEngagementResultSchema,
+  surfaceEntryRequestSchema,
+  surfaceEntryResponseSchema,
   updateManagedPollRequestSchema,
+  workbenchSummarySchema,
   type ChannelSettings,
   type ChannelSettingsScreenResponse,
   type ManagedEntityHeader,
   type ManagedPoll,
   type PublishChannelEngagementRequest,
   type PublishChannelEngagementResult,
+  type SurfaceEntryRequest,
+  type SurfaceEntryResponse,
+  type WorkbenchSummary,
 } from '@maxim/contracts';
 import type { BroadcastHandoffPayload } from './shared-types';
 import type { ApiTransport } from './transport';
@@ -40,6 +46,31 @@ export async function getChannelSettingsScreen(
 ): Promise<ChannelSettingsScreenResponse> {
   const response = await api.request(`/channels/${chatId}/settings-screen`);
   return channelSettingsScreenResponseSchema.parse(response);
+}
+
+export async function getChannelWorkbench(
+  api: ApiTransport,
+  chatId: string,
+): Promise<WorkbenchSummary> {
+  const response = await api.request(`/channels/${chatId}/workbench`);
+  return workbenchSummarySchema.parse(response);
+}
+
+export async function openChannelEntrypoint(
+  api: ApiTransport,
+  chatId: string,
+  payload: Omit<SurfaceEntryRequest, 'entityId' | 'entityType'>,
+): Promise<SurfaceEntryResponse> {
+  const requestBody = surfaceEntryRequestSchema.parse({
+    ...payload,
+    entityId: chatId,
+    entityType: 'channel',
+  });
+  const response = await api.request(`/channels/${chatId}/entrypoint`, {
+    method: 'POST',
+    body: JSON.stringify(requestBody),
+  });
+  return surfaceEntryResponseSchema.parse(response);
 }
 
 export async function updateChannelSettings(

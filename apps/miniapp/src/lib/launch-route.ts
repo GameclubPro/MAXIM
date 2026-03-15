@@ -2,6 +2,8 @@ import type { ChannelDialogType } from '@maxim/contracts';
 
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const GIVEAWAY_START_PARAM_PREFIX = 'gg-';
+const WORKBENCH_START_PARAM_PREFIX = 'wb-';
+const SETTINGS_SECTION_START_PARAM_PREFIX = 'ss-';
 
 type ChannelDialogLaunchPayload = {
   v: 1;
@@ -15,6 +17,23 @@ type GiveawayLaunchPayload = {
   v: 1;
   k: 'giveaway';
   g: string;
+};
+
+type WorkbenchLaunchPayload = {
+  v: 1;
+  k: 'workbench';
+  c: string;
+  e: 'chat' | 'channel';
+  s: string | null;
+  screen: string | null;
+};
+
+type SettingsSectionLaunchPayload = {
+  v: 1;
+  k: 'settings-section';
+  c: string;
+  e: 'chat' | 'channel';
+  s: string;
 };
 
 function readString(value: unknown): string {
@@ -148,11 +167,89 @@ function parseGiveawayStartParam(value: string): GiveawayLaunchPayload | null {
   }
 }
 
+function parseWorkbenchStartParam(value: string): WorkbenchLaunchPayload | null {
+  const normalized = value.trim();
+  if (!normalized.startsWith(WORKBENCH_START_PARAM_PREFIX)) {
+    return null;
+  }
+
+  const encodedPayload = normalized.slice(WORKBENCH_START_PARAM_PREFIX.length);
+  if (!encodedPayload) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(decodeBase64Url(encodedPayload)) as Partial<WorkbenchLaunchPayload>;
+    const chatId = readString(parsed.c);
+    const entityType = parsed.e === 'channel' ? 'channel' : parsed.e === 'chat' ? 'chat' : null;
+    if (parsed.v !== 1 || parsed.k !== 'workbench' || !chatId || !entityType) {
+      return null;
+    }
+
+    return {
+      v: 1,
+      k: 'workbench',
+      c: chatId,
+      e: entityType,
+      s: readString(parsed.s) || null,
+      screen: readString(parsed.screen) || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseSettingsSectionStartParam(value: string): SettingsSectionLaunchPayload | null {
+  const normalized = value.trim();
+  if (!normalized.startsWith(SETTINGS_SECTION_START_PARAM_PREFIX)) {
+    return null;
+  }
+
+  const encodedPayload = normalized.slice(SETTINGS_SECTION_START_PARAM_PREFIX.length);
+  if (!encodedPayload) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(
+      decodeBase64Url(encodedPayload),
+    ) as Partial<SettingsSectionLaunchPayload>;
+    const chatId = readString(parsed.c);
+    const entityType = parsed.e === 'channel' ? 'channel' : parsed.e === 'chat' ? 'chat' : null;
+    const section = readString(parsed.s);
+    if (parsed.v !== 1 || parsed.k !== 'settings-section' || !chatId || !entityType || !section) {
+      return null;
+    }
+
+    return {
+      v: 1,
+      k: 'settings-section',
+      c: chatId,
+      e: entityType,
+      s: section,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function resolveLaunchRoute(initData: string): string | null {
   const startParam =
     readStartParamFromLocation() ||
     readStartParamFromBridge() ||
     readStartParamFromInitData(initData);
+
+  const settingsSectionLaunch = parseSettingsSectionStartParam(startParam);
+  if (settingsSectionLaunch) {
+    return `/${settingsSectionLaunch.e}/${encodeURIComponent(
+      settingsSectionLaunch.c,
+    )}/settings?section=${encodeURIComponent(settingsSectionLaunch.s)}`;
+  }
+
+  const workbenchLaunch = parseWorkbenchStartParam(startParam);
+  if (workbenchLaunch) {
+    return `/${workbenchLaunch.e}/${encodeURIComponent(workbenchLaunch.c)}`;
+  }
 
   const giveawayLaunch = parseGiveawayStartParam(startParam);
   if (giveawayLaunch) {

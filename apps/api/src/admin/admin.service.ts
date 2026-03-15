@@ -52,6 +52,10 @@ import {
   type SendBroadcastResult,
   type ChatSummary,
   type ManagedEntityHeader,
+  type WorkbenchDraft,
+  type WorkbenchQuickAction,
+  type WorkbenchSummary,
+  workbenchSummarySchema,
   managedPollSchema,
   updateManagedPollRequestSchema,
   type ManagedPoll,
@@ -178,6 +182,7 @@ const MANAGED_POLL_ACTION_PUBLISH = 'PUBLISH_MANAGED_POLL';
 const MANAGED_POLL_ACTION_CLOSE = 'CLOSE_MANAGED_POLL';
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
+const DEFAULT_CHAT_SETTINGS = chatSettingsSchema.parse({});
 const DEFAULT_CHANNEL_SETTINGS = channelSettingsSchema.parse({});
 const SETTINGS_SECTION_KEYS = {
   links: [
@@ -363,6 +368,14 @@ export class AdminService {
 
   async getChannelHeader(chatId: string, user: AuthUser): Promise<ManagedEntityHeader> {
     return this.getManagedEntityHeader(chatId, user, 'channel');
+  }
+
+  async getChatWorkbench(chatId: string, user: AuthUser): Promise<WorkbenchSummary> {
+    return this.getManagedWorkbench(chatId, user, 'chat');
+  }
+
+  async getChannelWorkbench(chatId: string, user: AuthUser): Promise<WorkbenchSummary> {
+    return this.getManagedWorkbench(chatId, user, 'channel');
   }
 
   async listManagedEntities(
@@ -1231,6 +1244,142 @@ export class AdminService {
     });
   }
 
+  private async getManagedWorkbench(
+    chatId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType,
+  ): Promise<WorkbenchSummary> {
+    const [header, settings, recentModerationEvents, managedBroadcasts, poll, giveaways, apiReady] =
+      await Promise.all([
+        entityType === 'channel'
+          ? this.getChannelHeader(chatId, user)
+          : this.getChatHeader(chatId, user),
+        entityType === 'channel'
+          ? this.getChannelSettings(chatId, user)
+          : this.getSettings(chatId, user),
+        entityType === 'chat'
+          ? this.prisma.moderationEvent.count({
+              where: {
+                chatId,
+                createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1_000) },
+              },
+            })
+          : Promise.resolve(0),
+        entityType === 'channel'
+          ? this.listManagedChannelBroadcasts(chatId, user)
+          : this.listManagedBroadcasts(chatId, user),
+        entityType === 'channel'
+          ? this.getChannelPoll(chatId, user)
+          : this.getChatPoll(chatId, user),
+        this.prisma.managedGiveaway.findMany({
+          where: {
+            sourceChatId: chatId,
+            entityType: this.toPrismaEntityType(entityType),
+          },
+          orderBy: [{ updatedAt: 'desc' }],
+          select: {
+            id: true,
+            title: true,
+            status: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        }),
+        this.checkApiReady(),
+      ]);
+
+    const hasSettingsChanges =
+      entityType === 'channel'
+        ? JSON.stringify(settings) !== JSON.stringify(DEFAULT_CHANNEL_SETTINGS)
+        : JSON.stringify(settings) !== JSON.stringify(DEFAULT_CHAT_SETTINGS);
+    const activeBroadcasts = managedBroadcasts.filter((item) => item.status !== 'COMPLETED');
+    const pendingBroadcastDeliveries = managedBroadcasts.reduce(
+      (total, item) => total + item.pendingChats,
+      0,
+    );
+    const activeGiveaways = giveaways.filter(
+      (item) => item.status !== 'COMPLETED' && item.status !== 'CANCELED',
+    );
+    const hasPollDraft =
+      poll.status === 'DRAFT'
+        ? poll.question.trim().length > 0 || poll.options.some((option) => option.trim().length > 0)
+        : true;
+    const hasChannelDialogActivity =
+      entityType === 'channel'
+        ? (settings as ChannelSettings).commentsEnabled ||
+          (settings as ChannelSettings).postSuggestionsEnabled
+        : false;
+    const hasUsefulAction =
+      recentModerationEvents > 0 ||
+      activeBroadcasts.length > 0 ||
+      activeGiveaways.length > 0 ||
+      hasPollDraft ||
+      hasChannelDialogActivity;
+
+    const activationItems = [
+      {
+        key: 'entity_visible',
+        label: entityType === 'channel' ? 'Канал найден' : 'Чат найден',
+        description: 'Сущность уже доступна в MAXIM.',
+        done: true,
+      },
+      {
+        key: 'bot_admin_granted',
+        label: 'Права бота подтверждены',
+        description: 'Бот видит сущность и прошёл проверку админ-доступа.',
+        done: true,
+      },
+      {
+        key: 'api_ready',
+        label: 'API отвечает',
+        description: 'Базовая внутренняя проверка API проходит.',
+        done: apiReady,
+      },
+      {
+        key: 'first_setting_saved',
+        label: 'Первая настройка сохранена',
+        description: 'В сущности уже есть настройки, отличающиеся от дефолта.',
+        done: hasSettingsChanges,
+      },
+      {
+        key: 'first_useful_action',
+        label: 'Первое полезное действие выполнено',
+        description: 'Есть первый сигнал реального использования: событие, рассылка, опрос или розыгрыш.',
+        done: hasUsefulAction,
+      },
+    ] as const;
+    const completedSteps = activationItems.filter((item) => item.done).length;
+    const quickActions = this.buildWorkbenchQuickActions(entityType, completedSteps === activationItems.length);
+    const activeDrafts = this.buildWorkbenchDrafts({
+      entityType,
+      managedBroadcasts: activeBroadcasts,
+      poll,
+      giveaways: activeGiveaways,
+    });
+
+    return workbenchSummarySchema.parse({
+      header,
+      activation: {
+        completed: completedSteps === activationItems.length,
+        completedSteps,
+        totalSteps: activationItems.length,
+        nextStepLabel: activationItems.find((item) => !item.done)?.label ?? null,
+        items: activationItems,
+      },
+      attention: {
+        moderationEvents24h: recentModerationEvents,
+        activeBroadcasts: activeBroadcasts.length,
+        pendingBroadcastDeliveries,
+        activeGiveaways: activeGiveaways.length,
+        hasPollDraft,
+      },
+      quickActions,
+      activeDrafts,
+      defaultSection: entityType === 'channel' ? 'comments' : 'links',
+      legacyInlineFallbackAvailable: true,
+    });
+  }
+
   async updateChannelSettings(
     chatId: string,
     user: AuthUser,
@@ -1791,6 +1940,36 @@ export class AdminService {
       where: {
         sourceChatId,
         entityType: ChatEntityType.CHAT,
+        status: {
+          in: [
+            PrismaManagedBroadcastStatus.ACTIVE,
+            PrismaManagedBroadcastStatus.PARTIAL,
+            PrismaManagedBroadcastStatus.FAILED,
+          ],
+        },
+      },
+      orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'desc' }],
+    });
+
+    const snapshots = await this.getManagedBroadcastDeliverySnapshots(rows);
+    return rows.map((row) =>
+      managedBroadcastSummarySchema.parse(
+        this.mapManagedBroadcastSummary(row, snapshots.get(row.id)),
+      ),
+    );
+  }
+
+  private async listManagedChannelBroadcasts(
+    sourceChatId: string,
+    user: AuthUser,
+  ): Promise<ManagedBroadcastSummary[]> {
+    await this.assertChatAdmin(sourceChatId, user.userId, 'channel');
+    await this.ensureEntityType(sourceChatId, user.userId, 'channel');
+
+    const rows = await this.prisma.managedBroadcast.findMany({
+      where: {
+        sourceChatId,
+        entityType: ChatEntityType.CHANNEL,
         status: {
           in: [
             PrismaManagedBroadcastStatus.ACTIVE,
@@ -6135,6 +6314,185 @@ export class AdminService {
     };
     await this.chatContextCache.setManagedEntityHeader?.(fallbackHeader);
     return fallbackHeader;
+  }
+
+  private buildWorkbenchQuickActions(
+    entityType: ManagedEntityType,
+    activationCompleted: boolean,
+  ): WorkbenchQuickAction[] {
+    const actions: WorkbenchQuickAction[] =
+      entityType === 'channel'
+        ? [
+            {
+              key: 'open_settings',
+              label: 'Настройки канала',
+              description: 'Полная настройка сценариев и публикаций.',
+              intent: 'settings_section',
+              targetSurface: 'miniapp',
+              enabled: true,
+              section: 'comments',
+            },
+            {
+              key: 'broadcast',
+              label: 'Рассылка',
+              description: 'Подготовить публикацию или серию постов.',
+              intent: 'broadcast_compose',
+              targetSurface: 'miniapp',
+              enabled: true,
+              section: 'broadcast',
+            },
+            {
+              key: 'poll',
+              label: 'Опрос',
+              description: 'Создать или продолжить опрос.',
+              intent: 'poll_manage',
+              targetSurface: 'miniapp',
+              enabled: true,
+              section: 'poll',
+            },
+            {
+              key: 'giveaway',
+              label: 'Розыгрыш',
+              description: 'Открыть текущий розыгрыш и черновики.',
+              intent: 'giveaway_manage',
+              targetSurface: 'miniapp',
+              enabled: true,
+              section: 'giveaway',
+            },
+          ]
+        : [
+            {
+              key: 'open_settings',
+              label: 'Настройки чата',
+              description: 'Полная настройка правил и политики модерации.',
+              intent: 'settings_section',
+              targetSurface: 'miniapp',
+              enabled: true,
+              section: 'links',
+            },
+            {
+              key: 'open_events',
+              label: 'События',
+              description: 'Быстрый просмотр последних нарушений в личке бота.',
+              intent: 'events',
+              targetSurface: 'private_bot',
+              enabled: true,
+              section: null,
+            },
+            {
+              key: 'manual_action',
+              label: 'Ручные действия',
+              description: 'Кик, бан и разбан через быстрый операционный контур.',
+              intent: 'manual_action',
+              targetSurface: 'private_bot',
+              enabled: true,
+              section: null,
+            },
+            {
+              key: 'broadcast',
+              label: 'Рассылка',
+              description: 'Собрать текст, кнопку, фото и расписание.',
+              intent: 'broadcast_compose',
+              targetSurface: 'miniapp',
+              enabled: true,
+              section: 'mailing',
+            },
+            {
+              key: 'poll',
+              label: 'Опрос',
+              description: 'Создать или продолжить опрос.',
+              intent: 'poll_manage',
+              targetSurface: 'miniapp',
+              enabled: true,
+              section: 'poll',
+            },
+            {
+              key: 'giveaway',
+              label: 'Розыгрыш',
+              description: 'Открыть текущий розыгрыш и черновики.',
+              intent: 'giveaway_manage',
+              targetSurface: 'miniapp',
+              enabled: true,
+              section: 'giveaway',
+            },
+          ];
+
+    if (activationCompleted) {
+      actions.push({
+        key: 'share_bot',
+        label: 'Поделиться ботом',
+        description: 'Следующий growth-шаг после активации.',
+        intent: 'activation',
+        targetSurface: 'miniapp',
+        enabled: true,
+        section: null,
+      });
+    }
+
+    return actions;
+  }
+
+  private buildWorkbenchDrafts(params: {
+    entityType: ManagedEntityType;
+    managedBroadcasts: ManagedBroadcastSummary[];
+    poll: ManagedPoll;
+    giveaways: Array<{
+      id: string;
+      title: string;
+      status: string;
+      createdAt: Date;
+      updatedAt: Date;
+    }>;
+  }): WorkbenchDraft[] {
+    const drafts: WorkbenchDraft[] = [];
+
+    for (const broadcast of params.managedBroadcasts) {
+      drafts.push({
+        kind: 'broadcast',
+        resourceId: broadcast.id,
+        status: broadcast.status,
+        title: broadcast.textPreview.trim() || 'Рассылка',
+        intent: 'broadcast_compose',
+        targetSurface: 'miniapp',
+      });
+    }
+
+    if (
+      params.poll.status !== 'DRAFT' ||
+      params.poll.question.trim().length > 0 ||
+      params.poll.options.some((option) => option.trim().length > 0)
+    ) {
+      drafts.push({
+        kind: 'poll',
+        resourceId: params.poll.publishedMessageId,
+        status: params.poll.status,
+        title: params.poll.question.trim() || 'Опрос',
+        intent: 'poll_manage',
+        targetSurface: 'miniapp',
+      });
+    }
+
+    for (const giveaway of params.giveaways) {
+      drafts.push({
+        kind: 'giveaway',
+        resourceId: giveaway.id,
+        status: giveaway.status,
+        title: giveaway.title.trim() || 'Розыгрыш',
+        intent: 'giveaway_manage',
+        targetSurface: 'miniapp',
+      });
+    }
+
+    return drafts;
+  }
+
+  private async checkApiReady(): Promise<boolean> {
+    try {
+      await this.prisma.$queryRaw`SELECT 1`;
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private toPrismaEntityType(entityType: ManagedEntityType): ChatEntityType {

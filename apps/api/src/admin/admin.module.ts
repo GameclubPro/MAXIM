@@ -8,6 +8,7 @@ import { ManagedGiveawayRunnerService } from './managed-giveaway-runner.service'
 import { ManagedGiveawayService } from './managed-giveaway.service';
 import { AdminService } from './admin.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
+import { SurfaceOrchestratorService } from './surface-orchestrator.service';
 
 @Module({
   imports: [AuthModule, MaxModule, ChatContextModule],
@@ -15,10 +16,11 @@ import { ChannelStatsCollectorService } from './channel-stats-collector.service'
   providers: [
     AdminService,
     ChannelStatsCollectorService,
+    SurfaceOrchestratorService,
     ManagedBroadcastRunnerService,
     ManagedGiveawayService,
     ManagedGiveawayRunnerService,
   ],
-  exports: [AdminService, ManagedGiveawayService],
+  exports: [AdminService, ManagedGiveawayService, SurfaceOrchestratorService],
 })
 export class AdminModule {}

@@ -15,6 +15,7 @@ import {
   saveLastEntityType,
 } from '../lib/last-chat';
 import {
+  preloadEntityWorkbenchPage,
   preloadChannelSettingsPage,
   preloadChannelStatsPage,
   preloadEventsPage,
@@ -310,17 +311,17 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               {activeTab === 'chat' ? (
                 <div className="chat-card__actions">
                   <Link
-                    to={`/chat/${entity.id}/settings`}
+                    to={`/chat/${entity.id}`}
                     className="button button--accent"
                     state={{ chatTitle: entity.title }}
                     onClick={() => {
                       saveLastEntityId('chat', entity.id);
                       saveChatTitle(entity.id, entity.title);
                     }}
-                    onPointerEnter={preloadSettingsPage}
-                    onTouchStart={preloadSettingsPage}
+                    onPointerEnter={preloadEntityWorkbenchPage}
+                    onTouchStart={preloadEntityWorkbenchPage}
                   >
-                    Настройки
+                    Открыть
                   </Link>
                   <Link
                     to={`/chat/${entity.id}/events`}
@@ -339,17 +340,17 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               ) : (
                 <div className="chat-card__actions">
                   <Link
-                    to={`/channel/${entity.id}/settings`}
+                    to={`/channel/${entity.id}`}
                     className="button button--accent"
                     state={{ chatTitle: entity.title, chatLink: entity.link ?? '' }}
                     onClick={() => {
                       saveLastEntityId('channel', entity.id);
                       saveChatTitle(entity.id, entity.title);
                     }}
-                    onPointerEnter={preloadChannelSettingsPage}
-                    onTouchStart={preloadChannelSettingsPage}
+                    onPointerEnter={preloadEntityWorkbenchPage}
+                    onTouchStart={preloadEntityWorkbenchPage}
                   >
-                    Настройки
+                    Открыть
                   </Link>
                   <Link
                     to={`/channel/${entity.id}/stats`}
