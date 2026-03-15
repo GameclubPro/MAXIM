@@ -185,6 +185,21 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
   });
 
+  it('detects blocked links with unicode domains', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'вакансии https://центр-занятости-иркутск38.рф',
+      settings: buildSettings({
+        linkPolicy: LinkPolicy.BLOCKLIST_ONLY,
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
+  });
+
   it('matches legacy allowlist rows with encoded trailing text', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({

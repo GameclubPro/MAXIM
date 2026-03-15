@@ -73,6 +73,23 @@ describe('WebhookParser', () => {
     expect(parsed.message?.text).toContain('https://example.com/abc');
   });
 
+  it('extracts unicode-domain urls from nested body.text', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-3-unicode',
+        chat_id: 'chat-3-unicode',
+        sender_id: 'user-3-unicode',
+        created_at: '2026-03-15T07:08:54.854Z',
+        body: {
+          text: 'вакансии https://центр-занятости-иркутск38.рф',
+        },
+      },
+    });
+
+    expect(parsed.message?.text).toContain('https://центр-занятости-иркутск38.рф');
+  });
+
   it('adds urls from forwarded payload when outer text has no links', () => {
     const parsed = parser.parse({
       update_type: 'message_created',

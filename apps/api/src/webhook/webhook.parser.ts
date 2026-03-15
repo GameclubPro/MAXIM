@@ -1,6 +1,10 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { maxUpdateSchema, type MaxUpdate } from '@maxim/contracts';
 import { randomUUID } from 'node:crypto';
+import {
+  extractUrlsFromText as extractTextUrls,
+  stripUrlsFromText as stripTextUrls,
+} from '../common/url-text.util';
 
 @Injectable()
 export class WebhookParser {
@@ -811,23 +815,11 @@ export class WebhookParser {
   }
 
   private stripUrlsFromText(value: string): string {
-    if (!value) {
-      return '';
-    }
-
-    const regex = /((https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,})(\/\S*)?/gi;
-    return value.replace(regex, ' ').replace(/\s+/g, ' ').trim();
+    return stripTextUrls(value);
   }
 
   private extractUrlsFromString(value: string): string[] {
-    if (!value || value.trim().length === 0) {
-      return [];
-    }
-
-    const regex = /((https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,})(\/\S*)?/gi;
-    return [...value.matchAll(regex)]
-      .map((match) => match[0].trim().replace(/[),.;!?]+$/, ''))
-      .filter((url) => url.length > 0);
+    return extractTextUrls(value);
   }
 
   private findBestMessageCandidate(

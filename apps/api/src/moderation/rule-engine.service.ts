@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { normalizeAllowlistLink } from '@maxim/contracts';
 import { CommercialAdsSensitivity, LinkPolicy, type ChatSettings } from '@prisma/client';
 import { createHash } from 'node:crypto';
+import { extractUrlsFromText as extractTextUrls } from '../common/url-text.util';
 import { RedisCounterService } from './redis-counter.service';
 
 export type CommercialDecisionBand = 'LOW' | 'MEDIUM' | 'HIGH';
@@ -689,14 +690,7 @@ export class RuleEngineService {
   }
 
   private extractUrlsFromText(value: string): string[] {
-    if (!value || value.trim().length === 0) {
-      return [];
-    }
-
-    const regex = /((https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,})(\/\S*)?/gi;
-    return [...value.matchAll(regex)]
-      .map((match) => match[0].trim().replace(/[),.;!?]+$/, ''))
-      .filter((url) => url.length > 0);
+    return extractTextUrls(value);
   }
 
   private shouldCheckExactAllowlistLink(value: string): boolean {
