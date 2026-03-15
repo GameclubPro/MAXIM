@@ -4874,7 +4874,31 @@ export class AdminService {
         AND created_at <= ${now}
     `;
 
-    const [warnCount, deleteMessageCount, kickCount, banCount, violationRows] = await Promise.all([
+    const violationsWhere: Prisma.ModerationEventWhereInput = {
+      chatId,
+      createdAt: { gte: from, lte: now },
+      OR: [
+        {
+          action: {
+            in: ['WARN', 'DELETE_MESSAGE', 'KICK', 'BAN'],
+          },
+        },
+        {
+          action: SanctionAction.NONE,
+          ruleCode: 'MANUAL_UNBAN',
+        },
+      ],
+    };
+
+    const [
+      warnCount,
+      deleteMessageCount,
+      kickCount,
+      banCount,
+      unbanCount,
+      affectedUsers,
+      violationRows,
+    ] = await Promise.all([
       this.prisma.moderationEvent.count({
         where: {
           chatId,
@@ -4903,14 +4927,21 @@ export class AdminService {
           createdAt: { gte: from, lte: now },
         },
       }),
-      this.prisma.moderationEvent.findMany({
+      this.prisma.moderationEvent.count({
         where: {
           chatId,
-          action: {
-            in: ['WARN', 'DELETE_MESSAGE', 'KICK', 'BAN'],
-          },
+          action: SanctionAction.NONE,
+          ruleCode: 'MANUAL_UNBAN',
           createdAt: { gte: from, lte: now },
         },
+      }),
+      this.prisma.moderationEvent.findMany({
+        where: violationsWhere,
+        distinct: ['userId'],
+        select: { userId: true },
+      }),
+      this.prisma.moderationEvent.findMany({
+        where: violationsWhere,
         orderBy: { createdAt: 'desc' },
         take: LOGS_DASHBOARD_VIOLATIONS_LIMIT,
       }),
@@ -4921,6 +4952,8 @@ export class AdminService {
     );
 
     const membershipSource = membershipRows[0] ?? { joined_users: 0, left_users: 0 };
+    const joinedUsers = this.toSafeInteger(membershipSource.joined_users);
+    const leftUsers = this.toSafeInteger(membershipSource.left_users);
     const response: LogsDashboardResponse = {
       chat: {
         id: chatId,
@@ -4932,15 +4965,18 @@ export class AdminService {
         to: now.toISOString(),
       },
       membership: {
-        joinedUsers: this.toSafeInteger(membershipSource.joined_users),
-        leftUsers: this.toSafeInteger(membershipSource.left_users),
+        joinedUsers,
+        leftUsers,
+        netUsers: joinedUsers - leftUsers,
       },
       violationsSummary: {
         warn: warnCount,
         deleteMessage: deleteMessageCount,
         kick: kickCount,
         ban: banCount,
-        total: warnCount + deleteMessageCount + kickCount + banCount,
+        unban: unbanCount,
+        affectedUsers: affectedUsers.length,
+        total: warnCount + deleteMessageCount + kickCount + banCount + unbanCount,
       },
       violations: violationRows.map((row) => ({
         id: row.id,

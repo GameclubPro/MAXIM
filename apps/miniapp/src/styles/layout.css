@@ -342,11 +342,63 @@ body.settings-drilldown-open .bottom-nav {
   font-size: 1.12rem;
 }
 
+.logs-head__summary {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  line-height: 1.35;
+  font-weight: 600;
+}
+
 .logs-membership__grid,
 .logs-summary__grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-3);
+}
+
+.events-overview {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.events-overview__card {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.events-overview__card small {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.events-overview__card strong {
+  font-size: 1.28rem;
+  line-height: 1;
+}
+
+.events-overview__card span {
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  line-height: 1.35;
+  font-weight: 600;
+}
+
+.events-overview__value.is-positive {
+  color: #157456;
+}
+
+.events-overview__value.is-negative {
+  color: #a5364c;
+}
+
+.events-overview__value.is-neutral {
+  color: var(--text-primary);
 }
 
 .logs-metric-card {
@@ -378,6 +430,16 @@ body.settings-drilldown-open .bottom-nav {
   margin: 0;
   color: var(--text-muted);
   font-size: 0.82rem;
+}
+
+.logs-section-title--compact {
+  gap: 2px;
+  margin-bottom: 0;
+}
+
+.logs-filter-card {
+  display: grid;
+  gap: 10px;
 }
 
 .settings-grid {
@@ -447,6 +509,10 @@ body.settings-drilldown-open .bottom-nav {
 
   .settings-grid--single {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .events-overview {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 
   .logs-summary__grid {

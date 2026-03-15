@@ -1184,12 +1184,15 @@ export const logsDashboardResponseSchema = z.object({
   membership: z.object({
     joinedUsers: z.number().int().min(0),
     leftUsers: z.number().int().min(0),
+    netUsers: z.number().int(),
   }),
   violationsSummary: z.object({
     warn: z.number().int().min(0),
     deleteMessage: z.number().int().min(0),
     kick: z.number().int().min(0),
     ban: z.number().int().min(0),
+    unban: z.number().int().min(0),
+    affectedUsers: z.number().int().min(0),
     total: z.number().int().min(0),
   }),
   violations: z.array(logsDashboardViolationSchema),

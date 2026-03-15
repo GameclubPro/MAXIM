@@ -18,24 +18,26 @@ import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 
 type ViolationAction = LogsDashboardResponse['violations'][number]['action'];
 type ViolationItem = LogsDashboardResponse['violations'][number];
+type DisplayAction = Exclude<ViolationAction, 'NONE'> | 'UNBAN';
+type EventsFilter = 'ALL' | DisplayAction;
 
 const BAN_DURATION_MIN_HOURS = 1;
 const BAN_DURATION_MAX_HOURS = 336;
 
-const actionLabelMap: Record<ViolationAction, string> = {
+const actionLabelMap: Record<DisplayAction, string> = {
   DELETE_MESSAGE: 'Удаление',
   WARN: 'Предупреждение',
   KICK: 'Исключение',
   BAN: 'Бан',
-  NONE: 'Без санкции',
+  UNBAN: 'Разбан',
 };
 
-const actionToneMap: Record<ViolationAction, 'neutral' | 'warning' | 'danger'> = {
+const actionToneMap: Record<DisplayAction, 'neutral' | 'warning' | 'danger' | 'success'> = {
   WARN: 'warning',
   DELETE_MESSAGE: 'neutral',
   KICK: 'danger',
   BAN: 'danger',
-  NONE: 'neutral',
+  UNBAN: 'success',
 };
 
 const periodOptions: Array<{ value: LogsDashboardRange; label: string }> = [
@@ -61,7 +63,7 @@ function formatViolationRule(ruleCode: string): string {
   const labels: Record<string, string> = {
     LINK_BLOCKED: 'Ссылки запрещены',
     PROFANITY: 'Нецензурная лексика',
-    COMMERCIAL_AD: 'Реклама',
+    COMMERCIAL_AD: 'Комерция',
     MESSAGE_TOO_LONG: 'Слишком длинное сообщение',
     VIDEO_BLOCKED: 'Видео запрещено',
     FILE_BLOCKED: 'Файлы запрещены',
@@ -74,6 +76,7 @@ function formatViolationRule(ruleCode: string): string {
     MANUAL_KICK: 'Ручное удаление',
     MANUAL_BAN: 'Ручной бан',
     MANUAL_UNBAN: 'Ручной разбан',
+    THEMATIC_FILTER: 'Объявления по теме',
     GLOBAL_USER_BLACKLIST_KICK: 'Глобальный черный список',
     GLOBAL_CROSS_CHAT_SPAM: 'Кросс-чат спам',
     GLOBAL_CROSS_CHAT_SPAM_DELETE: 'Кросс-чат спам',
@@ -107,7 +110,42 @@ function resolveOffenderInitial(name: string): string {
   return matched ? matched[0]!.toUpperCase() : '•';
 }
 
+function isManualUnban(violation: ViolationItem): boolean {
+  return violation.ruleCode === 'MANUAL_UNBAN';
+}
+
+function resolveDisplayAction(violation: ViolationItem): DisplayAction {
+  if (isManualUnban(violation)) {
+    return 'UNBAN';
+  }
+
+  return violation.action === 'NONE' ? 'DELETE_MESSAGE' : violation.action;
+}
+
 function resolveViolationText(violation: LogsDashboardResponse['violations'][number]): string {
+  if (violation.ruleCode === 'MANUAL_UNBAN') {
+    return 'Модератор снял бан и вернул участнику доступ к чату.';
+  }
+
+  if (violation.ruleCode === 'MANUAL_KICK') {
+    return 'Модератор удалил участника из чата вручную.';
+  }
+
+  if (violation.ruleCode === 'MANUAL_BAN') {
+    const metadata =
+      violation.metadata && typeof violation.metadata === 'object' && !Array.isArray(violation.metadata)
+        ? violation.metadata
+        : null;
+    const banDurationHours =
+      metadata && typeof metadata.banDurationHours === 'number' && Number.isFinite(metadata.banDurationHours)
+        ? metadata.banDurationHours
+        : null;
+
+    return banDurationHours
+      ? `Модератор выдал бан на ${banDurationHours}ч.`
+      : 'Модератор выдал бан вручную.';
+  }
+
   const metadataReason =
     violation.metadata &&
     typeof violation.metadata === 'object' &&
@@ -139,6 +177,30 @@ function resolveViolationText(violation: LogsDashboardResponse['violations'][num
   }
 
   return `Зафиксировано событие модерации. Причина: ${rule}.`;
+}
+
+function formatPeriodCaption(from: string, to: string): string {
+  const fromDate = new Date(from);
+  const toDate = new Date(to);
+  if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+    return `${from} - ${to}`;
+  }
+
+  return `${fromDate.toLocaleDateString('ru-RU', {
+    day: '2-digit',
+    month: 'short',
+  })} - ${toDate.toLocaleDateString('ru-RU', {
+    day: '2-digit',
+    month: 'short',
+  })}`;
+}
+
+function formatSignedCount(value: number): string {
+  if (value > 0) {
+    return `+${value}`;
+  }
+
+  return String(value);
 }
 
 function clampBanDurationHours(value: number): number {
@@ -281,7 +343,7 @@ function ViolationModerationControls({
 
   return (
     <details className="logs-violation-item__moderation">
-      <summary>Действия модератора</summary>
+      <summary>Модерация</summary>
       <div className="logs-violation-item__actions">
         <p className="logs-violation-item__actions-caption">Нарушитель: {offenderName}</p>
         <p className="logs-violation-item__actions-hint">
@@ -391,6 +453,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
   const [range, setRange] = useState<LogsDashboardRange>('7d');
+  const [eventsFilter, setEventsFilter] = useState<EventsFilter>('ALL');
 
   const routeChatTitle = getRouteChatTitle(location.state);
 
@@ -451,6 +514,51 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     saveChatTitle(chatId, chatTitle);
   }, [chatId, chatTitle]);
 
+  const dashboard = dashboardQuery.data ?? null;
+  const filterOptions = useMemo<Array<{ value: EventsFilter; label: string; count: number }>>(() => {
+    if (!dashboard) {
+      return [{ value: 'ALL', label: 'Все', count: 0 }];
+    }
+
+    const options: Array<{ value: EventsFilter; label: string; count: number }> = [
+      { value: 'ALL', label: 'Все', count: dashboard.violationsSummary.total },
+      { value: 'WARN', label: 'Предупр.', count: dashboard.violationsSummary.warn },
+      { value: 'DELETE_MESSAGE', label: 'Удаления', count: dashboard.violationsSummary.deleteMessage },
+      { value: 'KICK', label: 'Кики', count: dashboard.violationsSummary.kick },
+      { value: 'BAN', label: 'Баны', count: dashboard.violationsSummary.ban },
+      { value: 'UNBAN', label: 'Разбаны', count: dashboard.violationsSummary.unban },
+    ];
+
+    return options.filter((option) => option.value === 'ALL' || option.count > 0);
+  }, [dashboard]);
+
+  useEffect(() => {
+    if (!filterOptions.some((option) => option.value === eventsFilter)) {
+      setEventsFilter('ALL');
+    }
+  }, [eventsFilter, filterOptions]);
+
+  const filteredViolations = useMemo(() => {
+    if (!dashboard) {
+      return [];
+    }
+
+    if (eventsFilter === 'ALL') {
+      return dashboard.violations;
+    }
+
+    return dashboard.violations.filter((violation) => resolveDisplayAction(violation) === eventsFilter);
+  }, [dashboard, eventsFilter]);
+
+  const periodCaption = dashboard
+    ? formatPeriodCaption(dashboard.period.from, dashboard.period.to)
+    : '';
+  const feedCaption = dashboard
+    ? dashboard.violationsSummary.total > dashboard.violations.length
+      ? `Показаны последние ${dashboard.violations.length} из ${dashboard.violationsSummary.total} действий`
+      : `${dashboard.violations.length} действий за период`
+    : '';
+
   if (!chatId) {
     return (
       <GlassCard>
@@ -474,6 +582,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         <div className="logs-head__title">
           <p className="logs-head__eyebrow">События чата</p>
           <h1>{chatTitle}</h1>
+          {dashboard ? (
+            <p className="logs-head__summary">
+              {periodCaption} · {feedCaption}
+            </p>
+          ) : null}
         </div>
         <SegmentedControl
           value={range}
@@ -485,7 +598,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       {dashboardQuery.isLoading ? (
         <section className="events-list" aria-label="Загрузка событий">
           {Array.from({ length: 4 }).map((_, index) => (
-            <GlassCard key={index} className="logs-violation-item">
+            <GlassCard key={index} className="logs-violation-item" padding="sm">
               <SkeletonCard lines={3} />
             </GlassCard>
           ))}
@@ -511,81 +624,97 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         </GlassCard>
       ) : null}
 
-      {!dashboardQuery.isLoading && !dashboardQuery.error && dashboardQuery.data ? (
-        <GlassCard>
-          <section className="logs-membership" aria-label="Статистика участников">
-            <div className="logs-section-title">
-              <h2>Участники</h2>
-              <p>
-                Период: {new Date(dashboardQuery.data.period.from).toLocaleDateString('ru-RU')} -{' '}
-                {new Date(dashboardQuery.data.period.to).toLocaleDateString('ru-RU')}
-              </p>
-            </div>
-            <div className="logs-membership__grid">
-              <article className="logs-metric-card">
-                <small>Вступили</small>
-                <strong>{dashboardQuery.data.membership.joinedUsers}</strong>
-              </article>
-              <article className="logs-metric-card">
-                <small>Вышли</small>
-                <strong>{dashboardQuery.data.membership.leftUsers}</strong>
-              </article>
-            </div>
-          </section>
-        </GlassCard>
-      ) : null}
-
-      {!dashboardQuery.isLoading && !dashboardQuery.error && dashboardQuery.data ? (
-        <section className="logs-summary" aria-label="Сводка нарушений">
-          <GlassCard>
-            <div className="logs-section-title">
-              <h2>Нарушения</h2>
-              <p>Предупреждения, удаления, исключения и баны.</p>
-            </div>
-            <div className="logs-summary__grid">
-              <article className="logs-metric-card">
-                <small>Предупреждения</small>
-                <strong>{dashboardQuery.data.violationsSummary.warn}</strong>
-              </article>
-              <article className="logs-metric-card">
-                <small>Удаления</small>
-                <strong>{dashboardQuery.data.violationsSummary.deleteMessage}</strong>
-              </article>
-              <article className="logs-metric-card">
-                <small>Исключения</small>
-                <strong>{dashboardQuery.data.violationsSummary.kick}</strong>
-              </article>
-              <article className="logs-metric-card">
-                <small>Баны</small>
-                <strong>{dashboardQuery.data.violationsSummary.ban}</strong>
-              </article>
-            </div>
+      {!dashboardQuery.isLoading && !dashboardQuery.error && dashboard ? (
+        <section className="events-overview" aria-label="Сводка по чату">
+          <GlassCard className="events-overview__card" padding="sm">
+            <small>События</small>
+            <strong>{dashboard.violationsSummary.total}</strong>
+            <span>{feedCaption}</span>
+          </GlassCard>
+          <GlassCard className="events-overview__card" padding="sm">
+            <small>Нарушители</small>
+            <strong>{dashboard.violationsSummary.affectedUsers}</strong>
+            <span>Уникальные участники</span>
+          </GlassCard>
+          <GlassCard className="events-overview__card" padding="sm">
+            <small>Баланс чата</small>
+            <strong
+              className={`events-overview__value ${
+                dashboard.membership.netUsers > 0
+                  ? 'is-positive'
+                  : dashboard.membership.netUsers < 0
+                    ? 'is-negative'
+                    : 'is-neutral'
+              }`}
+            >
+              {formatSignedCount(dashboard.membership.netUsers)}
+            </strong>
+            <span>
+              +{dashboard.membership.joinedUsers} / -{dashboard.membership.leftUsers}
+            </span>
+          </GlassCard>
+          <GlassCard className="events-overview__card" padding="sm">
+            <small>Жёсткие меры</small>
+            <strong>{dashboard.violationsSummary.kick + dashboard.violationsSummary.ban}</strong>
+            <span>
+              Кики {dashboard.violationsSummary.kick} · Баны {dashboard.violationsSummary.ban}
+            </span>
           </GlassCard>
         </section>
       ) : null}
 
-      {!dashboardQuery.isLoading &&
-      !dashboardQuery.error &&
-      dashboardQuery.data &&
-      dashboardQuery.data.violations.length === 0 ? (
-        <GlassCard>
-          <StatusState
-            tone="neutral"
-            title="Нарушений не найдено"
-            description="За выбранный период действий модерации не было."
+      {!dashboardQuery.isLoading && !dashboardQuery.error && dashboard ? (
+        <GlassCard className="logs-filter-card" padding="sm">
+          <div className="logs-section-title logs-section-title--compact">
+            <h2>Лента действий</h2>
+            <p>Фильтр по типу события. Разбаны тоже учитываются и отображаются отдельно.</p>
+          </div>
+          <SegmentedControl
+            value={eventsFilter}
+            options={filterOptions}
+            onChange={(next) => setEventsFilter(next as EventsFilter)}
+            className="logs-filter-card__controls"
           />
         </GlassCard>
       ) : null}
 
       {!dashboardQuery.isLoading &&
       !dashboardQuery.error &&
-      dashboardQuery.data &&
-      dashboardQuery.data.violations.length > 0 ? (
+      dashboard &&
+      dashboard.violations.length === 0 ? (
+        <GlassCard>
+          <StatusState
+            tone="neutral"
+            title="Событий не найдено"
+            description="За выбранный период действий модерации и ручных разбанов не было."
+          />
+        </GlassCard>
+      ) : null}
+
+      {!dashboardQuery.isLoading &&
+      !dashboardQuery.error &&
+      dashboard &&
+      dashboard.violations.length > 0 &&
+      filteredViolations.length === 0 ? (
+        <GlassCard>
+          <StatusState
+            tone="neutral"
+            title="По этому фильтру пусто"
+            description="Попробуйте переключить тип события или расширить период."
+          />
+        </GlassCard>
+      ) : null}
+
+      {!dashboardQuery.isLoading &&
+      !dashboardQuery.error &&
+      dashboard &&
+      filteredViolations.length > 0 ? (
         <section className="events-list" aria-label="Список нарушений">
-          {dashboardQuery.data.violations.map((violation, index) => (
+          {filteredViolations.map((violation, index) => (
             <GlassCard
               key={violation.id}
               className="logs-violation-item stagger-in"
+              padding="sm"
               style={{ animationDelay: `${Math.min(index, 8) * 35}ms` }}
             >
               <div className="logs-violation-item__head">
@@ -602,18 +731,25 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                     </span>
                   </div>
                 </div>
-                <span className={`badge-action badge-action--${actionToneMap[violation.action]}`}>
-                  {actionLabelMap[violation.action]}
-                </span>
-              </div>
-
-              <div className="logs-violation-item__tags">
-                <span className="logs-violation-item__rule">
-                  {formatViolationRule(violation.ruleCode)}
-                </span>
+                <div className="logs-violation-item__chips">
+                  <span
+                    className={`badge-action badge-action--${actionToneMap[resolveDisplayAction(violation)]}`}
+                  >
+                    {actionLabelMap[resolveDisplayAction(violation)]}
+                  </span>
+                  <span className="logs-violation-item__rule">
+                    {formatViolationRule(violation.ruleCode)}
+                  </span>
+                </div>
               </div>
 
               <p className="logs-violation-item__reason">{resolveViolationText(violation)}</p>
+              {violation.maskedExcerpt ? (
+                <div className="logs-violation-item__excerpt-inline">
+                  <span>Фрагмент</span>
+                  <p>{violation.maskedExcerpt}</p>
+                </div>
+              ) : null}
 
               <ViolationModerationControls
                 api={api}
@@ -623,7 +759,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               />
 
               <details className="logs-violation-item__details">
-                <summary>Подробности</summary>
+                <summary>ID и детали</summary>
                 <div className="logs-violation-item__details-grid">
                   <div>
                     <span>Нарушитель</span>

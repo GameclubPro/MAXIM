@@ -1141,27 +1141,39 @@ describe('AdminService.getLogsDashboard', () => {
       .mockResolvedValueOnce(3)
       .mockResolvedValueOnce(4)
       .mockResolvedValueOnce(1)
-      .mockResolvedValueOnce(2);
-    prisma.moderationEvent.findMany.mockResolvedValue([
-      {
-        id: 'evt-1',
-        action: 'WARN',
-        ruleCode: 'PROFANITY',
-        userId: 'user-1',
-        createdAt: new Date('2026-03-02T09:00:00.000Z'),
-        maskedExcerpt: '***',
-        metadata: { reason: 'Profanity detected' },
-      },
-      {
-        id: 'evt-2',
-        action: 'BAN',
-        ruleCode: 'LINK_BLOCKED',
-        userId: 'user-2',
-        createdAt: new Date('2026-03-02T08:00:00.000Z'),
-        maskedExcerpt: null,
-        metadata: null,
-      },
-    ]);
+      .mockResolvedValueOnce(2)
+      .mockResolvedValueOnce(1);
+    prisma.moderationEvent.findMany
+      .mockResolvedValueOnce([{ userId: 'user-1' }, { userId: 'user-2' }])
+      .mockResolvedValueOnce([
+        {
+          id: 'evt-1',
+          action: 'WARN',
+          ruleCode: 'PROFANITY',
+          userId: 'user-1',
+          createdAt: new Date('2026-03-02T09:00:00.000Z'),
+          maskedExcerpt: '***',
+          metadata: { reason: 'Profanity detected' },
+        },
+        {
+          id: 'evt-2',
+          action: 'BAN',
+          ruleCode: 'LINK_BLOCKED',
+          userId: 'user-2',
+          createdAt: new Date('2026-03-02T08:00:00.000Z'),
+          maskedExcerpt: null,
+          metadata: null,
+        },
+        {
+          id: 'evt-3',
+          action: 'NONE',
+          ruleCode: 'MANUAL_UNBAN',
+          userId: 'user-2',
+          createdAt: new Date('2026-03-02T07:00:00.000Z'),
+          maskedExcerpt: null,
+          metadata: { reason: 'Ручной разбан участника через miniapp' },
+        },
+      ]);
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -1189,17 +1201,20 @@ describe('AdminService.getLogsDashboard', () => {
     );
 
     expect(result.chat).toEqual({ id: 'chat-1', title: 'Команда MAX' });
-    expect(result.membership).toEqual({ joinedUsers: 5, leftUsers: 2 });
+    expect(result.membership).toEqual({ joinedUsers: 5, leftUsers: 2, netUsers: 3 });
     expect(result.violationsSummary).toEqual({
       warn: 3,
       deleteMessage: 4,
       kick: 1,
       ban: 2,
-      total: 10,
+      unban: 1,
+      affectedUsers: 2,
+      total: 11,
     });
-    expect(result.violations).toHaveLength(2);
+    expect(result.violations).toHaveLength(3);
     expect(result.violations[0]?.userDisplayName).toBe('Алексей');
     expect(result.violations[1]?.userDisplayName).toBe('Мария');
+    expect(result.violations[2]?.ruleCode).toBe('MANUAL_UNBAN');
 
     const membershipSqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
     expect(membershipSqlText).toContain('user_added');
@@ -1223,8 +1238,11 @@ describe('AdminService.getLogsDashboard', () => {
       .mockResolvedValueOnce(0)
       .mockResolvedValueOnce(0)
       .mockResolvedValueOnce(0)
+      .mockResolvedValueOnce(0)
       .mockResolvedValueOnce(0);
-    prisma.moderationEvent.findMany.mockResolvedValue([]);
+    prisma.moderationEvent.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
