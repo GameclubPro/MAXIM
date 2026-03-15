@@ -1,12 +1,18 @@
 import type { ChannelAutoPostButtonsMode, ChannelSettings } from '@maxim/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useLocation, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { BackChevronIcon, ParticipantsIcon } from '../components/ui/entity-header-icons';
+import {
+  ChannelBroadcastSectionContent,
+  ChannelCommentsSectionContent,
+  ChannelPostSuggestionsSectionContent,
+} from '../components/settings/channel-settings-sections';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { MaxMarkdownEditor } from '../components/max-markdown-editor';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import { GlassCard } from '../components/ui/glass-card';
+import { SegmentedControl } from '../components/ui/segmented-control';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
@@ -30,6 +36,18 @@ type ChannelRouteState = {
 };
 
 type ChannelSettingsSectionKey = 'comments' | 'postSuggestions' | 'broadcast' | 'poll' | 'giveaway';
+type ChannelSettingsDetailTabKey =
+  | 'overview'
+  | 'moderation'
+  | 'publish'
+  | 'content'
+  | 'automation'
+  | 'launch';
+type ChannelSettingsDetailTabDefinition = {
+  value: ChannelSettingsDetailTabKey;
+  label: string;
+  anchorId: string;
+};
 type ChannelSettingsHintKey =
   | 'commentsEnabled'
   | 'commentsModerationEnabled'
@@ -52,6 +70,66 @@ const MAX_BROADCAST_CYCLE_HOURS = 14 * 24;
 const MAX_BROADCAST_CYCLE_COUNT = 100;
 const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
 const BROADCAST_DAY_MS = 24 * 60 * 60 * 1_000;
+
+const CHANNEL_SETTINGS_DETAIL_TABS: Partial<
+  Record<ChannelSettingsSectionKey, ChannelSettingsDetailTabDefinition[]>
+> = {
+  comments: [
+    {
+      value: 'overview',
+      label: 'Основное',
+      anchorId: 'channel-settings-detail-comments-overview',
+    },
+    {
+      value: 'moderation',
+      label: 'Модерация',
+      anchorId: 'channel-settings-detail-comments-moderation',
+    },
+  ],
+  postSuggestions: [
+    {
+      value: 'overview',
+      label: 'Основное',
+      anchorId: 'channel-settings-detail-suggest-overview',
+    },
+    {
+      value: 'publish',
+      label: 'Публикация',
+      anchorId: 'channel-settings-detail-suggest-publish',
+    },
+  ],
+  broadcast: [
+    {
+      value: 'content',
+      label: 'Контент',
+      anchorId: 'channel-settings-detail-broadcast-content',
+    },
+    {
+      value: 'automation',
+      label: 'Авто',
+      anchorId: 'channel-settings-detail-broadcast-automation',
+    },
+    {
+      value: 'launch',
+      label: 'Запуск',
+      anchorId: 'channel-settings-detail-broadcast-launch',
+    },
+  ],
+};
+
+function parseFocusedChannelSection(value: string | null): ChannelSettingsSectionKey | null {
+  if (
+    value === 'comments' ||
+    value === 'postSuggestions' ||
+    value === 'broadcast' ||
+    value === 'poll' ||
+    value === 'giveaway'
+  ) {
+    return value;
+  }
+
+  return null;
+}
 
 function buildBroadcastScheduleIso(days: number, time: string): string | null {
   if (!Number.isInteger(days) || days < 0 || days > MAX_BROADCAST_SCHEDULE_DAYS) {
@@ -416,11 +494,17 @@ function normalizeChannelSettingsDraft(
 }
 
 export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
-  const { chatId = '' } = useParams();
+  const { chatId = '', section: sectionParam } = useParams();
   const location = useLocation();
+  const navigate = useNavigate();
   const routeState = getRouteState(location.state);
   const routeChatTitle = routeState.chatTitle;
   const routeChatLink = routeState.chatLink;
+  const focusSection = parseFocusedChannelSection(
+    new URLSearchParams(location.search).get('focus'),
+  );
+  const activeSection = parseFocusedChannelSection(sectionParam ?? null) ?? focusSection;
+  const isHubMode = activeSection === null;
   const [draft, setDraft] = useState<ChannelSettings | null>(null);
   const [savedSnapshot, setSavedSnapshot] = useState<ChannelSettings | null>(null);
   const [autosaveState, setAutosaveState] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
@@ -441,6 +525,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     giveaway: false,
   });
   const [openHintKey, setOpenHintKey] = useState<ChannelSettingsHintKey | null>(null);
+  const [activeDetailTab, setActiveDetailTab] = useState<ChannelSettingsDetailTabKey | ''>('');
   const { pushToast } = useToast();
   const [broadcastText, setBroadcastText] = useState('');
   const [broadcastTextError, setBroadcastTextError] = useState('');
@@ -461,9 +546,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   );
   const [broadcastScheduleError, setBroadcastScheduleError] = useState('');
   const [broadcastCycleEnabled, setBroadcastCycleEnabled] = useState(false);
-  const [broadcastCycleEveryHours, setBroadcastCycleEveryHours] = useState(
-    MIN_BROADCAST_CYCLE_HOURS,
-  );
+  const [broadcastCycleEveryHours, setBroadcastCycleEveryHours] =
+    useState(MIN_BROADCAST_CYCLE_HOURS);
   const [broadcastCycleCount, setBroadcastCycleCount] = useState(2);
   const [broadcastCycleError, setBroadcastCycleError] = useState('');
 
@@ -475,13 +559,31 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   });
 
   useEffect(() => {
-    const focusSection = new URLSearchParams(location.search).get('focus');
-    if (focusSection !== 'giveaway') {
+    if (!activeSection) {
       return;
     }
 
-    setExpandedSections((current) => ({ ...current, giveaway: true }));
-  }, [location.search]);
+    setExpandedSections((current) =>
+      current[activeSection] ? current : { ...current, [activeSection]: true },
+    );
+  }, [activeSection]);
+
+  useEffect(() => {
+    setActiveDetailTab(
+      activeSection ? (CHANNEL_SETTINGS_DETAIL_TABS[activeSection]?.[0]?.value ?? '') : '',
+    );
+  }, [activeSection]);
+
+  useEffect(() => {
+    if (!chatId || sectionParam || !focusSection) {
+      return;
+    }
+
+    navigate(`/channel/${encodeURIComponent(chatId)}/settings/${focusSection}`, {
+      replace: true,
+      state: location.state,
+    });
+  }, [chatId, focusSection, location.state, navigate, sectionParam]);
 
   const settingsQuery = {
     data: settingsScreenQuery.data?.settings,
@@ -571,6 +673,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   }, [channelHeader?.link, routeChatLink]);
 
   function toggleSection(section: ChannelSettingsSectionKey) {
+    if (activeSection === section) {
+      return;
+    }
+
     startTransition(() => {
       setExpandedSections((current) => ({
         ...current,
@@ -754,8 +860,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   }, [chatId, isDirty, normalizedDraft, normalizedDraftKey, normalizedSavedSnapshot]);
 
   const handoffBroadcastMutation = useMutation({
-    mutationFn: (payload: BroadcastHandoffPayload) =>
-      handoffChannelBroadcast(api, chatId, payload),
+    mutationFn: (payload: BroadcastHandoffPayload) => handoffChannelBroadcast(api, chatId, payload),
     onSuccess: (result) => {
       pushToast({
         tone: 'info',
@@ -902,9 +1007,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       ? resolvedChannelLink
       : 'Настройки канала';
   const showHeaderStatus = headerStatusTone !== 'saved';
-  const participantsCountLabel = formatParticipantsCount(
-    channelHeader?.participantsCount ?? null,
-  );
+  const participantsCountLabel = formatParticipantsCount(channelHeader?.participantsCount ?? null);
   const publishButtons = resolveManualPublishButtons(
     normalizedDraft ?? normalizeChannelSettingsDraft(draft, resolvedChannelLink),
   );
@@ -921,7 +1024,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         : 'Кнопка будет только в этом посте.';
   const broadcastHasButton = broadcastButtonEnabled && Boolean(broadcastButtonText.trim());
   const broadcastSchedulePreview = broadcastScheduleEnabled
-    ? formatBroadcastDateTime(buildBroadcastScheduleIso(broadcastScheduleDays, broadcastScheduleTime))
+    ? formatBroadcastDateTime(
+        buildBroadcastScheduleIso(broadcastScheduleDays, broadcastScheduleTime),
+      )
     : '';
   const broadcastHeaderSummary = [
     'контент в боте',
@@ -933,6 +1038,53 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   ]
     .filter(Boolean)
     .join(' · ');
+  const detailBackHref = chatId ? `/channel/${encodeURIComponent(chatId)}/settings` : '';
+  const isSectionExpanded = (section: ChannelSettingsSectionKey) =>
+    activeSection === section || expandedSections[section];
+  const isSectionVisible = (section: ChannelSettingsSectionKey) =>
+    activeSection === null || activeSection === section;
+  const isDetailSection = (section: ChannelSettingsSectionKey) => activeSection === section;
+  const hubCards: Array<{
+    key: ChannelSettingsSectionKey;
+    title: string;
+    summary: string;
+    description: string;
+  }> = [
+    {
+      key: 'comments',
+      title: 'Комментарии',
+      summary: draft.commentsEnabled ? 'включены' : 'выключены',
+      description: 'Обсуждения, модерация и ограничения в комментариях.',
+    },
+    {
+      key: 'postSuggestions',
+      title: 'Предложить пост',
+      summary: draft.postSuggestionsEnabled ? 'авто' : 'вручную',
+      description: 'Кнопка предложки и пост с вовлекающими кнопками.',
+    },
+    {
+      key: 'broadcast',
+      title: 'Рассылка',
+      summary: broadcastHeaderSummary,
+      description: 'Публикация поста через бота, таймер и цикл.',
+    },
+    {
+      key: 'poll',
+      title: 'Опрос',
+      summary: 'отдельный пост',
+      description: 'Голосование и публикация опроса в канале.',
+    },
+    {
+      key: 'giveaway',
+      title: 'Розыгрыши',
+      summary: 'управление в боте',
+      description: 'Создание, публикация и итоги розыгрышей.',
+    },
+  ];
+  const detailTabs = activeSection ? (CHANNEL_SETTINGS_DETAIL_TABS[activeSection] ?? []) : [];
+  const effectiveDetailTab = detailTabs.some((item) => item.value === activeDetailTab)
+    ? activeDetailTab
+    : (detailTabs[0]?.value ?? '');
 
   function resetBroadcastComposer() {
     setBroadcastText('');
@@ -1024,14 +1176,35 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     });
   }
 
+  function handleDetailTabChange(value: string) {
+    const nextValue = value as ChannelSettingsDetailTabKey;
+    const target = detailTabs.find((item) => item.value === nextValue);
+    setActiveDetailTab(nextValue);
+
+    if (!target) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      document.getElementById(target.anchorId)?.scrollIntoView({
+        behavior: 'smooth',
+        block: 'start',
+      });
+    });
+  }
+
   return (
     <div className="channel-settings-screen page-enter">
       <GlassCard className="channel-settings-header" elevated>
         <div className="channel-settings-header__top">
           <Link
-            to={buildManagedEntitiesRoute('channel')}
+            to={
+              isHubMode
+                ? buildManagedEntitiesRoute('channel')
+                : detailBackHref || buildManagedEntitiesRoute('channel')
+            }
             className="channel-settings-header__back"
-            aria-label="Назад к каналам"
+            aria-label={isHubMode ? 'Назад к каналам' : 'Назад к разделам'}
           >
             <BackChevronIcon />
           </Link>
@@ -1081,598 +1254,374 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         </div>
       </GlassCard>
 
-      <GlassCard className="channel-settings-card" elevated>
-        <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-          <button
-            type="button"
-            className="settings-section__toggle"
-            onClick={() => toggleSection('comments')}
-            aria-expanded={expandedSections.comments}
-            aria-controls="channel-settings-comments"
-          >
-            <span className="settings-section__toggle-main">
-              <h3>Комментарии</h3>
-              <small>{draft.commentsEnabled ? 'включены' : 'выключены'}</small>
-            </span>
-            <SectionChevron isOpen={expandedSections.comments} />
-          </button>
-        </div>
-
-        <div
-          id="channel-settings-comments"
-          className={cn('settings-section__collapse', expandedSections.comments && 'is-open')}
-        >
-          <div className="settings-section__collapse-inner">
-            <ChannelSettingsToggleCard
-              title="Включить комментарии"
-              description="Обсуждение под постами."
-              hintKey="commentsEnabled"
-              openHintKey={openHintKey}
-              onToggleHint={toggleHint}
-              checked={draft.commentsEnabled}
-              onChange={(nextValue) => patchDraft('commentsEnabled', nextValue)}
-            />
-
-            {draft.commentsEnabled ? (
-              <div className="channel-settings-stack">
-                <ChannelSettingsToggleCard
-                  title="Модерация"
-                  description="Проверка комментариев."
-                  hintKey="commentsModerationEnabled"
-                  openHintKey={openHintKey}
-                  onToggleHint={toggleHint}
-                  checked={draft.commentsModerationEnabled}
-                  onChange={(nextValue) => patchDraft('commentsModerationEnabled', nextValue)}
-                />
-
-                {draft.commentsModerationEnabled ? (
-                  <div className="channel-settings-stack">
-                    <ChannelSettingsToggleCard
-                      title="Запретить ссылки"
-                      description="Ссылки в комментариях блокируются."
-                      hintKey="commentsBlockLinksEnabled"
-                      openHintKey={openHintKey}
-                      onToggleHint={toggleHint}
-                      checked={draft.commentsBlockLinksEnabled}
-                      onChange={(nextValue) => patchDraft('commentsBlockLinksEnabled', nextValue)}
-                    />
-
-                    <ChannelSettingsToggleCard
-                      title="Антиспам"
-                      description="Блок частых повторов."
-                      hintKey="commentsAntiSpamEnabled"
-                      openHintKey={openHintKey}
-                      onToggleHint={toggleHint}
-                      checked={draft.commentsAntiSpamEnabled}
-                      onChange={(nextValue) => patchDraft('commentsAntiSpamEnabled', nextValue)}
-                    />
-
-                    <ChannelSettingsToggleCard
-                      title="Не больше двух подряд"
-                      description="Третий подряд блокируется."
-                      hintKey="commentsLimitTwoInRowEnabled"
-                      openHintKey={openHintKey}
-                      onToggleHint={toggleHint}
-                      checked={draft.commentsLimitTwoInRowEnabled}
-                      onChange={(nextValue) =>
-                        patchDraft('commentsLimitTwoInRowEnabled', nextValue)
-                      }
-                    />
-                  </div>
-                ) : null}
-              </div>
+      {isHubMode ? (
+        <GlassCard className="settings-sections-shell settings-hub-shell" padding="sm">
+          <div className="settings-hub-grid" role="list" aria-label="Разделы настроек канала">
+            {hubCards.map((item) => (
+              <Link
+                key={item.key}
+                to={`/channel/${encodeURIComponent(chatId)}/settings/${item.key}`}
+                className="settings-hub-card"
+                role="listitem"
+              >
+                <span className="settings-hub-card__eyebrow">Раздел</span>
+                <span className="settings-hub-card__title">{item.title}</span>
+                <span className="settings-hub-card__summary">{item.summary}</span>
+                <span className="settings-hub-card__description">{item.description}</span>
+                <span className="settings-hub-card__cta">Открыть</span>
+              </Link>
+            ))}
+          </div>
+        </GlassCard>
+      ) : (
+        <>
+          <div className="settings-detail-topbar">
+            <div className="settings-detail-topbar__copy">
+              <span className="settings-detail-topbar__eyebrow">Раздел канала</span>
+              <strong className="settings-detail-topbar__title">
+                {hubCards.find((item) => item.key === activeSection)?.title ?? 'Настройки'}
+              </strong>
+            </div>
+            {detailBackHref ? (
+              <Link
+                to={detailBackHref}
+                className="button button--ghost settings-detail-topbar__back"
+              >
+                Все разделы
+              </Link>
             ) : null}
           </div>
-        </div>
-      </GlassCard>
+          {detailTabs.length > 0 ? (
+            <div className="settings-detail-tabs-shell">
+              <SegmentedControl
+                value={effectiveDetailTab}
+                options={detailTabs}
+                onChange={handleDetailTabChange}
+                className="settings-detail-tabs"
+              />
+            </div>
+          ) : null}
 
-      <GlassCard className="channel-settings-card" elevated>
-        <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-          <button
-            type="button"
-            className="settings-section__toggle"
-            onClick={() => toggleSection('postSuggestions')}
-            aria-expanded={expandedSections.postSuggestions}
-            aria-controls="channel-settings-post-suggestions"
+          <GlassCard
+            className={cn(
+              'channel-settings-card',
+              isDetailSection('comments') && 'channel-settings-card--detail',
+            )}
+            elevated
+            hidden={!isSectionVisible('comments')}
           >
-            <span className="settings-section__toggle-main">
-              <h3>Предложить пост</h3>
-              <small>{draft.postSuggestionsEnabled ? 'авто' : 'вручную'}</small>
-            </span>
-            <SectionChevron isOpen={expandedSections.postSuggestions} />
-          </button>
-        </div>
+            <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+              <button
+                type="button"
+                className="settings-section__toggle"
+                onClick={() => toggleSection('comments')}
+                aria-expanded={isSectionExpanded('comments')}
+                aria-controls="channel-settings-comments"
+              >
+                <span className="settings-section__toggle-main">
+                  <h3>Комментарии</h3>
+                  <small>{draft.commentsEnabled ? 'включены' : 'выключены'}</small>
+                </span>
+                <SectionChevron isOpen={isSectionExpanded('comments')} />
+              </button>
+            </div>
 
-        <div
-          id="channel-settings-post-suggestions"
-          className={cn(
-            'settings-section__collapse',
-            expandedSections.postSuggestions && 'is-open',
-          )}
-        >
-          <div className="settings-section__collapse-inner">
-            <ChannelSettingsToggleCard
-              title="Разрешить предложения"
-              description="Кнопка предложки под новыми постами."
-              hintKey="postSuggestionsEnabled"
-              openHintKey={openHintKey}
-              onToggleHint={toggleHint}
-              checked={draft.postSuggestionsEnabled}
-              onChange={(nextValue) => patchDraft('postSuggestionsEnabled', nextValue)}
-            />
-
-            <div className="channel-settings-stack">
-              <label className="field">
-                <div className="channel-settings-field-label">
-                  <span>Текст публикации</span>
-                  <ChannelSettingsHintAnchor
-                    hintKey="engagementMessageText"
-                    openHintKey={openHintKey}
-                    onToggleHint={toggleHint}
-                    label="Пояснение для текста публикации"
-                  >
-                    Текст поста перед кнопками.
-                  </ChannelSettingsHintAnchor>
-                </div>
-                <textarea
-                  rows={3}
-                  value={draft.engagementMessageText}
-                  onChange={(event) => patchDraft('engagementMessageText', event.target.value)}
-                  placeholder="Есть идея или обратная связь? Нажмите кнопку ниже."
+            <div
+              id="channel-settings-comments"
+              className={cn(
+                'settings-section__collapse',
+                isSectionExpanded('comments') && 'is-open',
+              )}
+            >
+              <div className="settings-section__collapse-inner">
+                <div
+                  id="channel-settings-detail-comments-overview"
+                  className="settings-detail-anchor"
                 />
-              </label>
-
-              <label className="field">
-                <span>Название кнопки</span>
-                <input
-                  type="text"
-                  value={draft.postSuggestionsButtonText}
-                  onChange={(event) => patchDraft('postSuggestionsButtonText', event.target.value)}
-                  placeholder="Предложить пост"
-                  maxLength={32}
-                />
-              </label>
-
-              <label className="field">
-                <span>Текст</span>
-                <textarea
-                  rows={3}
-                  value={draft.postSuggestionsText}
-                  onChange={(event) => patchDraft('postSuggestionsText', event.target.value)}
-                  placeholder="Коротко объясните, что отправлять."
-                />
-              </label>
-
-              <div className="channel-settings-inline-fields">
-                <label className="field">
-                  <div className="channel-settings-field-label">
-                    <span>Пост с кнопками</span>
-                    <ChannelSettingsHintAnchor
-                      hintKey="publishEngagement"
+                <ChannelCommentsSectionContent
+                  draft={draft}
+                  renderToggleCard={(props) => (
+                    <ChannelSettingsToggleCard
+                      {...props}
                       openHintKey={openHintKey}
                       onToggleHint={toggleHint}
-                      label="Пояснение для поста с кнопками"
+                    />
+                  )}
+                  patchField={(field, value) => patchDraft(field, value)}
+                />
+              </div>
+            </div>
+          </GlassCard>
+
+          <GlassCard
+            className={cn(
+              'channel-settings-card',
+              isDetailSection('postSuggestions') && 'channel-settings-card--detail',
+            )}
+            elevated
+            hidden={!isSectionVisible('postSuggestions')}
+          >
+            <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+              <button
+                type="button"
+                className="settings-section__toggle"
+                onClick={() => toggleSection('postSuggestions')}
+                aria-expanded={isSectionExpanded('postSuggestions')}
+                aria-controls="channel-settings-post-suggestions"
+              >
+                <span className="settings-section__toggle-main">
+                  <h3>Предложить пост</h3>
+                  <small>{draft.postSuggestionsEnabled ? 'авто' : 'вручную'}</small>
+                </span>
+                <SectionChevron isOpen={isSectionExpanded('postSuggestions')} />
+              </button>
+            </div>
+
+            <div
+              id="channel-settings-post-suggestions"
+              className={cn(
+                'settings-section__collapse',
+                isSectionExpanded('postSuggestions') && 'is-open',
+              )}
+            >
+              <div className="settings-section__collapse-inner">
+                <div
+                  id="channel-settings-detail-suggest-overview"
+                  className="settings-detail-anchor"
+                />
+                <ChannelPostSuggestionsSectionContent
+                  draft={draft}
+                  publishHint={publishHint}
+                  canPublishEngagement={canPublishEngagement}
+                  publishPending={publishMutation.isPending}
+                  onPublish={() => publishMutation.mutate()}
+                  renderHintAnchor={({ hintKey, label, children }) => (
+                    <ChannelSettingsHintAnchor
+                      hintKey={hintKey}
+                      openHintKey={openHintKey}
+                      onToggleHint={toggleHint}
+                      label={label}
                     >
-                      {publishHint}
+                      {children}
                     </ChannelSettingsHintAnchor>
-                  </div>
-                </label>
-                <button
-                  type="button"
-                  className="button button--accent"
-                  onClick={() => publishMutation.mutate()}
-                  disabled={!canPublishEngagement || publishMutation.isPending}
-                >
-                  {publishMutation.isPending ? 'Публикуем…' : 'Опубликовать или обновить'}
-                </button>
+                  )}
+                  renderToggleCard={(props) => (
+                    <ChannelSettingsToggleCard
+                      {...props}
+                      openHintKey={openHintKey}
+                      onToggleHint={toggleHint}
+                    />
+                  )}
+                  patchField={(field, value) => patchDraft(field, value)}
+                />
               </div>
             </div>
-          </div>
-        </div>
-      </GlassCard>
+          </GlassCard>
 
-      <GlassCard className="channel-settings-card" elevated>
-        <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-          <button
-            type="button"
-            className="settings-section__toggle"
-            onClick={() => toggleSection('broadcast')}
-            aria-expanded={expandedSections.broadcast}
-            aria-controls="channel-settings-broadcast"
+          <GlassCard
+            className={cn(
+              'channel-settings-card',
+              isDetailSection('broadcast') && 'channel-settings-card--detail',
+            )}
+            elevated
+            hidden={!isSectionVisible('broadcast')}
           >
-            <span className="settings-section__toggle-main">
-              <h3>Рассылка</h3>
-              <small>{broadcastHeaderSummary}</small>
-            </span>
-            <SectionChevron isOpen={expandedSections.broadcast} />
-          </button>
-        </div>
-
-        <div
-          id="channel-settings-broadcast"
-          className={cn('settings-section__collapse', expandedSections.broadcast && 'is-open')}
-        >
-          <div className="settings-section__collapse-inner">
-            <div className="channel-broadcast-studio">
-              <div className="mailing-options-grid">
-                <div className="managed-broadcast-editor-note">
-                  <strong>Контент в боте</strong>
-                  <small>Текст и фото отправляются в личке бота.</small>
-                </div>
-
-                <div
-                  className={cn(
-                    'mailing-option-card',
-                    broadcastButtonEnabled && 'is-enabled',
-                    (broadcastButtonUrlError || broadcastButtonTextError) && 'field--error',
-                  )}
-                >
-                  <div className="mailing-option-card__head">
-                    <div className="mailing-option-card__title-wrap">
-                      <div className="channel-settings-field-label">
-                        <span className="mailing-option-card__title">Кнопка</span>
-                        <ChannelSettingsHintAnchor
-                          hintKey="broadcastButton"
-                          openHintKey={openHintKey}
-                          onToggleHint={toggleHint}
-                          label="Пояснение для кнопки в рассылке"
-                        >
-                          Кнопка для перехода в канал, пост или ссылку.
-                        </ChannelSettingsHintAnchor>
-                      </div>
-                      <small className="mailing-option-card__subtitle">
-                        {broadcastButtonEnabled ? 'CTA включён' : 'Необязательно'}
-                      </small>
-                    </div>
-
-                    <label
-                      className="settings-native-switch"
-                      aria-label="Добавить кнопку в пост канала"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={broadcastButtonEnabled}
-                        onChange={(event) => {
-                          const enabled = event.target.checked;
-                          setBroadcastButtonEnabled(enabled);
-                          if (!enabled) {
-                            setBroadcastButtonUrlError('');
-                            setBroadcastButtonTextError('');
-                          }
-                        }}
-                      />
-                      <span className="toggle-switch" aria-hidden>
-                        <span className="toggle-switch__thumb" />
-                      </span>
-                    </label>
-                  </div>
-
-                  {broadcastButtonEnabled ? (
-                    <div className="mailing-option-card__body">
-                      <label
-                        className={cn(
-                          'field settings-url-field',
-                          broadcastButtonUrlError && 'field--error',
-                        )}
-                      >
-                        <span className="field__label">Ссылка кнопки</span>
-                        <input
-                          type="url"
-                          inputMode="url"
-                          value={broadcastButtonUrl}
-                          onChange={(event) => {
-                            setBroadcastButtonUrl(event.target.value);
-                            if (broadcastButtonUrlError) {
-                              setBroadcastButtonUrlError('');
-                            }
-                          }}
-                          placeholder="https://max.ru/channel/..."
-                        />
-                        {broadcastButtonUrlError ? (
-                          <small className="field__hint">{broadcastButtonUrlError}</small>
-                        ) : null}
-                      </label>
-
-                      <label
-                        className={cn(
-                          'field settings-text-field',
-                          broadcastButtonTextError && 'field--error',
-                        )}
-                      >
-                        <span className="field__label">Название кнопки</span>
-                        <input
-                          type="text"
-                          maxLength={32}
-                          value={broadcastButtonText}
-                          onChange={(event) => {
-                            setBroadcastButtonText(event.target.value);
-                            if (broadcastButtonTextError) {
-                              setBroadcastButtonTextError('');
-                            }
-                          }}
-                          placeholder="Открыть"
-                        />
-                        {broadcastButtonTextError ? (
-                          <small className="field__hint">{broadcastButtonTextError}</small>
-                        ) : null}
-                      </label>
-                    </div>
-                  ) : null}
-                </div>
-
-                <div
-                  className={cn(
-                    'mailing-option-card',
-                    broadcastScheduleEnabled && 'is-enabled',
-                    broadcastScheduleError && 'field--error',
-                  )}
-                >
-                  <div className="mailing-option-card__head">
-                    <div className="mailing-option-card__title-wrap">
-                      <div className="channel-settings-field-label">
-                        <span className="mailing-option-card__title">Таймер</span>
-                        <ChannelSettingsHintAnchor
-                          hintKey="broadcastText"
-                          openHintKey={openHintKey}
-                          onToggleHint={toggleHint}
-                          label="Пояснение для таймера рассылки"
-                        >
-                          Можно отложить пост в канал максимум на 14 дней.
-                        </ChannelSettingsHintAnchor>
-                      </div>
-                      <small className="mailing-option-card__subtitle">
-                        {broadcastScheduleEnabled && broadcastSchedulePreview
-                          ? broadcastSchedulePreview
-                          : 'Отправка сразу'}
-                      </small>
-                    </div>
-
-                    <label
-                      className="settings-native-switch"
-                      aria-label="Включить таймер для рассылки в канал"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={broadcastScheduleEnabled}
-                        onChange={(event) => {
-                          setBroadcastScheduleEnabled(event.target.checked);
-                          if (!event.target.checked) {
-                            setBroadcastScheduleError('');
-                          }
-                        }}
-                      />
-                      <span className="toggle-switch" aria-hidden>
-                        <span className="toggle-switch__thumb" />
-                      </span>
-                    </label>
-                  </div>
-
-                  {broadcastScheduleEnabled ? (
-                    <div className="mailing-option-card__body">
-                      <label className="field settings-text-field mailing-inline-field">
-                        <span className="field__label">Через дней</span>
-                        <input
-                          type="number"
-                          min={0}
-                          max={MAX_BROADCAST_SCHEDULE_DAYS}
-                          value={broadcastScheduleDays}
-                          onChange={(event) => {
-                            const nextValue = Number.parseInt(event.target.value, 10);
-                            setBroadcastScheduleDays(
-                              Number.isNaN(nextValue)
-                                ? 0
-                                : Math.max(0, Math.min(MAX_BROADCAST_SCHEDULE_DAYS, nextValue)),
-                            );
-                            if (broadcastScheduleError) {
-                              setBroadcastScheduleError('');
-                            }
-                          }}
-                        />
-                      </label>
-
-                      <label className="field settings-text-field mailing-inline-field">
-                        <span className="field__label">Время</span>
-                        <input
-                          type="time"
-                          value={broadcastScheduleTime}
-                          onChange={(event) => {
-                            setBroadcastScheduleTime(event.target.value);
-                            if (broadcastScheduleError) {
-                              setBroadcastScheduleError('');
-                            }
-                          }}
-                        />
-                      </label>
-
-                      {broadcastScheduleError ? (
-                        <small className="field__hint">{broadcastScheduleError}</small>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-
-                <div
-                  className={cn(
-                    'mailing-option-card',
-                    broadcastCycleEnabled && 'is-enabled',
-                    broadcastCycleError && 'field--error',
-                  )}
-                >
-                  <div className="mailing-option-card__head">
-                    <div className="mailing-option-card__title-wrap">
-                      <div className="channel-settings-field-label">
-                        <span className="mailing-option-card__title">Цикл</span>
-                        <ChannelSettingsHintAnchor
-                          hintKey="broadcastImage"
-                          openHintKey={openHintKey}
-                          onToggleHint={toggleHint}
-                          label="Пояснение для цикла рассылки"
-                        >
-                          Повторяет отправку в канал через заданный интервал. Общая длина цикла не
-                          должна превышать 14 дней.
-                        </ChannelSettingsHintAnchor>
-                      </div>
-                      <small className="mailing-option-card__subtitle">
-                        {broadcastCycleEnabled
-                          ? `${broadcastCycleCount} отправок / ${broadcastCycleEveryHours}ч`
-                          : 'Выключено'}
-                      </small>
-                    </div>
-
-                    <label
-                      className="settings-native-switch"
-                      aria-label="Включить циклическую рассылку в канал"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={broadcastCycleEnabled}
-                        onChange={(event) => {
-                          setBroadcastCycleEnabled(event.target.checked);
-                          if (!event.target.checked) {
-                            setBroadcastCycleError('');
-                          }
-                        }}
-                      />
-                      <span className="toggle-switch" aria-hidden>
-                        <span className="toggle-switch__thumb" />
-                      </span>
-                    </label>
-                  </div>
-
-                  {broadcastCycleEnabled ? (
-                    <div className="mailing-option-card__body">
-                      <label className="field settings-text-field mailing-inline-field">
-                        <span className="field__label">Интервал, часов</span>
-                        <input
-                          type="number"
-                          min={MIN_BROADCAST_CYCLE_HOURS}
-                          max={MAX_BROADCAST_CYCLE_HOURS}
-                          value={broadcastCycleEveryHours}
-                          onChange={(event) => {
-                            const nextValue = Number.parseInt(event.target.value, 10);
-                            setBroadcastCycleEveryHours(
-                              clampBroadcastCycleHours(
-                                Number.isNaN(nextValue) ? MIN_BROADCAST_CYCLE_HOURS : nextValue,
-                              ),
-                            );
-                            if (broadcastCycleError) {
-                              setBroadcastCycleError('');
-                            }
-                          }}
-                        />
-                      </label>
-
-                      <label className="field settings-text-field mailing-inline-field">
-                        <span className="field__label">Количество</span>
-                        <input
-                          type="number"
-                          min={2}
-                          max={MAX_BROADCAST_CYCLE_COUNT}
-                          value={broadcastCycleCount}
-                          onChange={(event) => {
-                            const nextValue = Number.parseInt(event.target.value, 10);
-                            setBroadcastCycleCount(
-                              Number.isNaN(nextValue)
-                                ? 2
-                                : Math.max(2, Math.min(MAX_BROADCAST_CYCLE_COUNT, nextValue)),
-                            );
-                            if (broadcastCycleError) {
-                              setBroadcastCycleError('');
-                            }
-                          }}
-                        />
-                      </label>
-
-                      {broadcastCycleError ? (
-                        <small className="field__hint">{broadcastCycleError}</small>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-
-              <div className="mailing-action-bar">
-                <button
-                  type="button"
-                  className="button button--accent mailing-action-bar__send"
-                  onClick={handleSendChannelBroadcast}
-                  disabled={handoffBroadcastMutation.isPending}
-                >
-                  {handoffBroadcastMutation.isPending
-                    ? 'Открываем бота...'
-                    : 'Продолжить в боте'}
-                </button>
-                <button
-                  type="button"
-                  className="button button--ghost mailing-action-bar__clear"
-                  onClick={resetBroadcastComposer}
-                  disabled={handoffBroadcastMutation.isPending}
-                >
-                  Очистить
-                </button>
-              </div>
+            <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+              <button
+                type="button"
+                className="settings-section__toggle"
+                onClick={() => toggleSection('broadcast')}
+                aria-expanded={isSectionExpanded('broadcast')}
+                aria-controls="channel-settings-broadcast"
+              >
+                <span className="settings-section__toggle-main">
+                  <h3>Рассылка</h3>
+                  <small>{broadcastHeaderSummary}</small>
+                </span>
+                <SectionChevron isOpen={isSectionExpanded('broadcast')} />
+              </button>
             </div>
-          </div>
-        </div>
-      </GlassCard>
 
-      {chatId ? (
-        <GlassCard className="channel-settings-card" elevated>
-          <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-            <button
-              type="button"
-              className="settings-section__toggle"
-              onClick={() => toggleSection('poll')}
-              aria-expanded={expandedSections.poll}
-              aria-controls="channel-settings-poll"
+            <div
+              id="channel-settings-broadcast"
+              className={cn(
+                'settings-section__collapse',
+                isSectionExpanded('broadcast') && 'is-open',
+              )}
             >
-              <span className="settings-section__toggle-main">
-                <h3>Опрос</h3>
-                <small>отдельный пост</small>
-              </span>
-              <SectionChevron isOpen={expandedSections.poll} />
-            </button>
-          </div>
-
-          <div
-            id="channel-settings-poll"
-            className={cn('settings-section__collapse', expandedSections.poll && 'is-open')}
-          >
-            <div className="settings-section__collapse-inner">
-              <ManagedPollCard api={api} entityType="channel" entityId={chatId} />
+              <div className="settings-section__collapse-inner">
+                <div
+                  id="channel-settings-detail-broadcast-content"
+                  className="settings-detail-anchor"
+                />
+                <ChannelBroadcastSectionContent
+                  renderHintAnchor={({ hintKey, label, children }) => (
+                    <ChannelSettingsHintAnchor
+                      hintKey={hintKey}
+                      openHintKey={openHintKey}
+                      onToggleHint={toggleHint}
+                      label={label}
+                    >
+                      {children}
+                    </ChannelSettingsHintAnchor>
+                  )}
+                  broadcastButtonEnabled={broadcastButtonEnabled}
+                  setBroadcastButtonEnabled={(value) => {
+                    setBroadcastButtonEnabled(value);
+                    if (!value) {
+                      setBroadcastButtonUrlError('');
+                      setBroadcastButtonTextError('');
+                    }
+                  }}
+                  broadcastButtonUrl={broadcastButtonUrl}
+                  setBroadcastButtonUrl={(value) => {
+                    setBroadcastButtonUrl(value);
+                    if (broadcastButtonUrlError) {
+                      setBroadcastButtonUrlError('');
+                    }
+                  }}
+                  broadcastButtonText={broadcastButtonText}
+                  setBroadcastButtonText={(value) => {
+                    setBroadcastButtonText(value);
+                    if (broadcastButtonTextError) {
+                      setBroadcastButtonTextError('');
+                    }
+                  }}
+                  broadcastButtonUrlError={broadcastButtonUrlError}
+                  broadcastButtonTextError={broadcastButtonTextError}
+                  broadcastScheduleEnabled={broadcastScheduleEnabled}
+                  setBroadcastScheduleEnabled={(value) => {
+                    setBroadcastScheduleEnabled(value);
+                    if (!value) {
+                      setBroadcastScheduleError('');
+                    }
+                  }}
+                  broadcastScheduleDays={broadcastScheduleDays}
+                  setBroadcastScheduleDays={(value) => {
+                    setBroadcastScheduleDays(value);
+                    if (broadcastScheduleError) {
+                      setBroadcastScheduleError('');
+                    }
+                  }}
+                  broadcastScheduleTime={broadcastScheduleTime}
+                  setBroadcastScheduleTime={(value) => {
+                    setBroadcastScheduleTime(value);
+                    if (broadcastScheduleError) {
+                      setBroadcastScheduleError('');
+                    }
+                  }}
+                  broadcastScheduleError={broadcastScheduleError}
+                  broadcastSchedulePreview={broadcastSchedulePreview}
+                  broadcastCycleEnabled={broadcastCycleEnabled}
+                  setBroadcastCycleEnabled={(value) => {
+                    setBroadcastCycleEnabled(value);
+                    if (!value) {
+                      setBroadcastCycleError('');
+                    }
+                  }}
+                  broadcastCycleEveryHours={broadcastCycleEveryHours}
+                  setBroadcastCycleEveryHours={(value) => {
+                    setBroadcastCycleEveryHours(clampBroadcastCycleHours(value));
+                    if (broadcastCycleError) {
+                      setBroadcastCycleError('');
+                    }
+                  }}
+                  broadcastCycleCount={broadcastCycleCount}
+                  setBroadcastCycleCount={(value) => {
+                    setBroadcastCycleCount(value);
+                    if (broadcastCycleError) {
+                      setBroadcastCycleError('');
+                    }
+                  }}
+                  broadcastCycleError={broadcastCycleError}
+                  minCycleHours={MIN_BROADCAST_CYCLE_HOURS}
+                  maxCycleHours={MAX_BROADCAST_CYCLE_HOURS}
+                  maxCycleCount={MAX_BROADCAST_CYCLE_COUNT}
+                  maxScheduleDays={MAX_BROADCAST_SCHEDULE_DAYS}
+                  onSend={handleSendChannelBroadcast}
+                  onReset={resetBroadcastComposer}
+                  isSending={handoffBroadcastMutation.isPending}
+                />
+              </div>
             </div>
-          </div>
-        </GlassCard>
-      ) : null}
+          </GlassCard>
 
-      {chatId ? (
-        <GlassCard className="channel-settings-card" elevated>
-          <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-            <button
-              type="button"
-              className="settings-section__toggle"
-              onClick={() => toggleSection('giveaway')}
-              aria-expanded={expandedSections.giveaway}
-              aria-controls="channel-settings-giveaway"
+          {chatId ? (
+            <GlassCard
+              className={cn(
+                'channel-settings-card',
+                isDetailSection('poll') && 'channel-settings-card--detail',
+              )}
+              elevated
+              hidden={!isSectionVisible('poll')}
             >
-              <span className="settings-section__toggle-main">
-                <h3>Розыгрыши</h3>
-                <small>управление в боте</small>
-              </span>
-              <SectionChevron isOpen={expandedSections.giveaway} />
-            </button>
-          </div>
+              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+                <button
+                  type="button"
+                  className="settings-section__toggle"
+                  onClick={() => toggleSection('poll')}
+                  aria-expanded={isSectionExpanded('poll')}
+                  aria-controls="channel-settings-poll"
+                >
+                  <span className="settings-section__toggle-main">
+                    <h3>Опрос</h3>
+                    <small>отдельный пост</small>
+                  </span>
+                  <SectionChevron isOpen={isSectionExpanded('poll')} />
+                </button>
+              </div>
 
-          <div
-            id="channel-settings-giveaway"
-            className={cn('settings-section__collapse', expandedSections.giveaway && 'is-open')}
-          >
-            <div className="settings-section__collapse-inner">
-              <ManagedGiveawayCard api={api} entityType="channel" entityId={chatId} />
-            </div>
-          </div>
-        </GlassCard>
-      ) : null}
+              <div
+                id="channel-settings-poll"
+                className={cn('settings-section__collapse', isSectionExpanded('poll') && 'is-open')}
+              >
+                <div className="settings-section__collapse-inner">
+                  <ManagedPollCard api={api} entityType="channel" entityId={chatId} />
+                </div>
+              </div>
+            </GlassCard>
+          ) : null}
+
+          {chatId ? (
+            <GlassCard
+              className={cn(
+                'channel-settings-card',
+                isDetailSection('giveaway') && 'channel-settings-card--detail',
+              )}
+              elevated
+              hidden={!isSectionVisible('giveaway')}
+            >
+              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+                <button
+                  type="button"
+                  className="settings-section__toggle"
+                  onClick={() => toggleSection('giveaway')}
+                  aria-expanded={isSectionExpanded('giveaway')}
+                  aria-controls="channel-settings-giveaway"
+                >
+                  <span className="settings-section__toggle-main">
+                    <h3>Розыгрыши</h3>
+                    <small>управление в боте</small>
+                  </span>
+                  <SectionChevron isOpen={isSectionExpanded('giveaway')} />
+                </button>
+              </div>
+
+              <div
+                id="channel-settings-giveaway"
+                className={cn(
+                  'settings-section__collapse',
+                  isSectionExpanded('giveaway') && 'is-open',
+                )}
+              >
+                <div className="settings-section__collapse-inner">
+                  <ManagedGiveawayCard api={api} entityType="channel" entityId={chatId} />
+                </div>
+              </div>
+            </GlassCard>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }

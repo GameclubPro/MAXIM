@@ -128,6 +128,7 @@ type PrivatePollDraft = {
 type PrivateScreen =
   | 'chat_select'
   | 'home'
+  | 'more'
   | 'settings_hub'
   | 'section'
   | 'channel_section'
@@ -302,6 +303,7 @@ const CHANNEL_ONLY_CALLBACK_ACTIONS = new Set<string>([
 ]);
 
 const ENTITY_CALLBACK_ACTIONS = new Set<string>([
+  'open_more',
   'open_broadcast',
   'open_giveaway',
   'refresh_giveaway',
@@ -339,6 +341,23 @@ const SECTION_LABELS: Record<PrivateSectionKey, string> = {
 const CHANNEL_SECTION_LABELS: Record<ChannelSectionKey, string> = {
   post_suggestions: 'Предложка',
   comments: 'Обсуждение и реакции',
+};
+
+const MINIAPP_CHAT_SECTION_FOCUS: Record<PrivateSectionKey, string> = {
+  links: 'links',
+  greeting: 'greeting',
+  profanityFilter: 'profanityFilter',
+  commercialFilter: 'commercialFilter',
+  thematicFilters: 'thematicFilters',
+  duplicates: 'duplicates',
+  limits: 'limits',
+  night: 'night',
+  extra: 'extra',
+};
+
+const MINIAPP_CHANNEL_SECTION_FOCUS: Record<ChannelSectionKey, string> = {
+  comments: 'comments',
+  post_suggestions: 'postSuggestions',
 };
 
 const CHANNEL_SECTION_FIELDS: Record<
@@ -1350,6 +1369,22 @@ export class PrivateControlService {
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Главный экран',
+        });
+        return;
+      }
+
+      case 'open_more': {
+        this.assertChatSelected(session);
+        this.pushHistory(session);
+        session.screen = 'more';
+        session.section = null;
+        session.channelSection = null;
+        session.pendingInput = null;
+        session.pendingMassAction = null;
+        const view = await this.renderMoreScreen(context, session);
+        await this.respond(context, session, view, {
+          callbackId: context.callbackId,
+          notification: 'Дополнительные действия',
         });
         return;
       }
@@ -2679,7 +2714,7 @@ export class PrivateControlService {
 
         session.screen = 'manual_actions';
         session.manualTargetUserId = targetUserId;
-        const view = this.renderManualActionsScreen(session.manualTargetUserId);
+        const view = this.renderManualActionsScreen(session.manualTargetUserId, session);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Пользователь выбран',
@@ -2722,7 +2757,11 @@ export class PrivateControlService {
           'private_bot',
         );
 
-        const view = this.renderManualActionsScreen(session.manualTargetUserId, result.message);
+        const view = this.renderManualActionsScreen(
+          session.manualTargetUserId,
+          session,
+          result.message,
+        );
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Готово',
@@ -2791,7 +2830,7 @@ export class PrivateControlService {
         }
 
         if (session.screen === 'manual_actions') {
-          const view = this.renderManualActionsScreen(session.manualTargetUserId);
+          const view = this.renderManualActionsScreen(session.manualTargetUserId, session);
           await this.respond(context, session, view, {
             callbackId: context.callbackId,
             notification: 'Отменено',
@@ -2903,7 +2942,7 @@ export class PrivateControlService {
       }
 
       if (session.screen === 'manual_actions') {
-        const view = this.renderManualActionsScreen(session.manualTargetUserId);
+        const view = this.renderManualActionsScreen(session.manualTargetUserId, session);
         await this.respond(context, session, view, {
           callbackId: null,
           notification: null,
@@ -2945,7 +2984,7 @@ export class PrivateControlService {
         session.pendingInput = null;
         session.searchQuery = query;
         session.screen = 'search';
-        const view = this.renderSearchResultsScreen(query);
+        const view = this.renderSearchResultsScreen(query, session);
         await this.respond(context, session, view, {
           callbackId: null,
           notification: null,
@@ -3446,7 +3485,11 @@ export class PrivateControlService {
         session.pendingInput = null;
         session.screen = 'manual_actions';
         session.manualTargetUserId = pendingInput.targetUserId;
-        const view = this.renderManualActionsScreen(session.manualTargetUserId, result.message);
+        const view = this.renderManualActionsScreen(
+          session.manualTargetUserId,
+          session,
+          result.message,
+        );
         await this.respond(context, session, view, {
           callbackId: null,
           notification: null,
@@ -3745,7 +3788,7 @@ export class PrivateControlService {
                 this.cb('entity_tab', 'channel'),
               ),
             ],
-            ...this.buildFooterButtons(),
+            ...this.buildContextFooterButtons(session),
           ],
         },
       };
@@ -3779,7 +3822,7 @@ export class PrivateControlService {
       ),
     ]);
     rows.push(this.paginationButtons(pageInfo.page, pageInfo.pages, 'chat_page'));
-    rows.push(...this.buildFooterButtons());
+    rows.push(...this.buildContextFooterButtons(session));
 
     return {
       text: lines.join('\n'),
@@ -3818,6 +3861,9 @@ export class PrivateControlService {
     if (session.screen === 'home') {
       return this.renderHomeScreen(context, session);
     }
+    if (session.screen === 'more') {
+      return this.renderMoreScreen(context, session);
+    }
     if (session.screen === 'settings_hub') {
       return this.renderSettingsHubScreen(context, session);
     }
@@ -3846,13 +3892,13 @@ export class PrivateControlService {
       return this.renderLogsScreen(context, session);
     }
     if (session.screen === 'search' && session.searchQuery) {
-      return this.renderSearchResultsScreen(session.searchQuery);
+      return this.renderSearchResultsScreen(session.searchQuery, session);
     }
     if (session.screen === 'manual_users') {
       return this.renderManualUsersScreen(context, session);
     }
     if (session.screen === 'manual_actions') {
-      return this.renderManualActionsScreen(session.manualTargetUserId);
+      return this.renderManualActionsScreen(session.manualTargetUserId, session);
     }
 
     return this.renderPrimaryScreen(context, session);
@@ -3894,15 +3940,77 @@ export class PrivateControlService {
       ],
       [
         this.callbackButton('Рассылка', this.cb('open_broadcast')),
-        this.callbackButton('Опрос', this.cb('open_poll')),
-      ],
-      [
-        this.callbackButton('Розыгрыш', this.cb('open_giveaway')),
-        this.callbackButton('Пост с кнопками', this.cb('publish_channel_engagement')),
+        this.callbackButton('Ещё', this.cb('open_more')),
       ],
       [this.callbackButton('Сменить канал', this.cb('change_chat'))],
-      ...this.buildFooterButtons(),
+      ...this.buildContextFooterButtons(session),
     ];
+
+    return {
+      text: lines.join('\n'),
+      options: {
+        buttons: rows,
+      },
+    };
+  }
+
+  private async renderMoreScreen(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<PrivateView> {
+    if (!session.selectedChatId || !session.selectedEntityType) {
+      return this.renderChatSelection(context, session);
+    }
+
+    const entityLabel = session.selectedEntityType === 'channel' ? 'Канал' : 'Чат';
+    const entityTitle = await this.resolveManagedEntityTitle(
+      context.actor,
+      session.selectedEntityType,
+      session.selectedChatId,
+    );
+
+    const lines: string[] = [
+      this.markdownTitle('Дополнительные действия'),
+      '',
+      `${entityLabel}: ${this.escapeMarkdown(entityTitle)}`,
+      'Откройте вторичные сценарии или перейдите в Mini App.',
+    ];
+
+    const rows: MaxMessageButton[][] = [];
+
+    if (session.selectedEntityType === 'channel') {
+      rows.push([
+        this.callbackButton('Опрос', this.cb('open_poll')),
+        this.callbackButton('Розыгрыш', this.cb('open_giveaway')),
+      ]);
+
+      const statsUrl = this.buildEntityInsightsMiniappUrl('channel', session.selectedChatId);
+      const channelExtraRow: MaxMessageButton[] = [];
+      if (statsUrl) {
+        channelExtraRow.push(this.buildMiniappOpenButton('Статистика', statsUrl));
+      }
+      channelExtraRow.push(
+        this.callbackButton('Пост с кнопками', this.cb('publish_channel_engagement')),
+      );
+      rows.push(channelExtraRow);
+      rows.push([this.callbackButton('Сменить канал', this.cb('change_chat'))]);
+    } else {
+      rows.push([
+        this.callbackButton('Розыгрыш', this.cb('open_giveaway')),
+        this.callbackButton('Статистика', this.cb('open_logs')),
+      ]);
+      rows.push([
+        this.callbackButton('Поиск', this.cb('open_search')),
+        this.callbackButton('Ручной бан', this.cb('open_manual_users')),
+      ]);
+      rows.push([this.callbackButton('Сменить чат', this.cb('change_chat'))]);
+    }
+
+    rows.push([
+      this.callbackButton('⬅️ Назад', this.cb('back')),
+      this.callbackButton('Главный экран', this.cb('home')),
+    ]);
+    rows.push(...this.buildContextFooterButtons(session));
 
     return {
       text: lines.join('\n'),
@@ -3937,7 +4045,7 @@ export class PrivateControlService {
       this.callbackButton('⬅️ Назад', this.cb('back')),
       this.callbackButton('Главный экран', this.cb('home')),
     ]);
-    rows.push(...this.buildFooterButtons());
+    rows.push(...this.buildContextFooterButtons(session));
 
     return {
       text: lines.join('\n'),
@@ -3982,24 +4090,19 @@ export class PrivateControlService {
     const rows: MaxMessageButton[][] = [
       [
         this.callbackButton('Настройки', this.cb('open_settings_hub')),
-        this.callbackButton('Рассылка', this.cb('open_broadcast')),
-      ],
-      [
-        this.callbackButton('Опрос', this.cb('open_poll')),
-        this.callbackButton('Розыгрыш', this.cb('open_giveaway')),
-      ],
-      [
         this.callbackButton('События', this.cb('open_events')),
-        this.callbackButton('Статистика', this.cb('open_logs')),
       ],
       [
-        this.callbackButton('Поиск', this.cb('open_search')),
-        this.callbackButton('Ручной бан', this.cb('open_manual_users')),
+        this.callbackButton('Рассылка', this.cb('open_broadcast')),
+        this.callbackButton('Опрос', this.cb('open_poll')),
       ],
-      [this.callbackButton('Сменить чат', this.cb('change_chat'))],
+      [
+        this.callbackButton('Ещё', this.cb('open_more')),
+        this.callbackButton('Сменить чат', this.cb('change_chat')),
+      ],
     ];
 
-    rows.push(...this.buildFooterButtons());
+    rows.push(...this.buildContextFooterButtons(session));
 
     return {
       text: lines.join('\n'),
@@ -4037,7 +4140,7 @@ export class PrivateControlService {
       this.callbackButton('Поиск', this.cb('open_search')),
       this.callbackButton('Главный экран', this.cb('home')),
     ]);
-    rows.push(...this.buildFooterButtons());
+    rows.push(...this.buildContextFooterButtons(session));
 
     return {
       text: lines.join('\n'),
@@ -4093,7 +4196,7 @@ export class PrivateControlService {
       this.callbackButton('⬅️ Назад', this.cb('back')),
       this.callbackButton('Разделы', this.cb('open_settings_hub')),
     ]);
-    rows.push(...this.buildFooterButtons());
+    rows.push(...this.buildContextFooterButtons(session));
 
     return {
       text: lines.join('\n'),
@@ -4164,7 +4267,7 @@ export class PrivateControlService {
       [this.callbackButton('Ручной бан', this.cb('open_manual_users'))],
       [this.callbackButton('Другой чат', this.cb('change_chat'))],
       [this.callbackButton('Новый вид', this.cb('home'))],
-      ...this.buildFooterButtons(),
+      ...this.buildContextFooterButtons(session),
     ];
 
     return {
@@ -4240,7 +4343,7 @@ export class PrivateControlService {
       ),
     ]);
     rows.push([this.callbackButton('⬅️ Главное меню', this.cb('main'))]);
-    rows.push(...this.buildFooterButtons());
+    rows.push(...this.buildContextFooterButtons(session));
 
     return {
       text: lines.join('\n'),
@@ -4314,7 +4417,7 @@ export class PrivateControlService {
     } else {
       rows.push([this.callbackButton('⬅️ К разделу «Ссылки»', this.cb('open_section', 'links'))]);
     }
-    rows.push(...this.buildFooterButtons());
+    rows.push(...this.buildContextFooterButtons(session));
 
     return {
       text: lines.join('\n'),
@@ -4572,7 +4675,7 @@ export class PrivateControlService {
       this.callbackButton('⬅️ Назад', this.cb('back')),
       this.callbackButton('Главный экран', this.cb('home')),
     ]);
-    rows.push(...this.buildFooterButtons());
+    rows.push(...this.buildContextFooterButtons(session));
 
     return {
       text: lines.join('\n'),
@@ -4883,7 +4986,7 @@ export class PrivateControlService {
         this.callbackButton('⬅️ Назад', this.cb('back')),
         this.callbackButton('Главный экран', this.cb('home')),
       ],
-      ...this.buildFooterButtons(),
+      ...this.buildContextFooterButtons(session),
     ];
 
     if (!hasFullPage && session.eventsPage > 1) {
@@ -4953,7 +5056,7 @@ export class PrivateControlService {
         this.callbackButton('⬅️ Назад', this.cb('back')),
         this.callbackButton('Главный экран', this.cb('home')),
       ],
-      ...this.buildFooterButtons(),
+      ...this.buildContextFooterButtons(session),
     ];
 
     return {
@@ -5021,7 +5124,7 @@ export class PrivateControlService {
       this.callbackButton('⬅️ Назад', this.cb('back')),
       this.callbackButton('Главный экран', this.cb('home')),
     ]);
-    rows.push(...this.buildFooterButtons());
+    rows.push(...this.buildContextFooterButtons(session));
 
     return {
       text: lines.join('\n'),
@@ -5033,6 +5136,7 @@ export class PrivateControlService {
 
   private renderManualActionsScreen(
     targetUserId: string | null,
+    session: PrivateSession,
     notice: string | null = null,
   ): PrivateView {
     if (!targetUserId) {
@@ -5041,7 +5145,7 @@ export class PrivateControlService {
         options: {
           buttons: [
             [this.callbackButton('К списку пользователей', this.cb('open_manual_users'))],
-            ...this.buildFooterButtons(),
+            ...this.buildContextFooterButtons(session),
           ],
         },
       };
@@ -5067,13 +5171,13 @@ export class PrivateControlService {
             this.callbackButton('⬅️ Назад', this.cb('back')),
             this.callbackButton('Главный экран', this.cb('home')),
           ],
-          ...this.buildFooterButtons(),
+          ...this.buildContextFooterButtons(session),
         ],
       },
     };
   }
 
-  private renderSearchResultsScreen(query: string): PrivateView {
+  private renderSearchResultsScreen(query: string, session: PrivateSession): PrivateView {
     const matches = this.findSettingMatches(query);
     const lines: string[] = [`Результаты поиска: «${this.compactText(query, 60)}»`, ''];
 
@@ -5097,7 +5201,7 @@ export class PrivateControlService {
       this.callbackButton('⬅️ Назад', this.cb('back')),
       this.callbackButton('Главный экран', this.cb('home')),
     ]);
-    rows.push(...this.buildFooterButtons());
+    rows.push(...this.buildContextFooterButtons(session));
 
     return {
       text: lines.join('\n'),
@@ -6191,14 +6295,14 @@ export class PrivateControlService {
     if (miniappUrl && botContactId) {
       row.push({
         type: 'open_app',
-        text: 'Мини-апп',
+        text: 'Mini App',
         webApp: miniappUrl,
         contactId: botContactId,
       });
     } else if (miniappUrl) {
       row.push({
         type: 'link',
-        text: 'Мини-апп',
+        text: 'Mini App',
         url: miniappUrl,
       });
     }
@@ -6228,6 +6332,146 @@ export class PrivateControlService {
       text,
       url: webAppUrl,
     };
+  }
+
+  private buildMiniappRouteUrl(
+    pathname: string,
+    query?: Record<string, string | null | undefined>,
+  ): string | null {
+    if (!this.appBaseUrl) {
+      return null;
+    }
+
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query ?? {})) {
+      const normalized = value?.trim();
+      if (normalized) {
+        params.set(key, normalized);
+      }
+    }
+
+    const queryString = params.toString();
+    return `${this.appBaseUrl}/app${pathname}${queryString ? `?${queryString}` : ''}`;
+  }
+
+  private buildMiniappRootUrl(entityType: ManagedEntityType): string | null {
+    return this.buildMiniappRouteUrl('/', { view: entityType });
+  }
+
+  private buildEntitySettingsMiniappUrl(
+    entityType: ManagedEntityType,
+    entityId: string,
+    focus?: string | null,
+  ): string | null {
+    return this.buildMiniappRouteUrl(
+      entityType === 'channel'
+        ? `/channel/${encodeURIComponent(entityId)}/settings${focus ? `/${encodeURIComponent(focus)}` : ''}`
+        : `/chat/${encodeURIComponent(entityId)}/settings${focus ? `/${encodeURIComponent(focus)}` : ''}`,
+    );
+  }
+
+  private buildEntityInsightsMiniappUrl(
+    entityType: ManagedEntityType,
+    entityId: string,
+  ): string | null {
+    return this.buildMiniappRouteUrl(
+      entityType === 'channel'
+        ? `/channel/${encodeURIComponent(entityId)}/stats`
+        : `/chat/${encodeURIComponent(entityId)}/events`,
+    );
+  }
+
+  private resolveMiniappUrlForSession(session: PrivateSession): string | null {
+    if (!session.selectedChatId || !session.selectedEntityType) {
+      return this.buildMiniappRootUrl(session.entityTab);
+    }
+
+    if (session.screen === 'chat_select') {
+      return this.buildMiniappRootUrl(session.entityTab);
+    }
+
+    if (
+      session.screen === 'home' ||
+      session.screen === 'more' ||
+      session.screen === 'settings_hub'
+    ) {
+      return this.buildEntitySettingsMiniappUrl(session.selectedEntityType, session.selectedChatId);
+    }
+
+    if (session.screen === 'section' && session.section) {
+      return this.buildEntitySettingsMiniappUrl(
+        'chat',
+        session.selectedChatId,
+        MINIAPP_CHAT_SECTION_FOCUS[session.section],
+      );
+    }
+
+    if (session.screen === 'channel_section' && session.channelSection) {
+      return this.buildEntitySettingsMiniappUrl(
+        'channel',
+        session.selectedChatId,
+        MINIAPP_CHANNEL_SECTION_FOCUS[session.channelSection],
+      );
+    }
+
+    if (session.screen === 'domains') {
+      return this.buildEntitySettingsMiniappUrl('chat', session.selectedChatId, 'links');
+    }
+
+    if (session.screen === 'broadcast') {
+      return this.buildEntitySettingsMiniappUrl(
+        session.selectedEntityType,
+        session.selectedChatId,
+        session.selectedEntityType === 'channel' ? 'broadcast' : 'mailing',
+      );
+    }
+
+    if (session.screen === 'poll') {
+      return this.buildEntitySettingsMiniappUrl(
+        session.selectedEntityType,
+        session.selectedChatId,
+        'poll',
+      );
+    }
+
+    if (session.screen === 'giveaway') {
+      return this.buildEntitySettingsMiniappUrl(
+        session.selectedEntityType,
+        session.selectedChatId,
+        'giveaway',
+      );
+    }
+
+    if (
+      session.screen === 'events' ||
+      session.screen === 'logs' ||
+      session.screen === 'search' ||
+      session.screen === 'manual_users' ||
+      session.screen === 'manual_actions'
+    ) {
+      return this.buildEntityInsightsMiniappUrl(session.selectedEntityType, session.selectedChatId);
+    }
+
+    return this.buildEntitySettingsMiniappUrl(session.selectedEntityType, session.selectedChatId);
+  }
+
+  private buildContextFooterButtons(session: PrivateSession): MaxMessageButton[][] {
+    const targetUrl =
+      this.resolveMiniappUrlForSession(session) ?? this.buildMiniappRootUrl(session.entityTab);
+    if (!targetUrl) {
+      return this.buildFooterButtons();
+    }
+
+    return [
+      [
+        this.buildMiniappOpenButton('Mini App', targetUrl),
+        {
+          type: 'link',
+          text: 'Поддержка',
+          url: SUPPORT_CHAT_URL,
+        },
+      ],
+    ];
   }
 
   private paginationButtons(page: number, pages: number, action: string): MaxMessageButton[] {
@@ -7495,6 +7739,7 @@ export class PrivateControlService {
     if (
       value === 'chat_select' ||
       value === 'home' ||
+      value === 'more' ||
       value === 'settings_hub' ||
       value === 'section' ||
       value === 'channel_section' ||
