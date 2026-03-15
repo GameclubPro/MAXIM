@@ -1686,6 +1686,71 @@ describe('AdminService.listChannels', () => {
   });
 });
 
+describe('AdminService.listChats', () => {
+  it('merges the current chat into cached allowlist results on default load', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-1',
+          title: 'Кэшированный чат',
+          createdAt: new Date('2026-03-02T10:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+
+    const maxClient = {
+      listBotChats: jest.fn(),
+      getChatAdminIds: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue({
+      id: 'chat-2',
+      title: 'Текущий чат',
+      createdAt: '2026-03-03T10:00:00.000Z',
+      entityType: 'chat',
+      link: null,
+      channelOverview: null,
+    });
+
+    const result = await service.listChats({
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatId: 'chat-2',
+      chatTitle: 'Текущий чат',
+    });
+
+    expect(result).toEqual([
+      {
+        id: 'chat-2',
+        title: 'Текущий чат',
+        createdAt: '2026-03-03T10:00:00.000Z',
+        entityType: 'chat',
+        link: null,
+        channelOverview: null,
+      },
+      {
+        id: 'chat-1',
+        title: 'Кэшированный чат',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'chat',
+        link: null,
+        channelOverview: null,
+      },
+    ]);
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
+  });
+});
+
 describe('AdminService settings screen endpoints', () => {
   it('aggregates chat settings screen data in one response', async () => {
     const service = new AdminService(
@@ -1839,6 +1904,25 @@ describe('AdminService admin access validation', () => {
 
     resolveAdminIds(['admin-1']);
     await expect(Promise.all(pending)).resolves.toEqual([undefined, undefined, undefined]);
+  });
+
+  it('accepts any MAX chat admin, not only editors of chat info', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatEditableAdminIds: jest.fn().mockResolvedValue([]),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(service.assertChatAdmin('chat-1', user.userId, 'chat')).resolves.toBeUndefined();
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
+    expect(maxClient.getChatEditableAdminIds).not.toHaveBeenCalled();
   });
 
   it('falls back to persisted allowlist on transient MAX admin check failures', async () => {

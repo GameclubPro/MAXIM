@@ -226,6 +226,16 @@ body.settings-drilldown-open .bottom-nav {
   gap: 12px;
 }
 
+.chats-search-card__meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.chats-search-card__refresh {
+  white-space: nowrap;
+}
+
 .chats-search-card__count {
   min-width: 38px;
   min-height: 30px;
@@ -476,6 +486,15 @@ body.settings-drilldown-open .bottom-nav {
 
   .chats-search-card__head {
     gap: 4px;
+  }
+
+  .chats-search-card__title-row {
+    align-items: flex-start;
+  }
+
+  .chats-search-card__meta {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .chats-search-card__field {

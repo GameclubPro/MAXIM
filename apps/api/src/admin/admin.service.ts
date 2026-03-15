@@ -1260,12 +1260,15 @@ export class AdminService {
   ): Promise<ChatSummary[]> {
     if (options.refresh !== true) {
       const cached = await this.listChatsFromAllowlist(user.userId, entityType);
-      if (cached.length > 0) {
-        return this.attachChannelOverview(cached);
+      const bootstrapped = await this.bootstrapCurrentChat(user, entityType);
+      const initial = bootstrapped
+        ? [bootstrapped, ...cached.filter((chat) => chat.id !== bootstrapped.id)]
+        : cached;
+      if (initial.length > 0) {
+        return this.attachChannelOverview(initial);
       }
 
-      const bootstrapped = await this.bootstrapCurrentChat(user, entityType);
-      return bootstrapped ? this.attachChannelOverview([bootstrapped]) : [];
+      return [];
     }
 
     try {
@@ -6558,13 +6561,16 @@ export class AdminService {
 
   private async loadRemoteAdminAccess(chatId: string, userId: string): Promise<AdminAccessResolution> {
     try {
-      const maxClientWithEditAccess = this.maxClient as MaxClientService & {
+      const maxClientWithAdminAccess = this.maxClient as MaxClientService & {
+        getChatAdminIds?: (chatId: string) => Promise<string[]>;
         getChatEditableAdminIds?: (chatId: string) => Promise<string[]>;
       };
       const adminIds =
-        typeof maxClientWithEditAccess.getChatEditableAdminIds === 'function'
-          ? await maxClientWithEditAccess.getChatEditableAdminIds(chatId)
-          : await this.maxClient.getChatAdminIds(chatId);
+        typeof maxClientWithAdminAccess.getChatAdminIds === 'function'
+          ? await maxClientWithAdminAccess.getChatAdminIds(chatId)
+          : typeof maxClientWithAdminAccess.getChatEditableAdminIds === 'function'
+            ? await maxClientWithAdminAccess.getChatEditableAdminIds(chatId)
+            : [];
       const hasAccess = adminIds.includes(userId);
       const cacheState: ChatAdminAccessState = hasAccess ? 'granted' : 'user_denied';
       await this.chatContextCache.setAdminAccess?.(chatId, userId, cacheState);

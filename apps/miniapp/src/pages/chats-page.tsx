@@ -131,12 +131,22 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
             <div className="chats-search-card__title">
               <div className="chats-search-card__title-row">
                 <h1>{tabLabel}</h1>
-                <span
-                  className="chats-search-card__count"
-                  aria-label={`Найдено ${filteredEntities.length}`}
-                >
-                  {filteredEntities.length}
-                </span>
+                <div className="chats-search-card__meta">
+                  <button
+                    type="button"
+                    className="button button--ghost chats-search-card__refresh"
+                    onClick={handleRefresh}
+                    disabled={isFetching}
+                  >
+                    {isFetching ? 'Обновляем...' : 'Обновить'}
+                  </button>
+                  <span
+                    className="chats-search-card__count"
+                    aria-label={`Найдено ${filteredEntities.length}`}
+                  >
+                    {filteredEntities.length}
+                  </span>
+                </div>
               </div>
             </div>
           </div>
