@@ -101,6 +101,13 @@ function BottomNavIcon({ name }: { name: BottomNavIconName }) {
 }
 
 function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
+  if (pathname.includes('/sticker-lab')) {
+    return {
+      title: 'Стикеры',
+      subtitle: '',
+    };
+  }
+
   if (pathname.includes('/giveaways/')) {
     return {
       title: 'Розыгрыш',

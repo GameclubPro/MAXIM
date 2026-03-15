@@ -1028,6 +1028,31 @@ export const meSchema = z.object({
 });
 export type Me = z.infer<typeof meSchema>;
 
+export const stickerLabShareRequestSchema = z
+  .object({
+    imageBase64: z.string().trim().min(1).max(2_000_000),
+    imageMimeType: z.string().trim().min(1).max(128),
+    imageFileName: z.string().trim().min(1).max(128),
+    deliveryType: z.enum(['image', 'file']).default('image'),
+  })
+  .superRefine((value, ctx) => {
+    if (!value.imageMimeType.toLowerCase().startsWith('image/')) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['imageMimeType'],
+        message: 'Неверный формат изображения.',
+      });
+    }
+  });
+export type StickerLabShareRequest = z.infer<typeof stickerLabShareRequestSchema>;
+
+export const stickerLabShareResponseSchema = z.object({
+  mid: z.string().trim().min(1),
+  messageUrl: z.string().trim().max(2_048).nullable(),
+  privateChatId: z.string().trim().min(1),
+});
+export type StickerLabShareResponse = z.infer<typeof stickerLabShareResponseSchema>;
+
 export const dateRangeQuerySchema = z.object({
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),

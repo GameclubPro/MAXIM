@@ -17,6 +17,11 @@ export class AdminController {
     return this.adminService.getMe(user);
   }
 
+  @Post('sticker-lab/share')
+  shareStickerLabAsset(@CurrentUser() user: AuthUser, @Body() body: unknown) {
+    return this.adminService.shareStickerLabAsset(user, body);
+  }
+
   @Get('chats')
   getChats(@CurrentUser() user: AuthUser, @Query('refresh') refresh: string | undefined) {
     return this.adminService.listChats(user, { refresh: refresh === '1' });
