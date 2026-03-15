@@ -2894,7 +2894,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           </header>
 
           <div className="settings-sections-shell">
-            <GlassCard className="settings-section settings-section--wide stagger-in">
+            <GlassCard className="settings-section stagger-in">
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Ссылки"
@@ -3515,7 +3515,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
 
             <GlassCard
-              className="settings-section settings-section--wide stagger-in"
+              className="settings-section stagger-in"
               style={{ animationDelay: '45ms' }}
               aria-label="Правила"
             >
@@ -5621,7 +5621,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
 
             <GlassCard
-              className="settings-section settings-section--wide stagger-in"
+              className="settings-section stagger-in"
               style={{ animationDelay: '225ms' }}
               aria-label="Ограничения"
             >
@@ -6648,7 +6648,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
 
             <GlassCard
-              className="settings-section settings-section--wide stagger-in"
+              className="settings-section stagger-in"
               style={{ animationDelay: '315ms' }}
               aria-label="Рассылки"
             >

@@ -1280,7 +1280,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         </SettingsDrilldownPanel>
       </GlassCard>
 
-      <GlassCard className="channel-settings-card channel-settings-card--wide" elevated>
+      <GlassCard className="channel-settings-card" elevated>
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
             title="Рассылки"
