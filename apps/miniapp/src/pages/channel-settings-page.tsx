@@ -1076,7 +1076,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
             title="Комментарии"
-            summary={commentsCardSummary}
+            summary=""
             status={commentsCardStatus}
             icon="comments"
             tone="sky"
@@ -1169,7 +1169,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
           <SettingsSectionToggle
             title="Предложка"
-            summary={postSuggestionsCardSummary}
+            summary=""
             status={postSuggestionsCardStatus}
             icon="spark"
             tone="mint"
@@ -1635,7 +1635,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
             <SettingsSectionToggle
               title="Опросы"
-              summary="Голосование отдельным постом"
+              summary=""
               status="Пост"
               icon="poll"
               tone="ink"
@@ -1671,7 +1671,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
             <SettingsSectionToggle
               title="Розыгрыши"
-              summary="Управление через бота"
+              summary=""
               status="Бот"
               icon="gift"
               tone="amber"

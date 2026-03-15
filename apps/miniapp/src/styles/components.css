@@ -54,10 +54,10 @@
 
 .channel-settings-screen {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 166px), 1fr));
   align-items: start;
-  gap: var(--space-3);
-  width: min(100%, 840px);
+  gap: 10px;
+  width: min(100%, 880px);
   margin: 0 auto;
 }
 
@@ -105,6 +105,11 @@
   gap: 8px;
   background: rgba(255, 255, 255, 0.9);
   min-width: 0;
+}
+
+.glass-card.settings-section,
+.glass-card.channel-settings-card {
+  padding: var(--space-3);
 }
 
 .channel-settings-header__top {
@@ -2253,6 +2258,7 @@
 .settings-section__toggle {
   flex: 1 1 auto;
   width: 100%;
+  min-height: 104px;
   border: 1px solid rgba(62, 96, 127, 0.2);
   border-radius: 18px;
   background:
@@ -2271,6 +2277,10 @@
     background-color 0.2s ease,
     box-shadow 0.2s ease,
     transform 0.18s ease;
+}
+
+.settings-section__toggle.is-compact {
+  min-height: 96px;
 }
 
 .settings-section__toggle:hover {
@@ -2381,14 +2391,18 @@
 .settings-section__toggle-main small {
   display: -webkit-box;
   overflow: hidden;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
-  font-size: 0.73rem;
-  line-height: 1.35;
+  font-size: 0.71rem;
+  line-height: 1.2;
   color: var(--text-muted);
   font-weight: 600;
   text-transform: none;
   letter-spacing: 0.01em;
+}
+
+.settings-section__toggle.is-compact .settings-section__toggle-main {
+  gap: 0;
 }
 
 .settings-section__toggle-side {
@@ -2457,6 +2471,11 @@
   .settings-section__toggle {
     gap: 10px;
     padding: 11px;
+    min-height: 96px;
+  }
+
+  .settings-section__toggle.is-compact {
+    min-height: 90px;
   }
 
   .settings-section__icon-badge {
@@ -2471,7 +2490,7 @@
   }
 
   .settings-section__toggle-main small {
-    font-size: 0.7rem;
+    font-size: 0.68rem;
   }
 
   .settings-section__status-chip {

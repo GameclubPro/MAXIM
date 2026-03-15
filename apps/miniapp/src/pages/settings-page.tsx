@@ -2893,7 +2893,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </div>
           </header>
 
-          <GlassCard className="settings-sections-shell" padding="sm">
+          <div className="settings-sections-shell">
             <GlassCard className="settings-section settings-section--wide stagger-in">
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
@@ -3797,8 +3797,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   className={cn('settings-section__head', 'settings-section__head--interactive')}
                 >
                   <SettingsSectionToggle
-                    title="Опросы"
-                    summary="Голосование в отдельном посте"
+                  title="Опросы"
+                    summary=""
                     status="Пост"
                     icon="poll"
                     tone="ink"
@@ -3839,8 +3839,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   className={cn('settings-section__head', 'settings-section__head--interactive')}
                 >
                   <SettingsSectionToggle
-                    title="Розыгрыши"
-                    summary="Создание и управление в личке бота"
+                  title="Розыгрыши"
+                    summary=""
                     status="Бот"
                     icon="gift"
                     tone="amber"
@@ -3882,7 +3882,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Приветствие"
-                  summary={greetingHeaderSummary}
+                  summary=""
                   status={greetingCardStatus}
                   icon="greeting"
                   tone="mint"
@@ -4165,7 +4165,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Мат и грубость"
-                  summary={profanityFilterHeaderSummary}
+                  summary=""
                   status={profanityCardStatus}
                   icon="warning"
                   tone="rose"
@@ -4373,7 +4373,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Реклама и продажи"
-                  summary={commercialFilterHeaderSummary}
+                  summary=""
                   status={commercialCardStatus}
                   icon="ads"
                   tone="amber"
@@ -4856,7 +4856,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Объявления по теме"
-                  summary={thematicFiltersHeaderSummary}
+                  summary=""
                   status={thematicFiltersCardStatus}
                   icon="topic"
                   tone="sky"
@@ -5166,7 +5166,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Повторы"
-                  summary={duplicatesHeaderSummary}
+                  summary=""
                   status={duplicatesCardStatus}
                   icon="repeat"
                   tone="rose"
@@ -6302,7 +6302,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Ночной режим"
-                  summary={nightHeaderSummary}
+                  summary=""
                   status={nightCardStatus}
                   icon="moon"
                   tone="ink"
@@ -7244,7 +7244,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Сервисные"
-                  summary={extraHeaderSummary}
+                  summary=""
                   status={extraCardStatus}
                   icon="tools"
                   tone="amber"
@@ -7463,7 +7463,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 </div>
               </SettingsDrilldownPanel>
             </GlassCard>
-          </GlassCard>
+          </div>
         </section>
       ) : null}
 

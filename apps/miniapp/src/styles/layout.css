@@ -305,15 +305,9 @@ body.settings-drilldown-open .bottom-nav {
 
 .settings-sections-shell {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 166px), 1fr));
   align-items: start;
-  gap: var(--space-3);
-  padding: 0;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+  gap: 10px;
 }
 
 .settings-section--wide {
