@@ -213,6 +213,44 @@ describe('WebhookParser', () => {
     expect(parsed.message?.text).toContain('https://max.ru/join/hidden-anchor-link');
   });
 
+  it('appends hidden urls from body markup when visible text is stored outside direct body text', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      message: {
+        message_id: 'msg-4c-body-markup',
+        chat_id: 'chat-4c-body-markup',
+        sender_id: 'user-4c-body-markup',
+        created_at: '2026-03-09T09:11:10.174Z',
+        body: {
+          text: '',
+          markup: [
+            {
+              type: 'link',
+              from: 91,
+              length: 12,
+              url: 'https://max.ru/join/xte75O0CZf_31UDr3PI1bqaRoWidHatl4yn3U2Rf8ZQ',
+            },
+          ],
+          attachments: [
+            {
+              type: 'share',
+              title: 'MAX',
+              description:
+                'MAX позволяет отправлять любые виды сообщений и звонить даже на слабых устройствах.',
+              payload: {
+                url: 'https://max.ru/join/xte75O0CZf_31UDr3PI1bqaRoWidHatl4yn3U2Rf8ZQ',
+              },
+            },
+          ],
+        },
+      },
+    });
+
+    expect(parsed.message?.text).toContain(
+      'https://max.ru/join/xte75O0CZf_31UDr3PI1bqaRoWidHatl4yn3U2Rf8ZQ',
+    );
+  });
+
   it('extracts url from nested structures when plain text is missing', () => {
     const parsed = parser.parse({
       update_type: 'message_created',

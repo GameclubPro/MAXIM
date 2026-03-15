@@ -200,6 +200,66 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
   });
 
+  it('detects bare MAX invite links without scheme', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'вступай max.ru/join/s-ue_EUH76fg0xkakyGtIbD4dfKhHyPStoqI3oK-ObUh',
+      settings: buildSettings({
+        linkPolicy: LinkPolicy.BLOCKLIST_ONLY,
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
+  });
+
+  it('does not treat dotted russian words as blocked links', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: "Продам кузов Нивы.Весь перевареный, документы есть",
+      settings: buildSettings({
+        linkPolicy: LinkPolicy.BLOCKLIST_ONLY,
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+  });
+
+  it('does not treat dotted addresses as blocked links', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'х.Тверской ул.Первомайская,34',
+      settings: buildSettings({
+        linkPolicy: LinkPolicy.BLOCKLIST_ONLY,
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+  });
+
+  it('does not treat decimal values as blocked links', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Завтра доставка после 18.00 Куплю 30 шт.',
+      settings: buildSettings({
+        linkPolicy: LinkPolicy.BLOCKLIST_ONLY,
+      }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+  });
+
   it('matches legacy allowlist rows with encoded trailing text', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
