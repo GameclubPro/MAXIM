@@ -40,7 +40,7 @@ import {
   updateRules,
   updateSettings,
 } from '../lib/api/chat-settings-client';
-import { getChats } from '../lib/api/root-client';
+import { getChats, getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import type {
   BroadcastHandoffPayload,
@@ -78,6 +78,7 @@ const MAX_BROADCAST_SCHEDULE_DAYS = 14;
 const MIN_BROADCAST_CYCLE_HOURS = 1;
 const MAX_BROADCAST_CYCLE_HOURS = 14 * 24;
 const MAX_BROADCAST_CYCLE_COUNT = 100;
+const THEMATIC_FILTERS_OWNER_USER_ID = '98315271';
 const MAX_RULES_IMAGE_SIZE_BYTES = 1_000_000;
 const MAX_CHAT_RULES_TEXT_LENGTH = 2_000;
 const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
@@ -1188,6 +1189,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     enabled: Boolean(chatId),
     refetchOnWindowFocus: false,
   });
+  const meQuery = useQuery({
+    queryKey: ['me'],
+    queryFn: () => getMe(api),
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
 
   const chatsQuery = useQuery({
     queryKey: ['chats'],
@@ -1405,6 +1412,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const chatParticipantsCountLabel = formatParticipantsCount(
     chatHeaderQuery.data?.participantsCount ?? null,
   );
+  const canSeeThematicFilters = meQuery.data?.userId === THEMATIC_FILTERS_OWNER_USER_ID;
 
   const publishRulesMutation = useMutation({
     mutationFn: () => publishRules(api, chatId ?? ''),
@@ -4848,46 +4856,47 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               </SettingsDrilldownPanel>
             </GlassCard>
 
-            <GlassCard
-              className="settings-section stagger-in"
-              style={{ animationDelay: '157ms' }}
-              aria-label="Объявления по теме"
-            >
-              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
-                <SettingsSectionToggle
-                  title="Объявления по теме"
-                  summary=""
-                  status={thematicFiltersCardStatus}
-                  icon="topic"
-                  tone="sky"
-                  open={expandedSections.thematicFilters}
-                  controls="settings-thematic-filters-content"
-                  onClick={() => toggleSection('thematicFilters')}
-                />
-              </div>
-
-              <SettingsDrilldownPanel
-                id="settings-thematic-filters-content"
-                open={expandedSections.thematicFilters}
-                title="Объявления по теме"
-                summary={thematicFiltersHeaderSummary}
-                onClose={() => toggleSection('thematicFilters')}
-                footer={renderSectionSaveFooter('thematicFilters')}
+            {canSeeThematicFilters ? (
+              <GlassCard
+                className="settings-section stagger-in"
+                style={{ animationDelay: '157ms' }}
+                aria-label="Объявления по теме"
               >
-                <div
+                <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+                  <SettingsSectionToggle
+                    title="Объявления по теме"
+                    summary=""
+                    status={thematicFiltersCardStatus}
+                    icon="topic"
+                    tone="sky"
+                    open={expandedSections.thematicFilters}
+                    controls="settings-thematic-filters-content"
+                    onClick={() => toggleSection('thematicFilters')}
+                  />
+                </div>
+
+                <SettingsDrilldownPanel
                   id="settings-thematic-filters-content"
-                  className={cn(
-                    'settings-section__collapse',
-                    expandedSections.thematicFilters && 'is-open',
-                  )}
+                  open={expandedSections.thematicFilters}
+                  title="Объявления по теме"
+                  summary={thematicFiltersHeaderSummary}
+                  onClose={() => toggleSection('thematicFilters')}
+                  footer={renderSectionSaveFooter('thematicFilters')}
                 >
-                {expandedSections.thematicFilters ? (
-                  <div className="settings-section__collapse-inner">
-                    <p className="settings-native-toggle__hint">
-                      Бот проверяет первое слово объявления длиной от 90 символов. Если оно не
-                      совпадает с кодовым словом, объявление удаляется и дальше работают ступени
-                      санкций.
-                    </p>
+                  <div
+                    id="settings-thematic-filters-content"
+                    className={cn(
+                      'settings-section__collapse',
+                      expandedSections.thematicFilters && 'is-open',
+                    )}
+                  >
+                  {expandedSections.thematicFilters ? (
+                    <div className="settings-section__collapse-inner">
+                      <p className="settings-native-toggle__hint">
+                        Бот проверяет первое слово объявления длиной от 90 символов. Если оно не
+                        совпадает с кодовым словом, объявление удаляется и дальше работают ступени
+                        санкций.
+                      </p>
 
                     <div className="settings-native-toggle text-filter-card">
                       <div className="settings-native-toggle__row">
@@ -5152,11 +5161,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         </div>
                       </>
                     ) : null}
+                    </div>
+                  ) : null}
                   </div>
-                ) : null}
-                </div>
-              </SettingsDrilldownPanel>
-            </GlassCard>
+                </SettingsDrilldownPanel>
+              </GlassCard>
+            ) : null}
 
             <GlassCard
               className="settings-section stagger-in"
