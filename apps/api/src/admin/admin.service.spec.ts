@@ -1906,25 +1906,6 @@ describe('AdminService admin access validation', () => {
     await expect(Promise.all(pending)).resolves.toEqual([undefined, undefined, undefined]);
   });
 
-  it('accepts any MAX chat admin, not only editors of chat info', async () => {
-    const prisma = createPrismaMock();
-    const chatContextCache = createChatContextCacheMock();
-    const maxClient = {
-      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      getChatEditableAdminIds: jest.fn().mockResolvedValue([]),
-    };
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock() as never,
-    );
-
-    await expect(service.assertChatAdmin('chat-1', user.userId, 'chat')).resolves.toBeUndefined();
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
-    expect(maxClient.getChatEditableAdminIds).not.toHaveBeenCalled();
-  });
-
   it('falls back to persisted allowlist on transient MAX admin check failures', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ chatId: 'chat-1' }]);

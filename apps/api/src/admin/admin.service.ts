@@ -6561,16 +6561,13 @@ export class AdminService {
 
   private async loadRemoteAdminAccess(chatId: string, userId: string): Promise<AdminAccessResolution> {
     try {
-      const maxClientWithAdminAccess = this.maxClient as MaxClientService & {
-        getChatAdminIds?: (chatId: string) => Promise<string[]>;
+      const maxClientWithEditAccess = this.maxClient as MaxClientService & {
         getChatEditableAdminIds?: (chatId: string) => Promise<string[]>;
       };
       const adminIds =
-        typeof maxClientWithAdminAccess.getChatAdminIds === 'function'
-          ? await maxClientWithAdminAccess.getChatAdminIds(chatId)
-          : typeof maxClientWithAdminAccess.getChatEditableAdminIds === 'function'
-            ? await maxClientWithAdminAccess.getChatEditableAdminIds(chatId)
-            : [];
+        typeof maxClientWithEditAccess.getChatEditableAdminIds === 'function'
+          ? await maxClientWithEditAccess.getChatEditableAdminIds(chatId)
+          : await this.maxClient.getChatAdminIds(chatId);
       const hasAccess = adminIds.includes(userId);
       const cacheState: ChatAdminAccessState = hasAccess ? 'granted' : 'user_denied';
       await this.chatContextCache.setAdminAccess?.(chatId, userId, cacheState);
