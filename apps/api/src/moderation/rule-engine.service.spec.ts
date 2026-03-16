@@ -26,6 +26,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     duplicateBanWindowSec: 48 * 60 * 60,
     duplicateBanMaxCount: 4,
     linkPolicy: LinkPolicy.ALLOWLIST_ONLY,
+    botSpeechStyle: null,
     greetingEnabled: false,
     greetingBotMessageEnabled: true,
     greetingBotMessageText: '',

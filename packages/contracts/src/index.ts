@@ -1,4 +1,23 @@
 import { z } from 'zod';
+export {
+  BOT_SPEECH_EDITABLE_FIELD_KEYS,
+  BOT_SPEECH_PRESETS,
+  BOT_SPEECH_STYLE_METADATA,
+  BOT_SPEECH_STYLE_OPTIONS,
+  BOT_SPEECH_STYLE_VALUES,
+  BOT_SPEECH_SYSTEM_TEMPLATE_KEYS,
+  applyBotSpeechStylePreset,
+  botSpeechStyleSchema,
+  getBotSpeechEditableTemplate,
+  getBotSpeechSystemTemplate,
+  hasBotSpeechEditableOverrides,
+  resolveBotSpeechStyle,
+  type BotSpeechEditableFieldKey,
+  type BotSpeechSettingsSubset,
+  type BotSpeechStyle,
+  type BotSpeechSystemTemplateKey,
+} from './bot-speech';
+import { botSpeechStyleSchema } from './bot-speech';
 
 export const sanctionActionSchema = z.enum(['NONE', 'WARN', 'DELETE_MESSAGE', 'KICK', 'BAN']);
 export type SanctionAction = z.infer<typeof sanctionActionSchema>;
@@ -243,6 +262,7 @@ export const chatSettingsSchema = z
     duplicateBanWindowSec: duplicateWindowSecSchema.default(172_800),
     duplicateBanMaxCount: duplicateMaxCountSchema.default(4),
     linkPolicy: linkPolicySchema.default('ALLOWLIST_ONLY'),
+    botSpeechStyle: botSpeechStyleSchema.nullable().default(null),
     greetingEnabled: z.boolean().default(false),
     greetingBotMessageEnabled: z.boolean().default(true),
     greetingBotMessageText: botMessageTextSchema,

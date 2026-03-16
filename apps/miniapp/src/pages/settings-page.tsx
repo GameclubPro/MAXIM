@@ -1,7 +1,15 @@
 import {
+  BOT_SPEECH_EDITABLE_FIELD_KEYS,
+  BOT_SPEECH_STYLE_METADATA,
+  BOT_SPEECH_STYLE_OPTIONS,
+  applyBotSpeechStylePreset,
   chatRulesSchema,
   chatSettingsSchema,
+  getBotSpeechEditableTemplate,
+  hasBotSpeechEditableOverrides,
   normalizeAllowlistLink,
+  type BotSpeechEditableFieldKey,
+  type BotSpeechStyle,
   type ChatRules,
   type ChatSettings,
   type ChatSettingsScreenResponse,
@@ -450,23 +458,24 @@ const RUSSIAN_TIMEZONE_OPTIONS = [
   { value: 'Asia/Kamchatka', label: 'Камчатка (UTC+12)' },
 ] as const;
 
-const DEFAULT_BOT_MESSAGE_TEMPLATES: Record<BotMessageEditorKey, string> = {
-  link: 'Товарищ {user}, Майор Максимов на связи 👮‍♂️ Сообщение {message_status}: {reason}. Поправьте и едем дальше.',
-  greeting: 'Здравия желаю, {user}. Майор Максимов на связи 🤝 Добро пожаловать в чат.',
-  textFilters:
-    'Товарищ {user}, Майор Максимов на связи 👮‍♂️ Сообщение {message_status}: {reason}. Поправьте и едем дальше.',
-  duplicate:
-    'Товарищ {user}, Майор Максимов на связи 👮‍♂️ Повтор по базе: сообщение {duplicate_context}. {sanction} Дальше без серий, договорились.',
-  messageLimits:
-    'Товарищ {user}, Майор Максимов на связи 👮‍♂️ Сообщение {message_status}: {reason}. Поправьте и едем дальше.',
-  night:
-    'Ночной режим, граждане 🌙 Участок закрыт на {night_window} ({night_timezone}). {night_status}',
+const BOT_MESSAGE_EDITOR_FIELD_KEYS: Record<BotMessageEditorKey, BotSpeechEditableFieldKey> = {
+  link: 'linkBotMessageText',
+  greeting: 'greetingBotMessageText',
+  textFilters: 'textFiltersBotMessageText',
+  duplicate: 'duplicateBotMessageText',
+  messageLimits: 'messageLimitsBotMessageText',
+  night: 'nightModeBotMessageText',
 };
 
-const DEFAULT_WARN_MESSAGE_TEMPLATES: Record<WarnMessageEditorKey, string> = {
-  linkWarn: 'Товарищ {user}, {warning}. 👮‍♂️ {reason}. Без повторов, и разойдёмся по-хорошему.',
-  textFiltersWarn: 'Товарищ {user}, {warning}. Дальше держим порядок.',
+const WARN_MESSAGE_EDITOR_FIELD_KEYS: Record<WarnMessageEditorKey, BotSpeechEditableFieldKey> = {
+  linkWarn: 'linkWarnMessageText',
+  textFiltersWarn: 'textFiltersWarnMessageText',
 };
+
+const BOT_SPEECH_SYNC_SETTING_KEYS = [
+  'botSpeechStyle',
+  ...BOT_SPEECH_EDITABLE_FIELD_KEYS,
+] as const satisfies ReadonlyArray<keyof ChatSettings>;
 
 const BOT_MESSAGE_TEMPLATE_HINTS: Record<BotMessageEditorKey, string> = {
   link: 'Плейсхолдеры: {user}, {message_status}, {reason}. Поддерживается Markdown MAX.',
@@ -557,8 +566,71 @@ function buildAutoRulesText(settings: ChatSettings): string {
   return ['Пожалуйста, соблюдайте правила чата:', ...lines.map((line) => `• ${line}`)].join('\n');
 }
 
+function getSpeechTemplateFallback(
+  style: ChatSettings['botSpeechStyle'],
+  fieldKey: BotSpeechEditableFieldKey,
+): string {
+  return getBotSpeechEditableTemplate(style, fieldKey);
+}
+
 function resolveBotMessageTemplate(customValue: string, fallbackTemplate: string): string {
   return customValue.trim().length > 0 ? customValue : fallbackTemplate;
+}
+
+function renderBotMessageTemplatePreview(
+  templateText: string,
+  replacements: Record<string, string>,
+): string {
+  let rendered = templateText;
+  for (const [key, value] of Object.entries(replacements)) {
+    rendered = rendered.split(`{${key}}`).join(value);
+  }
+
+  return rendered.trim();
+}
+
+function mergeBotSpeechStyleSettings(target: ChatSettings, source: ChatSettings): ChatSettings {
+  const nextSettings: ChatSettings = {
+    ...target,
+  };
+
+  for (const key of BOT_SPEECH_SYNC_SETTING_KEYS) {
+    nextSettings[key] = source[key] as never;
+  }
+
+  return nextSettings;
+}
+
+function buildSpeechStylePreviewSamples(style: BotSpeechStyle): {
+  greeting: string;
+  explanation: string;
+  warning: string;
+} {
+  return {
+    greeting: renderBotMessageTemplatePreview(
+      getSpeechTemplateFallback(style, 'greetingBotMessageText'),
+      {
+        user: 'Алексей',
+        greeting: 'добро пожаловать в чат',
+      },
+    ),
+    explanation: renderBotMessageTemplatePreview(
+      getSpeechTemplateFallback(style, 'linkBotMessageText'),
+      {
+        user: 'Алексей',
+        message_status: 'снято с линии',
+        reason: 'в этом чате ссылки не проходят, без ссылок',
+      },
+    ),
+    warning: renderBotMessageTemplatePreview(
+      getSpeechTemplateFallback(style, 'textFiltersWarnMessageText'),
+      {
+        user: 'Алексей',
+        warning: 'вынесено предупреждение за грубую лексику',
+        reason: 'грубая лексика запрещена правилами чата',
+      },
+    ),
+  };
 }
 
 function formatApiError(error: unknown): string {
@@ -922,6 +994,94 @@ function TrashIcon() {
   );
 }
 
+function BotSpeechStyleIcon({
+  iconKey,
+}: {
+  iconKey: (typeof BOT_SPEECH_STYLE_OPTIONS)[number]['iconKey'];
+}) {
+  if (iconKey === 'robot') {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+        <rect x="5" y="7" width="14" height="11" rx="4" stroke="currentColor" strokeWidth="1.7" />
+        <path d="M12 4.5V7" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
+        <circle cx="9.25" cy="11.5" r="1.05" fill="currentColor" />
+        <circle cx="14.75" cy="11.5" r="1.05" fill="currentColor" />
+        <path
+          d="M9.5 15H14.5"
+          stroke="currentColor"
+          strokeWidth="1.7"
+          strokeLinecap="round"
+        />
+      </svg>
+    );
+  }
+
+  if (iconKey === 'friendly') {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+        <circle cx="12" cy="12" r="7" stroke="currentColor" strokeWidth="1.7" />
+        <circle cx="9.5" cy="10.5" r="0.95" fill="currentColor" />
+        <circle cx="14.5" cy="10.5" r="0.95" fill="currentColor" />
+        <path
+          d="M8.7 13.4C9.4 14.7 10.5 15.3 12 15.3C13.5 15.3 14.6 14.7 15.3 13.4"
+          stroke="currentColor"
+          strokeWidth="1.7"
+          strokeLinecap="round"
+        />
+      </svg>
+    );
+  }
+
+  if (iconKey === 'police') {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+        <path
+          d="M12 4.7L18 7V11.6C18 15.2 15.5 18.2 12 19.3C8.5 18.2 6 15.2 6 11.6V7L12 4.7Z"
+          stroke="currentColor"
+          strokeWidth="1.7"
+          strokeLinejoin="round"
+        />
+        <path
+          d="M12 8.2V13.4"
+          stroke="currentColor"
+          strokeWidth="1.7"
+          strokeLinecap="round"
+        />
+        <path
+          d="M9.7 10.5H14.3"
+          stroke="currentColor"
+          strokeWidth="1.7"
+          strokeLinecap="round"
+        />
+      </svg>
+    );
+  }
+
+  return (
+    <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+      <path
+        d="M6.7 9.4C7.7 7.6 9.3 6.7 11.5 6.7C13.8 6.7 15.3 7.5 16.3 9.1"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
+      <circle cx="9.3" cy="12.1" r="0.95" fill="currentColor" />
+      <circle cx="14.9" cy="11.5" r="0.95" fill="currentColor" />
+      <path
+        d="M9.2 15.5C10.5 14.8 11.8 14.6 13.2 14.9C13.8 15 14.3 15.3 14.8 15.7"
+        stroke="currentColor"
+        strokeWidth="1.7"
+        strokeLinecap="round"
+      />
+      <path
+        d="M4.8 12C4.8 7.9 7.9 4.8 12 4.8C16.1 4.8 19.2 7.9 19.2 12C19.2 16.1 16.1 19.2 12 19.2C7.9 19.2 4.8 16.1 4.8 12Z"
+        stroke="currentColor"
+        strokeWidth="1.7"
+      />
+    </svg>
+  );
+}
+
 type EditToggleButtonProps = {
   label: string;
   onClick: () => void;
@@ -993,13 +1153,23 @@ function SettingsHintAnchor({
 
 type BotMessageEditorProps = {
   editorKey: BotMessageEditorKey;
+  botSpeechStyle: ChatSettings['botSpeechStyle'];
   value: string;
   onChange: (value: string) => void;
   onReset: () => void;
 };
 
-function BotMessageEditor({ editorKey, value, onChange, onReset }: BotMessageEditorProps) {
-  const defaultTemplate = DEFAULT_BOT_MESSAGE_TEMPLATES[editorKey];
+function BotMessageEditor({
+  editorKey,
+  botSpeechStyle,
+  value,
+  onChange,
+  onReset,
+}: BotMessageEditorProps) {
+  const defaultTemplate = getSpeechTemplateFallback(
+    botSpeechStyle,
+    BOT_MESSAGE_EDITOR_FIELD_KEYS[editorKey],
+  );
   const templateHint = BOT_MESSAGE_TEMPLATE_HINTS[editorKey];
   const isDefaultTemplate = value.trim().length === 0;
   const editorValue = resolveBotMessageTemplate(value, defaultTemplate);
@@ -1036,13 +1206,23 @@ function BotMessageEditor({ editorKey, value, onChange, onReset }: BotMessageEdi
 
 type WarnMessageEditorProps = {
   editorKey: WarnMessageEditorKey;
+  botSpeechStyle: ChatSettings['botSpeechStyle'];
   value: string;
   onChange: (value: string) => void;
   onReset: () => void;
 };
 
-function WarnMessageEditor({ editorKey, value, onChange, onReset }: WarnMessageEditorProps) {
-  const defaultTemplate = DEFAULT_WARN_MESSAGE_TEMPLATES[editorKey];
+function WarnMessageEditor({
+  editorKey,
+  botSpeechStyle,
+  value,
+  onChange,
+  onReset,
+}: WarnMessageEditorProps) {
+  const defaultTemplate = getSpeechTemplateFallback(
+    botSpeechStyle,
+    WARN_MESSAGE_EDITOR_FIELD_KEYS[editorKey],
+  );
   const templateHint = WARN_MESSAGE_TEMPLATE_HINTS[editorKey];
   const isDefaultTemplate = value.trim().length === 0;
   const editorValue = resolveBotMessageTemplate(value, defaultTemplate);
@@ -1129,6 +1309,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [openHintKey, setOpenHintKey] = useState<HintKey | null>(null);
   const [openBotEditorKey, setOpenBotEditorKey] = useState<BotMessageEditorKey | null>(null);
   const [openWarnEditorKey, setOpenWarnEditorKey] = useState<WarnMessageEditorKey | null>(null);
+  const [pendingSpeechStyle, setPendingSpeechStyle] = useState<BotSpeechStyle | null>(null);
   const [expandedSections, setExpandedSections] = useState<Record<SettingsSectionKey, boolean>>(
     INITIAL_EXPANDED_SECTIONS,
   );
@@ -1181,6 +1362,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setEditingManagedBroadcast(null);
     setExpandedManagedBroadcastId(null);
     setDuplicateWindowInputValues({});
+    setPendingSpeechStyle(null);
   }, [chatId]);
 
   const settingsScreenQuery = useQuery({
@@ -1370,6 +1552,34 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const savingSection = saveSectionMutation.variables?.section ?? null;
   const mutateSettingsAsync = saveSectionMutation.mutateAsync;
 
+  const saveSpeechStyleMutation = useMutation({
+    mutationFn: ({
+      style,
+      payload,
+    }: {
+      style: BotSpeechStyle;
+      payload: ChatSettings;
+    }) => updateSettings(api, chatId ?? '', payload),
+    onSuccess: (saved, variables) => {
+      syncSavedBotSpeechStyle(saved);
+      setPendingSpeechStyle(null);
+      pushToast({
+        tone: 'success',
+        title: `Стиль «${BOT_SPEECH_STYLE_METADATA[variables.style].label}» применен`,
+      });
+      maxNotify('success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось применить стиль речи',
+        description: formatApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+  const isSavingSpeechStyle = saveSpeechStyleMutation.isPending;
+
   const saveRulesMutation = useMutation({
     mutationFn: (payload: UpdateChatRulesPayload) => updateRules(api, chatId ?? '', payload),
     onSuccess: (saved, payload) => {
@@ -1400,7 +1610,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const isSavingRules = saveRulesMutation.isPending;
   const mutateRules = saveRulesMutation.mutate;
   const mutateRulesAsync = saveRulesMutation.mutateAsync;
-  const isHeaderSaving = isSavingSettings || isSavingRules;
+  const isHeaderSaving = isSavingSettings || isSavingRules || isSavingSpeechStyle;
   const hasPendingHeaderChanges = hasChanges || hasRulesChanges;
   const headerStatusLabel = isHeaderSaving
     ? 'Сохраняем'
@@ -1413,6 +1623,26 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     chatHeaderQuery.data?.participantsCount ?? null,
   );
   const canSeeThematicFilters = meQuery.data?.userId === THEMATIC_FILTERS_OWNER_USER_ID;
+  const activeSpeechStyle = useMemo(() => {
+    if (!draft?.botSpeechStyle || hasBotSpeechEditableOverrides(draft)) {
+      return null;
+    }
+
+    return draft.botSpeechStyle;
+  }, [draft]);
+  const baseSpeechStyle = draft?.botSpeechStyle ?? null;
+  const hasSpeechOverrides = draft ? hasBotSpeechEditableOverrides(draft) : false;
+  const speechStyleDescription = activeSpeechStyle
+    ? BOT_SPEECH_STYLE_METADATA[activeSpeechStyle].description
+    : baseSpeechStyle && hasSpeechOverrides
+      ? `Свои тексты. База скрытых реплик: ${BOT_SPEECH_STYLE_METADATA[baseSpeechStyle].label}.`
+      : 'Стиль не выбран. Можно оставить свои тексты.';
+  const pendingSpeechStyleMeta = pendingSpeechStyle
+    ? BOT_SPEECH_STYLE_METADATA[pendingSpeechStyle]
+    : null;
+  const pendingSpeechStyleSamples = pendingSpeechStyle
+    ? buildSpeechStylePreviewSamples(pendingSpeechStyle)
+    : null;
 
   const publishRulesMutation = useMutation({
     mutationFn: () => publishRules(api, chatId ?? ''),
@@ -1722,6 +1952,24 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     });
   }
 
+  function clearBotSpeechErrors() {
+    setFieldErrors((current) => {
+      let changed = false;
+      const next = { ...current };
+
+      for (const key of BOT_SPEECH_SYNC_SETTING_KEYS) {
+        if (!next[key]) {
+          continue;
+        }
+
+        delete next[key];
+        changed = true;
+      }
+
+      return changed ? next : current;
+    });
+  }
+
   function syncSavedSectionSettings(section: ApplySectionKey, saved: ChatSettings) {
     setDraft((current) => (current ? mergeSectionSettings(current, saved, section) : saved));
     clearSectionErrors(section);
@@ -1732,6 +1980,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           ? {
               ...current,
               settings: mergeSectionSettings(current.settings, saved, section),
+            }
+          : current,
+    );
+  }
+
+  function syncSavedBotSpeechStyle(saved: ChatSettings) {
+    setDraft((current) => (current ? mergeBotSpeechStyleSettings(current, saved) : saved));
+    clearBotSpeechErrors();
+    queryClient.setQueryData<ChatSettingsScreenResponse | undefined>(
+      ['settings-screen', chatId],
+      (current) =>
+        current
+          ? {
+              ...current,
+              settings: mergeBotSpeechStyleSettings(current.settings, saved),
             }
           : current,
     );
@@ -2733,6 +2996,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     return validateDraft(mergeSectionSettings(settingsQuery.data, draft, section));
   }
 
+  function buildBotSpeechStylePayload(style: BotSpeechStyle) {
+    if (!settingsQuery.data) {
+      return null;
+    }
+
+    return validateDraft(applyBotSpeechStylePreset(settingsQuery.data, style));
+  }
+
   async function handleSaveSection(section: ApplySectionKey) {
     if (!chatId) {
       return;
@@ -2790,6 +3061,28 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         sourceSettings: payload,
       });
       closeSection(section);
+    } catch {
+      // Errors are handled by the mutation.
+    }
+  }
+
+  async function handleApplyBotSpeechStyle(style: BotSpeechStyle) {
+    if (!chatId) {
+      return;
+    }
+
+    const payload = buildBotSpeechStylePayload(style);
+    if (!payload) {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось применить стиль речи',
+        description: 'Проверьте настройки и повторите попытку.',
+      });
+      return;
+    }
+
+    try {
+      await saveSpeechStyleMutation.mutateAsync({ style, payload });
     } catch {
       // Errors are handled by the mutation.
     }
@@ -2900,6 +3193,127 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               </div>
             </div>
           </header>
+
+          <GlassCard className="settings-speech-style-card stagger-in">
+            <div className="settings-speech-style-card__head">
+              <div>
+                <h3 className="settings-speech-style-card__title">Стиль речи</h3>
+                <p className="settings-speech-style-card__subtitle">
+                  Быстрый выбор общего тона для bot/warn шаблонов в этом чате.
+                </p>
+              </div>
+              {baseSpeechStyle ? (
+                <span className="chip">База: {BOT_SPEECH_STYLE_METADATA[baseSpeechStyle].label}</span>
+              ) : null}
+            </div>
+
+            <div className="settings-speech-style-grid" role="list" aria-label="Стили речи бота">
+              {BOT_SPEECH_STYLE_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={cn(
+                    'settings-speech-style-option',
+                    activeSpeechStyle === option.value && 'is-active',
+                  )}
+                  onClick={() => setPendingSpeechStyle(option.value)}
+                  disabled={isSavingSpeechStyle}
+                >
+                  <span className="settings-speech-style-option__icon" aria-hidden>
+                    <BotSpeechStyleIcon iconKey={option.iconKey} />
+                  </span>
+                  <span className="settings-speech-style-option__label">{option.label}</span>
+                  <span className="settings-speech-style-option__subtitle">{option.subtitle}</span>
+                </button>
+              ))}
+            </div>
+
+            <div className="settings-speech-style-card__status">
+              <span className="chip">
+                {activeSpeechStyle
+                  ? `Выбран: ${BOT_SPEECH_STYLE_METADATA[activeSpeechStyle].label}`
+                  : hasSpeechOverrides
+                    ? 'Свои тексты'
+                    : 'Без пресета'}
+              </span>
+              {baseSpeechStyle && hasSpeechOverrides ? (
+                <span className="settings-speech-style-card__base-note">
+                  База скрытых реплик: {BOT_SPEECH_STYLE_METADATA[baseSpeechStyle].label}
+                </span>
+              ) : null}
+              <p className="settings-speech-style-card__description">{speechStyleDescription}</p>
+            </div>
+          </GlassCard>
+
+          <SettingsDrilldownPanel
+            id="settings-bot-speech-style"
+            open={pendingSpeechStyle !== null}
+            title={pendingSpeechStyleMeta?.label ?? 'Стиль речи'}
+            summary={pendingSpeechStyleMeta?.subtitle}
+            onClose={() => {
+              if (!isSavingSpeechStyle) {
+                setPendingSpeechStyle(null);
+              }
+            }}
+            footer={
+              pendingSpeechStyle ? (
+                <div className="settings-drilldown__footer-actions">
+                  <button
+                    type="button"
+                    className="button button--ghost"
+                    onClick={() => setPendingSpeechStyle(null)}
+                    disabled={isSavingSpeechStyle}
+                  >
+                    Отмена
+                  </button>
+                  <button
+                    type="button"
+                    className="button button--accent"
+                    onClick={() => void handleApplyBotSpeechStyle(pendingSpeechStyle)}
+                    disabled={isSavingSpeechStyle}
+                  >
+                    {isSavingSpeechStyle ? 'Применяем...' : 'Применить стиль'}
+                  </button>
+                </div>
+              ) : null
+            }
+          >
+            {pendingSpeechStyleMeta && pendingSpeechStyleSamples ? (
+              <div className="settings-speech-preview">
+                <div className="settings-speech-preview__intro">
+                  <p className="settings-speech-preview__description">
+                    {pendingSpeechStyleMeta.description}
+                  </p>
+                  <div className="settings-speech-preview__warning">
+                    Ручные bot/warn тексты будут сброшены и заменены шаблонами этого стиля.
+                  </div>
+                </div>
+
+                <div className="settings-speech-preview__list">
+                  <article className="settings-speech-preview__item">
+                    <span className="settings-speech-preview__label">Приветствие</span>
+                    <p className="settings-speech-preview__text">
+                      {pendingSpeechStyleSamples.greeting}
+                    </p>
+                  </article>
+
+                  <article className="settings-speech-preview__item">
+                    <span className="settings-speech-preview__label">Объяснение удаления</span>
+                    <p className="settings-speech-preview__text">
+                      {pendingSpeechStyleSamples.explanation}
+                    </p>
+                  </article>
+
+                  <article className="settings-speech-preview__item">
+                    <span className="settings-speech-preview__label">Предупреждение</span>
+                    <p className="settings-speech-preview__text">
+                      {pendingSpeechStyleSamples.warning}
+                    </p>
+                  </article>
+                </div>
+              </div>
+            ) : null}
+          </SettingsDrilldownPanel>
 
           <div className="settings-sections-shell">
             <GlassCard className="settings-section stagger-in">
@@ -3259,6 +3673,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             {draft.linkBotMessageEnabled && openBotEditorKey === 'link' ? (
                               <BotMessageEditor
                                 editorKey="link"
+                                botSpeechStyle={draft.botSpeechStyle}
                                 value={draft.linkBotMessageText}
                                 onChange={(nextValue) =>
                                   setFieldValue(
@@ -3332,6 +3747,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             {openWarnEditorKey === 'linkWarn' ? (
                               <WarnMessageEditor
                                 editorKey="linkWarn"
+                                botSpeechStyle={draft.botSpeechStyle}
                                 value={draft.linkWarnMessageText}
                                 onChange={(nextValue) =>
                                   setFieldValue(
@@ -4035,6 +4451,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           {draft.greetingBotMessageEnabled && openBotEditorKey === 'greeting' ? (
                             <BotMessageEditor
                               editorKey="greeting"
+                              botSpeechStyle={draft.botSpeechStyle}
                               value={draft.greetingBotMessageText}
                               onChange={(nextValue) =>
                                 setFieldValue(
@@ -4596,6 +5013,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           openBotEditorKey === 'textFilters' ? (
                             <BotMessageEditor
                               editorKey="textFilters"
+                              botSpeechStyle={draft.botSpeechStyle}
                               value={draft.textFiltersBotMessageText}
                               onChange={(nextValue) =>
                                 setFieldValue(
@@ -4669,6 +5087,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           {openWarnEditorKey === 'textFiltersWarn' ? (
                             <WarnMessageEditor
                               editorKey="textFiltersWarn"
+                              botSpeechStyle={draft.botSpeechStyle}
                               value={draft.textFiltersWarnMessageText}
                               onChange={(nextValue) =>
                                 setFieldValue(
@@ -5506,6 +5925,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         {draft.duplicateBotMessageEnabled && openBotEditorKey === 'duplicate' ? (
                           <BotMessageEditor
                             editorKey="duplicate"
+                            botSpeechStyle={draft.botSpeechStyle}
                             value={draft.duplicateBotMessageText}
                             onChange={(nextValue) =>
                               setFieldValue(
@@ -6057,6 +6477,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         <div className="settings-native-toggle__title-wrap">
                           <span className="settings-native-toggle__title">Сообщение от бота</span>
                           <div className="settings-native-toggle__title-actions">
+                            <EditToggleButton
+                              label="Редактировать текст сообщения об ограничениях"
+                              onClick={() => toggleBotMessageEditor('messageLimits')}
+                              disabled={!draft.messageLimitsBotMessageEnabled}
+                              isOpen={openBotEditorKey === 'messageLimits'}
+                            />
                             <button
                               type="button"
                               className={cn(
@@ -6102,8 +6528,24 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           className="settings-native-toggle__hint"
                         >
                           Бот отправляет пояснение при удалении сообщения по правилам этого блока.
-                          Текст фиксированный и в этом разделе не редактируется.
+                          Текст можно настроить вручную или вернуть к выбранному стилю.
                         </p>
+                      ) : null}
+
+                      {draft.messageLimitsBotMessageEnabled &&
+                      openBotEditorKey === 'messageLimits' ? (
+                        <BotMessageEditor
+                          editorKey="messageLimits"
+                          botSpeechStyle={draft.botSpeechStyle}
+                          value={draft.messageLimitsBotMessageText}
+                          onChange={(nextValue) =>
+                            setFieldValue(
+                              'messageLimitsBotMessageText',
+                              nextValue as ChatSettings['messageLimitsBotMessageText'],
+                            )
+                          }
+                          onReset={() => setFieldValue('messageLimitsBotMessageText', '')}
+                        />
                       ) : null}
                     </div>
 
@@ -6531,6 +6973,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           {draft.nightModeBotMessageEnabled && openBotEditorKey === 'night' ? (
                             <BotMessageEditor
                               editorKey="night"
+                              botSpeechStyle={draft.botSpeechStyle}
                               value={draft.nightModeBotMessageText}
                               onChange={(nextValue) =>
                                 setFieldValue(

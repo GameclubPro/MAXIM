@@ -27,6 +27,7 @@ function buildSettings(chatId: string): ChatSettings {
     duplicateBanWindowSec: 172800,
     duplicateBanMaxCount: 4,
     linkPolicy: 'ALLOWLIST_ONLY',
+    botSpeechStyle: null,
     greetingEnabled: false,
     greetingBotMessageEnabled: true,
     greetingBotMessageText: '',

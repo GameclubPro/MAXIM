@@ -98,6 +98,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     duplicateBanWindowSec: 48 * 60 * 60,
     duplicateBanMaxCount: 4,
     linkPolicy: 'ALLOWLIST_ONLY',
+    botSpeechStyle: null,
     greetingEnabled: false,
     greetingBotMessageEnabled: true,
     greetingBotMessageText: '',
