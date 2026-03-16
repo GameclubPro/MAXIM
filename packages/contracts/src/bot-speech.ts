@@ -84,49 +84,49 @@ export const BOT_SPEECH_STYLE_OPTIONS = BOT_SPEECH_STYLE_VALUES.map((style) => (
 export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
   ROBOT: {
     editable: {
-      greetingBotMessageText: 'Пользователь {user}: {greeting}. Доступ открыт.',
+      greetingBotMessageText: 'Система: {user}, доступ в чат открыт.',
       linkBotMessageText:
-        'Пользователь {user}. Сообщение {message_status}. Причина: {reason}.',
+        'Система: {user}. Ссылка удалена. Причина: {reason}.',
       linkWarnMessageText:
-        'Пользователь {user}. {warning}. Причина: {reason}.',
+        'Система: {user}. Предупреждение. Повторная отправка ссылок запрещена.',
       textFiltersBotMessageText:
-        'Пользователь {user}. Сообщение {message_status}. Основание: {reason}.',
+        'Система: {user}. Сообщение удалено. Причина: {reason}.',
       textFiltersWarnMessageText:
-        'Пользователь {user}. {warning}. Основание: {reason}.',
+        'Система: {user}. Предупреждение. Причина: {reason}.',
       duplicateBotMessageText:
-        'Пользователь {user}. Повтор обнаружен: сообщение {duplicate_context}. {sanction}',
+        'Система: {user}. Зафиксирован повтор сообщения. {sanction}',
       messageLimitsBotMessageText:
-        'Пользователь {user}. Сообщение {message_status}. Нарушение: {reason}.',
+        'Система: {user}. Сообщение отклонено. Причина: {reason}.',
       nightModeBotMessageText:
-        'Ночной режим активен: {night_window} ({night_timezone}). {night_status}',
+        'Система: активен ночной режим. Интервал: {night_window} ({night_timezone}). {night_status}',
     },
     system: {
-      linkKick: 'Пользователь {user}. Доступ к чату ограничен за повторные ссылки.',
+      linkKick: 'Система: {user}. Доступ к чату ограничен за повторную отправку ссылок.',
       textFiltersKickCommercial:
-        'Пользователь {user}. Доступ к чату ограничен за повторную рекламу.',
+        'Система: {user}. Доступ к чату ограничен за повторную рекламу.',
       textFiltersKickProfanity:
-        'Пользователь {user}. Доступ к чату ограничен за повторную грубую лексику.',
+        'Система: {user}. Доступ к чату ограничен за повторную грубую лексику.',
       textFiltersKickGeneric:
-        'Пользователь {user}. Доступ к чату ограничен за повторные текстовые нарушения.',
+        'Система: {user}. Доступ к чату ограничен за повторные текстовые нарушения.',
       topicExplainAnnouncement:
-        'Пользователь {user}. Объявление {message_status}. Причина: {reason}.',
+        'Система: {user}. Объявление отклонено. Причина: {reason}.',
       topicExplainMessage:
-        'Пользователь {user}. Сообщение {message_status}. Причина: {reason}.',
-      topicWarn: 'Пользователь {user}. Предупреждение вынесено. Причина: {reason}.',
+        'Система: {user}. Сообщение отклонено. Причина: {reason}.',
+      topicWarn: 'Система: {user}. Предупреждение. Причина: {reason}.',
       topicKickAnnouncement:
-        'Пользователь {user}. Доступ к чату ограничен за повторные объявления с неверным форматом.',
+        'Система: {user}. Доступ к чату ограничен за повторные объявления с неверным форматом.',
       topicKickMessage:
-        'Пользователь {user}. Доступ к чату ограничен за повторные сообщения с неверным форматом.',
+        'Система: {user}. Доступ к чату ограничен за повторные сообщения с неверным форматом.',
       topicBan:
-        'Пользователь {user}. Применен тайм-аут на {ban_duration}. Причина: {reason}.',
+        'Система: {user}. Установлен тайм-аут на {ban_duration}. Причина: {reason}.',
       banNotice:
-        'Пользователь {user}. Тайм-аут на {ban_duration}. Возвращайтесь без нарушений.',
+        'Система: {user}. Установлен тайм-аут на {ban_duration}. Доступ будет восстановлен после окончания ограничения.',
       messageLimitsWarn:
-        'Пользователь {user}. Предупреждение вынесено. Причина: {reason}.',
+        'Система: {user}. Предупреждение. Причина: {reason}.',
       messageLimitsKick:
-        'Пользователь {user}. Доступ к чату ограничен за повторные нарушения ограничений. Причина: {reason}.',
+        'Система: {user}. Доступ к чату ограничен за повторное нарушение ограничений. Причина: {reason}.',
       messageLimitsBan:
-        'Пользователь {user}. Применен тайм-аут на {ban_duration}. Причина: {reason}.',
+        'Система: {user}. Установлен тайм-аут на {ban_duration}. Причина: {reason}.',
     },
   },
   FRIENDLY: {

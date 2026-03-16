@@ -1783,6 +1783,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     action: SanctionAction,
     banDurationLabel: string,
   ): string {
+    if (style === 'ROBOT') {
+      if (action === 'WARN') {
+        return 'Предупреждение зарегистрировано.';
+      }
+      if (action === 'KICK') {
+        return 'Доступ к чату ограничен.';
+      }
+      return `Установлен тайм-аут на ${banDurationLabel}.`;
+    }
+
     if (style === 'FRIENDLY') {
       if (action === 'WARN') {
         return 'Это уже предупреждение.';
@@ -1803,6 +1813,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private buildDuplicatePassiveSanctionLabel(style: BotSpeechStyle | null): string {
+    if (style === 'ROBOT') {
+      return 'Сообщение удалено.';
+    }
+
     if (style === 'FRIENDLY') {
       return 'Пока просто убрал повтор.';
     }

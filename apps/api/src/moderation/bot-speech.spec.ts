@@ -60,7 +60,52 @@ describe('bot speech styles', () => {
     const userLabel = '**Алексей**';
 
     expect((service as any).buildGreetingMessage(userLabel, '', 'ROBOT')).toBe(
-      'Пользователь **Алексей**: добро пожаловать в чат. Доступ открыт.',
+      'Система: **Алексей**, доступ в чат открыт.',
+    );
+
+    expect((service as any).buildLinkExplanation(userLabel, true, '', 'ROBOT')).toBe(
+      'Система: **Алексей**. Ссылка удалена. Причина: в этом чате ссылки не проходят, без ссылок.',
+    );
+
+    expect(
+      (service as any).buildMessageLimitsExplanation(
+        userLabel,
+        'MESSAGE_TOO_LONG',
+        true,
+        1,
+        5,
+        187,
+        100,
+        '',
+        'ROBOT',
+      ),
+    ).toBe(
+      'Система: **Алексей**. Сообщение отклонено. Причина: слишком длинное сообщение: 187 символов при лимите 100.',
+    );
+
+    expect(
+      (service as any).buildDuplicateHitExplanation(userLabel, true, '', 'ROBOT'),
+    ).toBe('Система: **Алексей**. Зафиксирован повтор сообщения. Сообщение удалено.');
+
+    expect(
+      (service as any).buildDuplicateExplanation(
+        userLabel,
+        {
+          action: 'WARN',
+          count: 2,
+          threshold: 2,
+          windowSec: 30,
+          hash: 'dup-hash',
+          nextAction: 'KICK',
+        },
+        6,
+        '',
+        'ROBOT',
+      ),
+    ).toBe('Система: **Алексей**. Зафиксирован повтор сообщения. Предупреждение зарегистрировано.');
+
+    expect((service as any).buildMessageLimitsWarnExplanation(userLabel, 'MESSAGE_TOO_LONG', 'ROBOT')).toBe(
+      'Система: **Алексей**. Предупреждение. Причина: слишком длинное сообщение.',
     );
 
     expect((service as any).buildGreetingMessage(userLabel, '', 'FRIENDLY')).toBe(
