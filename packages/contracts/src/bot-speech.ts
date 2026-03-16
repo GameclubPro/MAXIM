@@ -84,97 +84,97 @@ export const BOT_SPEECH_STYLE_OPTIONS = BOT_SPEECH_STYLE_VALUES.map((style) => (
 export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
   ROBOT: {
     editable: {
-      greetingBotMessageText: 'Пользователь {user}, доступ в чат предоставлен. {greeting}.',
+      greetingBotMessageText: 'Пользователь {user}: {greeting}. Доступ открыт.',
       linkBotMessageText:
-        'Пользователь {user}, сообщение {message_status}. Причина: {reason}. Исправьте сообщение и отправьте повторно.',
+        'Пользователь {user}. Сообщение {message_status}. Причина: {reason}.',
       linkWarnMessageText:
-        'Пользователь {user}, {warning}. Причина: {reason}. Повтор приведет к ограничению.',
+        'Пользователь {user}. {warning}. Причина: {reason}.',
       textFiltersBotMessageText:
-        'Пользователь {user}, сообщение {message_status}. Причина: {reason}. Исправьте сообщение и отправьте повторно.',
+        'Пользователь {user}. Сообщение {message_status}. Основание: {reason}.',
       textFiltersWarnMessageText:
-        'Пользователь {user}, {warning}. Нарушение зафиксировано. Следующее нарушение приведет к ограничению.',
+        'Пользователь {user}. {warning}. Основание: {reason}.',
       duplicateBotMessageText:
-        'Пользователь {user}, обнаружен повтор: сообщение {duplicate_context}. {sanction} Повторяющиеся сообщения в этом чате запрещены.',
+        'Пользователь {user}. Повтор обнаружен: сообщение {duplicate_context}. {sanction}',
       messageLimitsBotMessageText:
-        'Пользователь {user}, сообщение {message_status}. Причина: {reason}. Исправьте сообщение и отправьте повторно.',
+        'Пользователь {user}. Сообщение {message_status}. Нарушение: {reason}.',
       nightModeBotMessageText:
-        'Ночной режим активен. Интервал: {night_window} ({night_timezone}). {night_status}',
+        'Ночной режим активен: {night_window} ({night_timezone}). {night_status}',
     },
     system: {
-      linkKick: 'Пользователь {user}, за повторную отправку ссылок доступ к чату ограничен.',
+      linkKick: 'Пользователь {user}. Доступ к чату ограничен за повторные ссылки.',
       textFiltersKickCommercial:
-        'Пользователь {user}, за повторную рекламу доступ к чату ограничен.',
+        'Пользователь {user}. Доступ к чату ограничен за повторную рекламу.',
       textFiltersKickProfanity:
-        'Пользователь {user}, за повторную грубую лексику доступ к чату ограничен.',
+        'Пользователь {user}. Доступ к чату ограничен за повторную грубую лексику.',
       textFiltersKickGeneric:
-        'Пользователь {user}, за повторное нарушение текстовых правил доступ к чату ограничен.',
+        'Пользователь {user}. Доступ к чату ограничен за повторные текстовые нарушения.',
       topicExplainAnnouncement:
-        'Пользователь {user}, объявление {message_status}. Причина: {reason}. Исправьте формат и отправьте снова.',
+        'Пользователь {user}. Объявление {message_status}. Причина: {reason}.',
       topicExplainMessage:
-        'Пользователь {user}, сообщение {message_status}. Причина: {reason}. Исправьте формат и отправьте снова.',
-      topicWarn: 'Пользователь {user}, вынесено предупреждение. Причина: {reason}.',
+        'Пользователь {user}. Сообщение {message_status}. Причина: {reason}.',
+      topicWarn: 'Пользователь {user}. Предупреждение вынесено. Причина: {reason}.',
       topicKickAnnouncement:
-        'Пользователь {user}, за повторные объявления с неверным форматом доступ к чату ограничен.',
+        'Пользователь {user}. Доступ к чату ограничен за повторные объявления с неверным форматом.',
       topicKickMessage:
-        'Пользователь {user}, за повторные сообщения с неверным форматом доступ к чату ограничен.',
+        'Пользователь {user}. Доступ к чату ограничен за повторные сообщения с неверным форматом.',
       topicBan:
-        'Пользователь {user}, применен тайм-аут на {ban_duration}. Причина: {reason}.',
+        'Пользователь {user}. Применен тайм-аут на {ban_duration}. Причина: {reason}.',
       banNotice:
-        'Пользователь {user}, применен тайм-аут на {ban_duration}. Возвращайтесь без нарушений.',
+        'Пользователь {user}. Тайм-аут на {ban_duration}. Возвращайтесь без нарушений.',
       messageLimitsWarn:
-        'Пользователь {user}, вынесено предупреждение. Причина: {reason}.',
+        'Пользователь {user}. Предупреждение вынесено. Причина: {reason}.',
       messageLimitsKick:
-        'Пользователь {user}, за повторное нарушение ограничений доступ к чату ограничен. Причина: {reason}.',
+        'Пользователь {user}. Доступ к чату ограничен за повторные нарушения ограничений. Причина: {reason}.',
       messageLimitsBan:
-        'Пользователь {user}, применен тайм-аут на {ban_duration}. Причина: {reason}.',
+        'Пользователь {user}. Применен тайм-аут на {ban_duration}. Причина: {reason}.',
     },
   },
   FRIENDLY: {
     editable: {
-      greetingBotMessageText: '{user}, привет. Добро пожаловать в чат.',
+      greetingBotMessageText: '{user}, {greeting}. Рады видеть вас здесь.',
       linkBotMessageText:
-        '{user}, сообщение {message_status}, потому что {reason}. Поправьте его и возвращайтесь в диалог.',
+        '{user}, сообщение {message_status}: {reason}. Поправьте и отправьте еще раз.',
       linkWarnMessageText:
-        '{user}, {warning}, потому что {reason}. Давайте дальше без повторов.',
+        '{user}, {warning}. Причина: {reason}. Дальше давайте без повторов.',
       textFiltersBotMessageText:
-        '{user}, сообщение {message_status}, потому что {reason}. Поправьте его, и можно спокойно продолжать.',
+        '{user}, сообщение {message_status}: {reason}. Поправьте формулировку и возвращайтесь в разговор.',
       textFiltersWarnMessageText:
-        '{user}, {warning}. Давайте дальше спокойно и по правилам.',
+        '{user}, {warning}. Давайте дальше спокойнее.',
       duplicateBotMessageText:
         '{user}, вижу повтор: сообщение {duplicate_context}. {sanction} Давайте дальше без дублей.',
       messageLimitsBotMessageText:
-        '{user}, сообщение {message_status}, потому что {reason}. Поправьте его и можно продолжать.',
+        '{user}, сообщение {message_status}: {reason}. Поправьте и попробуйте снова.',
       nightModeBotMessageText:
-        'Сейчас в чате действует ночной режим. Интервал: {night_window} ({night_timezone}). {night_status}',
+        'Сейчас чат на паузе: {night_window} ({night_timezone}). {night_status}',
     },
     system: {
       linkKick:
-        '{user}, за повторные ссылки пришлось временно вывести вас из чата. Если вернетесь, давайте уже без них.',
+        '{user}, за повторные ссылки пришлось вывести вас из чата.',
       textFiltersKickCommercial:
-        '{user}, за повторную рекламу пришлось временно вывести вас из чата.',
+        '{user}, за повторную рекламу пришлось вывести вас из чата.',
       textFiltersKickProfanity:
-        '{user}, за повторную грубую лексику пришлось временно вывести вас из чата.',
+        '{user}, за повторную грубую лексику пришлось вывести вас из чата.',
       textFiltersKickGeneric:
-        '{user}, за повторные нарушения текстовых правил пришлось временно вывести вас из чата.',
+        '{user}, за повторные нарушения текста пришлось вывести вас из чата.',
       topicExplainAnnouncement:
-        '{user}, объявление {message_status}, потому что {reason}. Поправьте формат, и все будет нормально.',
+        '{user}, объявление {message_status}: {reason}. Поправьте формат и попробуйте снова.',
       topicExplainMessage:
-        '{user}, сообщение {message_status}, потому что {reason}. Поправьте формат, и можно продолжать.',
+        '{user}, сообщение {message_status}: {reason}. Поправьте формат и попробуйте снова.',
       topicWarn:
-        '{user}, фиксирую предупреждение: {reason}. Давайте дальше без повторения.',
+        '{user}, предупреждение: {reason}. Давайте дальше без повторений.',
       topicKickAnnouncement:
-        '{user}, за повторные объявления не по формату пришлось временно вывести вас из чата.',
+        '{user}, за повторные объявления не по формату пришлось вывести вас из чата.',
       topicKickMessage:
-        '{user}, за повторные сообщения не по формату пришлось временно вывести вас из чата.',
-      topicBan: '{user}, пришлось выдать тайм-аут на {ban_duration}. Причина: {reason}.',
+        '{user}, за повторные сообщения не по формату пришлось вывести вас из чата.',
+      topicBan: '{user}, тайм-аут на {ban_duration}. Причина: {reason}.',
       banNotice:
-        '{user}, выдан тайм-аут на {ban_duration}. Возвращайтесь уже без нарушений.',
+        '{user}, тайм-аут на {ban_duration}. Возвращайтесь спокойно.',
       messageLimitsWarn:
-        '{user}, фиксирую предупреждение: {reason}. Давайте дальше аккуратнее.',
+        '{user}, предупреждение: {reason}. Давайте аккуратнее.',
       messageLimitsKick:
-        '{user}, за повторные нарушения ограничений пришлось временно вывести вас из чата. Причина: {reason}.',
+        '{user}, за повторные нарушения ограничений пришлось вывести вас из чата. Причина: {reason}.',
       messageLimitsBan:
-        '{user}, пришлось выдать тайм-аут на {ban_duration}. Причина: {reason}.',
+        '{user}, тайм-аут на {ban_duration}. Причина: {reason}.',
     },
   },
   POLICE: {
@@ -229,51 +229,51 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
   IRONIC: {
     editable: {
       greetingBotMessageText:
-        '{user}, добро пожаловать. Да, здесь тоже есть правила, но вы справитесь.',
+        '{user}, {greeting}. Правила тут тоже на месте.',
       linkBotMessageText:
-        '{user}, сообщение {message_status}. Причина: {reason}. План был дерзкий, теперь давайте нормально.',
+        '{user}, сообщение {message_status}. Причина: {reason}. Ссылка была лишней.',
       linkWarnMessageText:
-        '{user}, {warning}. Причина простая: {reason}. Эксперимент засчитан, повторять не надо.',
+        '{user}, {warning}. Причина: {reason}. Номер с повтором уже понятен.',
       textFiltersBotMessageText:
-        '{user}, сообщение {message_status}. Причина: {reason}. Импровизация смелая, но давайте без нее.',
+        '{user}, сообщение {message_status}. Причина: {reason}. Формулировка пошла не туда.',
       textFiltersWarnMessageText:
-        '{user}, {warning}. Давайте без этого стендапа на ровном месте.',
+        '{user}, {warning}. Давайте без внезапных выступлений.',
       duplicateBotMessageText:
-        '{user}, повтор найден: сообщение {duplicate_context}. {sanction} Серийное производство сообщений сегодня закрыто.',
+        '{user}, повтор найден: сообщение {duplicate_context}. {sanction} Конвейер можно остановить.',
       messageLimitsBotMessageText:
-        '{user}, сообщение {message_status}. Причина: {reason}. Формат решил пойти своим путем, но не в этот раз.',
+        '{user}, сообщение {message_status}. Причина: {reason}. Лимиты тут не декоративные.',
       nightModeBotMessageText:
-        'Ночной режим включен. Интервал: {night_window} ({night_timezone}). {night_status} Да, даже у чата есть часы работы.',
+        'Ночной режим: {night_window} ({night_timezone}). {night_status} Да, чат тоже спит.',
     },
     system: {
       linkKick:
-        '{user}, ссылки упрямо возвращались, поэтому из чата пришлось вывести уже вас.',
+        '{user}, ссылки не поняли намек, поэтому дальше чат без вас.',
       textFiltersKickCommercial:
-        '{user}, реклама решила не сдаваться, поэтому с чатом пришлось попрощаться вам.',
+        '{user}, реклама пошла по второму кругу, поэтому дальше чат без вас.',
       textFiltersKickProfanity:
-        '{user}, запас грубой лексики впечатлил, но дальше уже без этого и без чата.',
+        '{user}, запас грубой лексики закончился вместе с доступом к чату.',
       textFiltersKickGeneric:
-        '{user}, нарушения решили собраться в серию, поэтому дальше чат идет без вас.',
+        '{user}, нарушения решили повториться, а чат решил обойтись без вас.',
       topicExplainAnnouncement:
-        '{user}, объявление {message_status}. Причина: {reason}. Формат притворился необязательным, но нет.',
+        '{user}, объявление {message_status}. Причина: {reason}. Формат тут не для красоты.',
       topicExplainMessage:
-        '{user}, сообщение {message_status}. Причина: {reason}. Формат, как выяснилось, все же существует.',
+        '{user}, сообщение {message_status}. Причина: {reason}. Формат все-таки обязателен.',
       topicWarn:
-        '{user}, предупреждение зафиксировано. Причина: {reason}. Бумаги я не люблю, но повод был.',
+        '{user}, предупреждение зафиксировано. Причина: {reason}. Коллекцию собирать не надо.',
       topicKickAnnouncement:
-        '{user}, объявления снова пошли не по форме, поэтому дальше чат обойдется без вас.',
+        '{user}, объявления снова мимо формы, поэтому дальше чат без вас.',
       topicKickMessage:
-        '{user}, сообщения снова пошли не по форме, поэтому дальше чат обойдется без вас.',
+        '{user}, сообщения снова мимо формы, поэтому дальше чат без вас.',
       topicBan:
-        '{user}, оформлен тайм-аут на {ban_duration}. Причина: {reason}. Будет пауза на пересборку формата.',
+        '{user}, тайм-аут на {ban_duration}. Причина: {reason}. Пауза тут к месту.',
       banNotice:
-        '{user}, оформлен тайм-аут на {ban_duration}. Возвращайтесь уже без творческих нарушений.',
+        '{user}, тайм-аут на {ban_duration}. Возвращайтесь без новых сюжетов.',
       messageLimitsWarn:
-        '{user}, предупреждение зафиксировано. Причина: {reason}. Лимиты, как назло, тоже умеют считать.',
+        '{user}, предупреждение зафиксировано. Причина: {reason}. Лимиты тут всерьез.',
       messageLimitsKick:
-        '{user}, ограничения проигнорированы повторно, поэтому чат временно пойдет без вас. Причина: {reason}.',
+        '{user}, ограничения снова проигнорированы, поэтому дальше чат без вас. Причина: {reason}.',
       messageLimitsBan:
-        '{user}, оформлен тайм-аут на {ban_duration}. Причина: {reason}. Иногда пауза работает лучше аргументов.',
+        '{user}, тайм-аут на {ban_duration}. Причина: {reason}. Пауза пойдет на пользу.',
     },
   },
 };
