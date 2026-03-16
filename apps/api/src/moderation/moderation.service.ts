@@ -1803,6 +1803,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return `Нужна пауза на ${banDurationLabel}.`;
     }
 
+    if (style === 'IRONIC') {
+      if (action === 'WARN') {
+        return 'Да, это уже предупреждение.';
+      }
+      if (action === 'KICK') {
+        return 'Чат решил немного передохнуть без вас.';
+      }
+      return `Пауза на ${banDurationLabel}. Пусть идея чуть остынет.`;
+    }
+
     if (action === 'WARN') {
       return 'Фиксирую предупреждение.';
     }
@@ -1819,6 +1829,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (style === 'FRIENDLY') {
       return 'Пока просто убрал повтор.';
+    }
+
+    if (style === 'IRONIC') {
+      return 'Повтор убрал. Коллекцию можно не собирать.';
     }
 
     return 'Пока без взыскания.';

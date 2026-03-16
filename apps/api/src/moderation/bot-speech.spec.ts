@@ -55,7 +55,7 @@ describe('bot speech styles', () => {
     expect(policeWarnText).toBe(legacyWarnText);
   });
 
-  it('renders robot and friendly editable templates with style presets', () => {
+  it('renders robot, friendly and ironic templates with style presets', () => {
     const service = createService();
     const userLabel = '**Алексей**';
 
@@ -156,6 +156,35 @@ describe('bot speech styles', () => {
     expect((service as any).buildMessageLimitsWarnExplanation(userLabel, 'MESSAGE_TOO_LONG', 'FRIENDLY')).toBe(
       '**Алексей**, это предупреждение. Причина: слишком длинное сообщение.',
     );
+
+    expect((service as any).buildGreetingMessage(userLabel, '', 'IRONIC')).toBe(
+      '**Алексей**, добро пожаловать 🙂 Осваивайтесь, правила тут тоже не бездельничают.',
+    );
+
+    expect((service as any).buildLinkExplanation(userLabel, true, '', 'IRONIC')).toBe(
+      '**Алексей**, ссылку убрал. Интернет, конечно, огромный, но сюда его тащить не надо.',
+    );
+
+    expect(
+      (service as any).buildDuplicateHitExplanation(userLabel, true, '', 'IRONIC'),
+    ).toBe('**Алексей**, это сообщение уже было. Повтор убрал. Коллекцию можно не собирать.');
+
+    expect(
+      (service as any).buildDuplicateExplanation(
+        userLabel,
+        {
+          action: 'WARN',
+          count: 2,
+          threshold: 2,
+          windowSec: 30,
+          hash: 'dup-hash',
+          nextAction: 'KICK',
+        },
+        6,
+        '',
+        'IRONIC',
+      ),
+    ).toBe('**Алексей**, это сообщение уже было. Да, это уже предупреждение.');
   });
 
   it('keeps system notices on the selected base style when one editable field is overridden', () => {
@@ -174,11 +203,11 @@ describe('bot speech styles', () => {
     );
 
     expect((service as any).buildMessageLimitsWarnExplanation(userLabel, 'MESSAGE_TOO_LONG', 'IRONIC')).toBe(
-      '**Алексей**, предупреждение зафиксировано. Причина: слишком длинное сообщение. Лимиты тут всерьез.',
+      '**Алексей**, это уже предупреждение. Причина: слишком длинное сообщение. Лимиты тут правда считают.',
     );
 
     expect((service as any).buildLinkKickExplanation(userLabel, 'IRONIC')).toBe(
-      '**Алексей**, ссылки не поняли намек, поэтому дальше чат без вас.',
+      '**Алексей**, со ссылками вышел небольшой сериал, поэтому дальше чат без вас.',
     );
   });
 
