@@ -488,6 +488,13 @@ const BOT_SPEECH_STYLE_ICON_ASSETS = {
   ironic: botSpeechIronicImage,
 } as const;
 
+const BOT_SPEECH_STYLE_SELECTOR_LABELS: Record<BotSpeechStyle, string> = {
+  ROBOT: 'Робот',
+  FRIENDLY: 'Друг',
+  POLICE: 'Коп',
+  IRONIC: 'Шут',
+};
+
 const BOT_MESSAGE_TEMPLATE_HINTS: Record<BotMessageEditorKey, string> = {
   link: 'Плейсхолдеры: {user}, {message_status}, {reason}. Поддерживается Markdown MAX.',
   greeting: 'Плейсхолдеры: {user}, {greeting}. Поддерживается Markdown MAX.',
@@ -3140,7 +3147,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <h3 className="settings-speech-style-card__title">Стиль речи</h3>
             </div>
 
-            <div className="settings-speech-style-grid" role="list" aria-label="Стили речи бота">
+            <div className="settings-speech-style-grid" role="group" aria-label="Стили речи бота">
               {BOT_SPEECH_STYLE_OPTIONS.map((option) => (
                 <button
                   key={option.value}
@@ -3161,7 +3168,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   <span className="settings-speech-style-option__icon" aria-hidden>
                     <BotSpeechStyleIcon iconKey={option.iconKey} />
                   </span>
-                  <span className="settings-speech-style-option__label">{option.label}</span>
+                  <span className="settings-speech-style-option__label">
+                    {BOT_SPEECH_STYLE_SELECTOR_LABELS[option.value]}
+                  </span>
                 </button>
               ))}
             </div>
