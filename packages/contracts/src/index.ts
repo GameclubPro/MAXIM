@@ -262,7 +262,7 @@ export const chatSettingsSchema = z
     duplicateBanWindowSec: duplicateWindowSecSchema.default(172_800),
     duplicateBanMaxCount: duplicateMaxCountSchema.default(4),
     linkPolicy: linkPolicySchema.default('ALLOWLIST_ONLY'),
-    botSpeechStyle: botSpeechStyleSchema.nullable().default(null),
+    botSpeechStyle: botSpeechStyleSchema.nullable().default('FRIENDLY'),
     greetingEnabled: z.boolean().default(false),
     greetingBotMessageEnabled: z.boolean().default(true),
     greetingBotMessageText: botMessageTextSchema,

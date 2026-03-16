@@ -154,7 +154,7 @@ model ChatSettings {
   duplicateBanWindowSec            Int                      @default(172800) @map("duplicate_ban_window_sec")
   duplicateBanMaxCount             Int                      @default(4) @map("duplicate_ban_max_count")
   linkPolicy                       LinkPolicy               @default(ALLOWLIST_ONLY) @map("link_policy")
-  botSpeechStyle                   BotSpeechStyle?          @map("bot_speech_style")
+  botSpeechStyle                   BotSpeechStyle?          @default(FRIENDLY) @map("bot_speech_style")
   greetingEnabled                  Boolean                  @default(false) @map("greeting_enabled")
   greetingBotMessageEnabled        Boolean                  @default(true) @map("greeting_bot_message_enabled")
   greetingBotMessageText           String                   @default("") @map("greeting_bot_message_text")
