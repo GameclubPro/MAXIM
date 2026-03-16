@@ -7,6 +7,7 @@ COPY packages/contracts/package.json packages/contracts/package.json
 RUN npm install
 
 COPY tsconfig.base.json ./
+COPY bot.webp frendly.webp joker.webp police.webp ./
 COPY packages/contracts packages/contracts
 COPY apps/miniapp apps/miniapp
 
