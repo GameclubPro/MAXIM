@@ -16,8 +16,8 @@ export {
   type BotSpeechSettingsSubset,
   type BotSpeechStyle,
   type BotSpeechSystemTemplateKey,
-} from './bot-speech';
-import { botSpeechStyleSchema } from './bot-speech';
+} from './bot-speech.js';
+import { botSpeechStyleSchema } from './bot-speech.js';
 
 export const sanctionActionSchema = z.enum(['NONE', 'WARN', 'DELETE_MESSAGE', 'KICK', 'BAN']);
 export type SanctionAction = z.infer<typeof sanctionActionSchema>;
