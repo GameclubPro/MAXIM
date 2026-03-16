@@ -133,48 +133,48 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
     editable: {
       greetingBotMessageText: 'Привет, {user} 🙂 Рады видеть тебя в чате.',
       linkBotMessageText:
-        '{user}, сообщение {message_status}: {reason}. Поправьте и можно снова.',
+        '{user}, ссылку пришлось убрать. В этом чате они отключены. Если она по делу, лучше сначала уточнить у админа.',
       linkWarnMessageText:
-        '{user}, {warning}. Причина: {reason}. Давайте дальше без ссылок.',
+        '{user}, это уже предупреждение. Здесь нельзя отправлять ссылки. Давайте дальше без них.',
       textFiltersBotMessageText:
-        '{user}, сообщение {message_status}: {reason}. Чуть поправьте формулировку и можно снова.',
+        '{user}, сообщение убрал. Причина: {reason}. Если поправить формулировку, можно отправить снова.',
       textFiltersWarnMessageText:
-        '{user}, {warning}. Давайте дальше спокойнее.',
+        '{user}, это предупреждение. Давайте дальше без такого текста.',
       duplicateBotMessageText:
-        '{user}, вижу повтор: сообщение {duplicate_context}. {sanction} Давайте без дублей.',
+        '{user}, такое сообщение уже было. {sanction}',
       messageLimitsBotMessageText:
-        '{user}, сообщение {message_status}: {reason}. Поправьте и попробуйте еще раз.',
+        '{user}, сообщение не прошло: {reason}. Чуть поправьте и можно снова.',
       nightModeBotMessageText:
         'Сейчас тихий режим 🌙 {night_window} ({night_timezone}). {night_status}',
     },
     system: {
       linkKick:
-        '{user}, за повторные ссылки пришлось вывести вас из чата.',
+        '{user}, ссылки повторились несколько раз, поэтому пришлось вывести вас из чата.',
       textFiltersKickCommercial:
-        '{user}, за повторную рекламу пришлось вывести вас из чата.',
+        '{user}, реклама повторилась, поэтому пришлось вывести вас из чата.',
       textFiltersKickProfanity:
-        '{user}, за повторную грубую лексику пришлось вывести вас из чата.',
+        '{user}, грубая лексика повторилась, поэтому пришлось вывести вас из чата.',
       textFiltersKickGeneric:
-        '{user}, за повторные нарушения пришлось вывести вас из чата.',
+        '{user}, нарушения повторились, поэтому пришлось вывести вас из чата.',
       topicExplainAnnouncement:
-        '{user}, объявление {message_status}: {reason}. Поправьте формат и можно снова.',
+        '{user}, объявление не подошло по формату: {reason}. Поправьте и можно отправить снова.',
       topicExplainMessage:
-        '{user}, сообщение {message_status}: {reason}. Поправьте формат и можно снова.',
+        '{user}, сообщение не подошло по формату: {reason}. Поправьте и можно отправить снова.',
       topicWarn:
-        '{user}, предупреждение: {reason}. Давайте дальше аккуратнее.',
+        '{user}, это предупреждение. Причина: {reason}.',
       topicKickAnnouncement:
-        '{user}, за повторные объявления не по формату пришлось вывести вас из чата.',
+        '{user}, объявления снова были не по формату, поэтому пришлось вывести вас из чата.',
       topicKickMessage:
-        '{user}, за повторные сообщения не по формату пришлось вывести вас из чата.',
-      topicBan: '{user}, тайм-аут на {ban_duration}. Причина: {reason}.',
+        '{user}, сообщения снова были не по формату, поэтому пришлось вывести вас из чата.',
+      topicBan: '{user}, нужна пауза на {ban_duration}. Причина: {reason}.',
       banNotice:
-        '{user}, тайм-аут на {ban_duration}. Возвращайтесь спокойно.',
+        '{user}, для вас временная пауза на {ban_duration}. Возвращайтесь спокойно.',
       messageLimitsWarn:
-        '{user}, предупреждение: {reason}. Давайте без повторов.',
+        '{user}, это предупреждение. Причина: {reason}.',
       messageLimitsKick:
-        '{user}, за повторные нарушения ограничений пришлось вывести вас из чата. Причина: {reason}.',
+        '{user}, ограничения по сообщениям снова нарушились, поэтому пришлось вывести вас из чата. Причина: {reason}.',
       messageLimitsBan:
-        '{user}, тайм-аут на {ban_duration}. Причина: {reason}.',
+        '{user}, нужна пауза на {ban_duration}. Причина: {reason}.',
     },
   },
   POLICE: {

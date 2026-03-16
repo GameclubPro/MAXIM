@@ -67,6 +67,10 @@ describe('bot speech styles', () => {
       'Привет, **Алексей** 🙂 Рады видеть тебя в чате.',
     );
 
+    expect((service as any).buildLinkExplanation(userLabel, true, '', 'FRIENDLY')).toBe(
+      '**Алексей**, ссылку пришлось убрать. В этом чате они отключены. Если она по делу, лучше сначала уточнить у админа.',
+    );
+
     expect(
       (service as any).buildMessageLimitsExplanation(
         userLabel,
@@ -80,7 +84,32 @@ describe('bot speech styles', () => {
         'FRIENDLY',
       ),
     ).toBe(
-      '**Алексей**, сообщение снято с линии: слишком длинное сообщение: 187 символов при лимите 100. Поправьте и попробуйте еще раз.',
+      '**Алексей**, сообщение не прошло: слишком длинное сообщение: 187 символов при лимите 100. Чуть поправьте и можно снова.',
+    );
+
+    expect(
+      (service as any).buildDuplicateHitExplanation(userLabel, true, '', 'FRIENDLY'),
+    ).toBe('**Алексей**, такое сообщение уже было. Пока просто убрал повтор.');
+
+    expect(
+      (service as any).buildDuplicateExplanation(
+        userLabel,
+        {
+          action: 'WARN',
+          count: 2,
+          threshold: 2,
+          windowSec: 30,
+          hash: 'dup-hash',
+          nextAction: 'KICK',
+        },
+        6,
+        '',
+        'FRIENDLY',
+      ),
+    ).toBe('**Алексей**, такое сообщение уже было. Это уже предупреждение.');
+
+    expect((service as any).buildMessageLimitsWarnExplanation(userLabel, 'MESSAGE_TOO_LONG', 'FRIENDLY')).toBe(
+      '**Алексей**, это предупреждение. Причина: слишком длинное сообщение.',
     );
   });
 

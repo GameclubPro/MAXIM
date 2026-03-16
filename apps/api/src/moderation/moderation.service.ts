@@ -1644,12 +1644,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   ): string {
     const banDurationLabel = this.formatBanDurationLabel(banDurationHours);
     const baseContext = this.buildDuplicateContextLabel(true);
-    const sanction =
-      decision.action === 'WARN'
-        ? 'Фиксирую предупреждение.'
-        : decision.action === 'KICK'
-          ? 'Пришлось вывести из чата.'
-          : `Оформляю тайм-аут на ${banDurationLabel}.`;
+    const sanction = this.buildDuplicateSanctionLabel(
+      botSpeechStyle,
+      decision.action,
+      banDurationLabel,
+    );
 
     return this.renderEditableBotSpeechTemplate({
       style: botSpeechStyle,
@@ -1684,7 +1683,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         message_status: messageStatus,
         reason: 'в этом чате серийные повторы не проходят',
         duplicate_context: duplicateContext,
-        sanction: 'Пока без взыскания.',
+        sanction: this.buildDuplicatePassiveSanctionLabel(botSpeechStyle),
       },
     });
   }
@@ -1777,6 +1776,38 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private buildDuplicateContextLabel(canDeleteMessage: boolean): string {
     return canDeleteMessage ? 'снято с линии как дубль' : 'идёт повтором';
+  }
+
+  private buildDuplicateSanctionLabel(
+    style: BotSpeechStyle | null,
+    action: SanctionAction,
+    banDurationLabel: string,
+  ): string {
+    if (style === 'FRIENDLY') {
+      if (action === 'WARN') {
+        return 'Это уже предупреждение.';
+      }
+      if (action === 'KICK') {
+        return 'Пришлось вывести вас из чата.';
+      }
+      return `Нужна пауза на ${banDurationLabel}.`;
+    }
+
+    if (action === 'WARN') {
+      return 'Фиксирую предупреждение.';
+    }
+    if (action === 'KICK') {
+      return 'Пришлось вывести из чата.';
+    }
+    return `Оформляю тайм-аут на ${banDurationLabel}.`;
+  }
+
+  private buildDuplicatePassiveSanctionLabel(style: BotSpeechStyle | null): string {
+    if (style === 'FRIENDLY') {
+      return 'Пока просто убрал повтор.';
+    }
+
+    return 'Пока без взыскания.';
   }
 
   private escapeMaxMarkdownText(value: string): string {
