@@ -1015,6 +1015,20 @@ function BotSpeechStyleIcon({
   );
 }
 
+function StyleSelectedIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
+      <path
+        d="M5.5 10.4L8.3 13.2L14.6 6.9"
+        stroke="currentColor"
+        strokeWidth="2.1"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 type EditToggleButtonProps = {
   label: string;
   onClick: () => void;
@@ -1563,7 +1577,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     return draft.botSpeechStyle;
   }, [draft]);
-  const baseSpeechStyle = draft?.botSpeechStyle ?? null;
   const hasSpeechOverrides = draft ? hasBotSpeechEditableOverrides(draft) : false;
   const pendingSpeechStyleMeta = pendingSpeechStyle
     ? BOT_SPEECH_STYLE_METADATA[pendingSpeechStyle]
@@ -3140,6 +3153,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   disabled={isSavingSpeechStyle}
                   aria-label={option.label}
                 >
+                  {activeSpeechStyle === option.value ? (
+                    <span className="settings-speech-style-option__badge" aria-hidden>
+                      <StyleSelectedIcon />
+                    </span>
+                  ) : null}
                   <span className="settings-speech-style-option__icon" aria-hidden>
                     <BotSpeechStyleIcon iconKey={option.iconKey} />
                   </span>
@@ -3154,13 +3172,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   ? `Выбран: ${BOT_SPEECH_STYLE_METADATA[activeSpeechStyle].label}`
                   : hasSpeechOverrides
                     ? 'Свои тексты'
-                    : 'Без пресета'}
+                    : 'Стиль не выбран'}
               </span>
-              {baseSpeechStyle && hasSpeechOverrides ? (
-                <span className="settings-speech-style-card__base-note">
-                  База скрытых реплик: {BOT_SPEECH_STYLE_METADATA[baseSpeechStyle].label}
-                </span>
-              ) : null}
             </div>
           </GlassCard>
 
