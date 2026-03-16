@@ -131,21 +131,21 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
   },
   FRIENDLY: {
     editable: {
-      greetingBotMessageText: '{user}, {greeting}. Рады видеть вас здесь.',
+      greetingBotMessageText: '{user}, {greeting} 🙂 Добро пожаловать.',
       linkBotMessageText:
-        '{user}, сообщение {message_status}: {reason}. Поправьте и отправьте еще раз.',
+        '{user}, сообщение {message_status}: {reason}. Поправьте и можно снова.',
       linkWarnMessageText:
-        '{user}, {warning}. Причина: {reason}. Дальше давайте без повторов.',
+        '{user}, {warning}. Причина: {reason}. Давайте дальше без ссылок.',
       textFiltersBotMessageText:
-        '{user}, сообщение {message_status}: {reason}. Поправьте формулировку и возвращайтесь в разговор.',
+        '{user}, сообщение {message_status}: {reason}. Чуть поправьте формулировку и можно снова.',
       textFiltersWarnMessageText:
         '{user}, {warning}. Давайте дальше спокойнее.',
       duplicateBotMessageText:
-        '{user}, вижу повтор: сообщение {duplicate_context}. {sanction} Давайте дальше без дублей.',
+        '{user}, вижу повтор: сообщение {duplicate_context}. {sanction} Давайте без дублей.',
       messageLimitsBotMessageText:
-        '{user}, сообщение {message_status}: {reason}. Поправьте и попробуйте снова.',
+        '{user}, сообщение {message_status}: {reason}. Поправьте и попробуйте еще раз.',
       nightModeBotMessageText:
-        'Сейчас чат на паузе: {night_window} ({night_timezone}). {night_status}',
+        'Сейчас тихий режим 🌙 {night_window} ({night_timezone}). {night_status}',
     },
     system: {
       linkKick:
@@ -155,13 +155,13 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
       textFiltersKickProfanity:
         '{user}, за повторную грубую лексику пришлось вывести вас из чата.',
       textFiltersKickGeneric:
-        '{user}, за повторные нарушения текста пришлось вывести вас из чата.',
+        '{user}, за повторные нарушения пришлось вывести вас из чата.',
       topicExplainAnnouncement:
-        '{user}, объявление {message_status}: {reason}. Поправьте формат и попробуйте снова.',
+        '{user}, объявление {message_status}: {reason}. Поправьте формат и можно снова.',
       topicExplainMessage:
-        '{user}, сообщение {message_status}: {reason}. Поправьте формат и попробуйте снова.',
+        '{user}, сообщение {message_status}: {reason}. Поправьте формат и можно снова.',
       topicWarn:
-        '{user}, предупреждение: {reason}. Давайте дальше без повторений.',
+        '{user}, предупреждение: {reason}. Давайте дальше аккуратнее.',
       topicKickAnnouncement:
         '{user}, за повторные объявления не по формату пришлось вывести вас из чата.',
       topicKickMessage:
@@ -170,7 +170,7 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
       banNotice:
         '{user}, тайм-аут на {ban_duration}. Возвращайтесь спокойно.',
       messageLimitsWarn:
-        '{user}, предупреждение: {reason}. Давайте аккуратнее.',
+        '{user}, предупреждение: {reason}. Давайте без повторов.',
       messageLimitsKick:
         '{user}, за повторные нарушения ограничений пришлось вывести вас из чата. Причина: {reason}.',
       messageLimitsBan:
