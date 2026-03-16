@@ -13,6 +13,7 @@ export const BOT_SPEECH_EDITABLE_FIELD_KEYS = [
   'duplicateBotMessageText',
   'messageLimitsBotMessageText',
   'nightModeBotMessageText',
+  'nightModeOpenMessageText',
 ] as const;
 export type BotSpeechEditableFieldKey = (typeof BOT_SPEECH_EDITABLE_FIELD_KEYS)[number];
 export type BotSpeechSettingsSubset = {
@@ -99,6 +100,8 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         'Система: {user}. Сообщение отклонено. Причина: {reason}.',
       nightModeBotMessageText:
         'Система: активен ночной режим. Интервал: {night_window} ({night_timezone}). {night_status}',
+      nightModeOpenMessageText:
+        'Система: ночной режим завершен. {opening_status}',
     },
     system: {
       linkKick: 'Система: {user}. Доступ к чату ограничен за повторную отправку ссылок.',
@@ -146,6 +149,8 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         '{user}, сообщение не прошло: {reason}. Чуть поправьте и можно снова.',
       nightModeBotMessageText:
         'Сейчас тихий режим 🌙 {night_window} ({night_timezone}). {night_status}',
+      nightModeOpenMessageText:
+        'Доброе утро ☀️ {opening_status} Можно возвращаться к разговору.',
     },
     system: {
       linkKick:
@@ -195,6 +200,8 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         'Товарищ {user}, сообщение завернул 👮‍♂️ Причина: {reason}. Подправьте и подавайте заново.',
       nightModeBotMessageText:
         'Ночной режим, граждане 🌙 Участок прикрыт на {night_window} ({night_timezone}). {night_status}',
+      nightModeOpenMessageText:
+        'Доброе утро, граждане ☀️ {opening_status} Возвращаемся в эфир без нарушений.',
     },
     system: {
       linkKick:
@@ -244,6 +251,8 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         '{user}, сообщение не прошло: {reason}. Лимиты тут не для интерьера.',
       nightModeBotMessageText:
         'Ночной режим 🌙 {night_window} ({night_timezone}). {night_status} Да, чат тоже иногда выбирает тишину.',
+      nightModeOpenMessageText:
+        'Доброе утро ☀️ {opening_status} Тишина закончилась, можно снова писать.',
     },
     system: {
       linkKick:

@@ -223,6 +223,7 @@ type HintKey =
   | 'messageLimitsBotButton'
   | 'nightModeEnabled'
   | 'nightBotMessage'
+  | 'nightOpenMessage'
   | 'nightBotButton'
   | 'deleteBotMessages'
   | 'removeBotsFromGroup'
@@ -238,7 +239,8 @@ type BotMessageEditorKey =
   | 'textFilters'
   | 'duplicate'
   | 'messageLimits'
-  | 'night';
+  | 'night'
+  | 'nightOpen';
 type WarnMessageEditorKey = 'linkWarn' | 'textFiltersWarn';
 type SettingsSectionKey =
   | 'links'
@@ -384,6 +386,8 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'nightModeTimezone',
     'nightModeBotMessageEnabled',
     'nightModeBotMessageText',
+    'nightModeOpenMessageEnabled',
+    'nightModeOpenMessageText',
     'nightModeBotButtonEnabled',
     'nightModeBotButtonUrl',
     'nightModeBotButtonText',
@@ -469,6 +473,7 @@ const BOT_MESSAGE_EDITOR_FIELD_KEYS: Record<BotMessageEditorKey, BotSpeechEditab
   duplicate: 'duplicateBotMessageText',
   messageLimits: 'messageLimitsBotMessageText',
   night: 'nightModeBotMessageText',
+  nightOpen: 'nightModeOpenMessageText',
 };
 
 const WARN_MESSAGE_EDITOR_FIELD_KEYS: Record<WarnMessageEditorKey, BotSpeechEditableFieldKey> = {
@@ -505,6 +510,8 @@ const BOT_MESSAGE_TEMPLATE_HINTS: Record<BotMessageEditorKey, string> = {
     'Плейсхолдеры: {user}, {message_status}, {reason}, {actual_length}, {max_length}, {photo_cooldown_hours}. Поддерживается Markdown MAX.',
   night:
     'Плейсхолдеры: {user}, {night_window}, {night_timezone}, {night_status}. Поддерживается Markdown MAX.',
+  nightOpen:
+    'Плейсхолдеры: {night_window}, {night_timezone}, {opening_status}. Поддерживается Markdown MAX.',
 };
 
 const WARN_MESSAGE_TEMPLATE_HINTS: Record<WarnMessageEditorKey, string> = {
@@ -6911,6 +6918,78 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 )
                               }
                               onReset={() => setFieldValue('nightModeBotMessageText', '')}
+                            />
+                          ) : null}
+                        </div>
+
+                        <div className="settings-native-toggle">
+                          <div className="settings-native-toggle__row">
+                            <div className="settings-native-toggle__title-wrap">
+                              <span className="settings-native-toggle__title">
+                                Сообщение об открытии
+                              </span>
+                              <div className="settings-native-toggle__title-actions">
+                                <EditToggleButton
+                                  label="Редактировать текст сообщения об открытии группы"
+                                  onClick={() => toggleBotMessageEditor('nightOpen')}
+                                  disabled={!draft.nightModeOpenMessageEnabled}
+                                  isOpen={openBotEditorKey === 'nightOpen'}
+                                />
+                                <button
+                                  type="button"
+                                  className={cn(
+                                    'settings-info-button',
+                                    openHintKey === 'nightOpenMessage' && 'is-open',
+                                  )}
+                                  aria-label="Пояснение для сообщения об открытии группы"
+                                  aria-controls="night-open-message-hint"
+                                  aria-expanded={openHintKey === 'nightOpenMessage'}
+                                  onClick={() => toggleHint('nightOpenMessage')}
+                                >
+                                  <span aria-hidden>i</span>
+                                </button>
+                              </div>
+                            </div>
+
+                            <label
+                              className="settings-native-switch"
+                              aria-label="Включить сообщение об открытии группы после ночного режима"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={draft.nightModeOpenMessageEnabled}
+                                onChange={(event) =>
+                                  setFieldValue('nightModeOpenMessageEnabled', event.target.checked)
+                                }
+                              />
+                              <span className="toggle-switch" aria-hidden>
+                                <span className="toggle-switch__thumb" />
+                              </span>
+                            </label>
+                          </div>
+
+                          {openHintKey === 'nightOpenMessage' ? (
+                            <p
+                              id="night-open-message-hint"
+                              className="settings-native-toggle__hint"
+                            >
+                              После окончания ночного режима бот пишет, что группа снова открыта,
+                              и удаляет предыдущее ночное сообщение.
+                            </p>
+                          ) : null}
+
+                          {draft.nightModeOpenMessageEnabled && openBotEditorKey === 'nightOpen' ? (
+                            <BotMessageEditor
+                              editorKey="nightOpen"
+                              botSpeechStyle={draft.botSpeechStyle}
+                              value={draft.nightModeOpenMessageText}
+                              onChange={(nextValue) =>
+                                setFieldValue(
+                                  'nightModeOpenMessageText',
+                                  nextValue as ChatSettings['nightModeOpenMessageText'],
+                                )
+                              }
+                              onReset={() => setFieldValue('nightModeOpenMessageText', '')}
                             />
                           ) : null}
                         </div>

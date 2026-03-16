@@ -219,6 +219,8 @@ model ChatSettings {
   nightModeTimezone                String                   @default("Europe/Moscow") @map("night_mode_timezone")
   nightModeBotMessageEnabled       Boolean                  @default(false) @map("night_mode_bot_message_enabled")
   nightModeBotMessageText          String                   @default("") @map("night_mode_bot_message_text")
+  nightModeOpenMessageEnabled      Boolean                  @default(true) @map("night_mode_open_message_enabled")
+  nightModeOpenMessageText         String                   @default("") @map("night_mode_open_message_text")
   nightModeBotButtonEnabled        Boolean                  @default(false) @map("night_mode_bot_button_enabled")
   nightModeBotButtonUrl            String                   @default("") @map("night_mode_bot_button_url")
   nightModeBotButtonText           String                   @default("Открыть") @map("night_mode_bot_button_text")

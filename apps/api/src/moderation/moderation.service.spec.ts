@@ -106,6 +106,10 @@ function nightModeNotice(window: string, timezone: string): string {
   return `Ночной режим, граждане 🌙 Участок прикрыт на ${window} (${timezone}). Новые сообщения временно не принимаются.`;
 }
 
+function nightModeOpenNotice(): string {
+  return 'Доброе утро, граждане ☀️ Группа снова открыта. Возвращаемся в эфир без нарушений.';
+}
+
 function createSettings(overrides: Record<string, unknown> = {}) {
   return {
     id: 'settings-1',
@@ -187,6 +191,8 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     nightModeTimezone: 'Europe/Moscow',
     nightModeBotMessageEnabled: false,
     nightModeBotMessageText: '',
+    nightModeOpenMessageEnabled: true,
+    nightModeOpenMessageText: '',
     nightModeBotButtonEnabled: false,
     nightModeBotButtonUrl: '',
     nightModeBotButtonText: 'Открыть',
@@ -256,7 +262,7 @@ function createBotAuthoredUpdate(): MaxUpdate {
   };
 }
 
-function createOwnBotUpdateWithoutBotFlags(): MaxUpdate {
+function createOwnBotUpdateWithoutBotFlags(text = 'service notice'): MaxUpdate {
   return {
     updateId: 'upd-own-bot-no-flags-1',
     type: 'message_created',
@@ -264,7 +270,7 @@ function createOwnBotUpdateWithoutBotFlags(): MaxUpdate {
       messageId: 'msg-own-bot-no-flags-1',
       chatId: 'chat-1',
       senderId: '613002203036',
-      text: 'service notice',
+      text,
       createdAt: new Date().toISOString(),
     },
     raw: {
@@ -1285,6 +1291,93 @@ describe('ModerationService', () => {
         chatId: 'chat-1',
         senderId: 'bot-1',
         text: nightModeNotice('23:00-08:00', 'Москва'),
+        createdAt: new Date().toISOString(),
+      },
+      raw: {
+        message: {
+          sender: {
+            id: 'bot-1',
+            type: 'bot',
+            is_bot: true,
+          },
+        },
+      },
+    });
+
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-delete scheduled night mode open notice from own bot', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            nightModeEnabled: true,
+            nightModeStartTimeMinutes: 23 * 60,
+            nightModeEndTimeMinutes: 8 * 60,
+            nightModeTimezone: 'Europe/Moscow',
+            nightModeOpenMessageEnabled: true,
+            nightModeOpenMessageText: '',
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 2,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalSpammer: {
+        upsert: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn().mockReturnValue('bot-1'),
+      } as never,
+    );
+
+    await service.handleUpdate({
+      updateId: 'upd-night-open-own-bot-1',
+      type: 'message_created',
+      message: {
+        messageId: 'msg-night-open-own-bot-1',
+        chatId: 'chat-1',
+        senderId: 'bot-1',
+        text: nightModeOpenNotice(),
         createdAt: new Date().toISOString(),
       },
       raw: {
@@ -3184,10 +3277,14 @@ describe('ModerationService', () => {
         findMany: jest.fn().mockResolvedValue([
           {
             chatId: 'chat-1',
+            botSpeechStyle: null,
             nightModeStartTimeMinutes: startMinutes,
             nightModeEndTimeMinutes: endMinutes,
             nightModeTimezone: 'Europe/Moscow',
+            nightModeBotMessageEnabled: true,
             nightModeBotMessageText: '',
+            nightModeOpenMessageEnabled: true,
+            nightModeOpenMessageText: '',
             nightModeBotButtonEnabled: false,
             nightModeBotButtonUrl: '',
             nightModeBotButtonText: 'Открыть',
@@ -3252,6 +3349,113 @@ describe('ModerationService', () => {
         chatId: 'chat-1',
         ruleCode: 'NIGHT_MODE_NOTICE',
         action: SanctionAction.NONE,
+      }),
+    });
+  });
+
+  it('sends scheduled night open notice and deletes previous closed notice', async () => {
+    const nowParts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Europe/Moscow',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date());
+    const currentHour = Number(nowParts.find((item) => item.type === 'hour')?.value ?? '0');
+    const currentMinute = Number(nowParts.find((item) => item.type === 'minute')?.value ?? '0');
+    const endMinutes = currentHour * 60 + currentMinute;
+    const startMinutes = (endMinutes + 23 * 60) % (24 * 60);
+
+    const prisma = {
+      chatSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'chat-1',
+            botSpeechStyle: null,
+            nightModeStartTimeMinutes: startMinutes,
+            nightModeEndTimeMinutes: endMinutes,
+            nightModeTimezone: 'Europe/Moscow',
+            nightModeBotMessageEnabled: true,
+            nightModeBotMessageText: '',
+            nightModeOpenMessageEnabled: true,
+            nightModeOpenMessageText: '',
+            nightModeBotButtonEnabled: false,
+            nightModeBotButtonUrl: '',
+            nightModeBotButtonText: 'Открыть',
+          },
+        ]),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockImplementation((query: {
+          where?: Record<string, unknown>;
+          select?: Record<string, unknown>;
+        }) => {
+          if (query.where?.ruleCode === 'NIGHT_MODE_OPEN_NOTICE') {
+            return Promise.resolve(null);
+          }
+
+          if (query.where?.ruleCode === 'NIGHT_MODE_NOTICE') {
+            return Promise.resolve({
+              metadata: {
+                noticeMessageId: 'msg-night-close-1',
+              },
+            });
+          }
+
+          return Promise.resolve(null);
+        }),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'msg-night-open-1',
+        url: null,
+      }),
+      deleteMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await (
+      service as unknown as { processNightModeAnnouncements: () => Promise<void> }
+    ).processNightModeAnnouncements();
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'chat-1',
+      expect.stringContaining('Доброе утро, граждане'),
+      expect.objectContaining({
+        textFormat: 'markdown',
+      }),
+    );
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-night-close-1');
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        ruleCode: 'NIGHT_MODE_OPEN_NOTICE',
+        action: SanctionAction.NONE,
+        metadata: expect.objectContaining({
+          closedNoticeDeleted: true,
+          closedNoticeMessageId: 'msg-night-close-1',
+          noticeMessageId: 'msg-night-open-1',
+        }),
       }),
     });
   });

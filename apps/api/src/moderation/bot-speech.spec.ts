@@ -19,6 +19,7 @@ function createBotSpeechSettings(
     duplicateBotMessageText: '',
     messageLimitsBotMessageText: '',
     nightModeBotMessageText: '',
+    nightModeOpenMessageText: '',
     ...overrides,
   };
 }
@@ -62,6 +63,15 @@ describe('bot speech styles', () => {
     expect((service as any).buildGreetingMessage(userLabel, '', 'ROBOT')).toBe(
       'Система: **Алексей**, доступ в чат открыт.',
     );
+    expect(
+      (service as any).buildNightModeOpenedNotice(
+        23 * 60,
+        8 * 60,
+        'Europe/Moscow',
+        '',
+        'ROBOT',
+      ),
+    ).toBe('Система: ночной режим завершен. Группа снова открыта.');
 
     expect((service as any).buildLinkExplanation(userLabel, true, '', 'ROBOT')).toBe(
       'Система: **Алексей**. Ссылка удалена. Причина: в этом чате ссылки не проходят, без ссылок.',
@@ -119,6 +129,15 @@ describe('bot speech styles', () => {
     expect((service as any).buildGreetingMessage(userLabel, '', 'FRIENDLY')).toBe(
       'Привет, **Алексей** 🙂 Рады видеть тебя в чате.',
     );
+    expect(
+      (service as any).buildNightModeOpenedNotice(
+        23 * 60,
+        8 * 60,
+        'Europe/Moscow',
+        '',
+        'FRIENDLY',
+      ),
+    ).toBe('Доброе утро ☀️ Группа снова открыта. Можно возвращаться к разговору.');
 
     expect((service as any).buildLinkExplanation(userLabel, true, '', 'FRIENDLY')).toBe(
       '**Алексей**, ссылку пришлось убрать. В этом чате они отключены. Если она по делу, лучше сначала уточнить у админа.',
@@ -168,6 +187,15 @@ describe('bot speech styles', () => {
     expect((service as any).buildGreetingMessage(userLabel, '', 'IRONIC')).toBe(
       '**Алексей**, добро пожаловать 🙂 Осваивайтесь, правила тут тоже не бездельничают.',
     );
+    expect(
+      (service as any).buildNightModeOpenedNotice(
+        23 * 60,
+        8 * 60,
+        'Europe/Moscow',
+        '',
+        'IRONIC',
+      ),
+    ).toBe('Доброе утро ☀️ Группа снова открыта. Тишина закончилась, можно снова писать.');
 
     expect((service as any).buildLinkExplanation(userLabel, true, '', 'IRONIC')).toBe(
       '**Алексей**, ссылку убрал. Интернет, конечно, огромный, но сюда его тащить не надо.',
