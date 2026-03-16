@@ -3166,15 +3166,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               ))}
             </div>
 
-            <div className="settings-speech-style-card__status">
-              <span className="chip">
-                {activeSpeechStyle
-                  ? `Выбран: ${BOT_SPEECH_STYLE_METADATA[activeSpeechStyle].label}`
-                  : hasSpeechOverrides
-                    ? 'Свои тексты'
-                    : 'Стиль не выбран'}
-              </span>
-            </div>
+            {!activeSpeechStyle ? (
+              <div className="settings-speech-style-card__status">
+                <span className="chip">
+                  {hasSpeechOverrides ? 'Свои тексты' : 'Стиль не выбран'}
+                </span>
+              </div>
+            ) : null}
           </GlassCard>
 
           <SettingsDrilldownPanel
