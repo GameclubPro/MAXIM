@@ -131,7 +131,7 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
   },
   FRIENDLY: {
     editable: {
-      greetingBotMessageText: '{user}, {greeting} 🙂 Добро пожаловать.',
+      greetingBotMessageText: 'Привет, {user} 🙂 Рады видеть тебя в чате.',
       linkBotMessageText:
         '{user}, сообщение {message_status}: {reason}. Поправьте и можно снова.',
       linkWarnMessageText:

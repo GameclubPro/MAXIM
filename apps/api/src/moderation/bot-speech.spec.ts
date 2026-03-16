@@ -63,6 +63,10 @@ describe('bot speech styles', () => {
       'Пользователь **Алексей**: добро пожаловать в чат. Доступ открыт.',
     );
 
+    expect((service as any).buildGreetingMessage(userLabel, '', 'FRIENDLY')).toBe(
+      'Привет, **Алексей** 🙂 Рады видеть тебя в чате.',
+    );
+
     expect(
       (service as any).buildMessageLimitsExplanation(
         userLabel,
