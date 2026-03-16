@@ -19,6 +19,10 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import botSpeechRobotImage from '../../../../bot.webp';
+import botSpeechFriendlyImage from '../../../../frendly.webp';
+import botSpeechIronicImage from '../../../../joker.webp';
+import botSpeechPoliceImage from '../../../../police.webp';
 import { MaxMarkdownEditor } from '../components/max-markdown-editor';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { ManagedPollCard } from '../components/managed-poll-card';
@@ -476,6 +480,13 @@ const BOT_SPEECH_SYNC_SETTING_KEYS = [
   'botSpeechStyle',
   ...BOT_SPEECH_EDITABLE_FIELD_KEYS,
 ] as const satisfies ReadonlyArray<keyof ChatSettings>;
+
+const BOT_SPEECH_STYLE_ICON_ASSETS = {
+  robot: botSpeechRobotImage,
+  friendly: botSpeechFriendlyImage,
+  police: botSpeechPoliceImage,
+  ironic: botSpeechIronicImage,
+} as const;
 
 const BOT_MESSAGE_TEMPLATE_HINTS: Record<BotMessageEditorKey, string> = {
   link: 'Плейсхолдеры: {user}, {message_status}, {reason}. Поддерживается Markdown MAX.',
@@ -999,86 +1010,8 @@ function BotSpeechStyleIcon({
 }: {
   iconKey: (typeof BOT_SPEECH_STYLE_OPTIONS)[number]['iconKey'];
 }) {
-  if (iconKey === 'robot') {
-    return (
-      <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
-        <rect x="5" y="7" width="14" height="11" rx="4" stroke="currentColor" strokeWidth="1.7" />
-        <path d="M12 4.5V7" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" />
-        <circle cx="9.25" cy="11.5" r="1.05" fill="currentColor" />
-        <circle cx="14.75" cy="11.5" r="1.05" fill="currentColor" />
-        <path
-          d="M9.5 15H14.5"
-          stroke="currentColor"
-          strokeWidth="1.7"
-          strokeLinecap="round"
-        />
-      </svg>
-    );
-  }
-
-  if (iconKey === 'friendly') {
-    return (
-      <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
-        <circle cx="12" cy="12" r="7" stroke="currentColor" strokeWidth="1.7" />
-        <circle cx="9.5" cy="10.5" r="0.95" fill="currentColor" />
-        <circle cx="14.5" cy="10.5" r="0.95" fill="currentColor" />
-        <path
-          d="M8.7 13.4C9.4 14.7 10.5 15.3 12 15.3C13.5 15.3 14.6 14.7 15.3 13.4"
-          stroke="currentColor"
-          strokeWidth="1.7"
-          strokeLinecap="round"
-        />
-      </svg>
-    );
-  }
-
-  if (iconKey === 'police') {
-    return (
-      <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
-        <path
-          d="M12 4.7L18 7V11.6C18 15.2 15.5 18.2 12 19.3C8.5 18.2 6 15.2 6 11.6V7L12 4.7Z"
-          stroke="currentColor"
-          strokeWidth="1.7"
-          strokeLinejoin="round"
-        />
-        <path
-          d="M12 8.2V13.4"
-          stroke="currentColor"
-          strokeWidth="1.7"
-          strokeLinecap="round"
-        />
-        <path
-          d="M9.7 10.5H14.3"
-          stroke="currentColor"
-          strokeWidth="1.7"
-          strokeLinecap="round"
-        />
-      </svg>
-    );
-  }
-
   return (
-    <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
-      <path
-        d="M6.7 9.4C7.7 7.6 9.3 6.7 11.5 6.7C13.8 6.7 15.3 7.5 16.3 9.1"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-      />
-      <circle cx="9.3" cy="12.1" r="0.95" fill="currentColor" />
-      <circle cx="14.9" cy="11.5" r="0.95" fill="currentColor" />
-      <path
-        d="M9.2 15.5C10.5 14.8 11.8 14.6 13.2 14.9C13.8 15 14.3 15.3 14.8 15.7"
-        stroke="currentColor"
-        strokeWidth="1.7"
-        strokeLinecap="round"
-      />
-      <path
-        d="M4.8 12C4.8 7.9 7.9 4.8 12 4.8C16.1 4.8 19.2 7.9 19.2 12C19.2 16.1 16.1 19.2 12 19.2C7.9 19.2 4.8 16.1 4.8 12Z"
-        stroke="currentColor"
-        strokeWidth="1.7"
-      />
-    </svg>
+    <img src={BOT_SPEECH_STYLE_ICON_ASSETS[iconKey]} alt="" loading="lazy" />
   );
 }
 
@@ -1632,11 +1565,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }, [draft]);
   const baseSpeechStyle = draft?.botSpeechStyle ?? null;
   const hasSpeechOverrides = draft ? hasBotSpeechEditableOverrides(draft) : false;
-  const speechStyleDescription = activeSpeechStyle
-    ? BOT_SPEECH_STYLE_METADATA[activeSpeechStyle].description
-    : baseSpeechStyle && hasSpeechOverrides
-      ? `Свои тексты. База скрытых реплик: ${BOT_SPEECH_STYLE_METADATA[baseSpeechStyle].label}.`
-      : 'Стиль не выбран. Можно оставить свои тексты.';
   const pendingSpeechStyleMeta = pendingSpeechStyle
     ? BOT_SPEECH_STYLE_METADATA[pendingSpeechStyle]
     : null;
@@ -3196,15 +3124,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
           <GlassCard className="settings-speech-style-card stagger-in">
             <div className="settings-speech-style-card__head">
-              <div>
-                <h3 className="settings-speech-style-card__title">Стиль речи</h3>
-                <p className="settings-speech-style-card__subtitle">
-                  Быстрый выбор общего тона для bot/warn шаблонов в этом чате.
-                </p>
-              </div>
-              {baseSpeechStyle ? (
-                <span className="chip">База: {BOT_SPEECH_STYLE_METADATA[baseSpeechStyle].label}</span>
-              ) : null}
+              <h3 className="settings-speech-style-card__title">Стиль речи</h3>
             </div>
 
             <div className="settings-speech-style-grid" role="list" aria-label="Стили речи бота">
@@ -3218,12 +3138,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   )}
                   onClick={() => setPendingSpeechStyle(option.value)}
                   disabled={isSavingSpeechStyle}
+                  aria-label={option.label}
                 >
                   <span className="settings-speech-style-option__icon" aria-hidden>
                     <BotSpeechStyleIcon iconKey={option.iconKey} />
                   </span>
                   <span className="settings-speech-style-option__label">{option.label}</span>
-                  <span className="settings-speech-style-option__subtitle">{option.subtitle}</span>
                 </button>
               ))}
             </div>
@@ -3241,7 +3161,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   База скрытых реплик: {BOT_SPEECH_STYLE_METADATA[baseSpeechStyle].label}
                 </span>
               ) : null}
-              <p className="settings-speech-style-card__description">{speechStyleDescription}</p>
             </div>
           </GlassCard>
 
@@ -3249,7 +3168,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             id="settings-bot-speech-style"
             open={pendingSpeechStyle !== null}
             title={pendingSpeechStyleMeta?.label ?? 'Стиль речи'}
-            summary={pendingSpeechStyleMeta?.subtitle}
             onClose={() => {
               if (!isSavingSpeechStyle) {
                 setPendingSpeechStyle(null);
@@ -3280,15 +3198,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           >
             {pendingSpeechStyleMeta && pendingSpeechStyleSamples ? (
               <div className="settings-speech-preview">
-                <div className="settings-speech-preview__intro">
-                  <p className="settings-speech-preview__description">
-                    {pendingSpeechStyleMeta.description}
-                  </p>
-                  <div className="settings-speech-preview__warning">
-                    Ручные bot/warn тексты будут сброшены и заменены шаблонами этого стиля.
-                  </div>
-                </div>
-
                 <div className="settings-speech-preview__list">
                   <article className="settings-speech-preview__item">
                     <span className="settings-speech-preview__label">Приветствие</span>
