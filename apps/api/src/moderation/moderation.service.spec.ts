@@ -41,46 +41,69 @@ function majorExplanation(
   reason: string,
   subject = 'Сообщение',
 ): string {
-  return `Товарищ ${boldUser(name)}, Майор Максимов на связи 👮‍♂️ ${subject} ${messageStatus}: ${reason}. Поправьте и едем дальше.`;
+  void messageStatus;
+
+  if (reason === 'в этом чате ссылки не проходят, без ссылок') {
+    return `Товарищ ${boldUser(name)}, ссылочку изъял 👮‍♂️ В этом чате с ними строго. Поправьте и работаем дальше.`;
+  }
+
+  if (subject === 'Объявление') {
+    return `Товарищ ${boldUser(name)}, объявление завернул 👮‍♂️ Причина: ${reason}. Поправьте по форме и возвращайтесь.`;
+  }
+
+  if (
+    reason.includes('слишком длинное сообщение') ||
+    reason.includes('видео в этом чате отключены') ||
+    reason.includes('файлы в этом чате отключены') ||
+    reason.includes('голосовые сообщения в этом чате отключены') ||
+    reason.includes('слишком частая отправка')
+  ) {
+    return `Товарищ ${boldUser(name)}, сообщение завернул 👮‍♂️ Причина: ${reason}. Подправьте и подавайте заново.`;
+  }
+
+  return `Товарищ ${boldUser(name)}, сообщение изъял 👮‍♂️ Причина: ${reason}. Поправьте по форме и разъедемся красиво.`;
 }
 
 function duplicateExplanation(
   name: string,
-  sanction: 'Фиксирую предупреждение.' | 'Пришлось вывести из чата.' | 'Пока без взыскания.',
+  sanction:
+    | 'Предупреждение оформил.'
+    | 'Пришлось оформить выход из чата.'
+    | 'Повтор изъял, пока без протокола.',
 ): string {
-  return `Товарищ ${boldUser(name)}, Майор Максимов на связи 👮‍♂️ Повтор по базе: сообщение снято с линии как дубль. ${sanction} Дальше без серий, договорились.`;
+  return `Товарищ ${boldUser(name)}, у нас тут не ксерокс 👮‍♂️ Повтор зафиксирован. ${sanction}`;
 }
 
 function banNotice(name: string, duration: string): string {
-  return `Товарищ ${boldUser(name)}, оформляю тайм-аут на ${duration}. Возвращайтесь без нарушений.`;
+  return `Товарищ ${boldUser(name)}, оформляю паузу на ${duration}. Возвращайтесь без приключений.`;
 }
 
 function textFilterWarnNotice(name: string, reason: string): string {
-  return `Товарищ ${boldUser(name)}, вынесено предупреждение за ${reason}. Дальше держим порядок.`;
+  return `Товарищ ${boldUser(name)}, предупреждение на карандаш занёс 👮‍♂️ Причина: ${reason}. Дальше держим порядок.`;
 }
 
 function linkWarnNotice(name: string): string {
-  return `Товарищ ${boldUser(name)}, вынесено предупреждение за ссылку. 👮‍♂️ в этом чате ссылки не проходят, без ссылок. Без повторов, и разойдёмся по-хорошему.`;
+  return `Товарищ ${boldUser(name)}, предупреждение за ссылки оформил 👮‍♂️ Ещё один такой заход, и разговор будет короче.`;
 }
 
 function messageLimitsWarnNotice(name: string, reason: string): string {
-  return `Товарищ ${boldUser(name)}, фиксирую предупреждение. Причина: ${reason}.`;
+  return `Товарищ ${boldUser(name)}, предупреждение оформил 👮‍♂️ Причина: ${reason}.`;
 }
 
 function messageLimitsKickNotice(name: string, reason: string): string {
-  return `Товарищ ${boldUser(name)}, за повторные нарушения пришлось вывести вас из чата. Причина: ${reason}.`;
+  return `Товарищ ${boldUser(name)}, ограничения снова решили проверить на прочность. Пришлось вывести из чата. Причина: ${reason}.`;
 }
 
 function messageLimitsBanNotice(name: string, duration: string, reason: string): string {
-  return `Товарищ ${boldUser(name)}, оформляю тайм-аут на ${duration}. Причина: ${reason}.`;
+  return `Товарищ ${boldUser(name)}, оформляю паузу на ${duration} 👮‍♂️ Причина: ${reason}.`;
 }
 
 function topicFilterWarnNotice(name: string, reason: string): string {
-  return `Товарищ ${boldUser(name)}, фиксирую предупреждение. Причина: ${reason}.`;
+  return `Товарищ ${boldUser(name)}, предупреждение оформил 👮‍♂️ Причина: ${reason}.`;
 }
 
 function nightModeNotice(window: string, timezone: string): string {
-  return `Ночной режим, граждане 🌙 Участок закрыт на ${window} (${timezone}). Новые сообщения временно не принимаются.`;
+  return `Ночной режим, граждане 🌙 Участок прикрыт на ${window} (${timezone}). Новые сообщения временно не принимаются.`;
 }
 
 function createSettings(overrides: Record<string, unknown> = {}) {
@@ -3620,7 +3643,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      duplicateExplanation('Алексей', 'Фиксирую предупреждение.'),
+      duplicateExplanation('Алексей', 'Предупреждение оформил.'),
     );
   });
 
@@ -3699,7 +3722,7 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      duplicateExplanation('Алексей', 'Пока без взыскания.'),
+      duplicateExplanation('Алексей', 'Повтор изъял, пока без протокола.'),
     );
   });
 
@@ -3765,7 +3788,7 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      duplicateExplanation('Алексей', 'Фиксирую предупреждение.'),
+      duplicateExplanation('Алексей', 'Предупреждение оформил.'),
       {
         button: {
           text: 'Правила',
@@ -3959,7 +3982,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      duplicateExplanation('Алексей', 'Пока без взыскания.'),
+      duplicateExplanation('Алексей', 'Повтор изъял, пока без протокола.'),
     );
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
@@ -4300,7 +4323,7 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Товарищ **Алексей**, за повторную грубую лексику пришлось вывести вас из чата.',
+      'Товарищ **Алексей**, по лексике пошёл рецидив. Дальше чат без вас.',
     );
     expect(globalSpammer.upsert).toHaveBeenCalledWith({
       where: { userId: 'user-1' },
@@ -4966,7 +4989,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Товарищ **Алексей**, оформляю тайм-аут на 12ч. Причина: объявление должно начинаться с кодового слова "недвижимость".',
+      'Товарищ **Алексей**, оформляю паузу на 12ч 👮‍♂️ Причина: объявление должно начинаться с кодового слова "недвижимость".',
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
@@ -5049,7 +5072,7 @@ describe('ModerationService', () => {
     expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Товарищ **Алексей**, за повторные объявления не по форме пришлось вывести вас из чата.',
+      'Товарищ **Алексей**, объявления снова мимо формы. Пришлось оформить выход из чата.',
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
@@ -5972,7 +5995,7 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Товарищ **Алексей**, за повторные заходы со ссылками пришлось вывести вас из чата.',
+      'Товарищ **Алексей**, со ссылками устроили повторное правонарушение. Пришлось вывести вас из чата.',
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
@@ -6044,7 +6067,7 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      'Товарищ **Алексей**, за повторные заходы со ссылками пришлось вывести вас из чата.',
+      'Товарищ **Алексей**, со ссылками устроили повторное правонарушение. Пришлось вывести вас из чата.',
       {
         button: {
           text: 'Правила',

@@ -46,10 +46,10 @@ describe('bot speech styles', () => {
     );
 
     expect(legacyLinkText).toBe(
-      'Товарищ **Алексей**, Майор Максимов на связи 👮‍♂️ Сообщение снято с линии: в этом чате ссылки не проходят, без ссылок. Поправьте и едем дальше.',
+      'Товарищ **Алексей**, ссылочку изъял 👮‍♂️ В этом чате с ними строго. Поправьте и работаем дальше.',
     );
     expect(legacyWarnText).toBe(
-      'Товарищ **Алексей**, фиксирую предупреждение. Причина: слишком длинное сообщение.',
+      'Товарищ **Алексей**, предупреждение оформил 👮‍♂️ Причина: слишком длинное сообщение.',
     );
     expect(policeLinkText).toBe(legacyLinkText);
     expect(policeWarnText).toBe(legacyWarnText);
@@ -106,6 +106,14 @@ describe('bot speech styles', () => {
 
     expect((service as any).buildMessageLimitsWarnExplanation(userLabel, 'MESSAGE_TOO_LONG', 'ROBOT')).toBe(
       'Система: **Алексей**. Предупреждение. Причина: слишком длинное сообщение.',
+    );
+
+    expect((service as any).buildGreetingMessage(userLabel, '', 'POLICE')).toBe(
+      'Здравия желаю, **Алексей** 🤝 Майор Максимов на месте. Осваивайтесь, но без самодеятельности.',
+    );
+
+    expect((service as any).buildDuplicateHitExplanation(userLabel, true, '', 'POLICE')).toBe(
+      'Товарищ **Алексей**, у нас тут не ксерокс 👮‍♂️ Повтор зафиксирован. Повтор изъял, пока без протокола.',
     );
 
     expect((service as any).buildGreetingMessage(userLabel, '', 'FRIENDLY')).toBe(
