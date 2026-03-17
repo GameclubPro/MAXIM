@@ -4,7 +4,7 @@ import { SegmentedControl } from '../ui/segmented-control';
 
 type MembershipActivityFeedProps = {
   title: string;
-  subtitle: string;
+  subtitle?: string | null;
   joinedLabel: string;
   leftLabel: string;
   filter: MembershipActivityFilter;
@@ -54,7 +54,7 @@ function resolveDescription(
 
 export function MembershipActivityFeed({
   title,
-  subtitle,
+  subtitle = null,
   joinedLabel,
   leftLabel,
   filter,
@@ -72,7 +72,7 @@ export function MembershipActivityFeed({
       <div className="membership-feed__head">
         <div className="membership-feed__title">
           <h2>{title}</h2>
-          <p>{subtitle}</p>
+          {subtitle ? <p>{subtitle}</p> : null}
         </div>
         {isReloading ? <span className="membership-feed__badge">Обновляем</span> : null}
       </div>
