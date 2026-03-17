@@ -90,10 +90,10 @@
     linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(229, 241, 255, 0.88)),
     rgba(255, 255, 255, 0.84);
   box-shadow:
-    0 18px 34px rgba(28, 61, 92, 0.2),
+    0 12px 24px rgba(28, 61, 92, 0.14),
     0 2px 0 rgba(255, 255, 255, 0.5) inset;
-  backdrop-filter: blur(20px) saturate(150%);
-  -webkit-backdrop-filter: blur(20px) saturate(150%);
+  backdrop-filter: blur(14px) saturate(145%);
+  -webkit-backdrop-filter: blur(14px) saturate(145%);
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
@@ -103,6 +103,7 @@
     opacity 0.2s ease,
     box-shadow 0.2s ease;
   will-change: transform, opacity;
+  backface-visibility: hidden;
 }
 
 .bottom-nav.is-keyboard-open {
@@ -169,8 +170,21 @@ body.settings-drilldown-open .bottom-nav {
     linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(219, 239, 255, 0.88)),
     rgba(255, 255, 255, 0.82);
   box-shadow:
-    0 10px 18px rgba(11, 132, 255, 0.14),
+    0 6px 12px rgba(11, 132, 255, 0.12),
     0 1px 0 rgba(255, 255, 255, 0.72) inset;
+}
+
+@media (pointer: coarse) {
+  .bottom-nav {
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.97), rgba(235, 245, 255, 0.94)),
+      rgba(255, 255, 255, 0.94);
+    box-shadow:
+      0 8px 16px rgba(28, 61, 92, 0.11),
+      0 2px 0 rgba(255, 255, 255, 0.5) inset;
+    backdrop-filter: blur(10px) saturate(135%);
+    -webkit-backdrop-filter: blur(10px) saturate(135%);
+  }
 }
 
 .bottom-nav__item.is-active .bottom-nav__icon {

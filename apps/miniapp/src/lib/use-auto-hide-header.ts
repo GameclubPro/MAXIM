@@ -4,14 +4,18 @@ type UseAutoHideHeaderOptions = {
   compactAfter?: number;
   hideAfter?: number;
   revealAtTop?: number;
-  delta?: number;
+  settleDelta?: number;
+  hideDistance?: number;
+  revealDistance?: number;
 };
 
 export function useAutoHideHeader({
   compactAfter = 10,
   hideAfter = 72,
   revealAtTop = 12,
-  delta = 8,
+  settleDelta = 1.5,
+  hideDistance = 44,
+  revealDistance = 6,
 }: UseAutoHideHeaderOptions = {}) {
   const [state, setState] = useState({
     isCompact: false,
@@ -19,6 +23,8 @@ export function useAutoHideHeader({
   });
   const lastYRef = useRef(0);
   const stateRef = useRef(state);
+  const directionRef = useRef<'up' | 'down' | 'idle'>('idle');
+  const pivotYRef = useRef(0);
 
   useEffect(() => {
     let frameId = 0;
@@ -31,17 +37,33 @@ export function useAutoHideHeader({
 
       const scrollY = readScrollY();
       const previousY = lastYRef.current;
-      const movedDown = scrollY > previousY + delta;
-      const movedUp = scrollY < previousY - delta;
+      const diff = scrollY - previousY;
       const isCompact = scrollY > compactAfter;
       let isHidden = stateRef.current.isHidden;
 
       if (scrollY <= revealAtTop) {
         isHidden = false;
-      } else if (movedDown && scrollY > hideAfter) {
-        isHidden = true;
-      } else if (movedUp) {
-        isHidden = false;
+        directionRef.current = 'idle';
+        pivotYRef.current = scrollY;
+      } else if (Math.abs(diff) >= settleDelta) {
+        const nextDirection: 'up' | 'down' = diff > 0 ? 'down' : 'up';
+
+        if (directionRef.current !== nextDirection) {
+          directionRef.current = nextDirection;
+          pivotYRef.current = previousY;
+        }
+
+        const traveled = Math.abs(scrollY - pivotYRef.current);
+
+        if (nextDirection === 'down' && scrollY > hideAfter && traveled >= hideDistance) {
+          isHidden = true;
+          pivotYRef.current = scrollY;
+        }
+
+        if (nextDirection === 'up' && traveled >= revealDistance) {
+          isHidden = false;
+          pivotYRef.current = scrollY;
+        }
       }
 
       lastYRef.current = scrollY;
@@ -66,6 +88,7 @@ export function useAutoHideHeader({
     };
 
     lastYRef.current = readScrollY();
+    pivotYRef.current = lastYRef.current;
     applyScrollState();
 
     window.addEventListener('scroll', handleScroll, { passive: true });
@@ -79,7 +102,7 @@ export function useAutoHideHeader({
       window.removeEventListener('scroll', handleScroll);
       window.visualViewport?.removeEventListener('scroll', handleScroll);
     };
-  }, [compactAfter, delta, hideAfter, revealAtTop]);
+  }, [compactAfter, hideAfter, hideDistance, revealAtTop, revealDistance, settleDelta]);
 
   return state;
 }
