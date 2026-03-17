@@ -670,93 +670,47 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     return null;
   }
 
-  const summaryItems =
-    section === 'activity'
-      ? [
-          {
-            label: 'Вошли',
-            value: String(dashboard.membership.joinedUsers),
-            tone: 'success',
-          },
-          {
-            label: 'Вышли',
-            value: String(dashboard.membership.leftUsers),
-            tone: 'warning',
-          },
-          {
-            label: 'Баланс',
-            value: formatSignedCount(dashboard.membership.netUsers),
-            tone:
-              dashboard.membership.netUsers > 0
-                ? 'success'
-                : dashboard.membership.netUsers < 0
-                  ? 'danger'
-                  : 'neutral',
-          },
-        ]
-      : [
-          {
-            label: 'События',
-            value: String(dashboard.violationsSummary.total),
-            tone: 'accent',
-          },
-          {
-            label: 'Люди',
-            value: String(dashboard.violationsSummary.affectedUsers),
-            tone: 'neutral',
-          },
-          {
-            label: 'Кик + бан',
-            value: String(hardMeasures),
-            tone: hardMeasures > 0 ? 'danger' : 'neutral',
-          },
-        ];
   const rangeDescription = resolveRangeDescription(range);
-  const dashboardHeroMetric =
-    section === 'activity'
-      ? {
-          label: 'Баланс',
-          value: formatSignedCount(dashboard.membership.netUsers),
-          note: rangeDescription,
-          tone:
-            dashboard.membership.netUsers > 0
-              ? 'success'
-              : dashboard.membership.netUsers < 0
-                ? 'danger'
-                : 'neutral',
-        }
-      : {
-          label: 'События',
-          value: String(dashboard.violationsSummary.total),
-          note: rangeDescription,
-          tone: 'accent' as const,
-        };
-  const dashboardSecondaryMetrics =
-    section === 'activity'
-      ? [
-          {
-            label: 'Вошли',
-            value: String(dashboard.membership.joinedUsers),
-            tone: 'success',
-          },
-          {
-            label: 'Вышли',
-            value: String(dashboard.membership.leftUsers),
-            tone: 'warning',
-          },
-        ]
-      : [
-          {
-            label: 'Люди',
-            value: String(dashboard.violationsSummary.affectedUsers),
-            tone: 'neutral',
-          },
-          {
-            label: 'Кик + бан',
-            value: String(hardMeasures),
-            tone: hardMeasures > 0 ? 'danger' : 'neutral',
-          },
-        ];
+  const activityBalanceTone =
+    dashboard.membership.netUsers > 0
+      ? 'success'
+      : dashboard.membership.netUsers < 0
+        ? 'danger'
+        : 'neutral';
+  const activityMovementsTotal = dashboard.membership.joinedUsers + dashboard.membership.leftUsers;
+  const joinedShare = activityMovementsTotal
+    ? Math.round((dashboard.membership.joinedUsers / activityMovementsTotal) * 100)
+    : 50;
+  const leftShare = activityMovementsTotal ? 100 - joinedShare : 50;
+  const activityBalanceLabel =
+    dashboard.membership.netUsers > 0
+      ? 'Рост участников'
+      : dashboard.membership.netUsers < 0
+        ? 'Отток участников'
+        : 'Баланс без изменений';
+  const moderationHeroMetric = {
+    label: 'События',
+    value: String(dashboard.violationsSummary.total),
+    note:
+      dashboard.violationsSummary.total > 0
+        ? 'Зафиксировано за период'
+        : 'За период нарушений не найдено',
+    tone: 'accent' as const,
+  };
+  const moderationSecondaryMetrics = [
+    {
+      label: 'Люди',
+      value: String(dashboard.violationsSummary.affectedUsers),
+      note: 'Участников затронуто',
+      tone: 'neutral' as const,
+    },
+    {
+      label: 'Кик + бан',
+      value: String(hardMeasures),
+      note: 'Жёсткие меры',
+      tone: hardMeasures > 0 ? ('danger' as const) : ('neutral' as const),
+    },
+  ];
   const dashboardTitle = section === 'activity' ? 'Входы и выходы' : 'Модерация';
   return (
     <div className="events-screen page-enter">
@@ -845,39 +799,63 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               />
             </div>
 
-            <div className="events-dashboard__body">
-              <article
-                className={`events-dashboard__hero events-dashboard__hero--${dashboardHeroMetric.tone}`}
-              >
-                <small>{dashboardHeroMetric.label}</small>
-                <strong>{dashboardHeroMetric.value}</strong>
-                <span>{dashboardHeroMetric.note}</span>
-              </article>
-
-              <div className="events-dashboard__stack">
-                {dashboardSecondaryMetrics.map((item) => (
-                  <article
-                    key={item.label}
-                    className={`events-dashboard__metric events-dashboard__metric--${item.tone}`}
-                  >
-                    <small>{item.label}</small>
-                    <strong>{item.value}</strong>
-                  </article>
-                ))}
-              </div>
-            </div>
-
-            <div className="events-dashboard__summary-line">
-              {summaryItems.map((item) => (
+            {section === 'activity' ? (
+              <div className="events-dashboard__activity">
                 <article
-                  key={item.label}
-                  className={`events-dashboard__summary-chip events-dashboard__summary-chip--${item.tone}`}
+                  className={`events-dashboard__activity-balance events-dashboard__activity-balance--${activityBalanceTone}`}
                 >
-                  <strong>{item.value}</strong>
-                  <small>{item.label}</small>
+                  <small>Баланс</small>
+                  <strong>{formatSignedCount(dashboard.membership.netUsers)}</strong>
+                  <span>{activityBalanceLabel}</span>
                 </article>
-              ))}
-            </div>
+
+                <div className="events-dashboard__activity-ledger">
+                  <article className="events-dashboard__flow-card events-dashboard__flow-card--joined">
+                    <small>Вошли</small>
+                    <strong>{dashboard.membership.joinedUsers}</strong>
+                    <span>{joinedShare}% всего движения</span>
+                  </article>
+
+                  <article className="events-dashboard__flow-card events-dashboard__flow-card--left">
+                    <small>Вышли</small>
+                    <strong>{dashboard.membership.leftUsers}</strong>
+                    <span>{leftShare}% всего движения</span>
+                  </article>
+
+                  <div className="events-dashboard__flow-bar" aria-hidden="true">
+                    <span style={{ width: `${joinedShare}%` }} />
+                  </div>
+
+                  <div className="events-dashboard__flow-meta">
+                    <small>Вошли {joinedShare}%</small>
+                    <small>Вышли {leftShare}%</small>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="events-dashboard__body events-dashboard__body--moderation">
+                <article
+                  className={`events-dashboard__hero events-dashboard__hero--${moderationHeroMetric.tone}`}
+                >
+                  <small>{moderationHeroMetric.label}</small>
+                  <strong>{moderationHeroMetric.value}</strong>
+                  <span>{moderationHeroMetric.note}</span>
+                </article>
+
+                <div className="events-dashboard__stack">
+                  {moderationSecondaryMetrics.map((item) => (
+                    <article
+                      key={item.label}
+                      className={`events-dashboard__metric events-dashboard__metric--${item.tone}`}
+                    >
+                      <small>{item.label}</small>
+                      <strong>{item.value}</strong>
+                      <span>{item.note}</span>
+                    </article>
+                  ))}
+                </div>
+              </div>
+            )}
           </section>
 
           {section === 'moderation' ? (

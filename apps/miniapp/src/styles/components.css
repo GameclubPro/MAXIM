@@ -6755,6 +6755,10 @@
     0 12px 20px rgba(25, 58, 88, 0.03);
 }
 
+.events-dashboard__body--moderation {
+  grid-template-columns: minmax(0, 1.18fr) minmax(0, 0.82fr);
+}
+
 .events-dashboard__hero {
   position: relative;
   display: grid;
@@ -6899,6 +6903,12 @@
   letter-spacing: -0.04em;
 }
 
+.events-dashboard__metric span {
+  color: #6d879d;
+  font-size: 0.72rem;
+  line-height: 1.15;
+}
+
 .events-dashboard__metric--accent::before {
   background: rgba(11, 132, 255, 0.7);
 }
@@ -6927,61 +6937,149 @@
   color: #9e3040;
 }
 
-.events-dashboard__summary-line {
+.events-dashboard__activity {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0;
+  border: 1px solid rgba(214, 228, 242, 0.92);
+  border-radius: 24px;
   overflow: hidden;
-  border: 1px solid rgba(214, 228, 242, 0.84);
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.56);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.96), rgba(247, 250, 255, 0.92)),
+    rgba(255, 255, 255, 0.9);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    0 12px 20px rgba(25, 58, 88, 0.03);
 }
 
-.events-dashboard__summary-line::-webkit-scrollbar {
-  display: none;
-}
-
-.events-dashboard__summary-chip {
+.events-dashboard__activity-balance {
+  position: relative;
   display: grid;
-  gap: 3px;
-  min-height: 58px;
-  padding: 10px 12px;
-  background: transparent;
-  white-space: normal;
+  gap: 6px;
+  padding: 16px 16px 14px;
+  border-bottom: 1px solid rgba(214, 228, 242, 0.88);
+  background:
+    linear-gradient(180deg, rgba(252, 254, 255, 0.98), rgba(246, 250, 255, 0.94)),
+    rgba(255, 255, 255, 0.94);
 }
 
-.events-dashboard__summary-chip + .events-dashboard__summary-chip {
-  border-left: 1px solid rgba(214, 228, 242, 0.84);
+.events-dashboard__activity-balance::before {
+  content: '';
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: rgba(62, 96, 127, 0.12);
 }
 
-.events-dashboard__summary-chip strong {
-  color: #173754;
-  font-size: 1rem;
+.events-dashboard__activity-balance small,
+.events-dashboard__flow-card small {
+  color: #6b8398;
+  font-size: 0.68rem;
   font-weight: 800;
-  line-height: 1;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
-.events-dashboard__summary-chip small {
-  color: #68839b;
-  font-size: 0.66rem;
-  font-weight: 700;
+.events-dashboard__activity-balance strong {
+  color: #173754;
+  font-family: var(--font-heading);
+  font-size: clamp(1.9rem, 1.54rem + 1.3vw, 2.5rem);
+  line-height: 0.92;
+  letter-spacing: -0.06em;
+}
+
+.events-dashboard__activity-balance span,
+.events-dashboard__flow-card span,
+.events-dashboard__flow-meta small {
+  color: #6d879d;
+  font-size: 0.72rem;
   line-height: 1.15;
 }
 
-.events-dashboard__summary-chip--accent strong {
-  color: #0a79db;
+.events-dashboard__activity-balance--neutral::before {
+  background: rgba(122, 149, 173, 0.3);
 }
 
-.events-dashboard__summary-chip--success strong {
+.events-dashboard__activity-balance--success::before {
+  background: rgba(31, 169, 126, 0.78);
+}
+
+.events-dashboard__activity-balance--warning::before {
+  background: rgba(240, 164, 43, 0.78);
+}
+
+.events-dashboard__activity-balance--danger::before {
+  background: rgba(228, 83, 99, 0.76);
+}
+
+.events-dashboard__activity-balance--success strong {
   color: #167659;
 }
 
-.events-dashboard__summary-chip--warning strong {
+.events-dashboard__activity-balance--danger strong {
+  color: #9e3040;
+}
+
+.events-dashboard__activity-ledger {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  background: rgba(250, 252, 255, 0.84);
+}
+
+.events-dashboard__flow-card {
+  display: grid;
+  gap: 6px;
+  padding: 14px 16px 12px;
+}
+
+.events-dashboard__flow-card--left {
+  border-left: 1px solid rgba(214, 228, 242, 0.88);
+}
+
+.events-dashboard__flow-card strong {
+  color: #173754;
+  font-family: var(--font-heading);
+  font-size: clamp(1.24rem, 1.08rem + 0.8vw, 1.72rem);
+  line-height: 1;
+  letter-spacing: -0.04em;
+}
+
+.events-dashboard__flow-card--joined strong {
+  color: #167659;
+}
+
+.events-dashboard__flow-card--left strong {
   color: #8d5b07;
 }
 
-.events-dashboard__summary-chip--danger strong {
-  color: #9e3040;
+.events-dashboard__flow-bar {
+  grid-column: 1 / -1;
+  position: relative;
+  height: 7px;
+  margin: 0 16px;
+  border-radius: 999px;
+  overflow: hidden;
+  background:
+    linear-gradient(90deg, rgba(31, 169, 126, 0.12), rgba(240, 164, 43, 0.16)),
+    rgba(232, 239, 247, 0.92);
+}
+
+.events-dashboard__flow-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, rgba(31, 169, 126, 0.94), rgba(45, 190, 142, 0.82));
+}
+
+.events-dashboard__flow-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 8px 16px 14px;
+}
+
+.events-dashboard__flow-meta small:last-child {
+  text-align: right;
 }
 
 .events-screen__filters {
@@ -7865,6 +7963,10 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .events-dashboard__body--moderation {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .events-dashboard__hero {
     min-height: 104px;
     padding: 15px 14px 13px;
@@ -7901,17 +8003,48 @@
     font-size: 1.08rem;
   }
 
-  .events-dashboard__summary-chip {
-    min-height: 52px;
-    padding: 8px 9px;
+  .events-dashboard__metric span {
+    font-size: 0.68rem;
   }
 
-  .events-dashboard__summary-chip strong {
-    font-size: 0.92rem;
+  .events-dashboard__activity {
+    border-radius: 20px;
   }
 
-  .events-dashboard__summary-chip small {
-    font-size: 0.62rem;
+  .events-dashboard__activity-balance {
+    padding: 14px 14px 12px;
+  }
+
+  .events-dashboard__activity-balance strong {
+    font-size: 1.84rem;
+  }
+
+  .events-dashboard__activity-ledger {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .events-dashboard__flow-card {
+    padding: 12px 14px 11px;
+  }
+
+  .events-dashboard__flow-card strong {
+    font-size: 1.08rem;
+  }
+
+  .events-dashboard__flow-bar {
+    margin: 0 14px;
+    height: 6px;
+  }
+
+  .events-dashboard__flow-meta {
+    padding: 8px 14px 12px;
+    gap: 8px;
+  }
+
+  .events-dashboard__flow-meta small,
+  .events-dashboard__flow-card span,
+  .events-dashboard__activity-balance span {
+    font-size: 0.68rem;
   }
 
   .event-feed-item__trigger {
