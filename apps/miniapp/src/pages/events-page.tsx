@@ -63,6 +63,49 @@ const EMPTY_ACTIVITY_PAGE: MembershipActivityPage = {
   nextCursor: null,
 };
 
+function ModerationTabIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
+      <path
+        d="M10 2.7 15.8 5v4.1c0 3.4-2 6.1-5.8 8.2-3.8-2.1-5.8-4.8-5.8-8.2V5L10 2.7Z"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="m7.7 10 1.4 1.4 3.3-3.3"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+function ActivityTabIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
+      <path
+        d="M3.4 13.8h2.3l1.9-3.5 2.4 5.2 2.1-6 1.2 2.2h3.3"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M3.3 4.8h13.4"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        opacity="0.42"
+      />
+    </svg>
+  );
+}
+
 function getRouteChatTitle(state: unknown): string {
   if (
     typeof state === 'object' &&
@@ -697,40 +740,65 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         </header>
 
         <div className="events-stage__panel stagger-in">
-          <div className="events-stage__section-nav">
-            <SegmentedControl
-              value={section}
-              options={sectionOptions}
-              onChange={(next) => setSection(next as EventsSection)}
-              className="events-screen__section-nav"
-            />
+          <div className="events-primary-tabs" role="tablist" aria-label="Раздел событий">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={section === 'moderation'}
+              className={`events-primary-tab ${section === 'moderation' ? 'is-active' : ''}`}
+              onClick={() => setSection('moderation')}
+            >
+              <span className="events-primary-tab__icon" aria-hidden="true">
+                <ModerationTabIcon />
+              </span>
+              <span className="events-primary-tab__label">Модерация</span>
+            </button>
+
+            <button
+              type="button"
+              role="tab"
+              aria-selected={section === 'activity'}
+              className={`events-primary-tab ${section === 'activity' ? 'is-active' : ''}`}
+              onClick={() => setSection('activity')}
+            >
+              <span className="events-primary-tab__icon" aria-hidden="true">
+                <ActivityTabIcon />
+              </span>
+              <span className="events-primary-tab__label">Входы и выходы</span>
+            </button>
           </div>
 
-          <div className="events-stage__meta">
-            <SegmentedControl
-              value={range}
-              options={periodOptions}
-              onChange={(next) => setRange(next as LogsDashboardRange)}
-              className="events-screen__range-nav"
-            />
+          <section
+            className={`events-dashboard events-dashboard--${section}`}
+            aria-label={
+              section === 'activity' ? 'Сводка по входам и выходам' : 'Сводка по модерации'
+            }
+          >
+            <div className="events-dashboard__head">
+              <span className="events-dashboard__eyebrow">
+                {section === 'activity' ? 'Активность участников' : 'Сводка модерации'}
+              </span>
 
-            <section
-              className="events-screen__summary"
-              aria-label={
-                section === 'activity' ? 'Сводка по входам и выходам' : 'Сводка по модерации'
-              }
-            >
+              <SegmentedControl
+                value={range}
+                options={periodOptions}
+                onChange={(next) => setRange(next as LogsDashboardRange)}
+                className="events-dashboard__range"
+              />
+            </div>
+
+            <div className="events-dashboard__grid">
               {summaryItems.map((item) => (
                 <article
                   key={item.label}
-                  className={`events-summary-card events-summary-card--${item.tone}`}
+                  className={`events-dashboard__metric events-dashboard__metric--${item.tone}`}
                 >
-                  <strong>{item.value}</strong>
                   <small>{item.label}</small>
+                  <strong>{item.value}</strong>
                 </article>
               ))}
-            </section>
-          </div>
+            </div>
+          </section>
 
           {section === 'moderation' ? (
             <div className="events-screen__filters" role="tablist" aria-label="Фильтр модерации">
