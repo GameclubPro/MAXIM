@@ -9,7 +9,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
-import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
+import { BackChevronIcon } from '../components/ui/entity-header-icons';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { SkeletonCard } from '../components/ui/skeleton';
@@ -662,79 +662,108 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         ];
   return (
     <div className="events-screen page-enter">
-      <CompactStickyHeader
-        backTo={buildManagedEntitiesRoute('chat')}
-        backLabel="К списку чатов"
-        title={chatTitle}
-        compact={isHeaderCompact}
-        hidden={isHeaderHidden}
-        className="events-screen__sticky-header stagger-in"
-        aside={
-          dashboardQuery.isFetching ? (
-            <span
-              className="compact-page-header__status compact-page-header__status--live"
-              aria-label="Обновляем"
-              title="Обновляем"
-            >
-              <span className="compact-page-header__status-dot" aria-hidden="true" />
-            </span>
-          ) : null
-        }
-      />
-
-      <section className="events-screen__topbar" aria-label="Навигация по событиям">
-        <div className="events-screen__controls">
-          <SegmentedControl
-            value={section}
-            options={sectionOptions}
-            onChange={(next) => setSection(next as EventsSection)}
-            className="events-screen__section-nav"
-          />
-
-          <SegmentedControl
-            value={range}
-            options={periodOptions}
-            onChange={(next) => setRange(next as LogsDashboardRange)}
-            className="events-screen__range-nav"
-          />
-        </div>
-
-        <section
-          className="events-screen__summary"
-          aria-label={section === 'activity' ? 'Сводка по входам и выходам' : 'Сводка по модерации'}
+      <section className={`events-stage events-stage--${section}`}>
+        <header
+          className={`events-stage__appbar ${isHeaderCompact ? 'is-compact' : ''} ${
+            isHeaderHidden ? 'is-hidden' : ''
+          }`}
         >
-          {summaryItems.map((item) => (
-            <article
-              key={item.label}
-              className={`events-summary-card events-summary-card--${item.tone}`}
+          <div className="events-stage__appbar-bar">
+            <Link
+              to={buildManagedEntitiesRoute('chat')}
+              className="events-stage__back"
+              aria-label="К списку чатов"
             >
-              <strong>{item.value}</strong>
-              <small>{item.label}</small>
-            </article>
-          ))}
-        </section>
+              <BackChevronIcon />
+            </Link>
 
-        {section === 'moderation' ? (
-          <div className="events-screen__filters" role="tablist" aria-label="Фильтр модерации">
-            {filterOptions.map((option) => {
-              const active = option.value === eventsFilter;
+            <div className="events-stage__appbar-copy">
+              <span className="events-stage__appbar-label">События</span>
+              <strong>{chatTitle}</strong>
+            </div>
 
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  className={`events-filter-chip ${active ? 'is-active' : ''}`}
-                  onClick={() => setEventsFilter(option.value)}
-                  role="tab"
-                  aria-selected={active}
-                >
-                  <span>{option.label}</span>
-                  <small>{option.count}</small>
-                </button>
-              );
-            })}
+            <div className="events-stage__appbar-side">
+              {dashboardQuery.isFetching ? (
+                <span
+                  className="events-stage__pulse"
+                  aria-label="Обновляем"
+                  title="Обновляем"
+                />
+              ) : (
+                <span className="events-stage__pulse events-stage__pulse--idle" aria-hidden="true" />
+              )}
+            </div>
           </div>
-        ) : null}
+        </header>
+
+        <div className="events-stage__panel stagger-in">
+          <div className="events-stage__kicker-row">
+            <span className="events-stage__kicker">
+              {section === 'moderation' ? 'Модерация чата' : 'Активность участников'}
+            </span>
+          </div>
+
+          <div className="events-stage__title-block">
+            <h1>{chatTitle}</h1>
+          </div>
+
+          <div className="events-stage__section-nav">
+            <SegmentedControl
+              value={section}
+              options={sectionOptions}
+              onChange={(next) => setSection(next as EventsSection)}
+              className="events-screen__section-nav"
+            />
+          </div>
+
+          <div className="events-stage__meta">
+            <SegmentedControl
+              value={range}
+              options={periodOptions}
+              onChange={(next) => setRange(next as LogsDashboardRange)}
+              className="events-screen__range-nav"
+            />
+
+            <section
+              className="events-screen__summary"
+              aria-label={
+                section === 'activity' ? 'Сводка по входам и выходам' : 'Сводка по модерации'
+              }
+            >
+              {summaryItems.map((item) => (
+                <article
+                  key={item.label}
+                  className={`events-summary-card events-summary-card--${item.tone}`}
+                >
+                  <strong>{item.value}</strong>
+                  <small>{item.label}</small>
+                </article>
+              ))}
+            </section>
+          </div>
+
+          {section === 'moderation' ? (
+            <div className="events-screen__filters" role="tablist" aria-label="Фильтр модерации">
+              {filterOptions.map((option) => {
+                const active = option.value === eventsFilter;
+
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className={`events-filter-chip ${active ? 'is-active' : ''}`}
+                    onClick={() => setEventsFilter(option.value)}
+                    role="tab"
+                    aria-selected={active}
+                  >
+                    <span>{option.label}</span>
+                    <small>{option.count}</small>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
       </section>
 
       {section === 'activity' ? (
