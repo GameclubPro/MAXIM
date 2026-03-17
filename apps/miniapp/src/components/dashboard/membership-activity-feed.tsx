@@ -1,9 +1,10 @@
 import type { MembershipActivityFilter, MembershipActivityItem } from '@maxim/contracts';
+import { useMemo } from 'react';
 import { GlassCard } from '../ui/glass-card';
 import { SegmentedControl } from '../ui/segmented-control';
 
 type MembershipActivityFeedProps = {
-  title: string;
+  title?: string | null;
   subtitle?: string | null;
   joinedLabel: string;
   leftLabel: string;
@@ -24,17 +25,44 @@ const filterOptions: Array<{ value: MembershipActivityFilter; label: string }> =
   { value: 'left', label: 'Вышли' },
 ];
 
-function formatActivityDate(value: string): string {
+function formatActivityTime(value: string): string {
   const parsed = new Date(value);
   if (!Number.isFinite(parsed.getTime())) {
-    return 'Нет даты';
+    return '--:--';
   }
 
   return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: 'short',
     hour: '2-digit',
     minute: '2-digit',
+  }).format(parsed);
+}
+
+function startOfDay(date: Date): number {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+}
+
+function resolveDayLabel(value: string): string {
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    return 'Без даты';
+  }
+
+  const today = startOfDay(new Date());
+  const target = startOfDay(parsed);
+  const diff = Math.round((today - target) / (24 * 60 * 60 * 1000));
+
+  if (diff === 0) {
+    return 'Сегодня';
+  }
+
+  if (diff === 1) {
+    return 'Вчера';
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: 'numeric',
+    month: 'long',
+    ...(parsed.getFullYear() !== new Date().getFullYear() ? { year: 'numeric' } : {}),
   }).format(parsed);
 }
 
@@ -52,8 +80,13 @@ function resolveDescription(
     : `покинул ${labels.leftLabel}`;
 }
 
+function resolveDisplayName(name: string): string {
+  const trimmed = name.trim();
+  return trimmed || 'Участник';
+}
+
 export function MembershipActivityFeed({
-  title,
+  title = null,
   subtitle = null,
   joinedLabel,
   leftLabel,
@@ -67,22 +100,53 @@ export function MembershipActivityFeed({
   onLoadMore,
   onRetry,
 }: MembershipActivityFeedProps) {
+  const groups = useMemo(() => {
+    const result: Array<{ key: string; label: string; items: MembershipActivityItem[] }> = [];
+    const bucket = new Map<string, { label: string; items: MembershipActivityItem[] }>();
+
+    items.forEach((item) => {
+      const parsed = new Date(item.createdAt);
+      const key = Number.isFinite(parsed.getTime())
+        ? `${parsed.getFullYear()}-${parsed.getMonth() + 1}-${parsed.getDate()}`
+        : `unknown-${item.id}`;
+      const existing = bucket.get(key);
+
+      if (existing) {
+        existing.items.push(item);
+        return;
+      }
+
+      const entry = {
+        label: resolveDayLabel(item.createdAt),
+        items: [item],
+      };
+      bucket.set(key, entry);
+      result.push({ key, ...entry });
+    });
+
+    return result;
+  }, [items]);
+
   return (
-    <GlassCard className="membership-feed" padding="sm" elevated>
-      <div className="membership-feed__head">
-        <div className="membership-feed__title">
-          <h2>{title}</h2>
-          {subtitle ? <p>{subtitle}</p> : null}
+    <GlassCard className="membership-feed" padding="sm">
+      {title || subtitle ? (
+        <div className="membership-feed__head">
+          <div className="membership-feed__title">
+            {title ? <h2>{title}</h2> : null}
+            {subtitle ? <p>{subtitle}</p> : null}
+          </div>
         </div>
+      ) : null}
+
+      <div className="membership-feed__toolbar">
+        <SegmentedControl
+          value={filter}
+          options={filterOptions}
+          onChange={onFilterChange}
+          className="membership-feed__filters"
+        />
         {isReloading ? <span className="membership-feed__badge">Обновляем</span> : null}
       </div>
-
-      <SegmentedControl
-        value={filter}
-        options={filterOptions}
-        onChange={onFilterChange}
-        className="membership-feed__filters"
-      />
 
       {error ? (
         <div className="membership-feed__status">
@@ -106,28 +170,56 @@ export function MembershipActivityFeed({
       ) : null}
 
       {items.length > 0 ? (
-        <div className="membership-feed__list">
-          {items.map((item) => (
-            <article
-              key={item.id}
-              className={`membership-feed__item membership-feed__item--${item.type}`}
-            >
-              <span className="membership-feed__avatar">{resolveInitial(item.userDisplayName)}</span>
-              <div className="membership-feed__content">
-                <div className="membership-feed__row">
-                  <strong>{item.userDisplayName}</strong>
-                  <span
-                    className={`membership-feed__pill membership-feed__pill--${item.type}`}
-                  >
-                    {item.type === 'joined' ? 'Вошёл' : 'Вышел'}
-                  </span>
-                </div>
-                <div className="membership-feed__meta-line">
-                  <span>{resolveDescription(item, { joinedLabel, leftLabel })}</span>
-                  <time dateTime={item.createdAt}>{formatActivityDate(item.createdAt)}</time>
-                </div>
+        <div className="membership-feed__timeline">
+          {groups.map((group) => (
+            <section key={group.key} className="membership-feed__group">
+              <div className="membership-feed__day">{group.label}</div>
+              <div className="membership-feed__group-list">
+                {group.items.map((item, index) => {
+                  const displayName = resolveDisplayName(item.userDisplayName);
+
+                  return (
+                    <article
+                      key={item.id}
+                      className={`membership-feed__item membership-feed__item--${item.type}`}
+                    >
+                      <div
+                        className={`membership-feed__rail ${
+                          index === group.items.length - 1 ? 'is-last' : ''
+                        }`}
+                      >
+                        <time
+                          className="membership-feed__time"
+                          dateTime={item.createdAt}
+                        >
+                          {formatActivityTime(item.createdAt)}
+                        </time>
+                        <span className="membership-feed__dot" aria-hidden="true" />
+                      </div>
+
+                      <div className="membership-feed__card">
+                        <span className="membership-feed__avatar">
+                          {resolveInitial(displayName)}
+                        </span>
+                        <div className="membership-feed__content">
+                          <div className="membership-feed__row">
+                            <strong>{displayName}</strong>
+                            <span
+                              className={`membership-feed__pill membership-feed__pill--${item.type}`}
+                            >
+                              {item.type === 'joined' ? 'Вошёл' : 'Вышел'}
+                            </span>
+                          </div>
+                          <p className="membership-feed__description">
+                            {resolveDescription(item, { joinedLabel, leftLabel })}
+                          </p>
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
               </div>
-            </article>
+            </section>
           ))}
         </div>
       ) : null}

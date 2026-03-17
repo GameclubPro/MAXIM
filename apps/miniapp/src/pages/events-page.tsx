@@ -8,9 +8,7 @@ import type {
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
-import { DashboardHero } from '../components/dashboard/dashboard-hero';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
-import { StatsMetricCard } from '../components/dashboard/stats-metric-card';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { SkeletonCard } from '../components/ui/skeleton';
@@ -481,7 +479,7 @@ function resolveChatStatsLastUpdated(dashboard: LogsDashboardResponse | null): s
   }
 
   const latestAt = dashboard.activityFeed.items[0]?.createdAt ?? dashboard.violations[0]?.createdAt;
-  return latestAt ? `Последнее событие · ${formatViolationDate(latestAt)}` : null;
+  return latestAt ? formatViolationDate(latestAt) : null;
 }
 
 export function EventsPage({ api }: { api: ApiTransport }) {
@@ -490,6 +488,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const [range, setRange] = useState<LogsDashboardRange>('7d');
   const [section, setSection] = useState<EventsSection>('moderation');
   const [eventsFilter, setEventsFilter] = useState<EventsFilter>('ALL');
+  const [expandedViolationId, setExpandedViolationId] = useState<string | null>(null);
 
   const routeChatTitle = getRouteChatTitle(location.state);
 
@@ -579,6 +578,10 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     }
   }, [eventsFilter, filterOptions]);
 
+  useEffect(() => {
+    setExpandedViolationId(null);
+  }, [eventsFilter, range, section]);
+
   const filteredViolations = useMemo(() => {
     if (!dashboard) {
       return [];
@@ -593,11 +596,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
   const periodCaption = dashboard
     ? formatPeriodCaption(dashboard.period.from, dashboard.period.to)
-    : '';
-  const feedCaption = dashboard
-    ? dashboard.violationsSummary.total > dashboard.violations.length
-      ? `Последние ${dashboard.violations.length} из ${dashboard.violationsSummary.total}`
-      : `${dashboard.violations.length} за период`
     : '';
   const hardMeasures = dashboard
     ? dashboard.violationsSummary.kick + dashboard.violationsSummary.ban
@@ -659,118 +657,139 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     return null;
   }
 
+  const summaryItems =
+    section === 'activity'
+      ? [
+          {
+            label: 'Вошли',
+            value: String(dashboard.membership.joinedUsers),
+            tone: 'success',
+          },
+          {
+            label: 'Вышли',
+            value: String(dashboard.membership.leftUsers),
+            tone: 'warning',
+          },
+          {
+            label: 'Баланс',
+            value: formatSignedCount(dashboard.membership.netUsers),
+            tone:
+              dashboard.membership.netUsers > 0
+                ? 'success'
+                : dashboard.membership.netUsers < 0
+                  ? 'danger'
+                  : 'neutral',
+          },
+        ]
+      : [
+          {
+            label: 'События',
+            value: String(dashboard.violationsSummary.total),
+            tone: 'accent',
+          },
+          {
+            label: 'Люди',
+            value: String(dashboard.violationsSummary.affectedUsers),
+            tone: 'neutral',
+          },
+          {
+            label: 'Кики + баны',
+            value: String(hardMeasures),
+            tone: hardMeasures > 0 ? 'danger' : 'neutral',
+          },
+        ];
+  const lastUpdated = resolveChatStatsLastUpdated(dashboard);
+
   return (
-    <div className="stats-dashboard page-enter">
-      <DashboardHero
-        accent="chat"
-        eyebrow="Чат"
-        title={chatTitle}
-        summary={periodCaption}
-        lastUpdated={resolveChatStatsLastUpdated(dashboard)}
-        badge={dashboardQuery.isFetching ? 'Обновляем' : null}
-        backTo={buildManagedEntitiesRoute('chat')}
-        rangeControl={
+    <div className="events-screen page-enter">
+      <header className="events-screen__header stagger-in">
+        <div className="events-screen__header-main">
+          <Link
+            to={buildManagedEntitiesRoute('chat')}
+            className="events-screen__back"
+            aria-label="К списку чатов"
+          >
+            ←
+          </Link>
+
+          <div className="events-screen__identity">
+            <div className="events-screen__topline">
+              <span className="events-screen__eyebrow">Статистика</span>
+              {dashboardQuery.isFetching ? (
+                <span className="events-screen__badge">Обновляем</span>
+              ) : null}
+            </div>
+
+            <h1>{chatTitle}</h1>
+
+            <div className="events-screen__meta">
+              <span>{periodCaption}</span>
+              {lastUpdated ? <span>Обновлено {lastUpdated}</span> : null}
+            </div>
+          </div>
+        </div>
+
+        <div className="events-screen__nav">
+          <SegmentedControl
+            value={section}
+            options={sectionOptions}
+            onChange={(next) => setSection(next as EventsSection)}
+            className="events-screen__section-nav"
+          />
+
           <SegmentedControl
             value={range}
             options={periodOptions}
             onChange={(next) => setRange(next as LogsDashboardRange)}
+            className="events-screen__range-nav"
           />
-        }
-      />
+        </div>
 
-      <GlassCard className="stats-panel stats-panel--tight" elevated>
-        <SegmentedControl
-          value={section}
-          options={sectionOptions}
-          onChange={(next) => setSection(next as EventsSection)}
-          className="stats-dashboard__section-nav"
-        />
-      </GlassCard>
+        <section
+          className="events-screen__summary"
+          aria-label={section === 'activity' ? 'Сводка по входам и выходам' : 'Сводка по модерации'}
+        >
+          {summaryItems.map((item) => (
+            <article
+              key={item.label}
+              className={`events-summary-card events-summary-card--${item.tone}`}
+            >
+              <small>{item.label}</small>
+              <strong>{item.value}</strong>
+            </article>
+          ))}
+        </section>
+      </header>
 
       {section === 'activity' ? (
-        <>
-          <section className="stats-dashboard__metrics" aria-label="Входы и выходы">
-            <StatsMetricCard
-              label="Вошли"
-              value={String(dashboard.membership.joinedUsers)}
-              detail="Новых участников"
-              tone="success"
-            />
-            <StatsMetricCard
-              label="Вышли"
-              value={String(dashboard.membership.leftUsers)}
-              detail="Покинули чат"
-              tone="warning"
-            />
-            <StatsMetricCard
-              label="Баланс"
-              value={formatSignedCount(dashboard.membership.netUsers)}
-              detail={`+${dashboard.membership.joinedUsers} / -${dashboard.membership.leftUsers}`}
-              tone={
-                dashboard.membership.netUsers > 0
-                  ? 'success'
-                  : dashboard.membership.netUsers < 0
-                    ? 'danger'
-                    : 'neutral'
-              }
-            />
-          </section>
-
-          <MembershipActivityFeed
-            title="Входы и выходы"
-            joinedLabel="чату"
-            leftLabel="чат"
-            filter={activityFeed.filter}
-            onFilterChange={activityFeed.setFilter}
-            items={activityFeed.items}
-            hasMore={activityFeed.hasMore}
-            isReloading={activityFeed.isReloading}
-            isLoadingMore={activityFeed.isLoadingMore}
-            error={activityFeed.error}
-            onLoadMore={() => void activityFeed.loadMore()}
-            onRetry={() => void activityFeed.retry()}
-          />
-        </>
+        <MembershipActivityFeed
+          joinedLabel="чату"
+          leftLabel="чат"
+          filter={activityFeed.filter}
+          onFilterChange={activityFeed.setFilter}
+          items={activityFeed.items}
+          hasMore={activityFeed.hasMore}
+          isReloading={activityFeed.isReloading}
+          isLoadingMore={activityFeed.isLoadingMore}
+          error={activityFeed.error}
+          onLoadMore={() => void activityFeed.loadMore()}
+          onRetry={() => void activityFeed.retry()}
+        />
       ) : null}
 
       {section === 'moderation' ? (
         <>
-          <section className="stats-dashboard__metrics" aria-label="Модерация">
-            <StatsMetricCard
-              label="Модерации"
-              value={String(dashboard.violationsSummary.total)}
-              detail={feedCaption}
-              tone="accent"
-            />
-            <StatsMetricCard
-              label="Нарушители"
-              value={String(dashboard.violationsSummary.affectedUsers)}
-              detail="Уникальные участники"
-              tone="neutral"
-            />
-            <StatsMetricCard
-              label="Жёсткие меры"
-              value={String(hardMeasures)}
-              detail={`Кики ${dashboard.violationsSummary.kick} · Баны ${dashboard.violationsSummary.ban}`}
-              tone={hardMeasures > 0 ? 'danger' : 'neutral'}
-            />
-          </section>
-
-          <GlassCard className="stats-panel stats-panel--tight" elevated>
-            <div className="stats-panel__head">
-              <h2>Модерация</h2>
-            </div>
-
+          <section className="events-toolbar" aria-label="Фильтр модерации">
             <SegmentedControl
               value={eventsFilter}
               options={filterOptions}
               onChange={(next) => setEventsFilter(next as EventsFilter)}
-              className="stats-panel__filters"
+              className="events-toolbar__filters"
             />
-          </GlassCard>
+          </section>
 
           {dashboardQuery.error ? (
-            <GlassCard>
+            <GlassCard className="events-inline-state">
               <StatusState
                 tone="warning"
                 title="Данные могли устареть"
@@ -789,7 +808,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           ) : null}
 
           {dashboard.violations.length === 0 ? (
-            <GlassCard>
+            <GlassCard className="events-inline-state">
               <StatusState
                 tone="neutral"
                 title="Нарушений не найдено"
@@ -799,7 +818,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           ) : null}
 
           {dashboard.violations.length > 0 && filteredViolations.length === 0 ? (
-            <GlassCard>
+            <GlassCard className="events-inline-state">
               <StatusState
                 tone="neutral"
                 title="По этому фильтру пусто"
@@ -809,57 +828,82 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           ) : null}
 
           {filteredViolations.length > 0 ? (
-            <section className="events-list" aria-label="Список нарушений">
-              {filteredViolations.map((violation, index) => (
-                <GlassCard
-                  key={violation.id}
-                  className="logs-violation-item logs-violation-item--premium stagger-in"
-                  padding="sm"
-                  elevated
-                  style={{ animationDelay: `${Math.min(index, 8) * 35}ms` }}
-                >
-                  <div className="logs-violation-item__head">
-                    <div className="logs-violation-item__identity">
-                      <span className="logs-violation-item__avatar">
+            <section className="events-feed" aria-label="Список нарушений">
+              {filteredViolations.map((violation, index) => {
+                const displayAction = resolveDisplayAction(violation);
+                const isExpanded = expandedViolationId === violation.id;
+
+                return (
+                  <article
+                    key={violation.id}
+                    className={`event-feed-item event-feed-item--${actionToneMap[displayAction]} ${
+                      isExpanded ? 'is-expanded' : ''
+                    } stagger-in`}
+                    style={{ animationDelay: `${Math.min(index, 8) * 35}ms` }}
+                  >
+                    <button
+                      type="button"
+                      className="event-feed-item__trigger"
+                      onClick={() =>
+                        setExpandedViolationId((current) =>
+                          current === violation.id ? null : violation.id,
+                        )
+                      }
+                      aria-expanded={isExpanded}
+                    >
+                      <span className="event-feed-item__avatar">
                         {resolveOffenderInitial(resolveOffenderName(violation))}
                       </span>
-                      <div className="logs-violation-item__meta">
-                        <span className="logs-violation-item__offender">
-                          {resolveOffenderName(violation)}
-                        </span>
-                        <span className="logs-violation-item__date">
-                          {formatViolationDate(violation.createdAt)}
-                        </span>
+
+                      <div className="event-feed-item__body">
+                        <div className="event-feed-item__headline">
+                          <strong>{resolveOffenderName(violation)}</strong>
+                          <time dateTime={violation.createdAt}>
+                            {formatViolationDate(violation.createdAt)}
+                          </time>
+                        </div>
+
+                        <div className="event-feed-item__meta">
+                          <span
+                            className={`event-feed-item__action event-feed-item__action--${actionToneMap[displayAction]}`}
+                          >
+                            {actionLabelMap[displayAction]}
+                          </span>
+                          <span className="event-feed-item__rule">
+                            {formatViolationRule(violation.ruleCode)}
+                          </span>
+                        </div>
+
+                        <p className="event-feed-item__summary">
+                          {resolveViolationText(violation)}
+                        </p>
                       </div>
-                    </div>
-                    <div className="logs-violation-item__chips">
-                      <span
-                        className={`badge-action badge-action--${actionToneMap[resolveDisplayAction(violation)]}`}
-                      >
-                        {actionLabelMap[resolveDisplayAction(violation)]}
-                      </span>
-                      <span className="logs-violation-item__rule">
-                        {formatViolationRule(violation.ruleCode)}
-                      </span>
-                    </div>
-                  </div>
 
-                  <p className="logs-violation-item__summary">{resolveViolationText(violation)}</p>
-                  {violation.maskedExcerpt ? (
-                    <div className="logs-violation-item__excerpt-inline">
-                      <span>Фрагмент</span>
-                      <p>{violation.maskedExcerpt}</p>
-                    </div>
-                  ) : null}
+                      <span className="event-feed-item__toggle" aria-hidden="true">
+                        {isExpanded ? '−' : '+'}
+                      </span>
+                    </button>
 
-                  <ViolationModerationControls
-                    api={api}
-                    chatId={chatId}
-                    violation={violation}
-                    onApplied={() => void dashboardQuery.refetch()}
-                  />
-                </GlassCard>
-              ))}
+                    {isExpanded ? (
+                      <div className="event-feed-item__details">
+                        {violation.maskedExcerpt ? (
+                          <div className="logs-violation-item__excerpt-inline">
+                            <span>Фрагмент</span>
+                            <p>{violation.maskedExcerpt}</p>
+                          </div>
+                        ) : null}
+
+                        <ViolationModerationControls
+                          api={api}
+                          chatId={chatId}
+                          violation={violation}
+                          onApplied={() => void dashboardQuery.refetch()}
+                        />
+                      </div>
+                    ) : null}
+                  </article>
+                );
+              })}
             </section>
           ) : null}
         </>
