@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Suspense, useEffect, useRef } from 'react';
+import { Suspense, useEffect, useRef, useState, type ComponentType, type ReactNode } from 'react';
 import {
   BrowserRouter as Router,
   Navigate,
@@ -14,6 +14,7 @@ import { SkeletonCard } from './components/ui/skeleton';
 import { StatusState } from './components/ui/status-state';
 import { ToastProvider } from './components/ui/toast';
 import { createApiTransport } from './lib/api/transport';
+import { getPreviewBootstrap } from './lib/design-preview';
 import { getInitData } from './lib/init-data';
 import { resolveLaunchRoute } from './lib/launch-route';
 import { readyMaxMiniApp } from './lib/max-bridge';
@@ -38,8 +39,6 @@ const queryClient = new QueryClient({
     },
   },
 });
-const initData = getInitData();
-const apiClient = initData ? createApiTransport(initData) : null;
 
 function RouteFallback() {
   return (
@@ -72,12 +71,96 @@ function LaunchRouteSync({ launchInitData }: { launchInitData: string }) {
   return null;
 }
 
+type PreviewRuntime = {
+  DesignPreviewScaffold: ComponentType<{
+    children: ReactNode;
+    initialDevice: ReturnType<typeof getPreviewBootstrap>['device'];
+  }>;
+  createPreviewApiTransport: () => ReturnType<typeof createApiTransport>;
+};
+
+function AppRoutes({
+  apiClient,
+  launchInitData,
+}: {
+  apiClient: ReturnType<typeof createApiTransport>;
+  launchInitData: string | null;
+}) {
+  return (
+    <>
+      {launchInitData ? <LaunchRouteSync launchInitData={launchInitData} /> : null}
+      <Suspense fallback={<RouteFallback />}>
+        <Routes>
+          <Route element={<Shell />}>
+            <Route path="/" element={<LazyChatsPage api={apiClient} />} />
+            <Route path="/chat/:chatId/settings" element={<LazySettingsPage api={apiClient} />} />
+            <Route
+              path="/channel/:chatId/settings"
+              element={<LazyChannelSettingsPage api={apiClient} />}
+            />
+            <Route
+              path="/channel/:chatId/stats"
+              element={<LazyChannelStatsPage api={apiClient} />}
+            />
+            <Route
+              path="/channel/:chatId/dialog/:mode"
+              element={<LazyChannelDialogPage api={apiClient} />}
+            />
+            <Route path="/chat/:chatId/events" element={<LazyEventsPage api={apiClient} />} />
+            <Route path="/giveaways/:giveawayId" element={<LazyGiveawayPage api={apiClient} />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Route>
+        </Routes>
+      </Suspense>
+    </>
+  );
+}
+
 export function App() {
+  const initData = getInitData();
+  const preview = getPreviewBootstrap(initData);
+  const previewApiRef = useRef<ReturnType<typeof createApiTransport> | null>(null);
+  const [previewRuntime, setPreviewRuntime] = useState<PreviewRuntime | null>(null);
+
   useEffect(() => {
     readyMaxMiniApp();
   }, []);
 
-  if (!initData || !apiClient) {
+  useEffect(() => {
+    if (!preview.enabled || previewRuntime) {
+      return;
+    }
+
+    let cancelled = false;
+
+    void import('./preview-runtime').then((module) => {
+      if (cancelled) {
+        return;
+      }
+
+      setPreviewRuntime({
+        DesignPreviewScaffold: module.DesignPreviewScaffold,
+        createPreviewApiTransport: module.createPreviewApiTransport,
+      });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [preview.enabled, previewRuntime]);
+
+  if (preview.enabled && previewRuntime && previewApiRef.current === null) {
+    previewApiRef.current = previewRuntime.createPreviewApiTransport();
+  }
+
+  const apiClient = preview.enabled
+    ? previewApiRef.current
+    : initData
+      ? createApiTransport(initData)
+      : null;
+  const PreviewScaffold = previewRuntime?.DesignPreviewScaffold ?? null;
+
+  if (!apiClient) {
     return (
       <div className="app-shell app-shell--centered">
         <GlassCard className="init-missing-card" elevated>
@@ -93,8 +176,24 @@ export function App() {
               <li>Запуск идет из MAX, а не по прямой ссылке.</li>
               <li>В URL сохраняется query-параметр `init_data`.</li>
               <li>Редирект на `/app/` не теряет query-параметры.</li>
+              <li>Для дизайн-preview можно открыть `/app/?preview=1`.</li>
             </ul>
           </div>
+        </GlassCard>
+      </div>
+    );
+  }
+
+  if (preview.enabled && !previewRuntime) {
+    return (
+      <div className="app-shell app-shell--centered">
+        <GlassCard className="init-missing-card" elevated>
+          <h1>Design Preview</h1>
+          <StatusState
+            tone="neutral"
+            title="Подготавливаю preview"
+            description="Загружаю мобильную рамку и моковые данные для дизайн-режима."
+          />
         </GlassCard>
       </div>
     );
@@ -104,30 +203,13 @@ export function App() {
     <QueryClientProvider client={queryClient}>
       <ToastProvider>
         <Router basename="/app">
-          <LaunchRouteSync launchInitData={initData} />
-          <Suspense fallback={<RouteFallback />}>
-            <Routes>
-              <Route element={<Shell />}>
-                <Route path="/" element={<LazyChatsPage api={apiClient} />} />
-                <Route path="/chat/:chatId/settings" element={<LazySettingsPage api={apiClient} />} />
-                <Route
-                  path="/channel/:chatId/settings"
-                  element={<LazyChannelSettingsPage api={apiClient} />}
-                />
-                <Route
-                  path="/channel/:chatId/stats"
-                  element={<LazyChannelStatsPage api={apiClient} />}
-                />
-                <Route
-                  path="/channel/:chatId/dialog/:mode"
-                  element={<LazyChannelDialogPage api={apiClient} />}
-                />
-                <Route path="/chat/:chatId/events" element={<LazyEventsPage api={apiClient} />} />
-                <Route path="/giveaways/:giveawayId" element={<LazyGiveawayPage api={apiClient} />} />
-                <Route path="*" element={<Navigate to="/" replace />} />
-              </Route>
-            </Routes>
-          </Suspense>
+          {preview.enabled && PreviewScaffold ? (
+            <PreviewScaffold initialDevice={preview.device}>
+              <AppRoutes apiClient={apiClient} launchInitData={null} />
+            </PreviewScaffold>
+          ) : (
+            <AppRoutes apiClient={apiClient} launchInitData={initData} />
+          )}
         </Router>
       </ToastProvider>
     </QueryClientProvider>

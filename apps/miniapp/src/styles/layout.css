@@ -575,3 +575,26 @@ body.settings-drilldown-open .bottom-nav {
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
+
+.design-preview .app-shell {
+  min-height: 100dvh;
+  width: 100%;
+  max-width: 100%;
+  background:
+    radial-gradient(circle at top, rgba(120, 175, 255, 0.14), transparent 40%),
+    linear-gradient(180deg, rgba(247, 251, 255, 0.98), rgba(240, 246, 255, 0.96));
+}
+
+.design-preview .app-shell--centered {
+  min-height: max(100dvh, 760px);
+}
+
+.design-preview .bottom-nav {
+  width: min(calc(100% - 24px), 396px);
+}
+
+@media (max-width: 1023px) {
+  .design-preview .bottom-nav {
+    width: min(calc(100% - 24px), 500px);
+  }
+}
