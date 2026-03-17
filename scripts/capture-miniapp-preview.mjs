@@ -47,12 +47,8 @@ const scenarios = [
   {
     name: 'events-activity',
     path: '/chat/preview-chat/events',
-    beforeShot: async (page) => {
-      await page
-        .locator('.events-screen__section-nav .segmented-control__item')
-        .last()
-        .click();
-      await page.waitForTimeout(250);
+    searchParams: {
+      section: 'activity',
     },
   },
   {
@@ -69,7 +65,7 @@ const scenarios = [
   },
 ];
 
-function buildPreviewUrl(baseUrl, routePath, queryDevice) {
+function buildPreviewUrl(baseUrl, routePath, queryDevice, scenarioSearchParams = {}) {
   const base = new URL(baseUrl);
   const normalizedBasePath = base.pathname.endsWith('/')
     ? base.pathname.slice(0, -1)
@@ -80,6 +76,11 @@ function buildPreviewUrl(baseUrl, routePath, queryDevice) {
   url.pathname = `${normalizedBasePath}${normalizedRoutePath}`;
   url.searchParams.set('preview', '1');
   url.searchParams.set('device', queryDevice);
+  for (const [key, value] of Object.entries(scenarioSearchParams)) {
+    if (value != null && String(value).trim()) {
+      url.searchParams.set(key, String(value));
+    }
+  }
   return url.toString();
 }
 
@@ -111,7 +112,12 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir) {
   await ensureDir(shotDir);
 
   for (const scenario of scenarios) {
-    const url = buildPreviewUrl(baseUrl, scenario.path, profile.queryDevice);
+    const url = buildPreviewUrl(
+      baseUrl,
+      scenario.path,
+      profile.queryDevice,
+      scenario.searchParams,
+    );
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     await waitForPreviewApp(page);
 

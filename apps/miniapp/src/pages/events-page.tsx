@@ -459,11 +459,16 @@ function formatViolationDate(value: string): string {
   });
 }
 
+function getInitialSection(search: string): EventsSection {
+  const value = new URLSearchParams(search).get('section');
+  return value === 'activity' ? 'activity' : 'moderation';
+}
+
 export function EventsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
   const [range, setRange] = useState<LogsDashboardRange>('7d');
-  const [section, setSection] = useState<EventsSection>('moderation');
+  const [section, setSection] = useState<EventsSection>(() => getInitialSection(location.search));
   const [eventsFilter, setEventsFilter] = useState<EventsFilter>('ALL');
   const [expandedViolationId, setExpandedViolationId] = useState<string | null>(null);
   const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader();
