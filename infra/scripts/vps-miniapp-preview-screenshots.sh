@@ -36,5 +36,6 @@ docker run --rm \
     cd /tmp/miniapp-shots
     HUSKY=0 npm ci --ignore-scripts
     node scripts/capture-miniapp-preview.mjs
-    cp -R /tmp/miniapp-shots/artifacts/miniapp-screenshots/. /repo/artifacts/miniapp-screenshots/
+    install -d /repo/artifacts/miniapp-screenshots
+    tar -C /tmp/miniapp-shots/artifacts/miniapp-screenshots -cf - . | tar -C /repo/artifacts/miniapp-screenshots -xf -
   '
