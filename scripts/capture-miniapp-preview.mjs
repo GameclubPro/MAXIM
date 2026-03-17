@@ -48,7 +48,10 @@ const scenarios = [
     name: 'events-activity',
     path: '/chat/preview-chat/events',
     beforeShot: async (page) => {
-      await page.getByRole('button', { name: 'Входы и выходы' }).click();
+      await page
+        .locator('.events-screen__section-nav .segmented-control__item')
+        .last()
+        .click();
       await page.waitForTimeout(250);
     },
   },
