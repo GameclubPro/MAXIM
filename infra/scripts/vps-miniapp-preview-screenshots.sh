@@ -16,4 +16,4 @@ docker run --rm \
   -e MINIAPP_SCREENSHOT_BASE_URL="$BASE_URL" \
   -e MINIAPP_SCREENSHOT_DEVICE="$DEVICE" \
   "$PLAYWRIGHT_IMAGE" \
-  bash -lc "npm ci && node scripts/capture-miniapp-preview.mjs"
+  bash -lc "HUSKY=0 npm ci --ignore-scripts && node scripts/capture-miniapp-preview.mjs"

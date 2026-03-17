@@ -67,7 +67,14 @@ const scenarios = [
 ];
 
 function buildPreviewUrl(baseUrl, routePath, queryDevice) {
-  const url = new URL(routePath, baseUrl);
+  const base = new URL(baseUrl);
+  const normalizedBasePath = base.pathname.endsWith('/')
+    ? base.pathname.slice(0, -1)
+    : base.pathname;
+  const normalizedRoutePath = routePath.startsWith('/') ? routePath : `/${routePath}`;
+  const url = new URL(base.toString());
+
+  url.pathname = `${normalizedBasePath}${normalizedRoutePath}`;
   url.searchParams.set('preview', '1');
   url.searchParams.set('device', queryDevice);
   return url.toString();
