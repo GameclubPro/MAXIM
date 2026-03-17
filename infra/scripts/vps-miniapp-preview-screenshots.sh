@@ -9,6 +9,7 @@ PLAYWRIGHT_IMAGE="${PLAYWRIGHT_IMAGE:-mcr.microsoft.com/playwright:v1.58.2-jammy
 cd "$ROOT_DIR"
 
 docker run --rm \
+  --ipc=host \
   -u "$(id -u):$(id -g)" \
   -v "$ROOT_DIR:/repo" \
   -e HOME=/tmp \
