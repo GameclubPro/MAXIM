@@ -493,7 +493,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
   const [range, setRange] = useState<LogsDashboardRange>('7d');
-  const [section, setSection] = useState<EventsSection>('activity');
+  const [section, setSection] = useState<EventsSection>('moderation');
   const [eventsFilter, setEventsFilter] = useState<EventsFilter>('ALL');
 
   const routeChatTitle = getRouteChatTitle(location.state);
@@ -601,36 +601,16 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     : '';
   const feedCaption = dashboard
     ? dashboard.violationsSummary.total > dashboard.violations.length
-      ? `Показаны последние ${dashboard.violations.length} из ${dashboard.violationsSummary.total} действий`
-      : `${dashboard.violations.length} действий за период`
+      ? `Последние ${dashboard.violations.length} из ${dashboard.violationsSummary.total}`
+      : `${dashboard.violations.length} за период`
     : '';
-  const heroChips = dashboard
-    ? [
-        { label: `${dashboard.membership.joinedUsers} вошло`, className: 'chip chip--success' },
-        { label: `${dashboard.membership.leftUsers} вышло`, className: 'chip chip--warning' },
-        {
-          label: `${dashboard.violationsSummary.total} модераций`,
-          className: 'chip chip--danger',
-        },
-      ]
-    : [];
   const hardMeasures = dashboard
     ? dashboard.violationsSummary.kick + dashboard.violationsSummary.ban
     : 0;
-  const sectionOptions = dashboard
-    ? [
-        {
-          value: 'activity' as const,
-          label: 'Входы и выходы',
-          count: dashboard.membership.joinedUsers + dashboard.membership.leftUsers,
-        },
-        {
-          value: 'moderation' as const,
-          label: 'Модерация',
-          count: dashboard.violationsSummary.total,
-        },
-      ]
-    : [];
+  const sectionOptions = [
+    { value: 'moderation' as const, label: 'Модерация' },
+    { value: 'activity' as const, label: 'Входы и выходы' },
+  ];
 
   if (!chatId) {
     return (
@@ -688,12 +668,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     <div className="stats-dashboard page-enter">
       <DashboardHero
         accent="chat"
-        eyebrow="Статистика"
+        eyebrow="Чат"
         title={chatTitle}
         summary={periodCaption}
         lastUpdated={resolveChatStatsLastUpdated(dashboard)}
         badge={dashboardQuery.isFetching ? 'Обновляем' : null}
-        chips={heroChips}
         backTo={buildManagedEntitiesRoute('chat')}
         rangeControl={
           <SegmentedControl
@@ -704,89 +683,84 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         }
       />
 
-      <section className="stats-dashboard__top-nav" aria-label="Разделы статистики чата">
-        {sectionOptions.map((option) => {
-          const active = section === option.value;
-
-          return (
-            <button
-              key={option.value}
-              type="button"
-              className={`stats-dashboard__top-nav-item ${active ? 'is-active' : ''}`}
-              onClick={() => setSection(option.value)}
-              aria-pressed={active}
-            >
-              <span>{option.label}</span>
-              <strong>{option.count}</strong>
-            </button>
-          );
-        })}
-      </section>
-
-      <section className="stats-dashboard__metrics" aria-label="Ключевые метрики чата">
-        <StatsMetricCard
-          label="Вошли"
-          value={String(dashboard.membership.joinedUsers)}
-          detail="Новых участников"
-          tone="success"
+      <GlassCard className="stats-panel stats-panel--tight" elevated>
+        <SegmentedControl
+          value={section}
+          options={sectionOptions}
+          onChange={(next) => setSection(next as EventsSection)}
+          className="stats-dashboard__section-nav"
         />
-        <StatsMetricCard
-          label="Вышли"
-          value={String(dashboard.membership.leftUsers)}
-          detail="Покинули чат"
-          tone="warning"
-        />
-        <StatsMetricCard
-          label="Баланс"
-          value={formatSignedCount(dashboard.membership.netUsers)}
-          detail={`+${dashboard.membership.joinedUsers} / -${dashboard.membership.leftUsers}`}
-          tone={
-            dashboard.membership.netUsers > 0
-              ? 'success'
-              : dashboard.membership.netUsers < 0
-                ? 'danger'
-                : 'neutral'
-          }
-        />
-        <StatsMetricCard
-          label="Модерации"
-          value={String(dashboard.violationsSummary.total)}
-          detail={feedCaption}
-          tone="accent"
-        />
-        <StatsMetricCard
-          label="Нарушители"
-          value={String(dashboard.violationsSummary.affectedUsers)}
-          detail="Уникальные участники"
-          tone="neutral"
-        />
-        <StatsMetricCard
-          label="Жёсткие меры"
-          value={String(hardMeasures)}
-          detail={`Кики ${dashboard.violationsSummary.kick} · Баны ${dashboard.violationsSummary.ban}`}
-          tone={hardMeasures > 0 ? 'danger' : 'neutral'}
-        />
-      </section>
+      </GlassCard>
 
       {section === 'activity' ? (
-        <MembershipActivityFeed
-          title="Входы и выходы"
-          joinedLabel="чату"
-          leftLabel="чат"
-          filter={activityFeed.filter}
-          onFilterChange={activityFeed.setFilter}
-          items={activityFeed.items}
-          hasMore={activityFeed.hasMore}
-          isReloading={activityFeed.isReloading}
-          isLoadingMore={activityFeed.isLoadingMore}
-          error={activityFeed.error}
-          onLoadMore={() => void activityFeed.loadMore()}
-          onRetry={() => void activityFeed.retry()}
-        />
+        <>
+          <section className="stats-dashboard__metrics" aria-label="Входы и выходы">
+            <StatsMetricCard
+              label="Вошли"
+              value={String(dashboard.membership.joinedUsers)}
+              detail="Новых участников"
+              tone="success"
+            />
+            <StatsMetricCard
+              label="Вышли"
+              value={String(dashboard.membership.leftUsers)}
+              detail="Покинули чат"
+              tone="warning"
+            />
+            <StatsMetricCard
+              label="Баланс"
+              value={formatSignedCount(dashboard.membership.netUsers)}
+              detail={`+${dashboard.membership.joinedUsers} / -${dashboard.membership.leftUsers}`}
+              tone={
+                dashboard.membership.netUsers > 0
+                  ? 'success'
+                  : dashboard.membership.netUsers < 0
+                    ? 'danger'
+                    : 'neutral'
+              }
+            />
+          </section>
+
+          <MembershipActivityFeed
+            title="Входы и выходы"
+            joinedLabel="чату"
+            leftLabel="чат"
+            filter={activityFeed.filter}
+            onFilterChange={activityFeed.setFilter}
+            items={activityFeed.items}
+            hasMore={activityFeed.hasMore}
+            isReloading={activityFeed.isReloading}
+            isLoadingMore={activityFeed.isLoadingMore}
+            error={activityFeed.error}
+            onLoadMore={() => void activityFeed.loadMore()}
+            onRetry={() => void activityFeed.retry()}
+          />
+        </>
       ) : null}
 
       {section === 'moderation' ? (
         <>
+          <section className="stats-dashboard__metrics" aria-label="Модерация">
+            <StatsMetricCard
+              label="Модерации"
+              value={String(dashboard.violationsSummary.total)}
+              detail={feedCaption}
+              tone="accent"
+            />
+            <StatsMetricCard
+              label="Нарушители"
+              value={String(dashboard.violationsSummary.affectedUsers)}
+              detail="Уникальные участники"
+              tone="neutral"
+            />
+            <StatsMetricCard
+              label="Жёсткие меры"
+              value={String(hardMeasures)}
+              detail={`Кики ${dashboard.violationsSummary.kick} · Баны ${dashboard.violationsSummary.ban}`}
+              tone={hardMeasures > 0 ? 'danger' : 'neutral'}
+            />
+          </section>
+
           <GlassCard className="stats-panel stats-panel--tight" elevated>
             <div className="stats-panel__head">
               <h2>Модерация</h2>
