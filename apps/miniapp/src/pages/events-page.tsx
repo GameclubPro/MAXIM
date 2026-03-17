@@ -217,6 +217,18 @@ function formatSignedCount(value: number): string {
   return String(value);
 }
 
+function resolveRangeDescription(range: LogsDashboardRange): string {
+  if (range === '24h') {
+    return 'за 24 часа';
+  }
+
+  if (range === '7d') {
+    return 'за 7 дней';
+  }
+
+  return 'за 30 дней';
+}
+
 function clampBanDurationHours(value: number): number {
   const normalized = Number.isFinite(value) ? Math.trunc(value) : BAN_DURATION_MIN_HOURS;
   return Math.max(BAN_DURATION_MIN_HOURS, Math.min(BAN_DURATION_MAX_HOURS, normalized));
@@ -605,10 +617,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const hardMeasures = dashboard
     ? dashboard.violationsSummary.kick + dashboard.violationsSummary.ban
     : 0;
-  const sectionOptions = [
-    { value: 'moderation' as const, label: 'Модерация' },
-    { value: 'activity' as const, label: 'Входы и выходы' },
-  ];
 
   if (!chatId) {
     return (
@@ -703,6 +711,52 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             tone: hardMeasures > 0 ? 'danger' : 'neutral',
           },
         ];
+  const rangeDescription = resolveRangeDescription(range);
+  const dashboardHeroMetric =
+    section === 'activity'
+      ? {
+          label: 'Баланс',
+          value: formatSignedCount(dashboard.membership.netUsers),
+          note: rangeDescription,
+          tone:
+            dashboard.membership.netUsers > 0
+              ? 'success'
+              : dashboard.membership.netUsers < 0
+                ? 'danger'
+                : 'neutral',
+        }
+      : {
+          label: 'События',
+          value: String(dashboard.violationsSummary.total),
+          note: rangeDescription,
+          tone: 'accent' as const,
+        };
+  const dashboardSecondaryMetrics =
+    section === 'activity'
+      ? [
+          {
+            label: 'Вошли',
+            value: String(dashboard.membership.joinedUsers),
+            tone: 'success',
+          },
+          {
+            label: 'Вышли',
+            value: String(dashboard.membership.leftUsers),
+            tone: 'warning',
+          },
+        ]
+      : [
+          {
+            label: 'Люди',
+            value: String(dashboard.violationsSummary.affectedUsers),
+            tone: 'neutral',
+          },
+          {
+            label: 'Кик + бан',
+            value: String(hardMeasures),
+            tone: hardMeasures > 0 ? 'danger' : 'neutral',
+          },
+        ];
   return (
     <div className="events-screen page-enter">
       <section className={`events-stage events-stage--${section}`}>
@@ -741,31 +795,33 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
         <div className="events-stage__panel stagger-in">
           <div className="events-primary-tabs" role="tablist" aria-label="Раздел событий">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={section === 'moderation'}
-              className={`events-primary-tab ${section === 'moderation' ? 'is-active' : ''}`}
-              onClick={() => setSection('moderation')}
-            >
-              <span className="events-primary-tab__icon" aria-hidden="true">
-                <ModerationTabIcon />
-              </span>
-              <span className="events-primary-tab__label">Модерация</span>
-            </button>
+            <div className="events-primary-tabs__track">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={section === 'moderation'}
+                className={`events-primary-tab ${section === 'moderation' ? 'is-active' : ''}`}
+                onClick={() => setSection('moderation')}
+              >
+                <span className="events-primary-tab__icon" aria-hidden="true">
+                  <ModerationTabIcon />
+                </span>
+                <span className="events-primary-tab__label">Модерация</span>
+              </button>
 
-            <button
-              type="button"
-              role="tab"
-              aria-selected={section === 'activity'}
-              className={`events-primary-tab ${section === 'activity' ? 'is-active' : ''}`}
-              onClick={() => setSection('activity')}
-            >
-              <span className="events-primary-tab__icon" aria-hidden="true">
-                <ActivityTabIcon />
-              </span>
-              <span className="events-primary-tab__label">Входы и выходы</span>
-            </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={section === 'activity'}
+                className={`events-primary-tab ${section === 'activity' ? 'is-active' : ''}`}
+                onClick={() => setSection('activity')}
+              >
+                <span className="events-primary-tab__icon" aria-hidden="true">
+                  <ActivityTabIcon />
+                </span>
+                <span className="events-primary-tab__label">Входы и выходы</span>
+              </button>
+            </div>
           </div>
 
           <section
@@ -775,9 +831,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             }
           >
             <div className="events-dashboard__head">
-              <span className="events-dashboard__eyebrow">
-                {section === 'activity' ? 'Активность участников' : 'Сводка модерации'}
-              </span>
+              <div className="events-dashboard__head-copy">
+                <span className="events-dashboard__eyebrow">
+                  {section === 'activity' ? 'Активность участников' : 'Сводка модерации'}
+                </span>
+                <strong>{rangeDescription}</strong>
+              </div>
 
               <SegmentedControl
                 value={range}
@@ -787,14 +846,36 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               />
             </div>
 
-            <div className="events-dashboard__grid">
+            <div className="events-dashboard__body">
+              <article
+                className={`events-dashboard__hero events-dashboard__hero--${dashboardHeroMetric.tone}`}
+              >
+                <small>{dashboardHeroMetric.label}</small>
+                <strong>{dashboardHeroMetric.value}</strong>
+                <span>{dashboardHeroMetric.note}</span>
+              </article>
+
+              <div className="events-dashboard__stack">
+                {dashboardSecondaryMetrics.map((item) => (
+                  <article
+                    key={item.label}
+                    className={`events-dashboard__metric events-dashboard__metric--${item.tone}`}
+                  >
+                    <small>{item.label}</small>
+                    <strong>{item.value}</strong>
+                  </article>
+                ))}
+              </div>
+            </div>
+
+            <div className="events-dashboard__summary-line">
               {summaryItems.map((item) => (
                 <article
                   key={item.label}
-                  className={`events-dashboard__metric events-dashboard__metric--${item.tone}`}
+                  className={`events-dashboard__summary-chip events-dashboard__summary-chip--${item.tone}`}
                 >
-                  <small>{item.label}</small>
                   <strong>{item.value}</strong>
+                  <small>{item.label}</small>
                 </article>
               ))}
             </div>
