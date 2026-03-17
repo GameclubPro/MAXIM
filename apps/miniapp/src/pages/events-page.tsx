@@ -354,11 +354,6 @@ function ViolationModerationControls({
 
   return (
     <section className="logs-violation-item__moderation" aria-label="Действия модератора">
-      <div className="logs-violation-item__moderation-head">
-        <span>Действия модератора</span>
-        {banExpanded ? <small>Настройте срок бана</small> : null}
-      </div>
-
       <div className="logs-violation-item__quick-actions">
         <button
           type="button"
@@ -397,6 +392,7 @@ function ViolationModerationControls({
 
       {!canUnban && banExpanded ? (
         <div className="logs-violation-item__ban-config">
+          <small className="logs-violation-item__ban-caption">Срок бана</small>
           <div className="logs-violation-item__ban-presets">
             {banPresets.map((hours) => (
               <button
@@ -474,7 +470,6 @@ function formatViolationDate(value: string): string {
   return new Date(value).toLocaleString('ru-RU', {
     day: '2-digit',
     month: 'short',
-    year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
   });

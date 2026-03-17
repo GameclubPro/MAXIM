@@ -5016,13 +5016,13 @@
   background:
     radial-gradient(120% 170% at 0% 0%, rgba(11, 132, 255, 0.1), transparent 58%),
     linear-gradient(162deg, rgba(255, 255, 255, 0.92), rgba(233, 246, 255, 0.68));
-  gap: 10px;
+  gap: 8px;
 }
 
 .logs-violation-item__head {
   display: flex;
   justify-content: space-between;
-  gap: var(--space-2);
+  gap: 10px;
   align-items: flex-start;
 }
 
@@ -5030,17 +5030,17 @@
   min-width: 0;
   display: flex;
   align-items: flex-start;
-  gap: 10px;
+  gap: 8px;
 }
 
 .logs-violation-item__avatar {
-  width: 40px;
-  height: 40px;
-  border-radius: 14px;
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
   display: grid;
   place-items: center;
   color: #0a5ea9;
-  font-size: 0.95rem;
+  font-size: 0.84rem;
   font-weight: 800;
   background:
     linear-gradient(146deg, rgba(11, 132, 255, 0.2), rgba(255, 255, 255, 0.88)),
@@ -5051,18 +5051,18 @@
 .logs-violation-item__meta {
   min-width: 0;
   display: grid;
-  gap: 3px;
+  gap: 2px;
 }
 
 .logs-violation-item__chips {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 6px;
+  gap: 5px;
 }
 
 .logs-violation-item__date {
-  font-size: 0.76rem;
+  font-size: 0.72rem;
   color: var(--text-muted);
   font-weight: 600;
 }
@@ -5082,8 +5082,8 @@
   border: 1px solid rgba(62, 96, 127, 0.2);
   background: rgba(255, 255, 255, 0.74);
   color: var(--text-secondary);
-  padding: 5px 10px;
-  font-size: 0.73rem;
+  padding: 4px 8px;
+  font-size: 0.68rem;
   font-weight: 700;
   white-space: nowrap;
   overflow: hidden;
@@ -5091,7 +5091,7 @@
 }
 
 .logs-violation-item__offender {
-  font-size: 0.94rem;
+  font-size: 0.88rem;
   font-weight: 800;
   color: var(--text-primary);
   overflow: hidden;
@@ -5102,22 +5102,22 @@
 .logs-violation-item__summary {
   margin: 0;
   color: #3b5a72;
-  font-size: 0.8rem;
-  line-height: 1.35;
+  font-size: 0.76rem;
+  line-height: 1.28;
   font-weight: 700;
 }
 
 .logs-violation-item__excerpt-inline {
   display: grid;
-  gap: 5px;
-  border-radius: 10px;
+  gap: 4px;
+  border-radius: 12px;
   border: 1px dashed rgba(62, 96, 127, 0.2);
   background: rgba(255, 255, 255, 0.7);
-  padding: 8px 10px;
+  padding: 7px 9px;
 }
 
 .logs-violation-item__excerpt-inline span {
-  font-size: 0.68rem;
+  font-size: 0.62rem;
   color: var(--text-muted);
   text-transform: uppercase;
   letter-spacing: 0.05em;
@@ -5127,56 +5127,33 @@
 .logs-violation-item__excerpt-inline p {
   margin: 0;
   color: var(--text-secondary);
-  font-size: 0.82rem;
-  line-height: 1.4;
+  font-size: 0.76rem;
+  line-height: 1.35;
   overflow-wrap: anywhere;
 }
 
 .logs-violation-item__moderation {
-  border-radius: 12px;
+  border-radius: 14px;
   border: 1px solid rgba(62, 96, 127, 0.18);
   background: rgba(255, 255, 255, 0.66);
-  padding: 10px;
-}
-
-.logs-violation-item__moderation-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.logs-violation-item__moderation-head span {
-  font-size: 0.76rem;
-  color: var(--text-secondary);
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.logs-violation-item__moderation-head small {
-  font-size: 0.7rem;
-  color: var(--text-muted);
-  font-size: 0.74rem;
-  font-weight: 700;
+  padding: 8px;
 }
 
 .logs-violation-item__quick-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 5px;
 }
 
 .logs-violation-item__quick-button {
   flex: 1 1 0;
-  min-height: 38px;
+  min-height: 34px;
   min-width: 0;
-  border-radius: 10px;
+  border-radius: 11px;
   border: 1px solid rgba(62, 96, 127, 0.2);
   background: rgba(255, 255, 255, 0.7);
   color: var(--text-secondary);
-  font-size: 0.78rem;
+  font-size: 0.73rem;
   font-weight: 700;
   cursor: pointer;
   transition:
@@ -5223,23 +5200,31 @@
 
 .logs-violation-item__ban-config {
   display: grid;
-  gap: 8px;
-  margin-top: 8px;
+  gap: 7px;
+  margin-top: 7px;
+}
+
+.logs-violation-item__ban-caption {
+  color: var(--text-muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .logs-violation-item__ban-presets {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 6px;
+  gap: 5px;
 }
 
 .logs-violation-item__ban-preset {
-  min-height: 34px;
-  border-radius: 10px;
+  min-height: 30px;
+  border-radius: 9px;
   border: 1px solid rgba(62, 96, 127, 0.18);
   background: rgba(255, 255, 255, 0.84);
   color: var(--text-secondary);
-  font-size: 0.76rem;
+  font-size: 0.72rem;
   font-weight: 800;
   cursor: pointer;
 }
@@ -5256,23 +5241,23 @@
 .logs-violation-item__ban-config-controls {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
+  gap: 6px;
   align-items: center;
 }
 
 .logs-violation-item__hours-input {
   display: grid;
   justify-items: end;
-  gap: 4px;
+  gap: 3px;
 }
 
 .logs-violation-item__hours-input input {
-  width: 74px;
-  min-height: 36px;
+  width: 68px;
+  min-height: 32px;
   border-radius: 8px;
   border: 1px solid rgba(62, 96, 127, 0.22);
   background: rgba(255, 255, 255, 0.86);
-  padding: 6px 8px;
+  padding: 5px 7px;
   text-align: center;
   font-weight: 700;
 }
@@ -5285,13 +5270,13 @@
 
 .logs-violation-item__apply-button {
   width: 100%;
-  min-height: 40px;
-  font-size: 0.82rem;
+  min-height: 34px;
+  font-size: 0.76rem;
 }
 
 .logs-violation-item__action-status {
   margin: 0;
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   font-weight: 700;
 }
 
@@ -5308,8 +5293,8 @@
   align-items: center;
   justify-content: center;
   border-radius: 999px;
-  padding: 6px 10px;
-  font-size: 0.71rem;
+  padding: 5px 8px;
+  font-size: 0.67rem;
   line-height: 1;
   font-weight: 800;
   border: 1px solid transparent;
@@ -6206,6 +6191,8 @@
 
 @media (max-width: 520px) {
   .logs-violation-item__head {
+    display: grid;
+    gap: 8px;
     align-items: flex-start;
   }
 
@@ -6214,13 +6201,17 @@
   }
 
   .logs-violation-item__avatar {
-    width: 36px;
-    height: 36px;
+    width: 32px;
+    height: 32px;
     border-radius: 12px;
   }
 
   .logs-violation-item__offender {
-    font-size: 0.88rem;
+    font-size: 0.84rem;
+  }
+
+  .logs-violation-item__chips {
+    justify-content: flex-start;
   }
 
   .logs-violation-item__ban-config-controls {
@@ -6410,6 +6401,11 @@
   gap: var(--space-3);
 }
 
+.events-list {
+  display: grid;
+  gap: 8px;
+}
+
 .stats-metric-card {
   display: grid;
   gap: 8px;
@@ -6540,16 +6536,16 @@
 
 .membership-feed__list {
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .membership-feed__item {
   display: grid;
   grid-template-columns: auto 1fr;
-  gap: 12px;
+  gap: 10px;
   align-items: start;
-  padding: 14px;
-  border-radius: 22px;
+  padding: 10px 11px;
+  border-radius: 18px;
   background: rgba(255, 255, 255, 0.76);
   border: 1px solid rgba(255, 255, 255, 0.7);
 }
@@ -6563,12 +6559,13 @@
 }
 
 .membership-feed__avatar {
-  width: 42px;
-  height: 42px;
-  border-radius: 16px;
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  font-size: 0.82rem;
   font-weight: 800;
   color: #1b3650;
   background:
@@ -6578,7 +6575,7 @@
 
 .membership-feed__content {
   display: grid;
-  gap: 5px;
+  gap: 4px;
 }
 
 .membership-feed__row {
@@ -6589,31 +6586,36 @@
 }
 
 .membership-feed__row strong {
-  font-size: 0.98rem;
+  font-size: 0.88rem;
 }
 
-.membership-feed__content p,
+.membership-feed__meta-line,
 .membership-feed__content time {
   margin: 0;
 }
 
-.membership-feed__content p {
+.membership-feed__meta-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: center;
   color: var(--text-secondary);
+  font-size: 0.75rem;
 }
 
-.membership-feed__content time {
+.membership-feed__meta-line time {
   color: var(--text-muted);
-  font-size: 0.78rem;
+  font-size: 0.72rem;
 }
 
 .membership-feed__pill {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 26px;
-  padding: 0 10px;
+  min-height: 22px;
+  padding: 0 8px;
   border-radius: 999px;
-  font-size: 0.72rem;
+  font-size: 0.66rem;
   font-weight: 800;
   white-space: nowrap;
 }
@@ -6631,14 +6633,15 @@
 .membership-feed__status {
   display: grid;
   gap: 10px;
-  padding: 14px;
-  border-radius: 20px;
+  padding: 11px;
+  border-radius: 16px;
   background: rgba(250, 253, 255, 0.92);
   color: var(--text-secondary);
 }
 
 .membership-feed__status p {
   margin: 0;
+  font-size: 0.8rem;
 }
 
 .membership-feed__load-more {
@@ -6646,7 +6649,7 @@
 }
 
 .logs-violation-item--premium {
-  border-radius: 24px;
+  border-radius: 18px;
   background:
     linear-gradient(155deg, rgba(255, 255, 255, 0.96), rgba(244, 250, 255, 0.92)),
     rgba(255, 255, 255, 0.92);

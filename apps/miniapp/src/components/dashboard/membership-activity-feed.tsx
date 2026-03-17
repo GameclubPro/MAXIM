@@ -32,7 +32,7 @@ function formatActivityDate(value: string): string {
 
   return new Intl.DateTimeFormat('ru-RU', {
     day: '2-digit',
-    month: 'long',
+    month: 'short',
     hour: '2-digit',
     minute: '2-digit',
   }).format(parsed);
@@ -68,7 +68,7 @@ export function MembershipActivityFeed({
   onRetry,
 }: MembershipActivityFeedProps) {
   return (
-    <GlassCard className="membership-feed" elevated>
+    <GlassCard className="membership-feed" padding="sm" elevated>
       <div className="membership-feed__head">
         <div className="membership-feed__title">
           <h2>{title}</h2>
@@ -122,8 +122,10 @@ export function MembershipActivityFeed({
                     {item.type === 'joined' ? 'Вошёл' : 'Вышел'}
                   </span>
                 </div>
-                <p>{resolveDescription(item, { joinedLabel, leftLabel })}</p>
-                <time dateTime={item.createdAt}>{formatActivityDate(item.createdAt)}</time>
+                <div className="membership-feed__meta-line">
+                  <span>{resolveDescription(item, { joinedLabel, leftLabel })}</span>
+                  <time dateTime={item.createdAt}>{formatActivityDate(item.createdAt)}</time>
+                </div>
               </div>
             </article>
           ))}
