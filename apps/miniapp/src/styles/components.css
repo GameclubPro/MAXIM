@@ -6716,7 +6716,7 @@
 
 .events-dashboard__head-copy strong {
   color: #173754;
-  font-size: 1rem;
+  font-size: 1.06rem;
   font-weight: 850;
   line-height: 1.02;
   letter-spacing: -0.03em;
@@ -6758,9 +6758,9 @@
 .events-dashboard__hero {
   position: relative;
   display: grid;
-  align-content: end;
+  align-content: start;
   gap: 8px;
-  min-height: 134px;
+  min-height: 118px;
   padding: 18px 18px 16px;
   border: 0;
   border-radius: 0;
@@ -7858,7 +7858,7 @@
   }
 
   .events-dashboard__head-copy strong {
-    font-size: 0.94rem;
+    font-size: 0.98rem;
   }
 
   .events-dashboard__body {
@@ -7866,8 +7866,8 @@
   }
 
   .events-dashboard__hero {
-    min-height: 0;
-    padding: 16px 14px 14px;
+    min-height: 104px;
+    padding: 15px 14px 13px;
   }
 
   .events-dashboard__hero small,
@@ -7881,6 +7881,7 @@
   }
 
   .events-dashboard__stack {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     border-top: 1px solid rgba(214, 228, 242, 0.92);
     border-left: 0;
   }
@@ -7889,6 +7890,11 @@
     min-height: 0;
     padding: 13px 14px 12px;
     gap: 6px;
+  }
+
+  .events-dashboard__metric + .events-dashboard__metric {
+    border-top: 0;
+    border-left: 1px solid rgba(214, 228, 242, 0.92);
   }
 
   .events-dashboard__metric strong {
