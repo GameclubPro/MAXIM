@@ -712,6 +712,10 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     },
   ];
   const dashboardTitle = section === 'activity' ? 'Входы и выходы' : 'Модерация';
+  const dashboardSubtitle =
+    section === 'activity'
+      ? 'Баланс и движение участников'
+      : 'Люди и меры за выбранный период';
   return (
     <div className="events-screen page-enter">
       <section className={`events-stage events-stage--${section}`}>
@@ -788,7 +792,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             <div className="events-dashboard__head">
               <div className="events-dashboard__head-copy">
                 <strong>{dashboardTitle}</strong>
-                <span className="events-dashboard__eyebrow">{rangeDescription}</span>
+                <span className="events-dashboard__eyebrow">{dashboardSubtitle}</span>
               </div>
 
               <SegmentedControl
