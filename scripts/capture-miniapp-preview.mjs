@@ -1,0 +1,174 @@
+import { mkdir } from 'node:fs/promises';
+import path from 'node:path';
+import { chromium, devices } from 'playwright';
+
+const DEFAULT_BASE_URL = 'https://maxim.play-team.ru/app/';
+const OUTPUT_ROOT = path.resolve(process.cwd(), 'artifacts/miniapp-screenshots');
+const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+
+const deviceProfiles = {
+  android: {
+    queryDevice: 'android',
+    viewportName: 'Pixel 7',
+    outputDirName: 'android',
+  },
+  iphone: {
+    queryDevice: 'iphone',
+    viewportName: 'iPhone 15',
+    outputDirName: 'iphone',
+  },
+};
+
+const scenarios = [
+  {
+    name: 'home',
+    path: '/',
+  },
+  {
+    name: 'events-moderation',
+    path: '/chat/preview-chat/events',
+  },
+  {
+    name: 'events-moderation-scrolled',
+    path: '/chat/preview-chat/events',
+    beforeShot: async (page) => {
+      await page.evaluate(() => window.scrollTo({ top: 360, behavior: 'instant' }));
+      await page.waitForTimeout(250);
+    },
+  },
+  {
+    name: 'events-moderation-expanded',
+    path: '/chat/preview-chat/events',
+    beforeShot: async (page) => {
+      await page.locator('.event-feed-item__trigger').first().click();
+      await page.waitForTimeout(200);
+    },
+  },
+  {
+    name: 'events-activity',
+    path: '/chat/preview-chat/events',
+    beforeShot: async (page) => {
+      await page.getByRole('button', { name: 'Входы и выходы' }).click();
+      await page.waitForTimeout(250);
+    },
+  },
+  {
+    name: 'chat-settings',
+    path: '/chat/preview-chat/settings',
+  },
+  {
+    name: 'channel-settings',
+    path: '/channel/preview-channel/settings',
+  },
+  {
+    name: 'channel-stats',
+    path: '/channel/preview-channel/stats',
+  },
+];
+
+function buildPreviewUrl(baseUrl, routePath, queryDevice) {
+  const url = new URL(routePath, baseUrl);
+  url.searchParams.set('preview', '1');
+  url.searchParams.set('device', queryDevice);
+  return url.toString();
+}
+
+async function ensureDir(dir) {
+  await mkdir(dir, { recursive: true });
+}
+
+async function waitForPreviewApp(page) {
+  await page.waitForSelector('.design-preview__device', { timeout: 20_000 });
+  await page.waitForSelector('.app-shell', { timeout: 20_000 });
+  await page.waitForLoadState('networkidle');
+}
+
+async function captureDeviceScenarios(browser, profile, baseUrl, outputDir) {
+  const device = devices[profile.viewportName];
+  if (!device) {
+    throw new Error(`Unknown Playwright device profile: ${profile.viewportName}`);
+  }
+
+  const context = await browser.newContext({
+    ...device,
+    colorScheme: 'light',
+    locale: 'ru-RU',
+    timezoneId: 'Europe/Moscow',
+  });
+
+  const page = await context.newPage();
+  const shotDir = path.join(outputDir, profile.outputDirName);
+  await ensureDir(shotDir);
+
+  for (const scenario of scenarios) {
+    const url = buildPreviewUrl(baseUrl, scenario.path, profile.queryDevice);
+    await page.goto(url, { waitUntil: 'domcontentloaded' });
+    await waitForPreviewApp(page);
+
+    if (scenario.beforeShot) {
+      await scenario.beforeShot(page);
+    }
+
+    const frame = page.locator('.design-preview__device').first();
+    await frame.screenshot({
+      path: path.join(shotDir, `${scenario.name}.png`),
+      animations: 'disabled',
+    });
+  }
+
+  await context.close();
+}
+
+async function main() {
+  const requestedDevice = process.env.MINIAPP_SCREENSHOT_DEVICE?.trim().toLowerCase() ?? 'all';
+  const baseUrl = process.env.MINIAPP_SCREENSHOT_BASE_URL?.trim() || DEFAULT_BASE_URL;
+  const outputDir = path.join(OUTPUT_ROOT, timestamp);
+  const deviceKeys =
+    requestedDevice === 'all'
+      ? Object.keys(deviceProfiles)
+      : Object.keys(deviceProfiles).filter((key) => key === requestedDevice);
+
+  if (deviceKeys.length === 0) {
+    throw new Error(
+      'MINIAPP_SCREENSHOT_DEVICE must be one of: android, iphone, all',
+    );
+  }
+
+  await ensureDir(outputDir);
+
+  let browser;
+
+  try {
+    browser = await chromium.launch({
+      headless: true,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes('error while loading shared libraries')) {
+      throw new Error(
+        [
+          'Playwright Chromium cannot start because system libraries are missing.',
+          'Local fallback: install Playwright browser dependencies for your OS.',
+          'VPS fallback: run the screenshot flow inside the Playwright Docker image.',
+        ].join(' '),
+      );
+    }
+
+    throw error;
+  }
+
+  try {
+    for (const key of deviceKeys) {
+      await captureDeviceScenarios(browser, deviceProfiles[key], baseUrl, outputDir);
+    }
+  } finally {
+    await browser.close();
+  }
+
+  console.log(`Screenshots saved to ${outputDir}`);
+}
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : error);
+  process.exitCode = 1;
+});

@@ -10,6 +10,7 @@
     "build": "npm run build --workspace @maxim/contracts && npm run build --workspace @maxim/api && npm run build --workspace @maxim/miniapp",
     "dev": "npm run dev --workspace @maxim/api",
     "lint": "eslint .",
+    "screenshots:miniapp": "node scripts/capture-miniapp-preview.mjs",
     "typecheck": "npm run typecheck --workspace @maxim/contracts && npm run typecheck --workspace @maxim/api && npm run typecheck --workspace @maxim/miniapp",
     "test": "npm run test --workspace @maxim/api",
     "format": "prettier --check .",
@@ -23,6 +24,7 @@
     "globals": "^15.15.0",
     "husky": "^9.1.7",
     "lint-staged": "^15.4.3",
+    "playwright": "^1.58.2",
     "prettier": "^3.5.0",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.24.1"
