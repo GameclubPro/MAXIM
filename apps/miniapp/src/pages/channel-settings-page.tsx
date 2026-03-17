@@ -2,10 +2,10 @@ import type { ChannelAutoPostButtonsMode, ChannelSettings } from '@maxim/contrac
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
-import { BackChevronIcon, ParticipantsIcon } from '../components/ui/entity-header-icons';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { MaxMarkdownEditor } from '../components/max-markdown-editor';
 import { ManagedPollCard } from '../components/managed-poll-card';
+import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
@@ -25,6 +25,7 @@ import { maxNotify, openMaxBotLink, setMaxClosingConfirmation } from '../lib/max
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
+import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 
 type ChannelRouteState = {
   chatTitle: string;
@@ -194,14 +195,6 @@ function getRouteState(state: unknown): ChannelRouteState {
   const chatLink = isHttpUrl(candidateLink) ? candidateLink : '';
 
   return { chatTitle, chatLink };
-}
-
-function formatParticipantsCount(value: number | null | undefined): string | null {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return null;
-  }
-
-  return new Intl.NumberFormat('ru-RU').format(value);
 }
 
 function normalizeApiError(error: unknown): string {
@@ -404,6 +397,7 @@ function normalizeChannelSettingsDraft(
 export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const { chatId = '' } = useParams();
   const location = useLocation();
+  const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader();
   const routeState = getRouteState(location.state);
   const routeChatTitle = routeState.chatTitle;
   const routeChatLink = routeState.chatLink;
@@ -828,20 +822,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         : isDirty
           ? 'draft'
           : 'saved';
-  const headerStatusLabel =
+  const showHeaderStatus = headerStatusTone !== 'saved';
+  const compactHeaderStatusLabel =
     headerStatusTone === 'error'
       ? 'Ошибка'
       : headerStatusTone === 'saving'
-        ? 'Сохраняем'
-        : headerStatusTone === 'draft'
-          ? 'Черновик'
-          : 'Сохранено';
-  const channelMetaLabel =
-    resolvedTitle && resolvedTitle !== chatId && resolvedChannelLink
-      ? resolvedChannelLink
-      : 'Настройки канала';
-  const showHeaderStatus = headerStatusTone !== 'saved';
-  const participantsCountLabel = formatParticipantsCount(channelHeader?.participantsCount ?? null);
+        ? 'Сохр.'
+        : 'Черн.';
   const publishButtons = resolveManualPublishButtons(
     normalizedDraft ?? normalizeChannelSettingsDraft(draft, resolvedChannelLink),
   );
@@ -1017,60 +1004,56 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
   return (
     <div className="channel-settings-screen page-enter">
-      <GlassCard className="channel-settings-header" elevated>
-        <div className="channel-settings-header__top">
-          <Link
-            to={buildManagedEntitiesRoute('channel')}
-            className="channel-settings-header__back"
-            aria-label="Назад к каналам"
-          >
-            <BackChevronIcon />
-          </Link>
-          <div className="channel-settings-header__body">
-            <div className="channel-settings-header__title-row">
-              <div className="channel-settings-header__main">
-                <h1>{resolvedTitle || 'Настройки'}</h1>
-                <p>{channelMetaLabel}</p>
-              </div>
-              {showHeaderStatus ? (
-                <div className="channel-settings-header__actions">
-                  {showHeaderStatus ? (
-                    <span
-                      className={cn('channel-settings-header__status', `is-${headerStatusTone}`)}
-                      aria-live="polite"
-                    >
-                      {headerStatusLabel}
-                    </span>
-                  ) : null}
-                  {headerStatusTone === 'error' ? (
-                    <button
-                      type="button"
-                      className="channel-settings-header__retry"
-                      onClick={() => {
-                        lastFailedDraftKeyRef.current = null;
-                        void saveCurrentDraft({ force: true });
-                      }}
-                    >
-                      Повторить
-                    </button>
-                  ) : null}
-                </div>
+      <CompactStickyHeader
+        backTo={buildManagedEntitiesRoute('channel')}
+        backLabel="Назад к каналам"
+        title={resolvedTitle || 'Настройки'}
+        compact={isHeaderCompact}
+        hidden={isHeaderHidden}
+        className="channel-settings-screen__sticky-header"
+        aside={
+          showHeaderStatus ? (
+            <div className="compact-page-header__actions">
+              <span
+                className={cn(
+                  'compact-page-header__status',
+                  `compact-page-header__status--${headerStatusTone}`,
+                )}
+                aria-live="polite"
+                aria-label={
+                  headerStatusTone === 'error'
+                    ? 'Ошибка сохранения'
+                    : headerStatusTone === 'saving'
+                      ? 'Сохраняем изменения'
+                      : 'Есть несохранённые изменения'
+                }
+                title={
+                  headerStatusTone === 'error'
+                    ? 'Ошибка сохранения'
+                    : headerStatusTone === 'saving'
+                      ? 'Сохраняем изменения'
+                      : 'Есть несохранённые изменения'
+                }
+              >
+                {compactHeaderStatusLabel}
+              </span>
+              {headerStatusTone === 'error' ? (
+                <button
+                  type="button"
+                  className="compact-page-header__retry"
+                  onClick={() => {
+                    lastFailedDraftKeyRef.current = null;
+                    void saveCurrentDraft({ force: true });
+                  }}
+                  aria-label="Повторить сохранение"
+                >
+                  ↻
+                </button>
               ) : null}
             </div>
-            {participantsCountLabel ? (
-              <div className="channel-settings-header__footer">
-                <span
-                  className="channel-settings-header__members"
-                  aria-label={`Участников: ${participantsCountLabel}`}
-                >
-                  <ParticipantsIcon />
-                  <span>{participantsCountLabel}</span>
-                </span>
-              </div>
-            ) : null}
-          </div>
-        </div>
-      </GlassCard>
+          ) : null
+        }
+      />
 
       <GlassCard className="channel-settings-card" elevated>
         <div className={cn('settings-section__head', 'settings-section__head--interactive')}>

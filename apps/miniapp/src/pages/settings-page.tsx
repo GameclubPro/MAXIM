@@ -26,8 +26,8 @@ import botSpeechPoliceImage from '../../../../police.webp';
 import { MaxMarkdownEditor } from '../components/max-markdown-editor';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { ManagedPollCard } from '../components/managed-poll-card';
+import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { GlassCard } from '../components/ui/glass-card';
-import { BackChevronIcon, ParticipantsIcon } from '../components/ui/entity-header-icons';
 import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
 import { SettingsSectionToggle } from '../components/ui/settings-section-toggle';
 import { SkeletonCard } from '../components/ui/skeleton';
@@ -64,6 +64,7 @@ import { maxNotify, openMaxBotLink, setMaxClosingConfirmation } from '../lib/max
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
+import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 
 type FieldErrors = Partial<Record<keyof ChatSettings, string>>;
 
@@ -95,14 +96,6 @@ const MAX_RULES_IMAGE_SIZE_BYTES = 1_000_000;
 const MAX_CHAT_RULES_TEXT_LENGTH = 2_000;
 const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
 const BROADCAST_DAY_MS = 24 * 60 * 60 * 1_000;
-
-function formatParticipantsCount(value: number | null | undefined): string | null {
-  if (typeof value !== 'number' || !Number.isFinite(value)) {
-    return null;
-  }
-
-  return new Intl.NumberFormat('ru-RU').format(value);
-}
 
 type MaxMessageLengthSliderProps = {
   value: ChatSettings['maxMessageLength'];
@@ -1222,6 +1215,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
+  const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
   const [draft, setDraft] = useState<ChatSettings | null>(null);
@@ -1573,16 +1567,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mutateRulesAsync = saveRulesMutation.mutateAsync;
   const isHeaderSaving = isSavingSettings || isSavingRules || isSavingSpeechStyle;
   const hasPendingHeaderChanges = hasChanges || hasRulesChanges;
-  const headerStatusLabel = isHeaderSaving
-    ? 'Сохраняем'
-    : hasPendingHeaderChanges
-      ? 'Черновик'
-      : 'Сохранено';
-  const chatMetaLabel = chatTitle && chatTitle !== chatId ? `ID ${chatId}` : 'Настройки модерации';
   const showHeaderStatus = isHeaderSaving || hasPendingHeaderChanges;
-  const chatParticipantsCountLabel = formatParticipantsCount(
-    chatHeaderQuery.data?.participantsCount ?? null,
-  );
+  const compactHeaderStatusLabel = isHeaderSaving ? 'Сохр.' : 'Черн.';
   const canSeeThematicFilters = meQuery.data?.userId === THEMATIC_FILTERS_OWNER_USER_ID;
   const activeSpeechStyle = useMemo(() => {
     if (!draft?.botSpeechStyle || hasBotSpeechEditableOverrides(draft)) {
@@ -3107,47 +3093,30 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
       {!settingsQuery.isLoading && !settingsQuery.error && draft ? (
         <section className="settings-sections" aria-label="Настройки модерации">
-          <header className="settings-page-header stagger-in">
-            <div className="settings-page-header__top">
-              <Link
-                to={buildManagedEntitiesRoute('chat')}
-                className="settings-page-header__back"
-                aria-label="Назад к чатам"
-              >
-                <BackChevronIcon />
-              </Link>
-              <div className="settings-page-header__body">
-                <div className="settings-page-header__title-row">
-                  <div className="settings-page-header__identity">
-                    <h2 className="settings-page-header__title">{chatTitle || chatId}</h2>
-                    <p className="settings-page-header__meta">{chatMetaLabel}</p>
-                  </div>
-                  {showHeaderStatus ? (
-                    <span
-                      className={cn(
-                        'settings-page-header__status',
-                        isHeaderSaving ? 'is-saving' : 'is-draft',
-                      )}
-                      aria-live="polite"
-                    >
-                      {headerStatusLabel}
-                    </span>
-                  ) : null}
-                </div>
-                {chatParticipantsCountLabel ? (
-                  <div className="settings-page-header__footer">
-                    <span
-                      className="settings-page-header__members"
-                      aria-label={`Участников: ${chatParticipantsCountLabel}`}
-                    >
-                      <ParticipantsIcon />
-                      <span>{chatParticipantsCountLabel}</span>
-                    </span>
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          </header>
+          <CompactStickyHeader
+            backTo={buildManagedEntitiesRoute('chat')}
+            backLabel="Назад к чатам"
+            title={chatTitle || chatId || 'Настройки'}
+            compact={isHeaderCompact}
+            hidden={isHeaderHidden}
+            className="settings-sections__sticky-header stagger-in"
+            aside={
+              showHeaderStatus ? (
+                <span
+                  className={cn(
+                    'compact-page-header__status',
+                    isHeaderSaving
+                      ? 'compact-page-header__status--saving'
+                      : 'compact-page-header__status--draft',
+                  )}
+                  aria-label={isHeaderSaving ? 'Сохраняем изменения' : 'Есть несохранённые изменения'}
+                  title={isHeaderSaving ? 'Сохраняем изменения' : 'Есть несохранённые изменения'}
+                >
+                  {compactHeaderStatusLabel}
+                </span>
+              ) : null
+            }
+          />
 
           <GlassCard className="settings-speech-style-card stagger-in">
             <div className="settings-speech-style-card__head">

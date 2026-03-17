@@ -9,6 +9,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
+import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { SkeletonCard } from '../components/ui/skeleton';
@@ -22,6 +23,7 @@ import { getChats } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
+import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 
 type ViolationAction = LogsDashboardResponse['violations'][number]['action'];
@@ -180,22 +182,6 @@ function resolveViolationText(violation: LogsDashboardResponse['violations'][num
   }
 
   return rule;
-}
-
-function formatPeriodCaption(from: string, to: string): string {
-  const fromDate = new Date(from);
-  const toDate = new Date(to);
-  if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
-    return `${from} - ${to}`;
-  }
-
-  return `${fromDate.toLocaleDateString('ru-RU', {
-    day: '2-digit',
-    month: 'short',
-  })} - ${toDate.toLocaleDateString('ru-RU', {
-    day: '2-digit',
-    month: 'short',
-  })}`;
 }
 
 function formatSignedCount(value: number): string {
@@ -473,15 +459,6 @@ function formatViolationDate(value: string): string {
   });
 }
 
-function resolveChatStatsLastUpdated(dashboard: LogsDashboardResponse | null): string | null {
-  if (!dashboard) {
-    return null;
-  }
-
-  const latestAt = dashboard.activityFeed.items[0]?.createdAt ?? dashboard.violations[0]?.createdAt;
-  return latestAt ? formatViolationDate(latestAt) : null;
-}
-
 export function EventsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
@@ -489,6 +466,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const [section, setSection] = useState<EventsSection>('moderation');
   const [eventsFilter, setEventsFilter] = useState<EventsFilter>('ALL');
   const [expandedViolationId, setExpandedViolationId] = useState<string | null>(null);
+  const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader();
 
   const routeChatTitle = getRouteChatTitle(location.state);
 
@@ -594,9 +572,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     return dashboard.violations.filter((violation) => resolveDisplayAction(violation) === eventsFilter);
   }, [dashboard, eventsFilter]);
 
-  const periodCaption = dashboard
-    ? formatPeriodCaption(dashboard.period.from, dashboard.period.to)
-    : '';
   const hardMeasures = dashboard
     ? dashboard.violationsSummary.kick + dashboard.violationsSummary.ban
     : 0;
@@ -698,68 +673,58 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             tone: hardMeasures > 0 ? 'danger' : 'neutral',
           },
         ];
-  const lastUpdated = resolveChatStatsLastUpdated(dashboard);
-
   return (
     <div className="events-screen page-enter">
-      <header className="events-screen__header stagger-in">
-        <div className="events-screen__header-main">
-          <Link
-            to={buildManagedEntitiesRoute('chat')}
-            className="events-screen__back"
-            aria-label="К списку чатов"
-          >
-            ←
-          </Link>
-
-          <div className="events-screen__identity">
-            <div className="events-screen__topline">
-              <span className="events-screen__eyebrow">Статистика</span>
-              {dashboardQuery.isFetching ? (
-                <span className="events-screen__badge">Обновляем</span>
-              ) : null}
-            </div>
-
-            <h1>{chatTitle}</h1>
-
-            <div className="events-screen__meta">
-              <span>{periodCaption}</span>
-              {lastUpdated ? <span>Обновлено {lastUpdated}</span> : null}
-            </div>
-          </div>
-        </div>
-
-        <div className="events-screen__nav">
-          <SegmentedControl
-            value={section}
-            options={sectionOptions}
-            onChange={(next) => setSection(next as EventsSection)}
-            className="events-screen__section-nav"
-          />
-
-          <SegmentedControl
-            value={range}
-            options={periodOptions}
-            onChange={(next) => setRange(next as LogsDashboardRange)}
-            className="events-screen__range-nav"
-          />
-        </div>
-
-        <section
-          className="events-screen__summary"
-          aria-label={section === 'activity' ? 'Сводка по входам и выходам' : 'Сводка по модерации'}
-        >
-          {summaryItems.map((item) => (
-            <article
-              key={item.label}
-              className={`events-summary-card events-summary-card--${item.tone}`}
+      <CompactStickyHeader
+        backTo={buildManagedEntitiesRoute('chat')}
+        backLabel="К списку чатов"
+        title={chatTitle}
+        compact={isHeaderCompact}
+        hidden={isHeaderHidden}
+        className="events-screen__sticky-header stagger-in"
+        aside={
+          dashboardQuery.isFetching ? (
+            <span
+              className="compact-page-header__status compact-page-header__status--live"
+              aria-label="Обновляем"
+              title="Обновляем"
             >
-              <small>{item.label}</small>
-              <strong>{item.value}</strong>
-            </article>
-          ))}
-        </section>
-      </header>
+              <span className="compact-page-header__status-dot" aria-hidden="true" />
+            </span>
+          ) : null
+        }
+      />
+
+      <section className="events-screen__controls">
+        <SegmentedControl
+          value={section}
+          options={sectionOptions}
+          onChange={(next) => setSection(next as EventsSection)}
+          className="events-screen__section-nav"
+        />
+
+        <SegmentedControl
+          value={range}
+          options={periodOptions}
+          onChange={(next) => setRange(next as LogsDashboardRange)}
+          className="events-screen__range-nav"
+        />
+      </section>
+
+      <section
+        className="events-screen__summary"
+        aria-label={section === 'activity' ? 'Сводка по входам и выходам' : 'Сводка по модерации'}
+      >
+        {summaryItems.map((item) => (
+          <article
+            key={item.label}
+            className={`events-summary-card events-summary-card--${item.tone}`}
+          >
+            <small>{item.label}</small>
+            <strong>{item.value}</strong>
+          </article>
+        ))}
+      </section>
 
       {section === 'activity' ? (
         <MembershipActivityFeed
