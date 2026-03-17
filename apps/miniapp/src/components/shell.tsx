@@ -150,8 +150,8 @@ function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
 
   if (pathname.includes('/events')) {
     return {
-      title: 'События',
-      subtitle: chatLabel ? `Чат: ${chatLabel}` : 'Выберите чат, чтобы посмотреть события.',
+      title: 'Статистика',
+      subtitle: chatLabel ? `Чат: ${chatLabel}` : 'Выберите чат, чтобы посмотреть статистику.',
     };
   }
 
@@ -451,14 +451,14 @@ export function Shell() {
                   <span className="bottom-nav__icon" aria-hidden>
                     <BottomNavIcon name="events" />
                   </span>
-                  <span className="bottom-nav__label">События</span>
+                  <span className="bottom-nav__label">Статистика</span>
                 </NavLink>
               ) : (
                 <span className="bottom-nav__item is-disabled" aria-disabled>
                   <span className="bottom-nav__icon" aria-hidden>
                     <BottomNavIcon name="events" />
                   </span>
-                  <span className="bottom-nav__label">События</span>
+                  <span className="bottom-nav__label">Статистика</span>
                 </span>
               )}
             </>

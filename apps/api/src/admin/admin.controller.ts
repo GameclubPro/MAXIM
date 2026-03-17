@@ -51,6 +51,15 @@ export class AdminController {
     return this.adminService.getChannelStats(chatId, user, query);
   }
 
+  @Get('channels/:chatId/activity-feed')
+  getChannelActivityFeed(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() query: unknown,
+  ) {
+    return this.adminService.getChannelActivityFeed(chatId, user, query);
+  }
+
   @Get('chats/:chatId/settings')
   getSettings(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.adminService.getSettings(chatId, user);
@@ -73,6 +82,15 @@ export class AdminController {
   @Get('chats/:chatId/rules')
   getRules(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.adminService.getRules(chatId, user);
+  }
+
+  @Get('chats/:chatId/activity-feed')
+  getChatActivityFeed(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() query: unknown,
+  ) {
+    return this.adminService.getChatActivityFeed(chatId, user, query);
   }
 
   @Put('chats/:chatId/rules')

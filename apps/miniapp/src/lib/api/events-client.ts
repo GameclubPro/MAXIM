@@ -3,10 +3,14 @@ import {
   logsDashboardResponseSchema,
   manualModerationActionRequestSchema,
   manualModerationActionResultSchema,
+  membershipActivityPageSchema,
+  membershipActivityQuerySchema,
   type LogsDashboardRange,
   type LogsDashboardResponse,
   type ManualModerationActionRequest,
   type ManualModerationActionResult,
+  type MembershipActivityPage,
+  type MembershipActivityQuery,
 } from '@maxim/contracts';
 import type { ApiTransport } from './transport';
 
@@ -20,6 +24,28 @@ export async function getLogsDashboard(
     `/chats/${chatId}/logs-dashboard?range=${encodeURIComponent(validatedRange)}`,
   );
   return logsDashboardResponseSchema.parse(response);
+}
+
+export async function getChatActivityFeed(
+  api: ApiTransport,
+  chatId: string,
+  query: Partial<MembershipActivityQuery> = {},
+): Promise<MembershipActivityPage> {
+  const validatedQuery = membershipActivityQuerySchema.parse(query);
+  const params = new URLSearchParams({
+    range: validatedQuery.range,
+    filter: validatedQuery.filter,
+    limit: String(validatedQuery.limit),
+  });
+
+  if (validatedQuery.cursor) {
+    params.set('cursor', validatedQuery.cursor);
+  }
+
+  const response = await api.request(
+    `/chats/${chatId}/activity-feed?${params.toString()}`,
+  );
+  return membershipActivityPageSchema.parse(response);
 }
 
 export async function applyManualModerationAction(

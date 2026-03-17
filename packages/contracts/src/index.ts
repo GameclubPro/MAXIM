@@ -1090,6 +1090,36 @@ export const logsDashboardQuerySchema = z.object({
 });
 export type LogsDashboardQuery = z.infer<typeof logsDashboardQuerySchema>;
 
+export const membershipActivityRangeSchema = logsDashboardRangeSchema;
+export type MembershipActivityRange = z.infer<typeof membershipActivityRangeSchema>;
+
+export const membershipActivityFilterSchema = z.enum(['all', 'joined', 'left']);
+export type MembershipActivityFilter = z.infer<typeof membershipActivityFilterSchema>;
+
+export const membershipActivityItemSchema = z.object({
+  id: z.string(),
+  type: z.enum(['joined', 'left']),
+  userId: z.string(),
+  userDisplayName: z.string().min(1),
+  createdAt: z.string().datetime(),
+});
+export type MembershipActivityItem = z.infer<typeof membershipActivityItemSchema>;
+
+export const membershipActivityPageSchema = z.object({
+  items: z.array(membershipActivityItemSchema),
+  hasMore: z.boolean(),
+  nextCursor: z.string().trim().min(1).nullable(),
+});
+export type MembershipActivityPage = z.infer<typeof membershipActivityPageSchema>;
+
+export const membershipActivityQuerySchema = z.object({
+  range: membershipActivityRangeSchema.default('7d'),
+  filter: membershipActivityFilterSchema.default('all'),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().trim().min(1).optional(),
+});
+export type MembershipActivityQuery = z.infer<typeof membershipActivityQuerySchema>;
+
 export const channelStatsRangeSchema = z.enum(['24h', '7d', '30d']);
 export type ChannelStatsRange = z.infer<typeof channelStatsRangeSchema>;
 
@@ -1178,6 +1208,7 @@ export const channelStatsResponseSchema = z.object({
     officialCoverageFrom: z.string().datetime().nullable(),
     missingOfficialMetrics: z.array(channelStatsMissingMetricSchema),
   }),
+  activityFeed: membershipActivityPageSchema,
 });
 export type ChannelStatsResponse = z.infer<typeof channelStatsResponseSchema>;
 
@@ -1218,6 +1249,7 @@ export const logsDashboardResponseSchema = z.object({
     total: z.number().int().min(0),
   }),
   violations: z.array(logsDashboardViolationSchema),
+  activityFeed: membershipActivityPageSchema,
 });
 export type LogsDashboardResponse = z.infer<typeof logsDashboardResponseSchema>;
 

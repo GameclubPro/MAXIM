@@ -20,6 +20,8 @@ import {
   logsDashboardResponseSchema,
   manualModerationActionRequestSchema,
   manualModerationActionResultSchema,
+  membershipActivityPageSchema,
+  membershipActivityQuerySchema,
   publishChatRulesResultSchema,
   type ChannelDialogType,
   type ChannelStatsBucket,
@@ -28,6 +30,9 @@ import {
   type ChannelOverview,
   type ApplySectionToAllResponse,
   type ManagedBroadcastDetails,
+  type MembershipActivityFilter,
+  type MembershipActivityPage,
+  type MembershipActivityQuery,
   managedBroadcastDetailsSchema,
   type ManagedBroadcastSummary,
   managedBroadcastSummarySchema,
@@ -200,6 +205,7 @@ const STICKER_LAB_QUALITY_LEVELS = [92, 84, 76, 68] as const;
 const MANAGED_BROADCAST_DUE_BATCH_SIZE = 10;
 const MANAGED_BROADCAST_LOCK_STALE_MS = 60_000;
 const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 30;
+const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 5;
 const CHANNEL_DIALOG_MESSAGES_LIMIT = 80;
@@ -1565,6 +1571,11 @@ export class AdminService {
 
     const bucketStarts = this.buildChannelStatsBucketStarts(from, now, bucket);
     const topReactions = this.buildTopReactions(periodPosts);
+    const activityFeed = await this.getMembershipActivityFeedPage(chatId, from, now, {
+      range: parsed.data.range,
+      filter: 'all',
+      limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
+    });
     const response: ChannelStatsResponse = {
       channel: {
         id: chatId,
@@ -1631,9 +1642,28 @@ export class AdminService {
         ),
         missingOfficialMetrics: [...CHANNEL_STATS_MISSING_METRICS],
       },
+      activityFeed,
     };
 
     return channelStatsResponseSchema.parse(response);
+  }
+
+  async getChannelActivityFeed(
+    chatId: string,
+    user: AuthUser,
+    query: unknown,
+  ): Promise<MembershipActivityPage> {
+    await this.assertChatAdmin(chatId, user.userId, 'channel');
+    await this.ensureEntityType(chatId, user.userId, 'channel');
+
+    const parsed = membershipActivityQuerySchema.safeParse(query);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const now = new Date();
+    const from = this.resolveChannelStatsFrom(parsed.data.range, now);
+    return this.getMembershipActivityFeedPage(chatId, from, now, parsed.data);
   }
 
   async getSettings(chatId: string, user: AuthUser): Promise<ChatSettings> {
@@ -4957,6 +4987,11 @@ export class AdminService {
     const membershipSource = membershipRows[0] ?? { joined_users: 0, left_users: 0 };
     const joinedUsers = this.toSafeInteger(membershipSource.joined_users);
     const leftUsers = this.toSafeInteger(membershipSource.left_users);
+    const activityFeed = await this.getMembershipActivityFeedPage(chatId, from, now, {
+      range: parsed.data.range,
+      filter: 'all',
+      limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
+    });
     const response: LogsDashboardResponse = {
       chat: {
         id: chatId,
@@ -4994,9 +5029,28 @@ export class AdminService {
             ? (row.metadata as Record<string, unknown>)
             : null,
       })),
+      activityFeed,
     };
 
     return logsDashboardResponseSchema.parse(response);
+  }
+
+  async getChatActivityFeed(
+    chatId: string,
+    user: AuthUser,
+    query: unknown,
+  ): Promise<MembershipActivityPage> {
+    await this.assertChatAdmin(chatId, user.userId, 'chat');
+    await this.ensureEntityType(chatId, user.userId, 'chat');
+
+    const parsed = membershipActivityQuerySchema.safeParse(query);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const now = new Date();
+    const from = this.resolveLogsDashboardFrom(parsed.data.range, now);
+    return this.getMembershipActivityFeedPage(chatId, from, now, parsed.data);
   }
 
   async applyManualModerationAction(
@@ -5549,6 +5603,108 @@ export class AdminService {
     return range === '24h' ? 'hour' : 'day';
   }
 
+  private async getMembershipActivityFeedPage(
+    chatId: string,
+    from: Date,
+    to: Date,
+    query: MembershipActivityQuery,
+  ): Promise<MembershipActivityPage> {
+    const limit = Math.max(1, Math.min(100, query.limit));
+    const cursor = this.decodeMembershipActivityCursor(query.cursor);
+    const eventTypes =
+      query.filter === 'joined'
+        ? ['user_added']
+        : query.filter === 'left'
+          ? ['user_removed']
+          : ['user_added', 'user_removed'];
+    const cursorClause = cursor
+      ? Prisma.sql`
+          AND (
+            created_at < ${new Date(cursor.createdAt)}
+            OR (created_at = ${new Date(cursor.createdAt)} AND id < ${cursor.id})
+          )
+        `
+      : Prisma.empty;
+
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        id: string;
+        created_at: Date | string;
+        event_type: string | null;
+        user_id: string | null;
+        sender_name: string | null;
+      }>
+    >`
+      SELECT
+        id,
+        created_at,
+        normalized_payload->>'type' AS event_type,
+        NULLIF(BTRIM(normalized_payload->'message'->>'senderId'), '') AS user_id,
+        NULLIF(BTRIM(normalized_payload->'message'->>'senderName'), '') AS sender_name
+      FROM webhook_events
+      WHERE normalized_payload->'message'->>'chatId' = ${chatId}
+        AND normalized_payload->>'type' IN (${Prisma.join(eventTypes)})
+        AND created_at >= ${from}
+        AND created_at <= ${to}
+        ${cursorClause}
+      ORDER BY created_at DESC, id DESC
+      LIMIT ${limit + 1}
+    `;
+
+    const pageRows = rows.slice(0, limit);
+    const missingUserIds = pageRows
+      .filter((row) => !row.sender_name)
+      .map((row) => (typeof row.user_id === 'string' ? row.user_id.trim() : ''))
+      .filter(Boolean);
+    const fallbackNames = await this.resolveUserDisplayNames(chatId, missingUserIds);
+    const items = pageRows
+      .map((row) => {
+        const createdAt = this.toIsoString(row.created_at);
+        if (!createdAt) {
+          return null;
+        }
+
+        const normalizedUserId =
+          typeof row.user_id === 'string' && row.user_id.trim() ? row.user_id.trim() : `unknown:${row.id}`;
+        const eventType = row.event_type === 'user_removed' ? 'left' : 'joined';
+        const directName = typeof row.sender_name === 'string' ? row.sender_name.trim() : '';
+        const userDisplayName = directName || fallbackNames.get(normalizedUserId) || 'Участник';
+
+        return {
+          id: row.id,
+          type: eventType,
+          userId: normalizedUserId,
+          userDisplayName,
+          createdAt,
+        };
+      })
+      .filter(
+        (
+          item,
+        ): item is {
+          id: string;
+          type: 'joined' | 'left';
+          userId: string;
+          userDisplayName: string;
+          createdAt: string;
+        } => item !== null,
+      );
+    const hasMore = rows.length > limit;
+    const lastItem = items[items.length - 1] ?? null;
+
+    return membershipActivityPageSchema.parse({
+      items,
+      hasMore,
+      nextCursor:
+        hasMore && lastItem
+          ? this.encodeMembershipActivityCursor({
+              createdAt: lastItem.createdAt,
+              id: lastItem.id,
+            })
+          : null,
+    });
+  }
+
   private buildChannelStatsBucketStarts(from: Date, to: Date, bucket: ChannelStatsBucket): Date[] {
     const starts: Date[] = [];
     let cursor = this.floorChannelStatsBucket(from, bucket);
@@ -5774,6 +5930,34 @@ export class AdminService {
 
     const parsed = new Date(normalized);
     return Number.isFinite(parsed.getTime()) ? parsed.toISOString() : null;
+  }
+
+  private encodeMembershipActivityCursor(cursor: { createdAt: string; id: string }): string {
+    return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+  }
+
+  private decodeMembershipActivityCursor(
+    value: string | undefined,
+  ): { createdAt: string; id: string } | null {
+    if (!value) {
+      return null;
+    }
+
+    try {
+      const decoded = Buffer.from(value, 'base64url').toString('utf8');
+      const parsed = JSON.parse(decoded) as { createdAt?: unknown; id?: unknown };
+      const createdAt =
+        typeof parsed.createdAt === 'string' ? this.toIsoString(parsed.createdAt) : null;
+      const id = typeof parsed.id === 'string' ? parsed.id.trim() : '';
+
+      if (!createdAt || !id) {
+        throw new Error('Invalid membership activity cursor');
+      }
+
+      return { createdAt, id };
+    } catch {
+      throw new BadRequestException('Неверный cursor для activity feed.');
+    }
   }
 
   private async resolveUserDisplayNames(

@@ -3,19 +3,28 @@ import type {
   LogsDashboardResponse,
   ManualModerationAction,
   ManualModerationActionRequest,
+  MembershipActivityPage,
 } from '@maxim/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
+import { DashboardHero } from '../components/dashboard/dashboard-hero';
+import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
+import { StatsMetricCard } from '../components/dashboard/stats-metric-card';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
-import { applyManualModerationAction, getLogsDashboard } from '../lib/api/events-client';
+import {
+  applyManualModerationAction,
+  getChatActivityFeed,
+  getLogsDashboard,
+} from '../lib/api/events-client';
 import { getChats } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
+import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 
 type ViolationAction = LogsDashboardResponse['violations'][number]['action'];
 type ViolationItem = LogsDashboardResponse['violations'][number];
@@ -46,6 +55,12 @@ const periodOptions: Array<{ value: LogsDashboardRange; label: string }> = [
   { value: '7d', label: '7д' },
   { value: '30d', label: '30д' },
 ];
+
+const EMPTY_ACTIVITY_PAGE: MembershipActivityPage = {
+  items: [],
+  hasMore: false,
+  nextCursor: null,
+};
 
 function getRouteChatTitle(state: unknown): string {
   if (
@@ -464,6 +479,15 @@ function formatViolationDate(value: string): string {
   });
 }
 
+function resolveChatStatsLastUpdated(dashboard: LogsDashboardResponse | null): string | null {
+  if (!dashboard) {
+    return null;
+  }
+
+  const latestAt = dashboard.activityFeed.items[0]?.createdAt ?? dashboard.violations[0]?.createdAt;
+  return latestAt ? `Последнее событие · ${formatViolationDate(latestAt)}` : null;
+}
+
 export function EventsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
@@ -530,6 +554,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   }, [chatId, chatTitle]);
 
   const dashboard = dashboardQuery.data ?? null;
+  const activityFeed = useMembershipActivityFeed({
+    range,
+    initialPage: dashboard?.activityFeed ?? EMPTY_ACTIVITY_PAGE,
+    loadPage: (query) => getChatActivityFeed(api, chatId ?? '', query),
+  });
   const filterOptions = useMemo<Array<{ value: EventsFilter; label: string; count: number }>>(() => {
     if (!dashboard) {
       return [{ value: 'ALL', label: 'Все', count: 0 }];
@@ -573,6 +602,19 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       ? `Показаны последние ${dashboard.violations.length} из ${dashboard.violationsSummary.total} действий`
       : `${dashboard.violations.length} действий за период`
     : '';
+  const heroChips = dashboard
+    ? [
+        { label: `${dashboard.membership.joinedUsers} вошло`, className: 'chip chip--success' },
+        { label: `${dashboard.membership.leftUsers} вышло`, className: 'chip chip--warning' },
+        {
+          label: `${dashboard.violationsSummary.total} модераций`,
+          className: 'chip chip--danger',
+        },
+      ]
+    : [];
+  const hardMeasures = dashboard
+    ? dashboard.violationsSummary.kick + dashboard.violationsSummary.ban
+    : 0;
 
   if (!chatId) {
     return (
@@ -591,125 +633,168 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     );
   }
 
+  if (dashboardQuery.isLoading && !dashboard) {
+    return (
+      <div className="page-stack page-enter">
+        <GlassCard className="settings-section">
+          <SkeletonCard lines={14} />
+        </GlassCard>
+      </div>
+    );
+  }
+
+  if (dashboardQuery.error && !dashboard) {
+    return (
+      <GlassCard>
+        <StatusState
+          tone="danger"
+          title="Не удалось загрузить статистику"
+          description={(dashboardQuery.error as Error).message}
+          action={
+            <button
+              type="button"
+              className="button button--danger"
+              onClick={() => void dashboardQuery.refetch()}
+            >
+              Повторить
+            </button>
+          }
+        />
+      </GlassCard>
+    );
+  }
+
+  if (!dashboard) {
+    return null;
+  }
+
   return (
-    <div className="page-stack page-enter">
-      <section className="logs-head">
-        <div className="logs-head__title">
-          <p className="logs-head__eyebrow">События чата</p>
-          <h1>{chatTitle}</h1>
-          {dashboard ? (
-            <p className="logs-head__summary">
-              {periodCaption} · {feedCaption}
-            </p>
-          ) : null}
-        </div>
-        <SegmentedControl
-          value={range}
-          options={periodOptions}
-          onChange={(next) => setRange(next as LogsDashboardRange)}
+    <div className="stats-dashboard page-enter">
+      <DashboardHero
+        accent="chat"
+        eyebrow="Статистика чата"
+        title={chatTitle}
+        summary={`${periodCaption} · ${feedCaption}`}
+        lastUpdated={resolveChatStatsLastUpdated(dashboard)}
+        badge={dashboardQuery.isFetching ? 'Обновляем' : null}
+        chips={heroChips}
+        backTo={buildManagedEntitiesRoute('chat')}
+        rangeControl={
+          <SegmentedControl
+            value={range}
+            options={periodOptions}
+            onChange={(next) => setRange(next as LogsDashboardRange)}
+          />
+        }
+      />
+
+      <section className="stats-dashboard__metrics" aria-label="Ключевые метрики чата">
+        <StatsMetricCard
+          label="Вошли"
+          value={String(dashboard.membership.joinedUsers)}
+          detail="Новых участников"
+          tone="success"
+        />
+        <StatsMetricCard
+          label="Вышли"
+          value={String(dashboard.membership.leftUsers)}
+          detail="Покинули чат"
+          tone="warning"
+        />
+        <StatsMetricCard
+          label="Баланс"
+          value={formatSignedCount(dashboard.membership.netUsers)}
+          detail={`+${dashboard.membership.joinedUsers} / -${dashboard.membership.leftUsers}`}
+          tone={
+            dashboard.membership.netUsers > 0
+              ? 'success'
+              : dashboard.membership.netUsers < 0
+                ? 'danger'
+                : 'neutral'
+          }
+        />
+        <StatsMetricCard
+          label="Модерации"
+          value={String(dashboard.violationsSummary.total)}
+          detail={feedCaption}
+          tone="accent"
+        />
+        <StatsMetricCard
+          label="Нарушители"
+          value={String(dashboard.violationsSummary.affectedUsers)}
+          detail="Уникальные участники"
+          tone="neutral"
+        />
+        <StatsMetricCard
+          label="Жёсткие меры"
+          value={String(hardMeasures)}
+          detail={`Кики ${dashboard.violationsSummary.kick} · Баны ${dashboard.violationsSummary.ban}`}
+          tone={hardMeasures > 0 ? 'danger' : 'neutral'}
         />
       </section>
 
-      {dashboardQuery.isLoading ? (
-        <section className="events-list" aria-label="Загрузка событий">
-          {Array.from({ length: 4 }).map((_, index) => (
-            <GlassCard key={index} className="logs-violation-item" padding="sm">
-              <SkeletonCard lines={3} />
-            </GlassCard>
-          ))}
-        </section>
-      ) : null}
+      <MembershipActivityFeed
+        title="Активность участников"
+        subtitle="Кто присоединялся и выходил за выбранный период."
+        joinedLabel="чату"
+        leftLabel="чат"
+        filter={activityFeed.filter}
+        onFilterChange={activityFeed.setFilter}
+        items={activityFeed.items}
+        hasMore={activityFeed.hasMore}
+        isReloading={activityFeed.isReloading}
+        isLoadingMore={activityFeed.isLoadingMore}
+        error={activityFeed.error}
+        onLoadMore={() => void activityFeed.loadMore()}
+        onRetry={() => void activityFeed.retry()}
+      />
+
+      <GlassCard className="stats-panel stats-panel--tight" elevated>
+        <div className="stats-panel__head">
+          <div>
+            <h2>Модерация</h2>
+            <p>Фильтруйте действия и управляйте нарушителями прямо из ленты.</p>
+          </div>
+        </div>
+
+        <SegmentedControl
+          value={eventsFilter}
+          options={filterOptions}
+          onChange={(next) => setEventsFilter(next as EventsFilter)}
+          className="stats-panel__filters"
+        />
+      </GlassCard>
 
       {dashboardQuery.error ? (
         <GlassCard>
           <StatusState
-            tone="danger"
-            title="Не удалось загрузить события"
+            tone="warning"
+            title="Данные могли устареть"
             description={(dashboardQuery.error as Error).message}
             action={
               <button
                 type="button"
-                className="button button--danger"
+                className="button button--ghost"
                 onClick={() => void dashboardQuery.refetch()}
               >
-                Повторить
+                Обновить
               </button>
             }
           />
         </GlassCard>
       ) : null}
 
-      {!dashboardQuery.isLoading && !dashboardQuery.error && dashboard ? (
-        <section className="events-overview" aria-label="Сводка по чату">
-          <GlassCard className="events-overview__card" padding="sm">
-            <small>События</small>
-            <strong>{dashboard.violationsSummary.total}</strong>
-            <span>{feedCaption}</span>
-          </GlassCard>
-          <GlassCard className="events-overview__card" padding="sm">
-            <small>Нарушители</small>
-            <strong>{dashboard.violationsSummary.affectedUsers}</strong>
-            <span>Уникальные участники</span>
-          </GlassCard>
-          <GlassCard className="events-overview__card" padding="sm">
-            <small>Баланс чата</small>
-            <strong
-              className={`events-overview__value ${
-                dashboard.membership.netUsers > 0
-                  ? 'is-positive'
-                  : dashboard.membership.netUsers < 0
-                    ? 'is-negative'
-                    : 'is-neutral'
-              }`}
-            >
-              {formatSignedCount(dashboard.membership.netUsers)}
-            </strong>
-            <span>
-              +{dashboard.membership.joinedUsers} / -{dashboard.membership.leftUsers}
-            </span>
-          </GlassCard>
-          <GlassCard className="events-overview__card" padding="sm">
-            <small>Жёсткие меры</small>
-            <strong>{dashboard.violationsSummary.kick + dashboard.violationsSummary.ban}</strong>
-            <span>
-              Кики {dashboard.violationsSummary.kick} · Баны {dashboard.violationsSummary.ban}
-            </span>
-          </GlassCard>
-        </section>
-      ) : null}
-
-      {!dashboardQuery.isLoading && !dashboardQuery.error && dashboard ? (
-        <GlassCard className="logs-filter-card" padding="sm">
-          <div className="logs-section-title logs-section-title--compact">
-            <h2>Лента действий</h2>
-          </div>
-          <SegmentedControl
-            value={eventsFilter}
-            options={filterOptions}
-            onChange={(next) => setEventsFilter(next as EventsFilter)}
-            className="logs-filter-card__controls"
-          />
-        </GlassCard>
-      ) : null}
-
-      {!dashboardQuery.isLoading &&
-      !dashboardQuery.error &&
-      dashboard &&
-      dashboard.violations.length === 0 ? (
+      {dashboard.violations.length === 0 ? (
         <GlassCard>
           <StatusState
             tone="neutral"
-            title="Событий не найдено"
+            title="Нарушений не найдено"
             description="За выбранный период действий модерации и ручных разбанов не было."
           />
         </GlassCard>
       ) : null}
 
-      {!dashboardQuery.isLoading &&
-      !dashboardQuery.error &&
-      dashboard &&
-      dashboard.violations.length > 0 &&
-      filteredViolations.length === 0 ? (
+      {dashboard.violations.length > 0 && filteredViolations.length === 0 ? (
         <GlassCard>
           <StatusState
             tone="neutral"
@@ -719,16 +804,14 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         </GlassCard>
       ) : null}
 
-      {!dashboardQuery.isLoading &&
-      !dashboardQuery.error &&
-      dashboard &&
-      filteredViolations.length > 0 ? (
+      {filteredViolations.length > 0 ? (
         <section className="events-list" aria-label="Список нарушений">
           {filteredViolations.map((violation, index) => (
             <GlassCard
               key={violation.id}
-              className="logs-violation-item stagger-in"
+              className="logs-violation-item logs-violation-item--premium stagger-in"
               padding="sm"
+              elevated
               style={{ animationDelay: `${Math.min(index, 8) * 35}ms` }}
             >
               <div className="logs-violation-item__head">

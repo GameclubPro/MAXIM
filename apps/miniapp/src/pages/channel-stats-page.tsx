@@ -1,16 +1,25 @@
-import type { ChannelStatsBucket, ChannelStatsRange, ChannelStatsResponse } from '@maxim/contracts';
+import type {
+  ChannelStatsBucket,
+  ChannelStatsRange,
+  ChannelStatsResponse,
+  MembershipActivityPage,
+} from '@maxim/contracts';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
+import { DashboardHero } from '../components/dashboard/dashboard-hero';
+import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
+import { StatsMetricCard } from '../components/dashboard/stats-metric-card';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
-import { getChannelStats } from '../lib/api/channel-stats-client';
+import { getChannelActivityFeed, getChannelStats } from '../lib/api/channel-stats-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
+import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 
 type ChannelStatsRouteState = {
   chatTitle: string;
@@ -38,6 +47,12 @@ const periodOptions: Array<{ value: ChannelStatsRange; label: string }> = [
   { value: '7d', label: '7д' },
   { value: '30d', label: '30д' },
 ];
+
+const EMPTY_ACTIVITY_PAGE: MembershipActivityPage = {
+  items: [],
+  hasMore: false,
+  nextCursor: null,
+};
 
 const audienceTabOptions: Array<{ value: ChartTab; label: string }> = [
   { value: 'audience', label: 'Аудитория' },
@@ -107,6 +122,22 @@ function formatShortDate(value: string | null, bucket: ChannelStatsBucket): stri
   }).format(parsed);
 }
 
+function formatPeriodCaption(from: string, to: string): string {
+  const fromDate = new Date(from);
+  const toDate = new Date(to);
+  if (Number.isNaN(fromDate.getTime()) || Number.isNaN(toDate.getTime())) {
+    return `${from} - ${to}`;
+  }
+
+  return `${fromDate.toLocaleDateString('ru-RU', {
+    day: '2-digit',
+    month: 'short',
+  })} - ${toDate.toLocaleDateString('ru-RU', {
+    day: '2-digit',
+    month: 'short',
+  })}`;
+}
+
 function formatLink(value: string | null): string {
   if (!value) {
     return 'Канал приватный';
@@ -118,6 +149,11 @@ function formatLink(value: string | null): string {
   } catch {
     return value;
   }
+}
+
+function resolveChannelStatsLastUpdated(stats: ChannelStatsResponse): string | null {
+  const latestAt = stats.activityFeed.items[0]?.createdAt ?? stats.channel.lastEventAt;
+  return latestAt ? `Последнее движение аудитории · ${formatDateTime(latestAt)}` : null;
 }
 
 function resolveStatusChips(
@@ -465,6 +501,12 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     }
   }, [chartTab, statsQuery.data?.meta.viewsAvailable]);
 
+  const activityFeed = useMembershipActivityFeed({
+    range,
+    initialPage: statsQuery.data?.activityFeed ?? EMPTY_ACTIVITY_PAGE,
+    loadPage: (query) => getChannelActivityFeed(api, chatId, query),
+  });
+
   if (!chatId) {
     return (
       <div className="page-stack page-enter">
@@ -526,107 +568,83 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   const chartTabs = stats.meta.viewsAvailable ? audienceTabOptions : audienceTabOptions.slice(0, 1);
   const effectiveChartTab: ChartTab = stats.meta.viewsAvailable ? chartTab : 'audience';
   const showSecondaryActivity = hasSecondaryActivity(stats.secondary);
+  const periodCaption = formatPeriodCaption(stats.period.from, stats.period.to);
 
   return (
-    <div className="channel-stats-screen page-enter">
-      <GlassCard className="channel-stats-hero" elevated>
-        <div className="channel-stats-hero__top">
-          <Link
-            to={buildManagedEntitiesRoute('channel')}
-            className="button button--ghost channel-stats-hero__back"
-          >
-            Назад
-          </Link>
-          {statsQuery.isFetching ? (
-            <span className="channel-stats-hero__badge">Обновляем</span>
-          ) : null}
-        </div>
+    <div className="stats-dashboard channel-stats-screen page-enter">
+      <DashboardHero
+        accent="channel"
+        eyebrow="Статистика канала"
+        title={resolvedTitle}
+        summary={`${periodCaption} · ${formatCount(stats.channel.participantsCount)} участников`}
+        lastUpdated={resolveChannelStatsLastUpdated(stats)}
+        badge={statsQuery.isFetching ? 'Обновляем' : null}
+        chips={statusChips}
+        backTo={buildManagedEntitiesRoute('channel')}
+        rangeControl={
+          <SegmentedControl
+            value={range}
+            options={periodOptions}
+            onChange={setRange}
+          />
+        }
+      />
 
-        <div className="channel-stats-hero__main">
-          <h1>{resolvedTitle}</h1>
-        </div>
-
-        <SegmentedControl
-          value={range}
-          options={periodOptions}
-          onChange={setRange}
-          className="channel-stats-hero__range"
-        />
-
-        {statusChips.length > 0 ? (
-          <div className="channel-stats-hero__chips">
-            {statusChips.map((chip) => (
-              <span key={chip.label} className={chip.className}>
-                {chip.label}
-              </span>
-            ))}
-          </div>
-        ) : null}
-      </GlassCard>
-
-      <section className="channel-stats-metrics" aria-label="Официальная статистика канала">
-        <MetricCard
+      <section className="stats-dashboard__metrics" aria-label="Ключевые метрики канала">
+        <StatsMetricCard
           label="Участники"
           value={formatCount(stats.channel.participantsCount)}
-          highlighted={typeof stats.channel.participantsCount === 'number'}
+          detail="Актуальный снимок MAX"
+          tone={typeof stats.channel.participantsCount === 'number' ? 'accent' : 'neutral'}
         />
-
-        <MetricCard
+        <StatsMetricCard
           label="Пришло"
           value={formatCount(stats.official.audience.joined)}
-          highlighted={stats.official.audience.joined > 0}
+          detail="Подписались за период"
+          tone="success"
         />
-
-        <MetricCard
+        <StatsMetricCard
           label="Ушло"
           value={formatCount(stats.official.audience.left)}
-          highlighted={(stats.official.audience.left ?? 0) > 0}
+          detail="Отписались за период"
+          tone="warning"
         />
-
-        <MetricCard
+        <StatsMetricCard
           label="Чистый рост"
           value={formatCount(stats.official.audience.net)}
-          highlighted={(stats.official.audience.net ?? 0) > 0}
+          detail="Разница между входами и выходами"
+          tone={(stats.official.audience.net ?? 0) > 0 ? 'success' : 'neutral'}
         />
-
-        <MetricCard
+        <StatsMetricCard
           label="Просмотры"
           value={stats.meta.viewsAvailable ? formatCount(stats.official.content.views) : '—'}
-          highlighted={stats.official.content.views > 0}
+          detail="Сумма просмотров постов"
+          tone={stats.official.content.views > 0 ? 'accent' : 'neutral'}
         />
-
-        <MetricCard
+        <StatsMetricCard
           label="Реакции"
           value={formatCount(stats.official.content.reactions)}
-          highlighted={stats.official.content.reactions > 0}
+          detail="Все реакции на посты"
+          tone={stats.official.content.reactions > 0 ? 'accent' : 'neutral'}
         />
-
-        <MetricCard
+        <StatsMetricCard
           label="Посты"
           value={formatCount(stats.official.content.posts)}
-          highlighted={stats.official.content.posts > 0}
+          detail="Опубликовано за период"
+          tone={stats.official.content.posts > 0 ? 'accent' : 'neutral'}
         />
       </section>
 
-      {stats.official.content.topReactions.length > 0 ? (
-        <GlassCard className="channel-stats-top-reactions" elevated>
-          <div className="channel-stats-panel__head">
-            <strong>Топ реакций</strong>
-          </div>
-
-          <div className="channel-stats-top-reactions__list">
-            {stats.official.content.topReactions.map((reaction) => (
-              <span key={reaction.emoji} className="chip">
-                {reaction.emoji} {formatCount(reaction.count)}
-              </span>
-            ))}
-          </div>
-        </GlassCard>
-      ) : null}
-
-      <GlassCard className="channel-stats-panel channel-stats-panel--chart" elevated>
+      <GlassCard className="stats-panel channel-stats-panel channel-stats-panel--chart" elevated>
         <div className="channel-stats-panel__head">
-          <strong>Динамика</strong>
+          <div>
+            <strong>Динамика</strong>
+            <small>
+              {effectiveChartTab === 'audience'
+                ? 'Аудитория и churn по периодам.'
+                : 'Суммарные просмотры опубликованных постов.'}
+            </small>
+          </div>
 
           <SegmentedControl
             value={effectiveChartTab}
@@ -643,9 +661,45 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
         )}
       </GlassCard>
 
-      <GlassCard className="channel-stats-secondary" elevated>
+      <MembershipActivityFeed
+        title="Движение аудитории"
+        subtitle="Последние входы и выходы подписчиков канала."
+        joinedLabel="каналу"
+        leftLabel="канал"
+        filter={activityFeed.filter}
+        onFilterChange={activityFeed.setFilter}
+        items={activityFeed.items}
+        hasMore={activityFeed.hasMore}
+        isReloading={activityFeed.isReloading}
+        isLoadingMore={activityFeed.isLoadingMore}
+        error={activityFeed.error}
+        onLoadMore={() => void activityFeed.loadMore()}
+        onRetry={() => void activityFeed.retry()}
+      />
+
+      {stats.official.content.topReactions.length > 0 ? (
+        <GlassCard className="channel-stats-top-reactions stats-panel" elevated>
+          <div className="channel-stats-panel__head">
+            <strong>Топ реакций</strong>
+            <small>Самые частые реакции на посты за период.</small>
+          </div>
+
+          <div className="channel-stats-top-reactions__list">
+            {stats.official.content.topReactions.map((reaction) => (
+              <span key={reaction.emoji} className="chip">
+                {reaction.emoji} {formatCount(reaction.count)}
+              </span>
+            ))}
+          </div>
+        </GlassCard>
+      ) : null}
+
+      <GlassCard className="channel-stats-secondary stats-panel" elevated>
         <div className="channel-stats-panel__head">
-          <strong>Через приложение</strong>
+          <div>
+            <strong>Через приложение</strong>
+            <small>Комментарии, предложки и автодоставка админам.</small>
+          </div>
         </div>
 
         <div className="channel-stats-secondary__grid">
@@ -675,7 +729,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
         ) : null}
       </GlassCard>
 
-      <GlassCard className="channel-stats-meta" elevated>
+      <GlassCard className="channel-stats-meta stats-panel" elevated>
         {stats.channel.lastEventAt ? (
           <article className="channel-stats-meta__item">
             <small>Активность в канале</small>

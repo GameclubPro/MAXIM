@@ -1137,6 +1137,22 @@ describe('AdminService.getLogsDashboard', () => {
       .mockResolvedValueOnce([
         { user_id: 'user-1', sender_name: 'Алексей' },
         { user_id: 'user-2', sender_name: 'Мария' },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 'wh-3',
+          created_at: new Date('2026-03-02T10:00:00.000Z'),
+          event_type: 'user_added',
+          user_id: 'user-3',
+          sender_name: 'Ирина',
+        },
+        {
+          id: 'wh-2',
+          created_at: new Date('2026-03-02T09:30:00.000Z'),
+          event_type: 'user_removed',
+          user_id: 'user-2',
+          sender_name: 'Мария',
+        },
       ]);
     prisma.moderationEvent.count
       .mockResolvedValueOnce(3)
@@ -1216,11 +1232,33 @@ describe('AdminService.getLogsDashboard', () => {
     expect(result.violations[0]?.userDisplayName).toBe('Алексей');
     expect(result.violations[1]?.userDisplayName).toBe('Мария');
     expect(result.violations[2]?.ruleCode).toBe('MANUAL_UNBAN');
+    expect(result.activityFeed).toEqual({
+      items: [
+        {
+          id: 'wh-3',
+          type: 'joined',
+          userId: 'user-3',
+          userDisplayName: 'Ирина',
+          createdAt: '2026-03-02T10:00:00.000Z',
+        },
+        {
+          id: 'wh-2',
+          type: 'left',
+          userId: 'user-2',
+          userDisplayName: 'Мария',
+          createdAt: '2026-03-02T09:30:00.000Z',
+        },
+      ],
+      hasMore: false,
+      nextCursor: null,
+    });
 
     const membershipSqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
     expect(membershipSqlText).toContain('user_added');
     expect(membershipSqlText).toContain('user_removed');
     expect(membershipSqlText).not.toContain('bot_added');
+    const activitySqlText = extractSqlText(prisma.$queryRaw.mock.calls[2]?.[0]);
+    expect(activitySqlText).toContain('ORDER BY created_at DESC, id DESC');
 
     expect(prisma.moderationEvent.count).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ chatId: 'chat-1' }) }),
@@ -1234,7 +1272,10 @@ describe('AdminService.getLogsDashboard', () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-02T12:00:00.000Z'));
 
     const prisma = createPrismaMock();
-    prisma.$queryRaw.mockResolvedValue([{ joined_users: '0', left_users: '0' }]);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ joined_users: '0', left_users: '0' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]);
     prisma.moderationEvent.count
       .mockResolvedValueOnce(0)
       .mockResolvedValueOnce(0)
@@ -1278,6 +1319,106 @@ describe('AdminService.getLogsDashboard', () => {
     const createdAt = countArgs.where.createdAt;
     expect(createdAt.gte.toISOString()).toBe('2026-03-01T12:00:00.000Z');
     expect(createdAt.lte.toISOString()).toBe('2026-03-02T12:00:00.000Z');
+  });
+});
+
+describe('AdminService.getChatActivityFeed', () => {
+  it('respects filter, limit, cursor and falls back to resolved names', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-02T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        {
+          id: 'wh-left-2',
+          created_at: new Date('2026-03-02T11:00:00.000Z'),
+          event_type: 'user_removed',
+          user_id: 'user-5',
+          sender_name: null,
+        },
+        {
+          id: 'wh-left-1',
+          created_at: new Date('2026-03-02T10:00:00.000Z'),
+          event_type: 'user_removed',
+          user_id: 'user-4',
+          sender_name: 'Мария',
+        },
+      ])
+      .mockResolvedValueOnce([{ user_id: 'user-5', sender_name: 'Игорь' }])
+      .mockResolvedValueOnce([
+        {
+          id: 'wh-left-1',
+          created_at: new Date('2026-03-02T10:00:00.000Z'),
+          event_type: 'user_removed',
+          user_id: 'user-4',
+          sender_name: 'Мария',
+        },
+      ]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const firstPage = await service.getChatActivityFeed(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { range: '7d', filter: 'left', limit: 1 },
+    );
+
+    expect(firstPage.items).toEqual([
+      {
+        id: 'wh-left-2',
+        type: 'left',
+        userId: 'user-5',
+        userDisplayName: 'Игорь',
+        createdAt: '2026-03-02T11:00:00.000Z',
+      },
+    ]);
+    expect(firstPage.hasMore).toBe(true);
+    expect(firstPage.nextCursor).toEqual(expect.any(String));
+
+    const secondPage = await service.getChatActivityFeed(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { range: '7d', filter: 'left', limit: 1, cursor: firstPage.nextCursor ?? undefined },
+    );
+
+    expect(secondPage).toEqual({
+      items: [
+        {
+          id: 'wh-left-1',
+          type: 'left',
+          userId: 'user-4',
+          userDisplayName: 'Мария',
+          createdAt: '2026-03-02T10:00:00.000Z',
+        },
+      ],
+      hasMore: false,
+      nextCursor: null,
+    });
+
+    const activitySqlText = extractSqlText(prisma.$queryRaw.mock.calls[0]?.[0]);
+    expect(activitySqlText).toContain('ORDER BY created_at DESC, id DESC');
   });
 });
 
@@ -2061,6 +2202,22 @@ describe('AdminService.getChannelStats', () => {
         { created_at: new Date('2026-03-03T09:00:00.000Z'), event_type: 'user_added' },
         { created_at: new Date('2026-03-04T09:00:00.000Z'), event_type: 'user_added' },
         { created_at: new Date('2026-03-05T09:00:00.000Z'), event_type: 'user_removed' },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 'wh-ch-3',
+          created_at: new Date('2026-03-07T11:40:00.000Z'),
+          event_type: 'user_added',
+          user_id: 'user-10',
+          sender_name: 'Андрей',
+        },
+        {
+          id: 'wh-ch-2',
+          created_at: new Date('2026-03-07T10:15:00.000Z'),
+          event_type: 'user_removed',
+          user_id: 'user-11',
+          sender_name: 'Елена',
+        },
       ]);
     prisma.channelAudienceSnapshot.findFirst
       .mockResolvedValueOnce({
@@ -2199,6 +2356,26 @@ describe('AdminService.getChannelStats', () => {
       officialCoverageFrom: '2026-02-28T08:00:00.000Z',
       missingOfficialMetrics: ['reach', 'uniqueViews'],
     });
+    expect(result.activityFeed).toEqual({
+      items: [
+        {
+          id: 'wh-ch-3',
+          type: 'joined',
+          userId: 'user-10',
+          userDisplayName: 'Андрей',
+          createdAt: '2026-03-07T11:40:00.000Z',
+        },
+        {
+          id: 'wh-ch-2',
+          type: 'left',
+          userId: 'user-11',
+          userDisplayName: 'Елена',
+          createdAt: '2026-03-07T10:15:00.000Z',
+        },
+      ],
+      hasMore: false,
+      nextCursor: null,
+    });
     expect(result.official.series.participants).toHaveLength(8);
     expect(result.official.series.membership).toHaveLength(8);
     expect(result.official.series.views).toHaveLength(8);
@@ -2241,6 +2418,7 @@ describe('AdminService.getChannelStats', () => {
             last_bot_activity_at: null,
           },
         ])
+        .mockResolvedValueOnce([])
         .mockResolvedValueOnce([]);
       prisma.channelAudienceSnapshot.findFirst
         .mockResolvedValueOnce({
@@ -2327,7 +2505,17 @@ describe('AdminService.getChannelStats', () => {
       ])
       .mockResolvedValueOnce([
         { created_at: new Date('2026-03-07T09:30:00.000Z'), event_type: 'user_added' },
-      ]);
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 'wh-missing-1',
+          created_at: new Date('2026-03-07T09:30:00.000Z'),
+          event_type: 'user_added',
+          user_id: 'user-42',
+          sender_name: null,
+        },
+      ])
+      .mockResolvedValueOnce([{ user_id: 'user-42', sender_name: 'Павел' }]);
     prisma.channelAudienceSnapshot.findFirst
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null)
@@ -2404,6 +2592,13 @@ describe('AdminService.getChannelStats', () => {
     expect(result.secondary.lastBotActivityAt).toBe('2026-03-07T09:30:00.000Z');
     expect(result.meta.maxSnapshotAvailable).toBe(false);
     expect(result.meta.churnAvailable).toBe(false);
+    expect(result.activityFeed.items[0]).toEqual({
+      id: 'wh-missing-1',
+      type: 'joined',
+      userId: 'user-42',
+      userDisplayName: 'Павел',
+      createdAt: '2026-03-07T09:30:00.000Z',
+    });
   });
 });
 
