@@ -2271,13 +2271,19 @@
     padding: 12px;
   }
 
-  .channel-insights__summary-head,
+  .channel-insights__summary-head {
+    flex-wrap: wrap;
+  }
+
   .channel-insights__panel-head {
     flex-direction: column;
     align-items: stretch;
   }
 
-  .channel-insights__range,
+  .channel-insights__range {
+    width: auto;
+  }
+
   .channel-insights__switch {
     width: 100%;
   }
@@ -2297,15 +2303,26 @@
     grid-template-columns: 1fr;
   }
 
+  .channel-insights__ledger-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
   .channel-insights__ledger-metric {
-    padding: 0;
+    padding: 10px 11px;
+    border: 1px solid rgba(218, 228, 239, 0.92);
+    border-radius: 16px;
+    background: rgba(248, 251, 253, 0.98);
   }
 
   .channel-insights__ledger-metric + .channel-insights__ledger-metric {
-    padding-top: 10px;
-    margin-top: 10px;
     border-left: 0;
-    border-top: 1px solid rgba(218, 228, 239, 0.92);
+    border-top: 0;
+    margin-top: 0;
+  }
+
+  .channel-insights__ledger-metric:last-child {
+    grid-column: 1 / -1;
   }
 
   .channel-insights__ledger-meta {
