@@ -139,18 +139,20 @@ function resolveDisplayAction(violation: ViolationItem): DisplayAction {
   return violation.action === 'NONE' ? 'DELETE_MESSAGE' : violation.action;
 }
 
-function resolveViolationText(violation: LogsDashboardResponse['violations'][number]): string {
+function resolveViolationBlurb(violation: LogsDashboardResponse['violations'][number]): string {
   if (violation.ruleCode === 'MANUAL_UNBAN') {
-    return 'Участник разблокирован модератором.';
+    return 'Модератор снял блокировку вручную';
   }
 
   if (violation.ruleCode === 'MANUAL_KICK') {
-    return 'Участник удалён модератором.';
+    return 'Модератор удалил участника вручную';
   }
 
   if (violation.ruleCode === 'MANUAL_BAN') {
     const metadata =
-      violation.metadata && typeof violation.metadata === 'object' && !Array.isArray(violation.metadata)
+      violation.metadata &&
+      typeof violation.metadata === 'object' &&
+      !Array.isArray(violation.metadata)
         ? violation.metadata
         : null;
     const banDurationHours =
@@ -158,30 +160,10 @@ function resolveViolationText(violation: LogsDashboardResponse['violations'][num
         ? metadata.banDurationHours
         : null;
 
-    return banDurationHours
-      ? `Бан вручную на ${banDurationHours}ч.`
-      : 'Участник забанен модератором.';
+    return banDurationHours ? `Ручной бан на ${banDurationHours}ч` : 'Модератор выдал ручной бан';
   }
 
-  const rule = formatViolationRule(violation.ruleCode);
-
-  if (violation.action === 'DELETE_MESSAGE') {
-    return `Сообщение удалено · ${rule}`;
-  }
-
-  if (violation.action === 'WARN') {
-    return `Предупреждение · ${rule}`;
-  }
-
-  if (violation.action === 'KICK') {
-    return `Кик · ${rule}`;
-  }
-
-  if (violation.action === 'BAN') {
-    return `Бан · ${rule}`;
-  }
-
-  return rule;
+  return formatViolationRule(violation.ruleCode);
 }
 
 function formatSignedCount(value: number): string {
@@ -673,7 +655,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             tone: 'neutral',
           },
           {
-            label: 'Кики + баны',
+            label: 'Кик + бан',
             value: String(hardMeasures),
             tone: hardMeasures > 0 ? 'danger' : 'neutral',
           },
@@ -700,35 +682,59 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         }
       />
 
-      <section className="events-screen__controls">
-        <SegmentedControl
-          value={section}
-          options={sectionOptions}
-          onChange={(next) => setSection(next as EventsSection)}
-          className="events-screen__section-nav"
-        />
+      <section className="events-screen__topbar" aria-label="Навигация по событиям">
+        <div className="events-screen__controls">
+          <SegmentedControl
+            value={section}
+            options={sectionOptions}
+            onChange={(next) => setSection(next as EventsSection)}
+            className="events-screen__section-nav"
+          />
 
-        <SegmentedControl
-          value={range}
-          options={periodOptions}
-          onChange={(next) => setRange(next as LogsDashboardRange)}
-          className="events-screen__range-nav"
-        />
-      </section>
+          <SegmentedControl
+            value={range}
+            options={periodOptions}
+            onChange={(next) => setRange(next as LogsDashboardRange)}
+            className="events-screen__range-nav"
+          />
+        </div>
 
-      <section
-        className="events-screen__summary"
-        aria-label={section === 'activity' ? 'Сводка по входам и выходам' : 'Сводка по модерации'}
-      >
-        {summaryItems.map((item) => (
-          <article
-            key={item.label}
-            className={`events-summary-card events-summary-card--${item.tone}`}
-          >
-            <small>{item.label}</small>
-            <strong>{item.value}</strong>
-          </article>
-        ))}
+        <section
+          className="events-screen__summary"
+          aria-label={section === 'activity' ? 'Сводка по входам и выходам' : 'Сводка по модерации'}
+        >
+          {summaryItems.map((item) => (
+            <article
+              key={item.label}
+              className={`events-summary-card events-summary-card--${item.tone}`}
+            >
+              <strong>{item.value}</strong>
+              <small>{item.label}</small>
+            </article>
+          ))}
+        </section>
+
+        {section === 'moderation' ? (
+          <div className="events-screen__filters" role="tablist" aria-label="Фильтр модерации">
+            {filterOptions.map((option) => {
+              const active = option.value === eventsFilter;
+
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={`events-filter-chip ${active ? 'is-active' : ''}`}
+                  onClick={() => setEventsFilter(option.value)}
+                  role="tab"
+                  aria-selected={active}
+                >
+                  <span>{option.label}</span>
+                  <small>{option.count}</small>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
       </section>
 
       {section === 'activity' ? (
@@ -749,15 +755,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
       {section === 'moderation' ? (
         <>
-          <section className="events-toolbar" aria-label="Фильтр модерации">
-            <SegmentedControl
-              value={eventsFilter}
-              options={filterOptions}
-              onChange={(next) => setEventsFilter(next as EventsFilter)}
-              className="events-toolbar__filters"
-            />
-          </section>
-
           {dashboardQuery.error ? (
             <GlassCard className="events-inline-state">
               <StatusState
@@ -827,38 +824,36 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
                       <div className="event-feed-item__body">
                         <div className="event-feed-item__headline">
-                          <strong>{resolveOffenderName(violation)}</strong>
-                          <time dateTime={violation.createdAt}>
-                            {formatViolationDate(violation.createdAt)}
-                          </time>
-                        </div>
+                          <div className="event-feed-item__identity">
+                            <strong>{resolveOffenderName(violation)}</strong>
+                            <div className="event-feed-item__stamp">
+                              <span
+                                className={`event-feed-item__action event-feed-item__action--${actionToneMap[displayAction]}`}
+                              >
+                                {actionLabelMap[displayAction]}
+                              </span>
+                              <time dateTime={violation.createdAt}>
+                                {formatViolationDate(violation.createdAt)}
+                              </time>
+                            </div>
+                          </div>
 
-                        <div className="event-feed-item__meta">
-                          <span
-                            className={`event-feed-item__action event-feed-item__action--${actionToneMap[displayAction]}`}
-                          >
-                            {actionLabelMap[displayAction]}
-                          </span>
-                          <span className="event-feed-item__rule">
-                            {formatViolationRule(violation.ruleCode)}
+                          <span className="event-feed-item__toggle" aria-hidden="true">
+                            {isExpanded ? '−' : '+'}
                           </span>
                         </div>
 
                         <p className="event-feed-item__summary">
-                          {resolveViolationText(violation)}
+                          {resolveViolationBlurb(violation)}
                         </p>
                       </div>
-
-                      <span className="event-feed-item__toggle" aria-hidden="true">
-                        {isExpanded ? '−' : '+'}
-                      </span>
                     </button>
 
                     {isExpanded ? (
                       <div className="event-feed-item__details">
                         {violation.maskedExcerpt ? (
-                          <div className="logs-violation-item__excerpt-inline">
-                            <span>Фрагмент</span>
+                          <div className="event-feed-item__excerpt">
+                            <span>Фрагмент сообщения</span>
                             <p>{violation.maskedExcerpt}</p>
                           </div>
                         ) : null}

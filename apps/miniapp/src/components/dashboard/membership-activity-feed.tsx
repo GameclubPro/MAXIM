@@ -1,6 +1,5 @@
 import type { MembershipActivityFilter, MembershipActivityItem } from '@maxim/contracts';
 import { useMemo } from 'react';
-import { GlassCard } from '../ui/glass-card';
 import { SegmentedControl } from '../ui/segmented-control';
 
 type MembershipActivityFeedProps = {
@@ -128,7 +127,7 @@ export function MembershipActivityFeed({
   }, [items]);
 
   return (
-    <GlassCard className="membership-feed" padding="sm">
+    <section className="membership-feed" aria-label="История входов и выходов">
       {title || subtitle ? (
         <div className="membership-feed__head">
           <div className="membership-feed__title">
@@ -234,6 +233,6 @@ export function MembershipActivityFeed({
           {isLoadingMore ? 'Загружаем...' : 'Показать ещё'}
         </button>
       ) : null}
-    </GlassCard>
+    </section>
   );
 }
