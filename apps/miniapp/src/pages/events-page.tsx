@@ -697,16 +697,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         </header>
 
         <div className="events-stage__panel stagger-in">
-          <div className="events-stage__kicker-row">
-            <span className="events-stage__kicker">
-              {section === 'moderation' ? 'Модерация чата' : 'Активность участников'}
-            </span>
-          </div>
-
-          <div className="events-stage__title-block">
-            <h1>{chatTitle}</h1>
-          </div>
-
           <div className="events-stage__section-nav">
             <SegmentedControl
               value={section}
