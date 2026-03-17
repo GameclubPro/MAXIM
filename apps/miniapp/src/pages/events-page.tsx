@@ -757,6 +757,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             tone: hardMeasures > 0 ? 'danger' : 'neutral',
           },
         ];
+  const dashboardTitle = section === 'activity' ? 'Входы и выходы' : 'Модерация';
   return (
     <div className="events-screen page-enter">
       <section className={`events-stage events-stage--${section}`}>
@@ -775,8 +776,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             </Link>
 
             <div className="events-stage__appbar-copy">
-              <span className="events-stage__appbar-label">События</span>
-              <strong>{chatTitle}</strong>
+              <strong>События</strong>
+              <span className="events-stage__appbar-label">{chatTitle}</span>
             </div>
 
             <div className="events-stage__appbar-side">
@@ -832,10 +833,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           >
             <div className="events-dashboard__head">
               <div className="events-dashboard__head-copy">
-                <span className="events-dashboard__eyebrow">
-                  {section === 'activity' ? 'Активность участников' : 'Сводка модерации'}
-                </span>
-                <strong>{rangeDescription}</strong>
+                <strong>{dashboardTitle}</strong>
+                <span className="events-dashboard__eyebrow">{rangeDescription}</span>
               </div>
 
               <SegmentedControl
