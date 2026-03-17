@@ -293,6 +293,9 @@ const SETTINGS_SECTION_KEYS = {
   ],
   limits: [
     'antiSpamEnabled',
+    'messageCountLimitEnabled',
+    'messageCountLimitMessages',
+    'messageCountLimitWindowHours',
     'maxMessageLengthEnabled',
     'maxMessageLength',
     'photoMessageCooldownEnabled',
@@ -1237,17 +1240,11 @@ export class AdminService {
     throw new Error('Sticker lab file delivery failed without error details');
   }
 
-  async listChats(
-    user: AuthUser,
-    options: { refresh?: boolean } = {},
-  ): Promise<ChatSummary[]> {
+  async listChats(user: AuthUser, options: { refresh?: boolean } = {}): Promise<ChatSummary[]> {
     return this.listManagedEntities(user, 'chat', options);
   }
 
-  async listChannels(
-    user: AuthUser,
-    options: { refresh?: boolean } = {},
-  ): Promise<ChatSummary[]> {
+  async listChannels(user: AuthUser, options: { refresh?: boolean } = {}): Promise<ChatSummary[]> {
     return this.listManagedEntities(user, 'channel', options);
   }
 
@@ -1283,10 +1280,7 @@ export class AdminService {
         remoteChats,
         LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
         async (remoteChat) => {
-          const access = await this.resolveUserAndBotAdminAccess(
-            remoteChat.chatId,
-            user.userId,
-          );
+          const access = await this.resolveUserAndBotAdminAccess(remoteChat.chatId, user.userId);
           if (access.status !== 'granted') {
             return null;
           }
@@ -1736,10 +1730,7 @@ export class AdminService {
     return fallback;
   }
 
-  async getChatSettingsScreen(
-    chatId: string,
-    user: AuthUser,
-  ): Promise<ChatSettingsScreenResponse> {
+  async getChatSettingsScreen(chatId: string, user: AuthUser): Promise<ChatSettingsScreenResponse> {
     const [settings, rules, header, domains, managedBroadcasts] = await Promise.all([
       this.getSettings(chatId, user),
       this.getRules(chatId, user),
@@ -3069,12 +3060,9 @@ export class AdminService {
     });
 
     for (const row of dueRows) {
-      await this.processManagedBroadcastOccurrence(
-        row.id,
-        reason,
-        staleLockBefore,
-        [PrismaManagedBroadcastStatus.ACTIVE],
-      );
+      await this.processManagedBroadcastOccurrence(row.id, reason, staleLockBefore, [
+        PrismaManagedBroadcastStatus.ACTIVE,
+      ]);
     }
   }
 
@@ -3333,7 +3321,12 @@ export class AdminService {
       },
     });
     await this.prisma.managedBroadcastDelivery.createMany({
-      data: this.buildManagedBroadcastDeliveryRows(created.id, request.targetChatIds, 1, cycleCount),
+      data: this.buildManagedBroadcastDeliveryRows(
+        created.id,
+        request.targetChatIds,
+        1,
+        cycleCount,
+      ),
     });
 
     let occurrence: BroadcastOccurrenceResult = {
@@ -3498,14 +3491,12 @@ export class AdminService {
         orderBy: [{ targetChatId: 'asc' }],
       });
 
-      if (initialDeliveries.some((delivery) => delivery.status === PrismaManagedBroadcastDeliveryStatus.FAILED)) {
-        return this.finalizeManagedBroadcastOccurrence(
-          row,
-          currentOccurrence,
-          [],
-          [],
-          null,
-        );
+      if (
+        initialDeliveries.some(
+          (delivery) => delivery.status === PrismaManagedBroadcastDeliveryStatus.FAILED,
+        )
+      ) {
+        return this.finalizeManagedBroadcastOccurrence(row, currentOccurrence, [], [], null);
       }
 
       const imagePayload = await this.uploadManagedBroadcastImage(
@@ -3784,7 +3775,11 @@ export class AdminService {
     cycleCount: number,
   ): Prisma.ManagedBroadcastDeliveryCreateManyInput[] {
     const rows: Prisma.ManagedBroadcastDeliveryCreateManyInput[] = [];
-    for (let occurrenceIndex = fromOccurrenceIndex; occurrenceIndex <= cycleCount; occurrenceIndex += 1) {
+    for (
+      let occurrenceIndex = fromOccurrenceIndex;
+      occurrenceIndex <= cycleCount;
+      occurrenceIndex += 1
+    ) {
       for (const targetChatId of targetChatIds) {
         rows.push({
           broadcastId,
@@ -3938,7 +3933,10 @@ export class AdminService {
     };
   }
 
-  private buildManagedBroadcastFailureMessage(failedChats: number, firstSendError: unknown): string {
+  private buildManagedBroadcastFailureMessage(
+    failedChats: number,
+    firstSendError: unknown,
+  ): string {
     return (
       this.extractMaxApiErrorMessage(firstSendError) ||
       (firstSendError instanceof Error && firstSendError.message.trim()
@@ -3975,7 +3973,10 @@ export class AdminService {
     }
 
     return new Map(
-      rows.map((row) => [row.id, this.createManagedBroadcastDeliverySnapshot(row, grouped.get(row.id) ?? [])]),
+      rows.map((row) => [
+        row.id,
+        this.createManagedBroadcastDeliverySnapshot(row, grouped.get(row.id) ?? []),
+      ]),
     );
   }
 
@@ -4020,9 +4021,7 @@ export class AdminService {
   ): ManagedBroadcastSummary {
     const targetChatIds = this.parseManagedBroadcastTargetChatIds(row.targetChatIds);
     const normalizedText = row.text.replace(/\s+/gu, ' ').trim();
-    const resolvedSnapshot =
-      snapshot ??
-      this.createManagedBroadcastDeliverySnapshot(row, []);
+    const resolvedSnapshot = snapshot ?? this.createManagedBroadcastDeliverySnapshot(row, []);
 
     return {
       id: row.id,
@@ -4059,9 +4058,7 @@ export class AdminService {
     snapshot?: ManagedBroadcastDeliverySnapshot,
   ): ManagedBroadcastDetails {
     const targetChatIds = this.parseManagedBroadcastTargetChatIds(row.targetChatIds);
-    const resolvedSnapshot =
-      snapshot ??
-      this.createManagedBroadcastDeliverySnapshot(row, []);
+    const resolvedSnapshot = snapshot ?? this.createManagedBroadcastDeliverySnapshot(row, []);
 
     return {
       id: row.id,
@@ -5665,7 +5662,9 @@ export class AdminService {
         }
 
         const normalizedUserId =
-          typeof row.user_id === 'string' && row.user_id.trim() ? row.user_id.trim() : `unknown:${row.id}`;
+          typeof row.user_id === 'string' && row.user_id.trim()
+            ? row.user_id.trim()
+            : `unknown:${row.id}`;
         const eventType = row.event_type === 'user_removed' ? 'left' : 'joined';
         const directName = typeof row.sender_name === 'string' ? row.sender_name.trim() : '';
         const userDisplayName = directName || fallbackNames.get(normalizedUserId) || 'Участник';
@@ -6743,7 +6742,10 @@ export class AdminService {
     return normalized === `Chat ${chatId}` || normalized === `Channel ${chatId}`;
   }
 
-  private async loadRemoteAdminAccess(chatId: string, userId: string): Promise<AdminAccessResolution> {
+  private async loadRemoteAdminAccess(
+    chatId: string,
+    userId: string,
+  ): Promise<AdminAccessResolution> {
     try {
       const maxClientWithEditAccess = this.maxClient as MaxClientService & {
         getChatEditableAdminIds?: (chatId: string) => Promise<string[]>;
@@ -6873,12 +6875,14 @@ export class AdminService {
 
   private extractMaxErrorCode(error: unknown): string | null {
     const maybeCode = (error as { response?: { data?: { code?: unknown } } })?.response?.data?.code;
-    return typeof maybeCode === 'string' && maybeCode.trim() ? maybeCode.trim().toLowerCase() : null;
+    return typeof maybeCode === 'string' && maybeCode.trim()
+      ? maybeCode.trim().toLowerCase()
+      : null;
   }
 
   private extractMaxErrorMessage(error: unknown): string {
-    const responseMessage = (error as { response?: { data?: { message?: unknown } } })?.response?.data
-      ?.message;
+    const responseMessage = (error as { response?: { data?: { message?: unknown } } })?.response
+      ?.data?.message;
     if (typeof responseMessage === 'string' && responseMessage.trim()) {
       return responseMessage.trim().toLowerCase();
     }

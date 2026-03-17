@@ -41,6 +41,9 @@ function buildSettings(chatId: string): ChatSettings {
     deleteSpammersEnabled: false,
 
     antiSpamEnabled: true,
+    messageCountLimitEnabled: false,
+    messageCountLimitMessages: 5,
+    messageCountLimitWindowHours: 1,
     maxMessageLengthEnabled: false,
     maxMessageLength: 1500,
     photoMessageCooldownEnabled: false,

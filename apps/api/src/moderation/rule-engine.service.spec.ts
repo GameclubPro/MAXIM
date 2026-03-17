@@ -40,6 +40,9 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     deleteSpammersEnabled: false,
 
     antiSpamEnabled: true,
+    messageCountLimitEnabled: false,
+    messageCountLimitMessages: 5,
+    messageCountLimitWindowHours: 1,
     maxMessageLengthEnabled: false,
     maxMessageLength: 1500,
     photoMessageCooldownEnabled: false,
@@ -223,7 +226,7 @@ describe('RuleEngineService', () => {
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
-      text: "Продам кузов Нивы.Весь перевареный, документы есть",
+      text: 'Продам кузов Нивы.Весь перевареный, документы есть',
       settings: buildSettings({
         linkPolicy: LinkPolicy.BLOCKLIST_ONLY,
       }),
@@ -626,6 +629,43 @@ describe('RuleEngineService', () => {
     });
 
     expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_TOO_LONG')).toBe(true);
+  });
+
+  it('detects MESSAGE_COUNT_LIMIT after exceeding configured message window', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      messageCountLimitEnabled: true,
+      messageCountLimitMessages: 2,
+      messageCountLimitWindowHours: 3,
+    });
+
+    const first = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'первое сообщение',
+      settings,
+      domainAllowlist: [],
+    });
+
+    const second = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'второе сообщение',
+      settings,
+      domainAllowlist: [],
+    });
+
+    const third = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'третье сообщение',
+      settings,
+      domainAllowlist: [],
+    });
+
+    expect(first.violations.some((item) => item.ruleCode === 'MESSAGE_COUNT_LIMIT')).toBe(false);
+    expect(second.violations.some((item) => item.ruleCode === 'MESSAGE_COUNT_LIMIT')).toBe(false);
+    expect(third.violations.some((item) => item.ruleCode === 'MESSAGE_COUNT_LIMIT')).toBe(true);
   });
 
   it('detects VIDEO_BLOCKED when video messages are disabled', async () => {

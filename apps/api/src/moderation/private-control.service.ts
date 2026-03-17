@@ -581,6 +581,25 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
   ],
   limits: [
     { key: 'antiSpamEnabled', label: 'Включить антиспам', type: 'boolean' },
+    { key: 'messageCountLimitEnabled', label: 'Лимит сообщений', type: 'boolean' },
+    {
+      key: 'messageCountLimitMessages',
+      label: 'Сообщений за окно',
+      type: 'number',
+      min: 1,
+      max: 10,
+      step: 1,
+      presets: [1, 3, 5],
+    },
+    {
+      key: 'messageCountLimitWindowHours',
+      label: 'Окно лимита (часы)',
+      type: 'number',
+      min: 1,
+      max: 24,
+      step: 1,
+      presets: [1, 6, 24],
+    },
     { key: 'maxMessageLengthEnabled', label: 'Ограничить длину сообщений', type: 'boolean' },
     {
       key: 'maxMessageLength',
@@ -780,6 +799,9 @@ const SECTION_CARD_FIELDS: Record<
   limits: {
     basic: [
       'antiSpamEnabled',
+      'messageCountLimitEnabled',
+      'messageCountLimitMessages',
+      'messageCountLimitWindowHours',
       'maxMessageLengthEnabled',
       'maxMessageLength',
       'videoMessagesEnabled',
@@ -5780,6 +5802,7 @@ export class PrivateControlService {
       case 'limits':
         return [
           `Антиспам: ${this.describeBooleanCompact(settings.antiSpamEnabled)} • макс. длина ${settings.maxMessageLengthEnabled ? settings.maxMessageLength : 'выкл'}`,
+          `Лимит сообщений: ${settings.messageCountLimitEnabled ? `${settings.messageCountLimitMessages} за ${settings.messageCountLimitWindowHours}ч` : 'выкл'}`,
           `Медиа: видео ${this.describeBooleanCompact(settings.videoMessagesEnabled)} • файлы ${this.describeBooleanCompact(settings.fileMessagesEnabled)} • голосовые ${this.describeBooleanCompact(settings.voiceMessagesEnabled)}`,
           `Сообщение: ${this.describeBooleanCompact(settings.messageLimitsBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.messageLimitsBotButtonEnabled)}`,
         ];
@@ -5959,6 +5982,9 @@ export class PrivateControlService {
       case 'duplicates':
         return settings.antiDuplicateEnabled ? 'активны штрафы за повторы' : 'выключено';
       case 'limits':
+        if (settings.messageCountLimitEnabled) {
+          return `${settings.messageCountLimitMessages} сообщ. за ${settings.messageCountLimitWindowHours}ч`;
+        }
         return settings.antiSpamEnabled ? 'антиспам включен' : 'выключено';
       case 'night':
         return settings.nightModeEnabled

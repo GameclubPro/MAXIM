@@ -146,6 +146,7 @@ const NON_SANCTION_RULE_CODES = new Set([
   'COMMERCIAL_AD',
   'TOPIC_FILTER_MISMATCH',
   'MESSAGE_TOO_LONG',
+  'MESSAGE_COUNT_LIMIT',
   'VIDEO_BLOCKED',
   'FILE_BLOCKED',
   'VOICE_BLOCKED',
@@ -154,6 +155,7 @@ const NON_SANCTION_RULE_CODES = new Set([
 ]);
 const MESSAGE_LIMITS_RULE_CODES = new Set([
   'MESSAGE_TOO_LONG',
+  'MESSAGE_COUNT_LIMIT',
   'VIDEO_BLOCKED',
   'FILE_BLOCKED',
   'VOICE_BLOCKED',
@@ -561,6 +563,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         item.ruleCode === 'COMMERCIAL_AD' ||
         item.ruleCode === 'TOPIC_FILTER_MISMATCH' ||
         item.ruleCode === 'MESSAGE_TOO_LONG' ||
+        item.ruleCode === 'MESSAGE_COUNT_LIMIT' ||
         item.ruleCode === 'VIDEO_BLOCKED' ||
         item.ruleCode === 'FILE_BLOCKED' ||
         item.ruleCode === 'VOICE_BLOCKED' ||
@@ -626,6 +629,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       violations.find((item) => item.ruleCode === 'PROFANITY') ??
       violations.find((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH') ??
       violations.find((item) => item.ruleCode === 'MESSAGE_TOO_LONG') ??
+      violations.find((item) => item.ruleCode === 'MESSAGE_COUNT_LIMIT') ??
       violations.find((item) => item.ruleCode === 'VIDEO_BLOCKED') ??
       violations.find((item) => item.ruleCode === 'FILE_BLOCKED') ??
       violations.find((item) => item.ruleCode === 'VOICE_BLOCKED') ??
@@ -853,6 +857,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               userLabel,
               topViolation.ruleCode,
               canDeleteMessage,
+              settings.messageCountLimitMessages,
+              settings.messageCountLimitWindowHours,
               settings.photoMessageCooldownHours,
               settings.stickerMessageCooldownMinutes,
               effectiveMessageLength,
@@ -1507,7 +1513,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
-  private buildLinkKickExplanation(userLabel: string, botSpeechStyle: BotSpeechStyle | null): string {
+  private buildLinkKickExplanation(
+    userLabel: string,
+    botSpeechStyle: BotSpeechStyle | null,
+  ): string {
     return this.renderSystemBotSpeechTemplate({
       style: botSpeechStyle,
       templateKey: 'linkKick',
@@ -2193,6 +2202,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userLabel: string,
     ruleCode: string,
     canDeleteMessage: boolean,
+    messageCountLimitMessages: number,
+    messageCountLimitWindowHours: number,
     photoCooldownHours: number,
     stickerCooldownMinutes: number,
     messageLength?: number,
@@ -2227,6 +2238,34 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           reason,
           actual_length: actualLength !== null ? String(actualLength) : '',
           max_length: maxLength !== null ? String(maxLength) : '',
+        },
+      });
+    }
+
+    if (ruleCode === 'MESSAGE_COUNT_LIMIT') {
+      const maxMessages =
+        Number.isInteger(messageCountLimitMessages) &&
+        messageCountLimitMessages >= 1 &&
+        messageCountLimitMessages <= 10
+          ? messageCountLimitMessages
+          : 5;
+      const windowHours =
+        Number.isInteger(messageCountLimitWindowHours) &&
+        messageCountLimitWindowHours >= 1 &&
+        messageCountLimitWindowHours <= 24
+          ? messageCountLimitWindowHours
+          : 1;
+      const reason = `слишком частая отправка сообщений: не более ${maxMessages} за ${windowHours}ч`;
+      return this.renderEditableBotSpeechTemplate({
+        style: botSpeechStyle ?? null,
+        fieldKey: 'messageLimitsBotMessageText',
+        overrideText: templateText ?? '',
+        replacements: {
+          user: userLabel,
+          message_status: messageStatus,
+          reason,
+          message_limit_count: String(maxMessages),
+          message_limit_window_hours: String(windowHours),
         },
       });
     }
@@ -2365,6 +2404,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (ruleCode === 'STICKER_RATE_LIMIT') {
       return 'слишком частая отправка стикеров';
+    }
+
+    if (ruleCode === 'MESSAGE_COUNT_LIMIT') {
+      return 'слишком частая отправка сообщений';
     }
 
     if (ruleCode === 'MESSAGE_TOO_LONG') {
@@ -3992,7 +4035,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         const endMinutes = this.normalizeDayMinutes(settings.nightModeEndTimeMinutes, 8 * 60);
         const timezone = this.normalizeNightModeTimezone(settings.nightModeTimezone);
 
-        if (settings.nightModeBotMessageEnabled && this.isNightModeStartMomentNow(startMinutes, timezone)) {
+        if (
+          settings.nightModeBotMessageEnabled &&
+          this.isNightModeStartMomentNow(startMinutes, timezone)
+        ) {
           const nightSessionKey = this.buildNightModeSessionKey(
             startMinutes,
             endMinutes,

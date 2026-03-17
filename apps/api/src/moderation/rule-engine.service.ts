@@ -315,6 +315,20 @@ export class RuleEngineService {
       });
     }
 
+    if (settings.messageCountLimitEnabled) {
+      const windowHours = Math.min(24, Math.max(1, settings.messageCountLimitWindowHours));
+      const maxMessages = Math.min(10, Math.max(1, settings.messageCountLimitMessages));
+      const key = `message:count-limit:v1:${chatId}:${userId}:${maxMessages}:${windowHours}`;
+      const count = await this.redisCounter.incrementWithTtl(key, windowHours * 60 * 60 + 1);
+      if (count > maxMessages) {
+        violations.push({
+          ruleCode: 'MESSAGE_COUNT_LIMIT',
+          score: 0.87,
+          reason: `Messages are limited to ${maxMessages} per ${windowHours}h`,
+        });
+      }
+    }
+
     if (hasVideoAttachment && !settings.videoMessagesEnabled) {
       violations.push({
         ruleCode: 'VIDEO_BLOCKED',

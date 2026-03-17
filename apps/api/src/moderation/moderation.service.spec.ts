@@ -139,6 +139,9 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     deleteSpammersEnabled: false,
 
     antiSpamEnabled: true,
+    messageCountLimitEnabled: false,
+    messageCountLimitMessages: 5,
+    messageCountLimitWindowHours: 1,
     maxMessageLengthEnabled: false,
     maxMessageLength: 1500,
     photoMessageCooldownEnabled: false,
@@ -1495,10 +1498,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createSpamUpdate('chat-5', 'msg-5', 'Текст 5'));
 
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
-      'chat-4',
-      expect.stringContaining('(1/2)'),
-    );
+    expect(maxClient.sendMessage).toHaveBeenCalledWith('chat-4', expect.stringContaining('(1/2)'));
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-5', 'msg-5');
     expect(maxClient.kickMember).toHaveBeenCalledWith('chat-5', 'user-spam-1');
     expect(prisma.globalSpammer.upsert).toHaveBeenCalledWith({
@@ -3385,24 +3385,25 @@ describe('ModerationService', () => {
         ]),
       },
       moderationEvent: {
-        findFirst: jest.fn().mockImplementation((query: {
-          where?: Record<string, unknown>;
-          select?: Record<string, unknown>;
-        }) => {
-          if (query.where?.ruleCode === 'NIGHT_MODE_OPEN_NOTICE') {
-            return Promise.resolve(null);
-          }
+        findFirst: jest
+          .fn()
+          .mockImplementation(
+            (query: { where?: Record<string, unknown>; select?: Record<string, unknown> }) => {
+              if (query.where?.ruleCode === 'NIGHT_MODE_OPEN_NOTICE') {
+                return Promise.resolve(null);
+              }
 
-          if (query.where?.ruleCode === 'NIGHT_MODE_NOTICE') {
-            return Promise.resolve({
-              metadata: {
-                noticeMessageId: 'msg-night-close-1',
-              },
-            });
-          }
+              if (query.where?.ruleCode === 'NIGHT_MODE_NOTICE') {
+                return Promise.resolve({
+                  metadata: {
+                    noticeMessageId: 'msg-night-close-1',
+                  },
+                });
+              }
 
-          return Promise.resolve(null);
-        }),
+              return Promise.resolve(null);
+            },
+          ),
         create: jest.fn().mockResolvedValue(undefined),
       },
       webhookEvent: {
@@ -6516,6 +6517,75 @@ describe('ModerationService', () => {
         'Алексей',
         'снято с линии',
         'слишком длинное сообщение: 187 символов при лимите 100',
+      ),
+    );
+    expect(sanctionService.resolveAction).not.toHaveBeenCalled();
+  });
+
+  it('includes configured message count window in MESSAGE_COUNT_LIMIT bot explanation', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            messageCountLimitEnabled: true,
+            messageCountLimitMessages: 2,
+            messageCountLimitWindowHours: 6,
+            messageLimitsBotMessageEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [
+          {
+            ruleCode: 'MESSAGE_COUNT_LIMIT',
+            score: 0.87,
+            reason: 'Message count limit hit',
+          },
+        ],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      majorExplanation(
+        'Алексей',
+        'снято с линии',
+        'слишком частая отправка сообщений: не более 2 за 6ч',
       ),
     );
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
