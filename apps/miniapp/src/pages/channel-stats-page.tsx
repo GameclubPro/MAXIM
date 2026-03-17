@@ -7,18 +7,17 @@ import type {
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
-import { DashboardHero } from '../components/dashboard/dashboard-hero';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
-import { StatsMetricCard } from '../components/dashboard/stats-metric-card';
+import { BackChevronIcon } from '../components/ui/entity-header-icons';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { getChannelActivityFeed, getChannelStats } from '../lib/api/channel-stats-client';
 import type { ApiTransport } from '../lib/api/transport';
-import { cn } from '../lib/cn';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
+import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 
 type ChannelStatsRouteState = {
@@ -152,39 +151,62 @@ function formatLink(value: string | null): string {
 }
 
 function resolveChannelStatsLastUpdated(stats: ChannelStatsResponse): string | null {
-  const latestAt = stats.activityFeed.items[0]?.createdAt ?? stats.channel.lastEventAt;
-  return latestAt ? `Последнее движение аудитории · ${formatDateTime(latestAt)}` : null;
+  return (
+    stats.activityFeed.items[0]?.createdAt ??
+    stats.channel.lastEventAt ??
+    stats.official.content.lastPublishedAt ??
+    stats.secondary.lastBotActivityAt
+  );
 }
 
-function resolveStatusChips(
-  stats: ChannelStatsResponse | undefined,
-): Array<{ label: string; className: string }> {
-  if (!stats) {
-    return [];
+function formatSignedCount(value: number | null): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '—';
   }
 
+  if (value > 0) {
+    return `+${value}`;
+  }
+
+  return String(value);
+}
+
+function formatPercent(value: number | null): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return '—';
+  }
+
+  return `${new Intl.NumberFormat('ru-RU', {
+    minimumFractionDigits: value > 0 && value < 10 ? 1 : 0,
+    maximumFractionDigits: value > 0 && value < 10 ? 1 : 0,
+  }).format(value)}%`;
+}
+
+function resolveChannelStateLabel(stats: ChannelStatsResponse): string {
   if (!stats.meta.maxSnapshotAvailable) {
-    return [{ label: 'Снимок MAX недоступен', className: 'chip' }];
+    return 'Снимок MAX недоступен';
   }
 
-  const chips: Array<{ label: string; className: string }> = [];
+  const parts: string[] = [];
 
   if (stats.channel.status) {
-    const isActive = stats.channel.status === 'active';
-    chips.push({
-      label: isActive ? 'Активен' : 'Неактивен',
-      className: cn('chip', isActive ? 'chip--success' : 'chip--warning'),
-    });
+    parts.push(stats.channel.status === 'active' ? 'Активен' : 'Неактивен');
   }
 
   if (stats.channel.isPublic !== null) {
-    chips.push({
-      label: stats.channel.isPublic ? 'Публичный' : 'Приватный',
-      className: cn('chip', !stats.channel.isPublic && 'chip--warning'),
-    });
+    parts.push(stats.channel.isPublic ? 'Публичный' : 'Приватный');
   }
 
-  return chips;
+  return parts.join(' · ') || 'Статус не определён';
+}
+
+function resolveHeroNote(stats: ChannelStatsResponse): string {
+  const lastUpdated = resolveChannelStatsLastUpdated(stats);
+  if (lastUpdated) {
+    return `Последнее движение ${formatDateTime(lastUpdated)}`;
+  }
+
+  return stats.meta.maxSnapshotAvailable ? 'Актуальный снимок MAX' : 'Снимок MAX недоступен';
 }
 
 function hasSecondaryActivity(secondary: ChannelStatsResponse['secondary']): boolean {
@@ -319,23 +341,6 @@ function buildViewsChart(stats: ChannelStatsResponse): {
   };
 }
 
-function MetricCard({
-  label,
-  value,
-  highlighted = false,
-}: {
-  label: string;
-  value: string;
-  highlighted?: boolean;
-}) {
-  return (
-    <article className={cn('channel-stats-metric', highlighted && 'is-accent')}>
-      <small>{label}</small>
-      <strong>{value}</strong>
-    </article>
-  );
-}
-
 function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   const chart = buildAudienceChart(stats);
   const labels = stats.official.series.participants;
@@ -466,6 +471,12 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   const routeState = getRouteState(location.state);
   const [range, setRange] = useState<ChannelStatsRange>('7d');
   const [chartTab, setChartTab] = useState<ChartTab>('audience');
+  const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader({
+    compactAfter: 12,
+    hideAfter: 72,
+    hideDistance: 44,
+    revealDistance: 6,
+  });
 
   const statsQuery = useQuery({
     queryKey: ['channel-stats', chatId, range],
@@ -564,209 +575,316 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     return null;
   }
 
-  const statusChips = resolveStatusChips(stats);
   const chartTabs = stats.meta.viewsAvailable ? audienceTabOptions : audienceTabOptions.slice(0, 1);
   const effectiveChartTab: ChartTab = stats.meta.viewsAvailable ? chartTab : 'audience';
   const showSecondaryActivity = hasSecondaryActivity(stats.secondary);
   const periodCaption = formatPeriodCaption(stats.period.from, stats.period.to);
+  const audienceJoined = stats.official.audience.joined ?? 0;
+  const audienceLeft = stats.official.audience.left ?? 0;
+  const audienceNet = stats.official.audience.net ?? audienceJoined - audienceLeft;
+  const netTone =
+    audienceNet > 0
+      ? 'success'
+      : audienceNet < 0
+        ? 'danger'
+        : 'neutral';
+  const movementTotal = audienceJoined + audienceLeft;
+  const joinedShare = movementTotal
+    ? Math.round((audienceJoined / movementTotal) * 100)
+    : 50;
+  const leftShare = movementTotal ? 100 - joinedShare : 50;
+  const averageViewsPerPost =
+    stats.meta.viewsAvailable && stats.official.content.posts > 0
+      ? Math.round(stats.official.content.views / stats.official.content.posts)
+      : null;
+  const reactionsPerPost =
+    stats.official.content.posts > 0
+      ? Math.round(stats.official.content.reactions / stats.official.content.posts)
+      : null;
+  const engagementRate =
+    stats.meta.viewsAvailable && stats.official.content.views > 0
+      ? (stats.official.content.reactions / stats.official.content.views) * 100
+      : null;
+  const chartTitle =
+    effectiveChartTab === 'audience' ? 'Динамика аудитории' : 'Охват публикаций';
+  const chartSummary =
+    effectiveChartTab === 'audience'
+      ? `${formatCount(audienceJoined)} вошли · ${formatCount(audienceLeft)} вышли`
+      : stats.meta.viewsAvailable
+        ? `${formatCount(stats.official.content.views)} просмотров · ${formatCount(
+            stats.official.content.posts,
+          )} постов`
+        : 'Официальные просмотры MAX недоступны';
+  const linkLabel =
+    stats.channel.isPublic && stats.channel.link
+      ? formatLink(stats.channel.link)
+      : stats.channel.isPublic === false
+        ? 'Канал приватный'
+        : 'Нет данных';
 
   return (
-    <div className="stats-dashboard channel-stats-screen page-enter">
-      <DashboardHero
-        accent="channel"
-        eyebrow="Статистика канала"
-        title={resolvedTitle}
-        summary={`${periodCaption} · ${formatCount(stats.channel.participantsCount)} участников`}
-        lastUpdated={resolveChannelStatsLastUpdated(stats)}
-        badge={statsQuery.isFetching ? 'Обновляем' : null}
-        chips={statusChips}
-        backTo={buildManagedEntitiesRoute('channel')}
-        rangeControl={
-          <SegmentedControl
-            value={range}
-            options={periodOptions}
-            onChange={setRange}
-          />
-        }
-      />
+    <div className="channel-insights page-enter">
+      <header
+        className={`channel-insights__appbar ${isHeaderCompact ? 'is-compact' : ''} ${
+          isHeaderHidden ? 'is-hidden' : ''
+        }`}
+      >
+        <div className="channel-insights__appbar-bar">
+          <Link
+            to={buildManagedEntitiesRoute('channel')}
+            className="channel-insights__back"
+            aria-label="К списку каналов"
+          >
+            <BackChevronIcon />
+          </Link>
 
-      <section className="stats-dashboard__metrics" aria-label="Ключевые метрики канала">
-        <StatsMetricCard
-          label="Участники"
-          value={formatCount(stats.channel.participantsCount)}
-          detail="Актуальный снимок MAX"
-          tone={typeof stats.channel.participantsCount === 'number' ? 'accent' : 'neutral'}
-        />
-        <StatsMetricCard
-          label="Пришло"
-          value={formatCount(stats.official.audience.joined)}
-          detail="Подписались за период"
-          tone="success"
-        />
-        <StatsMetricCard
-          label="Ушло"
-          value={formatCount(stats.official.audience.left)}
-          detail="Отписались за период"
-          tone="warning"
-        />
-        <StatsMetricCard
-          label="Чистый рост"
-          value={formatCount(stats.official.audience.net)}
-          detail="Разница между входами и выходами"
-          tone={(stats.official.audience.net ?? 0) > 0 ? 'success' : 'neutral'}
-        />
-        <StatsMetricCard
-          label="Просмотры"
-          value={stats.meta.viewsAvailable ? formatCount(stats.official.content.views) : '—'}
-          detail="Сумма просмотров постов"
-          tone={stats.official.content.views > 0 ? 'accent' : 'neutral'}
-        />
-        <StatsMetricCard
-          label="Реакции"
-          value={formatCount(stats.official.content.reactions)}
-          detail="Все реакции на посты"
-          tone={stats.official.content.reactions > 0 ? 'accent' : 'neutral'}
-        />
-        <StatsMetricCard
-          label="Посты"
-          value={formatCount(stats.official.content.posts)}
-          detail="Опубликовано за период"
-          tone={stats.official.content.posts > 0 ? 'accent' : 'neutral'}
-        />
-      </section>
-
-      <GlassCard className="stats-panel channel-stats-panel channel-stats-panel--chart" elevated>
-        <div className="channel-stats-panel__head">
-          <div>
-            <strong>Динамика</strong>
-            <small>
-              {effectiveChartTab === 'audience'
-                ? 'Аудитория и churn по периодам.'
-                : 'Суммарные просмотры опубликованных постов.'}
-            </small>
+          <div className="channel-insights__appbar-copy">
+            <strong>Статистика</strong>
+            <span className="channel-insights__appbar-label">{resolvedTitle}</span>
           </div>
 
-          <SegmentedControl
-            value={effectiveChartTab}
-            options={chartTabs}
-            onChange={setChartTab}
-            className="channel-stats-panel__switch"
-          />
-        </div>
-
-        {effectiveChartTab === 'audience' ? (
-          <AudienceChart stats={stats} />
-        ) : (
-          <ViewsChart stats={stats} />
-        )}
-      </GlassCard>
-
-      <MembershipActivityFeed
-        title="Движение аудитории"
-        subtitle="Последние входы и выходы подписчиков канала."
-        joinedLabel="каналу"
-        leftLabel="канал"
-        filter={activityFeed.filter}
-        onFilterChange={activityFeed.setFilter}
-        items={activityFeed.items}
-        hasMore={activityFeed.hasMore}
-        isReloading={activityFeed.isReloading}
-        isLoadingMore={activityFeed.isLoadingMore}
-        error={activityFeed.error}
-        onLoadMore={() => void activityFeed.loadMore()}
-        onRetry={() => void activityFeed.retry()}
-      />
-
-      {stats.official.content.topReactions.length > 0 ? (
-        <GlassCard className="channel-stats-top-reactions stats-panel" elevated>
-          <div className="channel-stats-panel__head">
-            <strong>Топ реакций</strong>
-            <small>Самые частые реакции на посты за период.</small>
-          </div>
-
-          <div className="channel-stats-top-reactions__list">
-            {stats.official.content.topReactions.map((reaction) => (
-              <span key={reaction.emoji} className="chip">
-                {reaction.emoji} {formatCount(reaction.count)}
-              </span>
-            ))}
-          </div>
-        </GlassCard>
-      ) : null}
-
-      <GlassCard className="channel-stats-secondary stats-panel" elevated>
-        <div className="channel-stats-panel__head">
-          <div>
-            <strong>Через приложение</strong>
-            <small>Комментарии, предложки и автодоставка админам.</small>
+          <div className="channel-insights__appbar-side">
+            {statsQuery.isFetching ? (
+              <span className="channel-insights__pulse" aria-label="Обновляем" title="Обновляем" />
+            ) : (
+              <span className="channel-insights__pulse channel-insights__pulse--idle" aria-hidden="true" />
+            )}
           </div>
         </div>
+      </header>
 
-        <div className="channel-stats-secondary__grid">
-          <article>
-            <small>Комментарии</small>
-            <strong>{formatCount(stats.secondary.comments)}</strong>
-            <span>Авторов {formatCount(stats.secondary.commentAuthors)}</span>
-          </article>
-          <article>
-            <small>Идеи</small>
-            <strong>{formatCount(stats.secondary.suggestions)}</strong>
-            <span>Авторов {formatCount(stats.secondary.suggestionAuthors)}</span>
-          </article>
-          <article>
-            <small>Доставлено админам</small>
-            <strong>{formatCount(stats.secondary.suggestionsDelivered)}</strong>
-            <span>Ошибок {formatCount(stats.secondary.suggestionsFailed)}</span>
-          </article>
-          <article>
-            <small>Постов с кнопками</small>
-            <strong>{formatCount(stats.secondary.postsWithButtons)}</strong>
-          </article>
-        </div>
+      <div className="channel-insights__body">
+        <section className="channel-insights__summary stagger-in" aria-label="Сводка по каналу">
+          <div className="channel-insights__summary-head">
+            <div className="channel-insights__summary-copy">
+              <span className="channel-insights__eyebrow">Статистика канала</span>
+              <h2>{resolvedTitle}</h2>
+              <p>{`${resolveChannelStateLabel(stats)} · ${periodCaption}`}</p>
+            </div>
 
-        {!showSecondaryActivity ? (
-          <p className="channel-stats-secondary__empty">Активности за период пока нет.</p>
-        ) : null}
-      </GlassCard>
+            <SegmentedControl
+              value={range}
+              options={periodOptions}
+              onChange={setRange}
+              className="channel-insights__range"
+            />
+          </div>
 
-      <GlassCard className="channel-stats-meta stats-panel" elevated>
-        {stats.channel.lastEventAt ? (
-          <article className="channel-stats-meta__item">
-            <small>Активность в канале</small>
-            <strong>{formatDateTime(stats.channel.lastEventAt)}</strong>
-          </article>
-        ) : null}
+          <article className="channel-insights__hero-card">
+            <div className="channel-insights__hero-copy">
+              <small>Участники сейчас</small>
+              <strong>{formatCount(stats.channel.participantsCount)}</strong>
+              <span>{resolveHeroNote(stats)}</span>
+            </div>
 
-        {stats.official.content.lastPublishedAt ? (
-          <article className="channel-stats-meta__item">
-            <small>Последний пост</small>
-            <strong>{formatDateTime(stats.official.content.lastPublishedAt)}</strong>
-          </article>
-        ) : null}
-
-        {stats.secondary.lastBotActivityAt ? (
-          <article className="channel-stats-meta__item">
-            <small>Через приложение</small>
-            <strong>{formatDateTime(stats.secondary.lastBotActivityAt)}</strong>
-          </article>
-        ) : null}
-
-        <article className="channel-stats-meta__item">
-          <small>Ссылка</small>
-          {stats.channel.isPublic && stats.channel.link ? (
-            <a
-              href={stats.channel.link}
-              target="_blank"
-              rel="noreferrer"
-              className="channel-stats-meta__link"
+            <div
+              className={`channel-insights__hero-delta channel-insights__hero-delta--${netTone}`}
             >
-              {formatLink(stats.channel.link)}
-            </a>
+              <small>За период</small>
+              <strong>{formatSignedCount(audienceNet)}</strong>
+            </div>
+          </article>
+
+          <article className="channel-insights__ledger-card">
+            <div className="channel-insights__ledger-grid">
+              <article className={`channel-insights__ledger-metric channel-insights__ledger-metric--${netTone}`}>
+                <small>Прирост</small>
+                <strong>{formatSignedCount(audienceNet)}</strong>
+                <span>
+                  {formatCount(audienceJoined)} вошли · {formatCount(audienceLeft)} вышли
+                </span>
+              </article>
+
+              <article className="channel-insights__ledger-metric channel-insights__ledger-metric--accent">
+                <small>Охват</small>
+                <strong>
+                  {stats.meta.viewsAvailable
+                    ? formatCount(stats.official.content.views)
+                    : formatCount(stats.official.content.posts)}
+                </strong>
+                <span>
+                  {stats.meta.viewsAvailable
+                    ? averageViewsPerPost !== null
+                      ? `${formatCount(averageViewsPerPost)} в среднем на пост`
+                      : 'Постов за период нет'
+                    : `${formatCount(stats.official.content.posts)} постов за период`}
+                </span>
+              </article>
+
+              <article className="channel-insights__ledger-metric channel-insights__ledger-metric--neutral">
+                <small>Реакции</small>
+                <strong>{formatCount(stats.official.content.reactions)}</strong>
+                <span>
+                  {engagementRate !== null
+                    ? `ER ${formatPercent(engagementRate)} · ${formatCount(
+                        reactionsPerPost,
+                      )} на пост`
+                    : reactionsPerPost !== null
+                      ? `${formatCount(reactionsPerPost)} на пост`
+                      : 'За период без публикаций'}
+                </span>
+              </article>
+            </div>
+
+            <div className="channel-insights__ledger-bar" aria-hidden="true">
+              <span style={{ width: `${joinedShare}%` }} />
+            </div>
+
+            <div className="channel-insights__ledger-meta">
+              <small>Вошли {joinedShare}%</small>
+              <small>Вышли {leftShare}%</small>
+              <small>{periodCaption}</small>
+            </div>
+          </article>
+        </section>
+
+        <section className="channel-insights__panel channel-insights__panel--chart">
+          <div className="channel-insights__panel-head">
+            <div className="channel-insights__panel-copy">
+              <strong>{chartTitle}</strong>
+              <small>{chartSummary}</small>
+            </div>
+
+            <SegmentedControl
+              value={effectiveChartTab}
+              options={chartTabs}
+              onChange={setChartTab}
+              className="channel-insights__switch"
+            />
+          </div>
+
+          {effectiveChartTab === 'audience' ? (
+            <AudienceChart stats={stats} />
           ) : (
-            <strong>{stats.channel.isPublic === false ? 'Канал приватный' : 'Нет данных'}</strong>
+            <ViewsChart stats={stats} />
           )}
-        </article>
-      </GlassCard>
+        </section>
+
+        <MembershipActivityFeed
+          title="Движение подписчиков"
+          subtitle={null}
+          joinedLabel="каналу"
+          leftLabel="канал"
+          filter={activityFeed.filter}
+          onFilterChange={activityFeed.setFilter}
+          items={activityFeed.items}
+          hasMore={activityFeed.hasMore}
+          isReloading={activityFeed.isReloading}
+          isLoadingMore={activityFeed.isLoadingMore}
+          error={activityFeed.error}
+          onLoadMore={() => void activityFeed.loadMore()}
+          onRetry={() => void activityFeed.retry()}
+        />
+
+        <div className="channel-insights__secondary-layout">
+          {stats.official.content.topReactions.length > 0 ? (
+            <section className="channel-insights__panel channel-insights__panel--reactions">
+              <div className="channel-insights__panel-head">
+                <div className="channel-insights__panel-copy">
+                  <strong>Топ реакций</strong>
+                  <small>Что сработало лучше всего за период.</small>
+                </div>
+              </div>
+
+              <div className="channel-insights__reaction-list">
+                {stats.official.content.topReactions.map((reaction) => (
+                  <span key={reaction.emoji} className="channel-insights__reaction-pill">
+                    <b>{reaction.emoji}</b>
+                    <small>{formatCount(reaction.count)}</small>
+                  </span>
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          <section className="channel-insights__panel channel-insights__panel--secondary">
+            <div className="channel-insights__panel-head">
+              <div className="channel-insights__panel-copy">
+                <strong>Через приложение</strong>
+                <small>Комментарии, идеи и доставка админам.</small>
+              </div>
+            </div>
+
+            <div className="channel-insights__secondary-grid">
+              <article className="channel-insights__secondary-metric">
+                <small>Комментарии</small>
+                <strong>{formatCount(stats.secondary.comments)}</strong>
+                <span>Авторов {formatCount(stats.secondary.commentAuthors)}</span>
+              </article>
+
+              <article className="channel-insights__secondary-metric">
+                <small>Идеи</small>
+                <strong>{formatCount(stats.secondary.suggestions)}</strong>
+                <span>Авторов {formatCount(stats.secondary.suggestionAuthors)}</span>
+              </article>
+
+              <article className="channel-insights__secondary-metric">
+                <small>Доставлено</small>
+                <strong>{formatCount(stats.secondary.suggestionsDelivered)}</strong>
+                <span>Ошибок {formatCount(stats.secondary.suggestionsFailed)}</span>
+              </article>
+
+              <article className="channel-insights__secondary-metric">
+                <small>Посты с кнопками</small>
+                <strong>{formatCount(stats.secondary.postsWithButtons)}</strong>
+                <span>Через мини-приложение</span>
+              </article>
+            </div>
+
+            {!showSecondaryActivity ? (
+              <p className="channel-insights__empty">Активности за период пока нет.</p>
+            ) : null}
+          </section>
+        </div>
+
+        <section className="channel-insights__panel channel-insights__panel--meta">
+          <div className="channel-insights__panel-head">
+            <div className="channel-insights__panel-copy">
+              <strong>Контекст канала</strong>
+              <small>Последние точки активности и ссылка на канал.</small>
+            </div>
+          </div>
+
+          <div className="channel-insights__facts">
+            {stats.channel.lastEventAt ? (
+              <article className="channel-insights__fact">
+                <small>Активность</small>
+                <strong>{formatDateTime(stats.channel.lastEventAt)}</strong>
+              </article>
+            ) : null}
+
+            {stats.official.content.lastPublishedAt ? (
+              <article className="channel-insights__fact">
+                <small>Последний пост</small>
+                <strong>{formatDateTime(stats.official.content.lastPublishedAt)}</strong>
+              </article>
+            ) : null}
+
+            {stats.secondary.lastBotActivityAt ? (
+              <article className="channel-insights__fact">
+                <small>Через приложение</small>
+                <strong>{formatDateTime(stats.secondary.lastBotActivityAt)}</strong>
+              </article>
+            ) : null}
+
+            <article className="channel-insights__fact">
+              <small>Ссылка</small>
+              {stats.channel.isPublic && stats.channel.link ? (
+                <a
+                  href={stats.channel.link}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="channel-insights__fact-link"
+                >
+                  {linkLabel}
+                </a>
+              ) : (
+                <strong>{linkLabel}</strong>
+              )}
+            </article>
+          </div>
+        </section>
+      </div>
     </div>
   );
 }
