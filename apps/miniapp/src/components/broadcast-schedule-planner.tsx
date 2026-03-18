@@ -648,8 +648,23 @@ export function BroadcastSchedulePlanner({
                     : isPicked
                       ? 'нов.'
                       : busyCount > 0
-                        ? `${busyCount} зан.`
+                        ? 'зан.'
                         : null;
+                const dayAriaLabelParts = [formatDayChipLabel(dayKey)];
+
+                if (isToday) {
+                  dayAriaLabelParts.push('сегодня');
+                }
+
+                if (daySlots.length > 0) {
+                  dayAriaLabelParts.push(
+                    `${formatCountLabel(daySlots.length, 'слот', 'слота', 'слотов')} настроено`,
+                  );
+                } else if (isPicked) {
+                  dayAriaLabelParts.push('выбран для настройки');
+                } else if (busyCount > 0) {
+                  dayAriaLabelParts.push('день занят');
+                }
 
                 return (
                   <button
@@ -665,16 +680,20 @@ export function BroadcastSchedulePlanner({
                       isActive && isPicked && 'is-active',
                     )}
                     disabled={isDisabled}
+                    aria-label={dayAriaLabelParts.join(', ')}
                     onClick={() => togglePickedDay(dayKey)}
                   >
-                    {isPicked ? <span className="broadcast-planner__day-marker">✓</span> : null}
-                    <span className="broadcast-planner__day-number">{cell.getDate()}</span>
+                    {isPicked ? (
+                      <span className="broadcast-planner__day-marker">✓</span>
+                    ) : isToday ? (
+                      <span className="broadcast-planner__day-today-dot" aria-hidden />
+                    ) : null}
+                    <div className="broadcast-planner__day-head">
+                      <span className="broadcast-planner__day-number-shell">
+                        <span className="broadcast-planner__day-number">{cell.getDate()}</span>
+                      </span>
+                    </div>
                     <div className="broadcast-planner__day-foot">
-                      {isToday ? (
-                        <span className="broadcast-planner__day-tag">сег.</span>
-                      ) : (
-                        <span className="broadcast-planner__day-tag is-empty" aria-hidden />
-                      )}
                       {dayStatusLabel ? (
                         <span
                           className={cn(
@@ -686,7 +705,9 @@ export function BroadcastSchedulePlanner({
                         >
                           {dayStatusLabel}
                         </span>
-                      ) : null}
+                      ) : (
+                        <span className="broadcast-planner__day-meta is-empty" aria-hidden />
+                      )}
                     </div>
                   </button>
                 );
