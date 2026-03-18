@@ -580,6 +580,20 @@ export class AdminController {
     return this.adminService.getLogsDashboard(chatId, user, query);
   }
 
+  @Get('chats/:chatId/spammer-candidates')
+  listSpammerCandidates(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.adminService.listChatSpammerCandidates(chatId, user);
+  }
+
+  @Post('chats/:chatId/spammer-candidates/review')
+  reviewSpammerCandidates(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.reviewChatSpammerCandidates(chatId, user, body);
+  }
+
   @Post('chats/:chatId/members/:userId/moderation-action')
   applyManualModerationAction(
     @Param('chatId') chatId: string,

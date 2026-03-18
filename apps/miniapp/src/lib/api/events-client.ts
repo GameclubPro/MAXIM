@@ -5,12 +5,18 @@ import {
   manualModerationActionResultSchema,
   membershipActivityPageSchema,
   membershipActivityQuerySchema,
+  reviewSpammerCandidatesRequestSchema,
+  reviewSpammerCandidatesResultSchema,
+  spammerCandidateListResponseSchema,
   type LogsDashboardRange,
   type LogsDashboardResponse,
   type ManualModerationActionRequest,
   type ManualModerationActionResult,
   type MembershipActivityPage,
   type MembershipActivityQuery,
+  type ReviewSpammerCandidatesRequest,
+  type ReviewSpammerCandidatesResult,
+  type SpammerCandidateListResponse,
 } from '@maxim/contracts';
 import type { ApiTransport } from './transport';
 
@@ -42,9 +48,7 @@ export async function getChatActivityFeed(
     params.set('cursor', validatedQuery.cursor);
   }
 
-  const response = await api.request(
-    `/chats/${chatId}/activity-feed?${params.toString()}`,
-  );
+  const response = await api.request(`/chats/${chatId}/activity-feed?${params.toString()}`);
   return membershipActivityPageSchema.parse(response);
 }
 
@@ -63,4 +67,25 @@ export async function applyManualModerationAction(
     },
   );
   return manualModerationActionResultSchema.parse(response);
+}
+
+export async function getSpammerCandidates(
+  api: ApiTransport,
+  chatId: string,
+): Promise<SpammerCandidateListResponse> {
+  const response = await api.request(`/chats/${chatId}/spammer-candidates`);
+  return spammerCandidateListResponseSchema.parse(response);
+}
+
+export async function reviewSpammerCandidates(
+  api: ApiTransport,
+  chatId: string,
+  payload: ReviewSpammerCandidatesRequest,
+): Promise<ReviewSpammerCandidatesResult> {
+  const requestBody = reviewSpammerCandidatesRequestSchema.parse(payload);
+  const response = await api.request(`/chats/${chatId}/spammer-candidates/review`, {
+    method: 'POST',
+    body: JSON.stringify(requestBody),
+  });
+  return reviewSpammerCandidatesResultSchema.parse(response);
 }

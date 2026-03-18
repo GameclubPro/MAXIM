@@ -16,6 +16,9 @@ import {
   membershipActivityPageSchema,
   publishChannelEngagementResultSchema,
   publishChatRulesResultSchema,
+  reviewSpammerCandidatesRequestSchema,
+  reviewSpammerCandidatesResultSchema,
+  spammerCandidateListResponseSchema,
   type BroadcastHandoffResponse,
   type BroadcastHandoffState,
   type ChannelSettings,
@@ -41,6 +44,9 @@ import {
   type MembershipActivityRange,
   type PublishChannelEngagementResult,
   type PublishChatRulesResult,
+  type ReviewSpammerCandidatesRequest,
+  type ReviewSpammerCandidatesResult,
+  type SpammerCandidate,
 } from '@maxim/contracts';
 import {
   PREVIEW_CHANNEL_ID,
@@ -64,6 +70,7 @@ type PreviewState = {
   chatGiveaways: ManagedGiveawayDetails[];
   chatActivity: MembershipActivityItem[];
   chatViolations: LogsDashboardResponse['violations'];
+  chatSpammerCandidates: SpammerCandidate[];
   channelHeaderParticipantsCount: number;
   channelSettings: ChannelSettings;
   channelPoll: ManagedPoll;
@@ -355,6 +362,89 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
   return base.sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
 }
 
+function createPreviewSpammerCandidates(now: Date): SpammerCandidate[] {
+  return spammerCandidateListResponseSchema.parse({
+    items: [
+      {
+        userId: 'preview-spammer-11',
+        userDisplayName: 'Сергей Маркет',
+        detectionsCount: 9,
+        firstDetectedAt: addHours(now, -26).toISOString(),
+        lastDetectedAt: addMinutes(now, -25).toISOString(),
+        lastReason: 'HIGH_FANOUT_5_CHATS_2M',
+        excerpt: 'Переходите по ссылке и забирайте бонус. Акция только сегодня.',
+        totalAffectedChats: 2,
+        visibleChats: [
+          {
+            chatId: PREVIEW_CHAT_ID,
+            title: PREVIEW_CHAT_TITLE,
+            detectionsCount: 6,
+            lastDetectedAt: addMinutes(now, -25).toISOString(),
+            excerpt: 'Переходите по ссылке и забирайте бонус. Акция только сегодня.',
+          },
+          {
+            chatId: 'preview-chat-2',
+            title: 'Клуб соседей',
+            detectionsCount: 3,
+            lastDetectedAt: addMinutes(now, -31).toISOString(),
+            excerpt: 'Пишу сразу в несколько чатов. Смотрите срочное предложение.',
+          },
+        ],
+      },
+      {
+        userId: 'preview-spammer-12',
+        userDisplayName: 'Мария Каналова',
+        detectionsCount: 5,
+        firstDetectedAt: addHours(now, -5.5).toISOString(),
+        lastDetectedAt: addMinutes(now, -52).toISOString(),
+        lastReason: 'HIGH_FANOUT_4_CHATS_WARN_THRESHOLD',
+        excerpt: 'Подписывайтесь на канал и пишите в личку для деталей.',
+        totalAffectedChats: 2,
+        visibleChats: [
+          {
+            chatId: PREVIEW_CHAT_ID,
+            title: PREVIEW_CHAT_TITLE,
+            detectionsCount: 2,
+            lastDetectedAt: addMinutes(now, -52).toISOString(),
+            excerpt: 'Подписывайтесь на канал и пишите в личку для деталей.',
+          },
+          {
+            chatId: 'preview-chat-2',
+            title: 'Клуб соседей',
+            detectionsCount: 3,
+            lastDetectedAt: addMinutes(now, -59).toISOString(),
+            excerpt: 'Срочный набор в закрытую группу, оставляйте контакты.',
+          },
+        ],
+      },
+      {
+        userId: 'preview-spammer-13',
+        userDisplayName: 'Инфо Буст',
+        detectionsCount: 3,
+        firstDetectedAt: addHours(now, -2.2).toISOString(),
+        lastDetectedAt: addMinutes(now, -9).toISOString(),
+        lastReason: 'HIGH_FANOUT_4_CHATS_WARN_THRESHOLD',
+        excerpt: 'Размещаю объявление сразу по домовым чатам. Отвечаю быстро.',
+        totalAffectedChats: 1,
+        visibleChats: [
+          {
+            chatId: PREVIEW_CHAT_ID,
+            title: PREVIEW_CHAT_TITLE,
+            detectionsCount: 3,
+            lastDetectedAt: addMinutes(now, -9).toISOString(),
+            excerpt: 'Размещаю объявление сразу по домовым чатам. Отвечаю быстро.',
+          },
+        ],
+      },
+    ],
+    total: 3,
+  }).items;
+}
+
+function addMinutes(value: Date, minutes: number): Date {
+  return new Date(value.getTime() + minutes * 60 * 1_000);
+}
+
 function createInitialState(): PreviewState {
   const now = new Date();
   const chatSettings = chatSettingsSchema.parse({
@@ -364,6 +454,7 @@ function createInitialState(): PreviewState {
     linkPolicy: 'ALLOWLIST_ONLY',
     antiSpamEnabled: true,
     deleteSpammersEnabled: true,
+    deleteSpammersRequireApproval: true,
     russianProfanityFilterEnabled: true,
     commercialAdsFilterEnabled: true,
     commercialAdsSensitivity: 'BALANCED',
@@ -657,6 +748,7 @@ function createInitialState(): PreviewState {
       ],
     ),
     chatViolations: createChatViolations(now),
+    chatSpammerCandidates: createPreviewSpammerCandidates(now),
     channelHeaderParticipantsCount: 9_240,
     channelSettings,
     channelPoll,
@@ -1047,6 +1139,28 @@ function createModerationResult(
       payload.action === 'BAN' ? addHours(now, payload.banDurationHours ?? 24).toISOString() : null,
     message: buildModerationMessage(payload),
   });
+}
+
+function createApprovedCandidateViolation(
+  candidate: SpammerCandidate,
+  chatId: string,
+): LogsDashboardResponse['violations'][number] {
+  const currentChat =
+    candidate.visibleChats.find((item) => item.chatId === chatId) ?? candidate.visibleChats[0];
+
+  return {
+    id: `candidate-kick-${candidate.userId}-${Date.now()}`,
+    action: 'KICK',
+    ruleCode: 'GLOBAL_SPAMMER_KICK',
+    userId: candidate.userId,
+    userDisplayName: candidate.userDisplayName,
+    createdAt: new Date().toISOString(),
+    maskedExcerpt: currentChat?.excerpt ?? candidate.excerpt ?? null,
+    metadata: {
+      source: 'preview-review',
+      affectedChats: candidate.totalAffectedChats,
+    },
+  };
 }
 
 function createManualViolation(
@@ -1479,6 +1593,49 @@ async function handleChatRequest(
       ...state.chatViolations,
     ];
     return createModerationResult(userId, payload);
+  }
+
+  if (tail[0] === 'spammer-candidates' && tail.length === 1 && method === 'GET') {
+    return cloneJson(
+      spammerCandidateListResponseSchema.parse({
+        items: state.chatSpammerCandidates,
+        total: state.chatSpammerCandidates.length,
+      }),
+    );
+  }
+
+  if (tail[0] === 'spammer-candidates' && tail[1] === 'review' && method === 'POST') {
+    const payload = reviewSpammerCandidatesRequestSchema.parse(parseJsonBody(init));
+    const selected = state.chatSpammerCandidates.filter((item) =>
+      payload.userIds.includes(item.userId),
+    );
+
+    if (payload.decision === 'APPROVE') {
+      state.chatViolations = [
+        ...selected.map((candidate) => createApprovedCandidateViolation(candidate, chatId)),
+        ...state.chatViolations,
+      ];
+    }
+
+    state.chatSpammerCandidates = state.chatSpammerCandidates.filter(
+      (item) => !payload.userIds.includes(item.userId),
+    );
+
+    return reviewSpammerCandidatesResultSchema.parse({
+      ok: true,
+      decision: payload.decision,
+      processed: selected.length,
+      approved: payload.decision === 'APPROVE' ? selected.length : 0,
+      rejected: payload.decision === 'REJECT' ? selected.length : 0,
+      message:
+        payload.decision === 'APPROVE'
+          ? selected.length === 1
+            ? 'Кандидат подтвержден и добавлен в глобальную базу спаммеров.'
+            : `Кандидаты подтверждены и добавлены в глобальную базу спаммеров: ${selected.length}.`
+          : selected.length === 1
+            ? 'Кандидат оставлен и скрыт из очереди на 30 дней.'
+            : `Кандидаты оставлены и скрыты из очереди на 30 дней: ${selected.length}.`,
+    });
   }
 
   throw new Error(`Preview transport does not implement ${method} ${url.pathname}`);

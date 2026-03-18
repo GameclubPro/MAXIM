@@ -2963,6 +2963,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : 'Выкл';
   const extraEnabledCount = [
     draft?.deleteSpammersEnabled,
+    draft?.deleteSpammersEnabled && draft?.deleteSpammersRequireApproval,
     draft?.deleteBotMessagesEnabled,
     draft?.removeBotsFromGroupEnabled,
   ].filter(Boolean).length;
@@ -4648,7 +4649,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           ) : null}
                         </>
                       ) : null}
-
                     </div>
                   ) : null}
                 </div>
@@ -7434,7 +7434,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           <div className="settings-native-toggle">
                             <div className="settings-native-toggle__row">
                               <div className="settings-native-toggle__title-wrap">
-                                <span className="settings-native-toggle__title">Закрыть группу</span>
+                                <span className="settings-native-toggle__title">
+                                  Закрыть группу
+                                </span>
                                 <button
                                   type="button"
                                   className={cn(
@@ -7484,8 +7486,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 id="night-force-close-hint"
                                 className="settings-native-toggle__hint"
                               >
-                                Пока ручное закрытие активно, бот молча удаляет сообщения
-                                не-админов без дополнительного текста.
+                                Пока ручное закрытие активно, бот молча удаляет сообщения не-админов
+                                без дополнительного текста.
                               </p>
                             ) : null}
                           </div>
@@ -7527,8 +7529,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </div>
                           ) : null}
 
-                          {draft.nightModeForceCloseEnabled &&
-                          !draft.nightModeForceCloseForever ? (
+                          {draft.nightModeForceCloseEnabled && !draft.nightModeForceCloseForever ? (
                             <div
                               className={cn(
                                 'settings-native-toggle',
@@ -8189,10 +8190,48 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         {openHintKey === 'deleteSpammers' ? (
                           <p id="delete-spammers-hint" className="settings-native-toggle__hint">
                             База спаммеров ведется глобально. Когда тумблер включен, бот удаляет
-                            сообщение спаммера и удаляет участника из текущего чата.
+                            сообщения кандидата. Ниже можно включить режим согласования перед
+                            глобальным добавлением и киком.
                           </p>
                         ) : null}
                       </div>
+
+                      {draft.deleteSpammersEnabled ? (
+                        <div className="settings-native-toggle settings-native-toggle--nested">
+                          <div className="settings-native-toggle__row">
+                            <div className="settings-native-toggle__title-wrap">
+                              <span className="settings-native-toggle__title">
+                                Только после согласования
+                              </span>
+                            </div>
+
+                            <label
+                              className="settings-native-switch"
+                              aria-label="Требовать согласование перед добавлением спаммера"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={draft.deleteSpammersRequireApproval}
+                                onChange={(event) =>
+                                  setFieldValue(
+                                    'deleteSpammersRequireApproval',
+                                    event.target.checked,
+                                  )
+                                }
+                              />
+                              <span className="toggle-switch" aria-hidden>
+                                <span className="toggle-switch__thumb" />
+                              </span>
+                            </label>
+                          </div>
+
+                          <p className="settings-native-toggle__hint">
+                            Бот сначала собирает кандидатов в «Событиях», показывает затронутые чаты
+                            и ждёт решения администратора. Пока кандидат не согласован, новые
+                            спам-сообщения удаляются без кика.
+                          </p>
+                        </div>
+                      ) : null}
 
                       <div className="settings-native-toggle">
                         <div className="settings-native-toggle__row">

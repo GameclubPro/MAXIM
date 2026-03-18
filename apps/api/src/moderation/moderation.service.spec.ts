@@ -137,6 +137,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     deleteBotMessagesDelayMinutes: 2,
     removeBotsFromGroupEnabled: false,
     deleteSpammersEnabled: false,
+    deleteSpammersRequireApproval: false,
 
     antiSpamEnabled: true,
     messageCountLimitEnabled: false,
