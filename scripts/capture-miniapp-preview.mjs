@@ -75,9 +75,9 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(1000);
-      await page.locator('.settings-drilldown__body').evaluate((element) => {
-        element.scrollTo({ top: 980, behavior: 'instant' });
-      });
+      await page.locator('.broadcast-planner__day.is-selected').first().click();
+      await page.waitForTimeout(150);
+      await page.locator('.broadcast-planner__selection-open').click();
       await page.waitForTimeout(300);
     },
   },
@@ -105,9 +105,9 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(1000);
-      await page.locator('.settings-drilldown__body').evaluate((element) => {
-        element.scrollTo({ top: 980, behavior: 'instant' });
-      });
+      await page.locator('.broadcast-planner__day.is-selected').first().click();
+      await page.waitForTimeout(150);
+      await page.locator('.broadcast-planner__selection-open').click();
       await page.waitForTimeout(300);
     },
   },

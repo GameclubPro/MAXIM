@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { cn } from '../lib/cn';
 import {
   BROADCAST_SCHEDULE_MAX_DAYS,
@@ -83,6 +84,14 @@ function formatMonthKey(value: string): string {
   }).format(date);
 }
 
+function formatDayChipLabel(dayKey: string): string {
+  const date = new Date(`${dayKey}T12:00:00`);
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: 'numeric',
+    month: 'short',
+  }).format(date);
+}
+
 function getMonthKeys(windowStart: Date, windowEnd: Date): string[] {
   const keys: string[] = [];
   const cursor = startOfMonth(windowStart);
@@ -124,6 +133,10 @@ function getSelectedDaySlots(dayKey: string, slots: string[]): string[] {
   return slots.filter((slot) => getBroadcastScheduleDayKey(slot) === dayKey);
 }
 
+function sortDayKeys(values: string[]): string[] {
+  return Array.from(new Set(values)).sort((left, right) => left.localeCompare(right));
+}
+
 export function BroadcastSchedulePlanner({
   value,
   occupiedSlots = [],
@@ -133,43 +146,79 @@ export function BroadcastSchedulePlanner({
   onOpenDay,
 }: BroadcastSchedulePlannerProps) {
   const [anchorNow] = useState(() => new Date());
-  const sheetRef = useRef<HTMLDivElement | null>(null);
   const normalizedValue = sortAndUniqueBroadcastSlots(value);
-  const selectedDayKeys = Array.from(
-    new Set(normalizedValue.map((slot) => getBroadcastScheduleDayKey(slot))),
+  const scheduledDayKeys = sortDayKeys(
+    normalizedValue.map((slot) => getBroadcastScheduleDayKey(slot)),
   );
-  const initialDayKey = selectedDayKeys[0] ?? getBroadcastScheduleDayKey(anchorNow);
+  const initialDayKey = scheduledDayKeys[0] ?? getBroadcastScheduleDayKey(anchorNow);
   const [activeDayKey, setActiveDayKey] = useState(initialDayKey);
+  const [pickedDayKeys, setPickedDayKeys] = useState<string[]>([]);
   const [currentMonthKey, setCurrentMonthKey] = useState(() =>
     getMonthKey(new Date(normalizedValue[0] ?? anchorNow)),
   );
+  const [isDaySheetOpen, setIsDaySheetOpen] = useState(false);
+  const [applyToAllPickedDays, setApplyToAllPickedDays] = useState(false);
 
   const windowStart = startOfDay(anchorNow);
   const windowEnd = endOfMonth(addDays(anchorNow, BROADCAST_SCHEDULE_MAX_DAYS - 1));
   const monthKeys = getMonthKeys(windowStart, windowEnd);
   const visibleMonthKey = monthKeys.includes(currentMonthKey) ? currentMonthKey : monthKeys[0];
-  const activeDaySlots = getSelectedDaySlots(activeDayKey, normalizedValue);
   const selectedDayCount = countBroadcastScheduleDays(normalizedValue);
   const occupiedSet = new Set(sortAndUniqueBroadcastSlots(occupiedSlots));
   const selectedSet = new Set(normalizedValue);
+  const pickedDaySet = new Set(pickedDayKeys);
   const minimumTime = anchorNow.getTime() + 30_000;
+  const activeDaySlots = getSelectedDaySlots(activeDayKey, normalizedValue);
+  const targetDayKeys =
+    applyToAllPickedDays && pickedDayKeys.length > 1 ? pickedDayKeys : [activeDayKey];
 
   useEffect(() => {
-    if (selectedDayKeys.length === 0) {
+    if (pickedDayKeys.length > 0) {
+      if (!pickedDayKeys.includes(activeDayKey)) {
+        setActiveDayKey(pickedDayKeys[0] ?? activeDayKey);
+      }
+      return;
+    }
+
+    if (scheduledDayKeys.length === 0) {
       const todayKey = getBroadcastScheduleDayKey(anchorNow);
       setActiveDayKey(todayKey);
       setCurrentMonthKey(getMonthKey(anchorNow));
       return;
     }
 
-    if (!selectedDayKeys.includes(activeDayKey)) {
-      setActiveDayKey(selectedDayKeys[0] ?? activeDayKey);
+    if (!scheduledDayKeys.includes(activeDayKey)) {
+      setActiveDayKey(scheduledDayKeys[0] ?? activeDayKey);
     }
-  }, [activeDayKey, anchorNow, selectedDayKeys]);
+  }, [activeDayKey, anchorNow, pickedDayKeys, scheduledDayKeys]);
 
-  function replaceDaySlots(dayKey: string, nextSlots: string[]) {
-    const cleaned = normalizedValue.filter((slot) => getBroadcastScheduleDayKey(slot) !== dayKey);
-    onChange(sortAndUniqueBroadcastSlots([...cleaned, ...nextSlots]));
+  useEffect(() => {
+    if (pickedDayKeys.length === 0) {
+      setIsDaySheetOpen(false);
+      setApplyToAllPickedDays(false);
+      return;
+    }
+
+    if (pickedDayKeys.length === 1) {
+      setApplyToAllPickedDays(false);
+    }
+  }, [pickedDayKeys]);
+
+  function replaceSlotsForDays(
+    dayKeys: string[],
+    updater: (dayKey: string, currentSlots: string[]) => string[],
+  ) {
+    const uniqueDayKeys = sortDayKeys(dayKeys);
+    const cleaned = normalizedValue.filter(
+      (slot) => !uniqueDayKeys.includes(getBroadcastScheduleDayKey(slot)),
+    );
+    const nextSlots = [...cleaned];
+
+    for (const dayKey of uniqueDayKeys) {
+      nextSlots.push(...updater(dayKey, getSelectedDaySlots(dayKey, normalizedValue)));
+    }
+
+    onChange(sortAndUniqueBroadcastSlots(nextSlots));
   }
 
   function isSlotUnavailable(dayKey: string, minutes: number): boolean {
@@ -181,35 +230,88 @@ export function BroadcastSchedulePlanner({
     return occupiedSet.has(slotIso) && !selectedSet.has(slotIso);
   }
 
-  function openDay(dayKey: string) {
-    setActiveDayKey(dayKey);
-    setCurrentMonthKey(getMonthKey(new Date(`${dayKey}T12:00:00`)));
-    maxSelectionChanged();
-    onOpenDay?.(dayKey);
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        sheetRef.current?.scrollIntoView({
-          block: 'start',
-          behavior: 'smooth',
-        });
-      });
-    });
+  function isSlotSelectedForDay(dayKey: string, minutes: number): boolean {
+    const slotIso = buildBroadcastScheduleSlotIso(dayKey, minutes);
+    return getSelectedDaySlots(dayKey, normalizedValue).includes(slotIso);
   }
 
-  function toggleSlot(minutes: number) {
-    if (disabled || isSlotUnavailable(activeDayKey, minutes)) {
+  function togglePickedDay(dayKey: string) {
+    if (disabled) {
       return;
     }
 
-    const slotIso = buildBroadcastScheduleSlotIso(activeDayKey, minutes);
-    const nextSlots = activeDaySlots.includes(slotIso)
-      ? activeDaySlots.filter((slot) => slot !== slotIso)
-      : [...activeDaySlots, slotIso];
-    replaceDaySlots(activeDayKey, nextSlots);
-    maxImpact(nextSlots.includes(slotIso) ? 'light' : 'soft');
+    setPickedDayKeys((current) => {
+      const exists = current.includes(dayKey);
+      const next = exists
+        ? current.filter((item) => item !== dayKey)
+        : sortDayKeys([...current, dayKey]);
+
+      if (!exists) {
+        setActiveDayKey(dayKey);
+        onOpenDay?.(dayKey);
+      } else if (activeDayKey === dayKey && next[0]) {
+        setActiveDayKey(next[0]);
+      }
+
+      return next;
+    });
+    maxSelectionChanged();
   }
 
-  function findPresetMinute(preferredMinute: number, usedMinutes: Set<number>): number | null {
+  function openDaySheet() {
+    if (disabled || pickedDayKeys.length === 0) {
+      return;
+    }
+
+    setApplyToAllPickedDays(pickedDayKeys.length > 1);
+    if (!pickedDayKeys.includes(activeDayKey)) {
+      setActiveDayKey(pickedDayKeys[0] ?? activeDayKey);
+    }
+    setIsDaySheetOpen(true);
+    maxImpact('light');
+  }
+
+  function closeDaySheet() {
+    setIsDaySheetOpen(false);
+  }
+
+  function clearPickedSelection() {
+    setPickedDayKeys([]);
+    maxImpact('soft');
+  }
+
+  function clearTargetDays() {
+    replaceSlotsForDays(targetDayKeys, () => []);
+    maxImpact('soft');
+  }
+
+  function toggleSlot(minutes: number) {
+    if (disabled) {
+      return;
+    }
+
+    const hasConflict = targetDayKeys.some(
+      (dayKey) => isSlotUnavailable(dayKey, minutes) && !isSlotSelectedForDay(dayKey, minutes),
+    );
+    if (hasConflict) {
+      return;
+    }
+
+    const shouldAdd = targetDayKeys.some((dayKey) => !isSlotSelectedForDay(dayKey, minutes));
+    replaceSlotsForDays(targetDayKeys, (dayKey, currentSlots) => {
+      const slotIso = buildBroadcastScheduleSlotIso(dayKey, minutes);
+      return shouldAdd
+        ? sortAndUniqueBroadcastSlots([...currentSlots, slotIso])
+        : currentSlots.filter((slot) => slot !== slotIso);
+    });
+    maxImpact(shouldAdd ? 'light' : 'soft');
+  }
+
+  function findPresetMinute(
+    dayKey: string,
+    preferredMinute: number,
+    usedMinutes: Set<number>,
+  ): number | null {
     const maxStepOffset = Math.floor((4 * 60) / BROADCAST_SCHEDULE_STEP_MINUTES);
     for (let offset = 0; offset <= maxStepOffset; offset += 1) {
       const candidates =
@@ -225,7 +327,7 @@ export function BroadcastSchedulePlanner({
           continue;
         }
 
-        if (!isSlotUnavailable(activeDayKey, candidate)) {
+        if (!isSlotUnavailable(dayKey, candidate)) {
           return candidate;
         }
       }
@@ -239,20 +341,19 @@ export function BroadcastSchedulePlanner({
       return;
     }
 
-    const nextMinutes = new Set<number>();
-    for (const preferredMinute of preset.minutes) {
-      const resolvedMinute = findPresetMinute(preferredMinute, nextMinutes);
-      if (resolvedMinute != null) {
-        nextMinutes.add(resolvedMinute);
+    replaceSlotsForDays(targetDayKeys, (dayKey) => {
+      const nextMinutes = new Set<number>();
+      for (const preferredMinute of preset.minutes) {
+        const resolvedMinute = findPresetMinute(dayKey, preferredMinute, nextMinutes);
+        if (resolvedMinute != null) {
+          nextMinutes.add(resolvedMinute);
+        }
       }
-    }
 
-    replaceDaySlots(
-      activeDayKey,
-      Array.from(nextMinutes)
+      return Array.from(nextMinutes)
         .sort((left, right) => left - right)
-        .map((minute) => buildBroadcastScheduleSlotIso(activeDayKey, minute)),
-    );
+        .map((minute) => buildBroadcastScheduleSlotIso(dayKey, minute));
+    });
     maxImpact('medium');
   }
 
@@ -262,216 +363,355 @@ export function BroadcastSchedulePlanner({
   ).length;
 
   return (
-    <section className={cn('broadcast-planner', disabled && 'is-disabled')}>
-      <div className="broadcast-planner__topline">
-        <div className="broadcast-planner__topline-copy">
-          <strong>Сначала день, потом время</strong>
-          <small>Тап по дню сразу переводит к слотам ниже.</small>
-        </div>
-        <div className="broadcast-planner__topline-badges">
-          <span>{selectedDayCount} дн.</span>
-          <span>{normalizedValue.length} слота</span>
-          {activeDaySlots.length > 0 ? (
-            <span>{`${formatBroadcastScheduleDay(activeDayKey)} · ${activeDaySlots.length}`}</span>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="broadcast-planner__calendar-card">
-        <div className="broadcast-planner__calendar-copy">
-          <strong>Календарь публикаций</strong>
-          <small>
-            {normalizedValue.length > 0
-              ? formatBroadcastScheduleSummary(normalizedValue)
-              : 'Свободные 30-минутные окна можно отметить в любом дне месяца.'}
-          </small>
+    <>
+      <section className={cn('broadcast-planner', disabled && 'is-disabled')}>
+        <div className="broadcast-planner__topline">
+          <div className="broadcast-planner__topline-copy">
+            <strong>Отметьте один или несколько дней</strong>
+            <small>Потом внизу откроется отдельный выбор времени для этих дат.</small>
+          </div>
+          <div className="broadcast-planner__topline-badges">
+            <span>{selectedDayCount} дн.</span>
+            <span>{normalizedValue.length} слота</span>
+            {pickedDayKeys.length > 0 ? <span>{`${pickedDayKeys.length} выбрано`}</span> : null}
+          </div>
         </div>
 
-        <div className="broadcast-planner__calendar-head">
-          <button
-            type="button"
-            className="broadcast-planner__month-button"
-            onClick={() => {
-              const currentIndex = monthKeys.indexOf(visibleMonthKey);
-              if (currentIndex > 0) {
-                setCurrentMonthKey(monthKeys[currentIndex - 1] ?? visibleMonthKey);
-                maxSelectionChanged();
-              }
-            }}
-            disabled={disabled || monthKeys.indexOf(visibleMonthKey) <= 0}
-            aria-label="Предыдущий месяц"
-          >
-            ←
-          </button>
-          <strong>{formatMonthKey(visibleMonthKey)}</strong>
-          <button
-            type="button"
-            className="broadcast-planner__month-button"
-            onClick={() => {
-              const currentIndex = monthKeys.indexOf(visibleMonthKey);
-              if (currentIndex >= 0 && currentIndex < monthKeys.length - 1) {
-                setCurrentMonthKey(monthKeys[currentIndex + 1] ?? visibleMonthKey);
-                maxSelectionChanged();
-              }
-            }}
-            disabled={disabled || monthKeys.indexOf(visibleMonthKey) >= monthKeys.length - 1}
-            aria-label="Следующий месяц"
-          >
-            →
-          </button>
-        </div>
-
-        <div className="broadcast-planner__weekdays" aria-hidden>
-          {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((label) => (
-            <span key={label}>{label}</span>
-          ))}
-        </div>
-
-        <div className="broadcast-planner__grid">
-          {monthCells.map((cell) => {
-            const dayKey = getBroadcastScheduleDayKey(cell);
-            const daySlots = getSelectedDaySlots(dayKey, normalizedValue);
-            const busyCount = occupiedSlots.filter(
-              (slot) => getBroadcastScheduleDayKey(slot) === dayKey && !selectedSet.has(slot),
-            ).length;
-            const isOutsideMonth = getMonthKey(cell) !== visibleMonthKey;
-            const isBeforeWindow = startOfDay(cell).getTime() < windowStart.getTime();
-            const isAfterWindow = startOfDay(cell).getTime() > windowEnd.getTime();
-            const isDisabled = disabled || isBeforeWindow || isAfterWindow;
-            const isToday = dayKey === getBroadcastScheduleDayKey(anchorNow);
-            const isActive = dayKey === activeDayKey;
-
-            return (
-              <button
-                key={`${visibleMonthKey}-${dayKey}`}
-                type="button"
-                className={cn(
-                  'broadcast-planner__day',
-                  isOutsideMonth && 'is-outside',
-                  daySlots.length > 0 && 'is-selected',
-                  busyCount > 0 && 'is-busy',
-                  isToday && 'is-today',
-                  isActive && 'is-active',
-                )}
-                disabled={isDisabled}
-                onClick={() => openDay(dayKey)}
-              >
-                <span className="broadcast-planner__day-number">{cell.getDate()}</span>
-                <span className="broadcast-planner__day-meta">
-                  {daySlots.length > 0 ? `${daySlots.length} сл.` : busyCount > 0 ? 'занято' : ' '}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      <div ref={sheetRef} className="broadcast-planner__sheet">
-        <div className="broadcast-planner__sheet-head">
-          <div>
-            <strong>{formatBroadcastScheduleDay(activeDayKey)}</strong>
+        <div className="broadcast-planner__calendar-card">
+          <div className="broadcast-planner__calendar-copy">
+            <strong>Календарь публикаций</strong>
             <small>
-              {activeDaySlots.length > 0
-                ? `${activeDaySlots.length} публикац. в этот день`
-                : 'Выберите слоты публикации'}
+              {normalizedValue.length > 0
+                ? formatBroadcastScheduleSummary(normalizedValue)
+                : 'Можно отметить несколько дней сразу, а потом одним действием задать им время.'}
             </small>
           </div>
-          <div className="broadcast-planner__sheet-facts">
-            {activeDayOccupiedCount > 0 ? <span>{activeDayOccupiedCount} занято</span> : null}
-            {activeDaySlots.length > 0 ? (
-              <button
-                type="button"
-                className="broadcast-planner__clear-button"
-                onClick={() => {
-                  replaceDaySlots(activeDayKey, []);
-                  maxImpact('soft');
-                }}
-                disabled={disabled}
-              >
-                Очистить день
-              </button>
-            ) : null}
+
+          <div className="broadcast-planner__calendar-head">
+            <button
+              type="button"
+              className="broadcast-planner__month-button"
+              onClick={() => {
+                const currentIndex = monthKeys.indexOf(visibleMonthKey);
+                if (currentIndex > 0) {
+                  setCurrentMonthKey(monthKeys[currentIndex - 1] ?? visibleMonthKey);
+                  maxSelectionChanged();
+                }
+              }}
+              disabled={disabled || monthKeys.indexOf(visibleMonthKey) <= 0}
+              aria-label="Предыдущий месяц"
+            >
+              ←
+            </button>
+            <strong>{formatMonthKey(visibleMonthKey)}</strong>
+            <button
+              type="button"
+              className="broadcast-planner__month-button"
+              onClick={() => {
+                const currentIndex = monthKeys.indexOf(visibleMonthKey);
+                if (currentIndex >= 0 && currentIndex < monthKeys.length - 1) {
+                  setCurrentMonthKey(monthKeys[currentIndex + 1] ?? visibleMonthKey);
+                  maxSelectionChanged();
+                }
+              }}
+              disabled={disabled || monthKeys.indexOf(visibleMonthKey) >= monthKeys.length - 1}
+              aria-label="Следующий месяц"
+            >
+              →
+            </button>
+          </div>
+
+          <div className="broadcast-planner__weekdays" aria-hidden>
+            {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((label) => (
+              <span key={label}>{label}</span>
+            ))}
+          </div>
+
+          <div className="broadcast-planner__grid">
+            {monthCells.map((cell) => {
+              const dayKey = getBroadcastScheduleDayKey(cell);
+              const daySlots = getSelectedDaySlots(dayKey, normalizedValue);
+              const busyCount = occupiedSlots.filter(
+                (slot) => getBroadcastScheduleDayKey(slot) === dayKey && !selectedSet.has(slot),
+              ).length;
+              const isOutsideMonth = getMonthKey(cell) !== visibleMonthKey;
+              const isBeforeWindow = startOfDay(cell).getTime() < windowStart.getTime();
+              const isAfterWindow = startOfDay(cell).getTime() > windowEnd.getTime();
+              const isDisabled = disabled || isBeforeWindow || isAfterWindow;
+              const isToday = dayKey === getBroadcastScheduleDayKey(anchorNow);
+              const isActive = dayKey === activeDayKey;
+              const isPicked = pickedDaySet.has(dayKey);
+
+              return (
+                <button
+                  key={`${visibleMonthKey}-${dayKey}`}
+                  type="button"
+                  className={cn(
+                    'broadcast-planner__day',
+                    isOutsideMonth && 'is-outside',
+                    daySlots.length > 0 && 'is-selected',
+                    busyCount > 0 && 'is-busy',
+                    isToday && 'is-today',
+                    isPicked && 'is-picked',
+                    isActive && isPicked && 'is-active',
+                  )}
+                  disabled={isDisabled}
+                  onClick={() => togglePickedDay(dayKey)}
+                >
+                  <span className="broadcast-planner__day-number">{cell.getDate()}</span>
+                  <span className="broadcast-planner__day-meta">
+                    {daySlots.length > 0
+                      ? `${daySlots.length} сл.`
+                      : isPicked
+                        ? 'выбран'
+                        : busyCount > 0
+                          ? 'занято'
+                          : ' '}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         </div>
 
-        {activeDaySlots.length > 0 ? (
-          <div className="broadcast-planner__selected-strip" aria-label="Выбранные слоты дня">
-            {activeDaySlots.map((slot) => (
-              <span key={slot} className="broadcast-planner__selected-chip">
-                {formatBroadcastScheduleSlot(slot).split(', ').pop()}
-              </span>
-            ))}
+        <div className="broadcast-planner__selection-bar">
+          <div className="broadcast-planner__selection-copy">
+            <strong>
+              {pickedDayKeys.length > 0
+                ? `Выбрано ${pickedDayKeys.length} ${pickedDayKeys.length === 1 ? 'день' : 'дня'}`
+                : 'Сначала отметьте дни в календаре'}
+            </strong>
+            <small>
+              {pickedDayKeys.length > 0
+                ? 'После этого откроется bottom sheet со слотами и быстрыми шаблонами.'
+                : 'Повторный тап снимает день из выбора.'}
+            </small>
+          </div>
+
+          <div className="broadcast-planner__selection-actions">
+            {pickedDayKeys.length > 0 ? (
+              <button
+                type="button"
+                className="broadcast-planner__selection-reset"
+                onClick={clearPickedSelection}
+                disabled={disabled}
+              >
+                Сбросить
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="broadcast-planner__selection-open"
+              onClick={openDaySheet}
+              disabled={disabled || pickedDayKeys.length === 0}
+            >
+              Выбрать время
+            </button>
+          </div>
+        </div>
+
+        {normalizedValue.length > 0 ? (
+          <div className="broadcast-planner__agenda">
+            <div className="broadcast-planner__agenda-head">
+              <strong>План публикаций</strong>
+              <small>{normalizedValue.length} слотов</small>
+            </div>
+            <div className="broadcast-planner__agenda-list">
+              {normalizedValue.map((slot) => (
+                <div key={slot} className="broadcast-planner__agenda-row">
+                  <strong>{formatBroadcastScheduleSlot(slot)}</strong>
+                  <span>{formatBroadcastScheduleDay(getBroadcastScheduleDayKey(slot))}</span>
+                </div>
+              ))}
+            </div>
           </div>
         ) : null}
 
-        <div className="broadcast-planner__preset-row">
-          {SLOT_PRESETS.map((preset) => (
-            <button
-              key={preset.id}
-              type="button"
-              className="broadcast-planner__preset"
-              onClick={() => applyPreset(preset)}
-              disabled={disabled}
-            >
-              {preset.label}
-            </button>
-          ))}
-        </div>
-
-        {SLOT_GROUPS.map((group) => (
-          <div key={group.label} className="broadcast-planner__time-group">
-            <div className="broadcast-planner__time-group-head">
-              <strong>{group.label}</strong>
-            </div>
-            <div className="broadcast-planner__time-grid">
-              {getMinutesList(group).map((minutes) => {
-                const slotIso = buildBroadcastScheduleSlotIso(activeDayKey, minutes);
-                const isSelected = activeDaySlots.includes(slotIso);
-                const isUnavailable = isSlotUnavailable(activeDayKey, minutes);
-
-                return (
-                  <button
-                    key={`${group.label}-${minutes}`}
-                    type="button"
-                    className={cn(
-                      'broadcast-planner__time-chip',
-                      isSelected && 'is-selected',
-                      isUnavailable && !isSelected && 'is-disabled',
-                    )}
-                    onClick={() => toggleSlot(minutes)}
-                    disabled={disabled || (isUnavailable && !isSelected)}
-                  >
-                    {formatMinuteLabel(minutes)}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-
         {error ? <small className="broadcast-planner__error">{error}</small> : null}
-      </div>
+      </section>
 
-      <div className="broadcast-planner__agenda">
-        <div className="broadcast-planner__agenda-head">
-          <strong>План публикаций</strong>
-          <small>{normalizedValue.length} слотов</small>
-        </div>
-        {normalizedValue.length > 0 ? (
-          <div className="broadcast-planner__agenda-list">
-            {normalizedValue.map((slot) => (
-              <div key={slot} className="broadcast-planner__agenda-row">
-                <strong>{formatBroadcastScheduleSlot(slot)}</strong>
-                <span>{formatBroadcastScheduleDay(getBroadcastScheduleDayKey(slot))}</span>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="broadcast-planner__agenda-empty">
-            Отметьте дни в календаре и выберите время публикации.
-          </div>
-        )}
-      </div>
-    </section>
+      {typeof document !== 'undefined' && isDaySheetOpen && pickedDayKeys.length > 0
+        ? createPortal(
+            <div className="broadcast-planner-sheet" aria-hidden={!isDaySheetOpen}>
+              <button
+                type="button"
+                className="broadcast-planner-sheet__backdrop"
+                aria-label="Закрыть выбор времени"
+                onClick={closeDaySheet}
+              />
+
+              <section
+                className="broadcast-planner-sheet__panel"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="broadcast-planner-sheet-title"
+              >
+                <div className="broadcast-planner-sheet__grabber" aria-hidden />
+
+                <div className="broadcast-planner__sheet">
+                  <div className="broadcast-planner__sheet-head">
+                    <div>
+                      <strong id="broadcast-planner-sheet-title">
+                        {pickedDayKeys.length > 1
+                          ? `Выбрано ${pickedDayKeys.length} дня`
+                          : formatBroadcastScheduleDay(activeDayKey)}
+                      </strong>
+                      <small>
+                        {applyToAllPickedDays && pickedDayKeys.length > 1
+                          ? 'Слоты и пресеты применятся ко всем выбранным дням.'
+                          : activeDaySlots.length > 0
+                            ? `${activeDaySlots.length} публикац. в этот день`
+                            : 'Выберите слоты публикации'}
+                      </small>
+                    </div>
+
+                    <div className="broadcast-planner__sheet-facts">
+                      {activeDayOccupiedCount > 0 && !applyToAllPickedDays ? (
+                        <span>{activeDayOccupiedCount} занято</span>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="broadcast-planner__clear-button"
+                        onClick={clearTargetDays}
+                        disabled={disabled}
+                      >
+                        {applyToAllPickedDays && pickedDayKeys.length > 1
+                          ? 'Очистить выбранные'
+                          : 'Очистить день'}
+                      </button>
+                      <button
+                        type="button"
+                        className="broadcast-planner__clear-button"
+                        onClick={closeDaySheet}
+                      >
+                        Готово
+                      </button>
+                    </div>
+                  </div>
+
+                  {pickedDayKeys.length > 1 ? (
+                    <>
+                      <div className="broadcast-planner__day-tabs">
+                        {pickedDayKeys.map((dayKey) => (
+                          <button
+                            key={dayKey}
+                            type="button"
+                            className={cn(
+                              'broadcast-planner__day-tab',
+                              dayKey === activeDayKey && !applyToAllPickedDays && 'is-active',
+                              getSelectedDaySlots(dayKey, normalizedValue).length > 0 && 'has-slots',
+                            )}
+                            onClick={() => {
+                              setActiveDayKey(dayKey);
+                              setApplyToAllPickedDays(false);
+                              maxSelectionChanged();
+                            }}
+                          >
+                            <strong>{formatDayChipLabel(dayKey)}</strong>
+                            <small>{`${getSelectedDaySlots(dayKey, normalizedValue).length} сл.`}</small>
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="broadcast-planner__mode-row">
+                        <button
+                          type="button"
+                          className={cn(
+                            'broadcast-planner__mode-chip',
+                            !applyToAllPickedDays && 'is-active',
+                          )}
+                          onClick={() => setApplyToAllPickedDays(false)}
+                        >
+                          Один день
+                        </button>
+                        <button
+                          type="button"
+                          className={cn(
+                            'broadcast-planner__mode-chip',
+                            applyToAllPickedDays && 'is-active',
+                          )}
+                          onClick={() => setApplyToAllPickedDays(true)}
+                        >
+                          Все выбранные
+                        </button>
+                      </div>
+                    </>
+                  ) : null}
+
+                  {!applyToAllPickedDays && activeDaySlots.length > 0 ? (
+                    <div className="broadcast-planner__selected-strip" aria-label="Выбранные слоты дня">
+                      {activeDaySlots.map((slot) => (
+                        <span key={slot} className="broadcast-planner__selected-chip">
+                          {formatBroadcastScheduleSlot(slot).split(', ').pop()}
+                        </span>
+                      ))}
+                    </div>
+                  ) : applyToAllPickedDays && pickedDayKeys.length > 1 ? (
+                    <div className="broadcast-planner__sheet-note">
+                      Одинаковые часы будут поставлены сразу на все отмеченные даты.
+                    </div>
+                  ) : null}
+
+                  <div className="broadcast-planner__preset-row">
+                    {SLOT_PRESETS.map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        className="broadcast-planner__preset"
+                        onClick={() => applyPreset(preset)}
+                        disabled={disabled}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {SLOT_GROUPS.map((group) => (
+                    <div key={group.label} className="broadcast-planner__time-group">
+                      <div className="broadcast-planner__time-group-head">
+                        <strong>{group.label}</strong>
+                      </div>
+                      <div className="broadcast-planner__time-grid">
+                        {getMinutesList(group).map((minutes) => {
+                          const selectedCountForTargets = targetDayKeys.filter((dayKey) =>
+                            isSlotSelectedForDay(dayKey, minutes),
+                          ).length;
+                          const isSelected = selectedCountForTargets === targetDayKeys.length;
+                          const isMixed =
+                            selectedCountForTargets > 0 &&
+                            selectedCountForTargets < targetDayKeys.length;
+                          const hasConflict = targetDayKeys.some(
+                            (dayKey) =>
+                              isSlotUnavailable(dayKey, minutes) &&
+                              !isSlotSelectedForDay(dayKey, minutes),
+                          );
+
+                          return (
+                            <button
+                              key={`${group.label}-${minutes}`}
+                              type="button"
+                              className={cn(
+                                'broadcast-planner__time-chip',
+                                isSelected && 'is-selected',
+                                isMixed && 'is-mixed',
+                                hasConflict && !isSelected && !isMixed && 'is-disabled',
+                              )}
+                              onClick={() => toggleSlot(minutes)}
+                              disabled={disabled || (hasConflict && !isSelected && !isMixed)}
+                            >
+                              {formatMinuteLabel(minutes)}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
   );
 }
