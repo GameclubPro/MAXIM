@@ -582,16 +582,9 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   const audienceJoined = stats.official.audience.joined ?? 0;
   const audienceLeft = stats.official.audience.left ?? 0;
   const audienceNet = stats.official.audience.net ?? audienceJoined - audienceLeft;
-  const netTone =
-    audienceNet > 0
-      ? 'success'
-      : audienceNet < 0
-        ? 'danger'
-        : 'neutral';
+  const netTone = audienceNet > 0 ? 'success' : audienceNet < 0 ? 'danger' : 'neutral';
   const movementTotal = audienceJoined + audienceLeft;
-  const joinedShare = movementTotal
-    ? Math.round((audienceJoined / movementTotal) * 100)
-    : 50;
+  const joinedShare = movementTotal ? Math.round((audienceJoined / movementTotal) * 100) : 50;
   const leftShare = movementTotal ? 100 - joinedShare : 50;
   const averageViewsPerPost =
     stats.meta.viewsAvailable && stats.official.content.posts > 0
@@ -605,8 +598,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     stats.meta.viewsAvailable && stats.official.content.views > 0
       ? (stats.official.content.reactions / stats.official.content.views) * 100
       : null;
-  const chartTitle =
-    effectiveChartTab === 'audience' ? 'Динамика аудитории' : 'Охват публикаций';
+  const chartTitle = effectiveChartTab === 'audience' ? 'Динамика аудитории' : 'Охват публикаций';
   const chartSummary =
     effectiveChartTab === 'audience'
       ? `${formatCount(audienceJoined)} вошли · ${formatCount(audienceLeft)} вышли`
@@ -647,7 +639,10 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
             {statsQuery.isFetching ? (
               <span className="channel-insights__pulse" aria-label="Обновляем" title="Обновляем" />
             ) : (
-              <span className="channel-insights__pulse channel-insights__pulse--idle" aria-hidden="true" />
+              <span
+                className="channel-insights__pulse channel-insights__pulse--idle"
+                aria-hidden="true"
+              />
             )}
           </div>
         </div>
@@ -687,7 +682,9 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
 
           <article className="channel-insights__ledger-card">
             <div className="channel-insights__ledger-grid">
-              <article className={`channel-insights__ledger-metric channel-insights__ledger-metric--${netTone}`}>
+              <article
+                className={`channel-insights__ledger-metric channel-insights__ledger-metric--${netTone}`}
+              >
                 <small>Прирост</small>
                 <strong>{formatSignedCount(audienceNet)}</strong>
                 <span>
@@ -762,7 +759,8 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
 
         <MembershipActivityFeed
           title="Движение подписчиков"
-          subtitle={null}
+          subtitle="Лента входов и выходов по дням, без перегруженных карточек."
+          variant="immersive"
           joinedLabel="каналу"
           leftLabel="канал"
           filter={activityFeed.filter}
@@ -778,7 +776,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
 
         <div className="channel-insights__secondary-layout">
           {stats.official.content.topReactions.length > 0 ? (
-            <section className="channel-insights__panel channel-insights__panel--reactions">
+            <section className="channel-insights__panel channel-insights__panel--reactions channel-insights__panel--warm">
               <div className="channel-insights__panel-head">
                 <div className="channel-insights__panel-copy">
                   <strong>Топ реакций</strong>
@@ -797,7 +795,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
             </section>
           ) : null}
 
-          <section className="channel-insights__panel channel-insights__panel--secondary">
+          <section className="channel-insights__panel channel-insights__panel--secondary channel-insights__panel--cool">
             <div className="channel-insights__panel-head">
               <div className="channel-insights__panel-copy">
                 <strong>Через приложение</strong>
@@ -806,25 +804,25 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
             </div>
 
             <div className="channel-insights__secondary-grid">
-              <article className="channel-insights__secondary-metric">
+              <article className="channel-insights__secondary-metric channel-insights__secondary-metric--comments">
                 <small>Комментарии</small>
                 <strong>{formatCount(stats.secondary.comments)}</strong>
                 <span>Авторов {formatCount(stats.secondary.commentAuthors)}</span>
               </article>
 
-              <article className="channel-insights__secondary-metric">
+              <article className="channel-insights__secondary-metric channel-insights__secondary-metric--ideas">
                 <small>Идеи</small>
                 <strong>{formatCount(stats.secondary.suggestions)}</strong>
                 <span>Авторов {formatCount(stats.secondary.suggestionAuthors)}</span>
               </article>
 
-              <article className="channel-insights__secondary-metric">
+              <article className="channel-insights__secondary-metric channel-insights__secondary-metric--delivery">
                 <small>Доставлено</small>
                 <strong>{formatCount(stats.secondary.suggestionsDelivered)}</strong>
                 <span>Ошибок {formatCount(stats.secondary.suggestionsFailed)}</span>
               </article>
 
-              <article className="channel-insights__secondary-metric">
+              <article className="channel-insights__secondary-metric channel-insights__secondary-metric--buttons">
                 <small>Посты с кнопками</small>
                 <strong>{formatCount(stats.secondary.postsWithButtons)}</strong>
                 <span>Через мини-приложение</span>
@@ -837,7 +835,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
           </section>
         </div>
 
-        <section className="channel-insights__panel channel-insights__panel--meta">
+        <section className="channel-insights__panel channel-insights__panel--meta channel-insights__panel--neutral">
           <div className="channel-insights__panel-head">
             <div className="channel-insights__panel-copy">
               <strong>Контекст канала</strong>
@@ -847,27 +845,27 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
 
           <div className="channel-insights__facts">
             {stats.channel.lastEventAt ? (
-              <article className="channel-insights__fact">
+              <article className="channel-insights__fact channel-insights__fact--activity">
                 <small>Активность</small>
                 <strong>{formatDateTime(stats.channel.lastEventAt)}</strong>
               </article>
             ) : null}
 
             {stats.official.content.lastPublishedAt ? (
-              <article className="channel-insights__fact">
+              <article className="channel-insights__fact channel-insights__fact--published">
                 <small>Последний пост</small>
                 <strong>{formatDateTime(stats.official.content.lastPublishedAt)}</strong>
               </article>
             ) : null}
 
             {stats.secondary.lastBotActivityAt ? (
-              <article className="channel-insights__fact">
+              <article className="channel-insights__fact channel-insights__fact--app">
                 <small>Через приложение</small>
                 <strong>{formatDateTime(stats.secondary.lastBotActivityAt)}</strong>
               </article>
             ) : null}
 
-            <article className="channel-insights__fact">
+            <article className="channel-insights__fact channel-insights__fact--link">
               <small>Ссылка</small>
               {stats.channel.isPublic && stats.channel.link ? (
                 <a

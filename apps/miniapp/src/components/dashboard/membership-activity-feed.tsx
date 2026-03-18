@@ -5,6 +5,7 @@ import { SegmentedControl } from '../ui/segmented-control';
 type MembershipActivityFeedProps = {
   title?: string | null;
   subtitle?: string | null;
+  variant?: 'default' | 'immersive';
   joinedLabel: string;
   leftLabel: string;
   filter: MembershipActivityFilter;
@@ -87,6 +88,7 @@ function resolveDisplayName(name: string): string {
 export function MembershipActivityFeed({
   title = null,
   subtitle = null,
+  variant = 'default',
   joinedLabel,
   leftLabel,
   filter,
@@ -100,8 +102,22 @@ export function MembershipActivityFeed({
   onRetry,
 }: MembershipActivityFeedProps) {
   const groups = useMemo(() => {
-    const result: Array<{ key: string; label: string; items: MembershipActivityItem[] }> = [];
-    const bucket = new Map<string, { label: string; items: MembershipActivityItem[] }>();
+    const result: Array<{
+      key: string;
+      label: string;
+      items: MembershipActivityItem[];
+      joinedCount: number;
+      leftCount: number;
+    }> = [];
+    const bucket = new Map<
+      string,
+      {
+        label: string;
+        items: MembershipActivityItem[];
+        joinedCount: number;
+        leftCount: number;
+      }
+    >();
 
     items.forEach((item) => {
       const parsed = new Date(item.createdAt);
@@ -112,12 +128,19 @@ export function MembershipActivityFeed({
 
       if (existing) {
         existing.items.push(item);
+        if (item.type === 'joined') {
+          existing.joinedCount += 1;
+        } else {
+          existing.leftCount += 1;
+        }
         return;
       }
 
       const entry = {
         label: resolveDayLabel(item.createdAt),
         items: [item],
+        joinedCount: item.type === 'joined' ? 1 : 0,
+        leftCount: item.type === 'left' ? 1 : 0,
       };
       bucket.set(key, entry);
       result.push({ key, ...entry });
@@ -127,7 +150,10 @@ export function MembershipActivityFeed({
   }, [items]);
 
   return (
-    <section className="membership-feed" aria-label="История входов и выходов">
+    <section
+      className={`membership-feed membership-feed--${variant}`}
+      aria-label="История входов и выходов"
+    >
       {title || subtitle ? (
         <div className="membership-feed__head">
           <div className="membership-feed__title">
@@ -172,7 +198,24 @@ export function MembershipActivityFeed({
         <div className="membership-feed__timeline">
           {groups.map((group) => (
             <section key={group.key} className="membership-feed__group">
-              <div className="membership-feed__day">{group.label}</div>
+              <div className="membership-feed__day">
+                <div className="membership-feed__day-copy">
+                  <span className="membership-feed__day-label">{group.label}</span>
+                  <small>{`${group.items.length} событий`}</small>
+                </div>
+                <div className="membership-feed__day-stats" aria-hidden="true">
+                  {group.joinedCount > 0 ? (
+                    <span className="membership-feed__day-pill membership-feed__day-pill--joined">
+                      +{group.joinedCount}
+                    </span>
+                  ) : null}
+                  {group.leftCount > 0 ? (
+                    <span className="membership-feed__day-pill membership-feed__day-pill--left">
+                      -{group.leftCount}
+                    </span>
+                  ) : null}
+                </div>
+              </div>
               <div className="membership-feed__group-list">
                 {group.items.map((item, index) => {
                   const displayName = resolveDisplayName(item.userDisplayName);
@@ -187,10 +230,7 @@ export function MembershipActivityFeed({
                           index === group.items.length - 1 ? 'is-last' : ''
                         }`}
                       >
-                        <time
-                          className="membership-feed__time"
-                          dateTime={item.createdAt}
-                        >
+                        <time className="membership-feed__time" dateTime={item.createdAt}>
                           {formatActivityTime(item.createdAt)}
                         </time>
                         <span className="membership-feed__dot" aria-hidden="true" />
