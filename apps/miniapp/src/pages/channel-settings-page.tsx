@@ -926,16 +926,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastScheduleReady = broadcastScheduledSlots.length > 0 && !broadcastPlannerPending;
   const showBroadcastPrimaryAction =
     handoffBroadcastMutation.isPending || (broadcastScheduleReady && broadcastButtonDraftValid);
-  const broadcastActionTitle = broadcastPlannerPending
-    ? 'Закончите настройку расписания'
-    : broadcastScheduledSlots.length === 0
-      ? 'Сначала соберите календарь'
-      : 'Проверьте кнопку';
-  const broadcastActionHint = broadcastPlannerPending
-    ? 'Сначала выберите количество отправок, потом точное время, и только после этого откроется переход в бота.'
-    : broadcastScheduledSlots.length === 0
-      ? 'Отметьте дни и назначьте им время, после этого откроется переход в бота.'
-      : 'Заполните ссылку и текст CTA или выключите кнопку, чтобы продолжить.';
   const broadcastHeaderSummary = [
     broadcastBotHasContent ? 'контент уже в боте' : 'контент в боте',
     broadcastHasButton ? 'CTA' : null,
@@ -961,21 +951,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     broadcastScheduledSlots.length > 0 ? 'Календ' : broadcastHasButton ? 'CTA' : 'Бот';
   const broadcastDrilldownFooter = (
     <div className="mailing-action-bar">
-      {showBroadcastPrimaryAction ? (
-        <button
-          type="button"
-          className="button button--accent mailing-action-bar__send"
-          onClick={handleSendChannelBroadcast}
-          disabled={handoffBroadcastMutation.isPending}
-        >
-          {handoffBroadcastMutation.isPending ? 'Открываем бота...' : 'Продолжить в боте'}
-        </button>
-      ) : (
-        <div className="mailing-action-bar__note" aria-live="polite">
-          <strong>{broadcastActionTitle}</strong>
-          <small>{broadcastActionHint}</small>
-        </div>
-      )}
+      <button
+        type="button"
+        className="button button--accent mailing-action-bar__send"
+        onClick={handleSendChannelBroadcast}
+        disabled={handoffBroadcastMutation.isPending}
+      >
+        {handoffBroadcastMutation.isPending ? 'Открываем бота...' : 'Продолжить в боте'}
+      </button>
       <button
         type="button"
         className="button button--ghost mailing-action-bar__clear"
@@ -1384,7 +1367,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           title="Рассылки"
           summary={broadcastHeaderSummary}
           onClose={() => toggleSection('broadcast')}
-          footer={broadcastDrilldownFooter}
+          footer={showBroadcastPrimaryAction ? broadcastDrilldownFooter : undefined}
         >
           <div
             id="channel-settings-broadcast"

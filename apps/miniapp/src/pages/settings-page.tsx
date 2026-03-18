@@ -2956,40 +2956,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingScheduleReady = mailingScheduledSlots.length > 0 && !mailingPlannerPending;
   const showMailingPrimaryAction =
     isMailingBusy || (mailingScheduleReady && mailingButtonDraftValid);
-  const mailingActionTitle = mailingPlannerPending
-    ? 'Закончите настройку расписания'
-    : mailingScheduledSlots.length === 0
-      ? 'Сначала соберите календарь'
-      : 'Проверьте кнопку';
-  const mailingActionHint = mailingPlannerPending
-    ? 'Сначала выберите количество отправок, потом точное время, и только после этого станет доступен следующий шаг.'
-    : mailingScheduledSlots.length === 0
-      ? 'Отметьте дни и назначьте им время, после этого станет доступен следующий шаг.'
-      : 'Заполните ссылку и текст CTA или выключите кнопку, чтобы продолжить.';
   const mailingSendDisabled = isMailingBusy;
   const mailingDrilldownFooter = (
     <div className="mailing-action-bar">
-      {showMailingPrimaryAction ? (
-        <button
-          type="button"
-          className="button button--accent mailing-action-bar__send"
-          onClick={handleSendBroadcast}
-          disabled={mailingSendDisabled}
-        >
-          {isUpdatingManagedBroadcast
-            ? 'Сохраняем...'
-            : handoffBroadcastMutation.isPending
-              ? 'Открываем бота...'
-              : editingManagedBroadcast
-                ? 'Сохранить рассылку'
-                : 'Продолжить в боте'}
-        </button>
-      ) : (
-        <div className="mailing-action-bar__note" aria-live="polite">
-          <strong>{mailingActionTitle}</strong>
-          <small>{mailingActionHint}</small>
-        </div>
-      )}
+      <button
+        type="button"
+        className="button button--accent mailing-action-bar__send"
+        onClick={handleSendBroadcast}
+        disabled={mailingSendDisabled}
+      >
+        {isUpdatingManagedBroadcast
+          ? 'Сохраняем...'
+          : handoffBroadcastMutation.isPending
+            ? 'Открываем бота...'
+            : editingManagedBroadcast
+              ? 'Сохранить рассылку'
+              : 'Продолжить в боте'}
+      </button>
       <button
         type="button"
         className="button button--ghost mailing-action-bar__clear"
@@ -7395,7 +7378,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 title="Рассылки"
                 summary={mailingHeaderSummary}
                 onClose={() => toggleSection('mailing')}
-                footer={mailingDrilldownFooter}
+                footer={showMailingPrimaryAction ? mailingDrilldownFooter : undefined}
               >
                 <div
                   id="settings-mailing-content"

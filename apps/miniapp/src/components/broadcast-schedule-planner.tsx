@@ -479,16 +479,10 @@ export function BroadcastSchedulePlanner({
       <section className={cn('broadcast-planner', disabled && 'is-disabled')}>
         <div className="broadcast-planner__topline">
           <div className="broadcast-planner__topline-copy">
-            <strong>Выберите дни публикации</strong>
+            <strong>Шаг 1. Выберите дни публикации</strong>
             <small>
-              Можно отметить сразу несколько дат, а затем одним действием задать им время в
-              отдельной шторке.
+              Сначала отметьте даты. Следующие шаги с количеством и временем откроются отдельно.
             </small>
-          </div>
-          <div className="broadcast-planner__topline-badges">
-            <span>{selectedDayCount} дн.</span>
-            <span>{normalizedValue.length} слота</span>
-            {pickedDayKeys.length > 0 ? <span>{pickedDayLabel}</span> : null}
           </div>
         </div>
 
@@ -590,42 +584,6 @@ export function BroadcastSchedulePlanner({
               );
             })}
           </div>
-          <div className="broadcast-planner__selection-bar">
-            <div className="broadcast-planner__selection-copy">
-              <strong>
-                {pickedDayKeys.length > 0
-                  ? `Шаг 1 готов: ${pickedDayLabel}`
-                  : 'Можно отметить сразу несколько дат'}
-              </strong>
-              <small>
-                {pickedDayKeys.length > 0
-                  ? 'Дальше отдельно выберите количество отправок, а потом точное время.'
-                  : 'Повторный тап по дате снимает её из выбора.'}
-              </small>
-            </div>
-
-            <div className="broadcast-planner__selection-actions">
-              {pickedDayKeys.length > 0 ? (
-                <button
-                  type="button"
-                  className="broadcast-planner__selection-reset"
-                  onClick={clearPickedSelection}
-                  disabled={disabled}
-                >
-                  Сбросить
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="broadcast-planner__selection-open"
-                onClick={openCountStep}
-                disabled={disabled || pickedDayKeys.length === 0}
-              >
-                Выбрать количество
-              </button>
-            </div>
-          </div>
-
           {pickedDayKeys.length > 0 ? (
             <div className="broadcast-planner__picked-strip" aria-label="Выбранные дни">
               {pickedDayKeys.map((dayKey) => {
@@ -655,6 +613,42 @@ export function BroadcastSchedulePlanner({
               })}
             </div>
           ) : null}
+
+          <div className="broadcast-planner__selection-bar">
+            <div className="broadcast-planner__selection-copy">
+              <strong>
+                {pickedDayKeys.length > 0
+                  ? `Выбрано: ${pickedDayLabel}`
+                  : 'Выберите хотя бы один день'}
+              </strong>
+              <small>
+                {pickedDayKeys.length > 0
+                  ? 'Когда даты выбраны, переходите к следующему шагу.'
+                  : 'Повторный тап по дате снимает выбор.'}
+              </small>
+            </div>
+
+            <div className="broadcast-planner__selection-actions">
+              {pickedDayKeys.length > 0 ? (
+                <button
+                  type="button"
+                  className="broadcast-planner__selection-reset"
+                  onClick={clearPickedSelection}
+                  disabled={disabled}
+                >
+                  Сбросить
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="broadcast-planner__selection-open"
+                onClick={openCountStep}
+                disabled={disabled || pickedDayKeys.length === 0}
+              >
+                Далее
+              </button>
+            </div>
+          </div>
         </div>
 
         {normalizedValue.length > 0 ? (

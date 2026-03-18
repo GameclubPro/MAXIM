@@ -5015,11 +5015,6 @@
   border-color: rgba(62, 96, 127, 0.2);
 }
 
-.mailing-action-bar__note {
-  display: grid;
-  gap: 4px;
-}
-
 .channel-broadcast-studio {
   display: grid;
   gap: 14px;
@@ -5054,25 +5049,6 @@
   font-size: 0.76rem;
   line-height: 1.4;
   color: var(--text-secondary);
-}
-
-.broadcast-planner__topline-badges {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.broadcast-planner__topline-badges span {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  border-radius: 999px;
-  padding: 0 9px;
-  background: rgba(11, 132, 255, 0.08);
-  border: 1px solid rgba(11, 132, 255, 0.14);
-  font-size: 0.7rem;
-  font-weight: 700;
-  color: #0c5e99;
 }
 
 .broadcast-planner__calendar-card,
