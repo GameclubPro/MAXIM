@@ -2,7 +2,10 @@ import type { ChannelAutoPostButtonsMode, ChannelSettings } from '@maxim/contrac
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
-import { BroadcastSchedulePlanner } from '../components/broadcast-schedule-planner';
+import {
+  BroadcastSchedulePlanner,
+  type BroadcastSchedulePlannerSelectionState,
+} from '../components/broadcast-schedule-planner';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { MaxMarkdownEditor } from '../components/max-markdown-editor';
 import { ManagedPollCard } from '../components/managed-poll-card';
@@ -66,6 +69,12 @@ const INITIAL_EXPANDED_CHANNEL_SECTIONS: Record<ChannelSettingsSectionKey, boole
   broadcast: false,
   poll: false,
   giveaway: false,
+};
+const EMPTY_BROADCAST_PLANNER_STATE: BroadcastSchedulePlannerSelectionState = {
+  pickedDayCount: 0,
+  selectedDayCount: 0,
+  slotCount: 0,
+  isDaySheetOpen: false,
 };
 
 function buildBroadcastScheduleIso(days: number, time: string): string | null {
@@ -446,6 +455,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     useState(MIN_BROADCAST_CYCLE_HOURS);
   const [broadcastCycleCount, setBroadcastCycleCount] = useState(2);
   const [broadcastCycleError, setBroadcastCycleError] = useState('');
+  const [broadcastPlannerResetKey, setBroadcastPlannerResetKey] = useState(0);
+  const [broadcastPlannerState, setBroadcastPlannerState] =
+    useState<BroadcastSchedulePlannerSelectionState>(EMPTY_BROADCAST_PLANNER_STATE);
   const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
 
   const settingsScreenQuery = useQuery({
@@ -520,6 +532,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastImageFileName('');
     setBroadcastScheduleError('');
     setBroadcastCycleError('');
+    resetBroadcastPlanner();
     setExpandedSections((current) => ({ ...current, broadcast: true }));
     if (broadcastHandoffStateQuery.data.hasContent) {
       pushToast({
@@ -553,6 +566,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastCycleEveryHours(MIN_BROADCAST_CYCLE_HOURS);
     setBroadcastCycleCount(2);
     setBroadcastCycleError('');
+    resetBroadcastPlanner();
   }, [chatId]);
 
   useEffect(() => {
@@ -900,6 +914,28 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         : 'Кнопка будет только в этом посте.';
   const broadcastHasButton = broadcastButtonEnabled && Boolean(broadcastButtonText.trim());
   const broadcastSchedulePreview = `${countBroadcastScheduleDays(broadcastScheduledSlots)} дн. · ${broadcastScheduledSlots.length} слота`;
+  const normalizedBroadcastButtonUrl = broadcastButtonUrl.trim();
+  const normalizedBroadcastButtonText = broadcastButtonText.trim();
+  const broadcastButtonDraftValid =
+    !broadcastButtonEnabled ||
+    (isHttpUrl(normalizedBroadcastButtonUrl) &&
+      normalizedBroadcastButtonText.length > 0 &&
+      normalizedBroadcastButtonText.length <= 32);
+  const broadcastPlannerPending =
+    broadcastPlannerState.pickedDayCount > 0 || broadcastPlannerState.isDaySheetOpen;
+  const broadcastScheduleReady = broadcastScheduledSlots.length > 0 && !broadcastPlannerPending;
+  const showBroadcastPrimaryAction =
+    handoffBroadcastMutation.isPending || (broadcastScheduleReady && broadcastButtonDraftValid);
+  const broadcastActionTitle = broadcastPlannerPending
+    ? 'Закончите выбор времени'
+    : broadcastScheduledSlots.length === 0
+      ? 'Сначала соберите календарь'
+      : 'Проверьте кнопку';
+  const broadcastActionHint = broadcastPlannerPending
+    ? 'Для отмеченных дней сначала выберите 1, 2 или 3 отправки либо задайте точные часы.'
+    : broadcastScheduledSlots.length === 0
+      ? 'Отметьте дни и назначьте им время, после этого откроется переход в бота.'
+      : 'Заполните ссылку и текст CTA или выключите кнопку, чтобы продолжить.';
   const broadcastHeaderSummary = [
     broadcastBotHasContent ? 'контент уже в боте' : 'контент в боте',
     broadcastHasButton ? 'CTA' : null,
@@ -925,14 +961,21 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     broadcastScheduledSlots.length > 0 ? 'Календ' : broadcastHasButton ? 'CTA' : 'Бот';
   const broadcastDrilldownFooter = (
     <div className="mailing-action-bar">
-      <button
-        type="button"
-        className="button button--accent mailing-action-bar__send"
-        onClick={handleSendChannelBroadcast}
-        disabled={handoffBroadcastMutation.isPending}
-      >
-        {handoffBroadcastMutation.isPending ? 'Открываем бота...' : 'Продолжить в боте'}
-      </button>
+      {showBroadcastPrimaryAction ? (
+        <button
+          type="button"
+          className="button button--accent mailing-action-bar__send"
+          onClick={handleSendChannelBroadcast}
+          disabled={handoffBroadcastMutation.isPending}
+        >
+          {handoffBroadcastMutation.isPending ? 'Открываем бота...' : 'Продолжить в боте'}
+        </button>
+      ) : (
+        <div className="mailing-action-bar__note" aria-live="polite">
+          <strong>{broadcastActionTitle}</strong>
+          <small>{broadcastActionHint}</small>
+        </div>
+      )}
       <button
         type="button"
         className="button button--ghost mailing-action-bar__clear"
@@ -943,6 +986,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       </button>
     </div>
   );
+
+  function resetBroadcastPlanner() {
+    setBroadcastPlannerState(EMPTY_BROADCAST_PLANNER_STATE);
+    setBroadcastPlannerResetKey((current) => current + 1);
+  }
 
   function resetBroadcastComposer() {
     setBroadcastText('');
@@ -967,6 +1015,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastCycleEveryHours(MIN_BROADCAST_CYCLE_HOURS);
     setBroadcastCycleCount(2);
     setBroadcastCycleError('');
+    resetBroadcastPlanner();
   }
 
   async function handleSaveChannelSection(section: ChannelSettingsSectionKey) {
@@ -1345,10 +1394,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
               <div className="settings-section__collapse-inner">
                 <div className="channel-broadcast-studio">
                   <BroadcastSchedulePlanner
+                    resetKey={broadcastPlannerResetKey}
                     value={broadcastScheduledSlots}
-                    occupiedSlots={managedBroadcasts.flatMap((broadcast) => broadcast.scheduledSlots)}
+                    occupiedSlots={managedBroadcasts.flatMap(
+                      (broadcast) => broadcast.scheduledSlots,
+                    )}
                     error={broadcastScheduleError}
                     disabled={handoffBroadcastMutation.isPending}
+                    onSelectionStateChange={setBroadcastPlannerState}
                     onChange={(nextValue) => {
                       setBroadcastScheduledSlots(nextValue);
                       if (broadcastScheduleError) {

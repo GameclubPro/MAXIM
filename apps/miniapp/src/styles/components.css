@@ -5015,6 +5015,11 @@
   border-color: rgba(62, 96, 127, 0.2);
 }
 
+.mailing-action-bar__note {
+  display: grid;
+  gap: 4px;
+}
+
 .channel-broadcast-studio {
   display: grid;
   gap: 14px;
@@ -6176,7 +6181,6 @@
   .mailing-action-bar__clear {
     min-width: 136px;
   }
-
   .rules-studio__layout {
     grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
     align-items: start;

@@ -23,7 +23,10 @@ import botSpeechRobotImage from '../../../../bot.webp';
 import botSpeechFriendlyImage from '../../../../frendly.webp';
 import botSpeechIronicImage from '../../../../joker.webp';
 import botSpeechPoliceImage from '../../../../police.webp';
-import { BroadcastSchedulePlanner } from '../components/broadcast-schedule-planner';
+import {
+  BroadcastSchedulePlanner,
+  type BroadcastSchedulePlannerSelectionState,
+} from '../components/broadcast-schedule-planner';
 import { MaxMarkdownEditor } from '../components/max-markdown-editor';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { ManagedPollCard } from '../components/managed-poll-card';
@@ -1178,6 +1181,13 @@ type WarnMessageEditorProps = {
   onReset: () => void;
 };
 
+const EMPTY_BROADCAST_PLANNER_STATE: BroadcastSchedulePlannerSelectionState = {
+  pickedDayCount: 0,
+  selectedDayCount: 0,
+  slotCount: 0,
+  isDaySheetOpen: false,
+};
+
 function WarnMessageEditor({
   editorKey,
   botSpeechStyle,
@@ -1268,6 +1278,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [mailingImageError, setMailingImageError] = useState('');
   const [mailingScheduleError, setMailingScheduleError] = useState('');
   const [mailingCycleError, setMailingCycleError] = useState('');
+  const [mailingPlannerResetKey, setMailingPlannerResetKey] = useState(0);
+  const [mailingPlannerState, setMailingPlannerState] =
+    useState<BroadcastSchedulePlannerSelectionState>(EMPTY_BROADCAST_PLANNER_STATE);
   const [editingManagedBroadcast, setEditingManagedBroadcast] =
     useState<ManagedBroadcastDetails | null>(null);
   const [expandedManagedBroadcastId, setExpandedManagedBroadcastId] = useState<string | null>(null);
@@ -1335,6 +1348,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageError('');
     setMailingScheduleError('');
     setMailingCycleError('');
+    resetMailingPlanner();
     setEditingManagedBroadcast(null);
     setExpandedManagedBroadcastId(null);
     setDuplicateWindowInputValues({});
@@ -1470,6 +1484,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageFileName('');
     setMailingScheduleError('');
     setMailingCycleError('');
+    resetMailingPlanner();
     setExpandedSections((current) => ({ ...current, mailing: true }));
     if (broadcastHandoffStateQuery.data.hasContent) {
       pushToast({
@@ -2455,6 +2470,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageError('');
     setMailingScheduleError('');
     setMailingCycleError('');
+    resetMailingPlanner();
   }
 
   function applyManagedBroadcastToComposer(broadcast: ManagedBroadcastDetails) {
@@ -2482,6 +2498,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageError('');
     setMailingScheduleError('');
     setMailingCycleError('');
+    resetMailingPlanner();
   }
 
   function handleEditManagedBroadcast(broadcastId: string) {
@@ -2927,23 +2944,52 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       : mailingApplyToAllChats && canApplyToAllChats
         ? 'Все'
         : 'Бот';
+  const normalizedMailingButtonUrl = mailingButtonUrl.trim();
+  const normalizedMailingButtonText = mailingButtonText.trim();
+  const mailingButtonDraftValid =
+    !mailingButtonEnabled ||
+    (isValidHttpUrl(normalizedMailingButtonUrl) &&
+      normalizedMailingButtonText.length > 0 &&
+      normalizedMailingButtonText.length <= 32);
+  const mailingPlannerPending =
+    mailingPlannerState.pickedDayCount > 0 || mailingPlannerState.isDaySheetOpen;
+  const mailingScheduleReady = mailingScheduledSlots.length > 0 && !mailingPlannerPending;
+  const showMailingPrimaryAction =
+    isMailingBusy || (mailingScheduleReady && mailingButtonDraftValid);
+  const mailingActionTitle = mailingPlannerPending
+    ? 'Закончите выбор времени'
+    : mailingScheduledSlots.length === 0
+      ? 'Сначала соберите календарь'
+      : 'Проверьте кнопку';
+  const mailingActionHint = mailingPlannerPending
+    ? 'Для отмеченных дней сначала выберите 1, 2 или 3 отправки либо задайте точные часы.'
+    : mailingScheduledSlots.length === 0
+      ? 'Отметьте дни и назначьте им время, после этого станет доступен следующий шаг.'
+      : 'Заполните ссылку и текст CTA или выключите кнопку, чтобы продолжить.';
   const mailingSendDisabled = isMailingBusy;
   const mailingDrilldownFooter = (
     <div className="mailing-action-bar">
-      <button
-        type="button"
-        className="button button--accent mailing-action-bar__send"
-        onClick={handleSendBroadcast}
-        disabled={mailingSendDisabled}
-      >
-        {isUpdatingManagedBroadcast
-          ? 'Сохраняем...'
-          : handoffBroadcastMutation.isPending
-            ? 'Открываем бота...'
-            : editingManagedBroadcast
-              ? 'Сохранить рассылку'
-              : 'Продолжить в боте'}
-      </button>
+      {showMailingPrimaryAction ? (
+        <button
+          type="button"
+          className="button button--accent mailing-action-bar__send"
+          onClick={handleSendBroadcast}
+          disabled={mailingSendDisabled}
+        >
+          {isUpdatingManagedBroadcast
+            ? 'Сохраняем...'
+            : handoffBroadcastMutation.isPending
+              ? 'Открываем бота...'
+              : editingManagedBroadcast
+                ? 'Сохранить рассылку'
+                : 'Продолжить в боте'}
+        </button>
+      ) : (
+        <div className="mailing-action-bar__note" aria-live="polite">
+          <strong>{mailingActionTitle}</strong>
+          <small>{mailingActionHint}</small>
+        </div>
+      )}
       <button
         type="button"
         className="button button--ghost mailing-action-bar__clear"
@@ -2956,6 +3002,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   );
 
   useHintPopoverAutoPosition(openHintKey !== null);
+
+  function resetMailingPlanner() {
+    setMailingPlannerState(EMPTY_BROADCAST_PLANNER_STATE);
+    setMailingPlannerResetKey((current) => current + 1);
+  }
 
   function isSectionDirty(section: ApplySectionKey) {
     if (!draft || !settingsQuery.data) {
@@ -7368,10 +7419,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                       <div className="mailing-options-grid mailing-options-grid--timing">
                         <BroadcastSchedulePlanner
+                          resetKey={mailingPlannerResetKey}
                           value={mailingScheduledSlots}
                           occupiedSlots={mailingOccupiedSlots}
                           error={mailingScheduleError}
                           disabled={isMailingBusy}
+                          onSelectionStateChange={setMailingPlannerState}
                           onChange={(nextValue) => {
                             setMailingScheduledSlots(nextValue);
                             if (mailingScheduleError) {
