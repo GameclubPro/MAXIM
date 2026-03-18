@@ -642,14 +642,8 @@ export function BroadcastSchedulePlanner({
                 const isToday = dayKey === getBroadcastScheduleDayKey(anchorNow);
                 const isActive = dayKey === activeDayKey;
                 const isPicked = pickedDaySet.has(dayKey);
-                const dayStatusLabel =
-                  daySlots.length > 0
-                    ? `${daySlots.length} сл.`
-                    : isPicked
-                      ? 'нов.'
-                      : busyCount > 0
-                        ? 'зан.'
-                        : null;
+                const dayIndicatorCount =
+                  daySlots.length > 0 ? Math.min(daySlots.length, 3) : isPicked || busyCount > 0 ? 1 : 0;
                 const dayAriaLabelParts = [formatDayChipLabel(dayKey)];
 
                 if (isToday) {
@@ -689,25 +683,23 @@ export function BroadcastSchedulePlanner({
                       <span className="broadcast-planner__day-today-dot" aria-hidden />
                     ) : null}
                     <div className="broadcast-planner__day-head">
-                      <span className="broadcast-planner__day-number-shell">
-                        <span className="broadcast-planner__day-number">{cell.getDate()}</span>
-                      </span>
+                      <span className="broadcast-planner__day-number">{cell.getDate()}</span>
                     </div>
                     <div className="broadcast-planner__day-foot">
-                      {dayStatusLabel ? (
-                        <span
-                          className={cn(
-                            'broadcast-planner__day-meta',
-                            daySlots.length > 0 && 'is-selected',
-                            isPicked && 'is-picked',
-                            busyCount > 0 && daySlots.length === 0 && !isPicked && 'is-busy',
-                          )}
-                        >
-                          {dayStatusLabel}
-                        </span>
-                      ) : (
-                        <span className="broadcast-planner__day-meta is-empty" aria-hidden />
-                      )}
+                      <span
+                        className={cn(
+                          'broadcast-planner__day-indicators',
+                          daySlots.length > 0 && 'is-selected',
+                          isPicked && daySlots.length === 0 && 'is-picked',
+                          busyCount > 0 && daySlots.length === 0 && !isPicked && 'is-busy',
+                          dayIndicatorCount === 0 && 'is-empty',
+                        )}
+                        aria-hidden
+                      >
+                        {Array.from({ length: Math.max(dayIndicatorCount, 1) }).map((_, index) => (
+                          <span key={`${dayKey}-${index}`} className="broadcast-planner__day-dot" />
+                        ))}
+                      </span>
                     </div>
                   </button>
                 );
