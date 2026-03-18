@@ -1,4 +1,5 @@
 import type {
+  BroadcastScheduleMode,
   BroadcastTextFormat,
   ChatRules,
   UpdateManagedGiveawayRequest,
@@ -15,6 +16,9 @@ export type SendBroadcastPayload = {
   imageBase64: string;
   imageMimeType: string;
   imageFileName: string;
+  scheduleMode: BroadcastScheduleMode;
+  scheduleTimezone: string;
+  scheduledSlots: string[];
   sendAt: string | null;
   cycleEnabled: boolean;
   cycleEveryHours: number;
@@ -33,6 +37,9 @@ export type BroadcastHandoffPayload = {
   buttonEnabled: boolean;
   buttonUrl: string;
   buttonText: string;
+  scheduleMode: BroadcastScheduleMode;
+  scheduleTimezone: string;
+  scheduledSlots: string[];
   sendAt: string | null;
   cycleEnabled: boolean;
   cycleEveryHours: number;

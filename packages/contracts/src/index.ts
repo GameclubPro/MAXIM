@@ -1320,6 +1320,17 @@ export const scheduleDomainRemovalRequestSchema = z.object({
   removeAfterAt: z.string().datetime().nullable(),
 });
 
+export const broadcastScheduleModeSchema = z.enum(['legacy', 'calendar']);
+export type BroadcastScheduleMode = z.infer<typeof broadcastScheduleModeSchema>;
+
+const MAX_BROADCAST_CALENDAR_SLOTS = 186;
+
+function normalizeBroadcastScheduledSlots(values: string[]): string[] {
+  return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean))).sort((a, b) =>
+    a.localeCompare(b),
+  );
+}
+
 export const sendBroadcastRequestSchema = z
   .object({
     text: z.string().trim().max(1_000).default(''),
@@ -1332,6 +1343,9 @@ export const sendBroadcastRequestSchema = z
     imageBase64: z.string().trim().max(4_000_000).default(''),
     imageMimeType: z.string().trim().max(128).default(''),
     imageFileName: z.string().trim().max(128).default(''),
+    scheduleMode: broadcastScheduleModeSchema.default('legacy'),
+    scheduleTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
+    scheduledSlots: z.array(z.string().datetime()).max(MAX_BROADCAST_CALENDAR_SLOTS).default([]),
     sendAt: z.string().datetime().nullable().default(null),
     cycleEnabled: z.boolean().default(false),
     cycleEveryHours: z
@@ -1386,25 +1400,36 @@ export const sendBroadcastRequestSchema = z
       }
     }
 
-    if (value.cycleEnabled && value.cycleCount < 2) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['cycleCount'],
-        message: 'Для цикла укажите минимум 2 отправки.',
-      });
-    }
+    if (value.scheduleMode === 'calendar') {
+      if (normalizeBroadcastScheduledSlots(value.scheduledSlots).length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['scheduledSlots'],
+          message: 'Добавьте хотя бы один слот публикации.',
+        });
+      }
+    } else {
+      if (value.cycleEnabled && value.cycleCount < 2) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['cycleCount'],
+          message: 'Для цикла укажите минимум 2 отправки.',
+        });
+      }
 
-    if (value.cycleEnabled && value.cycleEveryHours == null && value.cycleEveryDays == null) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['cycleEveryHours'],
-        message: 'Укажите интервал циклической рассылки.',
-      });
+      if (value.cycleEnabled && value.cycleEveryHours == null && value.cycleEveryDays == null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['cycleEveryHours'],
+          message: 'Укажите интервал циклической рассылки.',
+        });
+      }
     }
   })
   .transform((value) => ({
     ...value,
     cycleEveryHours: value.cycleEveryHours ?? (value.cycleEveryDays ?? 1) * 24,
+    scheduledSlots: normalizeBroadcastScheduledSlots(value.scheduledSlots),
   }));
 export type SendBroadcastRequest = z.infer<typeof sendBroadcastRequestSchema>;
 
@@ -1414,6 +1439,9 @@ export const broadcastHandoffRequestSchema = z
     buttonEnabled: z.boolean().default(false),
     buttonUrl: botButtonUrlSchema,
     buttonText: botButtonTextSchema,
+    scheduleMode: broadcastScheduleModeSchema.default('legacy'),
+    scheduleTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
+    scheduledSlots: z.array(z.string().datetime()).max(MAX_BROADCAST_CALENDAR_SLOTS).default([]),
     sendAt: z.string().datetime().nullable().default(null),
     cycleEnabled: z.boolean().default(false),
     cycleEveryHours: z
@@ -1442,25 +1470,36 @@ export const broadcastHandoffRequestSchema = z
       });
     }
 
-    if (value.cycleEnabled && value.cycleCount < 2) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['cycleCount'],
-        message: 'Для цикла укажите минимум 2 отправки.',
-      });
-    }
+    if (value.scheduleMode === 'calendar') {
+      if (normalizeBroadcastScheduledSlots(value.scheduledSlots).length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['scheduledSlots'],
+          message: 'Добавьте хотя бы один слот публикации.',
+        });
+      }
+    } else {
+      if (value.cycleEnabled && value.cycleCount < 2) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['cycleCount'],
+          message: 'Для цикла укажите минимум 2 отправки.',
+        });
+      }
 
-    if (value.cycleEnabled && value.cycleEveryHours == null && value.cycleEveryDays == null) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['cycleEveryHours'],
-        message: 'Укажите интервал циклической рассылки.',
-      });
+      if (value.cycleEnabled && value.cycleEveryHours == null && value.cycleEveryDays == null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['cycleEveryHours'],
+          message: 'Укажите интервал циклической рассылки.',
+        });
+      }
     }
   })
   .transform((value) => ({
     ...value,
     cycleEveryHours: value.cycleEveryHours ?? (value.cycleEveryDays ?? 1) * 24,
+    scheduledSlots: normalizeBroadcastScheduledSlots(value.scheduledSlots),
   }));
 export type BroadcastHandoffRequest = z.infer<typeof broadcastHandoffRequestSchema>;
 
@@ -1469,6 +1508,22 @@ export const broadcastHandoffResponseSchema = z.object({
 });
 export type BroadcastHandoffResponse = z.infer<typeof broadcastHandoffResponseSchema>;
 
+export const broadcastHandoffStateSchema = z.object({
+  applyToAllChats: z.boolean(),
+  buttonEnabled: z.boolean(),
+  buttonUrl: botButtonUrlSchema,
+  buttonText: botButtonTextSchema,
+  scheduleMode: broadcastScheduleModeSchema.default('legacy'),
+  scheduleTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
+  scheduledSlots: z.array(z.string().datetime()).default([]),
+  sendAt: z.string().datetime().nullable().default(null),
+  cycleEnabled: z.boolean(),
+  cycleEveryHours: z.number().int().min(1),
+  cycleCount: z.number().int().min(1),
+  hasContent: z.boolean().default(false),
+});
+export type BroadcastHandoffState = z.infer<typeof broadcastHandoffStateSchema>;
+
 export const sendBroadcastResultSchema = z.object({
   sourceChatId: z.string(),
   targetChats: z.number().int().min(1),
@@ -1476,6 +1531,9 @@ export const sendBroadcastResultSchema = z.object({
   failedChats: z.number().int().min(0),
   sentChatIds: z.array(z.string()),
   failedChatIds: z.array(z.string()),
+  scheduleMode: broadcastScheduleModeSchema.default('legacy'),
+  scheduleTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
+  scheduledSlots: z.array(z.string().datetime()).default([]),
   sendAt: z.string().datetime().nullable(),
   nextSendAt: z.string().datetime().nullable().default(null),
   cycleEnabled: z.boolean(),
@@ -1505,6 +1563,9 @@ export const managedBroadcastSummarySchema = z.object({
   targetChats: z.number().int().min(1),
   hasImage: z.boolean(),
   buttonEnabled: z.boolean(),
+  scheduleMode: broadcastScheduleModeSchema.default('legacy'),
+  scheduleTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
+  scheduledSlots: z.array(z.string().datetime()).default([]),
   nextSendAt: z.string().datetime().nullable(),
   cycleEnabled: z.boolean(),
   cycleEveryHours: z.number().int().min(1),
@@ -1536,6 +1597,9 @@ export const managedBroadcastDetailsSchema = z.object({
   imageBase64: z.string(),
   imageMimeType: z.string(),
   imageFileName: z.string(),
+  scheduleMode: broadcastScheduleModeSchema.default('legacy'),
+  scheduleTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
+  scheduledSlots: z.array(z.string().datetime()).default([]),
   nextSendAt: z.string().datetime().nullable(),
   cycleEnabled: z.boolean(),
   cycleEveryHours: z.number().int().min(1),
@@ -1565,6 +1629,7 @@ export type ChatSettingsScreenResponse = z.infer<typeof chatSettingsScreenRespon
 export const channelSettingsScreenResponseSchema = z.object({
   settings: channelSettingsSchema,
   header: managedEntityHeaderSchema,
+  managedBroadcasts: z.array(managedBroadcastSummarySchema),
 });
 export type ChannelSettingsScreenResponse = z.infer<typeof channelSettingsScreenResponseSchema>;
 

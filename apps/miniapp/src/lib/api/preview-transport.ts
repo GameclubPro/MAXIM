@@ -1,5 +1,6 @@
 import {
   applySectionToAllResponseSchema,
+  broadcastHandoffStateSchema,
   channelSettingsSchema,
   channelSettingsScreenResponseSchema,
   channelStatsResponseSchema,
@@ -16,6 +17,7 @@ import {
   publishChannelEngagementResultSchema,
   publishChatRulesResultSchema,
   type BroadcastHandoffResponse,
+  type BroadcastHandoffState,
   type ChannelSettings,
   type ChannelSettingsScreenResponse,
   type ChannelStatsRange,
@@ -58,6 +60,7 @@ type PreviewState = {
   chatDomains: DomainAllowlistEntry[];
   chatPoll: ManagedPoll;
   chatBroadcasts: ManagedBroadcastDetails[];
+  channelBroadcasts: ManagedBroadcastDetails[];
   chatGiveaways: ManagedGiveawayDetails[];
   chatActivity: MembershipActivityItem[];
   chatViolations: LogsDashboardResponse['violations'];
@@ -162,6 +165,9 @@ function buildBroadcastSummary(details: ManagedBroadcastDetails) {
     targetChats: details.targetChatIds.length || 1,
     hasImage: details.imageEnabled,
     buttonEnabled: details.buttonEnabled,
+    scheduleMode: details.scheduleMode,
+    scheduleTimezone: details.scheduleTimezone,
+    scheduledSlots: details.scheduledSlots,
     nextSendAt: details.nextSendAt,
     cycleEnabled: details.cycleEnabled,
     cycleEveryHours: details.cycleEveryHours,
@@ -177,6 +183,23 @@ function buildBroadcastSummary(details: ManagedBroadcastDetails) {
     updatedAt: details.updatedAt,
     lastError: details.lastError,
   };
+}
+
+function buildBroadcastHandoffState(details: ManagedBroadcastDetails): BroadcastHandoffState {
+  return broadcastHandoffStateSchema.parse({
+    applyToAllChats: details.applyToAllChats,
+    buttonEnabled: details.buttonEnabled,
+    buttonUrl: details.buttonUrl,
+    buttonText: details.buttonText,
+    scheduleMode: details.scheduleMode,
+    scheduleTimezone: details.scheduleTimezone,
+    scheduledSlots: details.scheduledSlots,
+    sendAt: details.nextSendAt,
+    cycleEnabled: details.cycleEnabled,
+    cycleEveryHours: details.cycleEveryHours,
+    cycleCount: details.cycleCount,
+    hasContent: Boolean(details.text.trim() || details.imageEnabled),
+  });
 }
 
 function buildGiveawaySummary(details: ManagedGiveawayDetails): ManagedGiveawaySummary {
@@ -407,17 +430,24 @@ function createInitialState(): PreviewState {
       imageBase64: '',
       imageMimeType: '',
       imageFileName: '',
+      scheduleMode: 'calendar',
+      scheduleTimezone: 'Europe/Moscow',
+      scheduledSlots: [
+        addHours(now, 18).toISOString(),
+        addDays(now, 1).toISOString(),
+        addDays(now, 2).toISOString(),
+      ],
       nextSendAt: addHours(now, 18).toISOString(),
-      cycleEnabled: true,
-      cycleEveryHours: 168,
-      cycleCount: 4,
+      cycleEnabled: false,
+      cycleEveryHours: 1,
+      cycleCount: 3,
       sentCount: 1,
-      currentOccurrence: 1,
+      currentOccurrence: 2,
       deliveredChats: 1,
       failedChats: 0,
       pendingChats: 0,
       canRetry: false,
-      remainingCount: 3,
+      remainingCount: 2,
       createdAt: addHours(now, -36).toISOString(),
       updatedAt: addHours(now, -3).toISOString(),
       lastError: null,
@@ -518,6 +548,45 @@ function createInitialState(): PreviewState {
       winners: [],
     }),
   ];
+  const channelBroadcasts = [
+    managedBroadcastDetailsSchema.parse({
+      id: 'broadcast-channel-1',
+      status: 'ACTIVE',
+      text: 'Сегодня публикуем подборку событий района. Проверьте расписание и переходите в канал.',
+      textFormat: 'markdown',
+      applyToAllChats: false,
+      targetChatIds: [PREVIEW_CHANNEL_ID],
+      buttonEnabled: true,
+      buttonUrl: 'https://max.ru/channels/yuzhnoe-news',
+      buttonText: 'Открыть канал',
+      imageEnabled: false,
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      scheduleMode: 'calendar',
+      scheduleTimezone: 'Europe/Moscow',
+      scheduledSlots: [
+        addHours(now, 10).toISOString(),
+        addHours(now, 14).toISOString(),
+        addHours(now, 19).toISOString(),
+        addDays(now, 1).toISOString(),
+      ],
+      nextSendAt: addHours(now, 10).toISOString(),
+      cycleEnabled: false,
+      cycleEveryHours: 1,
+      cycleCount: 4,
+      sentCount: 0,
+      currentOccurrence: 1,
+      deliveredChats: 0,
+      failedChats: 0,
+      pendingChats: 1,
+      canRetry: false,
+      remainingCount: 4,
+      createdAt: addHours(now, -20).toISOString(),
+      updatedAt: addHours(now, -1).toISOString(),
+      lastError: null,
+    }),
+  ];
 
   return {
     me: {
@@ -591,6 +660,7 @@ function createInitialState(): PreviewState {
     channelHeaderParticipantsCount: 9_240,
     channelSettings,
     channelPoll,
+    channelBroadcasts,
     channelGiveaways,
     channelActivity: createActivityItems(
       'channel-activity',
@@ -633,6 +703,7 @@ function buildChannelSettingsScreen(
       link: 'https://max.ru/channels/yuzhnoe-news',
       participantsCount: state.channelHeaderParticipantsCount,
     },
+    managedBroadcasts: state.channelBroadcasts.map(buildBroadcastSummary),
   });
 }
 
@@ -1161,8 +1232,14 @@ async function handleChatRequest(
     return cloneJson(state.chatPoll);
   }
 
-  if (tail[0] === 'broadcast' && tail[1] === 'handoff' && method === 'POST') {
-    return createBroadcastHandoffResponse();
+  if (tail[0] === 'broadcast' && tail[1] === 'handoff') {
+    if (method === 'GET') {
+      return buildBroadcastHandoffState(state.chatBroadcasts[0] ?? state.channelBroadcasts[0]);
+    }
+
+    if (method === 'POST') {
+      return createBroadcastHandoffResponse();
+    }
   }
 
   if (tail[0] === 'broadcasts' && tail.length === 1 && method === 'GET') {
@@ -1484,8 +1561,77 @@ async function handleChannelRequest(
     return cloneJson(state.channelPoll);
   }
 
-  if (tail[0] === 'broadcast' && tail[1] === 'handoff' && method === 'POST') {
-    return createBroadcastHandoffResponse();
+  if (tail[0] === 'broadcast' && tail[1] === 'handoff') {
+    if (method === 'GET') {
+      return buildBroadcastHandoffState(state.channelBroadcasts[0] ?? state.chatBroadcasts[0]);
+    }
+
+    if (method === 'POST') {
+      return createBroadcastHandoffResponse();
+    }
+  }
+
+  if (tail[0] === 'broadcasts' && tail.length === 1 && method === 'GET') {
+    return cloneJson(state.channelBroadcasts.map(buildBroadcastSummary));
+  }
+
+  if (tail[0] === 'broadcasts' && tail[1] && tail.length === 2) {
+    const details = findBroadcast(state.channelBroadcasts, tail[1]);
+    if (!details) {
+      throw new Error(`Preview broadcast not found: ${tail[1]}`);
+    }
+
+    if (method === 'GET') {
+      return cloneJson(details);
+    }
+
+    if (method === 'PUT') {
+      const payload = parseJsonBody(init) as Record<string, unknown> | null;
+      const updated = managedBroadcastDetailsSchema.parse({
+        ...details,
+        ...(payload ?? {}),
+        updatedAt: new Date().toISOString(),
+      });
+      state.channelBroadcasts = state.channelBroadcasts.map((item) =>
+        item.id === details.id ? updated : item,
+      );
+      return cloneJson(updated);
+    }
+
+    if (method === 'DELETE') {
+      const canceled = managedBroadcastDetailsSchema.parse({
+        ...details,
+        status: 'CANCELED',
+        cycleEnabled: false,
+        canRetry: false,
+        updatedAt: new Date().toISOString(),
+      });
+      state.channelBroadcasts = state.channelBroadcasts.map((item) =>
+        item.id === details.id ? canceled : item,
+      );
+      return cloneJson(canceled);
+    }
+  }
+
+  if (tail[0] === 'broadcasts' && tail[1] && tail[2] === 'retry' && method === 'POST') {
+    const details = findBroadcast(state.channelBroadcasts, tail[1]);
+    if (!details) {
+      throw new Error(`Preview broadcast not found: ${tail[1]}`);
+    }
+
+    const retried = managedBroadcastDetailsSchema.parse({
+      ...details,
+      status: 'ACTIVE',
+      failedChats: 0,
+      pendingChats: 0,
+      canRetry: false,
+      lastError: null,
+      updatedAt: new Date().toISOString(),
+    });
+    state.channelBroadcasts = state.channelBroadcasts.map((item) =>
+      item.id === details.id ? retried : item,
+    );
+    return cloneJson(retried);
   }
 
   if (tail[0] === 'engagement-publish' && method === 'POST') {

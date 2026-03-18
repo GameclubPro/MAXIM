@@ -2,6 +2,7 @@ import {
   applySectionToAllResponseSchema,
   broadcastHandoffRequestSchema,
   broadcastHandoffResponseSchema,
+  broadcastHandoffStateSchema,
   chatRulesSchema,
   chatSettingsSchema,
   chatSettingsScreenResponseSchema,
@@ -21,6 +22,7 @@ import {
   type ChatSettings,
   type ChatSettingsScreenResponse,
   type DomainAllowlistEntry,
+  type BroadcastHandoffState,
   type ManagedBroadcastDetails,
   type ManagedBroadcastSummary,
   type ManagedEntityHeader,
@@ -28,7 +30,11 @@ import {
   type PublishChatRulesResult,
   type SendBroadcastResult,
 } from '@maxim/contracts';
-import type { BroadcastHandoffPayload, SendBroadcastPayload, UpdateChatRulesPayload } from './shared-types';
+import type {
+  BroadcastHandoffPayload,
+  SendBroadcastPayload,
+  UpdateChatRulesPayload,
+} from './shared-types';
 import type { ApiTransport } from './transport';
 
 export async function getChatHeader(
@@ -154,6 +160,14 @@ export async function handoffBroadcast(
     body: JSON.stringify(requestBody),
   });
   return broadcastHandoffResponseSchema.parse(response);
+}
+
+export async function getBroadcastHandoffState(
+  api: ApiTransport,
+  chatId: string,
+): Promise<BroadcastHandoffState> {
+  const response = await api.request(`/chats/${chatId}/broadcast/handoff`);
+  return broadcastHandoffStateSchema.parse(response);
 }
 
 export async function getManagedBroadcasts(

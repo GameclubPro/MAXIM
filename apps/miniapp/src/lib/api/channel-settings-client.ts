@@ -1,21 +1,28 @@
 import {
   broadcastHandoffRequestSchema,
   broadcastHandoffResponseSchema,
+  broadcastHandoffStateSchema,
   channelSettingsSchema,
   channelSettingsScreenResponseSchema,
+  managedBroadcastDetailsSchema,
+  managedBroadcastSummarySchema,
   managedEntityHeaderSchema,
   managedPollSchema,
   publishChannelEngagementRequestSchema,
   publishChannelEngagementResultSchema,
   updateManagedPollRequestSchema,
+  sendBroadcastRequestSchema,
+  type BroadcastHandoffState,
   type ChannelSettings,
   type ChannelSettingsScreenResponse,
+  type ManagedBroadcastDetails,
+  type ManagedBroadcastSummary,
   type ManagedEntityHeader,
   type ManagedPoll,
   type PublishChannelEngagementRequest,
   type PublishChannelEngagementResult,
 } from '@maxim/contracts';
-import type { BroadcastHandoffPayload } from './shared-types';
+import type { BroadcastHandoffPayload, SendBroadcastPayload } from './shared-types';
 import type { ApiTransport } from './transport';
 
 export async function getChannelHeader(
@@ -65,6 +72,71 @@ export async function handoffChannelBroadcast(
     body: JSON.stringify(requestBody),
   });
   return broadcastHandoffResponseSchema.parse(response);
+}
+
+export async function getChannelBroadcastHandoffState(
+  api: ApiTransport,
+  chatId: string,
+): Promise<BroadcastHandoffState> {
+  const response = await api.request(`/channels/${chatId}/broadcast/handoff`);
+  return broadcastHandoffStateSchema.parse(response);
+}
+
+export async function getChannelManagedBroadcasts(
+  api: ApiTransport,
+  chatId: string,
+): Promise<ManagedBroadcastSummary[]> {
+  const response = await api.request(`/channels/${chatId}/broadcasts`);
+  if (!Array.isArray(response)) {
+    throw new Error('Invalid managed broadcasts response');
+  }
+
+  return response.map((item: unknown) => managedBroadcastSummarySchema.parse(item));
+}
+
+export async function getChannelManagedBroadcast(
+  api: ApiTransport,
+  chatId: string,
+  broadcastId: string,
+): Promise<ManagedBroadcastDetails> {
+  const response = await api.request(`/channels/${chatId}/broadcasts/${broadcastId}`);
+  return managedBroadcastDetailsSchema.parse(response);
+}
+
+export async function updateChannelManagedBroadcast(
+  api: ApiTransport,
+  chatId: string,
+  broadcastId: string,
+  payload: SendBroadcastPayload,
+): Promise<ManagedBroadcastDetails> {
+  const requestBody = sendBroadcastRequestSchema.parse(payload);
+  const response = await api.request(`/channels/${chatId}/broadcasts/${broadcastId}`, {
+    method: 'PUT',
+    body: JSON.stringify(requestBody),
+  });
+  return managedBroadcastDetailsSchema.parse(response);
+}
+
+export async function cancelChannelManagedBroadcast(
+  api: ApiTransport,
+  chatId: string,
+  broadcastId: string,
+): Promise<ManagedBroadcastDetails> {
+  const response = await api.request(`/channels/${chatId}/broadcasts/${broadcastId}`, {
+    method: 'DELETE',
+  });
+  return managedBroadcastDetailsSchema.parse(response);
+}
+
+export async function retryChannelManagedBroadcast(
+  api: ApiTransport,
+  chatId: string,
+  broadcastId: string,
+): Promise<ManagedBroadcastDetails> {
+  const response = await api.request(`/channels/${chatId}/broadcasts/${broadcastId}/retry`, {
+    method: 'POST',
+  });
+  return managedBroadcastDetailsSchema.parse(response);
 }
 
 export async function publishChannelEngagement(

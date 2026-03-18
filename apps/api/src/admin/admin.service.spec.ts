@@ -121,6 +121,13 @@ function createPrismaMock() {
       update: jest.fn().mockResolvedValue(undefined),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
+    managedBroadcastOccurrence: {
+      findMany: jest.fn().mockResolvedValue([]),
+      findUnique: jest.fn().mockResolvedValue(null),
+      createMany: jest.fn().mockResolvedValue({ count: 0 }),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+      updateMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
     channelAudienceSnapshot: {
       findFirst: jest.fn().mockResolvedValue(null),
       findMany: jest.fn().mockResolvedValue([]),
@@ -203,10 +210,7 @@ function wireManagedBroadcastDeliveryStore(prisma: ReturnType<typeof createPrism
     if (!where) {
       return true;
     }
-    if (
-      typeof where.broadcastId === 'string' &&
-      delivery.broadcastId !== where.broadcastId
-    ) {
+    if (typeof where.broadcastId === 'string' && delivery.broadcastId !== where.broadcastId) {
       return false;
     }
     if (
@@ -606,17 +610,14 @@ describe('AdminService.shareStickerLabAsset', () => {
       'sticker.png',
       'image/png',
     );
-    expect(maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-      '152517912',
-      {
-        attachments: [
-          {
-            type: 'sticker',
-            payload: { token: 'upload-token-1' },
-          },
-        ],
-      },
-    );
+    expect(maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledWith('152517912', {
+      attachments: [
+        {
+          type: 'sticker',
+          payload: { token: 'upload-token-1' },
+        },
+      ],
+    });
     expect(result).toEqual({
       mid: 'mid-sticker-1',
       messageUrl: 'https://max.ru/c/152517912/test-mid',
@@ -666,17 +667,14 @@ describe('AdminService.shareStickerLabAsset', () => {
       'sticker.webp',
       'image/webp',
     );
-    expect(maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-      '152517912',
-      {
-        attachments: [
-          {
-            type: 'file',
-            payload: { token: 'upload-token-file-1' },
-          },
-        ],
-      },
-    );
+    expect(maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledWith('152517912', {
+      attachments: [
+        {
+          type: 'file',
+          payload: { token: 'upload-token-file-1' },
+        },
+      ],
+    });
     expect(result).toEqual({
       mid: 'mid-file-1',
       messageUrl: 'https://max.ru/c/152517912/file-mid',
@@ -737,17 +735,14 @@ describe('AdminService.shareStickerLabAsset', () => {
     expect(uploadFile).toHaveBeenCalledTimes(2);
     expect(uploadFile).toHaveBeenNthCalledWith(1, expect.any(Buffer), 'sticker.webp', 'image/webp');
     expect(uploadFile).toHaveBeenNthCalledWith(2, expect.any(Buffer), 'sticker.png', 'image/png');
-    expect(maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
-      '152517912',
-      {
-        attachments: [
-          {
-            type: 'file',
-            payload: { token: 'upload-token-file-2' },
-          },
-        ],
-      },
-    );
+    expect(maxClient.sendCustomMessageImmediateWithResolvedLink).toHaveBeenCalledWith('152517912', {
+      attachments: [
+        {
+          type: 'file',
+          payload: { token: 'upload-token-file-2' },
+        },
+      ],
+    });
     expect(result).toEqual({
       mid: 'mid-file-2',
       messageUrl: 'https://max.ru/c/152517912/file-mid-2',
@@ -1282,9 +1277,7 @@ describe('AdminService.getLogsDashboard', () => {
       .mockResolvedValueOnce(0)
       .mockResolvedValueOnce(0)
       .mockResolvedValueOnce(0);
-    prisma.moderationEvent.findMany
-      .mockResolvedValueOnce([])
-      .mockResolvedValueOnce([]);
+    prisma.moderationEvent.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -2003,13 +1996,11 @@ describe('AdminService settings screen endpoints', () => {
     });
 
     jest.spyOn(service, 'getSettings').mockResolvedValue(settings);
-    const applySpy = jest
-      .spyOn(service as any, 'applySettingsToAllChats')
-      .mockResolvedValue({
-        sourceChatId: 'chat-1',
-        updatedChats: 2,
-        appliedChatIds: ['chat-1', 'chat-2'],
-      });
+    const applySpy = jest.spyOn(service as any, 'applySettingsToAllChats').mockResolvedValue({
+      sourceChatId: 'chat-1',
+      updatedChats: 2,
+      appliedChatIds: ['chat-1', 'chat-2'],
+    });
 
     const result = await service.applySettingsSectionToAllChats(
       'chat-1',
@@ -2130,11 +2121,11 @@ describe('AdminService admin access validation', () => {
     let accessState: 'bot_denied' | null = null;
     const chatContextCache = createChatContextCacheMock({
       getAdminAccess: jest.fn().mockImplementation(async () => accessState),
-      setAdminAccess: jest.fn().mockImplementation(
-        async (_chatId: string, _userId: string, state: 'bot_denied') => {
+      setAdminAccess: jest
+        .fn()
+        .mockImplementation(async (_chatId: string, _userId: string, state: 'bot_denied') => {
           accessState = state;
-        },
-      ),
+        }),
     });
     const maxClient = {
       getChatEditableAdminIds: jest.fn().mockRejectedValue({
@@ -3074,12 +3065,9 @@ describe('AdminService.sendBroadcast', () => {
     );
 
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
-      'chat-1',
-      'Напоминание',
-      undefined,
-      { immediate: true },
-    );
+    expect(maxClient.sendMessage).toHaveBeenCalledWith('chat-1', 'Напоминание', undefined, {
+      immediate: true,
+    });
     expect(prisma.managedBroadcast.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -3261,16 +3249,12 @@ describe('AdminService.sendBroadcast', () => {
     );
 
     shouldFailSecondChat = false;
-    const result = await service.retryManagedBroadcast(
-      'chat-1',
-      'broadcast-1',
-      {
-        userId: 'admin-1',
-        username: null,
-        displayName: null,
-        chatTitle: null,
-      },
-    );
+    const result = await service.retryManagedBroadcast('chat-1', 'broadcast-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
 
     expect(result.status).toBe('COMPLETED');
     expect(result.failedChats).toBe(0);

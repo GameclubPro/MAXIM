@@ -1,0 +1,446 @@
+import { useEffect, useState } from 'react';
+import { cn } from '../lib/cn';
+import {
+  BROADCAST_SCHEDULE_MAX_DAYS,
+  BROADCAST_SCHEDULE_STEP_MINUTES,
+  buildBroadcastScheduleSlotIso,
+  countBroadcastScheduleDays,
+  formatBroadcastScheduleDay,
+  formatBroadcastScheduleSlot,
+  formatBroadcastScheduleSummary,
+  getBroadcastScheduleDayKey,
+  sortAndUniqueBroadcastSlots,
+} from '../lib/broadcast-schedule';
+import { maxImpact, maxSelectionChanged } from '../lib/max-bridge';
+
+type BroadcastSchedulePlannerProps = {
+  value: string[];
+  occupiedSlots?: string[];
+  error?: string;
+  disabled?: boolean;
+  onChange: (nextValue: string[]) => void;
+  onOpenDay?: (dayKey: string) => void;
+};
+
+type SlotPreset = {
+  id: string;
+  label: string;
+  minutes: number[];
+};
+
+type SlotGroup = {
+  label: string;
+  start: number;
+  end: number;
+};
+
+const SLOT_PRESETS: SlotPreset[] = [
+  { id: 'single', label: '1 раз', minutes: [10 * 60] },
+  { id: 'double', label: '2 раза', minutes: [10 * 60, 18 * 60] },
+  { id: 'triple', label: '3 раза', minutes: [10 * 60, 14 * 60, 19 * 60] },
+  { id: 'dayparts', label: 'Утро / день / вечер', minutes: [9 * 60, 14 * 60, 20 * 60] },
+];
+
+const SLOT_GROUPS: SlotGroup[] = [
+  { label: 'Ночь', start: 0, end: 6 * 60 },
+  { label: 'Утро', start: 6 * 60, end: 12 * 60 },
+  { label: 'День', start: 12 * 60, end: 18 * 60 },
+  { label: 'Вечер', start: 18 * 60, end: 24 * 60 },
+];
+
+function addDays(value: Date, days: number): Date {
+  return new Date(value.getTime() + days * 24 * 60 * 60 * 1_000);
+}
+
+function startOfDay(value: Date): Date {
+  return new Date(value.getFullYear(), value.getMonth(), value.getDate(), 0, 0, 0, 0);
+}
+
+function startOfMonth(value: Date): Date {
+  return new Date(value.getFullYear(), value.getMonth(), 1, 0, 0, 0, 0);
+}
+
+function endOfMonth(value: Date): Date {
+  return new Date(value.getFullYear(), value.getMonth() + 1, 0, 23, 59, 59, 999);
+}
+
+function getMonthKey(value: Date): string {
+  return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function parseMonthKey(value: string): Date {
+  const [yearRaw, monthRaw] = value.split('-');
+  const year = Number.parseInt(yearRaw ?? '', 10);
+  const month = Number.parseInt(monthRaw ?? '', 10);
+  return new Date(year, Math.max(0, month - 1), 1, 0, 0, 0, 0);
+}
+
+function formatMonthKey(value: string): string {
+  const date = parseMonthKey(value);
+  return new Intl.DateTimeFormat('ru-RU', {
+    month: 'long',
+    year: 'numeric',
+  }).format(date);
+}
+
+function getMonthKeys(windowStart: Date, windowEnd: Date): string[] {
+  const keys: string[] = [];
+  const cursor = startOfMonth(windowStart);
+  const lastMonth = startOfMonth(windowEnd);
+
+  while (cursor.getTime() <= lastMonth.getTime()) {
+    keys.push(getMonthKey(cursor));
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+
+  return keys;
+}
+
+function getMonthCells(monthKey: string): Date[] {
+  const monthStart = parseMonthKey(monthKey);
+  const gridStart = addDays(monthStart, -((monthStart.getDay() + 6) % 7));
+  const cells: Date[] = [];
+  for (let index = 0; index < 42; index += 1) {
+    cells.push(addDays(gridStart, index));
+  }
+  return cells;
+}
+
+function getMinutesList(group: SlotGroup): number[] {
+  const values: number[] = [];
+  for (let minute = group.start; minute < group.end; minute += BROADCAST_SCHEDULE_STEP_MINUTES) {
+    values.push(minute);
+  }
+  return values;
+}
+
+function formatMinuteLabel(minutes: number): string {
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return `${String(hours).padStart(2, '0')}:${String(rest).padStart(2, '0')}`;
+}
+
+function getSelectedDaySlots(dayKey: string, slots: string[]): string[] {
+  return slots.filter((slot) => getBroadcastScheduleDayKey(slot) === dayKey);
+}
+
+export function BroadcastSchedulePlanner({
+  value,
+  occupiedSlots = [],
+  error,
+  disabled = false,
+  onChange,
+  onOpenDay,
+}: BroadcastSchedulePlannerProps) {
+  const [anchorNow] = useState(() => new Date());
+  const normalizedValue = sortAndUniqueBroadcastSlots(value);
+  const selectedDayKeys = Array.from(
+    new Set(normalizedValue.map((slot) => getBroadcastScheduleDayKey(slot))),
+  );
+  const initialDayKey = selectedDayKeys[0] ?? getBroadcastScheduleDayKey(anchorNow);
+  const [activeDayKey, setActiveDayKey] = useState(initialDayKey);
+  const [currentMonthKey, setCurrentMonthKey] = useState(() =>
+    getMonthKey(new Date(normalizedValue[0] ?? anchorNow)),
+  );
+
+  const windowStart = startOfDay(anchorNow);
+  const windowEnd = endOfMonth(addDays(anchorNow, BROADCAST_SCHEDULE_MAX_DAYS - 1));
+  const monthKeys = getMonthKeys(windowStart, windowEnd);
+  const visibleMonthKey = monthKeys.includes(currentMonthKey) ? currentMonthKey : monthKeys[0];
+  const activeDaySlots = getSelectedDaySlots(activeDayKey, normalizedValue);
+  const occupiedSet = new Set(sortAndUniqueBroadcastSlots(occupiedSlots));
+  const selectedSet = new Set(normalizedValue);
+  const minimumTime = anchorNow.getTime() + 30_000;
+
+  useEffect(() => {
+    if (selectedDayKeys.length === 0) {
+      const todayKey = getBroadcastScheduleDayKey(anchorNow);
+      setActiveDayKey(todayKey);
+      setCurrentMonthKey(getMonthKey(anchorNow));
+      return;
+    }
+
+    if (!selectedDayKeys.includes(activeDayKey)) {
+      setActiveDayKey(selectedDayKeys[0] ?? activeDayKey);
+    }
+  }, [activeDayKey, anchorNow, selectedDayKeys]);
+
+  function replaceDaySlots(dayKey: string, nextSlots: string[]) {
+    const cleaned = normalizedValue.filter((slot) => getBroadcastScheduleDayKey(slot) !== dayKey);
+    onChange(sortAndUniqueBroadcastSlots([...cleaned, ...nextSlots]));
+  }
+
+  function isSlotUnavailable(dayKey: string, minutes: number): boolean {
+    const slotIso = buildBroadcastScheduleSlotIso(dayKey, minutes);
+    if (new Date(slotIso).getTime() < minimumTime) {
+      return true;
+    }
+
+    return occupiedSet.has(slotIso) && !selectedSet.has(slotIso);
+  }
+
+  function openDay(dayKey: string) {
+    setActiveDayKey(dayKey);
+    setCurrentMonthKey(getMonthKey(new Date(`${dayKey}T12:00:00`)));
+    maxSelectionChanged();
+    onOpenDay?.(dayKey);
+  }
+
+  function toggleSlot(minutes: number) {
+    if (disabled || isSlotUnavailable(activeDayKey, minutes)) {
+      return;
+    }
+
+    const slotIso = buildBroadcastScheduleSlotIso(activeDayKey, minutes);
+    const nextSlots = activeDaySlots.includes(slotIso)
+      ? activeDaySlots.filter((slot) => slot !== slotIso)
+      : [...activeDaySlots, slotIso];
+    replaceDaySlots(activeDayKey, nextSlots);
+    maxImpact(nextSlots.includes(slotIso) ? 'light' : 'soft');
+  }
+
+  function findPresetMinute(preferredMinute: number, usedMinutes: Set<number>): number | null {
+    const maxStepOffset = Math.floor((4 * 60) / BROADCAST_SCHEDULE_STEP_MINUTES);
+    for (let offset = 0; offset <= maxStepOffset; offset += 1) {
+      const candidates =
+        offset === 0
+          ? [preferredMinute]
+          : [
+              preferredMinute + offset * BROADCAST_SCHEDULE_STEP_MINUTES,
+              preferredMinute - offset * BROADCAST_SCHEDULE_STEP_MINUTES,
+            ];
+
+      for (const candidate of candidates) {
+        if (candidate < 0 || candidate >= 24 * 60 || usedMinutes.has(candidate)) {
+          continue;
+        }
+
+        if (!isSlotUnavailable(activeDayKey, candidate)) {
+          return candidate;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  function applyPreset(preset: SlotPreset) {
+    if (disabled) {
+      return;
+    }
+
+    const nextMinutes = new Set<number>();
+    for (const preferredMinute of preset.minutes) {
+      const resolvedMinute = findPresetMinute(preferredMinute, nextMinutes);
+      if (resolvedMinute != null) {
+        nextMinutes.add(resolvedMinute);
+      }
+    }
+
+    replaceDaySlots(
+      activeDayKey,
+      Array.from(nextMinutes)
+        .sort((left, right) => left - right)
+        .map((minute) => buildBroadcastScheduleSlotIso(activeDayKey, minute)),
+    );
+    maxImpact('medium');
+  }
+
+  const monthCells = getMonthCells(visibleMonthKey);
+  const activeDayOccupiedCount = occupiedSlots.filter(
+    (slot) => getBroadcastScheduleDayKey(slot) === activeDayKey && !selectedSet.has(slot),
+  ).length;
+
+  return (
+    <section className={cn('broadcast-planner', disabled && 'is-disabled')}>
+      <div className="broadcast-planner__hero">
+        <div>
+          <small className="broadcast-planner__eyebrow">Календарь публикаций</small>
+          <h4 className="broadcast-planner__title">Месяц вперёд с шагом 30 минут</h4>
+          <p className="broadcast-planner__summary">
+            {countBroadcastScheduleDays(normalizedValue)} дн. · {normalizedValue.length} публикац.
+            {' · '}
+            {formatBroadcastScheduleSummary(normalizedValue)}
+          </p>
+        </div>
+      </div>
+
+      <div className="broadcast-planner__calendar-card">
+        <div className="broadcast-planner__calendar-head">
+          <button
+            type="button"
+            className="broadcast-planner__month-button"
+            onClick={() => {
+              const currentIndex = monthKeys.indexOf(visibleMonthKey);
+              if (currentIndex > 0) {
+                setCurrentMonthKey(monthKeys[currentIndex - 1] ?? visibleMonthKey);
+                maxSelectionChanged();
+              }
+            }}
+            disabled={disabled || monthKeys.indexOf(visibleMonthKey) <= 0}
+            aria-label="Предыдущий месяц"
+          >
+            ←
+          </button>
+          <strong>{formatMonthKey(visibleMonthKey)}</strong>
+          <button
+            type="button"
+            className="broadcast-planner__month-button"
+            onClick={() => {
+              const currentIndex = monthKeys.indexOf(visibleMonthKey);
+              if (currentIndex >= 0 && currentIndex < monthKeys.length - 1) {
+                setCurrentMonthKey(monthKeys[currentIndex + 1] ?? visibleMonthKey);
+                maxSelectionChanged();
+              }
+            }}
+            disabled={disabled || monthKeys.indexOf(visibleMonthKey) >= monthKeys.length - 1}
+            aria-label="Следующий месяц"
+          >
+            →
+          </button>
+        </div>
+
+        <div className="broadcast-planner__weekdays" aria-hidden>
+          {['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map((label) => (
+            <span key={label}>{label}</span>
+          ))}
+        </div>
+
+        <div className="broadcast-planner__grid">
+          {monthCells.map((cell) => {
+            const dayKey = getBroadcastScheduleDayKey(cell);
+            const daySlots = getSelectedDaySlots(dayKey, normalizedValue);
+            const busyCount = occupiedSlots.filter(
+              (slot) => getBroadcastScheduleDayKey(slot) === dayKey && !selectedSet.has(slot),
+            ).length;
+            const isOutsideMonth = getMonthKey(cell) !== visibleMonthKey;
+            const isBeforeWindow = startOfDay(cell).getTime() < windowStart.getTime();
+            const isAfterWindow = startOfDay(cell).getTime() > windowEnd.getTime();
+            const isDisabled = disabled || isBeforeWindow || isAfterWindow;
+            const isToday = dayKey === getBroadcastScheduleDayKey(anchorNow);
+            const isActive = dayKey === activeDayKey;
+
+            return (
+              <button
+                key={`${visibleMonthKey}-${dayKey}`}
+                type="button"
+                className={cn(
+                  'broadcast-planner__day',
+                  isOutsideMonth && 'is-outside',
+                  daySlots.length > 0 && 'is-selected',
+                  busyCount > 0 && 'is-busy',
+                  isToday && 'is-today',
+                  isActive && 'is-active',
+                )}
+                disabled={isDisabled}
+                onClick={() => openDay(dayKey)}
+              >
+                <span className="broadcast-planner__day-number">{cell.getDate()}</span>
+                <span className="broadcast-planner__day-meta">
+                  {daySlots.length > 0 ? `${daySlots.length} сл.` : busyCount > 0 ? 'занято' : ' '}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      <div className="broadcast-planner__sheet">
+        <div className="broadcast-planner__sheet-head">
+          <div>
+            <strong>{formatBroadcastScheduleDay(activeDayKey)}</strong>
+            <small>
+              {activeDaySlots.length > 0
+                ? `${activeDaySlots.length} публикац. в этот день`
+                : 'Выберите слоты публикации'}
+            </small>
+          </div>
+          <div className="broadcast-planner__sheet-facts">
+            {activeDayOccupiedCount > 0 ? <span>{activeDayOccupiedCount} занято</span> : null}
+            {activeDaySlots.length > 0 ? (
+              <button
+                type="button"
+                className="broadcast-planner__clear-button"
+                onClick={() => {
+                  replaceDaySlots(activeDayKey, []);
+                  maxImpact('soft');
+                }}
+                disabled={disabled}
+              >
+                Очистить день
+              </button>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="broadcast-planner__preset-row">
+          {SLOT_PRESETS.map((preset) => (
+            <button
+              key={preset.id}
+              type="button"
+              className="broadcast-planner__preset"
+              onClick={() => applyPreset(preset)}
+              disabled={disabled}
+            >
+              {preset.label}
+            </button>
+          ))}
+        </div>
+
+        {SLOT_GROUPS.map((group) => (
+          <div key={group.label} className="broadcast-planner__time-group">
+            <div className="broadcast-planner__time-group-head">
+              <strong>{group.label}</strong>
+            </div>
+            <div className="broadcast-planner__time-grid">
+              {getMinutesList(group).map((minutes) => {
+                const slotIso = buildBroadcastScheduleSlotIso(activeDayKey, minutes);
+                const isSelected = activeDaySlots.includes(slotIso);
+                const isUnavailable = isSlotUnavailable(activeDayKey, minutes);
+
+                return (
+                  <button
+                    key={`${group.label}-${minutes}`}
+                    type="button"
+                    className={cn(
+                      'broadcast-planner__time-chip',
+                      isSelected && 'is-selected',
+                      isUnavailable && !isSelected && 'is-disabled',
+                    )}
+                    onClick={() => toggleSlot(minutes)}
+                    disabled={disabled || (isUnavailable && !isSelected)}
+                  >
+                    {formatMinuteLabel(minutes)}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+
+        {error ? <small className="broadcast-planner__error">{error}</small> : null}
+      </div>
+
+      <div className="broadcast-planner__agenda">
+        <div className="broadcast-planner__agenda-head">
+          <strong>План публикаций</strong>
+          <small>{normalizedValue.length} слотов</small>
+        </div>
+        {normalizedValue.length > 0 ? (
+          <div className="broadcast-planner__agenda-list">
+            {normalizedValue.map((slot) => (
+              <div key={slot} className="broadcast-planner__agenda-row">
+                <strong>{formatBroadcastScheduleSlot(slot)}</strong>
+                <span>{formatBroadcastScheduleDay(getBroadcastScheduleDayKey(slot))}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="broadcast-planner__agenda-empty">
+            Отметьте дни в календаре и выберите время публикации.
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}

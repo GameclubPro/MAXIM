@@ -66,6 +66,7 @@ import {
   normalizeAllowlistLink,
   sendBroadcastRequestSchema,
   scheduleDomainRemovalRequestSchema,
+  type BroadcastScheduleMode,
 } from '@maxim/contracts';
 import {
   ChatEntityType,
@@ -78,6 +79,7 @@ import {
   SanctionAction,
   type ManagedBroadcast as PersistedManagedBroadcast,
   type ManagedBroadcastDelivery as PersistedManagedBroadcastDelivery,
+  type ManagedBroadcastOccurrence as PersistedManagedBroadcastOccurrence,
   type ChatRules as PersistedChatRules,
   type ManagedPoll as PersistedManagedPoll,
 } from '@prisma/client';
@@ -148,6 +150,17 @@ type PreparedManagedBroadcastRequest = {
   normalizedSourceText: string;
 };
 
+type ManagedBroadcastSchedulePlan = {
+  scheduleMode: BroadcastScheduleMode;
+  scheduleTimezone: string;
+  upcomingSlots: Date[];
+  nextSendAt: Date | null;
+  cycleEnabled: boolean;
+  cycleEveryHours: number;
+  cycleCount: number;
+  sendAt: string | null;
+};
+
 type BroadcastOccurrenceResult = {
   status: PrismaManagedBroadcastStatus;
   currentOccurrence: number;
@@ -196,9 +209,10 @@ type StickerLabUploadCandidate = {
 const RULES_IMAGE_MAX_BYTES = 1_000_000;
 const BROADCAST_IMAGE_MAX_BYTES = 3_000_000;
 const BROADCAST_MIN_DELAY_MS = 30_000;
-const BROADCAST_MAX_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
+const BROADCAST_MAX_DELAY_MS = 31 * 24 * 60 * 60 * 1000;
 const BROADCAST_CYCLE_MAX_COUNT = 100;
 const BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS = [1_500, 3_000, 6_000];
+const BROADCAST_CALENDAR_SLOT_MINUTES = 30;
 const STICKER_LAB_CANVAS_SIZE = 512;
 const STICKER_LAB_TARGET_BYTES = 1_000_000;
 const STICKER_LAB_QUALITY_LEVELS = [92, 84, 76, 68] as const;
@@ -2132,14 +2146,16 @@ export class AdminService {
     chatId: string,
     user: AuthUser,
   ): Promise<ChannelSettingsScreenResponse> {
-    const [settings, header] = await Promise.all([
+    const [settings, header, managedBroadcasts] = await Promise.all([
       this.getChannelSettings(chatId, user),
       this.getChannelHeader(chatId, user),
+      this.listChannelManagedBroadcasts(chatId, user),
     ]);
 
     return channelSettingsScreenResponseSchema.parse({
       settings,
       header,
+      managedBroadcasts,
     });
   }
 
@@ -2696,13 +2712,115 @@ export class AdminService {
     sourceChatId: string,
     user: AuthUser,
   ): Promise<ManagedBroadcastSummary[]> {
-    await this.assertChatAdmin(sourceChatId, user.userId, 'chat');
-    await this.ensureEntityType(sourceChatId, user.userId, 'chat');
+    return this.listManagedBroadcastsForEntity(sourceChatId, user, 'chat');
+  }
+
+  async listChannelManagedBroadcasts(
+    sourceChatId: string,
+    user: AuthUser,
+  ): Promise<ManagedBroadcastSummary[]> {
+    return this.listManagedBroadcastsForEntity(sourceChatId, user, 'channel');
+  }
+
+  async getManagedBroadcast(
+    sourceChatId: string,
+    broadcastId: string,
+    user: AuthUser,
+  ): Promise<ManagedBroadcastDetails> {
+    return this.getManagedBroadcastForEntity(sourceChatId, broadcastId, user, 'chat');
+  }
+
+  async getChannelManagedBroadcast(
+    sourceChatId: string,
+    broadcastId: string,
+    user: AuthUser,
+  ): Promise<ManagedBroadcastDetails> {
+    return this.getManagedBroadcastForEntity(sourceChatId, broadcastId, user, 'channel');
+  }
+
+  async updateManagedBroadcast(
+    sourceChatId: string,
+    broadcastId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ManagedBroadcastDetails> {
+    return this.updateManagedBroadcastForEntity(sourceChatId, broadcastId, user, body, 'chat');
+  }
+
+  async updateChannelManagedBroadcast(
+    sourceChatId: string,
+    broadcastId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ManagedBroadcastDetails> {
+    return this.updateManagedBroadcastForEntity(sourceChatId, broadcastId, user, body, 'channel');
+  }
+
+  async cancelManagedBroadcast(
+    sourceChatId: string,
+    broadcastId: string,
+    user: AuthUser,
+  ): Promise<ManagedBroadcastDetails> {
+    return this.cancelManagedBroadcastForEntity(sourceChatId, broadcastId, user, 'chat');
+  }
+
+  async cancelChannelManagedBroadcast(
+    sourceChatId: string,
+    broadcastId: string,
+    user: AuthUser,
+  ): Promise<ManagedBroadcastDetails> {
+    return this.cancelManagedBroadcastForEntity(sourceChatId, broadcastId, user, 'channel');
+  }
+
+  async retryManagedBroadcast(
+    sourceChatId: string,
+    broadcastId: string,
+    user: AuthUser,
+  ): Promise<ManagedBroadcastDetails> {
+    return this.retryManagedBroadcastForEntity(sourceChatId, broadcastId, user, 'chat');
+  }
+
+  async retryChannelManagedBroadcast(
+    sourceChatId: string,
+    broadcastId: string,
+    user: AuthUser,
+  ): Promise<ManagedBroadcastDetails> {
+    return this.retryManagedBroadcastForEntity(sourceChatId, broadcastId, user, 'channel');
+  }
+
+  async processDueManagedBroadcasts(reason: 'startup' | 'scheduled'): Promise<void> {
+    const now = new Date();
+    const staleLockBefore = new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS);
+    const dueRows = await this.prisma.managedBroadcast.findMany({
+      where: {
+        status: PrismaManagedBroadcastStatus.ACTIVE,
+        nextSendAt: { lte: now },
+        OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
+      },
+      orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }],
+      take: MANAGED_BROADCAST_DUE_BATCH_SIZE,
+      select: { id: true },
+    });
+
+    for (const row of dueRows) {
+      await this.processManagedBroadcastOccurrence(row.id, reason, staleLockBefore, [
+        PrismaManagedBroadcastStatus.ACTIVE,
+      ]);
+    }
+  }
+
+  private async listManagedBroadcastsForEntity(
+    sourceChatId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType,
+  ): Promise<ManagedBroadcastSummary[]> {
+    await this.assertChatAdmin(sourceChatId, user.userId, entityType);
+    await this.ensureEntityType(sourceChatId, user.userId, entityType);
 
     const rows = await this.prisma.managedBroadcast.findMany({
       where: {
         sourceChatId,
-        entityType: ChatEntityType.CHAT,
+        entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
         status: {
           in: [
             PrismaManagedBroadcastStatus.ACTIVE,
@@ -2714,51 +2832,66 @@ export class AdminService {
       orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'desc' }],
     });
 
-    const snapshots = await this.getManagedBroadcastDeliverySnapshots(rows);
+    const [snapshots, upcomingSlotsMap] = await Promise.all([
+      this.getManagedBroadcastDeliverySnapshots(rows),
+      this.getManagedBroadcastUpcomingSlotsMap(rows),
+    ]);
+
     return rows.map((row) =>
       managedBroadcastSummarySchema.parse(
-        this.mapManagedBroadcastSummary(row, snapshots.get(row.id)),
+        this.mapManagedBroadcastSummary(
+          row,
+          snapshots.get(row.id),
+          upcomingSlotsMap.get(row.id) ?? [],
+        ),
       ),
     );
   }
 
-  async getManagedBroadcast(
+  private async getManagedBroadcastForEntity(
     sourceChatId: string,
     broadcastId: string,
     user: AuthUser,
+    entityType: ManagedEntityType,
   ): Promise<ManagedBroadcastDetails> {
-    await this.assertChatAdmin(sourceChatId, user.userId, 'chat');
-    await this.ensureEntityType(sourceChatId, user.userId, 'chat');
+    await this.assertChatAdmin(sourceChatId, user.userId, entityType);
+    await this.ensureEntityType(sourceChatId, user.userId, entityType);
 
     const row = await this.prisma.managedBroadcast.findFirst({
       where: {
         id: broadcastId,
         sourceChatId,
-        entityType: ChatEntityType.CHAT,
+        entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
       },
     });
     if (!row) {
       throw new BadRequestException('Рассылка не найдена.');
     }
 
-    const snapshot = await this.getManagedBroadcastDeliverySnapshot(row);
-    return managedBroadcastDetailsSchema.parse(this.mapManagedBroadcastDetails(row, snapshot));
+    const [snapshot, upcomingSlots] = await Promise.all([
+      this.getManagedBroadcastDeliverySnapshot(row),
+      this.getManagedBroadcastUpcomingSlots(row),
+    ]);
+    return managedBroadcastDetailsSchema.parse(
+      this.mapManagedBroadcastDetails(row, snapshot, upcomingSlots),
+    );
   }
 
-  async updateManagedBroadcast(
+  private async updateManagedBroadcastForEntity(
     sourceChatId: string,
     broadcastId: string,
     user: AuthUser,
     body: unknown,
+    entityType: ManagedEntityType,
   ): Promise<ManagedBroadcastDetails> {
-    await this.assertChatAdmin(sourceChatId, user.userId, 'chat');
-    await this.ensureEntityType(sourceChatId, user.userId, 'chat');
+    await this.assertChatAdmin(sourceChatId, user.userId, entityType);
+    await this.ensureEntityType(sourceChatId, user.userId, entityType);
 
     const existing = await this.prisma.managedBroadcast.findFirst({
       where: {
         id: broadcastId,
         sourceChatId,
-        entityType: ChatEntityType.CHAT,
+        entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
         status: {
           in: [
             PrismaManagedBroadcastStatus.ACTIVE,
@@ -2773,37 +2906,9 @@ export class AdminService {
     }
 
     const request = await this.prepareManagedBroadcastRequest(sourceChatId, user, body, {
-      entityType: 'chat',
-      resolveTargets: (actor) => this.listChats(actor),
+      entityType,
+      resolveTargets: entityType === 'chat' ? (actor) => this.listChats(actor) : undefined,
     });
-
-    const scheduledAt = this.parseManagedBroadcastSendAt(request.payload.sendAt, {
-      required: true,
-      sourceChatId,
-      sentCount: existing.sentCount,
-    });
-    if (!scheduledAt) {
-      throw new BadRequestException('Укажите следующее время отправки.');
-    }
-    const cycleEveryHours = request.payload.cycleEnabled ? request.payload.cycleEveryHours : 1;
-    const cycleCount = request.payload.cycleEnabled ? request.payload.cycleCount : 1;
-
-    if (existing.sentCount > 0 && !request.payload.cycleEnabled) {
-      throw new BadRequestException(
-        'После первого запуска цикла оставьте циклический режим включенным.',
-      );
-    }
-    if (existing.sentCount > 0 && cycleCount <= existing.sentCount) {
-      throw new BadRequestException('Количество отправок должно быть больше уже выполненных.');
-    }
-
-    const remainingDelayMs =
-      scheduledAt.getTime() -
-      Date.now() +
-      Math.max(0, cycleCount - existing.sentCount - 1) * cycleEveryHours * ONE_HOUR_MS;
-    if (remainingDelayMs > BROADCAST_MAX_DELAY_MS) {
-      throw new BadRequestException('Все оставшиеся отправки должны уместиться в 14 дней.');
-    }
 
     const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(existing);
     const currentOccurrenceDelivered = await this.prisma.managedBroadcastDelivery.count({
@@ -2818,6 +2923,14 @@ export class AdminService {
         'Текущая отправка уже частично доставлена. Сначала повторите ошибки или остановите рассылку.',
       );
     }
+
+    const schedulePlan = await this.planManagedBroadcastSchedule(
+      sourceChatId,
+      this.mapManagedEntityTypeToChatEntityType(entityType),
+      request.payload,
+      existing.sentCount,
+      existing.id,
+    );
 
     await this.prisma.$transaction([
       this.prisma.managedBroadcast.update({
@@ -2837,10 +2950,12 @@ export class AdminService {
           imageBase64: request.payload.imageEnabled ? request.payload.imageBase64 : '',
           imageMimeType: request.payload.imageEnabled ? request.payload.imageMimeType : '',
           imageFileName: request.payload.imageEnabled ? request.payload.imageFileName : '',
-          nextSendAt: scheduledAt,
-          cycleEnabled: request.payload.cycleEnabled,
-          cycleEveryHours,
-          cycleCount,
+          scheduleMode: schedulePlan.scheduleMode,
+          scheduleTimezone: schedulePlan.scheduleTimezone,
+          nextSendAt: schedulePlan.nextSendAt,
+          cycleEnabled: schedulePlan.cycleEnabled,
+          cycleEveryHours: schedulePlan.cycleEveryHours,
+          cycleCount: schedulePlan.cycleCount,
           status: PrismaManagedBroadcastStatus.ACTIVE,
           lastError: null,
           lockedAt: null,
@@ -2853,14 +2968,33 @@ export class AdminService {
           status: { not: PrismaManagedBroadcastDeliveryStatus.SENT },
         },
       }),
+      this.prisma.managedBroadcastOccurrence.deleteMany({
+        where: {
+          broadcastId: existing.id,
+          occurrenceIndex: { gte: currentOccurrence },
+        },
+      }),
       this.prisma.managedBroadcastDelivery.createMany({
         data: this.buildManagedBroadcastDeliveryRows(
           existing.id,
           request.targetChatIds,
           currentOccurrence,
-          cycleCount,
+          schedulePlan.cycleCount,
         ),
       }),
+      ...(schedulePlan.scheduleMode === 'calendar'
+        ? [
+            this.prisma.managedBroadcastOccurrence.createMany({
+              data: this.buildManagedBroadcastOccurrenceRows(
+                existing.id,
+                sourceChatId,
+                this.mapManagedEntityTypeToChatEntityType(entityType),
+                currentOccurrence,
+                schedulePlan.upcomingSlots,
+              ),
+            }),
+          ]
+        : []),
     ]);
 
     const updated = await this.prisma.managedBroadcast.findUnique({
@@ -2877,32 +3011,42 @@ export class AdminService {
         action: 'UPDATE_BROADCAST_SCHEDULE',
         payload: {
           broadcastId: existing.id,
+          entityType,
           targetChats: request.targetChatIds.length,
-          nextSendAt: scheduledAt.toISOString(),
-          cycleEnabled: request.payload.cycleEnabled,
-          cycleEveryHours,
-          cycleCount,
+          nextSendAt: schedulePlan.nextSendAt?.toISOString() ?? null,
+          scheduleMode: schedulePlan.scheduleMode,
+          scheduleTimezone: schedulePlan.scheduleTimezone,
+          scheduledSlots: schedulePlan.upcomingSlots.map((slot) => slot.toISOString()),
+          cycleEnabled: schedulePlan.cycleEnabled,
+          cycleEveryHours: schedulePlan.cycleEveryHours,
+          cycleCount: schedulePlan.cycleCount,
         },
       },
     });
 
-    const snapshot = await this.getManagedBroadcastDeliverySnapshot(updated);
-    return managedBroadcastDetailsSchema.parse(this.mapManagedBroadcastDetails(updated, snapshot));
+    const [snapshot, upcomingSlots] = await Promise.all([
+      this.getManagedBroadcastDeliverySnapshot(updated),
+      this.getManagedBroadcastUpcomingSlots(updated),
+    ]);
+    return managedBroadcastDetailsSchema.parse(
+      this.mapManagedBroadcastDetails(updated, snapshot, upcomingSlots),
+    );
   }
 
-  async cancelManagedBroadcast(
+  private async cancelManagedBroadcastForEntity(
     sourceChatId: string,
     broadcastId: string,
     user: AuthUser,
+    entityType: ManagedEntityType,
   ): Promise<ManagedBroadcastDetails> {
-    await this.assertChatAdmin(sourceChatId, user.userId, 'chat');
-    await this.ensureEntityType(sourceChatId, user.userId, 'chat');
+    await this.assertChatAdmin(sourceChatId, user.userId, entityType);
+    await this.ensureEntityType(sourceChatId, user.userId, entityType);
 
     const existing = await this.prisma.managedBroadcast.findFirst({
       where: {
         id: broadcastId,
         sourceChatId,
-        entityType: ChatEntityType.CHAT,
+        entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
         status: {
           in: [
             PrismaManagedBroadcastStatus.ACTIVE,
@@ -2916,6 +3060,7 @@ export class AdminService {
       throw new BadRequestException('Рассылка не найдена или уже завершена.');
     }
 
+    const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(existing);
     const [canceled] = await this.prisma.$transaction([
       this.prisma.managedBroadcast.update({
         where: { id: existing.id },
@@ -2941,6 +3086,12 @@ export class AdminService {
           lockedAt: null,
         },
       }),
+      this.prisma.managedBroadcastOccurrence.deleteMany({
+        where: {
+          broadcastId: existing.id,
+          occurrenceIndex: { gte: currentOccurrence },
+        },
+      }),
     ]);
 
     await this.prisma.auditLog.create({
@@ -2950,27 +3101,34 @@ export class AdminService {
         action: 'CANCEL_BROADCAST_SCHEDULE',
         payload: {
           broadcastId: existing.id,
+          entityType,
         },
       },
     });
 
-    const snapshot = await this.getManagedBroadcastDeliverySnapshot(canceled);
-    return managedBroadcastDetailsSchema.parse(this.mapManagedBroadcastDetails(canceled, snapshot));
+    const [snapshot, upcomingSlots] = await Promise.all([
+      this.getManagedBroadcastDeliverySnapshot(canceled),
+      this.getManagedBroadcastUpcomingSlots(canceled),
+    ]);
+    return managedBroadcastDetailsSchema.parse(
+      this.mapManagedBroadcastDetails(canceled, snapshot, upcomingSlots),
+    );
   }
 
-  async retryManagedBroadcast(
+  private async retryManagedBroadcastForEntity(
     sourceChatId: string,
     broadcastId: string,
     user: AuthUser,
+    entityType: ManagedEntityType,
   ): Promise<ManagedBroadcastDetails> {
-    await this.assertChatAdmin(sourceChatId, user.userId, 'chat');
-    await this.ensureEntityType(sourceChatId, user.userId, 'chat');
+    await this.assertChatAdmin(sourceChatId, user.userId, entityType);
+    await this.ensureEntityType(sourceChatId, user.userId, entityType);
 
     const existing = await this.prisma.managedBroadcast.findFirst({
       where: {
         id: broadcastId,
         sourceChatId,
-        entityType: ChatEntityType.CHAT,
+        entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
         status: {
           in: [PrismaManagedBroadcastStatus.PARTIAL, PrismaManagedBroadcastStatus.FAILED],
         },
@@ -2981,6 +3139,10 @@ export class AdminService {
     }
 
     const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(existing);
+    const currentOccurrenceSlot = await this.getManagedBroadcastOccurrenceAtIndex(
+      existing.id,
+      currentOccurrence,
+    );
     await this.prisma.$transaction([
       this.prisma.managedBroadcast.update({
         where: { id: existing.id },
@@ -2988,7 +3150,7 @@ export class AdminService {
           status: PrismaManagedBroadcastStatus.ACTIVE,
           lastError: null,
           lockedAt: null,
-          nextSendAt: existing.nextSendAt ?? new Date(),
+          nextSendAt: existing.nextSendAt ?? currentOccurrenceSlot?.scheduledAt ?? new Date(),
         },
       }),
       this.prisma.managedBroadcastDelivery.updateMany({
@@ -3006,6 +3168,15 @@ export class AdminService {
           status: PrismaManagedBroadcastDeliveryStatus.PENDING,
           lockedAt: null,
           lastError: null,
+        },
+      }),
+      this.prisma.managedBroadcastOccurrence.updateMany({
+        where: {
+          broadcastId: existing.id,
+          occurrenceIndex: currentOccurrence,
+        },
+        data: {
+          status: PrismaManagedBroadcastStatus.ACTIVE,
         },
       }),
     ]);
@@ -3035,35 +3206,19 @@ export class AdminService {
         action: 'RETRY_BROADCAST_SCHEDULE',
         payload: {
           broadcastId: existing.id,
+          entityType,
           occurrenceIndex: currentOccurrence,
         },
       },
     });
 
-    const snapshot = await this.getManagedBroadcastDeliverySnapshot(updated);
-    return managedBroadcastDetailsSchema.parse(this.mapManagedBroadcastDetails(updated, snapshot));
-  }
-
-  async processDueManagedBroadcasts(reason: 'startup' | 'scheduled'): Promise<void> {
-    const now = new Date();
-    const staleLockBefore = new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS);
-    const dueRows = await this.prisma.managedBroadcast.findMany({
-      where: {
-        entityType: ChatEntityType.CHAT,
-        status: PrismaManagedBroadcastStatus.ACTIVE,
-        nextSendAt: { lte: now },
-        OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
-      },
-      orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }],
-      take: MANAGED_BROADCAST_DUE_BATCH_SIZE,
-      select: { id: true },
-    });
-
-    for (const row of dueRows) {
-      await this.processManagedBroadcastOccurrence(row.id, reason, staleLockBefore, [
-        PrismaManagedBroadcastStatus.ACTIVE,
-      ]);
-    }
+    const [snapshot, upcomingSlots] = await Promise.all([
+      this.getManagedBroadcastDeliverySnapshot(updated),
+      this.getManagedBroadcastUpcomingSlots(updated),
+    ]);
+    return managedBroadcastDetailsSchema.parse(
+      this.mapManagedBroadcastDetails(updated, snapshot, upcomingSlots),
+    );
   }
 
   private async sendManagedBroadcast(
@@ -3081,8 +3236,20 @@ export class AdminService {
       resolveTargets: options.resolveTargets,
     });
 
-    if (options.entityType === 'chat') {
-      return this.scheduleManagedBroadcast(sourceChatId, user, request, options.source);
+    const shouldSchedule =
+      options.entityType === 'chat' ||
+      request.payload.scheduleMode === 'calendar' ||
+      request.payload.sendAt !== null ||
+      request.payload.cycleEnabled;
+
+    if (shouldSchedule) {
+      return this.scheduleManagedBroadcast(
+        sourceChatId,
+        user,
+        request,
+        options.entityType,
+        options.source,
+      );
     }
 
     return this.sendManagedBroadcastViaQueue(
@@ -3154,7 +3321,7 @@ export class AdminService {
     const cycleEveryMs = cycleEveryHours * ONE_HOUR_MS;
     const maxDelayWithCycles = delayMs + (cycleCount - 1) * cycleEveryMs;
     if (maxDelayWithCycles > BROADCAST_MAX_DELAY_MS) {
-      throw new BadRequestException('Все циклы должны укладываться в 14 дней от текущего момента.');
+      throw new BadRequestException('Все циклы должны укладываться в 31 день от текущего момента.');
     }
 
     const imagePayload = await this.uploadManagedBroadcastImage(
@@ -3242,6 +3409,9 @@ export class AdminService {
           targetChats: request.targetChatIds.length,
           sentChats: sentChatIds.length,
           failedChats: failedChatIds.length,
+          scheduleMode: 'legacy',
+          scheduleTimezone: request.payload.scheduleTimezone,
+          scheduledSlots: [],
           sendAt: scheduledAt?.toISOString() ?? null,
           nextSendAt: scheduledAt?.toISOString() ?? null,
           cycleEnabled,
@@ -3262,6 +3432,9 @@ export class AdminService {
       failedChats: failedChatIds.length,
       sentChatIds,
       failedChatIds,
+      scheduleMode: 'legacy',
+      scheduleTimezone: request.payload.scheduleTimezone,
+      scheduledSlots: [],
       sendAt: scheduledAt?.toISOString() ?? null,
       nextSendAt: scheduledAt?.toISOString() ?? null,
       cycleEnabled,
@@ -3277,27 +3450,22 @@ export class AdminService {
     sourceChatId: string,
     user: AuthUser,
     request: PreparedManagedBroadcastRequest,
+    entityType: ManagedEntityType,
     source: AdminActionSource,
   ): Promise<SendBroadcastResult> {
-    const scheduledAt = this.parseManagedBroadcastSendAt(request.payload.sendAt, {
-      required: false,
+    const schedulePlan = await this.planManagedBroadcastSchedule(
       sourceChatId,
-      sentCount: 0,
-    });
-    const cycleEveryHours = request.payload.cycleEnabled ? request.payload.cycleEveryHours : 1;
-    const cycleCount = request.payload.cycleEnabled ? request.payload.cycleCount : 1;
-    const initialDelayMs = scheduledAt ? scheduledAt.getTime() - Date.now() : 0;
-    const maxDelayWithCycles = initialDelayMs + (cycleCount - 1) * cycleEveryHours * ONE_HOUR_MS;
-    if (maxDelayWithCycles > BROADCAST_MAX_DELAY_MS) {
-      throw new BadRequestException('Все циклы должны укладываться в 14 дней от текущего момента.');
-    }
-
-    const firstOccurrenceAt = scheduledAt ?? new Date();
+      this.mapManagedEntityTypeToChatEntityType(entityType),
+      request.payload,
+      0,
+      null,
+    );
+    const firstOccurrenceAt = schedulePlan.nextSendAt ?? new Date();
 
     const created = await this.prisma.managedBroadcast.create({
       data: {
         sourceChatId,
-        entityType: ChatEntityType.CHAT,
+        entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
         actorUserId: user.userId,
         text: request.payload.text.trim(),
         textFormat: request.payload.textFormat,
@@ -3312,22 +3480,39 @@ export class AdminService {
         imageBase64: request.payload.imageEnabled ? request.payload.imageBase64 : '',
         imageMimeType: request.payload.imageEnabled ? request.payload.imageMimeType : '',
         imageFileName: request.payload.imageEnabled ? request.payload.imageFileName : '',
-        nextSendAt: firstOccurrenceAt,
-        cycleEnabled: request.payload.cycleEnabled,
-        cycleEveryHours,
-        cycleCount,
+        scheduleMode: schedulePlan.scheduleMode,
+        scheduleTimezone: schedulePlan.scheduleTimezone,
+        nextSendAt: schedulePlan.nextSendAt,
+        cycleEnabled: schedulePlan.cycleEnabled,
+        cycleEveryHours: schedulePlan.cycleEveryHours,
+        cycleCount: schedulePlan.cycleCount,
         sentCount: 0,
         status: PrismaManagedBroadcastStatus.ACTIVE,
       },
     });
-    await this.prisma.managedBroadcastDelivery.createMany({
-      data: this.buildManagedBroadcastDeliveryRows(
-        created.id,
-        request.targetChatIds,
-        1,
-        cycleCount,
-      ),
-    });
+    await this.prisma.$transaction([
+      this.prisma.managedBroadcastDelivery.createMany({
+        data: this.buildManagedBroadcastDeliveryRows(
+          created.id,
+          request.targetChatIds,
+          1,
+          schedulePlan.cycleCount,
+        ),
+      }),
+      ...(schedulePlan.scheduleMode === 'calendar'
+        ? [
+            this.prisma.managedBroadcastOccurrence.createMany({
+              data: this.buildManagedBroadcastOccurrenceRows(
+                created.id,
+                sourceChatId,
+                this.mapManagedEntityTypeToChatEntityType(entityType),
+                1,
+                schedulePlan.upcomingSlots,
+              ),
+            }),
+          ]
+        : []),
+    ]);
 
     let occurrence: BroadcastOccurrenceResult = {
       status: PrismaManagedBroadcastStatus.ACTIVE,
@@ -3337,10 +3522,10 @@ export class AdminService {
       pendingChatIds: request.targetChatIds,
       canRetry: false,
       firstSendError: null,
-      nextSendAt: firstOccurrenceAt,
+      nextSendAt: schedulePlan.nextSendAt,
     };
 
-    if (!scheduledAt) {
+    if (schedulePlan.scheduleMode !== 'calendar' && schedulePlan.sendAt === null) {
       occurrence = await this.processManagedBroadcastOccurrence(
         created.id,
         'immediate',
@@ -3356,7 +3541,7 @@ export class AdminService {
       throw new BadRequestException('Рассылка не найдена.');
     }
 
-    const legacyCycleEveryDays = this.toLegacyCycleEveryDays(cycleEveryHours);
+    const legacyCycleEveryDays = this.toLegacyCycleEveryDays(schedulePlan.cycleEveryHours);
     await this.prisma.auditLog.create({
       data: {
         chatId: sourceChatId,
@@ -3364,14 +3549,18 @@ export class AdminService {
         action: 'SCHEDULE_BROADCAST',
         payload: {
           broadcastId: created.id,
+          entityType,
           applyToAllChats: request.payload.applyToAllChats,
           targetChats: request.targetChatIds.length,
-          sendAt: request.payload.sendAt,
+          sendAt: schedulePlan.sendAt,
           nextSendAt: updated.nextSendAt?.toISOString() ?? null,
-          cycleEnabled: request.payload.cycleEnabled,
-          cycleEveryHours,
+          scheduleMode: schedulePlan.scheduleMode,
+          scheduleTimezone: schedulePlan.scheduleTimezone,
+          scheduledSlots: schedulePlan.upcomingSlots.map((slot) => slot.toISOString()),
+          cycleEnabled: schedulePlan.cycleEnabled,
+          cycleEveryHours: schedulePlan.cycleEveryHours,
           ...(legacyCycleEveryDays ? { cycleEveryDays: legacyCycleEveryDays } : {}),
-          cycleCount,
+          cycleCount: schedulePlan.cycleCount,
           sentCount: updated.sentCount,
           source,
         },
@@ -3385,14 +3574,17 @@ export class AdminService {
       failedChats: occurrence.failedChatIds.length,
       sentChatIds: occurrence.sentChatIds,
       failedChatIds: occurrence.failedChatIds,
-      sendAt: request.payload.sendAt,
+      scheduleMode: schedulePlan.scheduleMode,
+      scheduleTimezone: schedulePlan.scheduleTimezone,
+      scheduledSlots: schedulePlan.upcomingSlots.map((slot) => slot.toISOString()),
+      sendAt: schedulePlan.sendAt,
       nextSendAt: updated.nextSendAt?.toISOString() ?? null,
-      cycleEnabled: request.payload.cycleEnabled,
-      cycleEveryHours,
+      cycleEnabled: schedulePlan.cycleEnabled,
+      cycleEveryHours: schedulePlan.cycleEveryHours,
       ...(legacyCycleEveryDays ? { cycleEveryDays: legacyCycleEveryDays } : {}),
-      cycleCount,
+      cycleCount: schedulePlan.cycleCount,
       scheduleId: created.id,
-      scheduledOccurrences: Math.max(0, cycleCount - updated.sentCount),
+      scheduledOccurrences: Math.max(0, schedulePlan.cycleCount - updated.sentCount),
     };
   }
 
@@ -3471,6 +3663,9 @@ export class AdminService {
           imageBase64: row.imageBase64,
           imageMimeType: row.imageMimeType,
           imageFileName: row.imageFileName,
+          scheduleMode: this.normalizeBroadcastScheduleMode(row.scheduleMode),
+          scheduleTimezone: row.scheduleTimezone,
+          scheduledSlots: [],
           sendAt: row.nextSendAt.toISOString(),
           cycleEnabled: row.cycleEnabled,
           cycleEveryHours: row.cycleEveryHours,
@@ -3501,7 +3696,7 @@ export class AdminService {
 
       const imagePayload = await this.uploadManagedBroadcastImage(
         request.payload,
-        'chat',
+        row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
         row.sourceChatId,
         row.actorUserId,
       );
@@ -3529,7 +3724,7 @@ export class AdminService {
         try {
           const message = await this.buildManagedBroadcastMessage(
             delivery.targetChatId,
-            'chat',
+            row.entityType === ChatEntityType.CHANNEL ? 'channel' : 'chat',
             request.payload,
             request.normalizedSourceText,
             imagePayload,
@@ -3713,6 +3908,260 @@ export class AdminService {
     }
   }
 
+  private mapManagedEntityTypeToChatEntityType(entityType: ManagedEntityType): ChatEntityType {
+    return entityType === 'channel' ? ChatEntityType.CHANNEL : ChatEntityType.CHAT;
+  }
+
+  private normalizeBroadcastScheduleMode(value: string): BroadcastScheduleMode {
+    return value === 'calendar' ? 'calendar' : 'legacy';
+  }
+
+  private async planManagedBroadcastSchedule(
+    sourceChatId: string,
+    entityType: ChatEntityType,
+    payload: SendBroadcastRequest,
+    sentCount: number,
+    excludeBroadcastId: string | null,
+  ): Promise<ManagedBroadcastSchedulePlan> {
+    const scheduleMode = this.normalizeBroadcastScheduleMode(payload.scheduleMode);
+    const scheduleTimezone = payload.scheduleTimezone.trim() || 'Europe/Moscow';
+
+    if (scheduleMode === 'calendar') {
+      const upcomingSlots = await this.parseManagedBroadcastCalendarSlots(payload.scheduledSlots, {
+        sourceChatId,
+        sentCount,
+        entityType,
+        excludeBroadcastId,
+      });
+
+      return {
+        scheduleMode,
+        scheduleTimezone,
+        upcomingSlots,
+        nextSendAt: upcomingSlots[0] ?? null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: sentCount + upcomingSlots.length,
+        sendAt: upcomingSlots[0]?.toISOString() ?? null,
+      };
+    }
+
+    const scheduledAt = this.parseManagedBroadcastSendAt(payload.sendAt, {
+      required: false,
+      sourceChatId,
+      sentCount,
+    });
+    const cycleEveryHours = payload.cycleEnabled ? payload.cycleEveryHours : 1;
+    const cycleCount = payload.cycleEnabled ? payload.cycleCount : 1;
+
+    if (sentCount > 0 && !payload.cycleEnabled) {
+      throw new BadRequestException(
+        'После первого запуска цикла оставьте циклический режим включенным.',
+      );
+    }
+    if (sentCount > 0 && cycleCount <= sentCount) {
+      throw new BadRequestException('Количество отправок должно быть больше уже выполненных.');
+    }
+
+    const initialDelayMs = scheduledAt ? scheduledAt.getTime() - Date.now() : 0;
+    const maxDelayWithCycles = initialDelayMs + (cycleCount - 1) * cycleEveryHours * ONE_HOUR_MS;
+    if (maxDelayWithCycles > BROADCAST_MAX_DELAY_MS) {
+      throw new BadRequestException('Все оставшиеся отправки должны уместиться в 31 день.');
+    }
+
+    const firstOccurrenceAt = scheduledAt ?? new Date();
+    const remainingOccurrences = Math.max(1, cycleCount - sentCount);
+
+    return {
+      scheduleMode,
+      scheduleTimezone,
+      upcomingSlots: this.buildLegacyManagedBroadcastUpcomingSlots(
+        firstOccurrenceAt,
+        remainingOccurrences,
+        cycleEveryHours,
+      ),
+      nextSendAt: firstOccurrenceAt,
+      cycleEnabled: payload.cycleEnabled,
+      cycleEveryHours,
+      cycleCount,
+      sendAt: scheduledAt?.toISOString() ?? null,
+    };
+  }
+
+  private async parseManagedBroadcastCalendarSlots(
+    values: string[],
+    options: {
+      sourceChatId: string;
+      sentCount: number;
+      entityType: ChatEntityType;
+      excludeBroadcastId: string | null;
+    },
+  ): Promise<Date[]> {
+    const normalized = Array.from(
+      new Set(values.map((value) => value.trim()).filter(Boolean)),
+    ).sort((a, b) => a.localeCompare(b));
+    if (normalized.length === 0) {
+      throw new BadRequestException('Добавьте хотя бы один слот публикации.');
+    }
+
+    const slots = normalized.map((value) => {
+      const parsed = new Date(value);
+      if (Number.isNaN(parsed.getTime())) {
+        throw new BadRequestException('Некорректный слот публикации.');
+      }
+      if (
+        parsed.getUTCMinutes() % BROADCAST_CALENDAR_SLOT_MINUTES !== 0 ||
+        parsed.getUTCSeconds() !== 0 ||
+        parsed.getUTCMilliseconds() !== 0
+      ) {
+        throw new BadRequestException('Слоты должны быть кратны 30 минутам.');
+      }
+
+      const delayMs = parsed.getTime() - Date.now();
+      if (delayMs < BROADCAST_MIN_DELAY_MS) {
+        const message =
+          options.sentCount > 0
+            ? 'Следующую отправку можно поставить минимум через 30 секунд.'
+            : 'Добавьте слоты минимум через 30 секунд от текущего момента.';
+        throw new BadRequestException(message);
+      }
+      if (delayMs > BROADCAST_MAX_DELAY_MS) {
+        throw new BadRequestException('Планирование календаря доступно максимум на 31 день.');
+      }
+      return parsed;
+    });
+
+    const conflicts = await this.prisma.managedBroadcastOccurrence.findMany({
+      where: {
+        sourceChatId: options.sourceChatId,
+        entityType: options.entityType,
+        scheduledAt: {
+          in: slots,
+        },
+        ...(options.excludeBroadcastId ? { broadcastId: { not: options.excludeBroadcastId } } : {}),
+      },
+      select: {
+        scheduledAt: true,
+      },
+      orderBy: [{ scheduledAt: 'asc' }],
+    });
+    if (conflicts.length > 0) {
+      const preview = conflicts
+        .slice(0, 3)
+        .map((item) => item.scheduledAt.toISOString())
+        .join(', ');
+      throw new BadRequestException(
+        `Некоторые слоты уже заняты другой рассылкой: ${preview}${conflicts.length > 3 ? '…' : ''}`,
+      );
+    }
+
+    return slots;
+  }
+
+  private buildLegacyManagedBroadcastUpcomingSlots(
+    nextSendAt: Date | null,
+    remainingOccurrences: number,
+    cycleEveryHours: number,
+  ): Date[] {
+    if (!nextSendAt || remainingOccurrences <= 0) {
+      return [];
+    }
+
+    const slots: Date[] = [];
+    for (let index = 0; index < remainingOccurrences; index += 1) {
+      slots.push(new Date(nextSendAt.getTime() + index * cycleEveryHours * ONE_HOUR_MS));
+    }
+    return slots;
+  }
+
+  private buildManagedBroadcastOccurrenceRows(
+    broadcastId: string,
+    sourceChatId: string,
+    entityType: ChatEntityType,
+    fromOccurrenceIndex: number,
+    slots: Date[],
+  ): Prisma.ManagedBroadcastOccurrenceCreateManyInput[] {
+    return slots.map((scheduledAt, index) => ({
+      broadcastId,
+      sourceChatId,
+      entityType,
+      occurrenceIndex: fromOccurrenceIndex + index,
+      scheduledAt,
+      status: PrismaManagedBroadcastStatus.ACTIVE,
+    }));
+  }
+
+  private async getManagedBroadcastOccurrenceAtIndex(
+    broadcastId: string,
+    occurrenceIndex: number,
+  ): Promise<PersistedManagedBroadcastOccurrence | null> {
+    return this.prisma.managedBroadcastOccurrence.findUnique({
+      where: {
+        broadcastId_occurrenceIndex: {
+          broadcastId,
+          occurrenceIndex,
+        },
+      },
+    });
+  }
+
+  private async getManagedBroadcastUpcomingSlotsMap(
+    rows: PersistedManagedBroadcast[],
+  ): Promise<Map<string, Date[]>> {
+    if (rows.length === 0) {
+      return new Map();
+    }
+
+    const calendarRows = rows.filter(
+      (row) => this.normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar',
+    );
+    const occurrences =
+      calendarRows.length > 0
+        ? await this.prisma.managedBroadcastOccurrence.findMany({
+            where: {
+              broadcastId: {
+                in: calendarRows.map((row) => row.id),
+              },
+            },
+            orderBy: [{ occurrenceIndex: 'asc' }],
+          })
+        : [];
+
+    const groupedOccurrences = new Map<string, PersistedManagedBroadcastOccurrence[]>();
+    for (const occurrence of occurrences) {
+      const current = groupedOccurrences.get(occurrence.broadcastId) ?? [];
+      current.push(occurrence);
+      groupedOccurrences.set(occurrence.broadcastId, current);
+    }
+
+    const result = new Map<string, Date[]>();
+    for (const row of rows) {
+      if (this.normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
+        const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(row);
+        const upcoming = (groupedOccurrences.get(row.id) ?? [])
+          .filter((occurrence) => occurrence.occurrenceIndex >= currentOccurrence)
+          .map((occurrence) => occurrence.scheduledAt);
+        result.set(row.id, upcoming);
+        continue;
+      }
+
+      result.set(
+        row.id,
+        this.buildLegacyManagedBroadcastUpcomingSlots(
+          row.nextSendAt,
+          Math.max(0, row.cycleCount - row.sentCount),
+          row.cycleEveryHours,
+        ),
+      );
+    }
+
+    return result;
+  }
+
+  private async getManagedBroadcastUpcomingSlots(row: PersistedManagedBroadcast): Promise<Date[]> {
+    return (await this.getManagedBroadcastUpcomingSlotsMap([row])).get(row.id) ?? [];
+  }
+
   private parseManagedBroadcastSendAt(
     sendAt: string | null,
     options: {
@@ -3741,7 +4190,7 @@ export class AdminService {
       throw new BadRequestException(message);
     }
     if (calculatedDelayMs > BROADCAST_MAX_DELAY_MS) {
-      throw new BadRequestException('Максимальный таймер рассылки: 14 дней.');
+      throw new BadRequestException('Максимальный таймер рассылки: 31 день.');
     }
     return scheduledAt;
   }
@@ -3856,6 +4305,17 @@ export class AdminService {
           lockedAt: null,
         },
       });
+      if (this.normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
+        await this.prisma.managedBroadcastOccurrence.updateMany({
+          where: {
+            broadcastId: row.id,
+            occurrenceIndex: currentOccurrence,
+          },
+          data: {
+            status,
+          },
+        });
+      }
 
       return {
         status,
@@ -3884,6 +4344,17 @@ export class AdminService {
           lockedAt: null,
         },
       });
+      if (this.normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
+        await this.prisma.managedBroadcastOccurrence.updateMany({
+          where: {
+            broadcastId: row.id,
+            occurrenceIndex: currentOccurrence,
+          },
+          data: {
+            status: PrismaManagedBroadcastStatus.ACTIVE,
+          },
+        });
+      }
       return {
         status: PrismaManagedBroadcastStatus.ACTIVE,
         currentOccurrence,
@@ -3900,10 +4371,30 @@ export class AdminService {
     }
 
     const nextSentCount = currentOccurrence;
-    const isComplete = nextSentCount >= row.cycleCount;
-    const nextSendAt = isComplete
-      ? null
-      : new Date(row.nextSendAt!.getTime() + row.cycleEveryHours * ONE_HOUR_MS);
+    let nextSendAt: Date | null;
+    let isComplete: boolean;
+    if (this.normalizeBroadcastScheduleMode(row.scheduleMode) === 'calendar') {
+      const nextOccurrence = await this.getManagedBroadcastOccurrenceAtIndex(
+        row.id,
+        currentOccurrence + 1,
+      );
+      nextSendAt = nextOccurrence?.scheduledAt ?? null;
+      isComplete = nextSentCount >= row.cycleCount || !nextSendAt;
+      await this.prisma.managedBroadcastOccurrence.updateMany({
+        where: {
+          broadcastId: row.id,
+          occurrenceIndex: currentOccurrence,
+        },
+        data: {
+          status: PrismaManagedBroadcastStatus.COMPLETED,
+        },
+      });
+    } else {
+      isComplete = nextSentCount >= row.cycleCount;
+      nextSendAt = isComplete
+        ? null
+        : new Date(row.nextSendAt!.getTime() + row.cycleEveryHours * ONE_HOUR_MS);
+    }
     await this.prisma.managedBroadcast.update({
       where: { id: row.id },
       data: {
@@ -4018,6 +4509,7 @@ export class AdminService {
   private mapManagedBroadcastSummary(
     row: PersistedManagedBroadcast,
     snapshot?: ManagedBroadcastDeliverySnapshot,
+    upcomingSlots: Date[] = [],
   ): ManagedBroadcastSummary {
     const targetChatIds = this.parseManagedBroadcastTargetChatIds(row.targetChatIds);
     const normalizedText = row.text.replace(/\s+/gu, ' ').trim();
@@ -4036,6 +4528,9 @@ export class AdminService {
       targetChats: targetChatIds.length,
       hasImage: row.imageEnabled,
       buttonEnabled: row.buttonEnabled,
+      scheduleMode: this.normalizeBroadcastScheduleMode(row.scheduleMode),
+      scheduleTimezone: row.scheduleTimezone,
+      scheduledSlots: upcomingSlots.map((slot) => slot.toISOString()),
       nextSendAt: row.nextSendAt?.toISOString() ?? null,
       cycleEnabled: row.cycleEnabled,
       cycleEveryHours: row.cycleEveryHours,
@@ -4056,6 +4551,7 @@ export class AdminService {
   private mapManagedBroadcastDetails(
     row: PersistedManagedBroadcast,
     snapshot?: ManagedBroadcastDeliverySnapshot,
+    upcomingSlots: Date[] = [],
   ): ManagedBroadcastDetails {
     const targetChatIds = this.parseManagedBroadcastTargetChatIds(row.targetChatIds);
     const resolvedSnapshot = snapshot ?? this.createManagedBroadcastDeliverySnapshot(row, []);
@@ -4074,6 +4570,9 @@ export class AdminService {
       imageBase64: row.imageBase64,
       imageMimeType: row.imageMimeType,
       imageFileName: row.imageFileName,
+      scheduleMode: this.normalizeBroadcastScheduleMode(row.scheduleMode),
+      scheduleTimezone: row.scheduleTimezone,
+      scheduledSlots: upcomingSlots.map((slot) => slot.toISOString()),
       nextSendAt: row.nextSendAt?.toISOString() ?? null,
       cycleEnabled: row.cycleEnabled,
       cycleEveryHours: row.cycleEveryHours,

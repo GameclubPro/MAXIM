@@ -472,6 +472,8 @@ model ManagedBroadcast {
   imageBase64    String                 @default("") @map("image_base64")
   imageMimeType  String                 @default("") @map("image_mime_type")
   imageFileName  String                 @default("") @map("image_file_name")
+  scheduleMode   String                 @default("legacy") @map("schedule_mode")
+  scheduleTimezone String               @default("Europe/Moscow") @map("schedule_timezone")
   nextSendAt     DateTime?              @map("next_send_at")
   cycleEnabled   Boolean                @default(false) @map("cycle_enabled")
   cycleEveryHours Int                   @default(1) @map("cycle_every_hours")
@@ -485,10 +487,30 @@ model ManagedBroadcast {
 
   chat       Chat                       @relation(fields: [sourceChatId], references: [id], onDelete: Cascade)
   deliveries ManagedBroadcastDelivery[]
+  occurrences ManagedBroadcastOccurrence[]
 
   @@index([sourceChatId, status, nextSendAt], map: "managed_broadcasts_source_chat_id_status_next_send_at_idx")
   @@index([status, nextSendAt], map: "managed_broadcasts_status_next_send_at_idx")
   @@map("managed_broadcasts")
+}
+
+model ManagedBroadcastOccurrence {
+  id              String                  @id @default(cuid())
+  broadcastId     String                  @map("broadcast_id")
+  sourceChatId    String                  @map("source_chat_id")
+  entityType      ChatEntityType          @default(CHAT) @map("entity_type")
+  occurrenceIndex Int                     @map("occurrence_index")
+  scheduledAt     DateTime                @map("scheduled_at")
+  status          ManagedBroadcastStatus  @default(ACTIVE)
+  createdAt       DateTime                @default(now()) @map("created_at")
+  updatedAt       DateTime                @updatedAt @map("updated_at")
+
+  broadcast ManagedBroadcast @relation(fields: [broadcastId], references: [id], onDelete: Cascade)
+
+  @@unique([broadcastId, occurrenceIndex], map: "managed_broadcast_occurrences_broadcast_occurrence_key")
+  @@unique([sourceChatId, entityType, scheduledAt], map: "managed_broadcast_occurrences_slot_key")
+  @@index([status, scheduledAt], map: "managed_broadcast_occurrences_status_scheduled_at_idx")
+  @@map("managed_broadcast_occurrences")
 }
 
 model ManagedBroadcastDelivery {

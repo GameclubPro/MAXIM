@@ -3,8 +3,11 @@ import { ConfigService } from '@nestjs/config';
 import {
   broadcastHandoffRequestSchema,
   broadcastHandoffResponseSchema,
+  broadcastHandoffStateSchema,
   managedGiveawayHandoffRequestSchema,
+  type BroadcastHandoffState,
   type BroadcastHandoffResponse,
+  type BroadcastScheduleMode,
   type ChannelSettings,
   type ChatSettings,
   type LogsDashboardRange,
@@ -116,6 +119,9 @@ type PrivateBroadcastDraft = {
   imageBase64: string;
   imageMimeType: string;
   imageFileName: string;
+  scheduleMode: BroadcastScheduleMode;
+  scheduleTimezone: string;
+  scheduledSlots: string[];
   sendAt: string | null;
   cycleEnabled: boolean;
   cycleEveryHours: number;
@@ -860,6 +866,9 @@ const DEFAULT_BROADCAST_DRAFT: PrivateBroadcastDraft = {
   imageBase64: '',
   imageMimeType: '',
   imageFileName: '',
+  scheduleMode: 'legacy',
+  scheduleTimezone: 'Europe/Moscow',
+  scheduledSlots: [],
   sendAt: null,
   cycleEnabled: false,
   cycleEveryHours: 24,
@@ -1024,6 +1033,8 @@ export class PrivateControlService {
     session.broadcastView = 'advanced';
     session.pendingMassAction = null;
     session.pendingInput = { kind: 'broadcast_content' };
+    const scheduleMode: BroadcastScheduleMode =
+      parsed.data.scheduleMode === 'calendar' ? 'calendar' : 'legacy';
     session.broadcastDraft = {
       ...DEFAULT_BROADCAST_DRAFT,
       applyToAllChats: entityType === 'channel' ? false : parsed.data.applyToAllChats,
@@ -1032,10 +1043,29 @@ export class PrivateControlService {
       buttonText: parsed.data.buttonEnabled
         ? parsed.data.buttonText.trim() || 'Открыть'
         : DEFAULT_BROADCAST_DRAFT.buttonText,
-      sendAt: parsed.data.sendAt,
-      cycleEnabled: parsed.data.cycleEnabled,
-      cycleEveryHours: !parsed.data.cycleEnabled ? 24 : parsed.data.cycleEveryHours,
-      cycleCount: !parsed.data.cycleEnabled ? 1 : parsed.data.cycleCount,
+      scheduleMode,
+      scheduleTimezone:
+        parsed.data.scheduleTimezone.trim() || DEFAULT_BROADCAST_DRAFT.scheduleTimezone,
+      scheduledSlots:
+        scheduleMode === 'calendar'
+          ? Array.from(
+              new Set(parsed.data.scheduledSlots.map((slot) => slot.trim()).filter(Boolean)),
+            ).sort((left, right) => left.localeCompare(right))
+          : [],
+      sendAt: scheduleMode === 'calendar' ? null : parsed.data.sendAt,
+      cycleEnabled: scheduleMode === 'calendar' ? false : parsed.data.cycleEnabled,
+      cycleEveryHours:
+        scheduleMode === 'calendar'
+          ? DEFAULT_BROADCAST_DRAFT.cycleEveryHours
+          : !parsed.data.cycleEnabled
+            ? 24
+            : parsed.data.cycleEveryHours,
+      cycleCount:
+        scheduleMode === 'calendar'
+          ? Math.max(1, parsed.data.scheduledSlots.length)
+          : !parsed.data.cycleEnabled
+            ? 1
+            : parsed.data.cycleCount,
     };
 
     await this.saveSession(user.userId, session);
@@ -1046,6 +1076,38 @@ export class PrivateControlService {
     }
 
     return broadcastHandoffResponseSchema.parse({ botUrl });
+  }
+
+  async getBroadcastHandoffState(
+    sourceChatId: string,
+    user: AuthUser,
+    entityType: ManagedEntityType,
+  ): Promise<BroadcastHandoffState> {
+    if (entityType === 'channel') {
+      await this.adminService.getChannelSettings(sourceChatId, user);
+    } else {
+      await this.adminService.getSettings(sourceChatId, user);
+    }
+
+    const session = await this.loadSession(user.userId);
+    const hasMatchingDraft =
+      session.selectedChatId === sourceChatId && session.selectedEntityType === entityType;
+    const draft = hasMatchingDraft ? session.broadcastDraft : DEFAULT_BROADCAST_DRAFT;
+
+    return broadcastHandoffStateSchema.parse({
+      applyToAllChats: entityType === 'channel' ? false : draft.applyToAllChats,
+      buttonEnabled: draft.buttonEnabled,
+      buttonUrl: draft.buttonUrl,
+      buttonText: draft.buttonText,
+      scheduleMode: draft.scheduleMode,
+      scheduleTimezone: draft.scheduleTimezone,
+      scheduledSlots: draft.scheduledSlots,
+      sendAt: draft.sendAt,
+      cycleEnabled: draft.cycleEnabled,
+      cycleEveryHours: draft.cycleEveryHours,
+      cycleCount: draft.cycleCount,
+      hasContent: Boolean(draft.text.trim() || draft.imageEnabled),
+    });
   }
 
   async handoffGiveawayFromMiniapp(
@@ -4902,11 +4964,20 @@ export class PrivateControlService {
       ? await this.adminService.getChannelSettings(session.selectedChatId, context.actor)
       : null;
     const applyToAllEnabled = !isChannel && draft.applyToAllChats;
-    const timingSummary = draft.sendAt ? this.formatIsoDate(draft.sendAt) : 'нет';
+    const isCalendarMode = draft.scheduleMode === 'calendar';
+    const timingSummary = isCalendarMode
+      ? this.formatBroadcastCalendarSummary(draft.scheduledSlots)
+      : draft.sendAt
+        ? this.formatIsoDate(draft.sendAt)
+        : 'сразу';
     const cycleSummary = draft.cycleEnabled
       ? `каждые ${draft.cycleEveryHours} ч., ${draft.cycleCount} раз`
       : 'нет';
     const waitingForContent = session.pendingInput?.kind === 'broadcast_content';
+    const plannerUrl = this.buildBroadcastSettingsMiniappUrl(
+      session.selectedChatId,
+      session.selectedEntityType ?? 'chat',
+    );
 
     const lines: string[] = [
       this.markdownTitle(isChannel ? 'Рассылка в канал' : 'Рассылка'),
@@ -4921,11 +4992,12 @@ export class PrivateControlService {
       `Кнопка: ${draft.buttonEnabled ? 'да' : 'нет'}`,
       `Фото: ${draft.imageEnabled ? 'да' : 'нет'}`,
       ...(!isChannel ? [`Во все: ${applyToAllEnabled ? 'да' : 'нет'}`] : []),
-      `Таймер: ${timingSummary}`,
-      `Цикл: ${cycleSummary}`,
+      isCalendarMode ? `Календарь: ${timingSummary}` : `Таймер: ${timingSummary}`,
+      ...(isCalendarMode ? [] : [`Цикл: ${cycleSummary}`]),
       ...(channelSettings
         ? [`Комменты: ${this.describeBooleanCompact(channelSettings.commentsEnabled)}`]
         : []),
+      ...(isCalendarMode ? ['Расписание меняется в mini app.'] : []),
       ...(notice ? ['', `Статус: ${this.escapeMarkdown(notice)}`] : []),
       ...(waitingForContent ? ['', 'Жду текст или фото.'] : []),
     ];
@@ -4942,6 +5014,9 @@ export class PrivateControlService {
             this.cb('broadcast_toggle', 'apply_to_all'),
           ),
         ]);
+      }
+      if (plannerUrl) {
+        rows.push([this.buildMiniappOpenButton('🗓 Календарь', plannerUrl)]);
       }
       rows.push([this.callbackButton('🚀 Отправить', this.cb('broadcast_send'), 'positive')]);
       rows.push([this.callbackButton('⚙️ Ещё параметры', this.cb('broadcast_view', 'advanced'))]);
@@ -4977,28 +5052,34 @@ export class PrivateControlService {
         rows.push([this.callbackButton('🗑 Удалить фото', this.cb('broadcast_clear_photo'))]);
       }
 
-      rows.push([
-        this.callbackButton('🕒 Время отправки', this.cb('broadcast_input_prompt', 'send_at')),
-        this.callbackButton('🧹 Убрать таймер', this.cb('broadcast_clear_timer')),
-      ]);
+      if (isCalendarMode) {
+        if (plannerUrl) {
+          rows.push([this.buildMiniappOpenButton('🗓 Изменить календарь', plannerUrl)]);
+        }
+      } else {
+        rows.push([
+          this.callbackButton('🕒 Время отправки', this.cb('broadcast_input_prompt', 'send_at')),
+          this.callbackButton('🧹 Убрать таймер', this.cb('broadcast_clear_timer')),
+        ]);
 
-      rows.push([
-        this.callbackButton(
-          `${draft.cycleEnabled ? '✅' : '⬜'} Цикл`,
-          this.cb('broadcast_toggle', 'cycle_enabled'),
-        ),
-      ]);
-
-      if (draft.cycleEnabled) {
         rows.push([
           this.callbackButton(
-            '🔁 Шаг цикла (часы)',
-            this.cb('broadcast_input_prompt', 'cycle_hours'),
+            `${draft.cycleEnabled ? '✅' : '⬜'} Цикл`,
+            this.cb('broadcast_toggle', 'cycle_enabled'),
           ),
         ]);
-        rows.push([
-          this.callbackButton('🔢 Повторов', this.cb('broadcast_input_prompt', 'cycle_count')),
-        ]);
+
+        if (draft.cycleEnabled) {
+          rows.push([
+            this.callbackButton(
+              '🔁 Шаг цикла (часы)',
+              this.cb('broadcast_input_prompt', 'cycle_hours'),
+            ),
+          ]);
+          rows.push([
+            this.callbackButton('🔢 Повторов', this.cb('broadcast_input_prompt', 'cycle_count')),
+          ]);
+        }
       }
 
       rows.push([this.callbackButton('⬅️ Основное', this.cb('broadcast_view', 'basic'))]);
@@ -6825,6 +6906,20 @@ export class PrivateControlService {
     return `${this.appBaseUrl}/app/`;
   }
 
+  private buildBroadcastSettingsMiniappUrl(
+    chatId: string,
+    entityType: ManagedEntityType,
+  ): string | null {
+    if (!this.appBaseUrl) {
+      return null;
+    }
+
+    const encodedChatId = encodeURIComponent(chatId);
+    return entityType === 'channel'
+      ? `${this.appBaseUrl}/app/channel/${encodedChatId}/settings?focus=broadcast&handoff=1`
+      : `${this.appBaseUrl}/app/chat/${encodedChatId}/settings?focus=broadcast&handoff=1`;
+  }
+
   private buildBotStartUrl(startPayload: string): string | null {
     if (!this.botDeepLinkId) {
       return null;
@@ -8103,6 +8198,22 @@ export class PrivateControlService {
       imageBase64: typeof row.imageBase64 === 'string' ? row.imageBase64 : '',
       imageMimeType: typeof row.imageMimeType === 'string' ? row.imageMimeType : '',
       imageFileName: typeof row.imageFileName === 'string' ? row.imageFileName : '',
+      scheduleMode: row.scheduleMode === 'calendar' ? 'calendar' : 'legacy',
+      scheduleTimezone:
+        typeof row.scheduleTimezone === 'string' && row.scheduleTimezone.trim().length > 0
+          ? row.scheduleTimezone.trim()
+          : DEFAULT_BROADCAST_DRAFT.scheduleTimezone,
+      scheduledSlots: Array.isArray(row.scheduledSlots)
+        ? Array.from(
+            new Set(
+              row.scheduledSlots
+                .filter(
+                  (item): item is string => typeof item === 'string' && item.trim().length > 0,
+                )
+                .map((item) => item.trim()),
+            ),
+          ).sort((left, right) => left.localeCompare(right))
+        : [],
       sendAt: typeof row.sendAt === 'string' ? row.sendAt : null,
       cycleEnabled: row.cycleEnabled === true,
       cycleEveryHours: this.toPositiveInt(
@@ -8286,6 +8397,19 @@ export class PrivateControlService {
     }
 
     return this.formatIsoDate(iso);
+  }
+
+  private formatBroadcastCalendarSummary(slots: string[]): string {
+    if (slots.length === 0) {
+      return 'не настроен';
+    }
+
+    const preview = slots
+      .slice(0, 3)
+      .map((slot) => this.formatIsoDate(slot))
+      .join(' • ');
+    const extraCount = slots.length - 3;
+    return extraCount > 0 ? `${preview} • +${extraCount}` : preview;
   }
 
   private asRecord(value: unknown): Record<string, unknown> | null {

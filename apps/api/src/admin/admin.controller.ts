@@ -173,6 +173,48 @@ export class AdminController {
     return this.adminService.sendChannelBroadcast(chatId, user, body);
   }
 
+  @Get('channels/:chatId/broadcasts')
+  getChannelManagedBroadcasts(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.adminService.listChannelManagedBroadcasts(chatId, user);
+  }
+
+  @Get('channels/:chatId/broadcasts/:broadcastId')
+  getChannelManagedBroadcast(
+    @Param('chatId') chatId: string,
+    @Param('broadcastId') broadcastId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.adminService.getChannelManagedBroadcast(chatId, broadcastId, user);
+  }
+
+  @Put('channels/:chatId/broadcasts/:broadcastId')
+  updateChannelManagedBroadcast(
+    @Param('chatId') chatId: string,
+    @Param('broadcastId') broadcastId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.updateChannelManagedBroadcast(chatId, broadcastId, user, body);
+  }
+
+  @Delete('channels/:chatId/broadcasts/:broadcastId')
+  cancelChannelManagedBroadcast(
+    @Param('chatId') chatId: string,
+    @Param('broadcastId') broadcastId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.adminService.cancelChannelManagedBroadcast(chatId, broadcastId, user);
+  }
+
+  @Post('channels/:chatId/broadcasts/:broadcastId/retry')
+  retryChannelManagedBroadcast(
+    @Param('chatId') chatId: string,
+    @Param('broadcastId') broadcastId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.adminService.retryChannelManagedBroadcast(chatId, broadcastId, user);
+  }
+
   @Get('channels/:chatId/poll')
   getChannelPoll(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
     return this.adminService.getChannelPoll(chatId, user);

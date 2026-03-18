@@ -2,6 +2,7 @@ import type { ChannelAutoPostButtonsMode, ChannelSettings } from '@maxim/contrac
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
+import { BroadcastSchedulePlanner } from '../components/broadcast-schedule-planner';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { MaxMarkdownEditor } from '../components/max-markdown-editor';
 import { ManagedPollCard } from '../components/managed-poll-card';
@@ -14,12 +15,18 @@ import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import {
   getChannelSettingsScreen,
+  getChannelBroadcastHandoffState,
   handoffChannelBroadcast,
   publishChannelEngagement,
   updateChannelSettings,
 } from '../lib/api/channel-settings-client';
 import type { ApiTransport } from '../lib/api/transport';
 import type { BroadcastHandoffPayload } from '../lib/api/shared-types';
+import {
+  countBroadcastScheduleDays,
+  resolveBroadcastScheduleTimezone,
+  sortAndUniqueBroadcastSlots,
+} from '../lib/broadcast-schedule';
 import { cn } from '../lib/cn';
 import { maxNotify, openMaxBotLink, setMaxClosingConfirmation } from '../lib/max-bridge';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
@@ -425,6 +432,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [broadcastImageBase64, setBroadcastImageBase64] = useState('');
   const [broadcastImageMimeType, setBroadcastImageMimeType] = useState('');
   const [broadcastImageFileName, setBroadcastImageFileName] = useState('');
+  const [broadcastScheduledSlots, setBroadcastScheduledSlots] = useState<string[]>([]);
+  const [broadcastBotHasContent, setBroadcastBotHasContent] = useState(false);
   const [broadcastImageError, setBroadcastImageError] = useState('');
   const [broadcastScheduleEnabled, setBroadcastScheduleEnabled] = useState(false);
   const [broadcastScheduleDays, setBroadcastScheduleDays] = useState(0);
@@ -437,6 +446,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     useState(MIN_BROADCAST_CYCLE_HOURS);
   const [broadcastCycleCount, setBroadcastCycleCount] = useState(2);
   const [broadcastCycleError, setBroadcastCycleError] = useState('');
+  const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
 
   const settingsScreenQuery = useQuery({
     queryKey: ['channel-settings-screen', chatId],
@@ -444,15 +454,26 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     enabled: Boolean(chatId),
     refetchOnWindowFocus: false,
   });
+  const searchParams = new URLSearchParams(location.search);
+  const focusSection = searchParams.get('focus');
+  const handoffRequested = searchParams.get('handoff') === '1';
+  const broadcastHandoffStateQuery = useQuery({
+    queryKey: ['channel-broadcast-handoff', chatId],
+    queryFn: () => getChannelBroadcastHandoffState(api, chatId ?? ''),
+    enabled: Boolean(chatId) && focusSection === 'broadcast' && handoffRequested,
+    refetchOnWindowFocus: false,
+  });
 
   useEffect(() => {
-    const focusSection = new URLSearchParams(location.search).get('focus');
-    if (focusSection !== 'giveaway') {
+    if (focusSection !== 'giveaway' && focusSection !== 'broadcast') {
       return;
     }
 
-    setExpandedSections((current) => ({ ...current, giveaway: true }));
-  }, [location.search]);
+    setExpandedSections((current) => ({
+      ...current,
+      ...(focusSection === 'giveaway' ? { giveaway: true } : { broadcast: true }),
+    }));
+  }, [focusSection]);
 
   const settingsQuery = {
     data: settingsScreenQuery.data?.settings,
@@ -461,6 +482,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     refetch: settingsScreenQuery.refetch,
   };
   const channelHeader = settingsScreenQuery.data?.header ?? null;
+  const managedBroadcasts = settingsScreenQuery.data?.managedBroadcasts ?? [];
 
   useEffect(() => {
     if (!settingsQuery.data) {
@@ -474,17 +496,54 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   }, [settingsQuery.data]);
 
   useEffect(() => {
+    if (!broadcastHandoffStateQuery.data) {
+      return;
+    }
+
+    const signature = JSON.stringify(broadcastHandoffStateQuery.data);
+    if (appliedBroadcastHandoffSignatureRef.current === signature) {
+      return;
+    }
+
+    appliedBroadcastHandoffSignatureRef.current = signature;
+    setBroadcastButtonEnabled(broadcastHandoffStateQuery.data.buttonEnabled);
+    setBroadcastButtonUrl(broadcastHandoffStateQuery.data.buttonUrl);
+    setBroadcastButtonText(broadcastHandoffStateQuery.data.buttonText || 'Открыть');
+    setBroadcastScheduledSlots(
+      sortAndUniqueBroadcastSlots(broadcastHandoffStateQuery.data.scheduledSlots),
+    );
+    setBroadcastBotHasContent(broadcastHandoffStateQuery.data.hasContent);
+    setBroadcastText('');
+    setBroadcastImageEnabled(false);
+    setBroadcastImageBase64('');
+    setBroadcastImageMimeType('');
+    setBroadcastImageFileName('');
+    setBroadcastScheduleError('');
+    setBroadcastCycleError('');
+    setExpandedSections((current) => ({ ...current, broadcast: true }));
+    if (broadcastHandoffStateQuery.data.hasContent) {
+      pushToast({
+        tone: 'success',
+        title: 'Контент сохранён в боте',
+        description: 'Календарь восстановлен из личного чата бота.',
+      });
+    }
+  }, [broadcastHandoffStateQuery.data, pushToast]);
+
+  useEffect(() => {
     setBroadcastText('');
     setBroadcastTextError('');
     setBroadcastButtonEnabled(false);
     setBroadcastButtonUrl('');
     setBroadcastButtonText('Открыть');
+    setBroadcastBotHasContent(false);
     setBroadcastButtonUrlError('');
     setBroadcastButtonTextError('');
     setBroadcastImageEnabled(false);
     setBroadcastImageBase64('');
     setBroadcastImageMimeType('');
     setBroadcastImageFileName('');
+    setBroadcastScheduledSlots([]);
     setBroadcastImageError('');
     setBroadcastScheduleEnabled(false);
     setBroadcastScheduleDays(0);
@@ -824,11 +883,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           : 'saved';
   const showHeaderStatus = headerStatusTone !== 'saved';
   const compactHeaderStatusLabel =
-    headerStatusTone === 'error'
-      ? 'Ошибка'
-      : headerStatusTone === 'saving'
-        ? 'Сохр.'
-        : 'Черн.';
+    headerStatusTone === 'error' ? 'Ошибка' : headerStatusTone === 'saving' ? 'Сохр.' : 'Черн.';
   const publishButtons = resolveManualPublishButtons(
     normalizedDraft ?? normalizeChannelSettingsDraft(draft, resolvedChannelLink),
   );
@@ -844,18 +899,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         ? 'Кнопки будут только в этом посте.'
         : 'Кнопка будет только в этом посте.';
   const broadcastHasButton = broadcastButtonEnabled && Boolean(broadcastButtonText.trim());
-  const broadcastSchedulePreview = broadcastScheduleEnabled
-    ? formatBroadcastDateTime(
-        buildBroadcastScheduleIso(broadcastScheduleDays, broadcastScheduleTime),
-      )
-    : '';
+  const broadcastSchedulePreview = `${countBroadcastScheduleDays(broadcastScheduledSlots)} дн. · ${broadcastScheduledSlots.length} слота`;
   const broadcastHeaderSummary = [
-    'контент в боте',
+    broadcastBotHasContent ? 'контент уже в боте' : 'контент в боте',
     broadcastHasButton ? 'CTA' : null,
-    broadcastScheduleEnabled && broadcastSchedulePreview
-      ? `таймер ${broadcastSchedulePreview}`
-      : null,
-    broadcastCycleEnabled ? `цикл ${broadcastCycleCount}x` : null,
+    broadcastScheduledSlots.length > 0 ? `календарь ${broadcastSchedulePreview}` : null,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -873,17 +921,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     ? 'авто-кнопка под новыми постами'
     : 'ручная публикация кнопки';
   const postSuggestionsCardStatus = draft.postSuggestionsEnabled ? 'Авто' : 'Ручн';
-  const broadcastCardStatus = broadcastCycleEnabled
-    ? 'Цикл'
-    : broadcastScheduleEnabled
-      ? 'Таймер'
-      : broadcastHasButton
-        ? 'CTA'
-        : 'Бот';
+  const broadcastCardStatus =
+    broadcastScheduledSlots.length > 0 ? 'Календ' : broadcastHasButton ? 'CTA' : 'Бот';
 
   function resetBroadcastComposer() {
     setBroadcastText('');
     setBroadcastTextError('');
+    setBroadcastBotHasContent(false);
     setBroadcastButtonEnabled(false);
     setBroadcastButtonUrl('');
     setBroadcastButtonText('Открыть');
@@ -893,6 +937,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastImageBase64('');
     setBroadcastImageMimeType('');
     setBroadcastImageFileName('');
+    setBroadcastScheduledSlots([]);
     setBroadcastImageError('');
     setBroadcastScheduleEnabled(false);
     setBroadcastScheduleDays(0);
@@ -938,11 +983,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   function handleSendChannelBroadcast() {
     const normalizedButtonUrl = broadcastButtonUrl.trim();
     const normalizedButtonText = broadcastButtonText.trim() || 'Открыть';
-    const scheduleIso = broadcastScheduleEnabled
-      ? buildBroadcastScheduleIso(broadcastScheduleDays, broadcastScheduleTime)
-      : null;
-    const cycleEveryHours = clampBroadcastCycleHours(broadcastCycleEveryHours);
-    const cycleCount = Math.max(2, Math.min(MAX_BROADCAST_CYCLE_COUNT, broadcastCycleCount));
+    const scheduledSlots = sortAndUniqueBroadcastSlots(broadcastScheduledSlots);
+    const scheduleTimezone = resolveBroadcastScheduleTimezone();
 
     setBroadcastButtonUrlError('');
     setBroadcastButtonTextError('');
@@ -962,29 +1004,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       }
     }
 
-    if (broadcastScheduleEnabled) {
-      if (!scheduleIso) {
-        setBroadcastScheduleError('Проверьте день и время отправки.');
-        hasError = true;
-      } else if (new Date(scheduleIso).getTime() <= Date.now() + 30_000) {
-        setBroadcastScheduleError('Выберите время минимум через 30 секунд.');
-        hasError = true;
-      }
+    if (scheduledSlots.length === 0) {
+      setBroadcastScheduleError('Добавьте хотя бы один слот публикации.');
+      hasError = true;
+    } else if (scheduledSlots.some((slot) => new Date(slot).getTime() <= Date.now() + 30_000)) {
+      setBroadcastScheduleError('Все слоты должны быть минимум через 30 секунд.');
+      hasError = true;
     }
-
-    if (broadcastCycleEnabled) {
-      const firstDelayMs = scheduleIso ? new Date(scheduleIso).getTime() - Date.now() : 0;
-      if (firstDelayMs < 0) {
-        setBroadcastCycleError('Проверьте стартовое время цикла.');
-        hasError = true;
-      } else {
-        const totalDelayMs = firstDelayMs + (cycleCount - 1) * cycleEveryHours * BROADCAST_HOUR_MS;
-        if (totalDelayMs > MAX_BROADCAST_SCHEDULE_DAYS * BROADCAST_DAY_MS) {
-          setBroadcastCycleError('Все циклы должны уместиться в 14 дней.');
-          hasError = true;
-        }
-      }
-    }
+    setBroadcastCycleError('');
 
     if (hasError) {
       return;
@@ -995,10 +1022,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       buttonEnabled: broadcastButtonEnabled,
       buttonUrl: normalizedButtonUrl,
       buttonText: normalizedButtonText,
-      sendAt: broadcastScheduleEnabled ? scheduleIso : null,
-      cycleEnabled: broadcastCycleEnabled,
-      cycleEveryHours: broadcastCycleEnabled ? cycleEveryHours : 1,
-      cycleCount: broadcastCycleEnabled ? cycleCount : 1,
+      scheduleMode: 'calendar',
+      scheduleTimezone,
+      scheduledSlots,
+      sendAt: null,
+      cycleEnabled: false,
+      cycleEveryHours: 1,
+      cycleCount: scheduledSlots.length,
     });
   }
 
@@ -1081,69 +1111,71 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             id="channel-settings-comments"
             className={cn('settings-section__collapse', expandedSections.comments && 'is-open')}
           >
-          {expandedSections.comments ? (
-            <div className="settings-section__collapse-inner">
-              <ChannelSettingsToggleCard
-                title="Включить комментарии"
-                description="Обсуждение под постами."
-                hintKey="commentsEnabled"
-                openHintKey={openHintKey}
-                onToggleHint={toggleHint}
-                checked={draft.commentsEnabled}
-                onChange={(nextValue) => patchDraft('commentsEnabled', nextValue)}
-              />
+            {expandedSections.comments ? (
+              <div className="settings-section__collapse-inner">
+                <ChannelSettingsToggleCard
+                  title="Включить комментарии"
+                  description="Обсуждение под постами."
+                  hintKey="commentsEnabled"
+                  openHintKey={openHintKey}
+                  onToggleHint={toggleHint}
+                  checked={draft.commentsEnabled}
+                  onChange={(nextValue) => patchDraft('commentsEnabled', nextValue)}
+                />
 
-              {draft.commentsEnabled ? (
-                <div className="channel-settings-stack">
-                  <ChannelSettingsToggleCard
-                    title="Модерация"
-                    description="Проверка комментариев."
-                    hintKey="commentsModerationEnabled"
-                    openHintKey={openHintKey}
-                    onToggleHint={toggleHint}
-                    checked={draft.commentsModerationEnabled}
-                    onChange={(nextValue) => patchDraft('commentsModerationEnabled', nextValue)}
-                  />
+                {draft.commentsEnabled ? (
+                  <div className="channel-settings-stack">
+                    <ChannelSettingsToggleCard
+                      title="Модерация"
+                      description="Проверка комментариев."
+                      hintKey="commentsModerationEnabled"
+                      openHintKey={openHintKey}
+                      onToggleHint={toggleHint}
+                      checked={draft.commentsModerationEnabled}
+                      onChange={(nextValue) => patchDraft('commentsModerationEnabled', nextValue)}
+                    />
 
-                  {draft.commentsModerationEnabled ? (
-                    <div className="channel-settings-stack">
-                      <ChannelSettingsToggleCard
-                        title="Запретить ссылки"
-                        description="Ссылки в комментариях блокируются."
-                        hintKey="commentsBlockLinksEnabled"
-                        openHintKey={openHintKey}
-                        onToggleHint={toggleHint}
-                        checked={draft.commentsBlockLinksEnabled}
-                        onChange={(nextValue) => patchDraft('commentsBlockLinksEnabled', nextValue)}
-                      />
+                    {draft.commentsModerationEnabled ? (
+                      <div className="channel-settings-stack">
+                        <ChannelSettingsToggleCard
+                          title="Запретить ссылки"
+                          description="Ссылки в комментариях блокируются."
+                          hintKey="commentsBlockLinksEnabled"
+                          openHintKey={openHintKey}
+                          onToggleHint={toggleHint}
+                          checked={draft.commentsBlockLinksEnabled}
+                          onChange={(nextValue) =>
+                            patchDraft('commentsBlockLinksEnabled', nextValue)
+                          }
+                        />
 
-                      <ChannelSettingsToggleCard
-                        title="Антиспам"
-                        description="Блок частых повторов."
-                        hintKey="commentsAntiSpamEnabled"
-                        openHintKey={openHintKey}
-                        onToggleHint={toggleHint}
-                        checked={draft.commentsAntiSpamEnabled}
-                        onChange={(nextValue) => patchDraft('commentsAntiSpamEnabled', nextValue)}
-                      />
+                        <ChannelSettingsToggleCard
+                          title="Антиспам"
+                          description="Блок частых повторов."
+                          hintKey="commentsAntiSpamEnabled"
+                          openHintKey={openHintKey}
+                          onToggleHint={toggleHint}
+                          checked={draft.commentsAntiSpamEnabled}
+                          onChange={(nextValue) => patchDraft('commentsAntiSpamEnabled', nextValue)}
+                        />
 
-                      <ChannelSettingsToggleCard
-                        title="Не больше двух подряд"
-                        description="Третий подряд блокируется."
-                        hintKey="commentsLimitTwoInRowEnabled"
-                        openHintKey={openHintKey}
-                        onToggleHint={toggleHint}
-                        checked={draft.commentsLimitTwoInRowEnabled}
-                        onChange={(nextValue) =>
-                          patchDraft('commentsLimitTwoInRowEnabled', nextValue)
-                        }
-                      />
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          ) : null}
+                        <ChannelSettingsToggleCard
+                          title="Не больше двух подряд"
+                          description="Третий подряд блокируется."
+                          hintKey="commentsLimitTwoInRowEnabled"
+                          openHintKey={openHintKey}
+                          onToggleHint={toggleHint}
+                          checked={draft.commentsLimitTwoInRowEnabled}
+                          onChange={(nextValue) =>
+                            patchDraft('commentsLimitTwoInRowEnabled', nextValue)
+                          }
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
           </div>
         </SettingsDrilldownPanel>
       </GlassCard>
@@ -1177,88 +1209,88 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
               expandedSections.postSuggestions && 'is-open',
             )}
           >
-          {expandedSections.postSuggestions ? (
-            <div className="settings-section__collapse-inner">
-              <ChannelSettingsToggleCard
-                title="Разрешить предложения"
-                description="Кнопка предложки под новыми постами."
-                hintKey="postSuggestionsEnabled"
-                openHintKey={openHintKey}
-                onToggleHint={toggleHint}
-                checked={draft.postSuggestionsEnabled}
-                onChange={(nextValue) => patchDraft('postSuggestionsEnabled', nextValue)}
-              />
+            {expandedSections.postSuggestions ? (
+              <div className="settings-section__collapse-inner">
+                <ChannelSettingsToggleCard
+                  title="Разрешить предложения"
+                  description="Кнопка предложки под новыми постами."
+                  hintKey="postSuggestionsEnabled"
+                  openHintKey={openHintKey}
+                  onToggleHint={toggleHint}
+                  checked={draft.postSuggestionsEnabled}
+                  onChange={(nextValue) => patchDraft('postSuggestionsEnabled', nextValue)}
+                />
 
-              <div className="channel-settings-stack">
-                <label className="field">
-                  <div className="channel-settings-field-label">
-                    <span>Текст публикации</span>
-                    <ChannelSettingsHintAnchor
-                      hintKey="engagementMessageText"
-                      openHintKey={openHintKey}
-                      onToggleHint={toggleHint}
-                      label="Пояснение для текста публикации"
-                    >
-                      Текст поста перед кнопками.
-                    </ChannelSettingsHintAnchor>
-                  </div>
-                  <textarea
-                    rows={3}
-                    value={draft.engagementMessageText}
-                    onChange={(event) => patchDraft('engagementMessageText', event.target.value)}
-                    placeholder="Есть идея или обратная связь? Нажмите кнопку ниже."
-                  />
-                </label>
-
-                <label className="field">
-                  <span>Название кнопки</span>
-                  <input
-                    type="text"
-                    value={draft.postSuggestionsButtonText}
-                    onChange={(event) =>
-                      patchDraft('postSuggestionsButtonText', event.target.value)
-                    }
-                    placeholder="Предложить пост"
-                    maxLength={32}
-                  />
-                </label>
-
-                <label className="field">
-                  <span>Текст</span>
-                  <textarea
-                    rows={3}
-                    value={draft.postSuggestionsText}
-                    onChange={(event) => patchDraft('postSuggestionsText', event.target.value)}
-                    placeholder="Коротко объясните, что отправлять."
-                  />
-                </label>
-
-                <div className="channel-settings-inline-fields">
+                <div className="channel-settings-stack">
                   <label className="field">
                     <div className="channel-settings-field-label">
-                      <span>Пост с кнопками</span>
+                      <span>Текст публикации</span>
                       <ChannelSettingsHintAnchor
-                        hintKey="publishEngagement"
+                        hintKey="engagementMessageText"
                         openHintKey={openHintKey}
                         onToggleHint={toggleHint}
-                        label="Пояснение для поста с кнопками"
+                        label="Пояснение для текста публикации"
                       >
-                        {publishHint}
+                        Текст поста перед кнопками.
                       </ChannelSettingsHintAnchor>
                     </div>
+                    <textarea
+                      rows={3}
+                      value={draft.engagementMessageText}
+                      onChange={(event) => patchDraft('engagementMessageText', event.target.value)}
+                      placeholder="Есть идея или обратная связь? Нажмите кнопку ниже."
+                    />
                   </label>
-                  <button
-                    type="button"
-                    className="button button--accent"
-                    onClick={() => publishMutation.mutate()}
-                    disabled={!canPublishEngagement || publishMutation.isPending}
-                  >
-                    {publishMutation.isPending ? 'Публикуем…' : 'Опубликовать или обновить'}
-                  </button>
+
+                  <label className="field">
+                    <span>Название кнопки</span>
+                    <input
+                      type="text"
+                      value={draft.postSuggestionsButtonText}
+                      onChange={(event) =>
+                        patchDraft('postSuggestionsButtonText', event.target.value)
+                      }
+                      placeholder="Предложить пост"
+                      maxLength={32}
+                    />
+                  </label>
+
+                  <label className="field">
+                    <span>Текст</span>
+                    <textarea
+                      rows={3}
+                      value={draft.postSuggestionsText}
+                      onChange={(event) => patchDraft('postSuggestionsText', event.target.value)}
+                      placeholder="Коротко объясните, что отправлять."
+                    />
+                  </label>
+
+                  <div className="channel-settings-inline-fields">
+                    <label className="field">
+                      <div className="channel-settings-field-label">
+                        <span>Пост с кнопками</span>
+                        <ChannelSettingsHintAnchor
+                          hintKey="publishEngagement"
+                          openHintKey={openHintKey}
+                          onToggleHint={toggleHint}
+                          label="Пояснение для поста с кнопками"
+                        >
+                          {publishHint}
+                        </ChannelSettingsHintAnchor>
+                      </div>
+                    </label>
+                    <button
+                      type="button"
+                      className="button button--accent"
+                      onClick={() => publishMutation.mutate()}
+                      disabled={!canPublishEngagement || publishMutation.isPending}
+                    >
+                      {publishMutation.isPending ? 'Публикуем…' : 'Опубликовать или обновить'}
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          ) : null}
+            ) : null}
           </div>
         </SettingsDrilldownPanel>
       </GlassCard>
@@ -1288,327 +1320,162 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             id="channel-settings-broadcast"
             className={cn('settings-section__collapse', expandedSections.broadcast && 'is-open')}
           >
-          {expandedSections.broadcast ? (
-            <div className="settings-section__collapse-inner">
-              <div className="channel-broadcast-studio">
-                <div className="mailing-options-grid">
-                  <div className="managed-broadcast-editor-note">
-                    <strong>Контент в боте</strong>
-                    <small>Текст и фото отправляются в личке бота.</small>
-                  </div>
-
-                  <div
-                    className={cn(
-                      'mailing-option-card',
-                      broadcastButtonEnabled && 'is-enabled',
-                      (broadcastButtonUrlError || broadcastButtonTextError) && 'field--error',
-                    )}
-                  >
-                    <div className="mailing-option-card__head">
-                      <div className="mailing-option-card__title-wrap">
-                        <div className="channel-settings-field-label">
-                          <span className="mailing-option-card__title">Кнопка</span>
-                          <ChannelSettingsHintAnchor
-                            hintKey="broadcastButton"
-                            openHintKey={openHintKey}
-                            onToggleHint={toggleHint}
-                            label="Пояснение для кнопки в рассылке"
-                          >
-                            Кнопка для перехода в канал, пост или ссылку.
-                          </ChannelSettingsHintAnchor>
-                        </div>
-                        <small className="mailing-option-card__subtitle">
-                          {broadcastButtonEnabled ? 'CTA включён' : 'Необязательно'}
-                        </small>
-                      </div>
-
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Добавить кнопку в пост канала"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={broadcastButtonEnabled}
-                          onChange={(event) => {
-                            const enabled = event.target.checked;
-                            setBroadcastButtonEnabled(enabled);
-                            if (!enabled) {
-                              setBroadcastButtonUrlError('');
-                              setBroadcastButtonTextError('');
-                            }
-                          }}
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
+            {expandedSections.broadcast ? (
+              <div className="settings-section__collapse-inner">
+                <div className="channel-broadcast-studio">
+                  <div className="mailing-options-grid">
+                    <div className="managed-broadcast-editor-note">
+                      <strong>Контент в боте</strong>
+                      <small>Текст и фото отправляются в личке бота.</small>
                     </div>
 
-                    {broadcastButtonEnabled ? (
-                      <div className="mailing-option-card__body">
-                        <label
-                          className={cn(
-                            'field settings-url-field',
-                            broadcastButtonUrlError && 'field--error',
-                          )}
-                        >
-                          <span className="field__label">Ссылка кнопки</span>
-                          <input
-                            type="url"
-                            inputMode="url"
-                            value={broadcastButtonUrl}
-                            onChange={(event) => {
-                              setBroadcastButtonUrl(event.target.value);
-                              if (broadcastButtonUrlError) {
-                                setBroadcastButtonUrlError('');
-                              }
-                            }}
-                            placeholder="https://max.ru/channel/..."
-                          />
-                          {broadcastButtonUrlError ? (
-                            <small className="field__hint">{broadcastButtonUrlError}</small>
-                          ) : null}
-                        </label>
+                    <div
+                      className={cn(
+                        'mailing-option-card',
+                        broadcastButtonEnabled && 'is-enabled',
+                        (broadcastButtonUrlError || broadcastButtonTextError) && 'field--error',
+                      )}
+                    >
+                      <div className="mailing-option-card__head">
+                        <div className="mailing-option-card__title-wrap">
+                          <div className="channel-settings-field-label">
+                            <span className="mailing-option-card__title">Кнопка</span>
+                            <ChannelSettingsHintAnchor
+                              hintKey="broadcastButton"
+                              openHintKey={openHintKey}
+                              onToggleHint={toggleHint}
+                              label="Пояснение для кнопки в рассылке"
+                            >
+                              Кнопка для перехода в канал, пост или ссылку.
+                            </ChannelSettingsHintAnchor>
+                          </div>
+                          <small className="mailing-option-card__subtitle">
+                            {broadcastButtonEnabled ? 'CTA включён' : 'Необязательно'}
+                          </small>
+                        </div>
 
                         <label
-                          className={cn(
-                            'field settings-text-field',
-                            broadcastButtonTextError && 'field--error',
-                          )}
+                          className="settings-native-switch"
+                          aria-label="Добавить кнопку в пост канала"
                         >
-                          <span className="field__label">Название кнопки</span>
                           <input
-                            type="text"
-                            maxLength={32}
-                            value={broadcastButtonText}
+                            type="checkbox"
+                            checked={broadcastButtonEnabled}
                             onChange={(event) => {
-                              setBroadcastButtonText(event.target.value);
-                              if (broadcastButtonTextError) {
+                              const enabled = event.target.checked;
+                              setBroadcastButtonEnabled(enabled);
+                              if (!enabled) {
+                                setBroadcastButtonUrlError('');
                                 setBroadcastButtonTextError('');
                               }
                             }}
-                            placeholder="Открыть"
                           />
-                          {broadcastButtonTextError ? (
-                            <small className="field__hint">{broadcastButtonTextError}</small>
-                          ) : null}
+                          <span className="toggle-switch" aria-hidden>
+                            <span className="toggle-switch__thumb" />
+                          </span>
                         </label>
                       </div>
-                    ) : null}
-                  </div>
 
-                  <div
-                    className={cn(
-                      'mailing-option-card',
-                      broadcastScheduleEnabled && 'is-enabled',
-                      broadcastScheduleError && 'field--error',
-                    )}
-                  >
-                    <div className="mailing-option-card__head">
-                      <div className="mailing-option-card__title-wrap">
-                        <div className="channel-settings-field-label">
-                          <span className="mailing-option-card__title">Таймер</span>
-                          <ChannelSettingsHintAnchor
-                            hintKey="broadcastText"
-                            openHintKey={openHintKey}
-                            onToggleHint={toggleHint}
-                            label="Пояснение для таймера рассылки"
+                      {broadcastButtonEnabled ? (
+                        <div className="mailing-option-card__body">
+                          <label
+                            className={cn(
+                              'field settings-url-field',
+                              broadcastButtonUrlError && 'field--error',
+                            )}
                           >
-                            Можно отложить пост в канал максимум на 14 дней.
-                          </ChannelSettingsHintAnchor>
-                        </div>
-                        <small className="mailing-option-card__subtitle">
-                          {broadcastScheduleEnabled && broadcastSchedulePreview
-                            ? broadcastSchedulePreview
-                            : 'Отправка сразу'}
-                        </small>
-                      </div>
+                            <span className="field__label">Ссылка кнопки</span>
+                            <input
+                              type="url"
+                              inputMode="url"
+                              value={broadcastButtonUrl}
+                              onChange={(event) => {
+                                setBroadcastButtonUrl(event.target.value);
+                                if (broadcastButtonUrlError) {
+                                  setBroadcastButtonUrlError('');
+                                }
+                              }}
+                              placeholder="https://max.ru/channel/..."
+                            />
+                            {broadcastButtonUrlError ? (
+                              <small className="field__hint">{broadcastButtonUrlError}</small>
+                            ) : null}
+                          </label>
 
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Включить таймер для рассылки в канал"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={broadcastScheduleEnabled}
-                          onChange={(event) => {
-                            setBroadcastScheduleEnabled(event.target.checked);
-                            if (!event.target.checked) {
-                              setBroadcastScheduleError('');
-                            }
-                          }}
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
+                          <label
+                            className={cn(
+                              'field settings-text-field',
+                              broadcastButtonTextError && 'field--error',
+                            )}
+                          >
+                            <span className="field__label">Название кнопки</span>
+                            <input
+                              type="text"
+                              maxLength={32}
+                              value={broadcastButtonText}
+                              onChange={(event) => {
+                                setBroadcastButtonText(event.target.value);
+                                if (broadcastButtonTextError) {
+                                  setBroadcastButtonTextError('');
+                                }
+                              }}
+                              placeholder="Открыть"
+                            />
+                            {broadcastButtonTextError ? (
+                              <small className="field__hint">{broadcastButtonTextError}</small>
+                            ) : null}
+                          </label>
+                        </div>
+                      ) : null}
                     </div>
 
-                    {broadcastScheduleEnabled ? (
-                      <div className="mailing-option-card__body">
-                        <label className="field settings-text-field mailing-inline-field">
-                          <span className="field__label">Через дней</span>
-                          <input
-                            type="number"
-                            min={0}
-                            max={MAX_BROADCAST_SCHEDULE_DAYS}
-                            value={broadcastScheduleDays}
-                            onChange={(event) => {
-                              const nextValue = Number.parseInt(event.target.value, 10);
-                              setBroadcastScheduleDays(
-                                Number.isNaN(nextValue)
-                                  ? 0
-                                  : Math.max(0, Math.min(MAX_BROADCAST_SCHEDULE_DAYS, nextValue)),
-                              );
-                              if (broadcastScheduleError) {
-                                setBroadcastScheduleError('');
-                              }
-                            }}
-                          />
-                        </label>
-
-                        <label className="field settings-text-field mailing-inline-field">
-                          <span className="field__label">Время</span>
-                          <input
-                            type="time"
-                            value={broadcastScheduleTime}
-                            onChange={(event) => {
-                              setBroadcastScheduleTime(event.target.value);
-                              if (broadcastScheduleError) {
-                                setBroadcastScheduleError('');
-                              }
-                            }}
-                          />
-                        </label>
-
-                        {broadcastScheduleError ? (
-                          <small className="field__hint">{broadcastScheduleError}</small>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div
-                    className={cn(
-                      'mailing-option-card',
-                      broadcastCycleEnabled && 'is-enabled',
-                      broadcastCycleError && 'field--error',
-                    )}
-                  >
-                    <div className="mailing-option-card__head">
-                      <div className="mailing-option-card__title-wrap">
-                        <div className="channel-settings-field-label">
-                          <span className="mailing-option-card__title">Цикл</span>
-                          <ChannelSettingsHintAnchor
-                            hintKey="broadcastImage"
-                            openHintKey={openHintKey}
-                            onToggleHint={toggleHint}
-                            label="Пояснение для цикла рассылки"
-                          >
-                            Повторяет отправку в канал через заданный интервал. Общая длина цикла не
-                            должна превышать 14 дней.
-                          </ChannelSettingsHintAnchor>
-                        </div>
-                        <small className="mailing-option-card__subtitle">
-                          {broadcastCycleEnabled
-                            ? `${broadcastCycleCount} отправок / ${broadcastCycleEveryHours}ч`
-                            : 'Выключено'}
-                        </small>
-                      </div>
-
-                      <label
-                        className="settings-native-switch"
-                        aria-label="Включить циклическую рассылку в канал"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={broadcastCycleEnabled}
-                          onChange={(event) => {
-                            setBroadcastCycleEnabled(event.target.checked);
-                            if (!event.target.checked) {
-                              setBroadcastCycleError('');
-                            }
-                          }}
-                        />
-                        <span className="toggle-switch" aria-hidden>
-                          <span className="toggle-switch__thumb" />
-                        </span>
-                      </label>
+                    <div className="managed-broadcast-editor-note">
+                      <strong>Календарь публикаций</strong>
+                      <small>
+                        Выберите даты и точные слоты. Занятые окна на 30 минут сразу блокируются,
+                        чтобы не пересекаться с другими постами.
+                      </small>
                     </div>
 
-                    {broadcastCycleEnabled ? (
-                      <div className="mailing-option-card__body">
-                        <label className="field settings-text-field mailing-inline-field">
-                          <span className="field__label">Интервал, часов</span>
-                          <input
-                            type="number"
-                            min={MIN_BROADCAST_CYCLE_HOURS}
-                            max={MAX_BROADCAST_CYCLE_HOURS}
-                            value={broadcastCycleEveryHours}
-                            onChange={(event) => {
-                              const nextValue = Number.parseInt(event.target.value, 10);
-                              setBroadcastCycleEveryHours(
-                                clampBroadcastCycleHours(
-                                  Number.isNaN(nextValue) ? MIN_BROADCAST_CYCLE_HOURS : nextValue,
-                                ),
-                              );
-                              if (broadcastCycleError) {
-                                setBroadcastCycleError('');
-                              }
-                            }}
-                          />
-                        </label>
-
-                        <label className="field settings-text-field mailing-inline-field">
-                          <span className="field__label">Количество</span>
-                          <input
-                            type="number"
-                            min={2}
-                            max={MAX_BROADCAST_CYCLE_COUNT}
-                            value={broadcastCycleCount}
-                            onChange={(event) => {
-                              const nextValue = Number.parseInt(event.target.value, 10);
-                              setBroadcastCycleCount(
-                                Number.isNaN(nextValue)
-                                  ? 2
-                                  : Math.max(2, Math.min(MAX_BROADCAST_CYCLE_COUNT, nextValue)),
-                              );
-                              if (broadcastCycleError) {
-                                setBroadcastCycleError('');
-                              }
-                            }}
-                          />
-                        </label>
-
-                        {broadcastCycleError ? (
-                          <small className="field__hint">{broadcastCycleError}</small>
-                        ) : null}
-                      </div>
-                    ) : null}
+                    <BroadcastSchedulePlanner
+                      value={broadcastScheduledSlots}
+                      occupiedSlots={managedBroadcasts.flatMap(
+                        (broadcast) => broadcast.scheduledSlots,
+                      )}
+                      error={broadcastScheduleError}
+                      disabled={handoffBroadcastMutation.isPending}
+                      onChange={(nextValue) => {
+                        setBroadcastScheduledSlots(nextValue);
+                        if (broadcastScheduleError) {
+                          setBroadcastScheduleError('');
+                        }
+                      }}
+                    />
                   </div>
-                </div>
 
-                <div className="mailing-action-bar">
-                  <button
-                    type="button"
-                    className="button button--accent mailing-action-bar__send"
-                    onClick={handleSendChannelBroadcast}
-                    disabled={handoffBroadcastMutation.isPending}
-                  >
-                    {handoffBroadcastMutation.isPending ? 'Открываем бота...' : 'Продолжить в боте'}
-                  </button>
-                  <button
-                    type="button"
-                    className="button button--ghost mailing-action-bar__clear"
-                    onClick={resetBroadcastComposer}
-                    disabled={handoffBroadcastMutation.isPending}
-                  >
-                    Очистить
-                  </button>
+                  <div className="mailing-action-bar">
+                    <button
+                      type="button"
+                      className="button button--accent mailing-action-bar__send"
+                      onClick={handleSendChannelBroadcast}
+                      disabled={handoffBroadcastMutation.isPending}
+                    >
+                      {handoffBroadcastMutation.isPending
+                        ? 'Открываем бота...'
+                        : 'Продолжить в боте'}
+                    </button>
+                    <button
+                      type="button"
+                      className="button button--ghost mailing-action-bar__clear"
+                      onClick={resetBroadcastComposer}
+                      disabled={handoffBroadcastMutation.isPending}
+                    >
+                      Очистить
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
-          ) : null}
+            ) : null}
           </div>
         </SettingsDrilldownPanel>
       </GlassCard>
@@ -1639,11 +1506,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
               id="channel-settings-poll"
               className={cn('settings-section__collapse', expandedSections.poll && 'is-open')}
             >
-            {expandedSections.poll ? (
-              <div className="settings-section__collapse-inner">
-                <ManagedPollCard api={api} entityType="channel" entityId={chatId} />
-              </div>
-            ) : null}
+              {expandedSections.poll ? (
+                <div className="settings-section__collapse-inner">
+                  <ManagedPollCard api={api} entityType="channel" entityId={chatId} />
+                </div>
+              ) : null}
             </div>
           </SettingsDrilldownPanel>
         </GlassCard>
@@ -1675,11 +1542,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
               id="channel-settings-giveaway"
               className={cn('settings-section__collapse', expandedSections.giveaway && 'is-open')}
             >
-            {expandedSections.giveaway ? (
-              <div className="settings-section__collapse-inner">
-                <ManagedGiveawayCard api={api} entityType="channel" entityId={chatId} />
-              </div>
-            ) : null}
+              {expandedSections.giveaway ? (
+                <div className="settings-section__collapse-inner">
+                  <ManagedGiveawayCard api={api} entityType="channel" entityId={chatId} />
+                </div>
+              ) : null}
             </div>
           </SettingsDrilldownPanel>
         </GlassCard>

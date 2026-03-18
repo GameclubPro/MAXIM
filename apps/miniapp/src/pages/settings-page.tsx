@@ -23,6 +23,7 @@ import botSpeechRobotImage from '../../../../bot.webp';
 import botSpeechFriendlyImage from '../../../../frendly.webp';
 import botSpeechIronicImage from '../../../../joker.webp';
 import botSpeechPoliceImage from '../../../../police.webp';
+import { BroadcastSchedulePlanner } from '../components/broadcast-schedule-planner';
 import { MaxMarkdownEditor } from '../components/max-markdown-editor';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { ManagedPollCard } from '../components/managed-poll-card';
@@ -38,8 +39,8 @@ import {
   applySettingsSectionToAll,
   cancelManagedBroadcast,
   getDomainAllowlistDetails,
+  getBroadcastHandoffState,
   getManagedBroadcast,
-  getManagedBroadcasts,
   getRules,
   getSettingsScreen,
   handoffBroadcast,
@@ -59,6 +60,11 @@ import type {
   SendBroadcastPayload,
   UpdateChatRulesPayload,
 } from '../lib/api/shared-types';
+import {
+  countBroadcastScheduleDays,
+  resolveBroadcastScheduleTimezone,
+  sortAndUniqueBroadcastSlots,
+} from '../lib/broadcast-schedule';
 import { cn } from '../lib/cn';
 import { maxNotify, openMaxBotLink, setMaxClosingConfirmation } from '../lib/max-bridge';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
@@ -1246,6 +1252,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [mailingImageBase64, setMailingImageBase64] = useState('');
   const [mailingImageMimeType, setMailingImageMimeType] = useState('');
   const [mailingImageFileName, setMailingImageFileName] = useState('');
+  const [mailingScheduledSlots, setMailingScheduledSlots] = useState<string[]>([]);
+  const [mailingBotHasContent, setMailingBotHasContent] = useState(false);
   const [mailingScheduleEnabled, setMailingScheduleEnabled] = useState(false);
   const [mailingScheduleDays, setMailingScheduleDays] = useState(0);
   const [mailingScheduleTime, setMailingScheduleTime] = useState(() =>
@@ -1273,16 +1281,22 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [pendingSpeechStyle, setPendingSpeechStyle] = useState<BotSpeechStyle | null>(null);
   const [expandedSections, setExpandedSections] =
     useState<Record<SettingsSectionKey, boolean>>(INITIAL_EXPANDED_SECTIONS);
+  const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
 
   const routeChatTitle = getRouteChatTitle(location.state);
-  const focusSection = new URLSearchParams(location.search).get('focus');
+  const searchParams = new URLSearchParams(location.search);
+  const focusSection = searchParams.get('focus');
+  const handoffRequested = searchParams.get('handoff') === '1';
 
   useEffect(() => {
-    if (focusSection !== 'giveaway') {
+    if (focusSection !== 'giveaway' && focusSection !== 'broadcast') {
       return;
     }
 
-    setExpandedSections({ ...INITIAL_EXPANDED_SECTIONS, giveaway: true });
+    setExpandedSections({
+      ...INITIAL_EXPANDED_SECTIONS,
+      ...(focusSection === 'giveaway' ? { giveaway: true } : { mailing: true }),
+    });
   }, [focusSection]);
 
   useEffect(() => {
@@ -1307,6 +1321,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageBase64('');
     setMailingImageMimeType('');
     setMailingImageFileName('');
+    setMailingScheduledSlots([]);
+    setMailingBotHasContent(false);
     setMailingScheduleEnabled(false);
     setMailingScheduleDays(0);
     setMailingScheduleTime(toLocalTimeInputValue(new Date(Date.now() + BROADCAST_HOUR_MS)));
@@ -1329,6 +1345,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     queryKey: ['settings-screen', chatId],
     queryFn: () => getSettingsScreen(api, chatId ?? ''),
     enabled: Boolean(chatId),
+    refetchOnWindowFocus: false,
+  });
+  const broadcastHandoffStateQuery = useQuery({
+    queryKey: ['broadcast-handoff-state', chatId],
+    queryFn: () => getBroadcastHandoffState(api, chatId ?? ''),
+    enabled: Boolean(chatId) && focusSection === 'broadcast' && handoffRequested,
     refetchOnWindowFocus: false,
   });
   const meQuery = useQuery({
@@ -1420,6 +1442,43 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setFieldErrors({});
     setDuplicateWindowInputValues({});
   }, [settingsQuery.data]);
+
+  useEffect(() => {
+    if (!broadcastHandoffStateQuery.data) {
+      return;
+    }
+
+    const signature = JSON.stringify(broadcastHandoffStateQuery.data);
+    if (appliedBroadcastHandoffSignatureRef.current === signature) {
+      return;
+    }
+
+    appliedBroadcastHandoffSignatureRef.current = signature;
+    setEditingManagedBroadcast(null);
+    setMailingApplyToAllChats(broadcastHandoffStateQuery.data.applyToAllChats);
+    setMailingButtonEnabled(broadcastHandoffStateQuery.data.buttonEnabled);
+    setMailingButtonUrl(broadcastHandoffStateQuery.data.buttonUrl);
+    setMailingButtonText(broadcastHandoffStateQuery.data.buttonText || 'Открыть');
+    setMailingScheduledSlots(
+      sortAndUniqueBroadcastSlots(broadcastHandoffStateQuery.data.scheduledSlots),
+    );
+    setMailingBotHasContent(broadcastHandoffStateQuery.data.hasContent);
+    setMailingText('');
+    setMailingImageEnabled(false);
+    setMailingImageBase64('');
+    setMailingImageMimeType('');
+    setMailingImageFileName('');
+    setMailingScheduleError('');
+    setMailingCycleError('');
+    setExpandedSections((current) => ({ ...current, mailing: true }));
+    if (broadcastHandoffStateQuery.data.hasContent) {
+      pushToast({
+        title: 'Контент сохранён в боте',
+        description: 'Календарь восстановлен из личного чата бота.',
+        tone: 'success',
+      });
+    }
+  }, [broadcastHandoffStateQuery.data, pushToast]);
 
   const autoRulesText = useMemo(() => {
     const sourceSettings = draft ?? settingsQuery.data;
@@ -2375,6 +2434,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setEditingManagedBroadcast(null);
     setMailingApplyToAllChats(false);
     setMailingText('');
+    setMailingBotHasContent(false);
     setMailingButtonEnabled(false);
     setMailingButtonUrl('');
     setMailingButtonText('Открыть');
@@ -2382,6 +2442,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageBase64('');
     setMailingImageMimeType('');
     setMailingImageFileName('');
+    setMailingScheduledSlots([]);
     setMailingScheduleEnabled(false);
     setMailingScheduleDays(0);
     setMailingScheduleTime(toLocalTimeInputValue(new Date(Date.now() + BROADCAST_HOUR_MS)));
@@ -2397,9 +2458,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function applyManagedBroadcastToComposer(broadcast: ManagedBroadcastDetails) {
-    const schedule = decomposeBroadcastScheduleIso(broadcast.nextSendAt);
     setEditingManagedBroadcast(broadcast);
     setMailingApplyToAllChats(broadcast.applyToAllChats);
+    setMailingBotHasContent(false);
     setMailingText(broadcast.text);
     setMailingButtonEnabled(broadcast.buttonEnabled);
     setMailingButtonUrl(broadcast.buttonUrl);
@@ -2408,12 +2469,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageBase64(broadcast.imageBase64);
     setMailingImageMimeType(broadcast.imageMimeType);
     setMailingImageFileName(broadcast.imageFileName);
-    setMailingScheduleEnabled(Boolean(broadcast.nextSendAt));
-    setMailingScheduleDays(schedule.days);
-    setMailingScheduleTime(schedule.time);
-    setMailingCycleEnabled(broadcast.cycleEnabled);
+    setMailingScheduledSlots(sortAndUniqueBroadcastSlots(broadcast.scheduledSlots));
+    setMailingScheduleEnabled(false);
+    setMailingScheduleDays(0);
+    setMailingScheduleTime(toLocalTimeInputValue(new Date(Date.now() + BROADCAST_HOUR_MS)));
+    setMailingCycleEnabled(false);
     setMailingCycleEveryHours(clampBroadcastCycleHours(broadcast.cycleEveryHours));
-    setMailingCycleCount(broadcast.cycleCount);
+    setMailingCycleCount(Math.max(2, broadcast.cycleCount));
     setMailingTextError('');
     setMailingButtonUrlError('');
     setMailingButtonTextError('');
@@ -2442,23 +2504,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     const normalizedText = mailingText.trim();
     const normalizedButtonUrl = mailingButtonUrl.trim();
     const normalizedButtonText = mailingButtonText.trim();
-    const scheduleIso = mailingScheduleEnabled
-      ? buildBroadcastScheduleIso(mailingScheduleDays, mailingScheduleTime)
-      : null;
-    const cycleEveryHours = clampBroadcastCycleHours(
-      Number.isFinite(mailingCycleEveryHours) ? mailingCycleEveryHours : 1,
-    );
-    const minimumCycleCount =
-      editingManagedBroadcast && editingManagedBroadcast.sentCount > 0
-        ? editingManagedBroadcast.sentCount + 1
-        : 2;
-    const cycleCount = Math.max(
-      minimumCycleCount,
-      Math.min(
-        MAX_BROADCAST_CYCLE_COUNT,
-        Number.isFinite(mailingCycleCount) ? mailingCycleCount : minimumCycleCount,
-      ),
-    );
+    const scheduledSlots = sortAndUniqueBroadcastSlots(mailingScheduledSlots);
+    const scheduleTimezone = resolveBroadcastScheduleTimezone();
 
     let hasError = false;
     if (editingManagedBroadcast) {
@@ -2506,48 +2553,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setMailingButtonTextError('');
     }
 
-    if (mailingScheduleEnabled) {
-      if (!scheduleIso) {
-        setMailingScheduleError('Проверьте день и время рассылки.');
-        hasError = true;
-      } else if (new Date(scheduleIso).getTime() <= Date.now() + 30_000) {
-        setMailingScheduleError('Выберите время минимум через 30 секунд.');
-        hasError = true;
-      } else {
-        setMailingScheduleError('');
-      }
+    if (scheduledSlots.length === 0) {
+      setMailingScheduleError('Добавьте хотя бы один слот публикации.');
+      hasError = true;
+    } else if (scheduledSlots.some((slot) => new Date(slot).getTime() <= Date.now() + 30_000)) {
+      setMailingScheduleError('Все слоты должны быть минимум через 30 секунд.');
+      hasError = true;
     } else {
       setMailingScheduleError('');
     }
-
-    if (mailingCycleEnabled) {
-      const firstDelayMs = scheduleIso ? new Date(scheduleIso).getTime() - Date.now() : 0;
-      if (firstDelayMs < 0) {
-        setMailingCycleError('Проверьте стартовое время цикла.');
-        hasError = true;
-      } else {
-        const totalDelayMs = firstDelayMs + (cycleCount - 1) * cycleEveryHours * BROADCAST_HOUR_MS;
-        if (totalDelayMs > MAX_BROADCAST_SCHEDULE_DAYS * BROADCAST_DAY_MS) {
-          setMailingCycleError('Все циклы должны уместиться в 14 дней.');
-          hasError = true;
-        } else {
-          setMailingCycleError('');
-        }
-      }
-    } else {
-      setMailingCycleError('');
-    }
-
-    if (editingManagedBroadcast) {
-      if (!scheduleIso) {
-        setMailingScheduleError('Для редактирования укажите следующую отправку.');
-        hasError = true;
-      }
-      if (editingManagedBroadcast.sentCount > 0 && !mailingCycleEnabled) {
-        setMailingCycleError('После первого запуска цикл нужно оставить включенным.');
-        hasError = true;
-      }
-    }
+    setMailingCycleError('');
 
     if (hasError) {
       return;
@@ -2558,10 +2573,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       buttonEnabled: mailingButtonEnabled,
       buttonUrl: normalizedButtonUrl,
       buttonText: normalizedButtonText || 'Открыть',
-      sendAt: mailingScheduleEnabled ? scheduleIso : null,
-      cycleEnabled: mailingCycleEnabled,
-      cycleEveryHours: mailingCycleEnabled ? cycleEveryHours : 1,
-      cycleCount: mailingCycleEnabled ? cycleCount : 1,
+      scheduleMode: 'calendar',
+      scheduleTimezone,
+      scheduledSlots,
+      sendAt: null,
+      cycleEnabled: false,
+      cycleEveryHours: 1,
+      cycleCount: scheduledSlots.length,
     };
 
     if (editingManagedBroadcast) {
@@ -2878,10 +2896,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const chatsCount = chatsQuery.data?.length ?? 0;
   const canApplyToAllChats = chatsCount > 1;
   const managedBroadcasts = managedBroadcastsQuery.data ?? [];
-  const mailingCycleCountMin =
-    editingManagedBroadcast && editingManagedBroadcast.sentCount > 0
-      ? editingManagedBroadcast.sentCount + 1
-      : 2;
+  const mailingOccupiedSlots = managedBroadcasts
+    .filter((broadcast) => broadcast.id !== editingManagedBroadcast?.id)
+    .flatMap((broadcast) => broadcast.scheduledSlots);
   const isUpdatingManagedBroadcast = updateManagedBroadcastMutation.isPending;
   const isMailingBusy =
     handoffBroadcastMutation.isPending ||
@@ -2892,31 +2909,24 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingApplyToAllChats && canApplyToAllChats
       ? `Во все чаты (${chatsCount})`
       : 'Только текущий чат';
-  const mailingSchedulePreview = mailingScheduleEnabled
-    ? formatRemovalDateTime(buildBroadcastScheduleIso(mailingScheduleDays, mailingScheduleTime))
-    : '';
-  const mailingCycleSummary = mailingCycleEnabled
-    ? `${mailingCycleCount} отправок / ${mailingCycleEveryHours}ч`
-    : '';
+  const mailingDayCount = countBroadcastScheduleDays(mailingScheduledSlots);
   const mailingContentLabel = editingManagedBroadcast
     ? mailingImageEnabled && mailingImageBase64
       ? 'контент сохранён'
       : mailingText.trim()
         ? 'контент сохранён'
         : 'без контента'
-    : 'контент в боте';
-  const mailingHeaderSummary = `${mailingTargetLabel} · ${mailingContentLabel}${
-    mailingScheduleEnabled ? ' · по таймеру' : ''
-  }${mailingCycleEnabled ? ` · ${mailingCycleSummary}` : ''}`;
+    : mailingBotHasContent
+      ? 'контент уже в боте'
+      : 'контент в боте';
+  const mailingHeaderSummary = `${mailingTargetLabel} · ${mailingContentLabel} · ${mailingDayCount} дн. · ${mailingScheduledSlots.length} слота`;
   const mailingCardStatus = editingManagedBroadcast
-    ? 'Черновик'
-    : mailingCycleEnabled
-      ? 'Цикл'
-      : mailingScheduleEnabled
-        ? 'Таймер'
-        : mailingApplyToAllChats && canApplyToAllChats
-          ? 'Все'
-          : 'Бот';
+    ? 'План'
+    : mailingScheduledSlots.length > 0
+      ? 'Календ'
+      : mailingApplyToAllChats && canApplyToAllChats
+        ? 'Все'
+        : 'Бот';
   const mailingSendDisabled = isMailingBusy;
 
   useHintPopoverAutoPosition(openHintKey !== null);
@@ -7332,7 +7342,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                         {managedBroadcasts.map((broadcast) => {
                           const isOpen = expandedManagedBroadcastId === broadcast.id;
-                          const progressLabel = `${broadcast.sentCount}/${broadcast.cycleCount}`;
+                          const progressLabel =
+                            broadcast.scheduleMode === 'calendar'
+                              ? `${broadcast.scheduledSlots.length} слота`
+                              : `${broadcast.sentCount}/${broadcast.cycleCount}`;
                           const nextLabel = broadcast.nextSendAt
                             ? formatRemovalDateTime(broadcast.nextSendAt)
                             : 'ожидает правки';
@@ -7373,7 +7386,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   <small>{broadcast.textPreview}</small>
                                 </span>
                                 <span className="managed-broadcast-card__aside">
-                                  <small>{`Цикл ${progressLabel}`}</small>
+                                  <small>
+                                    {broadcast.scheduleMode === 'calendar'
+                                      ? `Календарь ${progressLabel}`
+                                      : `Цикл ${progressLabel}`}
+                                  </small>
                                   <SectionChevron isOpen={isOpen} />
                                 </span>
                               </button>
@@ -7396,9 +7413,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         {broadcast.buttonEnabled ? 'С кнопкой' : 'Без кнопки'}
                                       </span>
                                       <span>
-                                        {broadcast.cycleEnabled
-                                          ? `Каждые ${broadcast.cycleEveryHours}ч`
-                                          : 'Одна отправка'}
+                                        {broadcast.scheduleMode === 'calendar'
+                                          ? `${broadcast.scheduledSlots.length} слотов`
+                                          : broadcast.cycleEnabled
+                                            ? `Каждые ${broadcast.cycleEveryHours}ч`
+                                            : 'Одна отправка'}
                                       </span>
                                       <span>{deliveryLabel}</span>
                                       {broadcast.pendingChats > 0 ? (
@@ -7630,227 +7649,26 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       </div>
 
                       <div className="mailing-options-grid mailing-options-grid--timing">
-                        <div
-                          className={cn(
-                            'mailing-option-card',
-                            mailingScheduleEnabled && 'is-enabled',
-                            mailingScheduleError && 'field--error',
-                          )}
-                        >
-                          <div className="mailing-option-card__head">
-                            <div className="mailing-option-card__title-wrap">
-                              <div className="mailing-card-title-row">
-                                <span className="mailing-option-card__title">Таймер отправки</span>
-                                <SettingsHintAnchor
-                                  hintKey="mailingSchedule"
-                                  openHintKey={openHintKey}
-                                  onToggleHint={toggleHint}
-                                  label="Пояснение для таймера рассылки"
-                                >
-                                  Отложенная отправка доступна до 14 дней вперёд. Если таймер
-                                  выключен, сообщение уйдёт сразу.
-                                </SettingsHintAnchor>
-                              </div>
-                            </div>
-
-                            <label
-                              className="settings-native-switch"
-                              aria-label="Включить таймер рассылки"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={mailingScheduleEnabled}
-                                onChange={(event) => {
-                                  setMailingScheduleEnabled(event.target.checked);
-                                  setMailingScheduleError('');
-                                }}
-                                disabled={isMailingBusy}
-                              />
-                              <span className="toggle-switch" aria-hidden>
-                                <span className="toggle-switch__thumb" />
-                              </span>
-                            </label>
-                          </div>
-
-                          {mailingScheduleEnabled ? (
-                            <div className="mailing-option-card__body mailing-inline-fields">
-                              <label className="field settings-text-field mailing-inline-field">
-                                <span className="field__label">Через сколько дней</span>
-                                <input
-                                  type="number"
-                                  min={0}
-                                  max={MAX_BROADCAST_SCHEDULE_DAYS}
-                                  value={mailingScheduleDays}
-                                  onChange={(event) => {
-                                    const nextValue = Number.parseInt(event.target.value, 10);
-                                    const safeValue = Number.isNaN(nextValue)
-                                      ? 0
-                                      : Math.max(
-                                          0,
-                                          Math.min(MAX_BROADCAST_SCHEDULE_DAYS, nextValue),
-                                        );
-                                    setMailingScheduleDays(safeValue);
-                                    setMailingScheduleError('');
-                                  }}
-                                  disabled={isMailingBusy}
-                                />
-                              </label>
-
-                              <label className="field settings-text-field mailing-inline-field">
-                                <span className="field__label">Время</span>
-                                <input
-                                  type="time"
-                                  value={mailingScheduleTime}
-                                  onChange={(event) => {
-                                    setMailingScheduleTime(event.target.value);
-                                    setMailingScheduleError('');
-                                  }}
-                                  disabled={isMailingBusy}
-                                />
-                              </label>
-                            </div>
-                          ) : null}
-
-                          {mailingScheduleError ? (
-                            <small className="field__hint">{mailingScheduleError}</small>
-                          ) : mailingScheduleEnabled && mailingSchedulePreview ? (
-                            <small className="mailing-option-card__hint is-info">
-                              {`Отправка: ${mailingSchedulePreview}`}
-                            </small>
-                          ) : null}
+                        <div className="managed-broadcast-editor-note">
+                          <strong>Нативный планировщик</strong>
+                          <small>
+                            Выберите даты на месячном календаре. Уже занятые 30-минутные окна сразу
+                            недоступны, а весь план видно до перехода в бота.
+                          </small>
                         </div>
 
-                        <div
-                          className={cn(
-                            'mailing-option-card',
-                            mailingCycleEnabled && 'is-enabled',
-                            mailingCycleError && 'field--error',
-                          )}
-                        >
-                          <div className="mailing-option-card__head">
-                            <div className="mailing-option-card__title-wrap">
-                              <div className="mailing-card-title-row">
-                                <span className="mailing-option-card__title">
-                                  Циклическая рассылка
-                                </span>
-                                <SettingsHintAnchor
-                                  hintKey="mailingCycle"
-                                  openHintKey={openHintKey}
-                                  onToggleHint={toggleHint}
-                                  label="Пояснение для циклической рассылки"
-                                >
-                                  Интервал повторов задаётся в часах от 1 до 24. Максимум 100
-                                  отправок, но весь цикл всё равно должен уместиться в 14 дней.
-                                </SettingsHintAnchor>
-                              </div>
-                            </div>
-
-                            <label
-                              className="settings-native-switch"
-                              aria-label="Включить циклическую рассылку"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={mailingCycleEnabled}
-                                onChange={(event) => {
-                                  setMailingCycleEnabled(event.target.checked);
-                                  setMailingCycleError('');
-                                }}
-                                disabled={
-                                  isMailingBusy || Boolean(editingManagedBroadcast?.sentCount)
-                                }
-                              />
-                              <span className="toggle-switch" aria-hidden>
-                                <span className="toggle-switch__thumb" />
-                              </span>
-                            </label>
-                          </div>
-
-                          {mailingCycleEnabled ? (
-                            <div className="mailing-option-card__body mailing-inline-fields">
-                              <div className="mailing-inline-field mailing-hours-stepper">
-                                <span className="mailing-hours-stepper__label">
-                                  Интервал (часы)
-                                </span>
-                                <div className="mailing-hours-stepper__control">
-                                  <button
-                                    type="button"
-                                    className="mailing-hours-stepper__button"
-                                    onClick={() => {
-                                      setMailingCycleEveryHours((prev) =>
-                                        clampBroadcastCycleHours(prev - 1),
-                                      );
-                                      setMailingCycleError('');
-                                    }}
-                                    disabled={
-                                      isMailingBusy ||
-                                      mailingCycleEveryHours <= MIN_BROADCAST_CYCLE_HOURS
-                                    }
-                                    aria-label="Уменьшить интервал цикла"
-                                  >
-                                    -
-                                  </button>
-
-                                  <div className="mailing-hours-stepper__value" aria-live="polite">
-                                    {mailingCycleEveryHours}ч
-                                  </div>
-
-                                  <button
-                                    type="button"
-                                    className="mailing-hours-stepper__button"
-                                    onClick={() => {
-                                      setMailingCycleEveryHours((prev) =>
-                                        clampBroadcastCycleHours(prev + 1),
-                                      );
-                                      setMailingCycleError('');
-                                    }}
-                                    disabled={
-                                      isMailingBusy ||
-                                      mailingCycleEveryHours >= MAX_BROADCAST_CYCLE_HOURS
-                                    }
-                                    aria-label="Увеличить интервал цикла"
-                                  >
-                                    +
-                                  </button>
-                                </div>
-                              </div>
-
-                              <label className="field settings-text-field mailing-inline-field">
-                                <span className="field__label">Количество отправок</span>
-                                <input
-                                  type="number"
-                                  min={mailingCycleCountMin}
-                                  max={MAX_BROADCAST_CYCLE_COUNT}
-                                  value={mailingCycleCount}
-                                  onChange={(event) => {
-                                    const nextValue = Number.parseInt(event.target.value, 10);
-                                    const safeValue = Number.isNaN(nextValue)
-                                      ? mailingCycleCountMin
-                                      : Math.max(
-                                          mailingCycleCountMin,
-                                          Math.min(MAX_BROADCAST_CYCLE_COUNT, nextValue),
-                                        );
-                                    setMailingCycleCount(safeValue);
-                                    setMailingCycleError('');
-                                  }}
-                                  disabled={isMailingBusy}
-                                />
-                              </label>
-                            </div>
-                          ) : null}
-
-                          {mailingCycleError ? (
-                            <small className="field__hint">{mailingCycleError}</small>
-                          ) : editingManagedBroadcast?.sentCount ? (
-                            <small className="mailing-option-card__hint is-info">
-                              После первого запуска можно менять шаг, время и общий лимит отправок.
-                            </small>
-                          ) : mailingCycleEnabled && mailingCycleSummary ? (
-                            <small className="mailing-option-card__hint is-info">
-                              {`Цикл: ${mailingCycleSummary}`}
-                            </small>
-                          ) : null}
-                        </div>
+                        <BroadcastSchedulePlanner
+                          value={mailingScheduledSlots}
+                          occupiedSlots={mailingOccupiedSlots}
+                          error={mailingScheduleError}
+                          disabled={isMailingBusy}
+                          onChange={(nextValue) => {
+                            setMailingScheduledSlots(nextValue);
+                            if (mailingScheduleError) {
+                              setMailingScheduleError('');
+                            }
+                          }}
+                        />
                       </div>
                       <div className="mailing-action-bar">
                         <button
