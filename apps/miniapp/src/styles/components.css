@@ -5057,6 +5057,8 @@
 }
 
 .broadcast-planner__calendar-card {
+  box-sizing: border-box;
+  min-width: 0;
   padding: 16px;
   display: grid;
   gap: 12px;
@@ -5108,6 +5110,8 @@
 }
 
 .broadcast-planner__calendar-surface {
+  box-sizing: border-box;
+  min-width: 0;
   display: grid;
   gap: 10px;
   border-radius: 20px;
@@ -5175,12 +5179,15 @@
 }
 
 .broadcast-planner__grid {
+  min-width: 0;
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 7px;
 }
 
 .broadcast-planner__day {
+  box-sizing: border-box;
+  min-width: 0;
   position: relative;
   min-height: 64px;
   border-radius: 17px;
@@ -5995,6 +6002,119 @@
 
   .broadcast-planner__time-grid {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 360px) {
+  .broadcast-planner__calendar-card {
+    padding: 12px;
+    gap: 10px;
+  }
+
+  .broadcast-planner__calendar-copy strong {
+    font-size: 0.86rem;
+  }
+
+  .broadcast-planner__calendar-copy small {
+    font-size: 0.72rem;
+  }
+
+  .broadcast-planner__calendar-badge {
+    min-height: 28px;
+    padding: 0 10px;
+    font-size: 0.68rem;
+  }
+
+  .broadcast-planner__calendar-surface {
+    padding: 10px;
+    gap: 8px;
+  }
+
+  .broadcast-planner__calendar-head {
+    grid-template-columns: 32px minmax(0, 1fr) 32px;
+    gap: 6px;
+  }
+
+  .broadcast-planner__month-button {
+    width: 32px;
+    height: 32px;
+    border-radius: 10px;
+    font-size: 0.86rem;
+  }
+
+  .broadcast-planner__calendar-head strong {
+    min-height: 32px;
+    padding: 0 10px;
+    font-size: 0.9rem;
+  }
+
+  .broadcast-planner__weekdays {
+    gap: 2px;
+    padding: 6px 4px;
+  }
+
+  .broadcast-planner__weekdays span {
+    font-size: 0.58rem;
+  }
+
+  .broadcast-planner__grid {
+    gap: 4px;
+  }
+
+  .broadcast-planner__day {
+    min-height: 52px;
+    border-radius: 14px;
+    padding: 6px 2px;
+    gap: 6px;
+  }
+
+  .broadcast-planner__day-head {
+    min-height: 24px;
+  }
+
+  .broadcast-planner__day-number-shell {
+    width: 24px;
+    height: 24px;
+    border-radius: 12px;
+  }
+
+  .broadcast-planner__day-number {
+    font-size: 0.78rem;
+  }
+
+  .broadcast-planner__day-marker {
+    top: 7px;
+    right: 7px;
+    width: 14px;
+    height: 14px;
+    font-size: 0.48rem;
+  }
+
+  .broadcast-planner__day-today-dot {
+    top: 8px;
+    right: 8px;
+    width: 5px;
+    height: 5px;
+    box-shadow: 0 0 0 2px rgba(36, 150, 255, 0.14);
+  }
+
+  .broadcast-planner__day-meta {
+    min-width: 12px;
+    min-height: 12px;
+    width: 12px;
+    padding: 0;
+    font-size: 0;
+    line-height: 0;
+    border-width: 0;
+    box-shadow: none;
+  }
+
+  .broadcast-planner__day-meta::before {
+    content: '';
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: currentColor;
   }
 }
 
