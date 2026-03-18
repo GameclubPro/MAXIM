@@ -923,6 +923,37 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const postSuggestionsCardStatus = draft.postSuggestionsEnabled ? 'Авто' : 'Ручн';
   const broadcastCardStatus =
     broadcastScheduledSlots.length > 0 ? 'Календ' : broadcastHasButton ? 'CTA' : 'Бот';
+  const broadcastHeroTitle = 'Сначала выберите даты и слоты, потом отправьте контент в боте';
+  const broadcastHeroCopy =
+    'План публикаций собирается в mini app, а текст и фото вы отправляете в личке бота. Слоты по 30 минут блокируются сразу, без пересечений с другими постами.';
+  const broadcastHeroMeta = [
+    broadcastBotHasContent ? 'контент уже в боте' : 'контент в боте',
+    broadcastHasButton ? 'CTA включён' : 'CTA не нужен',
+    broadcastScheduledSlots.length > 0
+      ? `${countBroadcastScheduleDays(broadcastScheduledSlots)} дн. · ${broadcastScheduledSlots.length} слота`
+      : 'Слоты ещё не выбраны',
+    managedBroadcasts.length > 0 ? `${managedBroadcasts.length} активн.` : 'Новая рассылка',
+  ];
+  const broadcastDrilldownFooter = (
+    <div className="mailing-action-bar">
+      <button
+        type="button"
+        className="button button--accent mailing-action-bar__send"
+        onClick={handleSendChannelBroadcast}
+        disabled={handoffBroadcastMutation.isPending}
+      >
+        {handoffBroadcastMutation.isPending ? 'Открываем бота...' : 'Продолжить в боте'}
+      </button>
+      <button
+        type="button"
+        className="button button--ghost mailing-action-bar__clear"
+        onClick={resetBroadcastComposer}
+        disabled={handoffBroadcastMutation.isPending}
+      >
+        Очистить
+      </button>
+    </div>
+  );
 
   function resetBroadcastComposer() {
     setBroadcastText('');
@@ -1315,6 +1346,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           title="Рассылки"
           summary={broadcastHeaderSummary}
           onClose={() => toggleSection('broadcast')}
+          footer={broadcastDrilldownFooter}
         >
           <div
             id="channel-settings-broadcast"
@@ -1323,12 +1355,31 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             {expandedSections.broadcast ? (
               <div className="settings-section__collapse-inner">
                 <div className="channel-broadcast-studio">
-                  <div className="mailing-options-grid">
-                    <div className="managed-broadcast-editor-note">
-                      <strong>Контент в боте</strong>
-                      <small>Текст и фото отправляются в личке бота.</small>
+                  <div className="broadcast-composer-hero">
+                    <small className="broadcast-composer-hero__eyebrow">Календарь + бот</small>
+                    <h4 className="broadcast-composer-hero__title">{broadcastHeroTitle}</h4>
+                    <p className="broadcast-composer-hero__copy">{broadcastHeroCopy}</p>
+                    <div className="broadcast-composer-hero__meta">
+                      {broadcastHeroMeta.map((item) => (
+                        <span key={item}>{item}</span>
+                      ))}
                     </div>
+                  </div>
 
+                  <BroadcastSchedulePlanner
+                    value={broadcastScheduledSlots}
+                    occupiedSlots={managedBroadcasts.flatMap((broadcast) => broadcast.scheduledSlots)}
+                    error={broadcastScheduleError}
+                    disabled={handoffBroadcastMutation.isPending}
+                    onChange={(nextValue) => {
+                      setBroadcastScheduledSlots(nextValue);
+                      if (broadcastScheduleError) {
+                        setBroadcastScheduleError('');
+                      }
+                    }}
+                  />
+
+                  <div className="mailing-options-grid">
                     <div
                       className={cn(
                         'mailing-option-card',
@@ -1428,50 +1479,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                         </div>
                       ) : null}
                     </div>
-
-                    <div className="managed-broadcast-editor-note">
-                      <strong>Календарь публикаций</strong>
-                      <small>
-                        Выберите даты и точные слоты. Занятые окна на 30 минут сразу блокируются,
-                        чтобы не пересекаться с другими постами.
-                      </small>
-                    </div>
-
-                    <BroadcastSchedulePlanner
-                      value={broadcastScheduledSlots}
-                      occupiedSlots={managedBroadcasts.flatMap(
-                        (broadcast) => broadcast.scheduledSlots,
-                      )}
-                      error={broadcastScheduleError}
-                      disabled={handoffBroadcastMutation.isPending}
-                      onChange={(nextValue) => {
-                        setBroadcastScheduledSlots(nextValue);
-                        if (broadcastScheduleError) {
-                          setBroadcastScheduleError('');
-                        }
-                      }}
-                    />
-                  </div>
-
-                  <div className="mailing-action-bar">
-                    <button
-                      type="button"
-                      className="button button--accent mailing-action-bar__send"
-                      onClick={handleSendChannelBroadcast}
-                      disabled={handoffBroadcastMutation.isPending}
-                    >
-                      {handoffBroadcastMutation.isPending
-                        ? 'Открываем бота...'
-                        : 'Продолжить в боте'}
-                    </button>
-                    <button
-                      type="button"
-                      className="button button--ghost mailing-action-bar__clear"
-                      onClick={resetBroadcastComposer}
-                      disabled={handoffBroadcastMutation.isPending}
-                    >
-                      Очистить
-                    </button>
                   </div>
                 </div>
               </div>

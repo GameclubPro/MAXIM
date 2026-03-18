@@ -148,6 +148,7 @@ export function BroadcastSchedulePlanner({
   const monthKeys = getMonthKeys(windowStart, windowEnd);
   const visibleMonthKey = monthKeys.includes(currentMonthKey) ? currentMonthKey : monthKeys[0];
   const activeDaySlots = getSelectedDaySlots(activeDayKey, normalizedValue);
+  const selectedDayCount = countBroadcastScheduleDays(normalizedValue);
   const occupiedSet = new Set(sortAndUniqueBroadcastSlots(occupiedSlots));
   const selectedSet = new Set(normalizedValue);
   const minimumTime = anchorNow.getTime() + 30_000;
@@ -257,10 +258,18 @@ export function BroadcastSchedulePlanner({
         <div>
           <small className="broadcast-planner__eyebrow">Календарь публикаций</small>
           <h4 className="broadcast-planner__title">Месяц вперёд с шагом 30 минут</h4>
+          <div className="broadcast-planner__hero-metrics">
+            <span>{selectedDayCount} дн.</span>
+            <span>{normalizedValue.length} публикац.</span>
+            <span>
+              {activeDaySlots.length > 0
+                ? `${formatBroadcastScheduleDay(activeDayKey)} · ${activeDaySlots.length}`
+                : 'Выберите день'}
+            </span>
+          </div>
           <p className="broadcast-planner__summary">
-            {countBroadcastScheduleDays(normalizedValue)} дн. · {normalizedValue.length} публикац.
-            {' · '}
-            {formatBroadcastScheduleSummary(normalizedValue)}
+            Занятые окна сразу блокируются. Контент отправите в боте уже с готовым планом.
+            {normalizedValue.length > 0 ? ` ${formatBroadcastScheduleSummary(normalizedValue)}` : ''}
           </p>
         </div>
       </div>
@@ -372,6 +381,16 @@ export function BroadcastSchedulePlanner({
             ) : null}
           </div>
         </div>
+
+        {activeDaySlots.length > 0 ? (
+          <div className="broadcast-planner__selected-strip" aria-label="Выбранные слоты дня">
+            {activeDaySlots.map((slot) => (
+              <span key={slot} className="broadcast-planner__selected-chip">
+                {formatBroadcastScheduleSlot(slot).split(', ').pop()}
+              </span>
+            ))}
+          </div>
+        ) : null}
 
         <div className="broadcast-planner__preset-row">
           {SLOT_PRESETS.map((preset) => (

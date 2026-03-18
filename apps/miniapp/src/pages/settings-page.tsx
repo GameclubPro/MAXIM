@@ -2928,6 +2928,46 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         ? 'Все'
         : 'Бот';
   const mailingSendDisabled = isMailingBusy;
+  const mailingHeroTitle = editingManagedBroadcast
+    ? 'Исправьте календарь и CTA, контент уже лежит в боте'
+    : 'Сначала соберите календарь, потом откроется бот для текста и фото';
+  const mailingHeroCopy = editingManagedBroadcast
+    ? 'Слоты по 30 минут блокируются сразу. После сохранения рассылка продолжит идти по обновлённому плану без пересечений.'
+    : 'Месяц планируется прямо здесь. После кнопки ниже бот откроется уже с готовым расписанием, останется отправить контент обычным сообщением.';
+  const mailingHeroMeta = [
+    mailingTargetLabel,
+    mailingContentLabel,
+    mailingScheduledSlots.length > 0
+      ? `${mailingDayCount} дн. · ${mailingScheduledSlots.length} слота`
+      : 'Слоты ещё не выбраны',
+    managedBroadcasts.length > 0 ? `${managedBroadcasts.length} активн.` : 'Новая рассылка',
+  ];
+  const mailingDrilldownFooter = (
+    <div className="mailing-action-bar">
+      <button
+        type="button"
+        className="button button--accent mailing-action-bar__send"
+        onClick={handleSendBroadcast}
+        disabled={mailingSendDisabled}
+      >
+        {isUpdatingManagedBroadcast
+          ? 'Сохраняем...'
+          : handoffBroadcastMutation.isPending
+            ? 'Открываем бота...'
+            : editingManagedBroadcast
+              ? 'Сохранить рассылку'
+              : 'Продолжить в боте'}
+      </button>
+      <button
+        type="button"
+        className="button button--ghost mailing-action-bar__clear"
+        onClick={editingManagedBroadcast ? handleCancelMailingEdit : resetMailingComposer}
+        disabled={isMailingBusy}
+      >
+        {editingManagedBroadcast ? 'Отменить редактирование' : 'Очистить'}
+      </button>
+    </div>
+  );
 
   useHintPopoverAutoPosition(openHintKey !== null);
 
@@ -7318,6 +7358,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 title="Рассылки"
                 summary={mailingHeaderSummary}
                 onClose={() => toggleSection('mailing')}
+                footer={mailingDrilldownFooter}
               >
                 <div
                   id="settings-mailing-content"
@@ -7328,6 +7369,195 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 >
                   {expandedSections.mailing ? (
                     <div className="settings-section__collapse-inner settings-mailing">
+                      <div className="broadcast-composer-hero">
+                        <small className="broadcast-composer-hero__eyebrow">
+                          Календарь + бот
+                        </small>
+                        <h4 className="broadcast-composer-hero__title">{mailingHeroTitle}</h4>
+                        <p className="broadcast-composer-hero__copy">{mailingHeroCopy}</p>
+                        <div className="broadcast-composer-hero__meta">
+                          {mailingHeroMeta.map((item) => (
+                            <span key={item}>{item}</span>
+                          ))}
+                        </div>
+                      </div>
+
+                      {editingManagedBroadcast ? (
+                        <div className="managed-broadcast-editor-note">
+                          <strong>Редактирование текущей рассылки</strong>
+                          <small>
+                            {editingManagedBroadcast.sentCount > 0
+                              ? `Уже отправлено: ${editingManagedBroadcast.sentCount} из ${editingManagedBroadcast.cycleCount}.`
+                              : 'Контент уже сохранён. Здесь вы меняете календарь, охват и CTA.'}
+                          </small>
+                        </div>
+                      ) : null}
+
+                      <div className="mailing-options-grid mailing-options-grid--timing">
+                        <BroadcastSchedulePlanner
+                          value={mailingScheduledSlots}
+                          occupiedSlots={mailingOccupiedSlots}
+                          error={mailingScheduleError}
+                          disabled={isMailingBusy}
+                          onChange={(nextValue) => {
+                            setMailingScheduledSlots(nextValue);
+                            if (mailingScheduleError) {
+                              setMailingScheduleError('');
+                            }
+                          }}
+                        />
+                      </div>
+
+                      <div
+                        className={cn(
+                          'mailing-target-card',
+                          !canApplyToAllChats && 'is-single-chat',
+                        )}
+                      >
+                        <div className="mailing-target-card__row">
+                          <div className="mailing-target-card__title-wrap">
+                            <div className="mailing-card-title-row">
+                              <span className="mailing-target-card__title">
+                                Применить во всех чатах
+                              </span>
+                              <SettingsHintAnchor
+                                hintKey="mailingTargets"
+                                openHintKey={openHintKey}
+                                onToggleHint={toggleHint}
+                                label="Пояснение для массовой рассылки"
+                              >
+                                {canApplyToAllChats
+                                  ? `Отправим в ${chatsCount} чатах, где у вас и у бота есть админ-права.`
+                                  : 'Пока доступен только текущий чат.'}
+                              </SettingsHintAnchor>
+                            </div>
+                            <small className="mailing-target-card__meta">
+                              {mailingApplyToAllChats && canApplyToAllChats
+                                ? `Выбрано чатов: ${chatsCount}`
+                                : 'Отправка в текущий чат'}
+                            </small>
+                          </div>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Применить рассылку во всех чатах"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={mailingApplyToAllChats && canApplyToAllChats}
+                              onChange={(event) => setMailingApplyToAllChats(event.target.checked)}
+                              disabled={!canApplyToAllChats || isMailingBusy}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+
+                      <div className="mailing-options-grid">
+                        <div
+                          className={cn(
+                            'mailing-option-card',
+                            mailingButtonEnabled && 'is-enabled',
+                            (mailingButtonUrlError || mailingButtonTextError) && 'field--error',
+                          )}
+                        >
+                          <div className="mailing-option-card__head">
+                            <div className="mailing-option-card__title-wrap">
+                              <div className="mailing-card-title-row">
+                                <span className="mailing-option-card__title">Кнопка действия</span>
+                                <SettingsHintAnchor
+                                  hintKey="mailingButton"
+                                  openHintKey={openHintKey}
+                                  onToggleHint={toggleHint}
+                                  label="Пояснение для кнопки рассылки"
+                                >
+                                  Кнопка ведёт на канал, пост или внешнюю форму. Ссылка должна быть
+                                  `http/https`, подпись кнопки до 32 символов.
+                                </SettingsHintAnchor>
+                              </div>
+                            </div>
+
+                            <label
+                              className="settings-native-switch"
+                              aria-label="Добавить кнопку в рассылку"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={mailingButtonEnabled}
+                                onChange={(event) => {
+                                  const enabled = event.target.checked;
+                                  setMailingButtonEnabled(enabled);
+                                  if (!enabled) {
+                                    setMailingButtonUrlError('');
+                                    setMailingButtonTextError('');
+                                  }
+                                }}
+                                disabled={isMailingBusy}
+                              />
+                              <span className="toggle-switch" aria-hidden>
+                                <span className="toggle-switch__thumb" />
+                              </span>
+                            </label>
+                          </div>
+
+                          {mailingButtonEnabled ? (
+                            <div className="mailing-option-card__body">
+                              <label
+                                className={cn(
+                                  'field settings-url-field',
+                                  mailingButtonUrlError && 'field--error',
+                                )}
+                              >
+                                <span className="field__label">Ссылка кнопки</span>
+                                <input
+                                  type="url"
+                                  inputMode="url"
+                                  value={mailingButtonUrl}
+                                  onChange={(event) => {
+                                    setMailingButtonUrl(event.target.value);
+                                    if (mailingButtonUrlError) {
+                                      setMailingButtonUrlError('');
+                                    }
+                                  }}
+                                  placeholder="https://max.ru/channel/..."
+                                  disabled={isMailingBusy}
+                                />
+                                {mailingButtonUrlError ? (
+                                  <small className="field__hint">{mailingButtonUrlError}</small>
+                                ) : null}
+                              </label>
+
+                              <label
+                                className={cn(
+                                  'field settings-text-field',
+                                  mailingButtonTextError && 'field--error',
+                                )}
+                              >
+                                <span className="field__label">Название кнопки</span>
+                                <input
+                                  type="text"
+                                  maxLength={32}
+                                  value={mailingButtonText}
+                                  onChange={(event) => {
+                                    setMailingButtonText(event.target.value);
+                                    if (mailingButtonTextError) {
+                                      setMailingButtonTextError('');
+                                    }
+                                  }}
+                                  placeholder="Открыть"
+                                  disabled={isMailingBusy}
+                                />
+                                {mailingButtonTextError ? (
+                                  <small className="field__hint">{mailingButtonTextError}</small>
+                                ) : null}
+                              </label>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+
                       <div className="managed-broadcasts-list">
                         <div className="managed-broadcasts-list__head">
                           <span className="managed-broadcasts-list__title">Текущие рассылки</span>
@@ -7472,229 +7702,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </div>
                           );
                         })}
-                      </div>
-
-                      {editingManagedBroadcast ? (
-                        <div className="managed-broadcast-editor-note">
-                          <strong>Редактирование рассылки</strong>
-                          <small>
-                            {editingManagedBroadcast.sentCount > 0
-                              ? `Уже отправлено: ${editingManagedBroadcast.sentCount} из ${editingManagedBroadcast.cycleCount}.`
-                              : 'Контент уже сохранён. Здесь можно менять кнопку, охват и следующее время отправки.'}
-                          </small>
-                        </div>
-                      ) : null}
-
-                      <div
-                        className={cn(
-                          'mailing-target-card',
-                          !canApplyToAllChats && 'is-single-chat',
-                        )}
-                      >
-                        <div className="mailing-target-card__row">
-                          <div className="mailing-target-card__title-wrap">
-                            <div className="mailing-card-title-row">
-                              <span className="mailing-target-card__title">
-                                Применить во всех чатах
-                              </span>
-                              <SettingsHintAnchor
-                                hintKey="mailingTargets"
-                                openHintKey={openHintKey}
-                                onToggleHint={toggleHint}
-                                label="Пояснение для массовой рассылки"
-                              >
-                                {canApplyToAllChats
-                                  ? `Отправим в ${chatsCount} чатах, где у вас и у бота есть админ-права.`
-                                  : 'Пока доступен только текущий чат.'}
-                              </SettingsHintAnchor>
-                            </div>
-                            <small className="mailing-target-card__meta">
-                              {mailingApplyToAllChats && canApplyToAllChats
-                                ? `Выбрано чатов: ${chatsCount}`
-                                : 'Отправка в текущий чат'}
-                            </small>
-                          </div>
-
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Применить рассылку во всех чатах"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={mailingApplyToAllChats && canApplyToAllChats}
-                              onChange={(event) => setMailingApplyToAllChats(event.target.checked)}
-                              disabled={!canApplyToAllChats || isMailingBusy}
-                            />
-                            <span className="toggle-switch" aria-hidden>
-                              <span className="toggle-switch__thumb" />
-                            </span>
-                          </label>
-                        </div>
-                      </div>
-
-                      <div className="managed-broadcast-editor-note">
-                        <strong>
-                          {editingManagedBroadcast
-                            ? 'Контент меняется в боте'
-                            : 'Контент собирается в боте'}
-                        </strong>
-                        <small>
-                          {editingManagedBroadcast
-                            ? 'Чтобы заменить текст или фото, откройте новую рассылку через личный чат бота.'
-                            : 'В miniapp остаются только параметры. После кнопки ниже откроется личка бота, где можно отправить текст или фото обычным сообщением.'}
-                        </small>
-                      </div>
-
-                      <div className="mailing-options-grid">
-                        <div
-                          className={cn(
-                            'mailing-option-card',
-                            mailingButtonEnabled && 'is-enabled',
-                            (mailingButtonUrlError || mailingButtonTextError) && 'field--error',
-                          )}
-                        >
-                          <div className="mailing-option-card__head">
-                            <div className="mailing-option-card__title-wrap">
-                              <div className="mailing-card-title-row">
-                                <span className="mailing-option-card__title">Кнопка действия</span>
-                                <SettingsHintAnchor
-                                  hintKey="mailingButton"
-                                  openHintKey={openHintKey}
-                                  onToggleHint={toggleHint}
-                                  label="Пояснение для кнопки рассылки"
-                                >
-                                  Кнопка ведёт на канал, пост или внешнюю форму. Ссылка должна быть
-                                  `http/https`, подпись кнопки до 32 символов.
-                                </SettingsHintAnchor>
-                              </div>
-                            </div>
-
-                            <label
-                              className="settings-native-switch"
-                              aria-label="Добавить кнопку в рассылку"
-                            >
-                              <input
-                                type="checkbox"
-                                checked={mailingButtonEnabled}
-                                onChange={(event) => {
-                                  const enabled = event.target.checked;
-                                  setMailingButtonEnabled(enabled);
-                                  if (!enabled) {
-                                    setMailingButtonUrlError('');
-                                    setMailingButtonTextError('');
-                                  }
-                                }}
-                                disabled={isMailingBusy}
-                              />
-                              <span className="toggle-switch" aria-hidden>
-                                <span className="toggle-switch__thumb" />
-                              </span>
-                            </label>
-                          </div>
-
-                          {mailingButtonEnabled ? (
-                            <div className="mailing-option-card__body">
-                              <label
-                                className={cn(
-                                  'field settings-url-field',
-                                  mailingButtonUrlError && 'field--error',
-                                )}
-                              >
-                                <span className="field__label">Ссылка кнопки</span>
-                                <input
-                                  type="url"
-                                  inputMode="url"
-                                  value={mailingButtonUrl}
-                                  onChange={(event) => {
-                                    setMailingButtonUrl(event.target.value);
-                                    if (mailingButtonUrlError) {
-                                      setMailingButtonUrlError('');
-                                    }
-                                  }}
-                                  placeholder="https://max.ru/channel/..."
-                                  disabled={isMailingBusy}
-                                />
-                                {mailingButtonUrlError ? (
-                                  <small className="field__hint">{mailingButtonUrlError}</small>
-                                ) : null}
-                              </label>
-
-                              <label
-                                className={cn(
-                                  'field settings-text-field',
-                                  mailingButtonTextError && 'field--error',
-                                )}
-                              >
-                                <span className="field__label">Название кнопки</span>
-                                <input
-                                  type="text"
-                                  maxLength={32}
-                                  value={mailingButtonText}
-                                  onChange={(event) => {
-                                    setMailingButtonText(event.target.value);
-                                    if (mailingButtonTextError) {
-                                      setMailingButtonTextError('');
-                                    }
-                                  }}
-                                  placeholder="Открыть"
-                                  disabled={isMailingBusy}
-                                />
-                                {mailingButtonTextError ? (
-                                  <small className="field__hint">{mailingButtonTextError}</small>
-                                ) : null}
-                              </label>
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-
-                      <div className="mailing-options-grid mailing-options-grid--timing">
-                        <div className="managed-broadcast-editor-note">
-                          <strong>Нативный планировщик</strong>
-                          <small>
-                            Выберите даты на месячном календаре. Уже занятые 30-минутные окна сразу
-                            недоступны, а весь план видно до перехода в бота.
-                          </small>
-                        </div>
-
-                        <BroadcastSchedulePlanner
-                          value={mailingScheduledSlots}
-                          occupiedSlots={mailingOccupiedSlots}
-                          error={mailingScheduleError}
-                          disabled={isMailingBusy}
-                          onChange={(nextValue) => {
-                            setMailingScheduledSlots(nextValue);
-                            if (mailingScheduleError) {
-                              setMailingScheduleError('');
-                            }
-                          }}
-                        />
-                      </div>
-                      <div className="mailing-action-bar">
-                        <button
-                          type="button"
-                          className="button button--accent mailing-action-bar__send"
-                          onClick={handleSendBroadcast}
-                          disabled={mailingSendDisabled}
-                        >
-                          {isUpdatingManagedBroadcast
-                            ? 'Сохраняем...'
-                            : handoffBroadcastMutation.isPending
-                              ? 'Открываем бота...'
-                              : editingManagedBroadcast
-                                ? 'Сохранить рассылку'
-                                : 'Продолжить в боте'}
-                        </button>
-                        <button
-                          type="button"
-                          className="button button--ghost mailing-action-bar__clear"
-                          onClick={
-                            editingManagedBroadcast ? handleCancelMailingEdit : resetMailingComposer
-                          }
-                          disabled={isMailingBusy}
-                        >
-                          {editingManagedBroadcast ? 'Отменить редактирование' : 'Очистить'}
-                        </button>
                       </div>
                     </div>
                   ) : null}

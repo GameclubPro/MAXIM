@@ -56,8 +56,60 @@ const scenarios = [
     path: '/chat/preview-chat/settings',
   },
   {
+    name: 'chat-settings-broadcast',
+    path: '/chat/preview-chat/settings',
+    searchParams: {
+      focus: 'broadcast',
+      handoff: '1',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(1000);
+    },
+  },
+  {
+    name: 'chat-settings-broadcast-scrolled',
+    path: '/chat/preview-chat/settings',
+    searchParams: {
+      focus: 'broadcast',
+      handoff: '1',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(1000);
+      await page.locator('.settings-drilldown__content').evaluate((element) => {
+        element.scrollTo({ top: 980, behavior: 'instant' });
+      });
+      await page.waitForTimeout(300);
+    },
+  },
+  {
     name: 'channel-settings',
     path: '/channel/preview-channel/settings',
+  },
+  {
+    name: 'channel-settings-broadcast',
+    path: '/channel/preview-channel/settings',
+    searchParams: {
+      focus: 'broadcast',
+      handoff: '1',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(1000);
+    },
+  },
+  {
+    name: 'channel-settings-broadcast-scrolled',
+    path: '/channel/preview-channel/settings',
+    searchParams: {
+      focus: 'broadcast',
+      handoff: '1',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(1000);
+      await page.locator('.settings-drilldown__content').evaluate((element) => {
+        element.scrollTo({ top: 980, behavior: 'instant' });
+      });
+      await page.waitForTimeout(300);
+    },
   },
   {
     name: 'channel-stats',
