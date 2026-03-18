@@ -92,6 +92,26 @@ function formatDayChipLabel(dayKey: string): string {
   }).format(date);
 }
 
+function formatCountLabel(
+  count: number,
+  singular: string,
+  few: string,
+  plural: string,
+): string {
+  const remainder10 = count % 10;
+  const remainder100 = count % 100;
+
+  if (remainder10 === 1 && remainder100 !== 11) {
+    return `${count} ${singular}`;
+  }
+
+  if (remainder10 >= 2 && remainder10 <= 4 && (remainder100 < 12 || remainder100 > 14)) {
+    return `${count} ${few}`;
+  }
+
+  return `${count} ${plural}`;
+}
+
 function getMonthKeys(windowStart: Date, windowEnd: Date): string[] {
   const keys: string[] = [];
   const cursor = startOfMonth(windowStart);
@@ -169,6 +189,7 @@ export function BroadcastSchedulePlanner({
   const pickedDaySet = new Set(pickedDayKeys);
   const minimumTime = anchorNow.getTime() + 30_000;
   const activeDaySlots = getSelectedDaySlots(activeDayKey, normalizedValue);
+  const pickedDayLabel = formatCountLabel(pickedDayKeys.length, 'день', 'дня', 'дней');
   const targetDayKeys =
     applyToAllPickedDays && pickedDayKeys.length > 1 ? pickedDayKeys : [activeDayKey];
 
@@ -367,13 +388,16 @@ export function BroadcastSchedulePlanner({
       <section className={cn('broadcast-planner', disabled && 'is-disabled')}>
         <div className="broadcast-planner__topline">
           <div className="broadcast-planner__topline-copy">
-            <strong>Отметьте один или несколько дней</strong>
-            <small>Потом внизу откроется отдельный выбор времени для этих дат.</small>
+            <strong>Выберите дни публикации</strong>
+            <small>
+              Можно отметить сразу несколько дат, а затем одним действием задать им время в
+              отдельной шторке.
+            </small>
           </div>
           <div className="broadcast-planner__topline-badges">
             <span>{selectedDayCount} дн.</span>
             <span>{normalizedValue.length} слота</span>
-            {pickedDayKeys.length > 0 ? <span>{`${pickedDayKeys.length} выбрано`}</span> : null}
+            {pickedDayKeys.length > 0 ? <span>{pickedDayLabel}</span> : null}
           </div>
         </div>
 
@@ -381,7 +405,9 @@ export function BroadcastSchedulePlanner({
           <div className="broadcast-planner__calendar-copy">
             <strong>Календарь публикаций</strong>
             <small>
-              {normalizedValue.length > 0
+              {pickedDayKeys.length > 0
+                ? `${pickedDayLabel} готовы к настройке времени.`
+                : normalizedValue.length > 0
                 ? formatBroadcastScheduleSummary(normalizedValue)
                 : 'Можно отметить несколько дней сразу, а потом одним действием задать им время.'}
             </small>
@@ -458,12 +484,13 @@ export function BroadcastSchedulePlanner({
                   disabled={isDisabled}
                   onClick={() => togglePickedDay(dayKey)}
                 >
+                  {isPicked ? <span className="broadcast-planner__day-marker">✓</span> : null}
                   <span className="broadcast-planner__day-number">{cell.getDate()}</span>
                   <span className="broadcast-planner__day-meta">
                     {daySlots.length > 0
                       ? `${daySlots.length} сл.`
                       : isPicked
-                        ? 'выбран'
+                        ? 'в выборе'
                         : busyCount > 0
                           ? 'занято'
                           : ' '}
@@ -478,13 +505,13 @@ export function BroadcastSchedulePlanner({
           <div className="broadcast-planner__selection-copy">
             <strong>
               {pickedDayKeys.length > 0
-                ? `Выбрано ${pickedDayKeys.length} ${pickedDayKeys.length === 1 ? 'день' : 'дня'}`
-                : 'Сначала отметьте дни в календаре'}
+                ? `${pickedDayLabel} в выделении`
+                : 'Сначала отметьте даты в календаре'}
             </strong>
             <small>
               {pickedDayKeys.length > 0
-                ? 'После этого откроется bottom sheet со слотами и быстрыми шаблонами.'
-                : 'Повторный тап снимает день из выбора.'}
+                ? 'Открою нижнюю шторку со слотами и быстрыми пресетами.'
+                : 'Повторный тап по дате снимает её из выбора.'}
             </small>
           </div>
 
@@ -505,10 +532,38 @@ export function BroadcastSchedulePlanner({
               onClick={openDaySheet}
               disabled={disabled || pickedDayKeys.length === 0}
             >
-              Выбрать время
+              {pickedDayKeys.length > 1 ? `Настроить ${pickedDayLabel}` : 'Выбрать время'}
             </button>
           </div>
         </div>
+
+        {pickedDayKeys.length > 0 ? (
+          <div className="broadcast-planner__picked-strip" aria-label="Выбранные дни">
+            {pickedDayKeys.map((dayKey) => {
+              const slotsCount = getSelectedDaySlots(dayKey, normalizedValue).length;
+              return (
+                <button
+                  key={dayKey}
+                  type="button"
+                  className={cn(
+                    'broadcast-planner__picked-chip',
+                    dayKey === activeDayKey && 'is-active',
+                  )}
+                  onClick={() => {
+                    setActiveDayKey(dayKey);
+                    maxSelectionChanged();
+                  }}
+                  disabled={disabled}
+                >
+                  <strong>{formatDayChipLabel(dayKey)}</strong>
+                  <small>
+                    {slotsCount > 0 ? formatCountLabel(slotsCount, 'слот', 'слота', 'слотов') : 'без времени'}
+                  </small>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
 
         {normalizedValue.length > 0 ? (
           <div className="broadcast-planner__agenda">
