@@ -438,6 +438,32 @@ function createUserAddedUpdate(): MaxUpdate {
   };
 }
 
+function createUserAddedUpdateWithSuffix(suffix: number | string): MaxUpdate {
+  const normalizedSuffix = String(suffix);
+  return {
+    updateId: `upd-user-added-${normalizedSuffix}`,
+    type: 'user_added',
+    message: {
+      messageId: `user_added:upd-user-added-${normalizedSuffix}`,
+      chatId: 'chat-1',
+      senderId: `user-added-${normalizedSuffix}`,
+      senderName: `Новый участник user_added ${normalizedSuffix}`,
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'user_added',
+      chat_id: 'chat-1',
+      user: {
+        user_id: `user-added-${normalizedSuffix}`,
+        type: 'user',
+        display_name: `Новый участник user_added ${normalizedSuffix}`,
+      },
+      timestamp: Date.now(),
+    },
+  };
+}
+
 function createUserRemovedUpdate(): MaxUpdate {
   return {
     updateId: 'upd-user-removed-1',
@@ -2993,6 +3019,152 @@ describe('ModerationService', () => {
     await service.handleUpdate(createServiceUserJoinedUpdate());
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('temporarily disables greeting messages for one hour after more than three joins in one minute', async () => {
+    const redisCounter = {
+      getString: jest.fn().mockResolvedValue(null),
+      incrementByWithTtl: jest
+        .fn()
+        .mockResolvedValueOnce(1)
+        .mockResolvedValueOnce(2)
+        .mockResolvedValueOnce(3)
+        .mockResolvedValueOnce(4),
+      setStringWithTtl: jest.fn().mockResolvedValue(undefined),
+    };
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            greetingEnabled: true,
+            greetingBotMessageEnabled: true,
+            greetingBotMessageText: 'Добро пожаловать, {user}! {greeting}.',
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+    );
+
+    await service.handleUpdate(createUserAddedUpdateWithSuffix(1));
+    await service.handleUpdate(createUserAddedUpdateWithSuffix(2));
+    await service.handleUpdate(createUserAddedUpdateWithSuffix(3));
+    await service.handleUpdate(createUserAddedUpdateWithSuffix(4));
+
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(3);
+    expect(redisCounter.incrementByWithTtl).toHaveBeenNthCalledWith(
+      4,
+      'greeting-burst:v1:chat-1',
+      1,
+      60,
+    );
+    expect(redisCounter.setStringWithTtl).toHaveBeenCalledWith(
+      'greeting-disabled:v1:chat-1',
+      expect.any(String),
+      60 * 60,
+    );
+  });
+
+  it('skips greeting messages while hidden auto-disable window is active', async () => {
+    const redisCounter = {
+      getString: jest.fn().mockResolvedValue('2026-03-18T10:00:00.000Z'),
+      incrementByWithTtl: jest.fn(),
+      setStringWithTtl: jest.fn(),
+    };
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            greetingEnabled: true,
+            greetingBotMessageEnabled: true,
+            greetingBotMessageText: 'Добро пожаловать, {user}! {greeting}.',
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+    );
+
+    await service.handleUpdate(createUserAddedUpdateWithSuffix('blocked'));
+
+    expect(redisCounter.getString).toHaveBeenCalledWith('greeting-disabled:v1:chat-1');
+    expect(redisCounter.incrementByWithTtl).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });

@@ -18,6 +18,20 @@ export class RedisCounterService {
     return count;
   }
 
+  async incrementByWithTtl(key: string, amount: number, ttlSeconds: number): Promise<number> {
+    const normalizedAmount = Number.isFinite(amount) ? Math.trunc(amount) : 0;
+    if (normalizedAmount <= 0) {
+      return 0;
+    }
+
+    const count = await this.redis.incrby(key, normalizedAmount);
+    const ttl = await this.redis.ttl(key);
+    if (ttl < 0) {
+      await this.redis.expire(key, ttlSeconds);
+    }
+    return count;
+  }
+
   async addToSetWithTtl(
     key: string,
     member: string,
