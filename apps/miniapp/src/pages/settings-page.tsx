@@ -2975,7 +2975,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       <p className="settings-drilldown__footer-note">
         {editingManagedBroadcast
           ? 'Сохраним обновлённый календарь и CTA прямо здесь.'
-          : 'В боте останется только финальное подтверждение отправки.'}
+          : 'В боте останется только подтверждение отправки.'}
       </p>
       <div className="settings-drilldown__footer-actions is-single-action">
         <button

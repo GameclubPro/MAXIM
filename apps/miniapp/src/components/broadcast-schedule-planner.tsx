@@ -41,6 +41,7 @@ type CountChoiceId = SlotPreset['id'] | 'custom' | null;
 type SlotPreset = {
   id: string;
   label: string;
+  hint: string;
   minutes: number[];
 };
 
@@ -51,9 +52,14 @@ type SlotGroup = {
 };
 
 const SLOT_PRESETS: SlotPreset[] = [
-  { id: 'single', label: '1 раз', minutes: [10 * 60] },
-  { id: 'double', label: '2 раза', minutes: [10 * 60, 18 * 60] },
-  { id: 'triple', label: '3 раза', minutes: [10 * 60, 14 * 60, 19 * 60] },
+  { id: 'single', label: '1 раз', hint: 'Один слот на день', minutes: [10 * 60] },
+  { id: 'double', label: '2 раза', hint: 'Утро и вечер', minutes: [10 * 60, 18 * 60] },
+  {
+    id: 'triple',
+    label: '3 раза',
+    hint: 'Утро, день и вечер',
+    minutes: [10 * 60, 14 * 60, 19 * 60],
+  },
 ];
 
 const SLOT_GROUPS: SlotGroup[] = [
@@ -553,7 +559,7 @@ export function BroadcastSchedulePlanner({
             </strong>
             <small>
               {isReviewStep
-                ? 'Проверьте итог. В боте останется только финальное подтверждение.'
+                ? 'Проверьте итог. В боте останется только подтверждение.'
                 : 'Сначала отметьте даты. Следующие шаги с количеством и временем откроются отдельно.'}
             </small>
           </div>
@@ -749,11 +755,11 @@ export function BroadcastSchedulePlanner({
                 <strong>{selectedDayCount}</strong>
               </div>
               <div className="broadcast-planner__review-stat">
-                <small>Уже засчитаем</small>
+                <small>Засчитаем</small>
                 <strong>{pastSlotCount}</strong>
               </div>
               <div className="broadcast-planner__review-stat">
-                <small>Ещё отправим</small>
+                <small>Отправим</small>
                 <strong>{futureSlotCount}</strong>
               </div>
             </div>
@@ -902,8 +908,8 @@ export function BroadcastSchedulePlanner({
 
                       <div className="broadcast-planner__sheet-note">
                         {pickedDayKeys.length > 1
-                          ? 'Количество отправок применится ко всем выбранным дням. На следующем шаге можно оставить одинаковое время или настроить дни отдельно.'
-                          : 'Выберите быстрый пресет или перейдите к ручной настройке времени.'}
+                          ? 'Частота применится ко всем датам. Дальше можно оставить общее время или настроить дни отдельно.'
+                          : 'Выберите быстрый пресет или задайте слоты вручную.'}
                       </div>
 
                       <div className="broadcast-planner__count-grid">
@@ -919,7 +925,7 @@ export function BroadcastSchedulePlanner({
                             disabled={disabled}
                           >
                             <strong>{preset.label}</strong>
-                            <small>Перейти к выбору времени</small>
+                            <small>{preset.hint}</small>
                           </button>
                         ))}
                       </div>
@@ -1026,13 +1032,12 @@ export function BroadcastSchedulePlanner({
                         </div>
                       ) : applyToAllPickedDays && pickedDayKeys.length > 1 ? (
                         <div className="broadcast-planner__sheet-note">
-                          Одинаковые часы будут поставлены сразу на все отмеченные даты.
+                          Эти часы применятся ко всем выбранным датам.
                         </div>
                       ) : null}
 
                       <div className="broadcast-planner__sheet-note">
-                        Сегодняшнее прошедшее время тоже можно выбрать. Эти отправки засчитаем как
-                        уже выполненные.
+                        Сегодня можно выбрать и прошедшее время: такие слоты просто засчитаем.
                       </div>
 
                       <div className="broadcast-planner__time-summary">
@@ -1041,11 +1046,11 @@ export function BroadcastSchedulePlanner({
                           <strong>{normalizedValue.length}</strong>
                         </div>
                         <div className="broadcast-planner__time-summary-item">
-                          <small>Уже засчитаем</small>
+                          <small>Засчитаем</small>
                           <strong>{pastSlotCount}</strong>
                         </div>
                         <div className="broadcast-planner__time-summary-item">
-                          <small>Ещё отправим</small>
+                          <small>Отправим</small>
                           <strong>{futureSlotCount}</strong>
                         </div>
                       </div>

@@ -964,7 +964,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastDrilldownFooter = (
     <>
       <p className="settings-drilldown__footer-note">
-        В боте останется только финальное подтверждение отправки.
+        В боте останется только подтверждение отправки.
       </p>
       <div className="settings-drilldown__footer-actions is-single-action">
         <button
