@@ -1,7 +1,7 @@
 import type { ChannelAutoPostButtonsMode, ChannelSettings } from '@maxim/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useLocation, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   BroadcastSchedulePlanner,
   type BroadcastSchedulePlannerSelectionState,
@@ -415,6 +415,7 @@ function normalizeChannelSettingsDraft(
 export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const { chatId = '' } = useParams();
   const location = useLocation();
+  const navigate = useNavigate();
   const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader();
   const routeState = getRouteState(location.state);
   const routeChatTitle = routeState.chatTitle;
@@ -617,11 +618,16 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   }, [channelHeader?.link, routeChatLink]);
 
   function toggleSection(section: ChannelSettingsSectionKey) {
+    if (expandedSections[section]) {
+      closeSection(section);
+      return;
+    }
+
     startTransition(() => {
-      setExpandedSections((current) => ({
+      setExpandedSections({
         ...INITIAL_EXPANDED_CHANNEL_SECTIONS,
-        ...(current[section] ? {} : { [section]: true }),
-      }));
+        [section]: true,
+      });
     });
   }
 
@@ -630,6 +636,22 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function closeSection(section: ChannelSettingsSectionKey) {
+    if (
+      (section === 'broadcast' && focusSection === 'broadcast') ||
+      (section === 'giveaway' && focusSection === 'giveaway')
+    ) {
+      const nextSearchParams = new URLSearchParams(location.search);
+      nextSearchParams.delete('focus');
+      nextSearchParams.delete('handoff');
+      navigate(
+        {
+          pathname: location.pathname,
+          search: nextSearchParams.toString() ? `?${nextSearchParams.toString()}` : '',
+        },
+        { replace: true, state: location.state },
+      );
+    }
+
     setExpandedSections((current) =>
       current[section] ? INITIAL_EXPANDED_CHANNEL_SECTIONS : current,
     );

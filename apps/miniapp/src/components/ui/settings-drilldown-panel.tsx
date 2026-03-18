@@ -1,4 +1,4 @@
-import { useEffect, type ReactNode } from 'react';
+import { useEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../../lib/cn';
 
@@ -37,6 +37,9 @@ export function SettingsDrilldownPanel({
   className,
   footer,
 }: SettingsDrilldownPanelProps) {
+  const backdropRef = useRef<HTMLButtonElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+
   useEffect(() => {
     if (!open) {
       return undefined;
@@ -64,6 +67,29 @@ export function SettingsDrilldownPanel({
     };
   }, [onClose, open]);
 
+  useEffect(() => {
+    if (!open) {
+      return undefined;
+    }
+
+    const handleNativeClose = (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    };
+
+    const backdrop = backdropRef.current;
+    const closeButton = closeButtonRef.current;
+
+    backdrop?.addEventListener('click', handleNativeClose);
+    closeButton?.addEventListener('click', handleNativeClose);
+
+    return () => {
+      backdrop?.removeEventListener('click', handleNativeClose);
+      closeButton?.removeEventListener('click', handleNativeClose);
+    };
+  }, [onClose, open]);
+
   if (!open || typeof document === 'undefined') {
     return null;
   }
@@ -74,10 +100,10 @@ export function SettingsDrilldownPanel({
   return createPortal(
     <div className="settings-drilldown" aria-hidden={!open}>
       <button
+        ref={backdropRef}
         type="button"
         className="settings-drilldown__backdrop"
         aria-label="Закрыть панель"
-        onClick={onClose}
       />
 
       <section
@@ -100,9 +126,9 @@ export function SettingsDrilldownPanel({
           </div>
 
           <button
+            ref={closeButtonRef}
             type="button"
             className="settings-drilldown__close"
-            onClick={onClose}
             aria-label="Закрыть панель"
           >
             <CloseIcon />

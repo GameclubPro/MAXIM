@@ -2658,17 +2658,33 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   function closeSection(section: SettingsSectionKey) {
+    if (
+      (section === 'mailing' && focusSection === 'broadcast') ||
+      (section === 'giveaway' && focusSection === 'giveaway')
+    ) {
+      const nextSearchParams = new URLSearchParams(location.search);
+      nextSearchParams.delete('focus');
+      nextSearchParams.delete('handoff');
+      navigate(
+        {
+          pathname: location.pathname,
+          search: nextSearchParams.toString() ? `?${nextSearchParams.toString()}` : '',
+        },
+        { replace: true, state: location.state },
+      );
+    }
+
     setExpandedSections((current) => (current[section] ? INITIAL_EXPANDED_SECTIONS : current));
   }
 
   function toggleSection(section: SettingsSectionKey) {
+    if (expandedSections[section]) {
+      closeSection(section);
+      return;
+    }
+
     startTransition(() => {
-      setExpandedSections((current) => {
-        const shouldOpen = !current[section];
-        return shouldOpen
-          ? { ...INITIAL_EXPANDED_SECTIONS, [section]: true }
-          : INITIAL_EXPANDED_SECTIONS;
-      });
+      setExpandedSections({ ...INITIAL_EXPANDED_SECTIONS, [section]: true });
     });
   }
 
