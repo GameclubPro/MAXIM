@@ -74,6 +74,7 @@ const EMPTY_BROADCAST_PLANNER_STATE: BroadcastSchedulePlannerSelectionState = {
   pickedDayCount: 0,
   selectedDayCount: 0,
   slotCount: 0,
+  futureSlotCount: 0,
   isDaySheetOpen: false,
   isConfirmed: false,
 };
@@ -925,9 +926,18 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastPlannerPending =
     broadcastPlannerState.pickedDayCount > 0 || broadcastPlannerState.isDaySheetOpen;
   const broadcastScheduleReady = broadcastScheduledSlots.length > 0 && !broadcastPlannerPending;
+  const broadcastHasFutureSlots = broadcastPlannerState.futureSlotCount > 0;
   const showBroadcastPrimaryAction =
     handoffBroadcastMutation.isPending ||
-    (broadcastScheduleReady && broadcastButtonDraftValid && broadcastPlannerState.isConfirmed);
+    (broadcastScheduleReady &&
+      broadcastButtonDraftValid &&
+      broadcastPlannerState.isConfirmed &&
+      broadcastHasFutureSlots);
+  const showBroadcastInlineReset =
+    broadcastScheduledSlots.length > 0 ||
+    broadcastText.trim().length > 0 ||
+    broadcastImageEnabled ||
+    broadcastButtonEnabled;
   const broadcastHeaderSummary = [
     broadcastBotHasContent ? 'контент уже в боте' : 'контент в боте',
     broadcastHasButton ? 'CTA' : null,
@@ -952,24 +962,21 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastCardStatus =
     broadcastScheduledSlots.length > 0 ? 'Календ' : broadcastHasButton ? 'CTA' : 'Бот';
   const broadcastDrilldownFooter = (
-    <div className="mailing-action-bar">
-      <button
-        type="button"
-        className="mailing-action-bar__link"
-        onClick={resetBroadcastComposer}
-        disabled={handoffBroadcastMutation.isPending}
-      >
-        Очистить рассылку
-      </button>
-      <button
-        type="button"
-        className="button button--accent mailing-action-bar__send"
-        onClick={handleSendChannelBroadcast}
-        disabled={handoffBroadcastMutation.isPending}
-      >
-        {handoffBroadcastMutation.isPending ? 'Открываем бота...' : 'Продолжить в боте'}
-      </button>
-    </div>
+    <>
+      <p className="settings-drilldown__footer-note">
+        В боте останется только финальное подтверждение отправки.
+      </p>
+      <div className="settings-drilldown__footer-actions is-single-action">
+        <button
+          type="button"
+          className="button button--accent"
+          onClick={handleSendChannelBroadcast}
+          disabled={handoffBroadcastMutation.isPending}
+        >
+          {handoffBroadcastMutation.isPending ? 'Передаём в бота...' : 'Передать в бота'}
+        </button>
+      </div>
+    </>
   );
 
   function resetBroadcastPlanner() {
@@ -1060,6 +1067,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
     if (scheduledSlots.length === 0) {
       setBroadcastScheduleError('Добавьте хотя бы один слот публикации.');
+      hasError = true;
+    } else if (broadcastPlannerState.futureSlotCount === 0) {
+      setBroadcastScheduleError('Добавьте хотя бы один будущий слот публикации.');
       hasError = true;
     }
     setBroadcastCycleError('');
@@ -1375,6 +1385,19 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             {expandedSections.broadcast ? (
               <div className="settings-section__collapse-inner">
                 <div className="channel-broadcast-studio">
+                  {showBroadcastInlineReset ? (
+                    <div className="mailing-inline-tools">
+                      <button
+                        type="button"
+                        className="mailing-inline-tools__link"
+                        onClick={resetBroadcastComposer}
+                        disabled={handoffBroadcastMutation.isPending}
+                      >
+                        Очистить рассылку
+                      </button>
+                    </div>
+                  ) : null}
+
                   <BroadcastSchedulePlanner
                     resetKey={broadcastPlannerResetKey}
                     value={broadcastScheduledSlots}

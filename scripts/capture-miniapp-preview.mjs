@@ -75,9 +75,26 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(1000);
-      await page.getByRole('button', { name: 'Далее' }).click();
+      await page.getByRole('button', { name: 'Выбрать количество' }).click();
       await page.waitForTimeout(150);
       await page.getByRole('button', { name: '2 раза' }).click();
+      await page.waitForTimeout(300);
+    },
+  },
+  {
+    name: 'chat-settings-broadcast-review',
+    path: '/chat/preview-chat/settings',
+    searchParams: {
+      focus: 'broadcast',
+      handoff: '1',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(1000);
+      await page.getByRole('button', { name: 'Выбрать количество' }).click();
+      await page.waitForTimeout(150);
+      await page.getByRole('button', { name: '2 раза' }).click();
+      await page.waitForTimeout(150);
+      await page.getByRole('button', { name: 'Сохранить время' }).click();
       await page.waitForTimeout(300);
     },
   },
@@ -105,9 +122,26 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(1000);
-      await page.getByRole('button', { name: 'Далее' }).click();
+      await page.getByRole('button', { name: 'Выбрать количество' }).click();
       await page.waitForTimeout(150);
       await page.getByRole('button', { name: '2 раза' }).click();
+      await page.waitForTimeout(300);
+    },
+  },
+  {
+    name: 'channel-settings-broadcast-review',
+    path: '/channel/preview-channel/settings',
+    searchParams: {
+      focus: 'broadcast',
+      handoff: '1',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(1000);
+      await page.getByRole('button', { name: 'Выбрать количество' }).click();
+      await page.waitForTimeout(150);
+      await page.getByRole('button', { name: '2 раза' }).click();
+      await page.waitForTimeout(150);
+      await page.getByRole('button', { name: 'Сохранить время' }).click();
       await page.waitForTimeout(300);
     },
   },

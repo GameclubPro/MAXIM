@@ -29,6 +29,7 @@ export type BroadcastSchedulePlannerSelectionState = {
   pickedDayCount: number;
   selectedDayCount: number;
   slotCount: number;
+  futureSlotCount: number;
   isDaySheetOpen: boolean;
   isConfirmed: boolean;
 };
@@ -53,7 +54,6 @@ const SLOT_PRESETS: SlotPreset[] = [
   { id: 'single', label: '1 раз', minutes: [10 * 60] },
   { id: 'double', label: '2 раза', minutes: [10 * 60, 18 * 60] },
   { id: 'triple', label: '3 раза', minutes: [10 * 60, 14 * 60, 19 * 60] },
-  { id: 'dayparts', label: 'Утро / день / вечер', minutes: [9 * 60, 14 * 60, 20 * 60] },
 ];
 
 const SLOT_GROUPS: SlotGroup[] = [
@@ -176,6 +176,15 @@ function formatCountChoiceLabel(choice: CountChoiceId): string {
   return SLOT_PRESETS.find((preset) => preset.id === choice)?.label.toLowerCase() ?? 'вручную';
 }
 
+function formatDaySummary(dayKeys: string[]): string {
+  const labels = sortDayKeys(dayKeys).map((dayKey) => formatDayChipLabel(dayKey));
+  if (labels.length <= 2) {
+    return labels.join(', ');
+  }
+
+  return `${labels.slice(0, 2).join(', ')} +${labels.length - 2}`;
+}
+
 export function BroadcastSchedulePlanner({
   value,
   occupiedSlots = [],
@@ -213,9 +222,17 @@ export function BroadcastSchedulePlanner({
   const minimumTime = anchorNow.getTime() + 30_000;
   const activeDaySlots = getSelectedDaySlots(activeDayKey, normalizedValue);
   const pickedDayLabel = formatCountLabel(pickedDayKeys.length, 'день', 'дня', 'дней');
+  const pickedDaySummary = formatDaySummary(pickedDayKeys);
+  const scheduledDaySummary = formatDaySummary(scheduledDayKeys);
   const targetDayKeys =
     applyToAllPickedDays && pickedDayKeys.length > 1 ? pickedDayKeys : [activeDayKey];
   const isDaySheetOpen = sheetStep !== null;
+  const pastSlotCount = normalizedValue.filter(
+    (slot) => new Date(slot).getTime() < minimumTime,
+  ).length;
+  const futureSlotCount = normalizedValue.length - pastSlotCount;
+  const isReviewStep =
+    isConfirmed && normalizedValue.length > 0 && pickedDayKeys.length === 0 && !isDaySheetOpen;
   const emitSelectionStateChange = useEffectEvent(
     (nextState: BroadcastSchedulePlannerSelectionState) => {
       onSelectionStateChange?.(nextState);
@@ -275,11 +292,13 @@ export function BroadcastSchedulePlanner({
       pickedDayCount: pickedDayKeys.length,
       selectedDayCount,
       slotCount: normalizedValue.length,
+      futureSlotCount,
       isDaySheetOpen,
       isConfirmed,
     });
   }, [
     emitSelectionStateChange,
+    futureSlotCount,
     isConfirmed,
     isDaySheetOpen,
     normalizedValue.length,
@@ -379,6 +398,28 @@ export function BroadcastSchedulePlanner({
     setIsConfirmed(false);
     replaceSlotsForDays(targetDayKeys, () => []);
     maxImpact('soft');
+  }
+
+  function reopenDayStep() {
+    setIsConfirmed(false);
+    setPickedDayKeys(scheduledDayKeys);
+    setActiveDayKey(scheduledDayKeys[0] ?? getBroadcastScheduleDayKey(anchorNow));
+    setSheetStep(null);
+    setSelectedCountChoice(null);
+    maxImpact('light');
+  }
+
+  function reopenTimeStep() {
+    if (scheduledDayKeys.length === 0) {
+      return;
+    }
+
+    setIsConfirmed(false);
+    setPickedDayKeys(scheduledDayKeys);
+    setActiveDayKey(scheduledDayKeys[0] ?? getBroadcastScheduleDayKey(anchorNow));
+    setApplyToAllPickedDays(scheduledDayKeys.length > 1);
+    setSheetStep('time');
+    maxImpact('medium');
   }
 
   function openTimeStep(choice: CountChoiceId) {
@@ -490,6 +531,13 @@ export function BroadcastSchedulePlanner({
     openTimeStep(choice);
   }
 
+  function getPastTargetDayCount(minutes: number): number {
+    return targetDayKeys.filter((dayKey) => {
+      const slotIso = buildBroadcastScheduleSlotIso(dayKey, minutes);
+      return new Date(slotIso).getTime() < minimumTime;
+    }).length;
+  }
+
   const monthCells = getMonthCells(visibleMonthKey);
   const activeDayOccupiedCount = occupiedSlots.filter(
     (slot) => getBroadcastScheduleDayKey(slot) === activeDayKey && !selectedSet.has(slot),
@@ -500,9 +548,13 @@ export function BroadcastSchedulePlanner({
       <section className={cn('broadcast-planner', disabled && 'is-disabled')}>
         <div className="broadcast-planner__topline">
           <div className="broadcast-planner__topline-copy">
-            <strong>Шаг 1. Выберите дни публикации</strong>
+            <strong>
+              {isReviewStep ? 'Шаг 4. Проверьте расписание' : 'Шаг 1. Выберите дни публикации'}
+            </strong>
             <small>
-              Сначала отметьте даты. Следующие шаги с количеством и временем откроются отдельно.
+              {isReviewStep
+                ? 'Проверьте итог. В боте останется только финальное подтверждение.'
+                : 'Сначала отметьте даты. Следующие шаги с количеством и временем откроются отдельно.'}
             </small>
           </div>
         </div>
@@ -635,48 +687,124 @@ export function BroadcastSchedulePlanner({
             </div>
           ) : null}
 
-          <div className="broadcast-planner__selection-bar">
-            <div className="broadcast-planner__selection-copy">
-              <strong>
-                {pickedDayKeys.length > 0
-                  ? `Выбрано: ${pickedDayLabel}`
-                  : normalizedValue.length > 0
-                    ? 'Расписание готово'
-                    : 'Выберите хотя бы один день'}
-              </strong>
-              <small>
-                {pickedDayKeys.length > 0
-                  ? 'Когда даты выбраны, переходите к следующему шагу.'
-                  : normalizedValue.length > 0
-                    ? 'Чтобы изменить план или добавить ещё дни, отметьте нужные даты в календаре.'
-                    : 'Повторный тап по дате снимает выбор.'}
-              </small>
-            </div>
-
-            {pickedDayKeys.length > 0 ? (
-              <div className="broadcast-planner__selection-actions">
-                <button
-                  type="button"
-                  className="broadcast-planner__selection-reset"
-                  onClick={clearPickedSelection}
-                  disabled={disabled}
-                >
-                  Сбросить
-                </button>
-                <button
-                  type="button"
-                  className="broadcast-planner__selection-open"
-                  onClick={openCountStep}
-                  disabled={disabled || pickedDayKeys.length === 0}
-                >
-                  Далее
-                </button>
+          {!isReviewStep ? (
+            <div className="broadcast-planner__selection-bar">
+              <div className="broadcast-planner__selection-copy">
+                <strong>
+                  {pickedDayKeys.length > 0
+                    ? `Выбрано ${pickedDayLabel}: ${pickedDaySummary}`
+                    : normalizedValue.length > 0
+                      ? 'Расписание готово'
+                      : 'Выберите хотя бы один день'}
+                </strong>
+                <small>
+                  {pickedDayKeys.length > 0
+                    ? 'Когда даты выбраны, переходите к следующему шагу.'
+                    : normalizedValue.length > 0
+                      ? 'Чтобы изменить план, снова отметьте нужные даты в календаре.'
+                      : 'Повторный тап по дате снимает выбор.'}
+                </small>
               </div>
-            ) : null}
-          </div>
+
+              {pickedDayKeys.length > 0 ? (
+                <div className="broadcast-planner__selection-actions">
+                  <button
+                    type="button"
+                    className="broadcast-planner__selection-reset"
+                    onClick={clearPickedSelection}
+                    disabled={disabled}
+                  >
+                    Сбросить
+                  </button>
+                  <button
+                    type="button"
+                    className="broadcast-planner__selection-open"
+                    onClick={openCountStep}
+                    disabled={disabled || pickedDayKeys.length === 0}
+                  >
+                    Выбрать количество
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
-        {normalizedValue.length > 0 ? (
+        {isReviewStep ? (
+          <div className="broadcast-planner__review-card">
+            <div className="broadcast-planner__review-head">
+              <div>
+                <strong>Шаг 4. Проверьте расписание</strong>
+                <small>
+                  {futureSlotCount > 0
+                    ? 'Проверьте итог и передавайте рассылку в бота.'
+                    : 'Новых отправок не осталось. Добавьте хотя бы одно будущее время.'}
+                </small>
+              </div>
+            </div>
+
+            <div className="broadcast-planner__review-stats">
+              <div className="broadcast-planner__review-stat">
+                <small>Дней</small>
+                <strong>{selectedDayCount}</strong>
+              </div>
+              <div className="broadcast-planner__review-stat">
+                <small>Уже засчитаем</small>
+                <strong>{pastSlotCount}</strong>
+              </div>
+              <div className="broadcast-planner__review-stat">
+                <small>Ещё отправим</small>
+                <strong>{futureSlotCount}</strong>
+              </div>
+            </div>
+
+            <div className="broadcast-planner__review-summary">
+              <span>Дни</span>
+              <strong>{scheduledDaySummary}</strong>
+            </div>
+
+            <div className="broadcast-planner__review-actions">
+              <button
+                type="button"
+                className="broadcast-planner__review-link"
+                onClick={reopenDayStep}
+                disabled={disabled}
+              >
+                Изменить дни
+              </button>
+              <button
+                type="button"
+                className="broadcast-planner__review-link"
+                onClick={reopenTimeStep}
+                disabled={disabled}
+              >
+                Изменить время
+              </button>
+            </div>
+
+            <div className="broadcast-planner__agenda-list">
+              {normalizedValue.map((slot) => {
+                const isPastSlot = new Date(slot).getTime() < minimumTime;
+                return (
+                  <div key={slot} className="broadcast-planner__agenda-row">
+                    <div className="broadcast-planner__agenda-main">
+                      <strong>{formatBroadcastScheduleSlot(slot)}</strong>
+                      <span>{formatBroadcastScheduleDay(getBroadcastScheduleDayKey(slot))}</span>
+                    </div>
+                    <span
+                      className={cn(
+                        'broadcast-planner__agenda-badge',
+                        isPastSlot && 'is-past',
+                      )}
+                    >
+                      {isPastSlot ? 'Уже засчитано' : 'Отправим'}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ) : normalizedValue.length > 0 ? (
           <div className="broadcast-planner__agenda">
             <div className="broadcast-planner__agenda-head">
               <strong>План публикаций</strong>
@@ -723,7 +851,8 @@ export function BroadcastSchedulePlanner({
                             Шаг 2. Сколько раз отправлять?
                           </strong>
                           <small>
-                            {pickedDayLabel} выбрано. На следующем шаге зададите точное время.
+                            Для {pickedDayLabel} выберите частоту. После выбора сразу откроется
+                            настройка времени.
                           </small>
                         </div>
 
@@ -766,40 +895,46 @@ export function BroadcastSchedulePlanner({
                         ))}
                       </div>
 
-                      {pickedDayKeys.length > 1 ? (
-                        <div className="broadcast-planner__sheet-note">
-                          Количество отправок применится ко всем выбранным дням. Время потом можно
-                          оставить одинаковым или поправить по каждому дню отдельно.
-                        </div>
-                      ) : null}
+                      <div className="broadcast-planner__review-summary">
+                        <span>Дни</span>
+                        <strong>{pickedDaySummary}</strong>
+                      </div>
 
-                      <div className="broadcast-planner__time-grid">
+                      <div className="broadcast-planner__sheet-note">
+                        {pickedDayKeys.length > 1
+                          ? 'Количество отправок применится ко всем выбранным дням. На следующем шаге можно оставить одинаковое время или настроить дни отдельно.'
+                          : 'Выберите быстрый пресет или перейдите к ручной настройке времени.'}
+                      </div>
+
+                      <div className="broadcast-planner__count-grid">
                         {SLOT_PRESETS.slice(0, 3).map((preset) => (
                           <button
                             key={preset.id}
                             type="button"
                             className={cn(
-                              'broadcast-planner__time-chip',
+                              'broadcast-planner__count-card',
                               selectedCountChoice === preset.id && 'is-selected',
                             )}
                             onClick={() => applyCountChoice(preset.id)}
                             disabled={disabled}
                           >
-                            {preset.label}
+                            <strong>{preset.label}</strong>
+                            <small>Перейти к выбору времени</small>
                           </button>
                         ))}
-                        <button
-                          type="button"
-                          className={cn(
-                            'broadcast-planner__time-chip',
-                            selectedCountChoice === CUSTOM_COUNT_CHOICE_ID && 'is-selected',
-                          )}
-                          onClick={() => applyCountChoice(CUSTOM_COUNT_CHOICE_ID)}
-                          disabled={disabled}
-                        >
-                          Вручную
-                        </button>
                       </div>
+
+                      <button
+                        type="button"
+                        className={cn(
+                          'broadcast-planner__manual-choice',
+                          selectedCountChoice === CUSTOM_COUNT_CHOICE_ID && 'is-selected',
+                        )}
+                        onClick={() => applyCountChoice(CUSTOM_COUNT_CHOICE_ID)}
+                        disabled={disabled}
+                      >
+                        Задать вручную
+                      </button>
                     </>
                   ) : (
                     <>
@@ -808,7 +943,7 @@ export function BroadcastSchedulePlanner({
                           <strong id="broadcast-planner-sheet-title">Шаг 3. Выберите время</strong>
                           <small>
                             {selectedCountChoice
-                              ? `Основа: ${formatCountChoiceLabel(selectedCountChoice)}. Можно точно поправить часы.`
+                              ? `Основа: ${formatCountChoiceLabel(selectedCountChoice)}. Можно оставить её или точно поправить часы.`
                               : 'Выберите нужные слоты вручную.'}
                           </small>
                         </div>
@@ -824,26 +959,6 @@ export function BroadcastSchedulePlanner({
                             disabled={disabled}
                           >
                             Назад
-                          </button>
-                          <button
-                            type="button"
-                            className="broadcast-planner__clear-button"
-                            onClick={clearTargetDays}
-                            disabled={disabled}
-                          >
-                            {applyToAllPickedDays && pickedDayKeys.length > 1
-                              ? 'Очистить выбранные'
-                              : 'Очистить день'}
-                          </button>
-                          <button
-                            type="button"
-                            className="broadcast-planner__clear-button"
-                            onClick={() => {
-                              finishPickedSelection();
-                              maxImpact('soft');
-                            }}
-                          >
-                            Готово
                           </button>
                         </div>
                       </div>
@@ -882,7 +997,7 @@ export function BroadcastSchedulePlanner({
                               )}
                               onClick={() => setApplyToAllPickedDays(false)}
                             >
-                              Один день
+                              Настроить по дням
                             </button>
                             <button
                               type="button"
@@ -892,7 +1007,7 @@ export function BroadcastSchedulePlanner({
                               )}
                               onClick={() => setApplyToAllPickedDays(true)}
                             >
-                              Все выбранные
+                              Одинаково для всех
                             </button>
                           </div>
                         </>
@@ -915,6 +1030,26 @@ export function BroadcastSchedulePlanner({
                         </div>
                       ) : null}
 
+                      <div className="broadcast-planner__sheet-note">
+                        Сегодняшнее прошедшее время тоже можно выбрать. Эти отправки засчитаем как
+                        уже выполненные.
+                      </div>
+
+                      <div className="broadcast-planner__time-summary">
+                        <div className="broadcast-planner__time-summary-item">
+                          <small>Всего</small>
+                          <strong>{normalizedValue.length}</strong>
+                        </div>
+                        <div className="broadcast-planner__time-summary-item">
+                          <small>Уже засчитаем</small>
+                          <strong>{pastSlotCount}</strong>
+                        </div>
+                        <div className="broadcast-planner__time-summary-item">
+                          <small>Ещё отправим</small>
+                          <strong>{futureSlotCount}</strong>
+                        </div>
+                      </div>
+
                       {SLOT_GROUPS.map((group) => (
                         <div key={group.label} className="broadcast-planner__time-group">
                           <div className="broadcast-planner__time-group-head">
@@ -929,6 +1064,8 @@ export function BroadcastSchedulePlanner({
                               const isMixed =
                                 selectedCountForTargets > 0 &&
                                 selectedCountForTargets < targetDayKeys.length;
+                              const pastTargetCount = getPastTargetDayCount(minutes);
+                              const hasPastToday = pastTargetCount > 0;
                               const hasConflict = targetDayKeys.some(
                                 (dayKey) =>
                                   isSlotUnavailable(dayKey, minutes) &&
@@ -943,18 +1080,52 @@ export function BroadcastSchedulePlanner({
                                     'broadcast-planner__time-chip',
                                     isSelected && 'is-selected',
                                     isMixed && 'is-mixed',
+                                    hasPastToday && 'is-past',
                                     hasConflict && !isSelected && !isMixed && 'is-disabled',
                                   )}
                                   onClick={() => toggleSlot(minutes)}
                                   disabled={disabled || (hasConflict && !isSelected && !isMixed)}
                                 >
-                                  {formatMinuteLabel(minutes)}
+                                  <strong>{formatMinuteLabel(minutes)}</strong>
+                                  {hasPastToday ? (
+                                    <small>
+                                      {isSelected
+                                        ? 'засчитаем'
+                                        : pastTargetCount === targetDayKeys.length
+                                          ? 'уже прошло'
+                                          : 'часть прошла'}
+                                    </small>
+                                  ) : null}
                                 </button>
                               );
                             })}
                           </div>
                         </div>
                       ))}
+
+                      <div className="broadcast-planner__sheet-footer">
+                        <button
+                          type="button"
+                          className="broadcast-planner__review-link"
+                          onClick={clearTargetDays}
+                          disabled={disabled}
+                        >
+                          {applyToAllPickedDays && pickedDayKeys.length > 1
+                            ? 'Очистить выбранные'
+                            : 'Очистить день'}
+                        </button>
+                        <button
+                          type="button"
+                          className="broadcast-planner__sheet-submit"
+                          onClick={() => {
+                            finishPickedSelection();
+                            maxImpact('soft');
+                          }}
+                          disabled={disabled}
+                        >
+                          Сохранить время
+                        </button>
+                      </div>
                     </>
                   )}
                 </div>

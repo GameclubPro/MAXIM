@@ -1185,6 +1185,7 @@ const EMPTY_BROADCAST_PLANNER_STATE: BroadcastSchedulePlannerSelectionState = {
   pickedDayCount: 0,
   selectedDayCount: 0,
   slotCount: 0,
+  futureSlotCount: 0,
   isDaySheetOpen: false,
   isConfirmed: false,
 };
@@ -2574,6 +2575,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     if (scheduledSlots.length === 0) {
       setMailingScheduleError('Добавьте хотя бы один слот публикации.');
       hasError = true;
+    } else if (mailingPlannerState.futureSlotCount === 0) {
+      setMailingScheduleError('Добавьте хотя бы один будущий слот публикации.');
+      hasError = true;
     } else {
       setMailingScheduleError('');
     }
@@ -2952,35 +2956,44 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingPlannerPending =
     mailingPlannerState.pickedDayCount > 0 || mailingPlannerState.isDaySheetOpen;
   const mailingScheduleReady = mailingScheduledSlots.length > 0 && !mailingPlannerPending;
+  const mailingHasFutureSlots = mailingPlannerState.futureSlotCount > 0;
   const showMailingPrimaryAction =
     isMailingBusy ||
-    (mailingScheduleReady && mailingButtonDraftValid && mailingPlannerState.isConfirmed);
+    (mailingScheduleReady &&
+      mailingButtonDraftValid &&
+      mailingPlannerState.isConfirmed &&
+      mailingHasFutureSlots);
+  const showMailingInlineReset =
+    editingManagedBroadcast !== null ||
+    mailingScheduledSlots.length > 0 ||
+    mailingText.trim().length > 0 ||
+    mailingImageEnabled ||
+    mailingButtonEnabled;
   const mailingSendDisabled = isMailingBusy;
   const mailingDrilldownFooter = (
-    <div className="mailing-action-bar">
-      <button
-        type="button"
-        className="mailing-action-bar__link"
-        onClick={editingManagedBroadcast ? handleCancelMailingEdit : resetMailingComposer}
-        disabled={isMailingBusy}
-      >
-        {editingManagedBroadcast ? 'Отменить редактирование' : 'Очистить рассылку'}
-      </button>
-      <button
-        type="button"
-        className="button button--accent mailing-action-bar__send"
-        onClick={handleSendBroadcast}
-        disabled={mailingSendDisabled}
-      >
-        {isUpdatingManagedBroadcast
-          ? 'Сохраняем...'
+    <>
+      <p className="settings-drilldown__footer-note">
+        {editingManagedBroadcast
+          ? 'Сохраним обновлённый календарь и CTA прямо здесь.'
+          : 'В боте останется только финальное подтверждение отправки.'}
+      </p>
+      <div className="settings-drilldown__footer-actions is-single-action">
+        <button
+          type="button"
+          className="button button--accent"
+          onClick={handleSendBroadcast}
+          disabled={mailingSendDisabled}
+        >
+          {isUpdatingManagedBroadcast
+            ? 'Сохраняем...'
             : handoffBroadcastMutation.isPending
-              ? 'Открываем бота...'
+              ? 'Передаём в бота...'
               : editingManagedBroadcast
                 ? 'Сохранить рассылку'
-                : 'Продолжить в боте'}
-      </button>
-    </div>
+                : 'Передать в бота'}
+        </button>
+      </div>
+    </>
   );
 
   useHintPopoverAutoPosition(openHintKey !== null);
@@ -7396,6 +7409,25 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               ? `Уже отправлено: ${editingManagedBroadcast.sentCount} из ${editingManagedBroadcast.cycleCount}.`
                               : 'Контент уже сохранён. Здесь вы меняете календарь, охват и CTA.'}
                           </small>
+                        </div>
+                      ) : null}
+
+                      {showMailingInlineReset ? (
+                        <div className="mailing-inline-tools">
+                          <button
+                            type="button"
+                            className="mailing-inline-tools__link"
+                            onClick={
+                              editingManagedBroadcast
+                                ? handleCancelMailingEdit
+                                : resetMailingComposer
+                            }
+                            disabled={isMailingBusy}
+                          >
+                            {editingManagedBroadcast
+                              ? 'Отменить редактирование'
+                              : 'Очистить рассылку'}
+                          </button>
                         </div>
                       ) : null}
 
