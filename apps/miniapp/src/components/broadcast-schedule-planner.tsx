@@ -30,6 +30,7 @@ export type BroadcastSchedulePlannerSelectionState = {
   selectedDayCount: number;
   slotCount: number;
   isDaySheetOpen: boolean;
+  isConfirmed: boolean;
 };
 
 type BroadcastScheduleSheetStep = 'count' | 'time';
@@ -199,6 +200,7 @@ export function BroadcastSchedulePlanner({
   const [sheetStep, setSheetStep] = useState<BroadcastScheduleSheetStep | null>(null);
   const [applyToAllPickedDays, setApplyToAllPickedDays] = useState(false);
   const [selectedCountChoice, setSelectedCountChoice] = useState<CountChoiceId>(null);
+  const [isConfirmed, setIsConfirmed] = useState(false);
 
   const windowStart = startOfDay(anchorNow);
   const windowEnd = endOfMonth(addDays(anchorNow, BROADCAST_SCHEDULE_MAX_DAYS - 1));
@@ -254,8 +256,19 @@ export function BroadcastSchedulePlanner({
   }, [pickedDayKeys]);
 
   useEffect(() => {
-    finishPickedSelection();
+    setPickedDayKeys(scheduledDayKeys);
+    setActiveDayKey(scheduledDayKeys[0] ?? getBroadcastScheduleDayKey(anchorNow));
+    setSheetStep(null);
+    setApplyToAllPickedDays(false);
+    setSelectedCountChoice(null);
+    setIsConfirmed(false);
   }, [resetKey]);
+
+  useEffect(() => {
+    if (normalizedValue.length === 0) {
+      setIsConfirmed(false);
+    }
+  }, [normalizedValue.length]);
 
   useEffect(() => {
     emitSelectionStateChange({
@@ -263,9 +276,11 @@ export function BroadcastSchedulePlanner({
       selectedDayCount,
       slotCount: normalizedValue.length,
       isDaySheetOpen,
+      isConfirmed,
     });
   }, [
     emitSelectionStateChange,
+    isConfirmed,
     isDaySheetOpen,
     normalizedValue.length,
     pickedDayKeys.length,
@@ -308,6 +323,7 @@ export function BroadcastSchedulePlanner({
       return;
     }
 
+    setIsConfirmed(false);
     setSelectedCountChoice(null);
     setPickedDayKeys((current) => {
       const exists = current.includes(dayKey);
@@ -332,6 +348,7 @@ export function BroadcastSchedulePlanner({
       return;
     }
 
+    setIsConfirmed(false);
     if (!pickedDayKeys.includes(activeDayKey)) {
       setActiveDayKey(pickedDayKeys[0] ?? activeDayKey);
     }
@@ -344,6 +361,7 @@ export function BroadcastSchedulePlanner({
     setApplyToAllPickedDays(false);
     setSheetStep(null);
     setSelectedCountChoice(null);
+    setIsConfirmed(normalizedValue.length > 0);
   }
 
   function closeDaySheet() {
@@ -358,6 +376,7 @@ export function BroadcastSchedulePlanner({
   }
 
   function clearTargetDays() {
+    setIsConfirmed(false);
     replaceSlotsForDays(targetDayKeys, () => []);
     maxImpact('soft');
   }
@@ -379,6 +398,7 @@ export function BroadcastSchedulePlanner({
   function returnToCountStep() {
     setApplyToAllPickedDays(false);
     setSheetStep('count');
+    setIsConfirmed(false);
     maxImpact('light');
   }
 
@@ -455,6 +475,7 @@ export function BroadcastSchedulePlanner({
   }
 
   function applyCountChoice(choice: CountChoiceId) {
+    setIsConfirmed(false);
     if (choice === CUSTOM_COUNT_CHOICE_ID) {
       openTimeStep(choice);
       return;

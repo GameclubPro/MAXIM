@@ -75,6 +75,7 @@ const EMPTY_BROADCAST_PLANNER_STATE: BroadcastSchedulePlannerSelectionState = {
   selectedDayCount: 0,
   slotCount: 0,
   isDaySheetOpen: false,
+  isConfirmed: false,
 };
 
 function buildBroadcastScheduleIso(days: number, time: string): string | null {
@@ -925,7 +926,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     broadcastPlannerState.pickedDayCount > 0 || broadcastPlannerState.isDaySheetOpen;
   const broadcastScheduleReady = broadcastScheduledSlots.length > 0 && !broadcastPlannerPending;
   const showBroadcastPrimaryAction =
-    handoffBroadcastMutation.isPending || (broadcastScheduleReady && broadcastButtonDraftValid);
+    handoffBroadcastMutation.isPending ||
+    (broadcastScheduleReady && broadcastButtonDraftValid && broadcastPlannerState.isConfirmed);
   const broadcastHeaderSummary = [
     broadcastBotHasContent ? 'контент уже в боте' : 'контент в боте',
     broadcastHasButton ? 'CTA' : null,

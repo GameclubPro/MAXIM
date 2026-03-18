@@ -1186,6 +1186,7 @@ const EMPTY_BROADCAST_PLANNER_STATE: BroadcastSchedulePlannerSelectionState = {
   selectedDayCount: 0,
   slotCount: 0,
   isDaySheetOpen: false,
+  isConfirmed: false,
 };
 
 function WarnMessageEditor({
@@ -2955,7 +2956,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingPlannerState.pickedDayCount > 0 || mailingPlannerState.isDaySheetOpen;
   const mailingScheduleReady = mailingScheduledSlots.length > 0 && !mailingPlannerPending;
   const showMailingPrimaryAction =
-    isMailingBusy || (mailingScheduleReady && mailingButtonDraftValid);
+    isMailingBusy ||
+    (mailingScheduleReady && mailingButtonDraftValid && mailingPlannerState.isConfirmed);
   const mailingSendDisabled = isMailingBusy;
   const mailingDrilldownFooter = (
     <div className="mailing-action-bar">
