@@ -2928,20 +2928,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         ? 'Все'
         : 'Бот';
   const mailingSendDisabled = isMailingBusy;
-  const mailingHeroTitle = editingManagedBroadcast
-    ? 'Исправьте календарь и CTA, контент уже лежит в боте'
-    : 'Сначала выберите даты, потом отправьте контент в боте';
-  const mailingHeroCopy = editingManagedBroadcast
-    ? 'Слоты по 30 минут блокируются сразу. После сохранения рассылка продолжит идти по обновлённому плану без пересечений.'
-    : 'Слоты выбираете здесь, текст и фото отправите в личке бота. Пересечения блокируются автоматически.';
-  const mailingHeroMeta = [
-    mailingTargetLabel,
-    mailingContentLabel,
-    mailingScheduledSlots.length > 0
-      ? `${mailingDayCount} дн. · ${mailingScheduledSlots.length} слота`
-      : 'Слоты ещё не выбраны',
-    managedBroadcasts.length > 0 ? `${managedBroadcasts.length} активн.` : 'Новая рассылка',
-  ];
   const mailingDrilldownFooter = (
     <div className="mailing-action-bar">
       <button
@@ -7369,19 +7355,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 >
                   {expandedSections.mailing ? (
                     <div className="settings-section__collapse-inner settings-mailing">
-                      <div className="broadcast-composer-hero">
-                        <small className="broadcast-composer-hero__eyebrow">
-                          Календарь + бот
-                        </small>
-                        <h4 className="broadcast-composer-hero__title">{mailingHeroTitle}</h4>
-                        <p className="broadcast-composer-hero__copy">{mailingHeroCopy}</p>
-                        <div className="broadcast-composer-hero__meta">
-                          {mailingHeroMeta.map((item) => (
-                            <span key={item}>{item}</span>
-                          ))}
-                        </div>
-                      </div>
-
                       {editingManagedBroadcast ? (
                         <div className="managed-broadcast-editor-note">
                           <strong>Редактирование текущей рассылки</strong>

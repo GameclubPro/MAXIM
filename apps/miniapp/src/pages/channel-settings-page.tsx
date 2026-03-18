@@ -923,17 +923,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const postSuggestionsCardStatus = draft.postSuggestionsEnabled ? 'Авто' : 'Ручн';
   const broadcastCardStatus =
     broadcastScheduledSlots.length > 0 ? 'Календ' : broadcastHasButton ? 'CTA' : 'Бот';
-  const broadcastHeroTitle = 'Сначала выберите даты, потом отправьте контент в боте';
-  const broadcastHeroCopy =
-    'Слоты выбираете здесь, текст и фото отправите в личке бота. Пересечения блокируются автоматически.';
-  const broadcastHeroMeta = [
-    broadcastBotHasContent ? 'контент уже в боте' : 'контент в боте',
-    broadcastHasButton ? 'CTA включён' : 'CTA не нужен',
-    broadcastScheduledSlots.length > 0
-      ? `${countBroadcastScheduleDays(broadcastScheduledSlots)} дн. · ${broadcastScheduledSlots.length} слота`
-      : 'Слоты ещё не выбраны',
-    managedBroadcasts.length > 0 ? `${managedBroadcasts.length} активн.` : 'Новая рассылка',
-  ];
   const broadcastDrilldownFooter = (
     <div className="mailing-action-bar">
       <button
@@ -1355,17 +1344,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             {expandedSections.broadcast ? (
               <div className="settings-section__collapse-inner">
                 <div className="channel-broadcast-studio">
-                  <div className="broadcast-composer-hero">
-                    <small className="broadcast-composer-hero__eyebrow">Календарь + бот</small>
-                    <h4 className="broadcast-composer-hero__title">{broadcastHeroTitle}</h4>
-                    <p className="broadcast-composer-hero__copy">{broadcastHeroCopy}</p>
-                    <div className="broadcast-composer-hero__meta">
-                      {broadcastHeroMeta.map((item) => (
-                        <span key={item}>{item}</span>
-                      ))}
-                    </div>
-                  </div>
-
                   <BroadcastSchedulePlanner
                     value={broadcastScheduledSlots}
                     occupiedSlots={managedBroadcasts.flatMap((broadcast) => broadcast.scheduledSlots)}

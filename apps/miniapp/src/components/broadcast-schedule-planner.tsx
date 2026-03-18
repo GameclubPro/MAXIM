@@ -263,27 +263,30 @@ export function BroadcastSchedulePlanner({
 
   return (
     <section className={cn('broadcast-planner', disabled && 'is-disabled')}>
-      <div className="broadcast-planner__hero">
-        <div>
-          <small className="broadcast-planner__eyebrow">Календарь публикаций</small>
-          <h4 className="broadcast-planner__title">Месяц вперёд с шагом 30 минут</h4>
-          <div className="broadcast-planner__hero-metrics">
-            <span>{selectedDayCount} дн.</span>
-            <span>{normalizedValue.length} публикац.</span>
-            <span>
-              {activeDaySlots.length > 0
-                ? `${formatBroadcastScheduleDay(activeDayKey)} · ${activeDaySlots.length}`
-                : 'Выберите день'}
-            </span>
-          </div>
-          <p className="broadcast-planner__summary">
-            Занятые окна сразу блокируются. Контент отправите в боте уже с готовым планом.
-            {normalizedValue.length > 0 ? ` ${formatBroadcastScheduleSummary(normalizedValue)}` : ''}
-          </p>
+      <div className="broadcast-planner__topline">
+        <div className="broadcast-planner__topline-copy">
+          <strong>Сначала день, потом время</strong>
+          <small>Тап по дню сразу переводит к слотам ниже.</small>
+        </div>
+        <div className="broadcast-planner__topline-badges">
+          <span>{selectedDayCount} дн.</span>
+          <span>{normalizedValue.length} слота</span>
+          {activeDaySlots.length > 0 ? (
+            <span>{`${formatBroadcastScheduleDay(activeDayKey)} · ${activeDaySlots.length}`}</span>
+          ) : null}
         </div>
       </div>
 
       <div className="broadcast-planner__calendar-card">
+        <div className="broadcast-planner__calendar-copy">
+          <strong>Календарь публикаций</strong>
+          <small>
+            {normalizedValue.length > 0
+              ? formatBroadcastScheduleSummary(normalizedValue)
+              : 'Свободные 30-минутные окна можно отметить в любом дне месяца.'}
+          </small>
+        </div>
+
         <div className="broadcast-planner__calendar-head">
           <button
             type="button"

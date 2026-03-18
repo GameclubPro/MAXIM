@@ -4779,80 +4779,6 @@
   color: rgba(18, 43, 63, 0.88);
 }
 
-.broadcast-composer-hero {
-  position: relative;
-  overflow: hidden;
-  display: grid;
-  gap: 8px;
-  border-radius: 20px;
-  border: 1px solid rgba(11, 132, 255, 0.18);
-  background:
-    radial-gradient(circle at top right, rgba(255, 209, 102, 0.22), transparent 38%),
-    linear-gradient(158deg, rgba(255, 255, 255, 0.96), rgba(227, 241, 255, 0.84)),
-    rgba(255, 255, 255, 0.86);
-  padding: 12px;
-  box-shadow: 0 16px 34px rgba(19, 54, 83, 0.08);
-}
-
-.broadcast-composer-hero::after {
-  content: '';
-  position: absolute;
-  right: -30px;
-  top: -30px;
-  width: 124px;
-  height: 124px;
-  border-radius: 999px;
-  background: rgba(11, 132, 255, 0.08);
-}
-
-.broadcast-composer-hero > * {
-  position: relative;
-  z-index: 1;
-}
-
-.broadcast-composer-hero__eyebrow {
-  display: block;
-  font-size: 0.7rem;
-  font-weight: 800;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: rgba(7, 95, 170, 0.86);
-}
-
-.broadcast-composer-hero__title {
-  margin: 0;
-  font-size: 1rem;
-  line-height: 1.25;
-  color: var(--text-primary);
-}
-
-.broadcast-composer-hero__copy {
-  margin: 0;
-  font-size: 0.78rem;
-  line-height: 1.42;
-  color: var(--text-secondary);
-}
-
-.broadcast-composer-hero__meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.broadcast-composer-hero__meta span {
-  display: inline-flex;
-  align-items: center;
-  min-height: 28px;
-  border-radius: 999px;
-  border: 1px solid rgba(11, 132, 255, 0.16);
-  background: rgba(255, 255, 255, 0.76);
-  padding: 0 9px;
-  font-size: 0.7rem;
-  font-weight: 700;
-  line-height: 1.2;
-  color: rgba(7, 95, 170, 0.92);
-}
-
 .mailing-target-card {
   border-radius: 14px;
   border: 1px solid rgba(62, 96, 127, 0.16);
@@ -5096,86 +5022,52 @@
 
 .broadcast-planner {
   display: grid;
-  gap: 14px;
+  gap: 12px;
 }
 
 .broadcast-planner.is-disabled {
   opacity: 0.72;
 }
 
-.broadcast-planner__hero {
-  position: relative;
-  overflow: hidden;
-  border-radius: 22px;
-  border: 1px solid rgba(14, 91, 162, 0.2);
-  padding: 14px;
+.broadcast-planner__topline {
   display: grid;
-  gap: 10px;
-  background:
-    radial-gradient(circle at top right, rgba(255, 210, 108, 0.28), transparent 36%),
-    radial-gradient(circle at bottom left, rgba(126, 195, 255, 0.24), transparent 32%),
-    linear-gradient(145deg, rgba(18, 85, 145, 0.98), rgba(33, 128, 199, 0.94));
-  color: rgba(255, 255, 255, 0.96);
-  box-shadow: 0 20px 38px rgba(18, 63, 97, 0.18);
+  gap: 8px;
 }
 
-.broadcast-planner__hero::after {
-  content: '';
-  position: absolute;
-  left: -22px;
-  bottom: -42px;
-  width: 136px;
-  height: 136px;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.08);
+.broadcast-planner__topline-copy {
+  display: grid;
+  gap: 4px;
 }
 
-.broadcast-planner__hero > * {
-  position: relative;
-  z-index: 1;
+.broadcast-planner__topline-copy strong {
+  font-size: 0.94rem;
+  line-height: 1.2;
+  color: var(--text-primary);
 }
 
-.broadcast-planner__eyebrow {
-  display: block;
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: rgba(255, 255, 255, 0.76);
+.broadcast-planner__topline-copy small {
+  font-size: 0.76rem;
+  line-height: 1.4;
+  color: var(--text-secondary);
 }
 
-.broadcast-planner__title {
-  margin: 6px 0 0;
-  font-size: 1rem;
-  font-weight: 800;
-  line-height: 1.15;
-}
-
-.broadcast-planner__hero-metrics {
+.broadcast-planner__topline-badges {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 8px;
 }
 
-.broadcast-planner__hero-metrics span {
+.broadcast-planner__topline-badges span {
   display: inline-flex;
   align-items: center;
   min-height: 28px;
   border-radius: 999px;
   padding: 0 9px;
-  background: rgba(255, 255, 255, 0.14);
-  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(11, 132, 255, 0.08);
+  border: 1px solid rgba(11, 132, 255, 0.14);
   font-size: 0.7rem;
   font-weight: 700;
-  color: rgba(255, 255, 255, 0.94);
-  backdrop-filter: blur(10px);
-}
-
-.broadcast-planner__summary {
-  margin: 8px 0 0;
-  font-size: 0.78rem;
-  line-height: 1.4;
-  color: rgba(255, 255, 255, 0.88);
+  color: #0c5e99;
 }
 
 .broadcast-planner__calendar-card,
@@ -5193,6 +5085,23 @@
   display: grid;
   gap: 14px;
   box-shadow: 0 14px 30px rgba(23, 52, 78, 0.08);
+}
+
+.broadcast-planner__calendar-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.broadcast-planner__calendar-copy strong {
+  font-size: 0.9rem;
+  line-height: 1.2;
+  color: var(--text-primary);
+}
+
+.broadcast-planner__calendar-copy small {
+  font-size: 0.76rem;
+  line-height: 1.42;
+  color: var(--text-secondary);
 }
 
 .broadcast-planner__calendar-head {
