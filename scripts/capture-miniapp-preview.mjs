@@ -242,6 +242,7 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir) {
     await page.screenshot({
       path: path.join(shotDir, `${scenario.name}.png`),
       animations: 'disabled',
+      timeout: 120_000,
       clip: {
         x: Math.max(0, Math.floor(box.x)),
         y: Math.max(0, Math.floor(box.y)),
