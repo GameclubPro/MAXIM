@@ -307,7 +307,7 @@ export function BroadcastSchedulePlanner({
   function isSlotUnavailable(dayKey: string, minutes: number): boolean {
     const slotIso = buildBroadcastScheduleSlotIso(dayKey, minutes);
     if (new Date(slotIso).getTime() < minimumTime) {
-      return true;
+      return false;
     }
 
     return occupiedSet.has(slotIso) && !selectedSet.has(slotIso);

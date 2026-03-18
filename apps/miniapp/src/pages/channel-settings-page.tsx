@@ -1061,9 +1061,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     if (scheduledSlots.length === 0) {
       setBroadcastScheduleError('Добавьте хотя бы один слот публикации.');
       hasError = true;
-    } else if (scheduledSlots.some((slot) => new Date(slot).getTime() <= Date.now() + 30_000)) {
-      setBroadcastScheduleError('Все слоты должны быть минимум через 30 секунд.');
-      hasError = true;
     }
     setBroadcastCycleError('');
 

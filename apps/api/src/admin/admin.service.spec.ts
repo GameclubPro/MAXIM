@@ -3574,6 +3574,149 @@ describe('AdminService.sendChannelBroadcast', () => {
     });
     expect(options.buttons[0][0].url).toContain('https://max.ru/777000_bot?startapp=');
   });
+
+  it('treats past slots from today as already sent for calendar broadcast scheduling', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-18T18:30:00.000Z'));
+
+    const prisma = createPrismaMock();
+    wireManagedBroadcastDeliveryStore(prisma);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.sendBroadcast(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Ночной выпуск',
+        textFormat: 'plain',
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        scheduleMode: 'calendar',
+        scheduleTimezone: 'Europe/Moscow',
+        scheduledSlots: ['2026-03-18T07:00:00.000Z', '2026-03-18T20:00:00.000Z'],
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 2,
+      },
+    );
+
+    expect(prisma.managedBroadcast.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          sentCount: 1,
+          cycleCount: 2,
+          nextSendAt: new Date('2026-03-18T20:00:00.000Z'),
+          status: 'ACTIVE',
+        }),
+      }),
+    );
+    expect(prisma.managedBroadcastDelivery.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: [expect.objectContaining({ occurrenceIndex: 2, targetChatId: 'chat-1' })],
+      }),
+    );
+    expect(prisma.managedBroadcastOccurrence.createMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: [
+          expect.objectContaining({
+            occurrenceIndex: 2,
+            scheduledAt: new Date('2026-03-18T20:00:00.000Z'),
+          }),
+        ],
+      }),
+    );
+    expect(result.scheduledSlots).toEqual(['2026-03-18T20:00:00.000Z']);
+    expect(result.scheduledOccurrences).toBe(1);
+  });
+
+  it('completes a calendar broadcast immediately when all selected slots for today are already past', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-18T18:30:00.000Z'));
+
+    const prisma = createPrismaMock();
+    wireManagedBroadcastDeliveryStore(prisma);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.sendBroadcast(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Поздняя рассылка',
+        textFormat: 'plain',
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        scheduleMode: 'calendar',
+        scheduleTimezone: 'Europe/Moscow',
+        scheduledSlots: ['2026-03-18T07:00:00.000Z', '2026-03-18T15:00:00.000Z'],
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 2,
+      },
+    );
+
+    expect(prisma.managedBroadcast.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          sentCount: 2,
+          cycleCount: 2,
+          nextSendAt: null,
+          status: 'COMPLETED',
+        }),
+      }),
+    );
+    expect(prisma.managedBroadcastOccurrence.createMany).not.toHaveBeenCalled();
+    expect(result.scheduledSlots).toEqual([]);
+    expect(result.nextSendAt).toBeNull();
+    expect(result.scheduledOccurrences).toBe(0);
+  });
 });
 
 describe('AdminService chat rules', () => {

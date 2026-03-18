@@ -2574,9 +2574,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     if (scheduledSlots.length === 0) {
       setMailingScheduleError('Добавьте хотя бы один слот публикации.');
       hasError = true;
-    } else if (scheduledSlots.some((slot) => new Date(slot).getTime() <= Date.now() + 30_000)) {
-      setMailingScheduleError('Все слоты должны быть минимум через 30 секунд.');
-      hasError = true;
     } else {
       setMailingScheduleError('');
     }

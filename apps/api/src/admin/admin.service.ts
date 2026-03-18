@@ -159,6 +159,12 @@ type ManagedBroadcastSchedulePlan = {
   cycleEveryHours: number;
   cycleCount: number;
   sendAt: string | null;
+  sentCount: number;
+};
+
+type ParsedManagedBroadcastCalendarSlots = {
+  upcomingSlots: Date[];
+  sentCount: number;
 };
 
 type BroadcastOccurrenceResult = {
@@ -2931,6 +2937,9 @@ export class AdminService {
       existing.sentCount,
       existing.id,
     );
+    const nextOccurrenceIndex = schedulePlan.sentCount + 1;
+    const isCalendarPlanComplete =
+      schedulePlan.scheduleMode === 'calendar' && schedulePlan.upcomingSlots.length === 0;
 
     await this.prisma.$transaction([
       this.prisma.managedBroadcast.update({
@@ -2956,7 +2965,10 @@ export class AdminService {
           cycleEnabled: schedulePlan.cycleEnabled,
           cycleEveryHours: schedulePlan.cycleEveryHours,
           cycleCount: schedulePlan.cycleCount,
-          status: PrismaManagedBroadcastStatus.ACTIVE,
+          sentCount: schedulePlan.sentCount,
+          status: isCalendarPlanComplete
+            ? PrismaManagedBroadcastStatus.COMPLETED
+            : PrismaManagedBroadcastStatus.ACTIVE,
           lastError: null,
           lockedAt: null,
         },
@@ -2974,22 +2986,26 @@ export class AdminService {
           occurrenceIndex: { gte: currentOccurrence },
         },
       }),
-      this.prisma.managedBroadcastDelivery.createMany({
-        data: this.buildManagedBroadcastDeliveryRows(
-          existing.id,
-          request.targetChatIds,
-          currentOccurrence,
-          schedulePlan.cycleCount,
-        ),
-      }),
-      ...(schedulePlan.scheduleMode === 'calendar'
+      ...(schedulePlan.sentCount < schedulePlan.cycleCount
+        ? [
+            this.prisma.managedBroadcastDelivery.createMany({
+              data: this.buildManagedBroadcastDeliveryRows(
+                existing.id,
+                request.targetChatIds,
+                nextOccurrenceIndex,
+                schedulePlan.cycleCount,
+              ),
+            }),
+          ]
+        : []),
+      ...(schedulePlan.scheduleMode === 'calendar' && schedulePlan.upcomingSlots.length > 0
         ? [
             this.prisma.managedBroadcastOccurrence.createMany({
               data: this.buildManagedBroadcastOccurrenceRows(
                 existing.id,
                 sourceChatId,
                 this.mapManagedEntityTypeToChatEntityType(entityType),
-                currentOccurrence,
+                nextOccurrenceIndex,
                 schedulePlan.upcomingSlots,
               ),
             }),
@@ -3460,7 +3476,9 @@ export class AdminService {
       0,
       null,
     );
-    const firstOccurrenceAt = schedulePlan.nextSendAt ?? new Date();
+    const nextOccurrenceIndex = schedulePlan.sentCount + 1;
+    const isCalendarPlanComplete =
+      schedulePlan.scheduleMode === 'calendar' && schedulePlan.upcomingSlots.length === 0;
 
     const created = await this.prisma.managedBroadcast.create({
       data: {
@@ -3486,27 +3504,33 @@ export class AdminService {
         cycleEnabled: schedulePlan.cycleEnabled,
         cycleEveryHours: schedulePlan.cycleEveryHours,
         cycleCount: schedulePlan.cycleCount,
-        sentCount: 0,
-        status: PrismaManagedBroadcastStatus.ACTIVE,
+        sentCount: schedulePlan.sentCount,
+        status: isCalendarPlanComplete
+          ? PrismaManagedBroadcastStatus.COMPLETED
+          : PrismaManagedBroadcastStatus.ACTIVE,
       },
     });
     await this.prisma.$transaction([
-      this.prisma.managedBroadcastDelivery.createMany({
-        data: this.buildManagedBroadcastDeliveryRows(
-          created.id,
-          request.targetChatIds,
-          1,
-          schedulePlan.cycleCount,
-        ),
-      }),
-      ...(schedulePlan.scheduleMode === 'calendar'
+      ...(schedulePlan.sentCount < schedulePlan.cycleCount
+        ? [
+            this.prisma.managedBroadcastDelivery.createMany({
+              data: this.buildManagedBroadcastDeliveryRows(
+                created.id,
+                request.targetChatIds,
+                nextOccurrenceIndex,
+                schedulePlan.cycleCount,
+              ),
+            }),
+          ]
+        : []),
+      ...(schedulePlan.scheduleMode === 'calendar' && schedulePlan.upcomingSlots.length > 0
         ? [
             this.prisma.managedBroadcastOccurrence.createMany({
               data: this.buildManagedBroadcastOccurrenceRows(
                 created.id,
                 sourceChatId,
                 this.mapManagedEntityTypeToChatEntityType(entityType),
-                1,
+                nextOccurrenceIndex,
                 schedulePlan.upcomingSlots,
               ),
             }),
@@ -3515,11 +3539,16 @@ export class AdminService {
     ]);
 
     let occurrence: BroadcastOccurrenceResult = {
-      status: PrismaManagedBroadcastStatus.ACTIVE,
-      currentOccurrence: 1,
+      status: isCalendarPlanComplete
+        ? PrismaManagedBroadcastStatus.COMPLETED
+        : PrismaManagedBroadcastStatus.ACTIVE,
+      currentOccurrence: Math.min(
+        Math.max(1, schedulePlan.sentCount + 1),
+        Math.max(1, schedulePlan.cycleCount),
+      ),
       sentChatIds: [],
       failedChatIds: [],
-      pendingChatIds: request.targetChatIds,
+      pendingChatIds: isCalendarPlanComplete ? [] : request.targetChatIds,
       canRetry: false,
       firstSendError: null,
       nextSendAt: schedulePlan.nextSendAt,
@@ -3927,12 +3956,14 @@ export class AdminService {
     const scheduleTimezone = payload.scheduleTimezone.trim() || 'Europe/Moscow';
 
     if (scheduleMode === 'calendar') {
-      const upcomingSlots = await this.parseManagedBroadcastCalendarSlots(payload.scheduledSlots, {
+      const calendarPlan = await this.parseManagedBroadcastCalendarSlots(payload.scheduledSlots, {
         sourceChatId,
         sentCount,
         entityType,
         excludeBroadcastId,
+        scheduleTimezone,
       });
+      const upcomingSlots = calendarPlan.upcomingSlots;
 
       return {
         scheduleMode,
@@ -3941,8 +3972,9 @@ export class AdminService {
         nextSendAt: upcomingSlots[0] ?? null,
         cycleEnabled: false,
         cycleEveryHours: 1,
-        cycleCount: sentCount + upcomingSlots.length,
+        cycleCount: calendarPlan.sentCount + upcomingSlots.length,
         sendAt: upcomingSlots[0]?.toISOString() ?? null,
+        sentCount: calendarPlan.sentCount,
       };
     }
 
@@ -3985,6 +4017,7 @@ export class AdminService {
       cycleEveryHours,
       cycleCount,
       sendAt: scheduledAt?.toISOString() ?? null,
+      sentCount,
     };
   }
 
@@ -3995,8 +4028,9 @@ export class AdminService {
       sentCount: number;
       entityType: ChatEntityType;
       excludeBroadcastId: string | null;
+      scheduleTimezone: string;
     },
-  ): Promise<Date[]> {
+  ): Promise<ParsedManagedBroadcastCalendarSlots> {
     const normalized = Array.from(
       new Set(values.map((value) => value.trim()).filter(Boolean)),
     ).sort((a, b) => a.localeCompare(b));
@@ -4004,7 +4038,12 @@ export class AdminService {
       throw new BadRequestException('Добавьте хотя бы один слот публикации.');
     }
 
-    const slots = normalized.map((value) => {
+    const now = new Date();
+    const todayKey = this.getDateKeyInTimeZone(now, options.scheduleTimezone);
+    const upcomingSlots: Date[] = [];
+    let pastTodayCount = 0;
+
+    for (const value of normalized) {
       const parsed = new Date(value);
       if (Number.isNaN(parsed.getTime())) {
         throw new BadRequestException('Некорректный слот публикации.');
@@ -4017,26 +4056,28 @@ export class AdminService {
         throw new BadRequestException('Слоты должны быть кратны 30 минутам.');
       }
 
-      const delayMs = parsed.getTime() - Date.now();
+      const delayMs = parsed.getTime() - now.getTime();
       if (delayMs < BROADCAST_MIN_DELAY_MS) {
-        const message =
-          options.sentCount > 0
-            ? 'Следующую отправку можно поставить минимум через 30 секунд.'
-            : 'Добавьте слоты минимум через 30 секунд от текущего момента.';
-        throw new BadRequestException(message);
+        if (this.getDateKeyInTimeZone(parsed, options.scheduleTimezone) !== todayKey) {
+          throw new BadRequestException(
+            'Прошедшие слоты можно оставлять только в пределах сегодняшнего дня.',
+          );
+        }
+        pastTodayCount += 1;
+        continue;
       }
       if (delayMs > BROADCAST_MAX_DELAY_MS) {
         throw new BadRequestException('Планирование календаря доступно максимум на 31 день.');
       }
-      return parsed;
-    });
+      upcomingSlots.push(parsed);
+    }
 
     const conflicts = await this.prisma.managedBroadcastOccurrence.findMany({
       where: {
         sourceChatId: options.sourceChatId,
         entityType: options.entityType,
         scheduledAt: {
-          in: slots,
+          in: upcomingSlots,
         },
         ...(options.excludeBroadcastId ? { broadcastId: { not: options.excludeBroadcastId } } : {}),
       },
@@ -4055,7 +4096,10 @@ export class AdminService {
       );
     }
 
-    return slots;
+    return {
+      upcomingSlots,
+      sentCount: Math.max(options.sentCount, pastTodayCount),
+    };
   }
 
   private buildLegacyManagedBroadcastUpcomingSlots(
@@ -4193,6 +4237,30 @@ export class AdminService {
       throw new BadRequestException('Максимальный таймер рассылки: 31 день.');
     }
     return scheduledAt;
+  }
+
+  private getDateKeyInTimeZone(value: Date, timeZone: string): string {
+    const baseOptions: Intl.DateTimeFormatOptions = {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    };
+    let formatter: Intl.DateTimeFormat;
+
+    try {
+      formatter = new Intl.DateTimeFormat('en-CA', {
+        ...baseOptions,
+        timeZone,
+      });
+    } catch {
+      formatter = new Intl.DateTimeFormat('en-CA', baseOptions);
+    }
+
+    const parts = formatter.formatToParts(value);
+    const year = parts.find((part) => part.type === 'year')?.value ?? '0000';
+    const month = parts.find((part) => part.type === 'month')?.value ?? '00';
+    const day = parts.find((part) => part.type === 'day')?.value ?? '00';
+    return `${year}-${month}-${day}`;
   }
 
   private toLegacyCycleEveryDays(cycleEveryHours: number): number | undefined {
