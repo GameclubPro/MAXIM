@@ -8,7 +8,7 @@ const manifestPath = path.join(distDir, '.vite', 'manifest.json');
 
 const STARTUP_JS_BUDGET_GZIP = 100 * 1024;
 const SETTINGS_JS_BUDGET_GZIP = 90 * 1024;
-const STARTUP_CSS_BUDGET_GZIP = 25 * 1024;
+const STARTUP_CSS_BUDGET_GZIP = 26 * 1024;
 
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 

@@ -1919,7 +1919,6 @@
   gap: 10px;
   padding: 16px;
   background:
-    radial-gradient(circle at 100% 0%, rgba(149, 196, 255, 0.12), transparent 34%),
     linear-gradient(180deg, rgba(249, 252, 255, 0.99), rgba(243, 248, 253, 0.98)),
     rgba(252, 253, 255, 0.97);
 }
@@ -1986,11 +1985,8 @@
   border-radius: 22px;
   background:
     radial-gradient(circle at 100% 0%, rgba(104, 176, 255, 0.26), transparent 34%),
-    radial-gradient(circle at 0% 100%, rgba(86, 173, 153, 0.16), transparent 28%),
     linear-gradient(145deg, #17324a, #214868);
-  box-shadow:
-    0 22px 38px rgba(19, 45, 69, 0.18),
-    0 1px 0 rgba(255, 255, 255, 0.08) inset;
+  box-shadow: 0 22px 38px rgba(19, 45, 69, 0.18);
 }
 
 .channel-insights__hero-copy {
@@ -2202,9 +2198,7 @@
 }
 
 .channel-insights__panel--warm {
-  background:
-    linear-gradient(180deg, rgba(255, 252, 247, 0.99), rgba(255, 247, 238, 0.98)),
-    rgba(255, 249, 243, 0.98);
+  background: rgba(255, 249, 243, 0.98);
 }
 
 .channel-insights__panel--warm::before {
@@ -2212,9 +2206,7 @@
 }
 
 .channel-insights__panel--cool {
-  background:
-    linear-gradient(180deg, rgba(248, 252, 255, 0.99), rgba(242, 248, 254, 0.98)),
-    rgba(246, 250, 254, 0.98);
+  background: rgba(246, 250, 254, 0.98);
 }
 
 .channel-insights__panel--cool::before {
@@ -2222,9 +2214,7 @@
 }
 
 .channel-insights__panel--neutral {
-  background:
-    linear-gradient(180deg, rgba(251, 253, 255, 0.99), rgba(246, 249, 252, 0.98)),
-    rgba(248, 251, 253, 0.98);
+  background: rgba(248, 251, 253, 0.98);
 }
 
 .channel-insights__panel--neutral::before {
@@ -2246,9 +2236,7 @@
   padding: 10px 12px;
   border-radius: 18px;
   border: 1px solid rgba(236, 216, 187, 0.88);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 247, 236, 0.98)),
-    rgba(255, 248, 239, 0.98);
+  background: rgba(255, 248, 239, 0.98);
   color: #17324a;
   box-shadow: 0 10px 18px rgba(154, 110, 35, 0.05);
 }
@@ -2280,9 +2268,7 @@
   padding: 13px 12px 12px;
   border-radius: 18px;
   border: 1px solid rgba(216, 227, 238, 0.94);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 250, 253, 0.98)),
-    rgba(248, 251, 253, 0.98);
+  background: rgba(248, 251, 253, 0.98);
 }
 
 .channel-insights__secondary-metric::before,
@@ -8553,7 +8539,6 @@
   border: 1px solid rgba(212, 224, 236, 0.94);
   border-radius: 26px;
   background:
-    radial-gradient(circle at 100% 0%, rgba(149, 196, 255, 0.1), transparent 34%),
     linear-gradient(180deg, rgba(250, 252, 255, 0.99), rgba(243, 248, 253, 0.98)),
     rgba(252, 253, 255, 0.98);
   box-shadow:
@@ -8612,9 +8597,7 @@
   border: 1px solid rgba(214, 226, 238, 0.94);
   border-radius: 20px;
   overflow: hidden;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(248, 251, 254, 0.98)),
-    rgba(255, 255, 255, 0.99);
+  background: rgba(255, 255, 255, 0.99);
   box-shadow: 0 10px 18px rgba(25, 58, 88, 0.03);
 }
 
