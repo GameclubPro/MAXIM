@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { cn } from '../lib/cn';
 import {
   BROADCAST_SCHEDULE_MAX_DAYS,
@@ -133,6 +133,7 @@ export function BroadcastSchedulePlanner({
   onOpenDay,
 }: BroadcastSchedulePlannerProps) {
   const [anchorNow] = useState(() => new Date());
+  const sheetRef = useRef<HTMLDivElement | null>(null);
   const normalizedValue = sortAndUniqueBroadcastSlots(value);
   const selectedDayKeys = Array.from(
     new Set(normalizedValue.map((slot) => getBroadcastScheduleDayKey(slot))),
@@ -185,6 +186,14 @@ export function BroadcastSchedulePlanner({
     setCurrentMonthKey(getMonthKey(new Date(`${dayKey}T12:00:00`)));
     maxSelectionChanged();
     onOpenDay?.(dayKey);
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        sheetRef.current?.scrollIntoView({
+          block: 'start',
+          behavior: 'smooth',
+        });
+      });
+    });
   }
 
   function toggleSlot(minutes: number) {
@@ -354,7 +363,7 @@ export function BroadcastSchedulePlanner({
         </div>
       </div>
 
-      <div className="broadcast-planner__sheet">
+      <div ref={sheetRef} className="broadcast-planner__sheet">
         <div className="broadcast-planner__sheet-head">
           <div>
             <strong>{formatBroadcastScheduleDay(activeDayKey)}</strong>
