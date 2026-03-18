@@ -5811,11 +5811,6 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .broadcast-planner__time-summary,
-  .broadcast-planner__review-stats {
-    grid-template-columns: 1fr;
-  }
-
   .broadcast-planner__review-summary,
   .broadcast-planner__agenda-row {
     align-items: flex-start;
