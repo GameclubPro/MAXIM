@@ -759,7 +759,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
 
         <MembershipActivityFeed
           title="Движение подписчиков"
-          subtitle="Лента входов и выходов по дням, без перегруженных карточек."
+          subtitle="Последние входы и выходы по дням."
           variant="immersive"
           joinedLabel="каналу"
           leftLabel="канал"
