@@ -5059,12 +5059,20 @@
 .broadcast-planner__calendar-card {
   padding: 16px;
   display: grid;
-  gap: 14px;
+  gap: 12px;
+}
+
+.broadcast-planner__calendar-toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .broadcast-planner__calendar-copy {
   display: grid;
   gap: 4px;
+  min-width: 0;
 }
 
 .broadcast-planner__calendar-copy strong {
@@ -5079,21 +5087,46 @@
   color: var(--text-secondary);
 }
 
+.broadcast-planner__calendar-badge {
+  flex: 0 0 auto;
+  min-height: 32px;
+  border-radius: 999px;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  background: rgba(11, 132, 255, 0.08);
+  color: #0b66b6;
+  font-size: 0.72rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.broadcast-planner__calendar-surface {
+  display: grid;
+  gap: 10px;
+  border-radius: 20px;
+  border: 1px solid rgba(62, 96, 127, 0.1);
+  background:
+    linear-gradient(180deg, rgba(245, 249, 255, 0.96), rgba(255, 255, 255, 0.96)),
+    rgba(255, 255, 255, 0.96);
+  padding: 12px;
+}
+
 .broadcast-planner__calendar-head {
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) 40px;
+  grid-template-columns: 36px minmax(0, 1fr) 36px;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
 }
 
 .broadcast-planner__month-button {
-  width: 40px;
-  height: 40px;
-  border-radius: 14px;
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
   border: 1px solid rgba(62, 96, 127, 0.16);
-  background: rgba(255, 255, 255, 0.88);
+  background: rgba(255, 255, 255, 0.92);
   color: var(--text-primary);
-  font-size: 1rem;
+  font-size: 0.95rem;
   font-weight: 800;
 }
 
@@ -5102,21 +5135,31 @@
 }
 
 .broadcast-planner__calendar-head strong {
-  font-size: 1rem;
-  line-height: 1.2;
-  text-align: center;
+  min-height: 36px;
+  border-radius: 999px;
+  border: 1px solid rgba(62, 96, 127, 0.12);
+  background: rgba(255, 255, 255, 0.92);
+  padding: 0 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.96rem;
+  line-height: 1;
   color: var(--text-primary);
 }
 
 .broadcast-planner__weekdays {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 6px;
+  gap: 4px;
+  border-radius: 14px;
+  background: rgba(238, 244, 251, 0.88);
+  padding: 8px 6px;
 }
 
 .broadcast-planner__weekdays span {
   text-align: center;
-  font-size: 0.7rem;
+  font-size: 0.66rem;
   font-weight: 700;
   color: var(--text-muted);
 }
@@ -5124,53 +5167,55 @@
 .broadcast-planner__grid {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 6px;
+  gap: 8px;
 }
 
 .broadcast-planner__day {
   position: relative;
-  min-height: 64px;
-  border-radius: 20px;
+  min-height: 68px;
+  border-radius: 18px;
   border: 1px solid rgba(62, 96, 127, 0.1);
-  background: rgba(255, 255, 255, 0.78);
-  padding: 9px 7px 8px;
+  background: rgba(255, 255, 255, 0.96);
+  padding: 8px 7px 7px;
   display: grid;
-  align-content: space-between;
+  align-content: start;
   gap: 4px;
   color: var(--text-primary);
   text-align: left;
 }
 
 .broadcast-planner__day.is-outside {
-  opacity: 0.38;
+  opacity: 0.28;
 }
 
 .broadcast-planner__day.is-today {
   border-color: rgba(16, 83, 143, 0.28);
+  box-shadow: inset 0 0 0 1px rgba(16, 83, 143, 0.08);
 }
 
 .broadcast-planner__day.is-busy {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(239, 246, 255, 0.76)),
-    rgba(255, 255, 255, 0.76);
+  background: rgba(244, 249, 255, 0.96);
 }
 
 .broadcast-planner__day.is-selected {
   border-color: rgba(15, 102, 182, 0.28);
-  background: rgba(255, 244, 212, 0.9);
+  background: rgba(255, 246, 222, 0.96);
   box-shadow: inset 0 0 0 1px rgba(255, 220, 119, 0.4);
 }
 
 .broadcast-planner__day.is-picked {
   border-color: rgba(11, 132, 255, 0.34);
+  background: rgba(237, 245, 255, 0.96);
   box-shadow:
     inset 0 0 0 1px rgba(11, 132, 255, 0.18),
-    0 6px 16px rgba(15, 74, 128, 0.06);
+    0 4px 12px rgba(15, 74, 128, 0.05);
 }
 
 .broadcast-planner__day.is-active {
   transform: translateY(-1px);
-  box-shadow: 0 10px 20px rgba(19, 62, 96, 0.08);
+  box-shadow:
+    inset 0 0 0 1px rgba(11, 132, 255, 0.18),
+    0 8px 18px rgba(19, 62, 96, 0.08);
 }
 
 .broadcast-planner__day:disabled {
@@ -5178,34 +5223,75 @@
 }
 
 .broadcast-planner__day-number {
-  font-size: 0.88rem;
+  font-size: 0.9rem;
   font-weight: 800;
   line-height: 1;
 }
 
 .broadcast-planner__day-marker {
   position: absolute;
-  top: 7px;
-  right: 7px;
-  width: 18px;
-  height: 18px;
+  top: 8px;
+  right: 8px;
+  width: 16px;
+  height: 16px;
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(180deg, rgba(11, 132, 255, 0.98), rgba(8, 102, 215, 0.92));
-  box-shadow: 0 6px 14px rgba(11, 132, 255, 0.24);
+  background: #2496ff;
   color: #fff;
-  font-size: 0.64rem;
+  font-size: 0.58rem;
   font-weight: 900;
   line-height: 1;
 }
 
+.broadcast-planner__day-foot {
+  display: grid;
+  gap: 5px;
+  align-self: end;
+  margin-top: auto;
+}
+
+.broadcast-planner__day-tag {
+  font-size: 0.54rem;
+  font-weight: 800;
+  line-height: 1;
+  color: #0b66b6;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.broadcast-planner__day-tag.is-empty {
+  visibility: hidden;
+}
+
 .broadcast-planner__day-meta {
-  font-size: 0.63rem;
-  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  border-radius: 999px;
+  padding: 0 8px;
+  width: fit-content;
+  max-width: 100%;
+  font-size: 0.58rem;
+  font-weight: 800;
+  line-height: 1;
   color: var(--text-secondary);
-  line-height: 1.2;
+  background: rgba(62, 96, 127, 0.08);
+}
+
+.broadcast-planner__day-meta.is-selected {
+  background: rgba(255, 216, 117, 0.34);
+  color: #8a5a0a;
+}
+
+.broadcast-planner__day-meta.is-picked {
+  background: rgba(11, 132, 255, 0.12);
+  color: #0b66b6;
+}
+
+.broadcast-planner__day-meta.is-busy {
+  background: rgba(62, 96, 127, 0.1);
 }
 
 .broadcast-planner__selection-bar {
@@ -5791,6 +5877,14 @@
 }
 
 @media (max-width: 420px) {
+  .broadcast-planner__calendar-toolbar {
+    display: grid;
+  }
+
+  .broadcast-planner__calendar-badge {
+    justify-self: start;
+  }
+
   .broadcast-planner__selection-bar {
     grid-template-columns: 1fr;
     display: grid;
