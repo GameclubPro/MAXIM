@@ -640,17 +640,21 @@ export function BroadcastSchedulePlanner({
               <strong>
                 {pickedDayKeys.length > 0
                   ? `Выбрано: ${pickedDayLabel}`
-                  : 'Выберите хотя бы один день'}
+                  : normalizedValue.length > 0
+                    ? 'Расписание готово'
+                    : 'Выберите хотя бы один день'}
               </strong>
               <small>
                 {pickedDayKeys.length > 0
                   ? 'Когда даты выбраны, переходите к следующему шагу.'
-                  : 'Повторный тап по дате снимает выбор.'}
+                  : normalizedValue.length > 0
+                    ? 'Чтобы изменить план или добавить ещё дни, отметьте нужные даты в календаре.'
+                    : 'Повторный тап по дате снимает выбор.'}
               </small>
             </div>
 
-            <div className="broadcast-planner__selection-actions">
-              {pickedDayKeys.length > 0 ? (
+            {pickedDayKeys.length > 0 ? (
+              <div className="broadcast-planner__selection-actions">
                 <button
                   type="button"
                   className="broadcast-planner__selection-reset"
@@ -659,16 +663,16 @@ export function BroadcastSchedulePlanner({
                 >
                   Сбросить
                 </button>
-              ) : null}
-              <button
-                type="button"
-                className="broadcast-planner__selection-open"
-                onClick={openCountStep}
-                disabled={disabled || pickedDayKeys.length === 0}
-              >
-                Далее
-              </button>
-            </div>
+                <button
+                  type="button"
+                  className="broadcast-planner__selection-open"
+                  onClick={openCountStep}
+                  disabled={disabled || pickedDayKeys.length === 0}
+                >
+                  Далее
+                </button>
+              </div>
+            ) : null}
           </div>
         </div>
 
