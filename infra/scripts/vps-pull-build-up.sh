@@ -46,17 +46,24 @@ diff_in_paths() {
 }
 
 ensure_compose_env() {
-  if [[ -f .env ]]; then
+  local tmp_env
+
+  if [[ -s .env ]]; then
     return 0
   fi
 
   if docker ps --format '{{.Names}}' | grep -qx 'infra-api-1'; then
     echo "Missing .env. Restoring it from infra-api-1 container env..."
-    docker inspect infra-api-1 --format '{{range .Config.Env}}{{println .}}{{end}}' \
-      | grep -v '^PATH=' \
-      | grep -v '^NODE_VERSION=' \
-      | grep -v '^YARN_VERSION=' > .env
-    return 0
+    tmp_env="$(mktemp .env.restore.XXXXXX)"
+    if docker inspect infra-api-1 --format '{{range .Config.Env}}{{println .}}{{end}}' \
+      | awk '!/^(PATH|NODE_VERSION|YARN_VERSION)=/' >"$tmp_env" && [[ -s "$tmp_env" ]]; then
+      mv "$tmp_env" .env
+      return 0
+    fi
+
+    rm -f "$tmp_env"
+    echo "Failed to restore /var/www/Chat_bot/.env from infra-api-1 container env."
+    return 1
   fi
 
   echo "Missing /var/www/Chat_bot/.env and infra-api-1 is unavailable for restore."
@@ -131,6 +138,7 @@ wait_for_postgres() {
 }
 
 run_migrations() {
+  ensure_compose_env
   docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps api npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
 }
 
@@ -154,6 +162,7 @@ docker compose "${COMPOSE_FILES[@]}" up -d postgres redis
 wait_for_postgres 180
 
 if [[ "$BUILD_API_IMAGE" -eq 1 ]]; then
+  ensure_compose_env
   docker compose "${COMPOSE_FILES[@]}" build api
 fi
 
@@ -175,6 +184,7 @@ if [[ "${#SERVICES_TO_BUILD[@]}" -gt 0 ]]; then
   docker compose "${COMPOSE_FILES[@]}" build "${SERVICES_TO_BUILD[@]}"
 fi
 
+ensure_compose_env
 docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "${SERVICES[@]}"
 
 wait_for_url "http://127.0.0.1:3001/api/health/live" 180
