@@ -644,9 +644,9 @@ export function BroadcastSchedulePlanner({
                 const isPicked = pickedDaySet.has(dayKey);
                 const dayStatusLabel =
                   daySlots.length > 0
-                    ? formatCountLabel(daySlots.length, 'слот', 'слота', 'слотов')
+                    ? `${daySlots.length} сл.`
                     : isPicked
-                      ? 'новый'
+                      ? 'нов.'
                       : busyCount > 0
                         ? `${busyCount} зан.`
                         : null;
@@ -671,7 +671,7 @@ export function BroadcastSchedulePlanner({
                     <span className="broadcast-planner__day-number">{cell.getDate()}</span>
                     <div className="broadcast-planner__day-foot">
                       {isToday ? (
-                        <span className="broadcast-planner__day-tag">сегодня</span>
+                        <span className="broadcast-planner__day-tag">сег.</span>
                       ) : (
                         <span className="broadcast-planner__day-tag is-empty" aria-hidden />
                       )}
