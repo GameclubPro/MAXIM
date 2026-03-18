@@ -5007,12 +5007,23 @@
   min-height: 44px;
 }
 
-.mailing-action-bar__send {
+.mailing-action-bar__link {
+  justify-self: start;
+  border: none;
+  background: transparent;
+  padding: 2px 4px 0;
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+  line-height: 1.35;
   font-weight: 700;
 }
 
-.mailing-action-bar__clear {
-  border-color: rgba(62, 96, 127, 0.2);
+.mailing-action-bar__link:disabled {
+  opacity: 0.56;
+}
+
+.mailing-action-bar__send {
+  font-weight: 700;
 }
 
 .channel-broadcast-studio {
@@ -6150,12 +6161,7 @@
   }
 
   .mailing-action-bar {
-    grid-template-columns: minmax(0, 1fr) auto;
-    align-items: center;
-  }
-
-  .mailing-action-bar__clear {
-    min-width: 136px;
+    grid-template-columns: minmax(0, 1fr);
   }
   .rules-studio__layout {
     grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);

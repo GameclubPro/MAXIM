@@ -2963,25 +2963,25 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     <div className="mailing-action-bar">
       <button
         type="button"
+        className="mailing-action-bar__link"
+        onClick={editingManagedBroadcast ? handleCancelMailingEdit : resetMailingComposer}
+        disabled={isMailingBusy}
+      >
+        {editingManagedBroadcast ? 'Отменить редактирование' : 'Очистить рассылку'}
+      </button>
+      <button
+        type="button"
         className="button button--accent mailing-action-bar__send"
         onClick={handleSendBroadcast}
         disabled={mailingSendDisabled}
       >
         {isUpdatingManagedBroadcast
           ? 'Сохраняем...'
-          : handoffBroadcastMutation.isPending
-            ? 'Открываем бота...'
-            : editingManagedBroadcast
-              ? 'Сохранить рассылку'
-              : 'Продолжить в боте'}
-      </button>
-      <button
-        type="button"
-        className="button button--ghost mailing-action-bar__clear"
-        onClick={editingManagedBroadcast ? handleCancelMailingEdit : resetMailingComposer}
-        disabled={isMailingBusy}
-      >
-        {editingManagedBroadcast ? 'Отменить редактирование' : 'Очистить'}
+            : handoffBroadcastMutation.isPending
+              ? 'Открываем бота...'
+              : editingManagedBroadcast
+                ? 'Сохранить рассылку'
+                : 'Продолжить в боте'}
       </button>
     </div>
   );

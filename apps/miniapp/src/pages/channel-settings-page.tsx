@@ -955,19 +955,19 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     <div className="mailing-action-bar">
       <button
         type="button"
+        className="mailing-action-bar__link"
+        onClick={resetBroadcastComposer}
+        disabled={handoffBroadcastMutation.isPending}
+      >
+        Очистить рассылку
+      </button>
+      <button
+        type="button"
         className="button button--accent mailing-action-bar__send"
         onClick={handleSendChannelBroadcast}
         disabled={handoffBroadcastMutation.isPending}
       >
         {handoffBroadcastMutation.isPending ? 'Открываем бота...' : 'Продолжить в боте'}
-      </button>
-      <button
-        type="button"
-        className="button button--ghost mailing-action-bar__clear"
-        onClick={resetBroadcastComposer}
-        disabled={handoffBroadcastMutation.isPending}
-      >
-        Очистить
       </button>
     </div>
   );
