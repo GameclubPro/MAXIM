@@ -499,71 +499,72 @@ export function BroadcastSchedulePlanner({
               );
             })}
           </div>
-        </div>
+          <div className="broadcast-planner__selection-bar">
+            <div className="broadcast-planner__selection-copy">
+              <strong>
+                {pickedDayKeys.length > 0
+                  ? `${pickedDayLabel} в выделении`
+                  : 'Можно отметить сразу несколько дат'}
+              </strong>
+              <small>
+                {pickedDayKeys.length > 0
+                  ? 'Настройте одинаковые или разные часы в нижней шторке.'
+                  : 'Повторный тап по дате снимает её из выбора.'}
+              </small>
+            </div>
 
-        <div className="broadcast-planner__selection-bar">
-          <div className="broadcast-planner__selection-copy">
-            <strong>
-              {pickedDayKeys.length > 0
-                ? `${pickedDayLabel} в выделении`
-                : 'Сначала отметьте даты в календаре'}
-            </strong>
-            <small>
-              {pickedDayKeys.length > 0
-                ? 'Открою нижнюю шторку со слотами и быстрыми пресетами.'
-                : 'Повторный тап по дате снимает её из выбора.'}
-            </small>
-          </div>
-
-          <div className="broadcast-planner__selection-actions">
-            {pickedDayKeys.length > 0 ? (
-              <button
-                type="button"
-                className="broadcast-planner__selection-reset"
-                onClick={clearPickedSelection}
-                disabled={disabled}
-              >
-                Сбросить
-              </button>
-            ) : null}
-            <button
-              type="button"
-              className="broadcast-planner__selection-open"
-              onClick={openDaySheet}
-              disabled={disabled || pickedDayKeys.length === 0}
-            >
-              {pickedDayKeys.length > 1 ? `Настроить ${pickedDayLabel}` : 'Выбрать время'}
-            </button>
-          </div>
-        </div>
-
-        {pickedDayKeys.length > 0 ? (
-          <div className="broadcast-planner__picked-strip" aria-label="Выбранные дни">
-            {pickedDayKeys.map((dayKey) => {
-              const slotsCount = getSelectedDaySlots(dayKey, normalizedValue).length;
-              return (
+            <div className="broadcast-planner__selection-actions">
+              {pickedDayKeys.length > 0 ? (
                 <button
-                  key={dayKey}
                   type="button"
-                  className={cn(
-                    'broadcast-planner__picked-chip',
-                    dayKey === activeDayKey && 'is-active',
-                  )}
-                  onClick={() => {
-                    setActiveDayKey(dayKey);
-                    maxSelectionChanged();
-                  }}
+                  className="broadcast-planner__selection-reset"
+                  onClick={clearPickedSelection}
                   disabled={disabled}
                 >
-                  <strong>{formatDayChipLabel(dayKey)}</strong>
-                  <small>
-                    {slotsCount > 0 ? formatCountLabel(slotsCount, 'слот', 'слота', 'слотов') : 'без времени'}
-                  </small>
+                  Сбросить
                 </button>
-              );
-            })}
+              ) : null}
+              <button
+                type="button"
+                className="broadcast-planner__selection-open"
+                onClick={openDaySheet}
+                disabled={disabled || pickedDayKeys.length === 0}
+              >
+                {pickedDayKeys.length > 1 ? `Настроить ${pickedDayLabel}` : 'Выбрать время'}
+              </button>
+            </div>
           </div>
-        ) : null}
+
+          {pickedDayKeys.length > 0 ? (
+            <div className="broadcast-planner__picked-strip" aria-label="Выбранные дни">
+              {pickedDayKeys.map((dayKey) => {
+                const slotsCount = getSelectedDaySlots(dayKey, normalizedValue).length;
+                return (
+                  <button
+                    key={dayKey}
+                    type="button"
+                    className={cn(
+                      'broadcast-planner__picked-chip',
+                      dayKey === activeDayKey && 'is-active',
+                    )}
+                    onClick={() => {
+                      setActiveDayKey(dayKey);
+                      maxSelectionChanged();
+                    }}
+                    disabled={disabled}
+                  >
+                    <strong>{formatDayChipLabel(dayKey)}</strong>
+                    <small>
+                      {slotsCount > 0
+                        ? formatCountLabel(slotsCount, 'слот', 'слота', 'слотов')
+                        : 'без времени'}
+                    </small>
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
+        </div>
 
         {normalizedValue.length > 0 ? (
           <div className="broadcast-planner__agenda">
