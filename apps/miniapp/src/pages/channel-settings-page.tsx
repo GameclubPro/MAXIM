@@ -927,12 +927,12 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const showBroadcastPrimaryAction =
     handoffBroadcastMutation.isPending || (broadcastScheduleReady && broadcastButtonDraftValid);
   const broadcastActionTitle = broadcastPlannerPending
-    ? 'Закончите выбор времени'
+    ? 'Закончите настройку расписания'
     : broadcastScheduledSlots.length === 0
       ? 'Сначала соберите календарь'
       : 'Проверьте кнопку';
   const broadcastActionHint = broadcastPlannerPending
-    ? 'Для отмеченных дней сначала выберите 1, 2 или 3 отправки либо задайте точные часы.'
+    ? 'Сначала выберите количество отправок, потом точное время, и только после этого откроется переход в бота.'
     : broadcastScheduledSlots.length === 0
       ? 'Отметьте дни и назначьте им время, после этого откроется переход в бота.'
       : 'Заполните ссылку и текст CTA или выключите кнопку, чтобы продолжить.';

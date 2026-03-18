@@ -2957,12 +2957,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const showMailingPrimaryAction =
     isMailingBusy || (mailingScheduleReady && mailingButtonDraftValid);
   const mailingActionTitle = mailingPlannerPending
-    ? 'Закончите выбор времени'
+    ? 'Закончите настройку расписания'
     : mailingScheduledSlots.length === 0
       ? 'Сначала соберите календарь'
       : 'Проверьте кнопку';
   const mailingActionHint = mailingPlannerPending
-    ? 'Для отмеченных дней сначала выберите 1, 2 или 3 отправки либо задайте точные часы.'
+    ? 'Сначала выберите количество отправок, потом точное время, и только после этого станет доступен следующий шаг.'
     : mailingScheduledSlots.length === 0
       ? 'Отметьте дни и назначьте им время, после этого станет доступен следующий шаг.'
       : 'Заполните ссылку и текст CTA или выключите кнопку, чтобы продолжить.';

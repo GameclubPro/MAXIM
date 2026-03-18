@@ -77,7 +77,9 @@ const scenarios = [
       await page.waitForTimeout(1000);
       await page.locator('.broadcast-planner__day.is-selected').first().click();
       await page.waitForTimeout(150);
-      await page.getByRole('button', { name: 'Точное время' }).click();
+      await page.getByRole('button', { name: 'Выбрать количество' }).click();
+      await page.waitForTimeout(150);
+      await page.getByRole('button', { name: '2 раза' }).click();
       await page.waitForTimeout(300);
     },
   },
@@ -107,7 +109,9 @@ const scenarios = [
       await page.waitForTimeout(1000);
       await page.locator('.broadcast-planner__day.is-selected').first().click();
       await page.waitForTimeout(150);
-      await page.getByRole('button', { name: 'Точное время' }).click();
+      await page.getByRole('button', { name: 'Выбрать количество' }).click();
+      await page.waitForTimeout(150);
+      await page.getByRole('button', { name: '2 раза' }).click();
       await page.waitForTimeout(300);
     },
   },
@@ -164,12 +168,7 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir) {
   await ensureDir(shotDir);
 
   for (const scenario of scenarios) {
-    const url = buildPreviewUrl(
-      baseUrl,
-      scenario.path,
-      profile.queryDevice,
-      scenario.searchParams,
-    );
+    const url = buildPreviewUrl(baseUrl, scenario.path, profile.queryDevice, scenario.searchParams);
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     await waitForPreviewApp(page);
 
@@ -197,9 +196,7 @@ async function main() {
       : Object.keys(deviceProfiles).filter((key) => key === requestedDevice);
 
   if (deviceKeys.length === 0) {
-    throw new Error(
-      'MINIAPP_SCREENSHOT_DEVICE must be one of: android, iphone, all',
-    );
+    throw new Error('MINIAPP_SCREENSHOT_DEVICE must be one of: android, iphone, all');
   }
 
   await ensureDir(outputDir);
