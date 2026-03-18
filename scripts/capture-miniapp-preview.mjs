@@ -77,7 +77,7 @@ const scenarios = [
       await page.waitForTimeout(1000);
       await page.locator('.broadcast-planner__day.is-selected').first().click();
       await page.waitForTimeout(150);
-      await page.locator('.broadcast-planner__selection-open').click();
+      await page.getByRole('button', { name: 'Точное время' }).click();
       await page.waitForTimeout(300);
     },
   },
@@ -107,7 +107,7 @@ const scenarios = [
       await page.waitForTimeout(1000);
       await page.locator('.broadcast-planner__day.is-selected').first().click();
       await page.waitForTimeout(150);
-      await page.locator('.broadcast-planner__selection-open').click();
+      await page.getByRole('button', { name: 'Точное время' }).click();
       await page.waitForTimeout(300);
     },
   },
