@@ -3842,7 +3842,7 @@
 .settings-drilldown__footer {
   display: grid;
   gap: 10px;
-  padding: 12px 14px calc(14px + env(safe-area-inset-bottom, 0px));
+  padding: 10px 12px calc(12px + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid rgba(115, 142, 168, 0.18);
   background:
     linear-gradient(180deg, rgba(248, 252, 255, 0.96), rgba(238, 246, 255, 0.96)),
@@ -4783,14 +4783,14 @@
   position: relative;
   overflow: hidden;
   display: grid;
-  gap: 10px;
-  border-radius: 22px;
+  gap: 8px;
+  border-radius: 20px;
   border: 1px solid rgba(11, 132, 255, 0.18);
   background:
     radial-gradient(circle at top right, rgba(255, 209, 102, 0.22), transparent 38%),
     linear-gradient(158deg, rgba(255, 255, 255, 0.96), rgba(227, 241, 255, 0.84)),
     rgba(255, 255, 255, 0.86);
-  padding: 14px;
+  padding: 12px;
   box-shadow: 0 16px 34px rgba(19, 54, 83, 0.08);
 }
 
@@ -4821,33 +4821,33 @@
 
 .broadcast-composer-hero__title {
   margin: 0;
-  font-size: 1.04rem;
+  font-size: 1rem;
   line-height: 1.25;
   color: var(--text-primary);
 }
 
 .broadcast-composer-hero__copy {
   margin: 0;
-  font-size: 0.82rem;
-  line-height: 1.5;
+  font-size: 0.78rem;
+  line-height: 1.42;
   color: var(--text-secondary);
 }
 
 .broadcast-composer-hero__meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 
 .broadcast-composer-hero__meta span {
   display: inline-flex;
   align-items: center;
-  min-height: 30px;
+  min-height: 28px;
   border-radius: 999px;
   border: 1px solid rgba(11, 132, 255, 0.16);
   background: rgba(255, 255, 255, 0.76);
-  padding: 0 10px;
-  font-size: 0.72rem;
+  padding: 0 9px;
+  font-size: 0.7rem;
   font-weight: 700;
   line-height: 1.2;
   color: rgba(7, 95, 170, 0.92);
@@ -5071,14 +5071,14 @@
   background:
     linear-gradient(150deg, rgba(255, 255, 255, 0.93), rgba(230, 244, 255, 0.82)),
     rgba(255, 255, 255, 0.8);
-  padding: 10px;
+  padding: 8px;
   display: grid;
-  gap: 8px;
+  gap: 6px;
   margin-top: 2px;
 }
 
 .mailing-action-bar .button {
-  min-height: 46px;
+  min-height: 44px;
 }
 
 .mailing-action-bar__send {
@@ -5106,11 +5106,11 @@
 .broadcast-planner__hero {
   position: relative;
   overflow: hidden;
-  border-radius: 24px;
+  border-radius: 22px;
   border: 1px solid rgba(14, 91, 162, 0.2);
-  padding: 16px;
+  padding: 14px;
   display: grid;
-  gap: 12px;
+  gap: 10px;
   background:
     radial-gradient(circle at top right, rgba(255, 210, 108, 0.28), transparent 36%),
     radial-gradient(circle at bottom left, rgba(126, 195, 255, 0.24), transparent 32%),
@@ -5145,7 +5145,7 @@
 
 .broadcast-planner__title {
   margin: 6px 0 0;
-  font-size: 1.08rem;
+  font-size: 1rem;
   font-weight: 800;
   line-height: 1.15;
 }
@@ -5153,19 +5153,19 @@
 .broadcast-planner__hero-metrics {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 10px;
+  gap: 6px;
+  margin-top: 8px;
 }
 
 .broadcast-planner__hero-metrics span {
   display: inline-flex;
   align-items: center;
-  min-height: 30px;
+  min-height: 28px;
   border-radius: 999px;
-  padding: 0 10px;
+  padding: 0 9px;
   background: rgba(255, 255, 255, 0.14);
   border: 1px solid rgba(255, 255, 255, 0.18);
-  font-size: 0.73rem;
+  font-size: 0.7rem;
   font-weight: 700;
   color: rgba(255, 255, 255, 0.94);
   backdrop-filter: blur(10px);
@@ -5173,8 +5173,8 @@
 
 .broadcast-planner__summary {
   margin: 8px 0 0;
-  font-size: 0.82rem;
-  line-height: 1.45;
+  font-size: 0.78rem;
+  line-height: 1.4;
   color: rgba(255, 255, 255, 0.88);
 }
 

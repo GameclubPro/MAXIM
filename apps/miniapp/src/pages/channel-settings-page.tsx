@@ -923,9 +923,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const postSuggestionsCardStatus = draft.postSuggestionsEnabled ? 'Авто' : 'Ручн';
   const broadcastCardStatus =
     broadcastScheduledSlots.length > 0 ? 'Календ' : broadcastHasButton ? 'CTA' : 'Бот';
-  const broadcastHeroTitle = 'Сначала выберите даты и слоты, потом отправьте контент в боте';
+  const broadcastHeroTitle = 'Сначала выберите даты, потом отправьте контент в боте';
   const broadcastHeroCopy =
-    'План публикаций собирается в mini app, а текст и фото вы отправляете в личке бота. Слоты по 30 минут блокируются сразу, без пересечений с другими постами.';
+    'Слоты выбираете здесь, текст и фото отправите в личке бота. Пересечения блокируются автоматически.';
   const broadcastHeroMeta = [
     broadcastBotHasContent ? 'контент уже в боте' : 'контент в боте',
     broadcastHasButton ? 'CTA включён' : 'CTA не нужен',

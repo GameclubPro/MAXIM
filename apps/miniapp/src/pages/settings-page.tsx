@@ -2930,10 +2930,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingSendDisabled = isMailingBusy;
   const mailingHeroTitle = editingManagedBroadcast
     ? 'Исправьте календарь и CTA, контент уже лежит в боте'
-    : 'Сначала соберите календарь, потом откроется бот для текста и фото';
+    : 'Сначала выберите даты, потом отправьте контент в боте';
   const mailingHeroCopy = editingManagedBroadcast
     ? 'Слоты по 30 минут блокируются сразу. После сохранения рассылка продолжит идти по обновлённому плану без пересечений.'
-    : 'Месяц планируется прямо здесь. После кнопки ниже бот откроется уже с готовым расписанием, останется отправить контент обычным сообщением.';
+    : 'Слоты выбираете здесь, текст и фото отправите в личке бота. Пересечения блокируются автоматически.';
   const mailingHeroMeta = [
     mailingTargetLabel,
     mailingContentLabel,

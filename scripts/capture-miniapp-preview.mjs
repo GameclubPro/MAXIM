@@ -75,7 +75,7 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(1000);
-      await page.locator('.settings-drilldown__content').evaluate((element) => {
+      await page.locator('.settings-drilldown__body').evaluate((element) => {
         element.scrollTo({ top: 980, behavior: 'instant' });
       });
       await page.waitForTimeout(300);
@@ -105,7 +105,7 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(1000);
-      await page.locator('.settings-drilldown__content').evaluate((element) => {
+      await page.locator('.settings-drilldown__body').evaluate((element) => {
         element.scrollTo({ top: 980, behavior: 'instant' });
       });
       await page.waitForTimeout(300);
