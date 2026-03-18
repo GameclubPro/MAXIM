@@ -77,7 +77,7 @@ const scenarios = [
       await page.waitForTimeout(1000);
       await page.locator('.broadcast-planner__day.is-selected').first().click();
       await page.waitForTimeout(150);
-      await page.getByRole('button', { name: 'Выбрать количество' }).click();
+      await page.getByRole('button', { name: 'Далее' }).click();
       await page.waitForTimeout(150);
       await page.getByRole('button', { name: '2 раза' }).click();
       await page.waitForTimeout(300);
@@ -109,7 +109,7 @@ const scenarios = [
       await page.waitForTimeout(1000);
       await page.locator('.broadcast-planner__day.is-selected').first().click();
       await page.waitForTimeout(150);
-      await page.getByRole('button', { name: 'Выбрать количество' }).click();
+      await page.getByRole('button', { name: 'Далее' }).click();
       await page.waitForTimeout(150);
       await page.getByRole('button', { name: '2 раза' }).click();
       await page.waitForTimeout(300);
