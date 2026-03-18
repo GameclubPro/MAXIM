@@ -81,11 +81,18 @@ type TopicFilterDetection = {
 };
 
 const PROFANITY_CORE_TOKEN_PATTERNS = [
-  /^бля[а-я0-9]*$/u,
+  /^бля(?:[дт][а-я0-9]*)?$/u,
   /^пизд[а-я0-9]*$/u,
-  /^(?:на|по|до|о|за|ни|вы)?ху[йеяиё][а-я0-9]*$/u,
+  /^(?:на|по|до|о|за|ни|вы)?ху(?:й|е|я|и|ю)[а-я0-9]*$/u,
   /^(?:за|вы|на|по|до|пере|про|об|раз|под|у)?[её]б[а-я0-9]*$/u,
-  /^долбо[её]б[а-я0-9]*$/u,
+  /^долбо(?:[её]б)[а-я0-9]*$/u,
+];
+const PROFANITY_LATIN_TOKEN_PATTERNS = [
+  /^bl(?:ya|ia)(?:d|t)?[a-z0-9]*$/i,
+  /^pizd[a-z0-9]*$/i,
+  /^(?:na|po|do|o|za|ni|vy)?(?:h|x)(?:u|oo|y)(?:y|i|e|ya|yu)?[a-z0-9]*$/i,
+  /^(?:za|vy|na|po|do|pere|pro|ob|raz|pod|u)?e+b(?:a|o|i|y|e|u|l|n|t|s|k|sh|zh)[a-z0-9]*$/i,
+  /^dolboe+b[a-z0-9]*$/i,
 ];
 const PROFANITY_EXCEPTIONS = [
   'бляха',
@@ -103,14 +110,36 @@ const PROFANITY_EXCEPTIONS = [
   'дебилитац',
   'идиомат',
 ];
-const PROFANITY_OBFUSCATED_PATTERNS = [
-  /(?:^|[^\p{L}\p{N}])б(?:[^\p{L}\p{N}]{0,3})л(?:[^\p{L}\p{N}]{0,3})[яе](?:[^\p{L}\p{N}]{0,3})[дт]/iu,
-  /(?:^|[^\p{L}\p{N}])(?:на|по|до|о|за|ни|вы)?х(?:[^\p{L}\p{N}]{0,3})у(?:[^\p{L}\p{N}]{0,3})[йиея]/iu,
-  /(?:^|[^\p{L}\p{N}])п(?:[^\p{L}\p{N}]{0,3})и(?:[^\p{L}\p{N}]{0,3})з(?:[^\p{L}\p{N}]{0,3})д/iu,
-  /(?:^|[^\p{L}\p{N}])(?:за|вы|на|по|до|пере|про|об|раз|под|у)?[её](?:[^\p{L}\p{N}]{0,3})б(?:[^\p{L}\p{N}]{0,3})[аоуыиеё]/iu,
-  /(?:^|[^\p{L}\p{N}])д(?:[^\p{L}\p{N}]{0,3})о(?:[^\p{L}\p{N}]{0,3})л(?:[^\p{L}\p{N}]{0,3})б(?:[^\p{L}\p{N}]{0,3})о(?:[^\p{L}\p{N}]{0,3})[её](?:[^\p{L}\p{N}]{0,3})б/iu,
-  /(?:^|[^\p{L}\p{N}])у(?:[^\p{L}\p{N}]{0,3})[её](?:[^\p{L}\p{N}]{0,3})б(?:[^\p{L}\p{N}]{0,3})[аоуыиеё]/iu,
-];
+const PROFANITY_SHORT_JOINABLE_TOKENS = new Set([
+  'б',
+  'л',
+  'я',
+  'д',
+  'дь',
+  'т',
+  'ть',
+  'п',
+  'и',
+  'з',
+  'х',
+  'у',
+  'й',
+  'е',
+  'ё',
+  'на',
+  'по',
+  'до',
+  'о',
+  'за',
+  'ни',
+  'вы',
+  'об',
+  'раз',
+  'под',
+  'про',
+  'у',
+]);
+const PROFANITY_JOIN_WINDOW_TOKENS = 6;
 const ADS_INTENT_MARKERS = [
   'продам',
   'продаю',
@@ -553,19 +582,29 @@ export class RuleEngineService {
   }
 
   private hasProfanity(text: string): boolean {
-    const profanityText = this.normalizeForProfanity(text);
-    const sanitizedProfanityText = this.stripProfanityExceptions(profanityText);
-    const tokens = this.extractProfanityTokens(profanityText);
-    if (tokens.length === 0) {
-      return false;
+    const candidates = this.extractProfanityCandidates(text);
+    for (const candidate of candidates) {
+      const normalizedCandidate = this.normalizeProfanityCandidate(candidate);
+      if (
+        normalizedCandidate &&
+        !this.isProfanityException(normalizedCandidate) &&
+        this.isProfanityToken(normalizedCandidate)
+      ) {
+        return true;
+      }
+
+      const normalizedLatinCandidate = this.normalizeProfanityLatinCandidate(candidate);
+      if (
+        normalizedLatinCandidate &&
+        PROFANITY_LATIN_TOKEN_PATTERNS.some((pattern) =>
+          pattern.test(normalizedLatinCandidate),
+        )
+      ) {
+        return true;
+      }
     }
 
-    const tokenHit = tokens.some((token) => this.isProfanityToken(token));
-    if (tokenHit) {
-      return true;
-    }
-
-    return this.hasPatternHit(sanitizedProfanityText, PROFANITY_OBFUSCATED_PATTERNS);
+    return false;
   }
 
   private isProfanityToken(token: string): boolean {
@@ -573,29 +612,11 @@ export class RuleEngineService {
       return false;
     }
 
-    if (PROFANITY_EXCEPTIONS.some((exception) => token.startsWith(exception))) {
-      return false;
-    }
-
     return PROFANITY_CORE_TOKEN_PATTERNS.some((pattern) => pattern.test(token));
   }
 
-  private hasPatternHit(text: string, patterns: RegExp[]): boolean {
-    if (!text) {
-      return false;
-    }
-
-    return patterns.some((pattern) => pattern.test(text));
-  }
-
-  private stripProfanityExceptions(text: string): string {
-    let sanitized = text;
-    for (const exception of PROFANITY_EXCEPTIONS) {
-      const pattern = new RegExp(this.escapeRegExp(exception), 'giu');
-      sanitized = sanitized.replace(pattern, ' ');
-    }
-
-    return sanitized;
+  private isProfanityException(token: string): boolean {
+    return PROFANITY_EXCEPTIONS.some((exception) => token.startsWith(exception));
   }
 
   private escapeRegExp(value: string): string {
@@ -1010,19 +1031,71 @@ export class RuleEngineService {
     return normalized;
   }
 
-  private normalizeForProfanity(value: string): string {
+  private extractProfanityCandidates(value: string): string[] {
+    if (!value) {
+      return [];
+    }
+
+    const stripped = stripUrlsFromText(value.toLowerCase());
+    const segments = stripped
+      .split(/\s+/u)
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+    const candidates = [...segments];
+
+    for (let index = 0; index < segments.length; index += 1) {
+      let joinedCandidate = '';
+      let joinedCount = 0;
+
+      for (
+        let cursor = index;
+        cursor < segments.length && cursor < index + PROFANITY_JOIN_WINDOW_TOKENS;
+        cursor += 1
+      ) {
+        const normalizedToken = this.normalizeProfanityJoinToken(segments[cursor]);
+        if (!normalizedToken || !PROFANITY_SHORT_JOINABLE_TOKENS.has(normalizedToken)) {
+          break;
+        }
+
+        joinedCandidate += normalizedToken;
+        joinedCount += 1;
+        if (joinedCount >= 2) {
+          candidates.push(joinedCandidate);
+        }
+      }
+    }
+
+    return candidates;
+  }
+
+  private normalizeProfanityCandidate(value: string): string {
     if (!value) {
       return '';
     }
 
-    let normalized = stripUrlsFromText(value.toLowerCase());
+    let normalized = value.toLowerCase();
     normalized = this.normalizeMixedWritingForProfanity(normalized);
     normalized = normalized.replace(/ё/g, 'е');
     normalized = normalized.replace(/([a-zа-я0-9])\1{2,}/giu, '$1$1');
-    normalized = normalized.replace(/[_*~`"'«»“”(){}[[]\]|]+/g, ' ');
-    normalized = normalized.replace(/[^\p{L}\p{N}\s]+/gu, ' ');
-    normalized = normalized.replace(/\s+/g, ' ').trim();
+    normalized = normalized.replace(/[_*~`"'«»“”(){}[[]\]|]+/g, '');
+    normalized = normalized.replace(/[^\p{L}\p{N}]+/gu, '');
     return normalized;
+  }
+
+  private normalizeProfanityLatinCandidate(value: string): string {
+    if (!value) {
+      return '';
+    }
+
+    let normalized = value.toLowerCase();
+    normalized = normalized.replace(/([a-z0-9])\1{2,}/g, '$1$1');
+    normalized = normalized.replace(/[^a-z0-9]+/g, '');
+    return normalized;
+  }
+
+  private normalizeProfanityJoinToken(value: string): string {
+    const normalized = this.normalizeProfanityCandidate(value);
+    return normalized.length <= 2 ? normalized : '';
   }
 
   private normalizeMixedWritingForProfanity(value: string): string {
@@ -1030,11 +1103,19 @@ export class RuleEngineService {
   }
 
   private normalizeProfanityToken(token: string): string {
+    const lowered = token.toLowerCase();
+    const hasCyrillic = /[а-яё]/iu.test(lowered);
+    const hasLatin = /[a-z]/iu.test(lowered);
     const hasLetter = /[\p{L}]/u.test(token);
     let result = '';
 
-    for (const char of token) {
+    for (const char of lowered) {
       if (!hasLetter && /\p{N}/u.test(char)) {
+        result += char;
+        continue;
+      }
+
+      if (!hasCyrillic && hasLatin && /[a-z]/iu.test(char)) {
         result += char;
         continue;
       }
@@ -1058,7 +1139,4 @@ export class RuleEngineService {
     return normalized.match(/[a-zа-яё0-9]+/giu) ?? [];
   }
 
-  private extractProfanityTokens(value: string): string[] {
-    return value.match(/[a-zа-яё0-9]+/giu) ?? [];
-  }
 }
