@@ -583,8 +583,8 @@ function createInitialState(): PreviewState {
       ['Ольга Бойко', 'Юлия', 'Андрей Фёдоров', 'Марина', 'Александр', 'Наталья'],
       now,
       [
-        0.3, 1.2, 2.8, 4.1, 6.7, 8.9, 10.5, 12.4, 14.3, 18.8, 23.5, 26.2, 31.7, 36.1, 44.2,
-        55.6, 63.4, 78.5, 92.1, 110.4, 136.2, 158.7, 175.9, 212.8, 250.3, 310.1, 420.6, 560.8,
+        0.3, 1.2, 2.8, 4.1, 6.7, 8.9, 10.5, 12.4, 14.3, 18.8, 23.5, 26.2, 31.7, 36.1, 44.2, 55.6,
+        63.4, 78.5, 92.1, 110.4, 136.2, 158.7, 175.9, 212.8, 250.3, 310.1, 420.6, 560.8,
       ],
     ),
     chatViolations: createChatViolations(now),
@@ -597,8 +597,8 @@ function createInitialState(): PreviewState {
       ['Владимир', 'Татьяна', 'Ирина', 'Дмитрий', 'Елена', 'Максим'],
       addHours(now, -1),
       [
-        0.6, 1.4, 2.2, 3.8, 5.6, 7.3, 9.1, 11.8, 13.4, 17.7, 21.2, 26.5, 33.9, 40.2, 47.8,
-        58.1, 70.3, 88.4, 112.6, 138.8, 166.2, 199.1, 240.5, 296.2, 352.7, 490.4,
+        0.6, 1.4, 2.2, 3.8, 5.6, 7.3, 9.1, 11.8, 13.4, 17.7, 21.2, 26.5, 33.9, 40.2, 47.8, 58.1,
+        70.3, 88.4, 112.6, 138.8, 166.2, 199.1, 240.5, 296.2, 352.7, 490.4,
       ],
     ),
   };
@@ -642,7 +642,9 @@ function buildLogsDashboard(
   range: LogsDashboardRange,
 ): LogsDashboardResponse {
   const now = new Date();
-  const violations = state.chatViolations.filter((item) => isWithinRange(item.createdAt, range, now));
+  const violations = state.chatViolations.filter((item) =>
+    isWithinRange(item.createdAt, range, now),
+  );
   const membershipItems = filterActivityItems(state.chatActivity, range, 'all', now);
   const joinedUsers = membershipItems.filter((item) => item.type === 'joined').length;
   const leftUsers = membershipItems.filter((item) => item.type === 'left').length;
@@ -711,22 +713,72 @@ function buildChannelStats(state: PreviewState, channelId: string, range: Channe
   const { from, to } = resolveRangeWindow(range, now);
   const points = range === '24h' ? 12 : range === '7d' ? 8 : 10;
   const stepMs = Math.max(1, (to.getTime() - from.getTime()) / Math.max(1, points - 1));
-  const baseParticipants = state.channelHeaderParticipantsCount - joined + left;
-  const participantsSeries = Array.from({ length: points }, (_, index) => {
-    const at = new Date(from.getTime() + stepMs * index);
-    return {
-      at: at.toISOString(),
-      participantsCount: baseParticipants + Math.max(0, Math.round((joined - left) * (index / points))),
-    };
+
+  function distributeTotal(total: number, weights: number[]): number[] {
+    if (total <= 0) {
+      return Array.from({ length: weights.length }, () => 0);
+    }
+
+    const safeWeights = weights.map((weight) => Math.max(0, weight));
+    const totalWeight = safeWeights.reduce((sum, weight) => sum + weight, 0);
+    if (totalWeight <= 0) {
+      const fallback = Array.from({ length: weights.length }, () => 0);
+      for (let index = 0; index < total; index += 1) {
+        fallback[index % fallback.length] += 1;
+      }
+      return fallback;
+    }
+
+    const raw = safeWeights.map((weight) => (weight / totalWeight) * total);
+    const distributed = raw.map((value) => Math.floor(value));
+    let remainder = total - distributed.reduce((sum, value) => sum + value, 0);
+    const fractions = raw
+      .map((value, index) => ({ index, fraction: value - Math.floor(value) }))
+      .sort((leftItem, rightItem) => rightItem.fraction - leftItem.fraction);
+
+    for (let index = 0; index < fractions.length && remainder > 0; index += 1) {
+      distributed[fractions[index]!.index] += 1;
+      remainder -= 1;
+    }
+
+    return distributed;
+  }
+
+  const joinedWeights = Array.from({ length: points }, (_, index) => {
+    const progress = points > 1 ? index / (points - 1) : 0;
+    return 1 + progress * (range === '24h' ? 0.45 : 0.9);
   });
+  const leftWeights = Array.from({ length: points }, (_, index) => {
+    if (index % 4 === 0) {
+      return range === '24h' ? 0.2 : 0.25;
+    }
+
+    const progress = points > 1 ? index / (points - 1) : 0;
+    return 0.75 + (1 - progress) * 0.45;
+  });
+  const joinedDistribution = distributeTotal(joined, joinedWeights);
+  const leftDistribution = distributeTotal(left, leftWeights);
+  const baseParticipants =
+    state.channelHeaderParticipantsCount -
+    joinedDistribution.reduce((sum, value) => sum + value, 0) +
+    leftDistribution.reduce((sum, value) => sum + value, 0);
+
+  let runningParticipants = baseParticipants;
   const membershipSeries = Array.from({ length: points }, (_, index) => {
     const at = new Date(from.getTime() + stepMs * index);
-    const joinedBase = range === '24h' ? 1 + (index % 3) : 4 + (index % 5);
-    const leftBase = index % 4 === 0 ? 0 : range === '24h' ? index % 2 : index % 3;
+    const joinedValue = joinedDistribution[index] ?? 0;
+    const leftValue = leftDistribution[index] ?? 0;
     return {
       at: at.toISOString(),
-      joined: joinedBase,
-      left: leftBase,
+      joined: joinedValue,
+      left: leftValue,
+    };
+  });
+  const participantsSeries = membershipSeries.map((item) => {
+    runningParticipants = Math.max(0, runningParticipants + item.joined - item.left);
+    return {
+      at: item.at,
+      participantsCount: runningParticipants,
     };
   });
   const viewsSeries = Array.from({ length: points }, (_, index) => {
@@ -861,7 +913,10 @@ function upsertGiveaway(
   return next;
 }
 
-function createDraftGiveaway(entityType: 'chat' | 'channel', entityId: string): ManagedGiveawayDetails {
+function createDraftGiveaway(
+  entityType: 'chat' | 'channel',
+  entityId: string,
+): ManagedGiveawayDetails {
   const now = new Date();
 
   return managedGiveawayDetailsSchema.parse({
@@ -916,7 +971,7 @@ function createModerationResult(
     ok: true,
     action: payload.action,
     userId,
-    banDurationHours: payload.action === 'BAN' ? payload.banDurationHours ?? 24 : null,
+    banDurationHours: payload.action === 'BAN' ? (payload.banDurationHours ?? 24) : null,
     unbanScheduledAt:
       payload.action === 'BAN' ? addHours(now, payload.banDurationHours ?? 24).toISOString() : null,
     message: buildModerationMessage(payload),
@@ -1329,8 +1384,7 @@ async function handleChatRequest(
         state.chatActivity,
         {
           range: (url.searchParams.get('range') as MembershipActivityRange | null) ?? '7d',
-          filter:
-            (url.searchParams.get('filter') as MembershipActivityFilter | null) ?? 'all',
+          filter: (url.searchParams.get('filter') as MembershipActivityFilter | null) ?? 'all',
           limit: Number.parseInt(url.searchParams.get('limit') ?? '50', 10),
           cursor: url.searchParams.get('cursor'),
         },
@@ -1339,12 +1393,7 @@ async function handleChatRequest(
     );
   }
 
-  if (
-    tail[0] === 'members' &&
-    tail[1] &&
-    tail[2] === 'moderation-action' &&
-    method === 'POST'
-  ) {
+  if (tail[0] === 'members' && tail[1] && tail[2] === 'moderation-action' && method === 'POST') {
     const userId = decodeURIComponent(tail[1]);
     const payload = parseJsonBody(init) as ManualModerationActionRequest;
     const displayName = resolveDisplayName(state, userId);
@@ -1556,8 +1605,7 @@ async function handleChannelRequest(
         state.channelActivity,
         {
           range: (url.searchParams.get('range') as MembershipActivityRange | null) ?? '7d',
-          filter:
-            (url.searchParams.get('filter') as MembershipActivityFilter | null) ?? 'all',
+          filter: (url.searchParams.get('filter') as MembershipActivityFilter | null) ?? 'all',
           limit: Number.parseInt(url.searchParams.get('limit') ?? '50', 10),
           cursor: url.searchParams.get('cursor'),
         },

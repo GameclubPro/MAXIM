@@ -227,34 +227,74 @@ function buildAudiencePath(points: Array<{ x: number; y: number }>): string {
     return '';
   }
 
-  return points
-    .map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x.toFixed(2)} ${point.y.toFixed(2)}`)
-    .join(' ');
+  if (points.length === 1) {
+    const [point] = points;
+    return `M ${point.x.toFixed(2)} ${point.y.toFixed(2)}`;
+  }
+
+  let path = `M ${points[0]!.x.toFixed(2)} ${points[0]!.y.toFixed(2)}`;
+  for (let index = 0; index < points.length - 1; index += 1) {
+    const current = points[index]!;
+    const next = points[index + 1]!;
+    const deltaX = (next.x - current.x) / 2;
+
+    path += ` C ${(current.x + deltaX * 0.7).toFixed(2)} ${current.y.toFixed(2)} ${(
+      next.x -
+      deltaX * 0.7
+    ).toFixed(2)} ${next.y.toFixed(2)} ${next.x.toFixed(2)} ${next.y.toFixed(2)}`;
+  }
+
+  return path;
+}
+
+function buildAudienceAreaPath(
+  linePath: string,
+  points: Array<{ x: number; y: number }>,
+  floorY: number,
+): string {
+  if (!linePath || points.length === 0) {
+    return '';
+  }
+
+  const firstPoint = points[0]!;
+  const lastPoint = points[points.length - 1]!;
+  return `${linePath} L ${lastPoint.x.toFixed(2)} ${floorY.toFixed(2)} L ${firstPoint.x.toFixed(
+    2,
+  )} ${floorY.toFixed(2)} Z`;
 }
 
 function buildAudienceChart(stats: ChannelStatsResponse): {
   points: AudienceChartPoint[];
-  path: string;
+  linePath: string;
+  areaPath: string;
   hasLine: boolean;
-  maxMembership: number;
+  guideYs: number[];
+  dividerY: number;
+  barsBaseline: number;
 } {
   const series = stats.official.series.participants;
   if (series.length === 0) {
     return {
       points: [],
-      path: '',
+      linePath: '',
+      areaPath: '',
       hasLine: false,
-      maxMembership: 0,
+      guideYs: [],
+      dividerY: 92,
+      barsBaseline: 132,
     };
   }
 
   const width = 320;
-  const height = 180;
   const leftPad = 14;
   const rightPad = 14;
-  const topPad = 14;
-  const bottomPad = 18;
-  const baseline = 120;
+  const lineTop = 16;
+  const lineBottom = 74;
+  const lineFloor = 84;
+  const dividerY = 92;
+  const barsBaseline = 132;
+  const joinedPeakHeight = 28;
+  const leftPeakHeight = 16;
   const plotWidth = width - leftPad - rightPad;
   const participantValues = series
     .map((item) => item.participantsCount)
@@ -262,12 +302,15 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
   const minParticipants = participantValues.length > 0 ? Math.min(...participantValues) : 0;
   const maxParticipants = participantValues.length > 0 ? Math.max(...participantValues) : 0;
   const participantSpan = Math.max(1, maxParticipants - minParticipants);
-  const membershipValues = stats.official.series.membership.flatMap((item) => [
-    item.joined,
-    item.left ?? 0,
-  ]);
-  const maxMembership = membershipValues.length > 0 ? Math.max(...membershipValues) : 0;
-  const membershipScale = maxMembership > 0 ? 40 / maxMembership : 0;
+  const participantPadding = Math.max(1, participantSpan * 0.16);
+  const participantMin = minParticipants - participantPadding;
+  const participantMax = maxParticipants + participantPadding;
+  const participantRange = Math.max(1, participantMax - participantMin);
+  const membershipSeries = stats.official.series.membership;
+  const maxJoined = Math.max(...membershipSeries.map((item) => item.joined), 0);
+  const maxLeft = Math.max(...membershipSeries.map((item) => item.left ?? 0), 0);
+  const joinedScale = maxJoined > 0 ? joinedPeakHeight / maxJoined : 0;
+  const leftScale = maxLeft > 0 ? leftPeakHeight / maxLeft : 0;
 
   const points = series.map((item, index) => {
     const x =
@@ -276,28 +319,38 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
         : leftPad + (plotWidth * index) / Math.max(1, series.length - 1);
     const participantsY =
       typeof item.participantsCount === 'number'
-        ? topPad + ((maxParticipants - item.participantsCount) / participantSpan) * 74
-        : baseline;
+        ? lineTop +
+          ((participantMax - item.participantsCount) / participantRange) * (lineBottom - lineTop)
+        : lineBottom;
     const membership = stats.official.series.membership[index];
-    const joinedHeight = membership ? membership.joined * membershipScale : 0;
+    const joinedHeight = membership ? membership.joined * joinedScale : 0;
     const leftHeight =
-      membership && typeof membership.left === 'number' ? membership.left * membershipScale : 0;
+      membership && typeof membership.left === 'number' ? membership.left * leftScale : 0;
 
     return {
       x,
       y: participantsY,
-      joinedTop: baseline - joinedHeight,
+      joinedTop: barsBaseline - joinedHeight,
       joinedHeight,
-      leftTop: baseline,
+      leftTop: barsBaseline,
       leftHeight,
     };
   });
 
+  const linePath = buildAudiencePath(points.map((point) => ({ x: point.x, y: point.y })));
+
   return {
     points,
-    path: buildAudiencePath(points.map((point) => ({ x: point.x, y: point.y }))),
+    linePath,
+    areaPath: buildAudienceAreaPath(
+      linePath,
+      points.map((point) => ({ x: point.x, y: point.y })),
+      lineFloor,
+    ),
     hasLine: participantValues.length > 0,
-    maxMembership,
+    guideYs: [lineTop, Math.round((lineTop + lineBottom) / 2), lineBottom],
+    dividerY,
+    barsBaseline,
   };
 }
 
@@ -352,43 +405,73 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
         <div className="channel-stats-graph__empty">Пока нет данных за период.</div>
       ) : (
         <>
-          <svg viewBox="0 0 320 180" className="channel-stats-graph__svg" aria-hidden>
-            <line x1="14" y1="120" x2="306" y2="120" className="channel-stats-graph__baseline" />
-            {chart.points.map((point, index) => (
-              <g key={labels[index]?.at ?? index}>
-                <rect
-                  x={point.x - 6}
-                  y={point.joinedTop}
-                  width="12"
-                  height={point.joinedHeight}
-                  rx="5"
-                  className="channel-stats-graph__bar channel-stats-graph__bar--joined"
+          <div className="channel-stats-graph__canvas channel-stats-graph__canvas--audience">
+            <svg viewBox="0 0 320 180" className="channel-stats-graph__svg" aria-hidden>
+              {chart.guideYs.map((y) => (
+                <line
+                  key={`guide-${y}`}
+                  x1="14"
+                  y1={y}
+                  x2="306"
+                  y2={y}
+                  className="channel-stats-graph__grid"
                 />
-                {point.leftHeight > 0 ? (
+              ))}
+              <line
+                x1="14"
+                y1={chart.dividerY}
+                x2="306"
+                y2={chart.dividerY}
+                className="channel-stats-graph__divider"
+              />
+              <line
+                x1="14"
+                y1={chart.barsBaseline}
+                x2="306"
+                y2={chart.barsBaseline}
+                className="channel-stats-graph__baseline"
+              />
+              {chart.hasLine ? (
+                <path d={chart.areaPath} className="channel-stats-graph__area" />
+              ) : null}
+              {chart.points.map((point, index) => (
+                <g key={labels[index]?.at ?? index}>
                   <rect
-                    x={point.x - 6}
-                    y={point.leftTop}
-                    width="12"
-                    height={point.leftHeight}
-                    rx="5"
-                    className="channel-stats-graph__bar channel-stats-graph__bar--left"
+                    x={point.x - 5}
+                    y={point.joinedTop}
+                    width="10"
+                    height={point.joinedHeight}
+                    rx="4.5"
+                    className="channel-stats-graph__bar channel-stats-graph__bar--joined"
                   />
-                ) : null}
-              </g>
-            ))}
-            {chart.hasLine ? <path d={chart.path} className="channel-stats-graph__line" /> : null}
-            {chart.hasLine
-              ? chart.points.map((point, index) => (
-                  <circle
-                    key={labels[index]?.at ?? index}
-                    cx={point.x}
-                    cy={point.y}
-                    r="3.5"
-                    className="channel-stats-graph__dot"
-                  />
-                ))
-              : null}
-          </svg>
+                  {point.leftHeight > 0 ? (
+                    <rect
+                      x={point.x - 5}
+                      y={point.leftTop}
+                      width="10"
+                      height={point.leftHeight}
+                      rx="4.5"
+                      className="channel-stats-graph__bar channel-stats-graph__bar--left"
+                    />
+                  ) : null}
+                </g>
+              ))}
+              {chart.hasLine ? (
+                <path d={chart.linePath} className="channel-stats-graph__line" />
+              ) : null}
+              {chart.hasLine
+                ? chart.points.map((point, index) => (
+                    <circle
+                      key={labels[index]?.at ?? index}
+                      cx={point.x}
+                      cy={point.y}
+                      r="3.5"
+                      className="channel-stats-graph__dot"
+                    />
+                  ))
+                : null}
+            </svg>
+          </div>
 
           <div className="channel-stats-graph__legend">
             <span>
@@ -430,20 +513,22 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
         <div className="channel-stats-graph__empty">Пока нет постов за период.</div>
       ) : (
         <>
-          <svg viewBox="0 0 320 180" className="channel-stats-graph__svg" aria-hidden>
-            <line x1="14" y1="162" x2="306" y2="162" className="channel-stats-graph__baseline" />
-            {chart.bars.map((bar, index) => (
-              <rect
-                key={labels[index]?.at ?? index}
-                x={bar.x - 9}
-                y={bar.y}
-                width="18"
-                height={Math.max(4, bar.height)}
-                rx="6"
-                className="channel-stats-graph__bar channel-stats-graph__bar--views"
-              />
-            ))}
-          </svg>
+          <div className="channel-stats-graph__canvas">
+            <svg viewBox="0 0 320 180" className="channel-stats-graph__svg" aria-hidden>
+              <line x1="14" y1="162" x2="306" y2="162" className="channel-stats-graph__baseline" />
+              {chart.bars.map((bar, index) => (
+                <rect
+                  key={labels[index]?.at ?? index}
+                  x={bar.x - 9}
+                  y={bar.y}
+                  width="18"
+                  height={Math.max(4, bar.height)}
+                  rx="6"
+                  className="channel-stats-graph__bar channel-stats-graph__bar--views"
+                />
+              ))}
+            </svg>
+          </div>
 
           <div className="channel-stats-graph__legend">
             <span>
