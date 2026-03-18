@@ -232,23 +232,11 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir) {
       await scenario.beforeShot(page);
     }
 
-    const frame = page.locator('.design-preview__device').first();
-    const box = await frame.boundingBox();
-
-    if (!box) {
-      throw new Error(`Preview frame bounding box is unavailable for scenario "${scenario.name}"`);
-    }
-
     await page.screenshot({
       path: path.join(shotDir, `${scenario.name}.png`),
       animations: 'disabled',
       timeout: 120_000,
-      clip: {
-        x: Math.max(0, Math.floor(box.x)),
-        y: Math.max(0, Math.floor(box.y)),
-        width: Math.ceil(box.width),
-        height: Math.ceil(box.height),
-      },
+      fullPage: true,
     });
   }
 
