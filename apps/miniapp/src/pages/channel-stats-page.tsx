@@ -27,6 +27,10 @@ type ChannelStatsRouteState = {
 type ChartTab = 'audience' | 'views';
 
 type AudienceChartPoint = {
+  at: string;
+  participantsCount: number | null;
+  joined: number;
+  left: number;
   x: number;
   y: number;
   joinedTop: number;
@@ -36,6 +40,8 @@ type AudienceChartPoint = {
 };
 
 type ViewChartPoint = {
+  at: string;
+  views: number;
   x: number;
   y: number;
   height: number;
@@ -118,6 +124,31 @@ function formatShortDate(value: string | null, bucket: ChannelStatsBucket): stri
   return new Intl.DateTimeFormat('ru-RU', {
     day: '2-digit',
     month: 'short',
+  }).format(parsed);
+}
+
+function formatChartDetailDate(value: string | null, bucket: ChannelStatsBucket): string {
+  if (!value) {
+    return 'Нет данных';
+  }
+
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) {
+    return 'Нет данных';
+  }
+
+  if (bucket === 'hour') {
+    return new Intl.DateTimeFormat('ru-RU', {
+      day: '2-digit',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(parsed);
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: 'long',
   }).format(parsed);
 }
 
@@ -222,6 +253,36 @@ function hasSecondaryActivity(secondary: ChannelStatsResponse['secondary']): boo
   );
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function resolveSparseLabelIndices(length: number, activeIndex: number): Set<number> {
+  if (length <= 4) {
+    return new Set(Array.from({ length }, (_, index) => index));
+  }
+
+  const lastIndex = Math.max(0, length - 1);
+  const anchors = [
+    0,
+    Math.round(lastIndex / 3),
+    Math.round((lastIndex * 2) / 3),
+    lastIndex,
+    clamp(activeIndex, 0, lastIndex),
+  ];
+
+  return new Set(anchors);
+}
+
+function resolveChartIndexFromClientX(clientX: number, rect: DOMRect, pointsLength: number): number {
+  if (pointsLength <= 1) {
+    return 0;
+  }
+
+  const ratio = clamp((clientX - rect.left) / Math.max(rect.width, 1), 0, 1);
+  return Math.round(ratio * (pointsLength - 1));
+}
+
 function buildAudiencePath(points: Array<{ x: number; y: number }>): string {
   if (points.length === 0) {
     return '';
@@ -271,6 +332,9 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
   guideYs: number[];
   dividerY: number;
   barsBaseline: number;
+  leftPad: number;
+  rightPad: number;
+  axisLabels: Array<{ y: number; label: string }>;
 } {
   const series = stats.official.series.participants;
   if (series.length === 0) {
@@ -282,19 +346,22 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
       guideYs: [],
       dividerY: 92,
       barsBaseline: 132,
+      leftPad: 50,
+      rightPad: 14,
+      axisLabels: [],
     };
   }
 
   const width = 320;
-  const leftPad = 14;
+  const leftPad = 50;
   const rightPad = 14;
-  const lineTop = 16;
-  const lineBottom = 74;
-  const lineFloor = 84;
-  const dividerY = 92;
-  const barsBaseline = 132;
-  const joinedPeakHeight = 28;
-  const leftPeakHeight = 16;
+  const lineTop = 20;
+  const lineBottom = 78;
+  const lineFloor = 88;
+  const dividerY = 98;
+  const barsBaseline = 138;
+  const joinedPeakHeight = 24;
+  const leftPeakHeight = 14;
   const plotWidth = width - leftPad - rightPad;
   const participantValues = series
     .map((item) => item.participantsCount)
@@ -323,11 +390,17 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
           ((participantMax - item.participantsCount) / participantRange) * (lineBottom - lineTop)
         : lineBottom;
     const membership = stats.official.series.membership[index];
-    const joinedHeight = membership ? membership.joined * joinedScale : 0;
+    const joined = membership?.joined ?? 0;
+    const left = membership?.left ?? 0;
+    const joinedHeight = joined * joinedScale;
     const leftHeight =
-      membership && typeof membership.left === 'number' ? membership.left * leftScale : 0;
+      typeof left === 'number' && left > 0 ? left * leftScale : 0;
 
     return {
+      at: item.at,
+      participantsCount: item.participantsCount,
+      joined,
+      left,
       x,
       y: participantsY,
       joinedTop: barsBaseline - joinedHeight,
@@ -338,6 +411,24 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
   });
 
   const linePath = buildAudiencePath(points.map((point) => ({ x: point.x, y: point.y })));
+  const axisLabels =
+    participantValues.length === 0
+      ? []
+      : maxParticipants === minParticipants
+        ? [
+            {
+              y: Math.round((lineTop + lineBottom) / 2) + 4,
+              label: formatCount(maxParticipants),
+            },
+          ]
+        : [
+            { y: lineTop + 4, label: formatCount(maxParticipants) },
+            {
+              y: Math.round((lineTop + lineBottom) / 2) + 4,
+              label: formatCount(Math.round((maxParticipants + minParticipants) / 2)),
+            },
+            { y: lineBottom + 4, label: formatCount(minParticipants) },
+          ];
 
   return {
     points,
@@ -351,24 +442,35 @@ function buildAudienceChart(stats: ChannelStatsResponse): {
     guideYs: [lineTop, Math.round((lineTop + lineBottom) / 2), lineBottom],
     dividerY,
     barsBaseline,
+    leftPad,
+    rightPad,
+    axisLabels,
   };
 }
 
 function buildViewsChart(stats: ChannelStatsResponse): {
   bars: ViewChartPoint[];
   maxViews: number;
+  guideYs: number[];
+  leftPad: number;
+  rightPad: number;
+  baselineY: number;
 } {
   const series = stats.official.series.views;
   if (series.length === 0) {
     return {
       bars: [],
       maxViews: 0,
+      guideYs: [],
+      leftPad: 18,
+      rightPad: 14,
+      baselineY: 162,
     };
   }
 
   const width = 320;
   const height = 180;
-  const leftPad = 14;
+  const leftPad = 18;
   const rightPad = 14;
   const topPad = 16;
   const bottomPad = 18;
@@ -385,19 +487,57 @@ function buildViewsChart(stats: ChannelStatsResponse): {
           : leftPad + (plotWidth * index) / Math.max(1, series.length - 1);
       const barHeight = item.views * scale;
       return {
+        at: item.at,
+        views: item.views,
         x,
         y: height - bottomPad - barHeight,
         height: barHeight,
       };
     }),
     maxViews,
+    guideYs: [topPad, Math.round(topPad + usableHeight / 2)],
+    leftPad,
+    rightPad,
+    baselineY: height - bottomPad,
   };
 }
 
 function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
   const chart = buildAudienceChart(stats);
   const labels = stats.official.series.participants;
-  const hasLeftBars = stats.official.series.membership.some((item) => (item.left ?? 0) > 0);
+  const [activeIndex, setActiveIndex] = useState(Math.max(chart.points.length - 1, 0));
+
+  useEffect(() => {
+    setActiveIndex(Math.max(chart.points.length - 1, 0));
+  }, [chart.points.length, stats.period.from, stats.period.to]);
+
+  const safeActiveIndex = clamp(activeIndex, 0, Math.max(chart.points.length - 1, 0));
+  const activePoint = chart.points[safeActiveIndex] ?? null;
+  const hasLeftBars = chart.points.some((point) => point.left > 0);
+  const visibleLabelIndices = resolveSparseLabelIndices(labels.length, safeActiveIndex);
+  const slotWidth =
+    chart.points.length > 1
+      ? (320 - chart.leftPad - chart.rightPad) / Math.max(1, chart.points.length - 1)
+      : 44;
+  const activeBandWidth = clamp(slotWidth * 0.72, 26, 40);
+  const activeParticipantsLabel = formatCount(activePoint?.participantsCount ?? null);
+  const activeParticipantsLabelWidth = Math.max(58, activeParticipantsLabel.length * 7 + 18);
+  const activeNet = activePoint ? activePoint.joined - activePoint.left : 0;
+  const activeGuideLabel = activePoint
+    ? `${formatChartDetailDate(activePoint.at, stats.period.bucket)}: ${formatCount(
+        activePoint.participantsCount,
+      )} участников, ${formatCount(activePoint.joined)} пришли, ${formatCount(
+        activePoint.left,
+      )} ушли, баланс ${formatSignedCount(activeNet)}`
+    : 'Данные по аудитории недоступны';
+  const calloutX = activePoint
+    ? clamp(
+        activePoint.x - activeParticipantsLabelWidth / 2,
+        chart.leftPad,
+        320 - chart.rightPad - activeParticipantsLabelWidth,
+      )
+    : 0;
+  const calloutY = activePoint ? clamp(activePoint.y - 36, 8, chart.dividerY - 28) : 0;
 
   return (
     <div className="channel-stats-graph">
@@ -405,53 +545,149 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
         <div className="channel-stats-graph__empty">Пока нет данных за период.</div>
       ) : (
         <>
-          <div className="channel-stats-graph__canvas channel-stats-graph__canvas--audience">
+          <div className="channel-stats-graph__summary">
+            <div className="channel-stats-graph__summary-copy">
+              <small>{activePoint ? formatChartDetailDate(activePoint.at, stats.period.bucket) : 'Нет данных'}</small>
+              <strong>{activeParticipantsLabel} участников</strong>
+            </div>
+
+            <div className="channel-stats-graph__summary-chips">
+              <span className="channel-stats-graph__chip channel-stats-graph__chip--line">
+                Баланс {formatSignedCount(activeNet)}
+              </span>
+              <span className="channel-stats-graph__chip channel-stats-graph__chip--joined">
+                Вошли {formatCount(activePoint?.joined ?? 0)}
+              </span>
+              {hasLeftBars ? (
+                <span className="channel-stats-graph__chip channel-stats-graph__chip--left">
+                  Вышли {formatCount(activePoint?.left ?? 0)}
+                </span>
+              ) : null}
+            </div>
+          </div>
+
+          <div
+            className="channel-stats-graph__canvas channel-stats-graph__canvas--audience"
+            tabIndex={0}
+            role="slider"
+            aria-label="Динамика аудитории"
+            aria-valuemin={1}
+            aria-valuemax={chart.points.length}
+            aria-valuenow={safeActiveIndex + 1}
+            aria-valuetext={activeGuideLabel}
+            onPointerDown={(event) =>
+              setActiveIndex(
+                resolveChartIndexFromClientX(
+                  event.clientX,
+                  event.currentTarget.getBoundingClientRect(),
+                  chart.points.length,
+                ),
+              )
+            }
+            onPointerMove={(event) => {
+              if (event.pointerType !== 'mouse' && event.buttons !== 1) {
+                return;
+              }
+
+              setActiveIndex(
+                resolveChartIndexFromClientX(
+                  event.clientX,
+                  event.currentTarget.getBoundingClientRect(),
+                  chart.points.length,
+                ),
+              );
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowLeft') {
+                event.preventDefault();
+                setActiveIndex((current) => clamp(current - 1, 0, chart.points.length - 1));
+              }
+
+              if (event.key === 'ArrowRight') {
+                event.preventDefault();
+                setActiveIndex((current) => clamp(current + 1, 0, chart.points.length - 1));
+              }
+            }}
+          >
             <svg viewBox="0 0 320 180" className="channel-stats-graph__svg" aria-hidden>
+              {activePoint ? (
+                <rect
+                  x={activePoint.x - activeBandWidth / 2}
+                  y={chart.guideYs[0]! - 10}
+                  width={activeBandWidth}
+                  height={chart.barsBaseline - chart.guideYs[0]! + 14}
+                  rx={activeBandWidth / 2}
+                  className="channel-stats-graph__active-band"
+                />
+              ) : null}
+              {chart.axisLabels.map((label) => (
+                <text
+                  key={`${label.label}-${label.y}`}
+                  x="12"
+                  y={label.y}
+                  className="channel-stats-graph__axis-text"
+                >
+                  {label.label}
+                </text>
+              ))}
               {chart.guideYs.map((y) => (
                 <line
                   key={`guide-${y}`}
-                  x1="14"
+                  x1={chart.leftPad}
                   y1={y}
-                  x2="306"
+                  x2={320 - chart.rightPad}
                   y2={y}
                   className="channel-stats-graph__grid"
                 />
               ))}
               <line
-                x1="14"
+                x1={chart.leftPad}
                 y1={chart.dividerY}
-                x2="306"
+                x2={320 - chart.rightPad}
                 y2={chart.dividerY}
                 className="channel-stats-graph__divider"
               />
               <line
-                x1="14"
+                x1={chart.leftPad}
                 y1={chart.barsBaseline}
-                x2="306"
+                x2={320 - chart.rightPad}
                 y2={chart.barsBaseline}
                 className="channel-stats-graph__baseline"
               />
               {chart.hasLine ? (
                 <path d={chart.areaPath} className="channel-stats-graph__area" />
               ) : null}
+              {activePoint ? (
+                <line
+                  x1={activePoint.x}
+                  y1={chart.guideYs[0]}
+                  x2={activePoint.x}
+                  y2={chart.barsBaseline}
+                  className="channel-stats-graph__active-guide"
+                />
+              ) : null}
               {chart.points.map((point, index) => (
                 <g key={labels[index]?.at ?? index}>
                   <rect
-                    x={point.x - 5}
+                    x={point.x - (safeActiveIndex === index ? 6 : 5)}
                     y={point.joinedTop}
-                    width="10"
+                    width={safeActiveIndex === index ? 12 : 10}
                     height={point.joinedHeight}
                     rx="4.5"
-                    className="channel-stats-graph__bar channel-stats-graph__bar--joined"
+                    className={`channel-stats-graph__bar channel-stats-graph__bar--joined ${
+                      safeActiveIndex === index ? 'is-active' : ''
+                    }`}
                   />
                   {point.leftHeight > 0 ? (
                     <rect
-                      x={point.x - 5}
+                      x={point.x - (safeActiveIndex === index ? 6 : 5)}
                       y={point.leftTop}
-                      width="10"
+                      width={safeActiveIndex === index ? 12 : 10}
                       height={point.leftHeight}
                       rx="4.5"
-                      className="channel-stats-graph__bar channel-stats-graph__bar--left"
+                      className={`channel-stats-graph__bar channel-stats-graph__bar--left ${
+                        safeActiveIndex === index ? 'is-active' : ''
+                      }`}
                     />
                   ) : null}
                 </g>
@@ -465,38 +701,52 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
                       key={labels[index]?.at ?? index}
                       cx={point.x}
                       cy={point.y}
-                      r="3.5"
-                      className="channel-stats-graph__dot"
+                      r={safeActiveIndex === index ? 5 : 3.5}
+                      className={`channel-stats-graph__dot ${
+                        safeActiveIndex === index ? 'is-active' : ''
+                      }`}
                     />
                   ))
                 : null}
+              {activePoint ? (
+                <g>
+                  <rect
+                    x={calloutX}
+                    y={calloutY}
+                    width={activeParticipantsLabelWidth}
+                    height="24"
+                    rx="12"
+                    className="channel-stats-graph__callout"
+                  />
+                  <text
+                    x={calloutX + activeParticipantsLabelWidth / 2}
+                    y={calloutY + 16}
+                    textAnchor="middle"
+                    className="channel-stats-graph__callout-text"
+                  >
+                    {activeParticipantsLabel}
+                  </text>
+                </g>
+              ) : null}
             </svg>
-          </div>
-
-          <div className="channel-stats-graph__legend">
-            <span>
-              <i className="is-line" />
-              Участники
-            </span>
-            <span>
-              <i className="is-joined" />
-              Пришло
-            </span>
-            {hasLeftBars ? (
-              <span>
-                <i className="is-left" />
-                Ушло
-              </span>
-            ) : null}
           </div>
 
           <div className="channel-stats-graph__labels">
             {labels.map((item, index) => (
-              <small key={`${item.at}-${index}`}>
-                {formatShortDate(item.at, stats.period.bucket)}
+              <small
+                key={`${item.at}-${index}`}
+                className={safeActiveIndex === index ? 'is-active' : ''}
+              >
+                {visibleLabelIndices.has(index)
+                  ? formatShortDate(item.at, stats.period.bucket)
+                  : '\u00a0'}
               </small>
             ))}
           </div>
+
+          <output className="channel-stats-graph__sr" aria-live="polite">
+            {activeGuideLabel}
+          </output>
         </>
       )}
     </div>
@@ -506,6 +756,37 @@ function AudienceChart({ stats }: { stats: ChannelStatsResponse }) {
 function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
   const chart = buildViewsChart(stats);
   const labels = stats.official.series.views;
+  const [activeIndex, setActiveIndex] = useState(Math.max(chart.bars.length - 1, 0));
+
+  useEffect(() => {
+    setActiveIndex(Math.max(chart.bars.length - 1, 0));
+  }, [chart.bars.length, stats.period.from, stats.period.to]);
+
+  const safeActiveIndex = clamp(activeIndex, 0, Math.max(chart.bars.length - 1, 0));
+  const activeBar = chart.bars[safeActiveIndex] ?? null;
+  const visibleLabelIndices = resolveSparseLabelIndices(labels.length, safeActiveIndex);
+  const totalViews = labels.reduce((sum, item) => sum + item.views, 0);
+  const averageViews = labels.length > 0 ? Math.round(totalViews / labels.length) : 0;
+  const slotWidth =
+    chart.bars.length > 1
+      ? (320 - chart.leftPad - chart.rightPad) / Math.max(1, chart.bars.length - 1)
+      : 44;
+  const activeBandWidth = clamp(slotWidth * 0.76, 28, 44);
+  const activeViewsLabel = formatCount(activeBar?.views ?? null);
+  const activeViewsLabelWidth = Math.max(58, activeViewsLabel.length * 7 + 18);
+  const calloutX = activeBar
+    ? clamp(
+        activeBar.x - activeViewsLabelWidth / 2,
+        chart.leftPad,
+        320 - chart.rightPad - activeViewsLabelWidth,
+      )
+    : 0;
+  const calloutY = activeBar ? clamp(activeBar.y - 34, 8, chart.baselineY - 28) : 0;
+  const activeGuideLabel = activeBar
+    ? `${formatChartDetailDate(activeBar.at, stats.period.bucket)}: ${formatCount(
+        activeBar.views,
+      )} просмотров`
+    : 'Данные по просмотрам недоступны';
 
   return (
     <div className="channel-stats-graph">
@@ -513,37 +794,154 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
         <div className="channel-stats-graph__empty">Пока нет постов за период.</div>
       ) : (
         <>
-          <div className="channel-stats-graph__canvas">
+          <div className="channel-stats-graph__summary">
+            <div className="channel-stats-graph__summary-copy">
+              <small>{activeBar ? formatChartDetailDate(activeBar.at, stats.period.bucket) : 'Нет данных'}</small>
+              <strong>{activeViewsLabel} просмотров</strong>
+            </div>
+
+            <div className="channel-stats-graph__summary-chips">
+              <span className="channel-stats-graph__chip channel-stats-graph__chip--views">
+                Пик {formatCount(chart.maxViews)}
+              </span>
+              <span className="channel-stats-graph__chip channel-stats-graph__chip--muted">
+                Среднее {formatCount(averageViews)}
+              </span>
+            </div>
+          </div>
+
+          <div
+            className="channel-stats-graph__canvas"
+            tabIndex={0}
+            role="slider"
+            aria-label="Охват публикаций"
+            aria-valuemin={1}
+            aria-valuemax={chart.bars.length}
+            aria-valuenow={safeActiveIndex + 1}
+            aria-valuetext={activeGuideLabel}
+            onPointerDown={(event) =>
+              setActiveIndex(
+                resolveChartIndexFromClientX(
+                  event.clientX,
+                  event.currentTarget.getBoundingClientRect(),
+                  chart.bars.length,
+                ),
+              )
+            }
+            onPointerMove={(event) => {
+              if (event.pointerType !== 'mouse' && event.buttons !== 1) {
+                return;
+              }
+
+              setActiveIndex(
+                resolveChartIndexFromClientX(
+                  event.clientX,
+                  event.currentTarget.getBoundingClientRect(),
+                  chart.bars.length,
+                ),
+              );
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'ArrowLeft') {
+                event.preventDefault();
+                setActiveIndex((current) => clamp(current - 1, 0, chart.bars.length - 1));
+              }
+
+              if (event.key === 'ArrowRight') {
+                event.preventDefault();
+                setActiveIndex((current) => clamp(current + 1, 0, chart.bars.length - 1));
+              }
+            }}
+          >
             <svg viewBox="0 0 320 180" className="channel-stats-graph__svg" aria-hidden>
-              <line x1="14" y1="162" x2="306" y2="162" className="channel-stats-graph__baseline" />
+              {activeBar ? (
+                <rect
+                  x={activeBar.x - activeBandWidth / 2}
+                  y={chart.guideYs[0]! - 10}
+                  width={activeBandWidth}
+                  height={chart.baselineY - chart.guideYs[0]! + 14}
+                  rx={activeBandWidth / 2}
+                  className="channel-stats-graph__active-band channel-stats-graph__active-band--views"
+                />
+              ) : null}
+              {chart.guideYs.map((y) => (
+                <line
+                  key={`views-guide-${y}`}
+                  x1={chart.leftPad}
+                  y1={y}
+                  x2={320 - chart.rightPad}
+                  y2={y}
+                  className="channel-stats-graph__grid"
+                />
+              ))}
+              <line
+                x1={chart.leftPad}
+                y1={chart.baselineY}
+                x2={320 - chart.rightPad}
+                y2={chart.baselineY}
+                className="channel-stats-graph__baseline"
+              />
+              {activeBar ? (
+                <line
+                  x1={activeBar.x}
+                  y1={chart.guideYs[0]!}
+                  x2={activeBar.x}
+                  y2={chart.baselineY}
+                  className="channel-stats-graph__active-guide channel-stats-graph__active-guide--views"
+                />
+              ) : null}
               {chart.bars.map((bar, index) => (
                 <rect
                   key={labels[index]?.at ?? index}
-                  x={bar.x - 9}
+                  x={bar.x - (safeActiveIndex === index ? 10 : 9)}
                   y={bar.y}
-                  width="18"
+                  width={safeActiveIndex === index ? 20 : 18}
                   height={Math.max(4, bar.height)}
                   rx="6"
-                  className="channel-stats-graph__bar channel-stats-graph__bar--views"
+                  className={`channel-stats-graph__bar channel-stats-graph__bar--views ${
+                    safeActiveIndex === index ? 'is-active' : ''
+                  }`}
                 />
               ))}
+              {activeBar ? (
+                <g>
+                  <rect
+                    x={calloutX}
+                    y={calloutY}
+                    width={activeViewsLabelWidth}
+                    height="24"
+                    rx="12"
+                    className="channel-stats-graph__callout channel-stats-graph__callout--views"
+                  />
+                  <text
+                    x={calloutX + activeViewsLabelWidth / 2}
+                    y={calloutY + 16}
+                    textAnchor="middle"
+                    className="channel-stats-graph__callout-text"
+                  >
+                    {activeViewsLabel}
+                  </text>
+                </g>
+              ) : null}
             </svg>
-          </div>
-
-          <div className="channel-stats-graph__legend">
-            <span>
-              <i className="is-views" />
-              Просмотры постов
-            </span>
           </div>
 
           <div className="channel-stats-graph__labels">
             {labels.map((item, index) => (
-              <small key={`${item.at}-${index}`}>
-                {formatShortDate(item.at, stats.period.bucket)}
+              <small
+                key={`${item.at}-${index}`}
+                className={safeActiveIndex === index ? 'is-active' : ''}
+              >
+                {visibleLabelIndices.has(index)
+                  ? formatShortDate(item.at, stats.period.bucket)
+                  : '\u00a0'}
               </small>
             ))}
           </div>
+
+          <output className="channel-stats-graph__sr" aria-live="polite">
+            {activeGuideLabel}
+          </output>
         </>
       )}
     </div>
