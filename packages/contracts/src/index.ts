@@ -80,6 +80,7 @@ const botButtonUrlSchema = z.string().trim().max(2_048).default('');
 const botButtonTextSchema = z.string().trim().max(32).default('Открыть');
 const botMessageTextSchema = z.string().max(1_000).default('');
 const thematicCodewordSchema = z.string().trim().max(32).default('');
+const nightModeForceCloseUntilSchema = z.string().trim().max(64).default('');
 const chatRulesTextSchema = z.string().max(2_000).default('');
 const chatRulesImageBase64Schema = z.string().trim().max(1_500_000).default('');
 const chatRulesImageMimeTypeSchema = z.string().trim().max(128).default('');
@@ -346,6 +347,11 @@ export const chatSettingsSchema = z
     nightModeBotButtonUrl: botButtonUrlSchema,
     nightModeBotButtonText: botButtonTextSchema,
     nightModeRulesButtonEnabled: z.boolean().default(false),
+    nightModeForceCloseEnabled: z.boolean().default(false),
+    nightModeForceCloseForever: z.boolean().default(false),
+    nightModeForceCloseHours: z.number().int().min(0).max(23).default(8),
+    nightModeForceCloseDays: z.number().int().min(0).max(30).default(0),
+    nightModeForceCloseUntil: nightModeForceCloseUntilSchema,
     linkBotMessageEnabled: z.boolean().default(true),
     linkBotMessageText: botMessageTextSchema,
     linkWarnEnabled: z.boolean().default(false),
@@ -621,6 +627,24 @@ export const chatSettingsSchema = z
         code: z.ZodIssueCode.custom,
         path: ['nightModeBotButtonText'],
         message: 'Введите название кнопки.',
+      });
+    }
+
+    if (
+      value.nightModeForceCloseEnabled &&
+      !value.nightModeForceCloseForever &&
+      value.nightModeForceCloseHours === 0 &&
+      value.nightModeForceCloseDays === 0
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['nightModeForceCloseHours'],
+        message: 'Укажите длительность хотя бы на 1 час или 1 день.',
+      });
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['nightModeForceCloseDays'],
+        message: 'Укажите длительность хотя бы на 1 час или 1 день.',
       });
     }
   });

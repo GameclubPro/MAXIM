@@ -667,6 +667,10 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'nightModeBotButtonEnabled', label: 'Показывать кнопку', type: 'boolean' },
     { key: 'nightModeBotButtonUrl', label: 'Ссылка кнопки', type: 'url' },
     { key: 'nightModeBotButtonText', label: 'Текст кнопки', type: 'text' },
+    { key: 'nightModeForceCloseEnabled', label: 'Закрыть группу вручную', type: 'boolean' },
+    { key: 'nightModeForceCloseForever', label: 'Держать закрытой бессрочно', type: 'boolean' },
+    { key: 'nightModeForceCloseHours', label: 'Часы ручного закрытия', type: 'number' },
+    { key: 'nightModeForceCloseDays', label: 'Дни ручного закрытия', type: 'number' },
   ],
   extra: [
     { key: 'deleteSpammersEnabled', label: 'Удалять спаммеров', type: 'boolean' },
@@ -843,6 +847,10 @@ const SECTION_CARD_FIELDS: Record<
       'nightModeBotButtonEnabled',
       'nightModeBotButtonText',
       'nightModeBotButtonUrl',
+      'nightModeForceCloseEnabled',
+      'nightModeForceCloseForever',
+      'nightModeForceCloseHours',
+      'nightModeForceCloseDays',
     ],
   },
   extra: {
@@ -5892,6 +5900,7 @@ export class PrivateControlService {
           `Ночной режим: ${this.describeBooleanCompact(settings.nightModeEnabled)}`,
           `Окно: ${this.formatTime(settings.nightModeStartTimeMinutes)}-${this.formatTime(settings.nightModeEndTimeMinutes)} • ${settings.nightModeTimezone || 'не задан'}`,
           `Сообщение: ${this.describeBooleanCompact(settings.nightModeBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.nightModeBotButtonEnabled)}`,
+          `Ручное закрытие: ${this.describeBooleanCompact(settings.nightModeForceCloseEnabled)}${settings.nightModeForceCloseEnabled ? ` • ${settings.nightModeForceCloseForever ? 'бессрочно' : `${settings.nightModeForceCloseDays}д ${settings.nightModeForceCloseHours}ч`}` : ''}`,
         ];
       case 'extra':
         return [

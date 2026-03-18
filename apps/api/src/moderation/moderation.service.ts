@@ -529,6 +529,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    if (this.isNightModeForceCloseActiveNow(settings)) {
+      await this.handleNightModeForceCloseMessage({
+        chatId,
+        userId: senderId,
+        messageId,
+        text,
+        createdAt,
+        nightModeForceCloseForever: settings.nightModeForceCloseForever,
+        nightModeForceCloseUntil: settings.nightModeForceCloseUntil,
+      });
+      return;
+    }
+
     if (this.isNightModeActiveNow(settings)) {
       await this.handleNightModeMessage({
         chatId,
@@ -4370,6 +4383,61 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async handleNightModeForceCloseMessage(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    text: string;
+    createdAt: string;
+    nightModeForceCloseForever: boolean;
+    nightModeForceCloseUntil: string;
+  }) {
+    const { chatId, userId, messageId, text, createdAt } = params;
+    const messageAgeMs = Date.now() - new Date(createdAt).getTime();
+    const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
+
+    if (canDeleteMessage) {
+      try {
+        await this.maxClient.deleteMessage(chatId, messageId);
+        await this.prisma.moderationEvent.create({
+          data: {
+            chatId,
+            userId,
+            messageId,
+            eventType: EventType.MESSAGE,
+            ruleCode: 'MANUAL_GROUP_CLOSE_DELETE',
+            action: SanctionAction.DELETE_MESSAGE,
+            maskedExcerpt: maskText(text),
+            score: 0.6,
+            operator: Operator.BOT,
+            metadata: {
+              reason: 'Message removed while group is manually closed',
+              closeMode: params.nightModeForceCloseForever ? 'forever' : 'timed',
+              closeUntil: params.nightModeForceCloseForever
+                ? null
+                : params.nightModeForceCloseUntil,
+            },
+          },
+        });
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            userId,
+            messageId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to delete message during manual group close',
+        );
+      }
+    } else {
+      await this.maxClient.notifyModerators(
+        chatId,
+        `Сообщение от ${userId} попало в ручное закрытие группы, но старше 24 часов и не может быть удалено`,
+      );
+    }
+  }
+
   private isNightModeActiveNow(settings: {
     nightModeEnabled: boolean;
     nightModeStartTimeMinutes: number;
@@ -4398,6 +4466,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return currentMinutes >= startMinutes || currentMinutes < endMinutes;
+  }
+
+  private isNightModeForceCloseActiveNow(settings: {
+    nightModeForceCloseEnabled: boolean;
+    nightModeForceCloseForever: boolean;
+    nightModeForceCloseUntil: string;
+  }): boolean {
+    if (!settings.nightModeForceCloseEnabled) {
+      return false;
+    }
+
+    if (settings.nightModeForceCloseForever) {
+      return true;
+    }
+
+    const closeUntilTimestamp = Date.parse(settings.nightModeForceCloseUntil);
+    return Number.isFinite(closeUntilTimestamp) && closeUntilTimestamp > Date.now();
   }
 
   private isNightModeStartMomentNow(startMinutes: number, timezone: string): boolean {

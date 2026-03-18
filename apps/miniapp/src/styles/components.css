@@ -6638,6 +6638,16 @@
   line-height: 1;
 }
 
+.settings-duration-stack {
+  display: grid;
+  gap: 16px;
+}
+
+.settings-duration-stack__item {
+  display: grid;
+  gap: 10px;
+}
+
 .ban-duration-stepper {
   display: inline-grid;
   grid-template-columns: 32px auto 32px;

@@ -200,6 +200,11 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     nightModeBotButtonUrl: '',
     nightModeBotButtonText: 'Открыть',
     nightModeRulesButtonEnabled: false,
+    nightModeForceCloseEnabled: false,
+    nightModeForceCloseForever: false,
+    nightModeForceCloseHours: 8,
+    nightModeForceCloseDays: 0,
+    nightModeForceCloseUntil: '',
     linkBotMessageEnabled: true,
     linkBotMessageText: '',
     linkWarnEnabled: false,
@@ -3426,6 +3431,71 @@ describe('ModerationService', () => {
         userId: 'user-1',
         messageId: 'msg-1',
         ruleCode: 'NIGHT_MODE_DELETE',
+        action: SanctionAction.DELETE_MESSAGE,
+      }),
+    });
+  });
+
+  it('deletes messages during manual group close silently', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            nightModeForceCloseEnabled: true,
+            nightModeForceCloseForever: false,
+            nightModeForceCloseDays: 0,
+            nightModeForceCloseHours: 4,
+            nightModeForceCloseUntil: new Date(Date.now() + 4 * 60 * 60 * 1_000).toISOString(),
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'user-1',
+        messageId: 'msg-1',
+        ruleCode: 'MANUAL_GROUP_CLOSE_DELETE',
         action: SanctionAction.DELETE_MESSAGE,
       }),
     });

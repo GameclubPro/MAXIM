@@ -93,6 +93,10 @@ const PHOTO_COOLDOWN_MIN_HOURS = 1;
 const PHOTO_COOLDOWN_MAX_HOURS = 24;
 const STICKER_COOLDOWN_MIN_MINUTES = 1;
 const STICKER_COOLDOWN_MAX_MINUTES = 60;
+const NIGHT_FORCE_CLOSE_MIN_HOURS = 0;
+const NIGHT_FORCE_CLOSE_MAX_HOURS = 23;
+const NIGHT_FORCE_CLOSE_MIN_DAYS = 0;
+const NIGHT_FORCE_CLOSE_MAX_DAYS = 30;
 const COMMERCIAL_SENSITIVITY_MIN = 0;
 const COMMERCIAL_SENSITIVITY_MAX = 100;
 const COMMERCIAL_BALANCED_MAX = 69;
@@ -229,6 +233,7 @@ type HintKey =
   | 'messageLimitsBotMessage'
   | 'messageLimitsBotButton'
   | 'nightModeEnabled'
+  | 'nightForceClose'
   | 'nightBotMessage'
   | 'nightOpenMessage'
   | 'nightBotButton'
@@ -401,6 +406,11 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'nightModeBotButtonEnabled',
     'nightModeBotButtonUrl',
     'nightModeBotButtonText',
+    'nightModeForceCloseEnabled',
+    'nightModeForceCloseForever',
+    'nightModeForceCloseHours',
+    'nightModeForceCloseDays',
+    'nightModeForceCloseUntil',
   ],
   extra: [
     'deleteSpammersEnabled',
@@ -908,6 +918,17 @@ function formatRemovalDateTime(value: string | null): string {
     hour: '2-digit',
     minute: '2-digit',
   }).format(parsed);
+}
+
+function formatNightForceCloseDuration(days: number, hours: number): string {
+  const parts: string[] = [];
+  if (days > 0) {
+    parts.push(`${days}д`);
+  }
+  if (hours > 0 || parts.length === 0) {
+    parts.push(`${hours}ч`);
+  }
+  return parts.join(' ');
 }
 
 function clampCommercialSlider(value: number): number {
@@ -2796,6 +2817,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : undefined;
   const hasNightBotButtonError = Boolean(nightBotButtonUrlError || nightBotButtonTextError);
   const nightTimezoneError = fieldErrors.nightModeTimezone;
+  const showNightForceCloseDurationErrors = Boolean(
+    draft?.nightModeForceCloseEnabled && !draft?.nightModeForceCloseForever,
+  );
+  const nightForceCloseHoursError = showNightForceCloseDurationErrors
+    ? fieldErrors.nightModeForceCloseHours
+    : undefined;
+  const nightForceCloseDaysError = showNightForceCloseDurationErrors
+    ? fieldErrors.nightModeForceCloseDays
+    : undefined;
+  const hasNightForceCloseDurationError = Boolean(
+    nightForceCloseHoursError || nightForceCloseDaysError,
+  );
   const linkStagesEnabledCount = [
     draft?.linkBotMessageEnabled,
     draft?.linkWarnEnabled,
@@ -2897,9 +2930,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         draft.nightModeEndTimeMinutes,
       )}`
     : '23:00-08:00';
-  const nightHeaderSummary = draft?.nightModeEnabled
-    ? `${nightWindowLabel} • ${nightTimezoneLabel}`
-    : 'Выключено';
+  const nightForceCloseSummary = draft?.nightModeForceCloseEnabled
+    ? draft.nightModeForceCloseForever
+      ? 'Группа закрыта вручную бессрочно'
+      : `Группа закрыта вручную на ${formatNightForceCloseDuration(
+          draft.nightModeForceCloseDays,
+          draft.nightModeForceCloseHours,
+        )}`
+    : null;
+  const nightHeaderSummary = nightForceCloseSummary
+    ? nightForceCloseSummary
+    : draft?.nightModeEnabled
+      ? `${nightWindowLabel} • ${nightTimezoneLabel}`
+      : 'Выключено';
   const profanityFilterHeaderSummary = draft?.russianProfanityFilterEnabled
     ? `${profanityStagesEnabledCount}/4 ступени включено`
     : 'Выключено';
@@ -2927,7 +2970,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     extraEnabledCount > 0 ? `${extraEnabledCount} опции включено` : 'Выключено';
   const extraCardStatus = extraEnabledCount > 0 ? `${extraEnabledCount}` : 'Выкл';
   const limitsCardStatus = limitsRulesEnabledCount > 0 ? `${limitsRulesEnabledCount}` : 'Выкл';
-  const nightCardStatus = draft?.nightModeEnabled ? 'Ночь' : 'Выкл';
+  const nightCardStatus = draft?.nightModeForceCloseEnabled
+    ? 'Закрыто'
+    : draft?.nightModeEnabled
+      ? 'Ночь'
+      : 'Выкл';
   const chatsCount = chatsQuery.data?.length ?? 0;
   const canApplyToAllChats = chatsCount > 1;
   const managedBroadcasts = managedBroadcastsQuery.data ?? [];
@@ -4600,6 +4647,197 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </div>
                           ) : null}
                         </>
+                      ) : null}
+
+                      <div
+                        className="settings-subsection-divider"
+                        role="separator"
+                        aria-label="Блок ручного закрытия группы"
+                      >
+                        <span>Ручное закрытие</span>
+                      </div>
+
+                      <div className="settings-native-toggle">
+                        <div className="settings-native-toggle__row">
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="settings-native-toggle__title">Закрыть группу</span>
+                            <button
+                              type="button"
+                              className={cn(
+                                'settings-info-button',
+                                openHintKey === 'nightForceClose' && 'is-open',
+                              )}
+                              aria-label="Пояснение для ручного закрытия группы"
+                              aria-controls="night-force-close-hint"
+                              aria-expanded={openHintKey === 'nightForceClose'}
+                              onClick={() => toggleHint('nightForceClose')}
+                            >
+                              <span aria-hidden>i</span>
+                            </button>
+                          </div>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить ручное закрытие группы"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.nightModeForceCloseEnabled}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('nightModeForceCloseEnabled', enabled);
+                                setFieldValue('nightModeForceCloseUntil', '');
+                                clearFieldError('nightModeForceCloseHours');
+                                clearFieldError('nightModeForceCloseDays');
+                                if (
+                                  enabled &&
+                                  !draft.nightModeForceCloseForever &&
+                                  draft.nightModeForceCloseDays === 0 &&
+                                  draft.nightModeForceCloseHours === 0
+                                ) {
+                                  setFieldValue('nightModeForceCloseHours', 8);
+                                }
+                              }}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+
+                        {openHintKey === 'nightForceClose' ? (
+                          <p id="night-force-close-hint" className="settings-native-toggle__hint">
+                            Пока ручное закрытие активно, бот молча удаляет сообщения не-админов без
+                            дополнительного текста.
+                          </p>
+                        ) : null}
+                      </div>
+
+                      {draft.nightModeForceCloseEnabled ? (
+                        <div className="settings-native-toggle settings-native-toggle--nested">
+                          <div className="settings-native-toggle__row">
+                            <span className="settings-native-toggle__title">
+                              Включить бессрочно
+                            </span>
+
+                            <label
+                              className="settings-native-switch"
+                              aria-label="Включить бессрочное ручное закрытие группы"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={draft.nightModeForceCloseForever}
+                                onChange={(event) => {
+                                  const enabled = event.target.checked;
+                                  setFieldValue('nightModeForceCloseForever', enabled);
+                                  setFieldValue('nightModeForceCloseUntil', '');
+                                  clearFieldError('nightModeForceCloseHours');
+                                  clearFieldError('nightModeForceCloseDays');
+                                  if (
+                                    !enabled &&
+                                    draft.nightModeForceCloseDays === 0 &&
+                                    draft.nightModeForceCloseHours === 0
+                                  ) {
+                                    setFieldValue('nightModeForceCloseHours', 8);
+                                  }
+                                }}
+                              />
+                              <span className="toggle-switch" aria-hidden>
+                                <span className="toggle-switch__thumb" />
+                              </span>
+                            </label>
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {draft.nightModeForceCloseEnabled && !draft.nightModeForceCloseForever ? (
+                        <div
+                          className={cn(
+                            'settings-native-toggle',
+                            'settings-native-toggle--nested',
+                            hasNightForceCloseDurationError && 'field--error',
+                          )}
+                        >
+                          <div className="settings-duration-stack">
+                            <div className="settings-duration-stack__item">
+                              <div className="settings-native-toggle__row">
+                                <span className="settings-native-toggle__title settings-native-toggle__title--sub">
+                                  Часы
+                                </span>
+                                <output className="settings-length-limit__value" aria-live="polite">
+                                  {draft.nightModeForceCloseHours}ч
+                                </output>
+                              </div>
+                              <input
+                                className="settings-length-limit__slider"
+                                type="range"
+                                min={NIGHT_FORCE_CLOSE_MIN_HOURS}
+                                max={NIGHT_FORCE_CLOSE_MAX_HOURS}
+                                step={1}
+                                value={draft.nightModeForceCloseHours}
+                                onChange={(event) => {
+                                  setFieldValue(
+                                    'nightModeForceCloseHours',
+                                    Number(
+                                      event.target.value,
+                                    ) as ChatSettings['nightModeForceCloseHours'],
+                                  );
+                                  setFieldValue('nightModeForceCloseUntil', '');
+                                  clearFieldError('nightModeForceCloseDays');
+                                }}
+                                aria-label="Сколько часов держать группу закрытой"
+                              />
+                              <div className="settings-length-limit__labels" aria-hidden>
+                                <span>{NIGHT_FORCE_CLOSE_MIN_HOURS}ч</span>
+                                <span>{NIGHT_FORCE_CLOSE_MAX_HOURS}ч</span>
+                              </div>
+                            </div>
+
+                            <div className="settings-duration-stack__item">
+                              <div className="settings-native-toggle__row">
+                                <span className="settings-native-toggle__title settings-native-toggle__title--sub">
+                                  Дни
+                                </span>
+                                <output className="settings-length-limit__value" aria-live="polite">
+                                  {draft.nightModeForceCloseDays}д
+                                </output>
+                              </div>
+                              <input
+                                className="settings-length-limit__slider"
+                                type="range"
+                                min={NIGHT_FORCE_CLOSE_MIN_DAYS}
+                                max={NIGHT_FORCE_CLOSE_MAX_DAYS}
+                                step={1}
+                                value={draft.nightModeForceCloseDays}
+                                onChange={(event) => {
+                                  setFieldValue(
+                                    'nightModeForceCloseDays',
+                                    Number(
+                                      event.target.value,
+                                    ) as ChatSettings['nightModeForceCloseDays'],
+                                  );
+                                  setFieldValue('nightModeForceCloseUntil', '');
+                                  clearFieldError('nightModeForceCloseHours');
+                                }}
+                                aria-label="Сколько дней держать группу закрытой"
+                              />
+                              <div className="settings-length-limit__labels" aria-hidden>
+                                <span>{NIGHT_FORCE_CLOSE_MIN_DAYS}д</span>
+                                <span>{NIGHT_FORCE_CLOSE_MAX_DAYS}д</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {nightForceCloseHoursError || nightForceCloseDaysError ? (
+                            <small className="field__hint">
+                              {nightForceCloseHoursError ?? nightForceCloseDaysError}
+                            </small>
+                          ) : (
+                            <p className="settings-native-toggle__hint">
+                              Бот будет молча удалять новые сообщения весь выбранный срок.
+                            </p>
+                          )}
+                        </div>
                       ) : null}
                     </div>
                   ) : null}

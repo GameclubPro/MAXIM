@@ -76,6 +76,7 @@ function createPrismaMock() {
       update: jest.fn().mockResolvedValue(undefined),
     },
     chatSettings: {
+      findUnique: jest.fn().mockResolvedValue(null),
       update: jest.fn().mockResolvedValue(undefined),
     },
     chatAdminAllowlist: {
@@ -564,6 +565,99 @@ describe('AdminService night mode settings normalization', () => {
           nightModeBotButtonEnabled: false,
           nightModeRulesButtonEnabled: false,
         },
+      }),
+    );
+  });
+
+  it('starts manual close timer when timed close is enabled on update', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const before = Date.now();
+    const result = await service.updateSettings(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        nightModeForceCloseEnabled: true,
+        nightModeForceCloseForever: false,
+        nightModeForceCloseDays: 1,
+        nightModeForceCloseHours: 2,
+      },
+    );
+    const after = Date.now();
+
+    expect(result.nightModeForceCloseEnabled).toBe(true);
+    expect(result.nightModeForceCloseForever).toBe(false);
+    expect(result.nightModeForceCloseUntil).not.toBe('');
+
+    const closeUntil = Date.parse(result.nightModeForceCloseUntil);
+    expect(closeUntil).toBeGreaterThanOrEqual(before + 26 * 60 * 60 * 1_000);
+    expect(closeUntil).toBeLessThanOrEqual(after + 26 * 60 * 60 * 1_000);
+  });
+
+  it('disables expired timed manual close while reading settings', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      createdAt: new Date('2026-03-01T00:00:00.000Z'),
+      settings: {
+        ...chatSettingsSchema.parse({}),
+        nightModeForceCloseEnabled: true,
+        nightModeForceCloseForever: false,
+        nightModeForceCloseHours: 4,
+        nightModeForceCloseDays: 0,
+        nightModeForceCloseUntil: new Date(Date.now() - 60_000).toISOString(),
+      },
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.getSettings('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(result.nightModeForceCloseEnabled).toBe(false);
+    expect(result.nightModeForceCloseUntil).toBe('');
+    expect(prisma.chatSettings.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { chatId: 'chat-1' },
+        data: expect.objectContaining({
+          nightModeForceCloseEnabled: false,
+          nightModeForceCloseUntil: '',
+        }),
       }),
     );
   });

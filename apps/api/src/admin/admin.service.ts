@@ -345,6 +345,11 @@ const SETTINGS_SECTION_KEYS = {
     'nightModeBotButtonEnabled',
     'nightModeBotButtonUrl',
     'nightModeBotButtonText',
+    'nightModeForceCloseEnabled',
+    'nightModeForceCloseForever',
+    'nightModeForceCloseHours',
+    'nightModeForceCloseDays',
+    'nightModeForceCloseUntil',
   ],
   extra: [
     'deleteSpammersEnabled',
@@ -1780,7 +1785,23 @@ export class AdminService {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
-    const normalizedSettings = this.normalizeChatSettings(parsed.data);
+    const currentSettings = await this.prisma.chatSettings.findUnique({
+      where: { chatId },
+      select: {
+        nightModeForceCloseEnabled: true,
+        nightModeForceCloseForever: true,
+        nightModeForceCloseHours: true,
+        nightModeForceCloseDays: true,
+        nightModeForceCloseUntil: true,
+      },
+    });
+    const normalizedSettings = this.normalizeChatSettings(parsed.data, {
+      nightModeForceCloseEnabled: currentSettings?.nightModeForceCloseEnabled ?? false,
+      nightModeForceCloseForever: currentSettings?.nightModeForceCloseForever ?? false,
+      nightModeForceCloseHours: currentSettings?.nightModeForceCloseHours ?? 0,
+      nightModeForceCloseDays: currentSettings?.nightModeForceCloseDays ?? 0,
+      nightModeForceCloseUntil: currentSettings?.nightModeForceCloseUntil ?? '',
+    });
 
     await this.prisma.chat.upsert({
       where: { id: chatId },
@@ -2629,50 +2650,157 @@ export class AdminService {
     });
   }
 
-  private normalizeChatSettings(settings: ChatSettings): ChatSettings {
-    return this.normalizeNightModeSettings(settings);
+  private normalizeChatSettings(
+    settings: ChatSettings,
+    currentState?: Pick<
+      ChatSettings,
+      | 'nightModeForceCloseEnabled'
+      | 'nightModeForceCloseForever'
+      | 'nightModeForceCloseHours'
+      | 'nightModeForceCloseDays'
+      | 'nightModeForceCloseUntil'
+    > | null,
+  ): ChatSettings {
+    return this.normalizeNightModeSettings(settings, currentState);
   }
 
-  private normalizeNightModeSettings(settings: ChatSettings): ChatSettings {
-    if (!settings.nightModeEnabled) {
-      return {
-        ...settings,
+  private normalizeNightModeSettings(
+    settings: ChatSettings,
+    currentState?: Pick<
+      ChatSettings,
+      | 'nightModeForceCloseEnabled'
+      | 'nightModeForceCloseForever'
+      | 'nightModeForceCloseHours'
+      | 'nightModeForceCloseDays'
+      | 'nightModeForceCloseUntil'
+    > | null,
+  ): ChatSettings {
+    let normalized = settings;
+
+    if (!normalized.nightModeEnabled) {
+      normalized = {
+        ...normalized,
         nightModeBotMessageEnabled: false,
         nightModeBotButtonEnabled: false,
         nightModeRulesButtonEnabled: false,
       };
-    }
-
-    if (!settings.nightModeBotMessageEnabled) {
-      return {
-        ...settings,
+    } else if (!normalized.nightModeBotMessageEnabled) {
+      normalized = {
+        ...normalized,
         nightModeBotButtonEnabled: false,
         nightModeRulesButtonEnabled: false,
       };
     }
 
-    return settings;
+    return this.normalizeNightModeForceCloseSettings(normalized, currentState);
+  }
+
+  private normalizeNightModeForceCloseSettings(
+    settings: ChatSettings,
+    currentState?: Pick<
+      ChatSettings,
+      | 'nightModeForceCloseEnabled'
+      | 'nightModeForceCloseForever'
+      | 'nightModeForceCloseHours'
+      | 'nightModeForceCloseDays'
+      | 'nightModeForceCloseUntil'
+    > | null,
+  ): ChatSettings {
+    if (!settings.nightModeForceCloseEnabled) {
+      return settings.nightModeForceCloseUntil
+        ? {
+            ...settings,
+            nightModeForceCloseUntil: '',
+          }
+        : settings;
+    }
+
+    if (settings.nightModeForceCloseForever) {
+      return settings.nightModeForceCloseUntil
+        ? {
+            ...settings,
+            nightModeForceCloseUntil: '',
+          }
+        : settings;
+    }
+
+    const totalHours = settings.nightModeForceCloseDays * 24 + settings.nightModeForceCloseHours;
+    if (totalHours <= 0) {
+      return {
+        ...settings,
+        nightModeForceCloseEnabled: false,
+        nightModeForceCloseUntil: '',
+      };
+    }
+
+    if (!currentState) {
+      return this.isFutureIsoTimestamp(settings.nightModeForceCloseUntil)
+        ? settings
+        : {
+            ...settings,
+            nightModeForceCloseEnabled: false,
+            nightModeForceCloseUntil: '',
+          };
+    }
+
+    const currentUntil = currentState?.nightModeForceCloseUntil ?? '';
+    const shouldRefreshUntil =
+      !currentState?.nightModeForceCloseEnabled ||
+      currentState.nightModeForceCloseForever ||
+      currentState.nightModeForceCloseHours !== settings.nightModeForceCloseHours ||
+      currentState.nightModeForceCloseDays !== settings.nightModeForceCloseDays ||
+      !this.isFutureIsoTimestamp(currentUntil);
+
+    const nextUntil = shouldRefreshUntil
+      ? new Date(Date.now() + totalHours * 60 * 60 * 1_000).toISOString()
+      : currentUntil;
+
+    return {
+      ...settings,
+      nightModeForceCloseUntil: nextUntil,
+    };
+  }
+
+  private isFutureIsoTimestamp(value: string): boolean {
+    const timestamp = Date.parse(value);
+    return Number.isFinite(timestamp) && timestamp > Date.now();
   }
 
   private getChatSettingsNormalizationChanges(
     current: Pick<
       ChatSettings,
-      'nightModeBotMessageEnabled' | 'nightModeBotButtonEnabled' | 'nightModeRulesButtonEnabled'
+      | 'nightModeBotMessageEnabled'
+      | 'nightModeBotButtonEnabled'
+      | 'nightModeRulesButtonEnabled'
+      | 'nightModeForceCloseEnabled'
+      | 'nightModeForceCloseUntil'
     >,
     normalized: Pick<
       ChatSettings,
-      'nightModeBotMessageEnabled' | 'nightModeBotButtonEnabled' | 'nightModeRulesButtonEnabled'
+      | 'nightModeBotMessageEnabled'
+      | 'nightModeBotButtonEnabled'
+      | 'nightModeRulesButtonEnabled'
+      | 'nightModeForceCloseEnabled'
+      | 'nightModeForceCloseUntil'
     >,
   ): Partial<
     Pick<
       ChatSettings,
-      'nightModeBotMessageEnabled' | 'nightModeBotButtonEnabled' | 'nightModeRulesButtonEnabled'
+      | 'nightModeBotMessageEnabled'
+      | 'nightModeBotButtonEnabled'
+      | 'nightModeRulesButtonEnabled'
+      | 'nightModeForceCloseEnabled'
+      | 'nightModeForceCloseUntil'
     >
   > {
     const changes: Partial<
       Pick<
         ChatSettings,
-        'nightModeBotMessageEnabled' | 'nightModeBotButtonEnabled' | 'nightModeRulesButtonEnabled'
+        | 'nightModeBotMessageEnabled'
+        | 'nightModeBotButtonEnabled'
+        | 'nightModeRulesButtonEnabled'
+        | 'nightModeForceCloseEnabled'
+        | 'nightModeForceCloseUntil'
       >
     > = {};
 
@@ -2684,6 +2812,12 @@ export class AdminService {
     }
     if (current.nightModeRulesButtonEnabled !== normalized.nightModeRulesButtonEnabled) {
       changes.nightModeRulesButtonEnabled = normalized.nightModeRulesButtonEnabled;
+    }
+    if (current.nightModeForceCloseEnabled !== normalized.nightModeForceCloseEnabled) {
+      changes.nightModeForceCloseEnabled = normalized.nightModeForceCloseEnabled;
+    }
+    if (current.nightModeForceCloseUntil !== normalized.nightModeForceCloseUntil) {
+      changes.nightModeForceCloseUntil = normalized.nightModeForceCloseUntil;
     }
 
     return changes;
