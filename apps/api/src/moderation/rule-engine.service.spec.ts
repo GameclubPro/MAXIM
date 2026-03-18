@@ -385,12 +385,51 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
   });
 
+  it('does not detect PROFANITY in url paths that start with latin "eb"', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Фото здесь https://disk.yandex.ru/d/EBjA4MZie9N5YA',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
+  });
+
+  it('does not detect PROFANITY in neutral age labels with standalone digits', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Подходит взрослым и детям от 6 лет',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(false);
+  });
+
   it('still detects PROFANITY for explicit "е*бать" form', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
       chatId: 'chat-1',
       userId: 'u-1',
       text: 'Е*бать, ну и новость',
+      settings: buildSettings(),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'PROFANITY')).toBe(true);
+  });
+
+  it('still detects PROFANITY in digit-obfuscated russian mat token', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'ну ты 6лять конечно',
       settings: buildSettings(),
       domainAllowlist: [],
     });

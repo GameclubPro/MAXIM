@@ -2,7 +2,10 @@ import { Injectable } from '@nestjs/common';
 import { normalizeAllowlistLink } from '@maxim/contracts';
 import { CommercialAdsSensitivity, LinkPolicy, type ChatSettings } from '@prisma/client';
 import { createHash } from 'node:crypto';
-import { extractUrlsFromText as extractTextUrls } from '../common/url-text.util';
+import {
+  extractUrlsFromText as extractTextUrls,
+  stripUrlsFromText,
+} from '../common/url-text.util';
 import { RedisCounterService } from './redis-counter.service';
 
 export type CommercialDecisionBand = 'LOW' | 'MEDIUM' | 'HIGH';
@@ -257,7 +260,7 @@ export class RuleEngineService {
     const lowered = text.toLowerCase();
     const measuredLength = typeof effectiveLength === 'number' ? effectiveLength : text.length;
 
-    if (settings.russianProfanityFilterEnabled && this.hasProfanity(normalized)) {
+    if (settings.russianProfanityFilterEnabled && this.hasProfanity(text)) {
       violations.push({ ruleCode: 'PROFANITY', score: 0.95, reason: 'Detected profanity pattern' });
     }
 
@@ -549,8 +552,8 @@ export class RuleEngineService {
     return null;
   }
 
-  private hasProfanity(normalizedText: string): boolean {
-    const profanityText = this.normalizeForProfanity(normalizedText);
+  private hasProfanity(text: string): boolean {
+    const profanityText = this.normalizeForProfanity(text);
     const sanitizedProfanityText = this.stripProfanityExceptions(profanityText);
     const tokens = this.extractProfanityTokens(profanityText);
     if (tokens.length === 0) {
@@ -1012,14 +1015,34 @@ export class RuleEngineService {
       return '';
     }
 
-    let normalized = value.toLowerCase();
-    normalized = this.normalizeMixedWriting(normalized);
+    let normalized = stripUrlsFromText(value.toLowerCase());
+    normalized = this.normalizeMixedWritingForProfanity(normalized);
     normalized = normalized.replace(/ё/g, 'е');
     normalized = normalized.replace(/([a-zа-я0-9])\1{2,}/giu, '$1$1');
     normalized = normalized.replace(/[_*~`"'«»“”(){}[[]\]|]+/g, ' ');
     normalized = normalized.replace(/[^\p{L}\p{N}\s]+/gu, ' ');
     normalized = normalized.replace(/\s+/g, ' ').trim();
     return normalized;
+  }
+
+  private normalizeMixedWritingForProfanity(value: string): string {
+    return value.replace(/[\p{L}\p{N}]+/gu, (token) => this.normalizeProfanityToken(token));
+  }
+
+  private normalizeProfanityToken(token: string): string {
+    const hasLetter = /[\p{L}]/u.test(token);
+    let result = '';
+
+    for (const char of token) {
+      if (!hasLetter && /\p{N}/u.test(char)) {
+        result += char;
+        continue;
+      }
+
+      result += MIXED_CHAR_MAP[char] ?? char;
+    }
+
+    return result;
   }
 
   private normalizeMixedWriting(value: string): string {
