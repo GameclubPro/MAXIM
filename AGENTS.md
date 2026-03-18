@@ -1,6 +1,7 @@
 # Agent Notes
 
 - SSH alias для VPS: `ssh maxim-vps`
+- Для ускорения повторных подключений alias `maxim-vps` должен использовать SSH multiplexing (`ControlMaster auto`, `ControlPersist 10m`, `Compression yes`).
 
 ## Правило выполнения изменений (обязательно)
 - Если агент внёс изменения в код, задачу по умолчанию считать завершённой только после выката этих изменений на VPS.
@@ -18,6 +19,14 @@
 - Историческая ошибка `KeyError: 'ContainerConfig'` относилась к v1; при v2 стандартный путь:
   - `docker compose ... build`
   - `docker compose ... up -d --no-deps --force-recreate <service>`
+- Для `docker compose exec/run` на VPS нужен `/var/www/Chat_bot/.env`. Если файла нет, его нужно восстановить до post-pull шагов:
+  - `cd /var/www/Chat_bot`
+  - `docker inspect infra-api-1 --format "{{range .Config.Env}}{{println .}}{{end}}" | grep -v "^PATH=" | grep -v "^NODE_VERSION=" | grep -v "^YARN_VERSION=" > .env`
+- Если `git pull --ff-only` блокируется из-за грязного дерева на VPS, сначала нужно проверить, совпадает ли текущее содержимое файлов с `origin/<branch>`. Если совпадает, допускается служебный путь:
+  - `git stash push -m codex-sync-<date>`
+  - `git pull --ff-only origin <branch>`
+  - `git stash drop`
+- Если рабочее дерево на VPS грязное и не совпадает с `origin/<branch>`, агент не должен молча перетирать эти изменения; нужно остановиться и явно сообщить о конфликте.
 
 ## Локальная среда (февраль 2026)
 - По умолчанию локально выполнять:
@@ -53,6 +62,8 @@
 - Если в проекте есть auto-screenshot flow для mini app, агент обязан прогонять его перед финальной оценкой дизайна и использовать полученные скриншоты как обязательный источник визуальной проверки.
 - Для задач по mini app дизайн нельзя считать оцененным только по коду; агент обязан сверять результат по реальным auto-screenshots из mobile preview/emulation, а при возможности использовать оба профиля: `android` и `iphone`.
 - При каждой существенной правке дизайна агент должен по возможности обновлять auto-screenshots заново, чтобы оценка `0-100` опиралась на актуальную версию интерфейса, а не на устаревшее состояние.
+- Актуальными считаются только скриншоты из самого нового каталога `artifacts/miniapp-screenshots/<timestamp>` или из самого свежего запуска VPS flow; использовать старые артефакты для финальной оценки нельзя.
+- Если локальный `npm run screenshots:miniapp` падает из-за отсутствующих Playwright system libraries / browser deps, это не считается блокером: агент должен сразу переключаться на VPS flow и использовать его как основной источник визуальной проверки.
 - Для текущего репозитория стандартный путь такой:
   - `Локально`: `npm run screenshots:miniapp`
   - `VPS`: `cd /var/www/Chat_bot && ./infra/scripts/vps-miniapp-preview-screenshots.sh`
@@ -88,7 +99,7 @@
 - Локально:
   - `cd /home/alex/projects/MAXIM && ./infra/scripts/local-commit-push.sh "<COMMIT_MESSAGE>" main`
 - VPS:
-  - `cd /var/www/Chat_bot && git pull origin main && ./infra/scripts/vps-pull-build-up.sh main`
+  - `cd /var/www/Chat_bot && ./infra/scripts/vps-pull-build-up.sh main`
 
 ## Шаблоны команд
 
@@ -98,7 +109,6 @@
   - `./infra/scripts/local-commit-push.sh "<COMMIT_MESSAGE>" main`
 - VPS:
   - `cd /var/www/Chat_bot`
-  - `git pull origin main`
   - `./infra/scripts/vps-pull-build-up.sh main`
 
 ### Пересборка только API
