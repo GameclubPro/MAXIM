@@ -12,7 +12,7 @@ import {
   getChannelDialog,
 } from '../lib/api/channel-dialog-client';
 import { getMe } from '../lib/api/root-client';
-import { closeMaxMiniApp, maxImpact } from '../lib/max-bridge';
+import { maxImpact } from '../lib/max-bridge';
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
 import { readChatTitle } from '../lib/chat-titles';
@@ -94,6 +94,27 @@ function DialogAvatar({
   );
 }
 
+function SendArrowIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
+      <path
+        d="M4.5 10H15.5"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M10.8 5.3L15.5 10L10.8 14.7"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 type DialogViewModel = {
   title: string;
   placeholder: string;
@@ -125,7 +146,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const token = searchParams.get('token')?.trim() ?? '';
   const dialogType = resolveDialogType(mode);
   const entityType = resolveDialogEntityType(location.pathname);
-  const shouldCloseOnBack = dialogType === 'comments';
+  const showTopbar = dialogType !== 'comments';
   const [draft, setDraft] = useState('');
   const composeFieldRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollViewportRef = useRef<HTMLElement | null>(null);
@@ -163,14 +184,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   const handleDismiss = () => {
     maxImpact('light');
-
-    if (shouldCloseOnBack) {
-      closeMaxMiniApp(() => {
-        navigate(buildManagedEntitiesRoute(entityType), { replace: true });
-      });
-      return;
-    }
-
     navigate(buildManagedEntitiesRoute(entityType), { replace: true });
   };
 
@@ -304,28 +317,28 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     >
       <div className="channel-dialog-screen__backdrop" aria-hidden />
 
-      <div className="channel-dialog-shell">
-        <header className="channel-dialog-topbar">
-          <button
-            type="button"
-            className="channel-dialog-nav"
-            onClick={handleDismiss}
-            aria-label={shouldCloseOnBack ? 'Закрыть комментарии' : 'Назад'}
-          >
-            <BackChevronIcon />
-          </button>
+      <div className={cn('channel-dialog-shell', !showTopbar && 'channel-dialog-shell--flat')}>
+        {showTopbar ? (
+          <header className="channel-dialog-topbar">
+            <button
+              type="button"
+              className="channel-dialog-nav"
+              onClick={handleDismiss}
+              aria-label="Назад"
+            >
+              <BackChevronIcon />
+            </button>
 
-          <div className="channel-dialog-topbar__title">
-            <h1>{view.title}</h1>
-            <span>{chatTitle || chatId}</span>
-          </div>
+            <div className="channel-dialog-topbar__title">
+              <h1>{view.title}</h1>
+              <span>{chatTitle || chatId}</span>
+            </div>
 
-          {!shouldCloseOnBack ? (
             <button type="button" className="channel-dialog-close" onClick={handleDismiss}>
               Закрыть
             </button>
-          ) : null}
-        </header>
+          </header>
+        ) : null}
 
         <section ref={scrollViewportRef} className="channel-dialog-body">
           {dialogQuery.isLoading ? (
@@ -444,8 +457,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   className="channel-dialog-submit"
                   onClick={onSubmit}
                   disabled={!draft.trim() || sendMutation.isPending}
+                  aria-label={sendMutation.isPending ? 'Отправка' : 'Отправить'}
                 >
-                  {sendMutation.isPending ? '...' : 'Отправить'}
+                  {sendMutation.isPending ? (
+                    <span className="channel-dialog-submit__loader" aria-hidden />
+                  ) : (
+                    <SendArrowIcon />
+                  )}
                 </button>
               </div>
             </div>

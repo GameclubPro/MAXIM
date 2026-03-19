@@ -2640,6 +2640,10 @@
   gap: 8px;
 }
 
+.channel-dialog-shell--flat {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
 .channel-dialog-topbar {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -2965,14 +2969,14 @@
 }
 
 .channel-dialog-compose__row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: end;
+  display: flex;
+  align-items: flex-end;
   gap: 8px;
 }
 
 .channel-dialog-compose__field {
   min-width: 0;
+  flex: 1 1 auto;
 }
 
 .channel-dialog-compose__field textarea {
@@ -2999,18 +3003,22 @@
 .channel-dialog-compose__actions {
   display: flex;
   justify-content: flex-end;
-  align-self: stretch;
+  flex: 0 0 auto;
 }
 
 .channel-dialog-submit {
-  min-width: 118px;
+  width: 48px;
+  min-width: 48px;
   min-height: 48px;
-  padding: 0 18px;
+  padding: 0;
   border: 0;
-  border-radius: 18px;
+  border-radius: 16px;
   color: #fff;
   cursor: pointer;
   font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: linear-gradient(
     145deg,
     var(--dialog-accent),
@@ -3019,10 +3027,30 @@
   box-shadow: 0 14px 28px color-mix(in srgb, var(--dialog-accent) 24%, transparent);
 }
 
+.channel-dialog-submit svg {
+  width: 19px;
+  height: 19px;
+}
+
+.channel-dialog-submit__loader {
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  border: 2px solid rgba(255, 255, 255, 0.34);
+  border-top-color: rgba(255, 255, 255, 0.96);
+  animation: dialogSubmitSpin 0.85s linear infinite;
+}
+
 .channel-dialog-submit:disabled {
   opacity: 0.55;
   cursor: not-allowed;
   box-shadow: none;
+}
+
+@keyframes dialogSubmitSpin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (max-width: 640px) {
@@ -3057,24 +3085,16 @@
   }
 
   .channel-dialog-submit {
-    min-width: 102px;
+    width: 44px;
+    min-width: 44px;
     min-height: 44px;
-    padding: 0 14px;
+    border-radius: 14px;
   }
 }
 
 @media (max-width: 420px) {
-  .channel-dialog-compose__row {
-    grid-template-columns: 1fr;
-    display: grid;
-  }
-
-  .channel-dialog-compose__actions {
-    width: 100%;
-  }
-
-  .channel-dialog-submit {
-    width: 100%;
+  .channel-dialog-screen {
+    padding-top: max(6px, env(safe-area-inset-top, 0px));
   }
 }
 
