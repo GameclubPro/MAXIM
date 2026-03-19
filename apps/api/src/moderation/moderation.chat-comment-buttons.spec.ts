@@ -99,6 +99,10 @@ function createService(settingsOverrides: Record<string, unknown>, adminUserIds:
   const maxClient = {
     getChatAdminIds: jest.fn().mockResolvedValue(adminUserIds),
     editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+    sendMessageCopyWithInlineKeyboard: jest.fn().mockResolvedValue({
+      messageId: 'mid-bot-copy-1',
+      url: 'https://max.ru/chats/chat-1/message/bot-copy-1',
+    }),
     deleteMessage: jest.fn(),
     sendMessage: jest.fn(),
     kickMember: jest.fn(),
@@ -142,7 +146,7 @@ describe('ModerationService chat comment buttons', () => {
       }),
     );
 
-    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledWith(
       'chat-1',
       'mid-admin-1',
       'Пост админа',
@@ -150,34 +154,43 @@ describe('ModerationService chat comment buttons', () => {
         buttons: [[expect.objectContaining({ text: '💬 Комментарии', type: 'link' })]],
         debugContext: {
           screen: 'chat-auto-comments',
-          action: 'attach-comments',
+          action: 'replace-admin-message-with-bot-copy',
         },
       }),
     );
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-admin-1', {
+      immediate: true,
+    });
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           chatId: 'chat-1',
           actorUserId: 'admin-1',
           action: 'AUTO_ATTACH_CHAT_COMMENTS',
+          payload: expect.objectContaining({
+            deliveryMode: 'replace_with_bot_message',
+            replacementMessageId: 'mid-bot-copy-1',
+            originalDeleted: true,
+          }),
         }),
       }),
     );
     expect(ruleEngine.detect).not.toHaveBeenCalled();
   });
 
-  it('falls back to a bot reply when MAX rejects editing a chat message', async () => {
+  it('keeps the bot copy if deleting the original admin message fails', async () => {
     const { prisma, maxClient, service } = createService({
       commentsEnabled: true,
       commentsAdminsEnabled: true,
       commentsAllEnabled: false,
       commentsChatBroadcastsEnabled: false,
     });
-    maxClient.editMessageInlineKeyboard.mockRejectedValue({
+    maxClient.deleteMessage.mockRejectedValue({
       response: {
         status: 200,
       },
-      message: 'Error on message edit',
+      message: 'Delete failed',
     });
 
     await service.handleUpdate(
@@ -189,26 +202,22 @@ describe('ModerationService chat comment buttons', () => {
       }),
     );
 
-    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledWith(
       'chat-1',
-      'Открыть комментарии',
+      'mid-admin-fallback',
+      'Пост админа для fallback',
       expect.objectContaining({
         buttons: [[expect.objectContaining({ text: '💬 Комментарии', type: 'link' })]],
-        messageLink: {
-          type: 'reply',
-          mid: 'mid-admin-fallback',
-        },
       }),
-      {
-        immediate: true,
-      },
     );
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           payload: expect.objectContaining({
             messageId: 'mid-admin-fallback',
-            deliveryMode: 'reply_message',
+            deliveryMode: 'replace_with_bot_message',
+            replacementMessageId: 'mid-bot-copy-1',
+            originalDeleted: false,
           }),
         }),
       }),

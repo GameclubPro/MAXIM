@@ -175,6 +175,104 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('reposts a source chat message as bot copy with preserved attachments and reply link', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    mid: 'mid-source-1',
+                    text: 'Исходный пост админа',
+                    attachments: [
+                      {
+                        type: 'image',
+                        payload: { token: 'upload-token-1' },
+                      },
+                    ],
+                  },
+                  link: {
+                    type: 'reply',
+                    message: {
+                      mid: 'mid-parent-1',
+                    },
+                  },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              mid: 'mid-copy-1',
+              url: 'https://max.ru/chats/chat-1/message/789',
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.sendMessageCopyWithInlineKeyboard(
+      'chat-1',
+      'mid-source-1',
+      'Фолбэк текст',
+      {
+        button: {
+          text: '💬 Комментарии',
+          url: 'https://maxim.play-team.ru/app/',
+        },
+      },
+    );
+
+    expect(result).toEqual({
+      messageId: 'mid-copy-1',
+      url: 'https://max.ru/chats/chat-1/message/789',
+    });
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api.max.ru/messages',
+        params: { message_ids: 'mid-source-1' },
+      }),
+    );
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api.max.ru/messages',
+        params: { chat_id: 'chat-1' },
+        data: {
+          text: 'Исходный пост админа',
+          link: {
+            type: 'reply',
+            mid: 'mid-parent-1',
+          },
+          attachments: [
+            {
+              type: 'image',
+              payload: { token: 'upload-token-1' },
+            },
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [[{ type: 'link', text: '💬 Комментарии', url: 'https://maxim.play-team.ru/app/' }]],
+              },
+            },
+          ],
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('publishes message and resolves post link via follow-up message fetch', async () => {
     const httpService = {
       request: jest

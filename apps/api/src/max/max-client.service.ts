@@ -375,6 +375,30 @@ export class MaxClientService implements OnModuleDestroy {
     };
   }
 
+  async sendMessageCopyWithInlineKeyboard(
+    chatId: string,
+    sourceMessageId: string,
+    fallbackText: string | null,
+    options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext'>,
+  ): Promise<MaxPublishedMessage> {
+    const sourceMessage = await this.getMessageById(sourceMessageId);
+    const sourceBody = this.asRecord(sourceMessage?.body);
+    const attachments = this.buildEditableMessageAttachments(sourceMessage, options);
+    const replyLink = this.extractReplyMessageLink(sourceMessage);
+    const text =
+      typeof sourceBody?.text === 'string'
+        ? sourceBody.text
+        : typeof fallbackText === 'string'
+          ? fallbackText
+          : null;
+
+    return this.sendCustomMessageImmediateWithResolvedLink(chatId, {
+      ...(typeof text === 'string' && text.length > 0 ? { text } : {}),
+      ...(attachments.length > 0 ? { attachments } : {}),
+      ...(replyLink ? { messageLink: replyLink } : {}),
+    });
+  }
+
   async resolveMessageLink(messageId: string): Promise<string | null> {
     const sentMessage = await this.getMessageById(messageId);
     const batchLink = sentMessage ? this.parseChatLink(sentMessage) : null;
@@ -1519,6 +1543,24 @@ export class MaxClientService implements OnModuleDestroy {
     );
     const keyboardAttachment = this.buildInlineKeyboardAttachment(options);
     return keyboardAttachment ? [...existingAttachments, keyboardAttachment] : existingAttachments;
+  }
+
+  private extractReplyMessageLink(
+    message: Record<string, unknown> | null,
+  ): MaxReplyMessageLink | null {
+    const link = this.asRecord(message?.link);
+    if (this.readLowerString(link?.type) !== 'reply') {
+      return null;
+    }
+
+    const linkedMessage = this.asRecord(link?.message);
+    const mid = this.readTrimmedString(linkedMessage?.mid ?? link?.mid);
+    return mid
+      ? {
+          type: 'reply',
+          mid,
+        }
+      : null;
   }
 
   private extractEditableAttachments(

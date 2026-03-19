@@ -493,6 +493,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           messageId,
           text: typeof text === 'string' && text.trim() ? text : null,
           senderId,
+          senderIsAdmin: true,
           update,
         });
       }
@@ -674,6 +675,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           messageId,
           text: typeof text === 'string' && text.trim() ? text : null,
           senderId,
+          senderIsAdmin: false,
           update,
         });
       }
@@ -6954,9 +6956,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageId: string;
     text: string | null;
     senderId: string;
+    senderIsAdmin: boolean;
     update: MaxUpdate;
   }): Promise<void> {
-    const { chatId, messageId, text, senderId, update } = params;
+    const { chatId, messageId, text, senderId, senderIsAdmin, update } = params;
 
     if (this.messageHasInlineKeyboard(update)) {
       return;
@@ -6981,7 +6984,79 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const threadId = randomUUID();
     const buttons = [[this.buildChatDialogButton(chatId, 'comments', threadId, '💬 Комментарии')]];
-    let deliveryMode: 'edit_message' | 'reply_message' = 'edit_message';
+    let deliveryMode: 'edit_message' | 'reply_message' | 'replace_with_bot_message' =
+      'edit_message';
+    let replacementMessageId: string | null = null;
+    let originalDeleted = false;
+
+    if (senderIsAdmin) {
+      try {
+        const sent = await this.maxClient.sendMessageCopyWithInlineKeyboard(
+          chatId,
+          messageId,
+          text,
+          {
+            buttons,
+            debugContext: {
+              screen: 'chat-auto-comments',
+              action: 'replace-admin-message-with-bot-copy',
+            },
+          },
+        );
+        replacementMessageId = sent.messageId;
+        deliveryMode = 'replace_with_bot_message';
+      } catch (error: unknown) {
+        const status = this.extractStatusCode(error);
+        if (status && status < 500 && status !== 429) {
+          this.logger.warn(
+            {
+              chatId,
+              messageId,
+              status,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to publish bot copy for admin chat message; skipping retry',
+          );
+          return;
+        }
+        throw error;
+      }
+
+      try {
+        await this.maxClient.deleteMessage(chatId, messageId, {
+          immediate: true,
+        });
+        originalDeleted = true;
+      } catch (deleteError: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            messageId,
+            status: this.extractStatusCode(deleteError),
+            error: deleteError instanceof Error ? deleteError.message : 'Unknown error',
+            replacementMessageId,
+          },
+          'Failed to delete original admin chat message after bot copy publish',
+        );
+      }
+
+      await this.prisma.auditLog.create({
+        data: {
+          chatId,
+          actorUserId: senderId,
+          action: CHAT_DIALOG_AUTO_ATTACH_ACTION,
+          payload: {
+            messageId,
+            threadId,
+            source: 'webhook',
+            deliveryMode,
+            replacementMessageId,
+            originalDeleted,
+          },
+        },
+      });
+      return;
+    }
 
     try {
       await this.maxClient.editMessageInlineKeyboard(chatId, messageId, text, {
@@ -7050,6 +7125,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           threadId,
           source: 'webhook',
           deliveryMode,
+          ...(replacementMessageId ? { replacementMessageId } : {}),
+          originalDeleted,
         },
       },
     });
