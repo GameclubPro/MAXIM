@@ -1,9 +1,8 @@
-import { startTransition, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { cn } from '../lib/cn';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { bindMaxBackButton, maxImpact, setMaxBackButtonVisible } from '../lib/max-bridge';
-import { isMaxWebViewRuntime, navigateWithMaxRouteHandoff } from '../lib/max-route-handoff';
 import {
   buildManagedEntitiesRoute,
   normalizeEntityType,
@@ -56,6 +55,14 @@ function blurActiveElement(): void {
   if (activeElement instanceof HTMLElement && activeElement !== document.body) {
     activeElement.blur();
   }
+}
+
+function isMaxWebViewRuntime(): boolean {
+  return typeof window !== 'undefined' && Boolean(window.MAX?.WebApp ?? window.WebApp);
+}
+
+function buildAppUrl(target: string): string {
+  return `/app${target}`;
 }
 
 function BottomNavIcon({ name }: { name: BottomNavIconName }) {
@@ -285,7 +292,8 @@ export function Shell() {
     location.pathname.includes('/channel/') && location.pathname.includes('/dialog/');
   const isSettingsRoute = location.pathname.includes('/settings');
   const isEventsRoute = location.pathname.includes('/events');
-  const isChatEventsRoute = location.pathname.includes('/chat/') && location.pathname.includes('/events');
+  const isChatEventsRoute =
+    location.pathname.includes('/chat/') && location.pathname.includes('/events');
   const isChannelStatsRoute =
     location.pathname.includes('/channel/') && location.pathname.includes('/stats');
   const isMaxWebView = isMaxWebViewRuntime();
@@ -305,6 +313,15 @@ export function Shell() {
     blurActiveElement();
     setIsKeyboardOpen(false);
   };
+  const leaveRoute = (target: string, options?: { replace?: boolean }) => {
+    const url = buildAppUrl(target);
+    if (options?.replace) {
+      window.location.replace(url);
+      return;
+    }
+
+    window.location.assign(url);
+  };
   const handleBottomNav = (target: string) => {
     if (!target || `${location.pathname}${location.search}` === target) {
       return;
@@ -313,16 +330,10 @@ export function Shell() {
     dismissActiveFocus();
     maxImpact('light');
     if (isMaxWebView && isChatEventsRoute) {
-      navigateWithMaxRouteHandoff({
-        target,
-        currentRoute: `${location.pathname}${location.search}`,
-        navigate: (next, options) => {
-          startTransition(() => navigate(next, options));
-        },
-      });
+      leaveRoute(target);
       return;
     }
-    startTransition(() => navigate(target));
+    navigate(target);
   };
 
   useEffect(() => {
@@ -401,13 +412,7 @@ export function Shell() {
       dismissActiveFocus();
       maxImpact('light');
       if (isMaxWebView && isChatEventsRoute) {
-        navigateWithMaxRouteHandoff({
-          target: buildManagedEntitiesRoute('chat'),
-          currentRoute: `${location.pathname}${location.search}`,
-          navigate: (next, options) => {
-            startTransition(() => navigate(next, options));
-          },
-        });
+        leaveRoute(buildManagedEntitiesRoute('chat'));
         return;
       }
       if (window.history.length > 1) {
@@ -422,7 +427,7 @@ export function Shell() {
       cleanup();
       setMaxBackButtonVisible(false);
     };
-  }, [homeRoute, isChatEventsRoute, isChatsRoute, isMaxWebView, location.pathname, location.search, navigate]);
+  }, [homeRoute, isChatEventsRoute, isChatsRoute, isMaxWebView, navigate]);
 
   return (
     <div
