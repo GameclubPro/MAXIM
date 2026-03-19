@@ -865,6 +865,12 @@ function buildLogsDashboard(
     },
     violations,
     activityFeed: buildActivityPage(state.chatActivity, { range, limit: 50 }, now),
+    spammerCandidates: {
+      reviewEnabled:
+        state.chatSettings.deleteSpammersEnabled &&
+        state.chatSettings.deleteSpammersRequireApproval,
+      pendingCount: state.chatSpammerCandidates.length,
+    },
   });
 }
 

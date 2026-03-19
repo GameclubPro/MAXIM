@@ -1278,6 +1278,10 @@ export const logsDashboardResponseSchema = z.object({
   }),
   violations: z.array(logsDashboardViolationSchema),
   activityFeed: membershipActivityPageSchema,
+  spammerCandidates: z.object({
+    reviewEnabled: z.boolean(),
+    pendingCount: z.number().int().min(0),
+  }),
 });
 export type LogsDashboardResponse = z.infer<typeof logsDashboardResponseSchema>;
 

@@ -5630,6 +5630,7 @@ export class AdminService {
     };
 
     const [
+      chatSettings,
       warnCount,
       deleteMessageCount,
       kickCount,
@@ -5637,7 +5638,15 @@ export class AdminService {
       unbanCount,
       affectedUsers,
       violationRows,
+      pendingSpammerCandidatesCount,
     ] = await Promise.all([
+      this.prisma.chatSettings.findUnique({
+        where: { chatId },
+        select: {
+          deleteSpammersEnabled: true,
+          deleteSpammersRequireApproval: true,
+        },
+      }),
       this.prisma.moderationEvent.count({
         where: {
           chatId,
@@ -5684,6 +5693,17 @@ export class AdminService {
         orderBy: { createdAt: 'desc' },
         take: LOGS_DASHBOARD_VIOLATIONS_LIMIT,
       }),
+      this.prisma.globalSpammerCandidate.count({
+        where: {
+          status: 'PENDING',
+          OR: [{ suppressedUntil: null }, { suppressedUntil: { lt: now } }],
+          chats: {
+            some: {
+              chatId,
+            },
+          },
+        },
+      }),
     ]);
     const userDisplayNames = await this.resolveUserDisplayNames(
       chatId,
@@ -5698,6 +5718,9 @@ export class AdminService {
       filter: 'all',
       limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
     });
+    const spammerCandidatesReviewEnabled = Boolean(
+      chatSettings?.deleteSpammersEnabled && chatSettings?.deleteSpammersRequireApproval,
+    );
     const response: LogsDashboardResponse = {
       chat: {
         id: chatId,
@@ -5736,6 +5759,10 @@ export class AdminService {
             : null,
       })),
       activityFeed,
+      spammerCandidates: {
+        reviewEnabled: spammerCandidatesReviewEnabled,
+        pendingCount: pendingSpammerCandidatesCount,
+      },
     };
 
     return logsDashboardResponseSchema.parse(response);

@@ -856,6 +856,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
   const dashboard = dashboardQuery.data ?? null;
   const candidates = candidatesQuery.data?.items ?? [];
+  const candidateReviewEnabled = dashboard?.spammerCandidates.reviewEnabled ?? false;
+  const pendingCandidateCount = dashboard?.spammerCandidates.pendingCount ?? 0;
+  const isCandidatesSectionAvailable =
+    !dashboard || candidateReviewEnabled || pendingCandidateCount > 0;
+  const renderSection: EventsSection =
+    section === 'candidates' && !isCandidatesSectionAvailable ? 'moderation' : section;
   const activityFeed = useMembershipActivityFeed({
     range,
     initialPage: dashboard?.activityFeed ?? EMPTY_ACTIVITY_PAGE,
@@ -891,16 +897,22 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   }, [eventsFilter, filterOptions]);
 
   useEffect(() => {
+    if (section !== renderSection) {
+      setSection(renderSection);
+    }
+  }, [renderSection, section]);
+
+  useEffect(() => {
     setExpandedViolationId(null);
     setExpandedCandidateId(null);
     const activeElement = document.activeElement;
     if (activeElement instanceof HTMLElement && activeElement !== document.body) {
       activeElement.blur();
     }
-    if (section !== 'candidates') {
+    if (renderSection !== 'candidates') {
       setCandidateStatus(null);
     }
-  }, [eventsFilter, range, section]);
+  }, [eventsFilter, range, renderSection]);
 
   useEffect(() => {
     const availableIds = new Set(candidates.map((item) => item.userId));
@@ -978,7 +990,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  if (section !== 'candidates' && dashboardQuery.isLoading && !dashboard) {
+  if (dashboardQuery.isLoading && !dashboard) {
     return (
       <div className="page-stack page-enter">
         <GlassCard className="settings-section">
@@ -988,7 +1000,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  if (section !== 'candidates' && dashboardQuery.error && !dashboard) {
+  if (dashboardQuery.error && !dashboard) {
     return (
       <GlassCard>
         <StatusState
@@ -1009,20 +1021,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  if (section !== 'candidates' && !dashboard) {
+  if (!dashboard) {
     return null;
   }
 
-  const membership = dashboard?.membership ?? { joinedUsers: 0, leftUsers: 0, netUsers: 0 };
-  const violationsSummary = dashboard?.violationsSummary ?? {
-    warn: 0,
-    deleteMessage: 0,
-    kick: 0,
-    ban: 0,
-    unban: 0,
-    affectedUsers: 0,
-    total: 0,
-  };
+  const membership = dashboard.membership;
+  const violationsSummary = dashboard.violationsSummary;
   const activityBalanceTone =
     membership.netUsers > 0 ? 'success' : membership.netUsers < 0 ? 'danger' : 'neutral';
   const activityMovementsTotal = membership.joinedUsers + membership.leftUsers;
@@ -1059,9 +1063,13 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   ];
   const candidateHeroMetric = {
     label: 'В очереди',
-    value: String(candidates.length),
-    note: candidates.length > 0 ? 'Ждут согласования админа' : 'Очередь сейчас пустая',
-    tone: candidates.length > 0 ? ('warning' as const) : ('accent' as const),
+    value: String(pendingCandidateCount),
+    note: candidateReviewEnabled
+      ? pendingCandidateCount > 0
+        ? 'Ждут согласования админа'
+        : 'Очередь сейчас пустая'
+      : 'Новые кандидаты сюда больше не попадают',
+    tone: pendingCandidateCount > 0 ? ('warning' as const) : ('accent' as const),
   };
   const candidateSecondaryMetrics = [
     {
@@ -1078,22 +1086,25 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     },
   ];
   const dashboardTitle =
-    section === 'activity'
+    renderSection === 'activity'
       ? 'Входы и выходы'
-      : section === 'candidates'
+      : renderSection === 'candidates'
         ? 'Кандидаты на удаление'
         : 'Модерация';
   const dashboardSubtitle =
-    section === 'activity'
+    renderSection === 'activity'
       ? 'Баланс и движение участников'
-      : section === 'candidates'
-        ? 'Сначала согласование, потом глобальный бан'
+      : renderSection === 'candidates'
+        ? candidateReviewEnabled
+          ? 'Сначала согласование, потом глобальный бан'
+          : 'Осталось разобрать очередь после отключения согласования'
         : 'Люди и меры за выбранный период';
   const isActiveSectionFetching =
-    section === 'candidates' ? candidatesQuery.isFetching : dashboardQuery.isFetching;
+    renderSection === 'candidates' ? candidatesQuery.isFetching : dashboardQuery.isFetching;
+  const settingsRoute = `/chat/${chatId}/settings`;
   return (
     <div className="events-screen page-enter">
-      <section className={`events-stage events-stage--${section}`}>
+      <section className={`events-stage events-stage--${renderSection}`}>
         <header
           className={`events-stage__appbar ${isHeaderCompact ? 'is-compact' : ''} ${
             isHeaderHidden ? 'is-hidden' : ''
@@ -1136,8 +1147,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               <button
                 type="button"
                 role="tab"
-                aria-selected={section === 'moderation'}
-                className={`events-primary-tab ${section === 'moderation' ? 'is-active' : ''}`}
+                aria-selected={renderSection === 'moderation'}
+                className={`events-primary-tab ${renderSection === 'moderation' ? 'is-active' : ''}`}
                 onClick={(event) => {
                   event.currentTarget.blur();
                   setSection('moderation');
@@ -1152,8 +1163,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               <button
                 type="button"
                 role="tab"
-                aria-selected={section === 'activity'}
-                className={`events-primary-tab ${section === 'activity' ? 'is-active' : ''}`}
+                aria-selected={renderSection === 'activity'}
+                className={`events-primary-tab ${renderSection === 'activity' ? 'is-active' : ''}`}
                 onClick={(event) => {
                   event.currentTarget.blur();
                   setSection('activity');
@@ -1165,30 +1176,32 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 <span className="events-primary-tab__label">Входы и выходы</span>
               </button>
 
-              <button
-                type="button"
-                role="tab"
-                aria-selected={section === 'candidates'}
-                className={`events-primary-tab ${section === 'candidates' ? 'is-active' : ''}`}
-                onClick={(event) => {
-                  event.currentTarget.blur();
-                  setSection('candidates');
-                }}
-              >
-                <span className="events-primary-tab__icon" aria-hidden="true">
-                  <CandidatesTabIcon />
-                </span>
-                <span className="events-primary-tab__label">Кандидаты</span>
-              </button>
+              {isCandidatesSectionAvailable ? (
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={renderSection === 'candidates'}
+                  className={`events-primary-tab ${renderSection === 'candidates' ? 'is-active' : ''}`}
+                  onClick={(event) => {
+                    event.currentTarget.blur();
+                    setSection('candidates');
+                  }}
+                >
+                  <span className="events-primary-tab__icon" aria-hidden="true">
+                    <CandidatesTabIcon />
+                  </span>
+                  <span className="events-primary-tab__label">Кандидаты</span>
+                </button>
+              ) : null}
             </div>
           </div>
 
           <section
-            className={`events-dashboard events-dashboard--${section}`}
+            className={`events-dashboard events-dashboard--${renderSection}`}
             aria-label={
-              section === 'activity'
+              renderSection === 'activity'
                 ? 'Сводка по входам и выходам'
-                : section === 'candidates'
+                : renderSection === 'candidates'
                   ? 'Очередь кандидатов'
                   : 'Сводка по модерации'
             }
@@ -1199,8 +1212,10 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 <span className="events-dashboard__eyebrow">{dashboardSubtitle}</span>
               </div>
 
-              {section === 'candidates' ? (
-                <span className="events-dashboard__live-pill">На согласовании</span>
+              {renderSection === 'candidates' ? (
+                <span className="events-dashboard__live-pill">
+                  {candidateReviewEnabled ? 'На согласовании' : 'Очередь закрыта'}
+                </span>
               ) : (
                 <SegmentedControl
                   value={range}
@@ -1211,7 +1226,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               )}
             </div>
 
-            {section === 'activity' ? (
+            {renderSection === 'activity' ? (
               <div className="events-dashboard__activity">
                 <article
                   className={`events-dashboard__activity-balance events-dashboard__activity-balance--${activityBalanceTone}`}
@@ -1244,7 +1259,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                   </div>
                 </div>
               </div>
-            ) : section === 'candidates' ? (
+            ) : renderSection === 'candidates' ? (
               <div className="events-dashboard__body events-dashboard__body--moderation">
                 <article
                   className={`events-dashboard__hero events-dashboard__hero--${candidateHeroMetric.tone}`}
@@ -1293,7 +1308,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             )}
           </section>
 
-          {section === 'moderation' ? (
+          {renderSection === 'moderation' ? (
             <div className="events-screen__filters" role="tablist" aria-label="Фильтр модерации">
               {filterOptions.map((option) => {
                 const active = option.value === eventsFilter;
@@ -1317,7 +1332,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         </div>
       </section>
 
-      {section === 'activity' ? (
+      {renderSection === 'activity' ? (
         <MembershipActivityFeed
           joinedLabel="чату"
           leftLabel="чат"
@@ -1333,8 +1348,23 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         />
       ) : null}
 
-      {section === 'candidates' ? (
+      {renderSection === 'candidates' ? (
         <>
+          {!candidateReviewEnabled ? (
+            <GlassCard className="events-inline-state">
+              <StatusState
+                tone="warning"
+                title="Согласование выключено"
+                description="Новые кандидаты больше не попадают в очередь. Можно разобрать остаток или снова включить «Только после согласования» в настройках чата."
+                action={
+                  <Link to={settingsRoute} className="button button--ghost">
+                    Настройки чата
+                  </Link>
+                }
+              />
+            </GlassCard>
+          ) : null}
+
           {candidateStatus ? (
             <GlassCard className="events-inline-state">
               <p className={`logs-violation-item__action-status is-${candidateStatus.tone}`}>
@@ -1373,7 +1403,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               <StatusState
                 tone="neutral"
                 title="Очередь пуста"
-                description="Когда бот заметит межчатовый спам, кандидаты появятся здесь для согласования."
+                description={
+                  candidateReviewEnabled
+                    ? 'Когда бот заметит межчатовый спам, кандидаты появятся здесь для согласования.'
+                    : 'Остаток очереди уже разобран. Новые кандидаты появятся только после повторного включения согласования.'
+                }
               />
             </GlassCard>
           ) : null}
@@ -1443,8 +1477,23 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         </>
       ) : null}
 
-      {section === 'moderation' ? (
+      {renderSection === 'moderation' ? (
         <>
+          {!isCandidatesSectionAvailable ? (
+            <GlassCard className="events-inline-state">
+              <StatusState
+                tone="neutral"
+                title="Кандидаты выключены"
+                description="Чтобы бот собирал очередь на согласование, включите «Удалять спаммеров» и «Только после согласования» в настройках чата."
+                action={
+                  <Link to={settingsRoute} className="button button--accent">
+                    Открыть настройки
+                  </Link>
+                }
+              />
+            </GlassCard>
+          ) : null}
+
           {dashboardQuery.error ? (
             <GlassCard className="events-inline-state">
               <StatusState
