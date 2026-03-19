@@ -50,13 +50,9 @@ function isTextEntryElement(element: Element | null): boolean {
   return element instanceof HTMLElement && element.isContentEditable;
 }
 
-function blurNonTextEntryFocus(): void {
+function blurActiveElement(): void {
   const activeElement = document.activeElement;
-  if (
-    activeElement instanceof HTMLElement &&
-    activeElement !== document.body &&
-    !isTextEntryElement(activeElement)
-  ) {
+  if (activeElement instanceof HTMLElement && activeElement !== document.body) {
     activeElement.blur();
   }
 }
@@ -302,12 +298,16 @@ export function Shell() {
     () => resolveScreenInfo(location.pathname, resolvedChatTitle || resolvedChatId),
     [location.pathname, resolvedChatId, resolvedChatTitle],
   );
+  const dismissActiveFocus = () => {
+    blurActiveElement();
+    setIsKeyboardOpen(false);
+  };
   const handleBottomNav = (target: string) => {
     if (!target || `${location.pathname}${location.search}` === target) {
       return;
     }
 
-    blurNonTextEntryFocus();
+    dismissActiveFocus();
     maxImpact('light');
     navigate(target);
   };
@@ -349,15 +349,13 @@ export function Shell() {
 
   useEffect(() => {
     const frameId = window.requestAnimationFrame(() => {
-      if (!isTextEntryElement(document.activeElement)) {
-        setIsKeyboardOpen(false);
-      }
+      dismissActiveFocus();
     });
 
     return () => {
       window.cancelAnimationFrame(frameId);
     };
-  }, [location.pathname, location.search]);
+  }, [location.pathname]);
 
   useEffect(() => {
     const handlePointerDown = (event: Event) => {
@@ -366,7 +364,7 @@ export function Shell() {
         return;
       }
 
-      blurNonTextEntryFocus();
+      dismissActiveFocus();
     };
 
     window.addEventListener('pointerdown', handlePointerDown, true);
@@ -387,7 +385,7 @@ export function Shell() {
     }
 
     const cleanup = bindMaxBackButton(() => {
-      blurNonTextEntryFocus();
+      dismissActiveFocus();
       maxImpact('light');
       if (window.history.length > 1) {
         navigate(-1);

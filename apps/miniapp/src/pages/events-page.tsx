@@ -1479,21 +1479,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
       {renderSection === 'moderation' ? (
         <>
-          {!isCandidatesSectionAvailable ? (
-            <GlassCard className="events-inline-state">
-              <StatusState
-                tone="neutral"
-                title="Кандидаты выключены"
-                description="Чтобы бот собирал очередь на согласование, включите «Удалять спаммеров» и «Только после согласования» в настройках чата."
-                action={
-                  <Link to={settingsRoute} className="button button--accent">
-                    Открыть настройки
-                  </Link>
-                }
-              />
-            </GlassCard>
-          ) : null}
-
           {dashboardQuery.error ? (
             <GlassCard className="events-inline-state">
               <StatusState
