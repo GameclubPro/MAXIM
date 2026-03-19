@@ -773,6 +773,26 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const routeChatTitle = getRouteChatTitle(location.state);
 
   useEffect(() => {
+    const blurActiveElement = () => {
+      const activeElement = document.activeElement;
+      if (activeElement instanceof HTMLElement && activeElement !== document.body) {
+        activeElement.blur();
+      }
+    };
+
+    blurActiveElement();
+    const frameId = window.requestAnimationFrame(blurActiveElement);
+    const timeoutId = window.setTimeout(blurActiveElement, 140);
+    const settleTimeoutId = window.setTimeout(blurActiveElement, 320);
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+      window.clearTimeout(timeoutId);
+      window.clearTimeout(settleTimeoutId);
+    };
+  }, []);
+
+  useEffect(() => {
     if (chatId) {
       saveLastEntityId('chat', chatId);
     }

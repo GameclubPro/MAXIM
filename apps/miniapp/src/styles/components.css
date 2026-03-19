@@ -8207,7 +8207,8 @@
 
 .events-stage__appbar {
   position: relative;
-  z-index: 4;
+  z-index: 24;
+  transform: translateZ(0);
 }
 
 .events-stage__appbar-bar {
@@ -8240,6 +8241,8 @@
 }
 
 .events-stage__back {
+  position: relative;
+  z-index: 1;
   width: 34px;
   min-width: 34px;
   height: 34px;

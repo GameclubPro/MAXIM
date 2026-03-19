@@ -23,6 +23,13 @@ import {
 
 type ManagedTab = 'chat' | 'channel';
 
+function blurActiveElement(): void {
+  const activeElement = document.activeElement;
+  if (activeElement instanceof HTMLElement && activeElement !== document.body) {
+    activeElement.blur();
+  }
+}
+
 export function ChatsPage({ api }: { api: ApiTransport }) {
   const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
@@ -105,6 +112,12 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     startTransition(() => {
       setRefreshNonce((current) => current + 1);
     });
+  }
+
+  function handoffRouteFocus(entityId: string, entityTitle: string, entityType: ManagedTab) {
+    blurActiveElement();
+    saveLastEntityId(entityType, entityId);
+    saveChatTitle(entityId, entityTitle);
   }
 
   useEffect(() => {
@@ -346,10 +359,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                     to={`/chat/${entity.id}/settings`}
                     className="button button--accent"
                     state={{ chatTitle: entity.title }}
-                    onClick={() => {
-                      saveLastEntityId('chat', entity.id);
-                      saveChatTitle(entity.id, entity.title);
-                    }}
+                    onPointerDown={() => handoffRouteFocus(entity.id, entity.title, 'chat')}
+                    onClick={() => handoffRouteFocus(entity.id, entity.title, 'chat')}
                     onPointerEnter={preloadSettingsPage}
                     onTouchStart={preloadSettingsPage}
                   >
@@ -359,10 +370,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                     to={`/chat/${entity.id}/events`}
                     className="button button--ghost"
                     state={{ chatTitle: entity.title }}
-                    onClick={() => {
-                      saveLastEntityId('chat', entity.id);
-                      saveChatTitle(entity.id, entity.title);
-                    }}
+                    onPointerDown={() => handoffRouteFocus(entity.id, entity.title, 'chat')}
+                    onClick={() => handoffRouteFocus(entity.id, entity.title, 'chat')}
                     onPointerEnter={preloadEventsPage}
                     onTouchStart={preloadEventsPage}
                   >
@@ -375,10 +384,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                     to={`/channel/${entity.id}/settings`}
                     className="button button--accent"
                     state={{ chatTitle: entity.title, chatLink: entity.link ?? '' }}
-                    onClick={() => {
-                      saveLastEntityId('channel', entity.id);
-                      saveChatTitle(entity.id, entity.title);
-                    }}
+                    onPointerDown={() => handoffRouteFocus(entity.id, entity.title, 'channel')}
+                    onClick={() => handoffRouteFocus(entity.id, entity.title, 'channel')}
                     onPointerEnter={preloadChannelSettingsPage}
                     onTouchStart={preloadChannelSettingsPage}
                   >
@@ -388,10 +395,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                     to={`/channel/${entity.id}/stats`}
                     className="button button--ghost"
                     state={{ chatTitle: entity.title }}
-                    onClick={() => {
-                      saveLastEntityId('channel', entity.id);
-                      saveChatTitle(entity.id, entity.title);
-                    }}
+                    onPointerDown={() => handoffRouteFocus(entity.id, entity.title, 'channel')}
+                    onClick={() => handoffRouteFocus(entity.id, entity.title, 'channel')}
                     onPointerEnter={preloadChannelStatsPage}
                     onTouchStart={preloadChannelStatsPage}
                   >
