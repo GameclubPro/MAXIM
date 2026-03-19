@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT_DIR="${1:-/var/www/Chat_bot}"
 BASE_URL="${MINIAPP_SCREENSHOT_BASE_URL:-https://maxim.play-team.ru/app/}"
 DEVICE="${MINIAPP_SCREENSHOT_DEVICE:-all}"
+SCENARIOS="${MINIAPP_SCREENSHOT_SCENARIOS:-}"
 PLAYWRIGHT_IMAGE="${PLAYWRIGHT_IMAGE:-mcr.microsoft.com/playwright:v1.58.2-jammy}"
 CACHE_DIR="${MINIAPP_SCREENSHOT_NPM_CACHE_DIR:-$HOME/.cache/maxim-miniapp-preview-npm}"
 
@@ -18,6 +19,7 @@ docker run --rm \
   -e HOME=/tmp \
   -e MINIAPP_SCREENSHOT_BASE_URL="$BASE_URL" \
   -e MINIAPP_SCREENSHOT_DEVICE="$DEVICE" \
+  -e MINIAPP_SCREENSHOT_SCENARIOS="$SCENARIOS" \
   -e npm_config_cache=/tmp/npm-cache \
   "$PLAYWRIGHT_IMAGE" \
   bash -lc '
