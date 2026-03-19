@@ -115,12 +115,13 @@ function resolveScreenInfo(pathname: string, chatLabel: string): ScreenInfo {
     };
   }
 
-  if (pathname.includes('/channel/') && pathname.includes('/dialog/')) {
+  if (pathname.includes('/dialog/') && (pathname.includes('/channel/') || pathname.includes('/chat/'))) {
     const isSuggest = pathname.includes('/dialog/suggest');
+    const entityLabel = pathname.includes('/channel/') ? 'Канал' : 'Чат';
     return {
       title: isSuggest ? 'Идея для поста' : 'Обсуждение',
       subtitle: chatLabel
-        ? `Канал: ${chatLabel}`
+        ? `${entityLabel}: ${chatLabel}`
         : isSuggest
           ? 'Отправка идеи поста админу.'
           : 'Диалог обсуждения в приложении.',
@@ -244,7 +245,8 @@ export function Shell() {
   const isChannelsListRoute = isChatsRoute && selectedRootEntityType === 'channel';
   const isGiveawayRoute = location.pathname.includes('/giveaways/');
   const isDialogRoute =
-    location.pathname.includes('/channel/') && location.pathname.includes('/dialog/');
+    location.pathname.includes('/dialog/') &&
+    (location.pathname.includes('/channel/') || location.pathname.includes('/chat/'));
   const isSettingsRoute = location.pathname.includes('/settings');
   const isEventsRoute = location.pathname.includes('/events');
   const isChannelStatsRoute =

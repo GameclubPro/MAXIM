@@ -106,6 +106,7 @@ function AppRoutes({
               path="/channel/:chatId/dialog/:mode"
               element={<LazyChannelDialogPage api={apiClient} />}
             />
+            <Route path="/chat/:chatId/dialog/:mode" element={<LazyChannelDialogPage api={apiClient} />} />
             <Route path="/chat/:chatId/events" element={<LazyEventsPage api={apiClient} />} />
             <Route path="/giveaways/:giveawayId" element={<LazyGiveawayPage api={apiClient} />} />
             <Route path="*" element={<Navigate to="/" replace />} />

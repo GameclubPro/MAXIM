@@ -1,18 +1,20 @@
 import type { ChannelDialogType } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
 import {
+  createChatDialogMessage,
   createChannelDialogMessage,
+  getChatDialog,
   getChannelDialog,
 } from '../lib/api/channel-dialog-client';
 import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
 import { readChatTitle } from '../lib/chat-titles';
-import { buildManagedEntitiesRoute } from '../lib/last-chat';
+import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
 
 function normalizeApiError(error: unknown): string {
   if (!(error instanceof Error)) {
@@ -87,11 +89,17 @@ function buildViewModel(dialogType: ChannelDialogType): DialogViewModel {
   };
 }
 
+function resolveDialogEntityType(pathname: string): LastEntityType {
+  return pathname.includes('/channel/') ? 'channel' : 'chat';
+}
+
 export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const { chatId = '', mode } = useParams();
+  const location = useLocation();
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token')?.trim() ?? '';
   const dialogType = resolveDialogType(mode);
+  const entityType = resolveDialogEntityType(location.pathname);
   const [draft, setDraft] = useState('');
   const scrollViewportRef = useRef<HTMLElement | null>(null);
   const lastMessageIdRef = useRef<string | null>(null);
@@ -106,9 +114,18 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     queryFn: () => getMe(api),
   });
 
+  useEffect(() => {
+    if (chatId) {
+      saveLastEntityId(entityType, chatId);
+    }
+  }, [chatId, entityType]);
+
   const dialogQuery = useQuery({
-    queryKey: ['channel-dialog', chatId, dialogType, token],
-    queryFn: () => getChannelDialog(api, chatId, dialogType, token),
+    queryKey: ['entity-dialog', entityType, chatId, dialogType, token],
+    queryFn: () =>
+      entityType === 'channel'
+        ? getChannelDialog(api, chatId, dialogType, token)
+        : getChatDialog(api, chatId, dialogType, token),
     enabled: Boolean(chatId && token),
     refetchInterval: dialogType === 'comments' ? 8_000 : false,
   });
@@ -142,10 +159,15 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   const sendMutation = useMutation({
     mutationFn: (text: string) =>
-      createChannelDialogMessage(api, chatId, dialogType, {
-        token,
-        text,
-      }),
+      entityType === 'channel'
+        ? createChannelDialogMessage(api, chatId, dialogType, {
+            token,
+            text,
+          })
+        : createChatDialogMessage(api, chatId, dialogType, {
+            token,
+            text,
+          }),
     onSuccess: (result) => {
       pushToast({
         tone: result.message.delivered === false ? 'info' : 'success',
@@ -159,7 +181,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       });
       setDraft('');
       void queryClient.invalidateQueries({
-        queryKey: ['channel-dialog', chatId, dialogType, token],
+        queryKey: ['entity-dialog', entityType, chatId, dialogType, token],
       });
     },
     onError: (error) => {
@@ -186,10 +208,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         <div className="glass-card glass-card--md">
           <StatusState
             tone="warning"
-            title="Канал не найден"
-            description="Откройте диалог заново из сообщения канала."
+            title={entityType === 'channel' ? 'Канал не найден' : 'Чат не найден'}
+            description="Откройте диалог заново из сообщения."
             action={
-              <Link to={buildManagedEntitiesRoute('channel')} className="button button--accent">
+              <Link
+                to={buildManagedEntitiesRoute(entityType)}
+                className="button button--accent"
+              >
                 К списку
               </Link>
             }
@@ -206,9 +231,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
           <StatusState
             tone="warning"
             title="Кнопка устарела"
-            description="Откройте сообщение в канале и нажмите кнопку ещё раз."
+            description="Откройте сообщение и нажмите кнопку ещё раз."
             action={
-              <Link to={buildManagedEntitiesRoute('channel')} className="button button--accent">
+              <Link
+                to={buildManagedEntitiesRoute(entityType)}
+                className="button button--accent"
+              >
                 К списку
               </Link>
             }
@@ -231,7 +259,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
               <h1>{view.title}</h1>
               <span>{chatTitle || chatId}</span>
             </div>
-            <Link to={buildManagedEntitiesRoute('channel')} className="channel-dialog-close">
+            <Link to={buildManagedEntitiesRoute(entityType)} className="channel-dialog-close">
               Закрыть
             </Link>
           </header>

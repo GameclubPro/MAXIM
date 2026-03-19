@@ -390,13 +390,6 @@ const CHANNEL_SECTION_FIELDS: Record<
   ],
   comments: [
     { key: 'commentsEnabled', label: 'Сценарий обсуждения через бота/чат', type: 'boolean' },
-    { key: 'commentsAdminsEnabled', label: 'Комментарии только для админов', type: 'boolean' },
-    { key: 'commentsAllEnabled', label: 'Комментарии для всех', type: 'boolean' },
-    {
-      key: 'commentsChatBroadcastsEnabled',
-      label: 'Комментарии в рассылках по чатам',
-      type: 'boolean',
-    },
     { key: 'commentsModerationEnabled', label: 'Модерация обсуждений ботом', type: 'boolean' },
     { key: 'commentsMessageText', label: 'Текст-подсказка для участников', type: 'text' },
   ],
@@ -1618,11 +1611,9 @@ export class PrivateControlService {
         }
         const settings = await this.adminService.getChannelSettings(chatId, context.actor);
         const includeCommentsButton =
-          settings.commentsEnabled &&
-          (settings.commentsAdminsEnabled || settings.commentsAllEnabled) &&
-          (settings.autoPostButtonsMode === 'COMMENTS' ||
-            settings.autoPostButtonsMode === 'BOTH' ||
-            (settings.autoPostButtonsMode === 'OFF' && settings.commentsEnabled));
+          settings.autoPostButtonsMode === 'COMMENTS' ||
+          settings.autoPostButtonsMode === 'BOTH' ||
+          (settings.autoPostButtonsMode === 'OFF' && settings.commentsEnabled);
         const includeSuggestButton = true;
 
         await this.adminService.publishChannelEngagementMessage(chatId, context.actor, {
@@ -6028,9 +6019,6 @@ export class PrivateControlService {
 
     return [
       `Обсуждения: ${this.describeBooleanCompact(settings.commentsEnabled)}`,
-      `Только админы: ${this.describeBooleanCompact(settings.commentsAdminsEnabled)}`,
-      `Для всех: ${this.describeBooleanCompact(settings.commentsAllEnabled)}`,
-      `Рассылки в чатах: ${this.describeBooleanCompact(settings.commentsChatBroadcastsEnabled)}`,
       `Модерация обсуждений: ${this.describeBooleanCompact(settings.commentsModerationEnabled)}`,
       `Текст-подсказка: ${settings.commentsMessageText.trim() ? 'задан' : 'по умолчанию'}`,
     ];

@@ -56,6 +56,16 @@ const scenarios = [
     path: '/chat/preview-chat/settings',
   },
   {
+    name: 'chat-settings-comments',
+    path: '/chat/preview-chat/settings',
+    searchParams: {
+      focus: 'comments',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(500);
+    },
+  },
+  {
     name: 'chat-settings-required-subscription',
     path: '/chat/preview-chat/settings',
     searchParams: {

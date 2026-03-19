@@ -6875,40 +6875,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private resolveChannelAutoPostButtons(
     settings: Pick<
       PersistedChannelSettings,
-      | 'autoPostButtonsMode'
-      | 'postSuggestionsEnabled'
-      | 'commentsEnabled'
-      | 'commentsAdminsEnabled'
-      | 'commentsAllEnabled'
+      'autoPostButtonsMode' | 'postSuggestionsEnabled' | 'commentsEnabled'
     >,
   ) {
     return {
-      includeCommentsButton: this.shouldIncludeChannelCommentsButton(settings),
+      includeCommentsButton:
+        settings.autoPostButtonsMode === 'COMMENTS' || settings.autoPostButtonsMode === 'BOTH'
+          ? true
+          : settings.autoPostButtonsMode === 'OFF'
+            ? settings.commentsEnabled
+            : false,
       includeSuggestButton: settings.postSuggestionsEnabled,
     };
-  }
-
-  private hasChannelCommentsAudience(
-    settings: Pick<PersistedChannelSettings, 'commentsAdminsEnabled' | 'commentsAllEnabled'>,
-  ): boolean {
-    return settings.commentsAdminsEnabled || settings.commentsAllEnabled;
-  }
-
-  private shouldIncludeChannelCommentsButton(
-    settings: Pick<
-      PersistedChannelSettings,
-      'autoPostButtonsMode' | 'commentsEnabled' | 'commentsAdminsEnabled' | 'commentsAllEnabled'
-    >,
-  ): boolean {
-    if (!settings.commentsEnabled || !this.hasChannelCommentsAudience(settings)) {
-      return false;
-    }
-
-    return settings.autoPostButtonsMode === 'COMMENTS' || settings.autoPostButtonsMode === 'BOTH'
-      ? true
-      : settings.autoPostButtonsMode === 'OFF'
-        ? settings.commentsEnabled
-        : false;
   }
 
   private buildChannelAutoPostButtons(

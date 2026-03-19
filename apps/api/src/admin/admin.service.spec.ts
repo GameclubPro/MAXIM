@@ -74,9 +74,6 @@ function createPrismaMock() {
         postSuggestionsEnabled: false,
         postSuggestionsButtonText: 'Предложить пост',
         commentsEnabled: true,
-        commentsAdminsEnabled: true,
-        commentsAllEnabled: true,
-        commentsChatBroadcastsEnabled: true,
         engagementPublishedMessageId: null,
         engagementPublishedThreadId: null,
         engagementPublishedAt: null,
@@ -85,6 +82,13 @@ function createPrismaMock() {
     },
     chatSettings: {
       findUnique: jest.fn().mockResolvedValue(null),
+      upsert: jest.fn().mockResolvedValue({
+        chatId: 'chat-1',
+        commentsEnabled: false,
+        commentsAdminsEnabled: true,
+        commentsAllEnabled: false,
+        commentsChatBroadcastsEnabled: false,
+      }),
       update: jest.fn().mockResolvedValue(undefined),
     },
     chatAdminAllowlist: {
@@ -3611,6 +3615,143 @@ describe('AdminService.sendBroadcast', () => {
     expect(result.deliveredChats).toBe(2);
     expect(result.canRetry).toBe(false);
   });
+
+  it('adds the system comments button for chat broadcasts when comments are enabled for broadcasts', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatSettings.upsert.mockResolvedValue({
+      chatId: 'chat-1',
+      commentsEnabled: true,
+      commentsAdminsEnabled: true,
+      commentsAllEnabled: false,
+      commentsChatBroadcastsEnabled: true,
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = createChatContextCacheMock();
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const buttons = await (
+      service as unknown as { resolveBroadcastButtons: Function }
+    ).resolveBroadcastButtons('chat-1', 'chat', {
+      buttonEnabled: false,
+      buttonUrl: '',
+      buttonText: 'Открыть',
+      includeCustomButton: false,
+      customButtonText: '',
+      customButtonUrl: '',
+    });
+
+    expect(buttons).toMatchObject([[{ text: '💬 Комментарии', type: 'link' }]]);
+    const commentsButton = buttons[0]?.[0];
+    const commentsStartParam = new URL(commentsButton.url).searchParams.get('startapp');
+    const commentsLaunch = decodeBase64UrlJson<{ k: string; c: string; m: string; t: string }>(
+      commentsStartParam!.slice(3),
+    );
+
+    expect(commentsLaunch).toMatchObject({
+      k: 'chat-dialog',
+      c: 'chat-1',
+      m: 'comments',
+    });
+  });
+
+  it('stores and queries chat dialog messages inside the thread encoded in the button token', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatSettings.upsert.mockResolvedValue({
+      chatId: 'chat-1',
+      commentsEnabled: true,
+      commentsAdminsEnabled: false,
+      commentsAllEnabled: true,
+      commentsChatBroadcastsEnabled: true,
+    });
+    prisma.chatSettings.findUnique.mockResolvedValue(
+      chatSettingsSchema.parse({
+        commentsEnabled: true,
+        commentsAdminsEnabled: false,
+        commentsAllEnabled: true,
+        commentsChatBroadcastsEnabled: true,
+      }),
+    );
+    prisma.auditLog.create.mockResolvedValue({
+      id: 'chat-comment-1',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-06T08:00:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = createChatContextCacheMock();
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const threadId = 'chat-thread-1';
+    const commentsToken = (
+      service as unknown as { buildEntityDialogToken: Function }
+    ).buildEntityDialogToken('chat', 'chat-1', 'comments', threadId) as string;
+    const commentsTokenPayload = decodeBase64UrlJson<{ d: string }>(commentsToken.slice(4));
+
+    await service.createChatDialogMessage(
+      'chat-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        text: 'Первый комментарий',
+      },
+    );
+
+    await service.getChatDialog(
+      'chat-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      commentsToken,
+    );
+
+    const commentAuditCall = prisma.auditLog.create.mock.calls.find(
+      (call) => call?.[0]?.data?.action === 'CHANNEL_DIALOG_COMMENT',
+    );
+    const commentAuditPayload = commentAuditCall?.[0]?.data?.payload as { threadId?: unknown };
+    expect(commentAuditPayload.threadId).toBe(commentsTokenPayload.d);
+    expect(prisma.auditLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          chatId: 'chat-1',
+          action: 'CHANNEL_DIALOG_COMMENT',
+          payload: {
+            path: ['threadId'],
+            equals: commentsTokenPayload.d,
+          },
+        }),
+      }),
+    );
+  });
 });
 
 describe('AdminService.sendChannelBroadcast', () => {
@@ -3726,9 +3867,6 @@ describe('AdminService.sendChannelBroadcast', () => {
       postSuggestionsEnabled: false,
       postSuggestionsButtonText: '📰 Предложить пост',
       commentsEnabled: false,
-      commentsAdminsEnabled: false,
-      commentsAllEnabled: false,
-      commentsChatBroadcastsEnabled: false,
       engagementPublishedMessageId: null,
       engagementPublishedThreadId: null,
       engagementPublishedAt: null,
@@ -3803,9 +3941,6 @@ describe('AdminService.sendChannelBroadcast', () => {
       postSuggestionsEnabled: false,
       postSuggestionsButtonText: '📰 Предложить пост',
       commentsEnabled: true,
-      commentsAdminsEnabled: true,
-      commentsAllEnabled: false,
-      commentsChatBroadcastsEnabled: true,
       engagementPublishedMessageId: null,
       engagementPublishedThreadId: null,
       engagementPublishedAt: null,
@@ -4637,8 +4772,6 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     prisma.channelSettings.findUnique.mockResolvedValue(
       channelSettingsSchema.parse({
         commentsEnabled: true,
-        commentsAdminsEnabled: false,
-        commentsAllEnabled: true,
       }),
     );
     prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
@@ -4882,8 +5015,6 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     prisma.channelSettings.findUnique.mockResolvedValue(
       channelSettingsSchema.parse({
         commentsEnabled: true,
-        commentsAdminsEnabled: false,
-        commentsAllEnabled: true,
         commentsModerationEnabled: true,
         commentsBlockLinksEnabled: true,
         commentsAntiSpamEnabled: false,
@@ -4939,8 +5070,6 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     prisma.channelSettings.findUnique.mockResolvedValue(
       channelSettingsSchema.parse({
         commentsEnabled: true,
-        commentsAdminsEnabled: false,
-        commentsAllEnabled: true,
         commentsModerationEnabled: true,
         commentsBlockLinksEnabled: false,
         commentsAntiSpamEnabled: false,

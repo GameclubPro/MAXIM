@@ -5,7 +5,7 @@ const GIVEAWAY_START_PARAM_PREFIX = 'gg-';
 
 type ChannelDialogLaunchPayload = {
   v: 1;
-  k: 'channel-dialog';
+  k: 'channel-dialog' | 'chat-dialog';
   c: string;
   m: ChannelDialogType;
   t: string;
@@ -99,7 +99,7 @@ function parseChannelDialogStartParam(value: string): ChannelDialogLaunchPayload
     const token = readString(parsed.t);
     if (
       parsed.v !== 1 ||
-      parsed.k !== 'channel-dialog' ||
+      (parsed.k !== 'channel-dialog' && parsed.k !== 'chat-dialog') ||
       !chatId ||
       !type ||
       token.length < 16 ||
@@ -110,7 +110,7 @@ function parseChannelDialogStartParam(value: string): ChannelDialogLaunchPayload
 
     return {
       v: 1,
-      k: 'channel-dialog',
+      k: parsed.k,
       c: chatId,
       m: type,
       t: token,
@@ -164,7 +164,8 @@ export function resolveLaunchRoute(initData: string): string | null {
     return null;
   }
 
-  return `/channel/${encodeURIComponent(channelDialogLaunch.c)}/dialog/${channelDialogLaunch.m}?token=${encodeURIComponent(channelDialogLaunch.t)}`;
+  const entitySegment = channelDialogLaunch.k === 'chat-dialog' ? 'chat' : 'channel';
+  return `/${entitySegment}/${encodeURIComponent(channelDialogLaunch.c)}/dialog/${channelDialogLaunch.m}?token=${encodeURIComponent(channelDialogLaunch.t)}`;
 }
 
 export const resolveLaunchDialogRoute = resolveLaunchRoute;

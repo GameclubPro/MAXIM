@@ -274,9 +274,13 @@ type SettingsSectionKey =
   | 'limits'
   | 'night'
   | 'requiredSubscription'
+  | 'comments'
   | 'mailing'
   | 'extra';
-type ApplySectionKey = Exclude<SettingsSectionKey, 'mailing' | 'rules' | 'poll' | 'giveaway'>;
+type ApplySectionKey = Exclude<
+  SettingsSectionKey,
+  'comments' | 'mailing' | 'rules' | 'poll' | 'giveaway'
+>;
 
 const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
   links: false,
@@ -291,6 +295,7 @@ const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
   limits: false,
   night: false,
   requiredSubscription: false,
+  comments: false,
   mailing: false,
   extra: false,
 };
@@ -1386,6 +1391,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   useEffect(() => {
     if (
+      focusSection !== 'comments' &&
       focusSection !== 'giveaway' &&
       focusSection !== 'broadcast' &&
       focusSection !== 'requiredSubscription'
@@ -1395,7 +1401,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     setExpandedSections({
       ...INITIAL_EXPANDED_SECTIONS,
-      ...(focusSection === 'giveaway'
+      ...(focusSection === 'comments'
+        ? { comments: true }
+        : focusSection === 'giveaway'
         ? { giveaway: true }
         : focusSection === 'requiredSubscription'
           ? { requiredSubscription: true }
@@ -3187,6 +3195,28 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     isUpdatingManagedBroadcast ||
     cancelManagedBroadcastMutation.isPending ||
     retryManagedBroadcastMutation.isPending;
+  const commentsAudienceSummary = draft?.commentsAllEnabled
+    ? 'для всех'
+    : draft?.commentsAdminsEnabled
+      ? 'только админы'
+      : 'доступ не выбран';
+  const commentsCardSummary = !draft?.commentsEnabled
+    ? 'обсуждение выключено'
+    : [
+        commentsAudienceSummary,
+        draft?.commentsChatBroadcastsEnabled ? 'рассылки в чатах' : null,
+      ]
+        .filter(Boolean)
+        .join(' · ');
+  const commentsCardStatus = !draft?.commentsEnabled
+    ? 'Выкл'
+    : draft?.commentsAllEnabled
+      ? 'Все'
+      : draft?.commentsAdminsEnabled
+        ? draft?.commentsChatBroadcastsEnabled
+          ? 'Адм+'
+          : 'Адм'
+        : 'Вкл';
   const mailingTargetLabel =
     mailingApplyToAllChats && canApplyToAllChats
       ? `Во все чаты (${chatsCount})`
@@ -8258,6 +8288,184 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           );
                         })}
                       </div>
+                    </div>
+                  ) : null}
+                </div>
+              </SettingsDrilldownPanel>
+            </GlassCard>
+
+            <GlassCard
+              className="settings-section stagger-in"
+              style={{ animationDelay: '338ms' }}
+              aria-label="Комментарии"
+            >
+              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+                <SettingsSectionToggle
+                  title="Комментарии"
+                  summary={commentsCardSummary}
+                  status={commentsCardStatus}
+                  icon="comments"
+                  tone="mint"
+                  open={expandedSections.comments}
+                  controls="settings-comments-content"
+                  onClick={() => toggleSection('comments')}
+                />
+              </div>
+
+              <SettingsDrilldownPanel
+                id="settings-comments-content"
+                open={expandedSections.comments}
+                title="Комментарии"
+                summary={commentsCardSummary}
+                onClose={() => toggleSection('comments')}
+              >
+                <div
+                  id="settings-comments-content"
+                  className={cn(
+                    'settings-section__collapse',
+                    expandedSections.comments && 'is-open',
+                  )}
+                >
+                  {expandedSections.comments ? (
+                    <div className="settings-section__collapse-inner">
+                      <div className="settings-native-toggle">
+                        <div className="settings-native-toggle__row">
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="settings-native-toggle__title">
+                              Включить комментарии
+                            </span>
+                          </div>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить комментарии в чатах"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.commentsEnabled}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setDraft((current) =>
+                                  current
+                                    ? {
+                                        ...current,
+                                        commentsEnabled: enabled,
+                                        commentsAdminsEnabled:
+                                          enabled &&
+                                          !current.commentsAdminsEnabled &&
+                                          !current.commentsAllEnabled
+                                            ? true
+                                            : current.commentsAdminsEnabled,
+                                      }
+                                    : current,
+                                );
+                              }}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+
+                        <p className="settings-native-toggle__hint">
+                          Отдельный поток обсуждения для рассылок этого чата.
+                        </p>
+                      </div>
+
+                      {draft.commentsEnabled ? (
+                        <>
+                          <div className="settings-native-toggle">
+                            <div className="settings-native-toggle__row">
+                              <div className="settings-native-toggle__title-wrap">
+                                <span className="settings-native-toggle__title">
+                                  Только у админов
+                                </span>
+                              </div>
+
+                              <label
+                                className="settings-native-switch"
+                                aria-label="Комментарии только для админов"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={draft.commentsAdminsEnabled}
+                                  onChange={(event) =>
+                                    setFieldValue('commentsAdminsEnabled', event.target.checked)
+                                  }
+                                />
+                                <span className="toggle-switch" aria-hidden>
+                                  <span className="toggle-switch__thumb" />
+                                </span>
+                              </label>
+                            </div>
+
+                            <p className="settings-native-toggle__hint">
+                              Комментарии смогут писать только админы этого чата.
+                            </p>
+                          </div>
+
+                          <div className="settings-native-toggle">
+                            <div className="settings-native-toggle__row">
+                              <div className="settings-native-toggle__title-wrap">
+                                <span className="settings-native-toggle__title">Для всех</span>
+                              </div>
+
+                              <label
+                                className="settings-native-switch"
+                                aria-label="Комментарии для всех участников"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={draft.commentsAllEnabled}
+                                  onChange={(event) =>
+                                    setFieldValue('commentsAllEnabled', event.target.checked)
+                                  }
+                                />
+                                <span className="toggle-switch" aria-hidden>
+                                  <span className="toggle-switch__thumb" />
+                                </span>
+                              </label>
+                            </div>
+
+                            <p className="settings-native-toggle__hint">
+                              Комментарии смогут писать все участники.
+                            </p>
+                          </div>
+
+                          <div className="settings-native-toggle">
+                            <div className="settings-native-toggle__row">
+                              <div className="settings-native-toggle__title-wrap">
+                                <span className="settings-native-toggle__title">
+                                  Для рассылки в чатах
+                                </span>
+                              </div>
+
+                              <label
+                                className="settings-native-switch"
+                                aria-label="Комментарии для рассылки в чатах"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={draft.commentsChatBroadcastsEnabled}
+                                  onChange={(event) =>
+                                    setFieldValue(
+                                      'commentsChatBroadcastsEnabled',
+                                      event.target.checked,
+                                    )
+                                  }
+                                />
+                                <span className="toggle-switch" aria-hidden>
+                                  <span className="toggle-switch__thumb" />
+                                </span>
+                              </label>
+                            </div>
+
+                            <p className="settings-native-toggle__hint">
+                              Кнопка комментариев появится в рассылках этого чата.
+                            </p>
+                          </div>
+                        </>
+                      ) : null}
                     </div>
                   ) : null}
                 </div>

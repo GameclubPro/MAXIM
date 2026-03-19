@@ -384,6 +384,10 @@ function createInitialState(): PreviewState {
     requiredSubscriptionWarnEnabled: true,
     requiredSubscriptionBanEnabled: true,
     requiredSubscriptionKickEnabled: true,
+    commentsEnabled: true,
+    commentsAdminsEnabled: true,
+    commentsAllEnabled: false,
+    commentsChatBroadcastsEnabled: true,
     banDurationHours: 12,
     warnThreshold: 2,
   });
@@ -499,9 +503,6 @@ function createInitialState(): PreviewState {
   ];
   const channelSettings = channelSettingsSchema.parse({
     commentsEnabled: true,
-    commentsAdminsEnabled: true,
-    commentsAllEnabled: false,
-    commentsChatBroadcastsEnabled: false,
     commentsModerationEnabled: true,
     commentsBlockLinksEnabled: true,
     commentsAntiSpamEnabled: true,

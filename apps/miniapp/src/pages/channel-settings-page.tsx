@@ -45,9 +45,6 @@ type ChannelRouteState = {
 type ChannelSettingsSectionKey = 'comments' | 'postSuggestions' | 'broadcast' | 'poll' | 'giveaway';
 type ChannelSettingsHintKey =
   | 'commentsEnabled'
-  | 'commentsAdminsEnabled'
-  | 'commentsAllEnabled'
-  | 'commentsChatBroadcastsEnabled'
   | 'commentsModerationEnabled'
   | 'commentsBlockLinksEnabled'
   | 'commentsAntiSpamEnabled'
@@ -170,32 +167,14 @@ function sanitizeAutoPostButtonsMode(
   return buildAutoPostButtonsMode(commentsEnabled && modeHasComments(mode), suggestEnabled);
 }
 
-function hasCommentsAudience(
-  settings: Pick<ChannelSettings, 'commentsAdminsEnabled' | 'commentsAllEnabled'>,
-): boolean {
-  return settings.commentsAdminsEnabled || settings.commentsAllEnabled;
-}
-
-function resolveCommentsButtonEnabled(
-  settings: Pick<
-    ChannelSettings,
-    'autoPostButtonsMode' | 'commentsEnabled' | 'commentsAdminsEnabled' | 'commentsAllEnabled'
-  >,
-): boolean {
-  if (!settings.commentsEnabled || !hasCommentsAudience(settings)) {
-    return false;
-  }
-
-  return settings.autoPostButtonsMode === 'COMMENTS' || settings.autoPostButtonsMode === 'BOTH'
-    ? true
-    : settings.autoPostButtonsMode === 'OFF'
-      ? settings.commentsEnabled
-      : false;
-}
-
 function resolveManualPublishButtons(settings: ChannelSettings) {
   return {
-    includeCommentsButton: resolveCommentsButtonEnabled(settings),
+    includeCommentsButton:
+      settings.autoPostButtonsMode === 'COMMENTS' || settings.autoPostButtonsMode === 'BOTH'
+        ? true
+        : settings.autoPostButtonsMode === 'OFF'
+          ? settings.commentsEnabled
+          : false,
     includeSuggestButton: true,
   };
 }
@@ -203,7 +182,11 @@ function resolveManualPublishButtons(settings: ChannelSettings) {
 function resolveBroadcastSystemButtons(settings: ChannelSettings) {
   return {
     includeCommentsButton:
-      resolveCommentsButtonEnabled(settings) && settings.commentsChatBroadcastsEnabled,
+      settings.autoPostButtonsMode === 'COMMENTS' || settings.autoPostButtonsMode === 'BOTH'
+        ? true
+        : settings.autoPostButtonsMode === 'OFF'
+          ? settings.commentsEnabled
+          : false,
     includeSuggestButton: settings.postSuggestionsEnabled,
   };
 }
@@ -944,16 +927,15 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   );
   const canPublishEngagement =
     publishButtons.includeCommentsButton || publishButtons.includeSuggestButton;
-  const commentsPublishHint = publishButtons.includeCommentsButton
-    ? draft.commentsAllEnabled
-      ? 'кнопка «Комментарии» будет доступна всем'
-      : 'кнопка «Комментарии» останется только для админов'
-    : null;
   const publishHint = !canPublishEngagement
     ? 'Включите хотя бы один сценарий.'
     : draft.postSuggestionsEnabled
-      ? [commentsPublishHint, 'кнопка «Предложить пост»'].filter(Boolean).join(' + ')
-      : (commentsPublishHint ?? 'Кнопка будет только в этом посте.');
+      ? publishButtons.includeCommentsButton
+        ? 'Опубликуем кнопки «Комментарии» и «Предложить пост».'
+        : 'Опубликуем кнопку «Предложить пост».'
+      : publishButtons.includeCommentsButton
+        ? 'Кнопки будут только в этом посте.'
+        : 'Кнопка будет только в этом посте.';
   const broadcastHasButton = broadcastButtonEnabled && Boolean(broadcastButtonText.trim());
   const broadcastSchedulePreview = `${countBroadcastScheduleDays(broadcastScheduledSlots)} дн. · ${broadcastScheduledSlots.length} слота`;
   const normalizedBroadcastButtonUrl = broadcastButtonUrl.trim();
@@ -985,31 +967,16 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   ]
     .filter(Boolean)
     .join(' · ');
-  const commentsAudienceSummary = draft.commentsAllEnabled
-    ? 'для всех'
-    : draft.commentsAdminsEnabled
-      ? 'только админы'
-      : 'доступ не выбран';
   const commentsCardSummary = !draft.commentsEnabled
     ? 'обсуждение выключено'
-    : [
-        commentsAudienceSummary,
-        draft.commentsChatBroadcastsEnabled ? 'рассылки в чатах' : null,
-        draft.commentsModerationEnabled ? 'с модерацией' : 'без модерации',
-      ]
-        .filter(Boolean)
-        .join(' · ');
+    : draft.commentsModerationEnabled
+      ? 'обсуждение с модерацией'
+      : 'обсуждение без модерации';
   const commentsCardStatus = !draft.commentsEnabled
     ? 'Выкл'
-    : draft.commentsAllEnabled
-      ? 'Все'
-      : draft.commentsAdminsEnabled
-        ? draft.commentsChatBroadcastsEnabled
-          ? 'Адм+'
-          : 'Адм'
-        : draft.commentsModerationEnabled
-          ? 'Модер'
-          : 'Вкл';
+    : draft.commentsModerationEnabled
+      ? 'Модер'
+      : 'Вкл';
   const postSuggestionsCardSummary = draft.postSuggestionsEnabled
     ? 'авто-кнопка под новыми постами'
     : 'ручная публикация кнопки';
@@ -1241,38 +1208,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
                 {draft.commentsEnabled ? (
                   <div className="channel-settings-stack">
-                    <ChannelSettingsToggleCard
-                      title="Только у админов"
-                      description="Комментарии сможет писать только команда канала."
-                      hintKey="commentsAdminsEnabled"
-                      openHintKey={openHintKey}
-                      onToggleHint={toggleHint}
-                      checked={draft.commentsAdminsEnabled}
-                      onChange={(nextValue) => patchDraft('commentsAdminsEnabled', nextValue)}
-                    />
-
-                    <ChannelSettingsToggleCard
-                      title="Для всех"
-                      description="Комментарии смогут писать все участники."
-                      hintKey="commentsAllEnabled"
-                      openHintKey={openHintKey}
-                      onToggleHint={toggleHint}
-                      checked={draft.commentsAllEnabled}
-                      onChange={(nextValue) => patchDraft('commentsAllEnabled', nextValue)}
-                    />
-
-                    <ChannelSettingsToggleCard
-                      title="Для рассылки в чатах"
-                      description="Кнопка комментариев появится и в рассылках."
-                      hintKey="commentsChatBroadcastsEnabled"
-                      openHintKey={openHintKey}
-                      onToggleHint={toggleHint}
-                      checked={draft.commentsChatBroadcastsEnabled}
-                      onChange={(nextValue) =>
-                        patchDraft('commentsChatBroadcastsEnabled', nextValue)
-                      }
-                    />
-
                     <ChannelSettingsToggleCard
                       title="Модерация"
                       description="Проверка комментариев."

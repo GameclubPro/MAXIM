@@ -2478,10 +2478,6 @@ export class AdminService {
       throw new BadRequestException('Комментарии для этого канала сейчас закрыты.');
     }
 
-    if (dialogType === 'comments') {
-      await this.assertChannelCommentsAudience(chatId, user.userId, channelSettings);
-    }
-
     if (dialogType === 'suggest' && !channelSettings.postSuggestionsEnabled && !threadId) {
       throw new BadRequestException('Предложить пост для этого канала сейчас нельзя.');
     }
@@ -2535,6 +2531,115 @@ export class AdminService {
             deliveredToUserId,
           }
         : {}),
+    };
+
+    return createChannelDialogMessageResponseSchema.parse({
+      ok: true,
+      message,
+    });
+  }
+
+  async getChatDialog(
+    chatId: string,
+    user: AuthUser,
+    dialogTypeRaw: string,
+    token: string | null,
+  ) {
+    const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
+    if (dialogType !== 'comments') {
+      throw new BadRequestException('Для чатов доступен только сценарий комментариев.');
+    }
+
+    const threadId = this.resolveChatDialogThreadId(chatId, dialogType, token);
+    const chatSettings = await this.getPublicChatCommentSettings(chatId);
+
+    if (!chatSettings.commentsEnabled) {
+      throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
+    }
+
+    const rows = await this.prisma.auditLog.findMany({
+      where: {
+        chatId,
+        action: CHANNEL_DIALOG_ACTION_COMMENT,
+        ...(threadId
+          ? {
+              payload: {
+                path: ['threadId'],
+                equals: threadId,
+              },
+            }
+          : {}),
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+      take: CHANNEL_DIALOG_MESSAGES_LIMIT,
+    });
+
+    const messages = rows
+      .slice()
+      .reverse()
+      .map((row) => this.mapChannelDialogAuditLog(row, dialogType));
+
+    return channelDialogResponseSchema.parse({
+      chatId,
+      type: dialogType,
+      introText: null,
+      messages,
+    });
+  }
+
+  async createChatDialogMessage(
+    chatId: string,
+    user: AuthUser,
+    dialogTypeRaw: string,
+    body: unknown,
+  ) {
+    const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
+    if (dialogType !== 'comments') {
+      throw new BadRequestException('Для чатов доступен только сценарий комментариев.');
+    }
+
+    const parsed = createChannelDialogMessageRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const threadId = this.resolveChatDialogThreadId(chatId, dialogType, parsed.data.token);
+    const text = parsed.data.text.trim();
+    const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
+    const chatSettings = await this.getPublicChatCommentSettings(chatId);
+
+    if (!chatSettings.commentsEnabled) {
+      throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
+    }
+
+    await this.assertChatCommentsAudience(chatId, user.userId, chatSettings);
+
+    const created = await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: CHANNEL_DIALOG_ACTION_COMMENT,
+        payload: {
+          type: dialogType,
+          threadId,
+          text,
+          authorDisplayName: authorDisplayName ?? null,
+          delivered: true,
+          deliveredToUserId: null,
+          source: 'miniapp_dialog',
+        },
+      },
+    });
+
+    const message = {
+      id: created.id,
+      type: dialogType,
+      text,
+      authorUserId: user.userId,
+      authorDisplayName: authorDisplayName ?? null,
+      createdAt: created.createdAt.toISOString(),
     };
 
     return createChannelDialogMessageResponseSchema.parse({
@@ -5023,6 +5128,27 @@ export class AdminService {
       ]);
     }
 
+    if (entityType === 'chat') {
+      const chatSettings = await this.prisma.chatSettings.upsert({
+        where: { chatId },
+        create: { chatId },
+        update: {},
+        select: {
+          commentsEnabled: true,
+          commentsAdminsEnabled: true,
+          commentsAllEnabled: true,
+          commentsChatBroadcastsEnabled: true,
+        },
+      });
+      const threadId = randomUUID();
+
+      if (this.shouldIncludeChatCommentsButton(chatSettings)) {
+        rows.push([this.buildChatDialogButton(chatId, 'comments', threadId, '💬 Комментарии')]);
+      }
+
+      return rows;
+    }
+
     if (entityType !== 'channel') {
       return rows;
     }
@@ -5036,16 +5162,14 @@ export class AdminService {
         postSuggestionsEnabled: true,
         postSuggestionsButtonText: true,
         commentsEnabled: true,
-        commentsAdminsEnabled: true,
-        commentsAllEnabled: true,
-        commentsChatBroadcastsEnabled: true,
       },
     });
     const threadId = randomUUID();
 
     if (
-      this.shouldIncludeChannelCommentsButton(channelSettings) &&
-      channelSettings.commentsChatBroadcastsEnabled
+      channelSettings.autoPostButtonsMode === 'COMMENTS' ||
+      channelSettings.autoPostButtonsMode === 'BOTH' ||
+      (channelSettings.autoPostButtonsMode === 'OFF' && channelSettings.commentsEnabled)
     ) {
       rows.push([this.buildChannelDialogButton(chatId, 'comments', threadId, '💬 Комментарии')]);
     }
@@ -7013,45 +7137,78 @@ export class AdminService {
     };
   }
 
-  private hasChannelCommentsAudience(
-    settings: Pick<ChannelSettings, 'commentsAdminsEnabled' | 'commentsAllEnabled'>,
+  private async getPublicChatCommentSettings(
+    chatId: string,
+  ): Promise<
+    Pick<
+      ChatSettings,
+      | 'commentsEnabled'
+      | 'commentsAdminsEnabled'
+      | 'commentsAllEnabled'
+      | 'commentsChatBroadcastsEnabled'
+    >
+  > {
+    const settings = await this.prisma.chatSettings.findUnique({
+      where: { chatId },
+    });
+
+    if (!settings) {
+      return {
+        commentsEnabled: DEFAULT_CHAT_SETTINGS.commentsEnabled,
+        commentsAdminsEnabled: DEFAULT_CHAT_SETTINGS.commentsAdminsEnabled,
+        commentsAllEnabled: DEFAULT_CHAT_SETTINGS.commentsAllEnabled,
+        commentsChatBroadcastsEnabled: DEFAULT_CHAT_SETTINGS.commentsChatBroadcastsEnabled,
+      };
+    }
+
+    const parsed = chatSettingsSchema.safeParse(settings);
+    const normalized = parsed.success ? this.normalizeChatSettings(parsed.data) : DEFAULT_CHAT_SETTINGS;
+    return {
+      commentsEnabled: normalized.commentsEnabled,
+      commentsAdminsEnabled: normalized.commentsAdminsEnabled,
+      commentsAllEnabled: normalized.commentsAllEnabled,
+      commentsChatBroadcastsEnabled: normalized.commentsChatBroadcastsEnabled,
+    };
+  }
+
+  private hasChatCommentsAudience(
+    settings: Pick<ChatSettings, 'commentsAdminsEnabled' | 'commentsAllEnabled'>,
   ): boolean {
     return settings.commentsAdminsEnabled || settings.commentsAllEnabled;
   }
 
-  private shouldIncludeChannelCommentsButton(
+  private shouldIncludeChatCommentsButton(
     settings: Pick<
-      ChannelSettings,
-      'autoPostButtonsMode' | 'commentsEnabled' | 'commentsAdminsEnabled' | 'commentsAllEnabled'
+      ChatSettings,
+      | 'commentsEnabled'
+      | 'commentsAdminsEnabled'
+      | 'commentsAllEnabled'
+      | 'commentsChatBroadcastsEnabled'
     >,
   ): boolean {
-    if (!settings.commentsEnabled || !this.hasChannelCommentsAudience(settings)) {
-      return false;
-    }
-
-    return settings.autoPostButtonsMode === 'COMMENTS' || settings.autoPostButtonsMode === 'BOTH'
-      ? true
-      : settings.autoPostButtonsMode === 'OFF'
-        ? settings.commentsEnabled
-        : false;
+    return (
+      settings.commentsEnabled &&
+      settings.commentsChatBroadcastsEnabled &&
+      this.hasChatCommentsAudience(settings)
+    );
   }
 
-  private async assertChannelCommentsAudience(
+  private async assertChatCommentsAudience(
     chatId: string,
     userId: string,
-    settings: Pick<ChannelSettings, 'commentsAdminsEnabled' | 'commentsAllEnabled'>,
+    settings: Pick<ChatSettings, 'commentsAdminsEnabled' | 'commentsAllEnabled'>,
   ): Promise<void> {
     if (settings.commentsAllEnabled) {
       return;
     }
 
     if (!settings.commentsAdminsEnabled) {
-      throw new ForbiddenException('Комментарии для этого канала сейчас закрыты.');
+      throw new ForbiddenException('Комментарии для этого чата сейчас закрыты.');
     }
 
     const access = await this.resolveUserAndBotAdminAccess(chatId, userId);
     if (access.status === 'granted') {
-      await this.upsertUserChatAccess(chatId, userId, null, 'channel');
+      await this.upsertUserChatAccess(chatId, userId, null, 'chat');
       return;
     }
 
@@ -7061,7 +7218,7 @@ export class AdminService {
       );
     }
 
-    throw new ForbiddenException('Комментарии для этого канала доступны только администраторам.');
+    throw new ForbiddenException('Комментарии для этого чата доступны только администраторам.');
   }
 
   private normalizeChannelAutoPostButtonsMode(
@@ -7336,10 +7493,74 @@ export class AdminService {
     type: ChannelDialogType,
     threadId: string,
   ): string | null {
-    return this.buildMiniappStartUrl(this.buildChannelDialogStartParam(chatId, type, threadId));
+    return this.buildEntityDialogLaunchUrl('channel', chatId, type, threadId);
   }
 
   private buildChannelDialogDirectWebAppUrl(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+  ): string | null {
+    return this.buildEntityDialogDirectWebAppUrl('channel', chatId, type, threadId);
+  }
+
+  private buildChatDialogButton(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+    text: string,
+  ): MaxMessageButton {
+    const launchUrl = this.buildChatDialogLaunchUrl(chatId, type, threadId);
+    const webAppUrl = this.buildChatDialogDirectWebAppUrl(chatId, type, threadId);
+    const botContactId = this.resolveBotContactId();
+
+    return launchUrl
+      ? {
+          type: 'link',
+          text,
+          url: launchUrl,
+        }
+      : webAppUrl && botContactId
+        ? {
+            type: 'open_app',
+            text,
+            webApp: webAppUrl,
+            contactId: botContactId,
+          }
+        : {
+            type: 'link',
+            text,
+            url: webAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
+          };
+  }
+
+  private buildChatDialogLaunchUrl(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+  ): string | null {
+    return this.buildEntityDialogLaunchUrl('chat', chatId, type, threadId);
+  }
+
+  private buildChatDialogDirectWebAppUrl(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+  ): string | null {
+    return this.buildEntityDialogDirectWebAppUrl('chat', chatId, type, threadId);
+  }
+
+  private buildEntityDialogLaunchUrl(
+    entityType: ManagedEntityType,
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+  ): string | null {
+    return this.buildMiniappStartUrl(this.buildEntityDialogStartParam(entityType, chatId, type, threadId));
+  }
+
+  private buildEntityDialogDirectWebAppUrl(
+    entityType: ManagedEntityType,
     chatId: string,
     type: ChannelDialogType,
     threadId: string,
@@ -7348,9 +7569,10 @@ export class AdminService {
       return null;
     }
 
-    const token = this.buildChannelDialogToken(chatId, type, threadId);
+    const token = this.buildEntityDialogToken(entityType, chatId, type, threadId);
     const encodedChatId = encodeURIComponent(chatId);
-    return `${this.appBaseUrl}/app/channel/${encodedChatId}/dialog/${type}?token=${token}`;
+    const entitySegment = entityType === 'channel' ? 'channel' : 'chat';
+    return `${this.appBaseUrl}/app/${entitySegment}/${encodedChatId}/dialog/${type}?token=${token}`;
   }
 
   private buildChannelDialogStartParam(
@@ -7358,10 +7580,19 @@ export class AdminService {
     type: ChannelDialogType,
     threadId: string,
   ): string {
-    const token = this.buildChannelDialogToken(chatId, type, threadId);
+    return this.buildEntityDialogStartParam('channel', chatId, type, threadId);
+  }
+
+  private buildEntityDialogStartParam(
+    entityType: ManagedEntityType,
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+  ): string {
+    const token = this.buildEntityDialogToken(entityType, chatId, type, threadId);
     const payload = JSON.stringify({
       v: 1,
-      k: 'channel-dialog',
+      k: entityType === 'channel' ? 'channel-dialog' : 'chat-dialog',
       c: chatId,
       m: type,
       t: token,
@@ -7383,15 +7614,24 @@ export class AdminService {
     type: ChannelDialogType,
     threadId?: string | null,
   ): string {
+    return this.buildEntityDialogToken('channel', chatId, type, threadId);
+  }
+
+  private buildEntityDialogToken(
+    entityType: ManagedEntityType,
+    chatId: string,
+    type: ChannelDialogType,
+    threadId?: string | null,
+  ): string {
     const normalizedThreadId = threadId?.trim() ?? '';
     if (!normalizedThreadId) {
-      return this.buildChannelDialogTokenSignature(chatId, type);
+      return this.buildEntityDialogTokenSignature(entityType, chatId, type);
     }
 
     const payload = JSON.stringify({
       v: 1,
       d: normalizedThreadId,
-      s: this.buildChannelDialogTokenSignature(chatId, type, normalizedThreadId),
+      s: this.buildEntityDialogTokenSignature(entityType, chatId, type, normalizedThreadId),
     } satisfies ChannelDialogTokenPayload);
     const encoded = Buffer.from(payload, 'utf8').toString('base64url');
     return `${CHANNEL_DIALOG_TOKEN_PREFIX}${encoded}`;
@@ -7402,10 +7642,19 @@ export class AdminService {
     type: ChannelDialogType,
     threadId?: string | null,
   ): string {
+    return this.buildEntityDialogTokenSignature('channel', chatId, type, threadId);
+  }
+
+  private buildEntityDialogTokenSignature(
+    entityType: ManagedEntityType,
+    chatId: string,
+    type: ChannelDialogType,
+    threadId?: string | null,
+  ): string {
     const normalizedThreadId = threadId?.trim() ?? '';
-    const scope = normalizedThreadId
-      ? `dialog:${chatId}:${type}:${normalizedThreadId}`
-      : `dialog:${chatId}:${type}`;
+    const baseScope =
+      entityType === 'channel' ? `dialog:${chatId}:${type}` : `dialog:chat:${chatId}:${type}`;
+    const scope = normalizedThreadId ? `${baseScope}:${normalizedThreadId}` : baseScope;
     return createHmac('sha256', this.maxBotToken).update(scope).digest('hex');
   }
 
@@ -7414,36 +7663,53 @@ export class AdminService {
     type: ChannelDialogType,
     token: string | null | undefined,
   ): string | null {
+    return this.resolveEntityDialogThreadId('channel', chatId, type, token);
+  }
+
+  private resolveChatDialogThreadId(
+    chatId: string,
+    type: ChannelDialogType,
+    token: string | null | undefined,
+  ): string | null {
+    return this.resolveEntityDialogThreadId('chat', chatId, type, token);
+  }
+
+  private resolveEntityDialogThreadId(
+    entityType: ManagedEntityType,
+    chatId: string,
+    type: ChannelDialogType,
+    token: string | null | undefined,
+  ): string | null {
     const normalizedToken = typeof token === 'string' ? token.trim() : '';
+    const openAgainMessage =
+      entityType === 'channel'
+        ? 'Неверный токен кнопки. Откройте диалог заново из сообщения канала.'
+        : 'Неверный токен кнопки. Откройте диалог заново из сообщения чата.';
+    const staleMessage =
+      entityType === 'channel'
+        ? 'Кнопка устарела. Откройте сообщение в канале и нажмите кнопку снова.'
+        : 'Кнопка устарела. Откройте сообщение в чате и нажмите кнопку снова.';
     if (!normalizedToken) {
-      throw new BadRequestException(
-        'Неверный токен кнопки. Откройте диалог заново из сообщения канала.',
-      );
+      throw new BadRequestException(openAgainMessage);
     }
 
     if (/^[a-f0-9]{64}$/iu.test(normalizedToken)) {
       const signature = normalizedToken.toLowerCase();
-      const expected = this.buildChannelDialogTokenSignature(chatId, type);
+      const expected = this.buildEntityDialogTokenSignature(entityType, chatId, type);
       if (!this.isValidChannelDialogSignature(signature, expected)) {
-        throw new BadRequestException(
-          'Кнопка устарела. Откройте сообщение в канале и нажмите кнопку снова.',
-        );
+        throw new BadRequestException(staleMessage);
       }
 
       return null;
     }
 
     if (!normalizedToken.startsWith(CHANNEL_DIALOG_TOKEN_PREFIX)) {
-      throw new BadRequestException(
-        'Неверный токен кнопки. Откройте диалог заново из сообщения канала.',
-      );
+      throw new BadRequestException(openAgainMessage);
     }
 
     const encodedPayload = normalizedToken.slice(CHANNEL_DIALOG_TOKEN_PREFIX.length);
     if (!encodedPayload) {
-      throw new BadRequestException(
-        'Неверный токен кнопки. Откройте диалог заново из сообщения канала.',
-      );
+      throw new BadRequestException(openAgainMessage);
     }
 
     let payload: Partial<ChannelDialogTokenPayload>;
@@ -7452,9 +7718,7 @@ export class AdminService {
         Buffer.from(encodedPayload, 'base64url').toString('utf8'),
       ) as Partial<ChannelDialogTokenPayload>;
     } catch {
-      throw new BadRequestException(
-        'Неверный токен кнопки. Откройте диалог заново из сообщения канала.',
-      );
+      throw new BadRequestException(openAgainMessage);
     }
 
     const threadId = this.readTrimmedString(payload.d);
@@ -7465,16 +7729,12 @@ export class AdminService {
       threadId.length > 120 ||
       !/^[a-f0-9]{64}$/u.test(signature)
     ) {
-      throw new BadRequestException(
-        'Неверный токен кнопки. Откройте диалог заново из сообщения канала.',
-      );
+      throw new BadRequestException(openAgainMessage);
     }
 
-    const expected = this.buildChannelDialogTokenSignature(chatId, type, threadId);
+    const expected = this.buildEntityDialogTokenSignature(entityType, chatId, type, threadId);
     if (!this.isValidChannelDialogSignature(signature, expected)) {
-      throw new BadRequestException(
-        'Кнопка устарела. Откройте сообщение в канале и нажмите кнопку снова.',
-      );
+      throw new BadRequestException(staleMessage);
     }
 
     return threadId;
