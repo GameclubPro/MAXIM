@@ -3339,35 +3339,51 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
   }
 
-  function renderSectionSaveFooter(section: ApplySectionKey) {
+  function renderSectionSaveFooter(
+    section: ApplySectionKey,
+    options?: {
+      note?: string;
+      saveLabel?: string;
+      applyToAllLabel?: string;
+      emphasize?: 'save' | 'apply';
+    },
+  ) {
     const isCurrentSectionSaving = isSavingSettings && savingSection === section;
     const isCurrentSectionApplying = isApplyingSectionToAll && applyingSection === section;
+    const emphasize = options?.emphasize ?? 'apply';
+    const saveButtonClassName =
+      emphasize === 'save' ? 'button button--accent' : 'button button--ghost';
+    const applyToAllButtonClassName =
+      emphasize === 'save' ? 'button button--ghost' : 'button button--accent';
+    const footerNote =
+      options?.note ??
+      (canApplyToAllChats
+        ? 'Сохраняется только текущий блок. При необходимости его можно сразу применить во все чаты.'
+        : 'Пока доступен только текущий чат. Для массового применения нужен хотя бы ещё один чат.');
 
     return (
       <>
-        <p className="settings-drilldown__footer-note">
-          {canApplyToAllChats
-            ? 'Сохраняется только текущий блок. При необходимости его можно сразу применить во все чаты.'
-            : 'Пока доступен только текущий чат. Для массового применения нужен хотя бы ещё один чат.'}
-        </p>
+        <p className="settings-drilldown__footer-note">{footerNote}</p>
         <div className="settings-drilldown__footer-actions">
           <button
             type="button"
-            className="button button--ghost"
+            className={saveButtonClassName}
             onClick={() => void handleSaveSection(section)}
             disabled={
               isCurrentSectionSaving || isCurrentSectionApplying || !isSectionDirty(section)
             }
           >
-            {isCurrentSectionSaving ? 'Сохраняем...' : 'Сохранить'}
+            {isCurrentSectionSaving ? 'Сохраняем...' : (options?.saveLabel ?? 'Сохранить')}
           </button>
           <button
             type="button"
-            className="button button--accent"
+            className={applyToAllButtonClassName}
             onClick={() => void handleSaveSectionToAllChats(section)}
             disabled={isCurrentSectionSaving || isCurrentSectionApplying || !canApplyToAllChats}
           >
-            {isCurrentSectionApplying ? 'Сохраняем...' : 'Сохранить во всех чатах'}
+            {isCurrentSectionApplying
+              ? 'Сохраняем...'
+              : (options?.applyToAllLabel ?? 'Сохранить во всех чатах')}
           </button>
         </div>
       </>
@@ -8202,7 +8218,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 title="Обязательная подписка"
                 summary={requiredSubscriptionHeaderSummary}
                 onClose={() => toggleSection('requiredSubscription')}
-                footer={renderSectionSaveFooter('requiredSubscription')}
+                footer={renderSectionSaveFooter('requiredSubscription', {
+                  note: canApplyToAllChats
+                    ? 'Сначала проверьте каналы и текст в текущем чате. Массовое применение лучше запускать только после локальной проверки.'
+                    : 'Сначала сохраните правило в текущем чате. Для массового применения нужен хотя бы ещё один чат.',
+                  applyToAllLabel: 'Применить во всех чатах',
+                  emphasize: 'save',
+                })}
               >
                 <div
                   id="settings-required-subscription-content"
@@ -8286,14 +8308,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           </SettingsHintAnchor>
                         </div>
 
-                        <div className="managed-giveaway__chips">
-                          <span className="managed-giveaway__chip">
-                            Без подписки сообщения удаляются
-                          </span>
-                          <span className="managed-giveaway__chip">
-                            Проверка до антиспама и санкций
-                          </span>
-                        </div>
+                        <p
+                          className={cn(
+                            'settings-native-toggle__hint',
+                            requiredSubscriptionStaleCount > 0 &&
+                              'settings-native-toggle__hint--danger',
+                          )}
+                        >
+                          {requiredSubscriptionStaleCount > 0
+                            ? 'В списке есть недоступные каналы. Пока вы их не удалите или не выберете заново, правило нельзя безопасно включать во всех чатах.'
+                            : 'Проверка проходит до антиспама и санкций: если подписки нет, сообщение удаляется сразу, а бот показывает кнопки только для недостающих каналов.'}
+                        </p>
 
                         {selectedRequiredSubscriptionChannels.length > 0 ? (
                           <div className="managed-giveaway__prize-editor-list">
@@ -8338,7 +8363,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   className="managed-giveaway__selected-channel"
                                   title={channelId}
                                 >
-                                  Недоступен: {channelId}
+                                  Канал недоступен для проверки · {channelId}
                                 </span>
                                 <button
                                   type="button"

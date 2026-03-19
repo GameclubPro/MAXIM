@@ -7708,6 +7708,8 @@ describe('ModerationService', () => {
                 text: 'Новости MAX',
                 url: 'https://max.ru/channels/news-max',
               },
+            ],
+            [
               {
                 text: 'Афиша района',
                 url: 'https://max.ru/channels/afisha',
@@ -7777,6 +7779,70 @@ describe('ModerationService', () => {
         '1',
         15 * 60,
       );
+    });
+
+    it('retries sending the explanation on the next message when the first send fails', async () => {
+      const prisma = createPrismaForRequiredSubscription({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+      });
+      const ruleEngine = {
+        detect: jest.fn().mockResolvedValue({ violations: [] }),
+      };
+      const redisCounter = createRequiredSubscriptionRedisCounter();
+      const maxClient = {
+        hasChatMember: jest.fn().mockResolvedValue(false),
+        getChatSnapshot: jest.fn().mockResolvedValue({
+          title: 'Новости MAX',
+          link: 'https://max.ru/channels/news-max',
+          participantsCount: 100,
+          entityType: 'channel',
+        }),
+        deleteMessage: jest.fn(),
+        sendMessage: jest
+          .fn()
+          .mockRejectedValueOnce(new Error('MAX send failed'))
+          .mockResolvedValueOnce(undefined),
+        kickMember: jest.fn(),
+        banMember: jest.fn(),
+        notifyModerators: jest.fn(),
+        resolveMessageLink: jest.fn().mockResolvedValue(null),
+      };
+
+      const service = new ModerationService(
+        prisma as never,
+        ruleEngine as never,
+        { resolveAction: jest.fn() } as never,
+        maxClient as never,
+        undefined,
+        undefined,
+        undefined,
+        redisCounter as never,
+      );
+
+      const secondUpdate = createUpdate();
+      secondUpdate.updateId = 'upd-2';
+      if (secondUpdate.message) {
+        secondUpdate.message.messageId = 'msg-2';
+      }
+
+      await service.handleUpdate(createUpdate());
+      await service.handleUpdate(secondUpdate);
+
+      expect(maxClient.hasChatMember).toHaveBeenCalledTimes(1);
+      expect(maxClient.deleteMessage).toHaveBeenCalledTimes(2);
+      expect(maxClient.sendMessage).toHaveBeenCalledTimes(2);
+
+      const noticeCooldownWrites = redisCounter.setStringWithTtl.mock.calls.filter(
+        ([key]) =>
+          typeof key === 'string' && key.includes('required-subscription:notice:v1:chat-1:user-1'),
+      );
+      expect(noticeCooldownWrites).toHaveLength(1);
+      expect(noticeCooldownWrites[0]).toEqual([
+        expect.stringContaining('required-subscription:notice:v1:chat-1:user-1'),
+        '1',
+        15 * 60,
+      ]);
     });
 
     it('fails open when MAX membership lookup errors', async () => {

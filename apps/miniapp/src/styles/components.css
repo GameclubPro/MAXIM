@@ -4581,6 +4581,12 @@
   padding: 7px 9px;
 }
 
+.settings-native-toggle__hint--danger {
+  border-color: rgba(228, 83, 99, 0.2);
+  background: rgba(228, 83, 99, 0.1);
+  color: rgba(98, 31, 39, 0.96);
+}
+
 .bot-message-editor {
   display: grid;
   gap: 8px;

@@ -238,6 +238,7 @@ const MANAGED_POLL_ACTION_PUBLISH = 'PUBLISH_MANAGED_POLL';
 const MANAGED_POLL_ACTION_CLOSE = 'CLOSE_MANAGED_POLL';
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
+const DEFAULT_CHAT_SETTINGS = chatSettingsSchema.parse({});
 const DEFAULT_CHANNEL_SETTINGS = channelSettingsSchema.parse({});
 const SETTINGS_SECTION_KEYS = {
   links: [
@@ -1749,7 +1750,7 @@ export class AdminService {
       'Invalid chat settings found in DB, applying defaults',
     );
 
-    const fallback = chatSettingsSchema.parse({});
+    const fallback = DEFAULT_CHAT_SETTINGS;
     await this.prisma.chatSettings.update({
       where: { chatId },
       data: {
@@ -2565,6 +2566,13 @@ export class AdminService {
             return acc;
           }, {})
         : normalizedSettings;
+    const settingsCreatePayload =
+      filteredSettingKeys.length > 0
+        ? {
+            ...DEFAULT_CHAT_SETTINGS,
+            ...settingsUpdatePayload,
+          }
+        : normalizedSettings;
     const shouldValidateRequiredSubscription =
       filteredSettingKeys.length === 0 ||
       filteredSettingKeys.some((key) =>
@@ -2585,7 +2593,7 @@ export class AdminService {
           entityType: ChatEntityType.CHAT,
           settings: {
             create: {
-              ...normalizedSettings,
+              ...settingsCreatePayload,
             },
           },
         },
@@ -2596,7 +2604,7 @@ export class AdminService {
                 ...settingsUpdatePayload,
               },
               create: {
-                ...normalizedSettings,
+                ...settingsCreatePayload,
               },
             },
           },

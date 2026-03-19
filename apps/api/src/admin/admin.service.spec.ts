@@ -845,6 +845,7 @@ describe('AdminService required subscription settings', () => {
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['channel-1'],
         requiredSubscriptionBotMessageText: 'Следите за подпиской.',
+        deleteSpammersEnabled: true,
       }),
     );
 
@@ -862,6 +863,16 @@ describe('AdminService required subscription settings', () => {
     expect(chat2Call).toBeDefined();
     expect(chat2Call).toEqual(
       expect.objectContaining({
+        create: expect.objectContaining({
+          settings: {
+            create: expect.objectContaining({
+              requiredSubscriptionEnabled: true,
+              requiredSubscriptionChannelIds: ['channel-1'],
+              requiredSubscriptionBotMessageText: 'Следите за подпиской.',
+              deleteSpammersEnabled: false,
+            }),
+          },
+        }),
         update: {
           settings: {
             upsert: {
@@ -874,6 +885,7 @@ describe('AdminService required subscription settings', () => {
                 requiredSubscriptionEnabled: true,
                 requiredSubscriptionChannelIds: ['channel-1'],
                 requiredSubscriptionBotMessageText: 'Следите за подпиской.',
+                deleteSpammersEnabled: false,
               }),
             },
           },

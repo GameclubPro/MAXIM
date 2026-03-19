@@ -2930,7 +2930,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     return buttons.length > 0
       ? {
-          buttons: [buttons],
+          buttons: buttons.map((button) => [button]),
           ...(rulesMessageLink ? { messageLink: rulesMessageLink } : {}),
           debugContext: {
             screen: 'moderation',
@@ -4626,11 +4626,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    const shouldSendNotice = await this.shouldSendRequiredSubscriptionNotice(
+    const noticeOnCooldown = await this.hasRequiredSubscriptionNoticeCooldown(
       params.chatId,
       params.userId,
     );
-    if (!shouldSendNotice) {
+    if (noticeOnCooldown) {
       return true;
     }
 
@@ -4656,6 +4656,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
       });
+      await this.markRequiredSubscriptionNoticeSent(params.chatId, params.userId);
     } catch (error: unknown) {
       this.logger.warn(
         {
@@ -4803,22 +4804,22 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return channels;
   }
 
-  private async shouldSendRequiredSubscriptionNotice(
+  private async hasRequiredSubscriptionNoticeCooldown(
     chatId: string,
     userId: string,
   ): Promise<boolean> {
     const cacheKey = this.buildRequiredSubscriptionNoticeCooldownKey(chatId, userId);
     const cached = await this.redisCounter?.getString(cacheKey);
-    if (cached === '1') {
-      return false;
-    }
+    return cached === '1';
+  }
 
+  private async markRequiredSubscriptionNoticeSent(chatId: string, userId: string): Promise<void> {
+    const cacheKey = this.buildRequiredSubscriptionNoticeCooldownKey(chatId, userId);
     await this.redisCounter?.setStringWithTtl(
       cacheKey,
       '1',
       REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC,
     );
-    return true;
   }
 
   private buildRequiredSubscriptionMembershipCacheKey(channelId: string, userId: string): string {
