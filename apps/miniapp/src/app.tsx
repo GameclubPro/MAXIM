@@ -152,6 +152,15 @@ export function App() {
 
   useEffect(() => {
     readyMaxMiniApp();
+
+    const isMaxWebView = Boolean(window.MAX?.WebApp ?? window.WebApp);
+    document.documentElement.classList.toggle('max-webview', isMaxWebView);
+    document.body.classList.toggle('max-webview', isMaxWebView);
+
+    return () => {
+      document.documentElement.classList.remove('max-webview');
+      document.body.classList.remove('max-webview');
+    };
   }, []);
 
   useEffect(() => {

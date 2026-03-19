@@ -6,7 +6,7 @@ import type {
 } from '@maxim/contracts';
 import { useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useLocation, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
 import { BackChevronIcon } from '../components/ui/entity-header-icons';
 import { GlassCard } from '../components/ui/glass-card';
@@ -951,6 +951,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
 export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   const { chatId = '' } = useParams();
   const location = useLocation();
+  const navigate = useNavigate();
   const routeState = getRouteState(location.state);
   const [range, setRange] = useState<ChannelStatsRange>('7d');
   const [chartTab, setChartTab] = useState<ChartTab>('audience');
@@ -1105,13 +1106,14 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
         }`}
       >
         <div className="channel-insights__appbar-bar">
-          <Link
-            to={buildManagedEntitiesRoute('channel')}
+          <button
+            type="button"
             className="channel-insights__back"
             aria-label="К списку каналов"
+            onClick={() => navigate(buildManagedEntitiesRoute('channel'))}
           >
             <BackChevronIcon />
-          </Link>
+          </button>
 
           <div className="channel-insights__appbar-copy">
             <strong>Статистика</strong>

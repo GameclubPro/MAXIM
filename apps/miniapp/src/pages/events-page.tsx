@@ -9,7 +9,7 @@ import type {
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useLocation, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
 import { BackChevronIcon } from '../components/ui/entity-header-icons';
 import { GlassCard } from '../components/ui/glass-card';
@@ -739,6 +739,7 @@ function getInitialSection(search: string): EventsSection {
 export function EventsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [range, setRange] = useState<LogsDashboardRange>('7d');
   const [section, setSection] = useState<EventsSection>(() => getInitialSection(location.search));
@@ -1075,13 +1076,14 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           }`}
         >
           <div className="events-stage__appbar-bar">
-            <Link
-              to={buildManagedEntitiesRoute('chat')}
+            <button
+              type="button"
               className="events-stage__back"
               aria-label="К списку чатов"
+              onClick={() => navigate(buildManagedEntitiesRoute('chat'))}
             >
               <BackChevronIcon />
-            </Link>
+            </button>
 
             <div className="events-stage__appbar-copy">
               <strong>События</strong>

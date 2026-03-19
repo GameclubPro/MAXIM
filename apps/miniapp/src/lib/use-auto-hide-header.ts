@@ -21,12 +21,21 @@ export function useAutoHideHeader({
     isCompact: false,
     isHidden: false,
   });
+  const isMaxWebView =
+    typeof window !== 'undefined' && Boolean(window.MAX?.WebApp ?? window.WebApp);
   const lastYRef = useRef(0);
   const stateRef = useRef(state);
   const directionRef = useRef<'up' | 'down' | 'idle'>('idle');
   const pivotYRef = useRef(0);
 
   useEffect(() => {
+    if (isMaxWebView) {
+      setState((current) =>
+        current.isCompact || current.isHidden ? { isCompact: false, isHidden: false } : current,
+      );
+      return;
+    }
+
     let frameId = 0;
 
     const readScrollY = () =>
@@ -102,7 +111,7 @@ export function useAutoHideHeader({
       window.removeEventListener('scroll', handleScroll);
       window.visualViewport?.removeEventListener('scroll', handleScroll);
     };
-  }, [compactAfter, hideAfter, hideDistance, revealAtTop, revealDistance, settleDelta]);
+  }, [compactAfter, hideAfter, hideDistance, isMaxWebView, revealAtTop, revealDistance, settleDelta]);
 
   return state;
 }
