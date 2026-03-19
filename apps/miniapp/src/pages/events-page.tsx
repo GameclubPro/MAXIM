@@ -40,6 +40,7 @@ type CandidateReviewStatus = { tone: 'success' | 'danger'; text: string } | null
 
 const BAN_DURATION_MIN_HOURS = 1;
 const BAN_DURATION_MAX_HOURS = 336;
+const CANDIDATES_SECTION_ENABLED = false;
 
 const actionLabelMap: Record<DisplayAction, string> = {
   DELETE_MESSAGE: 'Удаление',
@@ -749,7 +750,7 @@ function getInitialSection(search: string): EventsSection {
     return 'activity';
   }
 
-  if (value === 'candidates') {
+  if (CANDIDATES_SECTION_ENABLED && value === 'candidates') {
     return 'candidates';
   }
 
@@ -816,7 +817,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const candidatesQuery = useQuery({
     queryKey: ['spammer-candidates', chatId],
     queryFn: () => getSpammerCandidates(api, chatId ?? ''),
-    enabled: Boolean(chatId) && section === 'candidates',
+    enabled: CANDIDATES_SECTION_ENABLED && Boolean(chatId) && section === 'candidates',
     refetchInterval: () => (section === 'candidates' && !document.hidden ? 10_000 : false),
     refetchOnWindowFocus: section === 'candidates',
   });
@@ -876,10 +877,14 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
   const dashboard = dashboardQuery.data ?? null;
   const candidates = candidatesQuery.data?.items ?? [];
-  const candidateReviewEnabled = dashboard?.spammerCandidates.reviewEnabled ?? false;
-  const pendingCandidateCount = dashboard?.spammerCandidates.pendingCount ?? 0;
+  const candidateReviewEnabled =
+    CANDIDATES_SECTION_ENABLED && (dashboard?.spammerCandidates.reviewEnabled ?? false);
+  const pendingCandidateCount = CANDIDATES_SECTION_ENABLED
+    ? (dashboard?.spammerCandidates.pendingCount ?? 0)
+    : 0;
   const isCandidatesSectionAvailable =
-    !dashboard || candidateReviewEnabled || pendingCandidateCount > 0;
+    CANDIDATES_SECTION_ENABLED &&
+    (!dashboard || candidateReviewEnabled || pendingCandidateCount > 0);
   const renderSection: EventsSection =
     section === 'candidates' && !isCandidatesSectionAvailable ? 'moderation' : section;
   const activityFeed = useMembershipActivityFeed({
