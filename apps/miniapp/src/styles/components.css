@@ -8195,30 +8195,6 @@
   box-shadow: 0 14px 24px rgba(22, 44, 67, 0.05);
 }
 
-.events-stage::before,
-.events-stage::after {
-  content: none;
-  position: absolute;
-  border-radius: 999px;
-  pointer-events: none;
-}
-
-.events-stage::before {
-  top: -44px;
-  right: -36px;
-  width: 168px;
-  height: 168px;
-  background: radial-gradient(circle, rgba(255, 255, 255, 0.54), transparent 70%);
-}
-
-.events-stage::after {
-  left: -48px;
-  bottom: -68px;
-  width: 220px;
-  height: 220px;
-  background: radial-gradient(circle, rgba(188, 221, 255, 0.18), transparent 72%);
-}
-
 .events-stage--moderation {
   background: linear-gradient(180deg, rgba(246, 249, 253, 0.99), rgba(239, 245, 251, 0.97));
 }
@@ -8229,7 +8205,7 @@
 
 .events-stage__appbar {
   position: relative;
-  z-index: 2;
+  z-index: 4;
 }
 
 .events-stage__appbar-bar {
@@ -8274,6 +8250,7 @@
   border: 1px solid rgba(212, 223, 235, 0.94);
   background: rgba(255, 255, 255, 0.9);
   box-shadow: none;
+  touch-action: manipulation;
 }
 
 .events-stage__back svg {
