@@ -213,6 +213,9 @@ type DuplicateMaxCountKey =
 type HintKey =
   | 'antiSpam'
   | 'deleteSpammers'
+  | 'commentsEnabled'
+  | 'commentsAdmins'
+  | 'commentsChatBroadcasts'
   | 'linkBotMessage'
   | 'linkWarnMessage'
   | 'linkBotButton'
@@ -448,7 +451,6 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
 const COMMENTS_SETTING_KEYS = [
   'commentsEnabled',
   'commentsAdminsEnabled',
-  'commentsAllEnabled',
   'commentsChatBroadcastsEnabled',
 ] as const satisfies ReadonlyArray<keyof ChatSettings>;
 
@@ -1016,6 +1018,17 @@ function inferCommercialSensitivitySliderValue(settings: ChatSettings): number {
   return Math.round(balancedProgress * COMMERCIAL_BALANCED_MAX);
 }
 
+function normalizeLegacyChatCommentScope(settings: ChatSettings): ChatSettings {
+  if (!settings.commentsAllEnabled) {
+    return settings;
+  }
+
+  return {
+    ...settings,
+    commentsAllEnabled: false,
+  };
+}
+
 function mergeSectionSettings(
   targetSettings: ChatSettings,
   sourceSettings: ChatSettings,
@@ -1040,6 +1053,8 @@ function mergeCommentsSettings(targetSettings: ChatSettings, sourceSettings: Cha
   for (const key of COMMENTS_SETTING_KEYS) {
     nextRecord[key] = sourceRecord[key];
   }
+
+  nextSettings.commentsAllEnabled = false;
 
   return nextSettings;
 }
@@ -1631,7 +1646,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    setDraft(settingsQuery.data);
+    setDraft(normalizeLegacyChatCommentScope(settingsQuery.data));
     setFieldErrors({});
     setDuplicateWindowInputValues({});
   }, [settingsQuery.data]);
@@ -1716,7 +1731,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   );
 
   const serverSnapshot = useMemo(
-    () => (settingsQuery.data ? JSON.stringify(settingsQuery.data) : ''),
+    () =>
+      settingsQuery.data ? JSON.stringify(normalizeLegacyChatCommentScope(settingsQuery.data)) : '',
     [settingsQuery.data],
   );
   const rulesServerSnapshot = useMemo(
@@ -3301,27 +3317,22 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     retryManagedBroadcastMutation.isPending;
   const commentsTargetSummary = [
     draft?.commentsAdminsEnabled ? 'посты админов' : null,
-    draft?.commentsAllEnabled ? 'все сообщения' : null,
     draft?.commentsChatBroadcastsEnabled ? 'рассылки в чатах' : null,
   ]
     .filter(Boolean)
     .join(' · ');
   const commentsCardSummary = !draft?.commentsEnabled
     ? 'обсуждение выключено'
-    : commentsTargetSummary || 'не выбрано, где показывать кнопку';
+    : commentsTargetSummary || 'не выбрано, где бот публикует кнопку';
   const commentsCardStatus = !draft?.commentsEnabled
     ? 'Выкл'
-    : draft?.commentsAllEnabled
+    : draft?.commentsAdminsEnabled
       ? draft?.commentsChatBroadcastsEnabled
-        ? 'Все+'
-        : 'Все'
-      : draft?.commentsAdminsEnabled
-        ? draft?.commentsChatBroadcastsEnabled
-          ? 'Адм+'
-          : 'Адм'
-        : draft?.commentsChatBroadcastsEnabled
-          ? 'Рассылки'
-          : 'Вкл';
+        ? 'Адм+'
+        : 'Адм'
+      : draft?.commentsChatBroadcastsEnabled
+        ? 'Рассылки'
+        : 'Вкл';
   const mailingTargetLabel =
     mailingApplyToAllChats && canApplyToAllChats
       ? `Во все чаты (${chatsCount})`
@@ -8484,6 +8495,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             <span className="settings-native-toggle__title">
                               Включить комментарии
                             </span>
+                            <div className="settings-native-toggle__title-actions">
+                              <SettingsHintAnchor
+                                hintKey="commentsEnabled"
+                                openHintKey={openHintKey}
+                                onToggleHint={toggleHint}
+                                label="Как работают комментарии в чатах"
+                              >
+                                В MAX нет нативных комментариев под сообщениями в чатах, поэтому
+                                бот сам публикует сообщение с кнопкой комментариев. Для постов
+                                админа бот отправляет копию с той же разметкой и удаляет исходное
+                                сообщение, а для рассылок кнопка ставится сразу на сообщение бота.
+                              </SettingsHintAnchor>
+                            </div>
                           </div>
 
                           <label
@@ -8503,9 +8527,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         commentsAdminsEnabled:
                                           enabled &&
                                           !current.commentsAdminsEnabled &&
-                                          !current.commentsAllEnabled
+                                          !current.commentsChatBroadcastsEnabled
                                             ? true
                                             : current.commentsAdminsEnabled,
+                                        commentsAllEnabled: false,
                                       }
                                     : current,
                                 );
@@ -8516,10 +8541,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </span>
                           </label>
                         </div>
-
-                        <p className="settings-native-toggle__hint">
-                          Кнопка комментариев под сообщениями и рассылками этого чата.
-                        </p>
                       </div>
 
                       {draft.commentsEnabled ? (
@@ -8530,6 +8551,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 <span className="settings-native-toggle__title">
                                   Только у админов
                                 </span>
+                                <div className="settings-native-toggle__title-actions">
+                                  <SettingsHintAnchor
+                                    hintKey="commentsAdmins"
+                                    openHintKey={openHintKey}
+                                    onToggleHint={toggleHint}
+                                    label="Как работают комментарии для постов админов"
+                                  >
+                                    Когда пишет админ, бот публикует такое же сообщение от себя с
+                                    кнопкой комментариев и удаляет исходное. Это нужно, потому что
+                                    MAX не умеет вешать кнопку прямо под сообщением человека в
+                                    чате.
+                                  </SettingsHintAnchor>
+                                </div>
                               </div>
 
                               <label
@@ -8548,38 +8582,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 </span>
                               </label>
                             </div>
-
-                            <p className="settings-native-toggle__hint">
-                              Кнопка комментариев будет появляться под сообщениями админов.
-                            </p>
-                          </div>
-
-                          <div className="settings-native-toggle">
-                            <div className="settings-native-toggle__row">
-                              <div className="settings-native-toggle__title-wrap">
-                                <span className="settings-native-toggle__title">Для всех</span>
-                              </div>
-
-                              <label
-                                className="settings-native-switch"
-                                aria-label="Комментарии под всеми сообщениями"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={draft.commentsAllEnabled}
-                                  onChange={(event) =>
-                                    setFieldValue('commentsAllEnabled', event.target.checked)
-                                  }
-                                />
-                                <span className="toggle-switch" aria-hidden>
-                                  <span className="toggle-switch__thumb" />
-                                </span>
-                              </label>
-                            </div>
-
-                            <p className="settings-native-toggle__hint">
-                              Кнопка комментариев будет появляться под всеми сообщениями чата.
-                            </p>
                           </div>
 
                           <div className="settings-native-toggle">
@@ -8588,6 +8590,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 <span className="settings-native-toggle__title">
                                   Для рассылки в чатах
                                 </span>
+                                <div className="settings-native-toggle__title-actions">
+                                  <SettingsHintAnchor
+                                    hintKey="commentsChatBroadcasts"
+                                    openHintKey={openHintKey}
+                                    onToggleHint={toggleHint}
+                                    label="Как работают комментарии для рассылок"
+                                  >
+                                    Для рассылки бот публикует сообщение сам и сразу добавляет в
+                                    него кнопку комментариев. Сообщения участников чата при этом не
+                                    заменяются.
+                                  </SettingsHintAnchor>
+                                </div>
                               </div>
 
                               <label
@@ -8609,10 +8623,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 </span>
                               </label>
                             </div>
-
-                            <p className="settings-native-toggle__hint">
-                              Кнопка комментариев появится в рассылках этого чата.
-                            </p>
                           </div>
                         </>
                       ) : null}

@@ -6949,14 +6949,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   }
 
   private shouldAutoAttachChatCommentsButton(
-    settings: Pick<ChatSettings, 'commentsEnabled' | 'commentsAdminsEnabled' | 'commentsAllEnabled'>,
+    settings: Pick<ChatSettings, 'commentsEnabled' | 'commentsAdminsEnabled'>,
     isSenderAdmin: boolean,
   ): boolean {
     if (!settings.commentsEnabled) {
       return false;
     }
 
-    return settings.commentsAllEnabled || (isSenderAdmin && settings.commentsAdminsEnabled);
+    return isSenderAdmin && settings.commentsAdminsEnabled;
   }
 
   private async tryAutoAttachChatMessageComments(params: {
