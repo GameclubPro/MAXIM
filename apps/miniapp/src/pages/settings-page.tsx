@@ -3195,28 +3195,29 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     isUpdatingManagedBroadcast ||
     cancelManagedBroadcastMutation.isPending ||
     retryManagedBroadcastMutation.isPending;
-  const commentsAudienceSummary = draft?.commentsAllEnabled
-    ? 'для всех'
-    : draft?.commentsAdminsEnabled
-      ? 'только админы'
-      : 'доступ не выбран';
+  const commentsTargetSummary = [
+    draft?.commentsAdminsEnabled ? 'посты админов' : null,
+    draft?.commentsAllEnabled ? 'все сообщения' : null,
+    draft?.commentsChatBroadcastsEnabled ? 'рассылки в чатах' : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
   const commentsCardSummary = !draft?.commentsEnabled
     ? 'обсуждение выключено'
-    : [
-        commentsAudienceSummary,
-        draft?.commentsChatBroadcastsEnabled ? 'рассылки в чатах' : null,
-      ]
-        .filter(Boolean)
-        .join(' · ');
+    : commentsTargetSummary || 'не выбрано, где показывать кнопку';
   const commentsCardStatus = !draft?.commentsEnabled
     ? 'Выкл'
     : draft?.commentsAllEnabled
-      ? 'Все'
+      ? draft?.commentsChatBroadcastsEnabled
+        ? 'Все+'
+        : 'Все'
       : draft?.commentsAdminsEnabled
         ? draft?.commentsChatBroadcastsEnabled
           ? 'Адм+'
           : 'Адм'
-        : 'Вкл';
+        : draft?.commentsChatBroadcastsEnabled
+          ? 'Рассылки'
+          : 'Вкл';
   const mailingTargetLabel =
     mailingApplyToAllChats && canApplyToAllChats
       ? `Во все чаты (${chatsCount})`
@@ -8368,7 +8369,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         </div>
 
                         <p className="settings-native-toggle__hint">
-                          Отдельный поток обсуждения для рассылок этого чата.
+                          Кнопка комментариев под сообщениями и рассылками этого чата.
                         </p>
                       </div>
 
@@ -8384,7 +8385,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                               <label
                                 className="settings-native-switch"
-                                aria-label="Комментарии только для админов"
+                                aria-label="Комментарии под постами админов"
                               >
                                 <input
                                   type="checkbox"
@@ -8400,7 +8401,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </div>
 
                             <p className="settings-native-toggle__hint">
-                              Комментарии смогут писать только админы этого чата.
+                              Кнопка комментариев будет появляться под сообщениями админов.
                             </p>
                           </div>
 
@@ -8412,7 +8413,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                               <label
                                 className="settings-native-switch"
-                                aria-label="Комментарии для всех участников"
+                                aria-label="Комментарии под всеми сообщениями"
                               >
                                 <input
                                   type="checkbox"
@@ -8428,7 +8429,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </div>
 
                             <p className="settings-native-toggle__hint">
-                              Комментарии смогут писать все участники.
+                              Кнопка комментариев будет появляться под всеми сообщениями чата.
                             </p>
                           </div>
 

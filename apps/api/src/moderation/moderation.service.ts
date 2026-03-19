@@ -122,6 +122,7 @@ const CHANNEL_AUTO_POST_SCAN_INTERVAL_MS = 5_000;
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
 const CHANNEL_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
+const CHAT_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHAT_COMMENTS';
 const GLOBAL_SPAMMER_WINDOW_SEC = 2 * 60;
 const GLOBAL_SPAMMER_REDIS_TTL_SEC = GLOBAL_SPAMMER_WINDOW_SEC + 5;
 const GLOBAL_SPAMMER_WARN_MIN_CHATS = 4;
@@ -485,6 +486,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       senderId,
     );
     if (senderChatAdminCheck.isAdmin) {
+      if (messageId && this.shouldAutoAttachChatCommentsButton(settings, true)) {
+        await this.tryAutoAttachChatMessageComments({
+          chatId,
+          messageId,
+          text: typeof text === 'string' && text.trim() ? text : null,
+          senderId,
+          update,
+        });
+      }
+
       this.logger.debug(
         {
           chatId,
@@ -656,6 +667,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (violations.length === 0) {
+      if (messageId && this.shouldAutoAttachChatCommentsButton(settings, false)) {
+        await this.tryAutoAttachChatMessageComments({
+          chatId,
+          messageId,
+          text: typeof text === 'string' && text.trim() ? text : null,
+          senderId,
+          update,
+        });
+      }
+
       return;
     }
 
@@ -6916,6 +6937,108 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return rows;
   }
 
+  private shouldAutoAttachChatCommentsButton(
+    settings: Pick<ChatSettings, 'commentsEnabled' | 'commentsAdminsEnabled' | 'commentsAllEnabled'>,
+    isSenderAdmin: boolean,
+  ): boolean {
+    if (!settings.commentsEnabled) {
+      return false;
+    }
+
+    return settings.commentsAllEnabled || (isSenderAdmin && settings.commentsAdminsEnabled);
+  }
+
+  private async tryAutoAttachChatMessageComments(params: {
+    chatId: string;
+    messageId: string;
+    text: string | null;
+    senderId: string;
+    update: MaxUpdate;
+  }): Promise<void> {
+    const { chatId, messageId, text, senderId, update } = params;
+
+    if (this.messageHasInlineKeyboard(update)) {
+      return;
+    }
+
+    const alreadyAttached = await this.prisma.auditLog.findFirst({
+      where: {
+        chatId,
+        action: CHAT_DIALOG_AUTO_ATTACH_ACTION,
+        payload: {
+          path: ['messageId'],
+          equals: messageId,
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+    if (alreadyAttached) {
+      return;
+    }
+
+    const threadId = randomUUID();
+    const buttons = [[this.buildChatDialogButton(chatId, 'comments', threadId, '💬 Комментарии')]];
+
+    try {
+      await this.maxClient.editMessageInlineKeyboard(chatId, messageId, text, {
+        buttons,
+        debugContext: {
+          screen: 'chat-auto-comments',
+          action: 'attach-comments',
+        },
+      });
+    } catch (error: unknown) {
+      const status = this.extractStatusCode(error);
+      if (status && status < 500 && status !== 429) {
+        this.logger.warn(
+          {
+            chatId,
+            messageId,
+            status,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to auto-attach chat comments button; skipping retry',
+        );
+        return;
+      }
+      throw error;
+    }
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: senderId,
+        action: CHAT_DIALOG_AUTO_ATTACH_ACTION,
+        payload: {
+          messageId,
+          threadId,
+          source: 'webhook',
+        },
+      },
+    });
+  }
+
+  private messageHasInlineKeyboard(update: MaxUpdate): boolean {
+    const raw = this.asRecord(update.raw);
+    const message = this.asRecord(raw?.message);
+    const body = this.asRecord(message?.body);
+    const attachmentGroups = [
+      Array.isArray(body?.attachments) ? body.attachments : null,
+      Array.isArray(message?.attachments) ? message.attachments : null,
+    ];
+
+    return attachmentGroups.some((attachments) =>
+      Array.isArray(attachments)
+        ? attachments.some((attachment) => {
+            const row = this.asRecord(attachment);
+            return this.readLowerString(row?.type) === 'inline_keyboard';
+          })
+        : false,
+    );
+  }
+
   private buildChannelDialogButton(
     chatId: string,
     type: ChannelDialogType,
@@ -6924,6 +7047,40 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   ): MaxMessageButton {
     const launchUrl = this.buildChannelDialogLaunchUrl(chatId, type, threadId);
     const webAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, type, threadId);
+    const botContactId = this.resolveBotContactId();
+
+    if (launchUrl) {
+      return {
+        type: 'link',
+        text,
+        url: launchUrl,
+      };
+    }
+
+    if (webAppUrl && botContactId) {
+      return {
+        type: 'open_app',
+        text,
+        webApp: webAppUrl,
+        contactId: botContactId,
+      };
+    }
+
+    return {
+      type: 'link',
+      text,
+      url: webAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
+    };
+  }
+
+  private buildChatDialogButton(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+    text: string,
+  ): MaxMessageButton {
+    const launchUrl = this.buildChatDialogLaunchUrl(chatId, type, threadId);
+    const webAppUrl = this.buildChatDialogDirectWebAppUrl(chatId, type, threadId);
     const botContactId = this.resolveBotContactId();
 
     if (launchUrl) {
@@ -6959,6 +7116,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return this.buildMiniappStartUrl(startParam);
   }
 
+  private buildChatDialogLaunchUrl(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+  ): string | null {
+    const startParam = this.buildChatDialogStartParam(chatId, type, threadId);
+    return this.buildMiniappStartUrl(startParam);
+  }
+
   private buildChannelDialogDirectWebAppUrl(
     chatId: string,
     type: ChannelDialogType,
@@ -6972,6 +7138,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `${this.appBaseUrl}/app/channel/${encodeURIComponent(chatId)}/dialog/${type}?token=${token}`;
   }
 
+  private buildChatDialogDirectWebAppUrl(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+  ): string | null {
+    if (!this.appBaseUrl) {
+      return null;
+    }
+
+    const token = this.buildChatDialogToken(chatId, type, threadId);
+    return `${this.appBaseUrl}/app/chat/${encodeURIComponent(chatId)}/dialog/${type}?token=${token}`;
+  }
+
   private buildChannelDialogStartParam(
     chatId: string,
     type: ChannelDialogType,
@@ -6981,6 +7160,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const payload = JSON.stringify({
       v: 1,
       k: 'channel-dialog',
+      c: chatId,
+      m: type,
+      t: token,
+    });
+    const encoded = Buffer.from(payload, 'utf8').toString('base64url');
+    return `${CHANNEL_DIALOG_START_PARAM_PREFIX}${encoded}`;
+  }
+
+  private buildChatDialogStartParam(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+  ): string {
+    const token = this.buildChatDialogToken(chatId, type, threadId);
+    const payload = JSON.stringify({
+      v: 1,
+      k: 'chat-dialog',
       c: chatId,
       m: type,
       t: token,
@@ -7011,12 +7207,37 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `${CHANNEL_DIALOG_TOKEN_PREFIX}${encoded}`;
   }
 
+  private buildChatDialogToken(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+  ): string {
+    const payload = JSON.stringify({
+      v: 1,
+      d: threadId,
+      s: this.buildChatDialogTokenSignature(chatId, type, threadId),
+    });
+    const encoded = Buffer.from(payload, 'utf8').toString('base64url');
+    return `${CHANNEL_DIALOG_TOKEN_PREFIX}${encoded}`;
+  }
+
   private buildChannelDialogTokenSignature(
     chatId: string,
     type: ChannelDialogType,
     threadId: string,
   ): string {
     const scope = `dialog:${chatId}:${type}:${threadId}`;
+    return createHmac('sha256', this.maxBotToken ?? '')
+      .update(scope)
+      .digest('hex');
+  }
+
+  private buildChatDialogTokenSignature(
+    chatId: string,
+    type: ChannelDialogType,
+    threadId: string,
+  ): string {
+    const scope = `dialog:chat:${chatId}:${type}:${threadId}`;
     return createHmac('sha256', this.maxBotToken ?? '')
       .update(scope)
       .digest('hex');

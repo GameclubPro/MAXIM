@@ -2614,8 +2614,6 @@ export class AdminService {
       throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
     }
 
-    await this.assertChatCommentsAudience(chatId, user.userId, chatSettings);
-
     const created = await this.prisma.auditLog.create({
       data: {
         chatId,
@@ -7171,54 +7169,13 @@ export class AdminService {
     };
   }
 
-  private hasChatCommentsAudience(
-    settings: Pick<ChatSettings, 'commentsAdminsEnabled' | 'commentsAllEnabled'>,
-  ): boolean {
-    return settings.commentsAdminsEnabled || settings.commentsAllEnabled;
-  }
-
   private shouldIncludeChatCommentsButton(
     settings: Pick<
       ChatSettings,
-      | 'commentsEnabled'
-      | 'commentsAdminsEnabled'
-      | 'commentsAllEnabled'
-      | 'commentsChatBroadcastsEnabled'
+      'commentsEnabled' | 'commentsChatBroadcastsEnabled'
     >,
   ): boolean {
-    return (
-      settings.commentsEnabled &&
-      settings.commentsChatBroadcastsEnabled &&
-      this.hasChatCommentsAudience(settings)
-    );
-  }
-
-  private async assertChatCommentsAudience(
-    chatId: string,
-    userId: string,
-    settings: Pick<ChatSettings, 'commentsAdminsEnabled' | 'commentsAllEnabled'>,
-  ): Promise<void> {
-    if (settings.commentsAllEnabled) {
-      return;
-    }
-
-    if (!settings.commentsAdminsEnabled) {
-      throw new ForbiddenException('Комментарии для этого чата сейчас закрыты.');
-    }
-
-    const access = await this.resolveUserAndBotAdminAccess(chatId, userId);
-    if (access.status === 'granted') {
-      await this.upsertUserChatAccess(chatId, userId, null, 'chat');
-      return;
-    }
-
-    if (access.status === 'unknown') {
-      throw new ServiceUnavailableException(
-        'Не удалось проверить права администратора в MAX. Повторите попытку.',
-      );
-    }
-
-    throw new ForbiddenException('Комментарии для этого чата доступны только администраторам.');
+    return settings.commentsEnabled && settings.commentsChatBroadcastsEnabled;
   }
 
   private normalizeChannelAutoPostButtonsMode(

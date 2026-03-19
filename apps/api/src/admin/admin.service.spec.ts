@@ -3616,12 +3616,12 @@ describe('AdminService.sendBroadcast', () => {
     expect(result.canRetry).toBe(false);
   });
 
-  it('adds the system comments button for chat broadcasts when comments are enabled for broadcasts', async () => {
+  it('adds the system comments button for chat broadcasts when the broadcast toggle is enabled', async () => {
     const prisma = createPrismaMock();
     prisma.chatSettings.upsert.mockResolvedValue({
       chatId: 'chat-1',
       commentsEnabled: true,
-      commentsAdminsEnabled: true,
+      commentsAdminsEnabled: false,
       commentsAllEnabled: false,
       commentsChatBroadcastsEnabled: true,
     });
@@ -3669,16 +3669,16 @@ describe('AdminService.sendBroadcast', () => {
     prisma.chatSettings.upsert.mockResolvedValue({
       chatId: 'chat-1',
       commentsEnabled: true,
-      commentsAdminsEnabled: false,
-      commentsAllEnabled: true,
-      commentsChatBroadcastsEnabled: true,
+      commentsAdminsEnabled: true,
+      commentsAllEnabled: false,
+      commentsChatBroadcastsEnabled: false,
     });
     prisma.chatSettings.findUnique.mockResolvedValue(
       chatSettingsSchema.parse({
         commentsEnabled: true,
-        commentsAdminsEnabled: false,
-        commentsAllEnabled: true,
-        commentsChatBroadcastsEnabled: true,
+        commentsAdminsEnabled: true,
+        commentsAllEnabled: false,
+        commentsChatBroadcastsEnabled: false,
       }),
     );
     prisma.auditLog.create.mockResolvedValue({
