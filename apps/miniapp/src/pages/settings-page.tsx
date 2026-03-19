@@ -445,6 +445,13 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
   ],
 };
 
+const COMMENTS_SETTING_KEYS = [
+  'commentsEnabled',
+  'commentsAdminsEnabled',
+  'commentsAllEnabled',
+  'commentsChatBroadcastsEnabled',
+] as const satisfies ReadonlyArray<keyof ChatSettings>;
+
 const DUPLICATE_STAGE_OPTIONS: Array<{
   id: 'WARN' | 'KICK' | 'BAN';
   label: string;
@@ -1019,6 +1026,18 @@ function mergeSectionSettings(
   const sourceRecord = sourceSettings as Record<keyof ChatSettings, unknown>;
 
   for (const key of SECTION_SETTING_KEYS[section]) {
+    nextRecord[key] = sourceRecord[key];
+  }
+
+  return nextSettings;
+}
+
+function mergeCommentsSettings(targetSettings: ChatSettings, sourceSettings: ChatSettings): ChatSettings {
+  const nextSettings = { ...targetSettings } as ChatSettings;
+  const nextRecord = nextSettings as Record<keyof ChatSettings, unknown>;
+  const sourceRecord = sourceSettings as Record<keyof ChatSettings, unknown>;
+
+  for (const key of COMMENTS_SETTING_KEYS) {
     nextRecord[key] = sourceRecord[key];
   }
 
@@ -1746,6 +1765,28 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const savingSection = saveSectionMutation.variables?.section ?? null;
   const mutateSettingsAsync = saveSectionMutation.mutateAsync;
 
+  const saveCommentsMutation = useMutation({
+    mutationFn: (payload: ChatSettings) => updateSettings(api, chatId ?? '', payload),
+    onSuccess: (saved) => {
+      syncSavedCommentsSettings(saved);
+      pushToast({
+        tone: 'success',
+        title: 'Комментарии сохранены',
+      });
+      maxNotify('success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось сохранить комментарии',
+        description: formatApiError(error),
+      });
+      maxNotify('error');
+    },
+  });
+  const isSavingComments = saveCommentsMutation.isPending;
+  const mutateCommentsAsync = saveCommentsMutation.mutateAsync;
+
   const saveSpeechStyleMutation = useMutation({
     mutationFn: ({ style, payload }: { style: BotSpeechStyle; payload: ChatSettings }) =>
       updateSettings(api, chatId ?? '', payload),
@@ -2163,6 +2204,24 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     });
   }
 
+  function clearCommentsErrors() {
+    setFieldErrors((current) => {
+      let changed = false;
+      const next = { ...current };
+
+      for (const key of COMMENTS_SETTING_KEYS) {
+        if (!next[key]) {
+          continue;
+        }
+
+        delete next[key];
+        changed = true;
+      }
+
+      return changed ? next : current;
+    });
+  }
+
   function clearBotSpeechErrors() {
     setFieldErrors((current) => {
       let changed = false;
@@ -2191,6 +2250,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           ? {
               ...current,
               settings: mergeSectionSettings(current.settings, saved, section),
+            }
+          : current,
+    );
+  }
+
+  function syncSavedCommentsSettings(saved: ChatSettings) {
+    setDraft((current) => (current ? mergeCommentsSettings(current, saved) : saved));
+    clearCommentsErrors();
+    queryClient.setQueryData<ChatSettingsScreenResponse | undefined>(
+      ['settings-screen', chatId],
+      (current) =>
+        current
+          ? {
+              ...current,
+              settings: mergeCommentsSettings(current.settings, saved),
             }
           : current,
     );
@@ -2509,6 +2583,36 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     rulesDraft,
     rulesDraftSnapshot,
     rulesFailedSnapshot,
+  ]);
+
+  useEffect(() => {
+    if (!chatId || !draft || !expandedSections.comments || isSavingComments) {
+      return;
+    }
+
+    if (!isCommentsDirty()) {
+      return;
+    }
+
+    const payload = buildCommentsPayload();
+    if (!payload) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      saveCommentsMutation.mutate(payload);
+    }, AUTO_SAVE_DELAY_MS);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [
+    chatId,
+    draftSnapshot,
+    expandedSections.comments,
+    isSavingComments,
+    saveCommentsMutation,
+    serverSnapshot,
   ]);
 
   function handleAddDomain() {
@@ -3306,12 +3410,29 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     return SECTION_SETTING_KEYS[section].some((key) => draft[key] !== savedSettings[key]);
   }
 
+  function isCommentsDirty() {
+    if (!draft || !settingsQuery.data) {
+      return false;
+    }
+
+    const savedSettings = settingsQuery.data;
+    return COMMENTS_SETTING_KEYS.some((key) => draft[key] !== savedSettings[key]);
+  }
+
   function buildSectionPayload(section: ApplySectionKey) {
     if (!draft || !settingsQuery.data) {
       return null;
     }
 
     return validateDraft(mergeSectionSettings(settingsQuery.data, draft, section));
+  }
+
+  function buildCommentsPayload() {
+    if (!draft || !settingsQuery.data) {
+      return null;
+    }
+
+    return validateDraft(mergeCommentsSettings(settingsQuery.data, draft));
   }
 
   function buildBotSpeechStylePayload(style: BotSpeechStyle) {
@@ -3345,6 +3466,34 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     try {
       await mutateSettingsAsync({ section, payload });
       closeSection(section);
+    } catch {
+      // Errors are handled by the mutation.
+    }
+  }
+
+  async function handleSaveComments() {
+    if (!chatId) {
+      return;
+    }
+
+    if (!isCommentsDirty()) {
+      closeSection('comments');
+      return;
+    }
+
+    const payload = buildCommentsPayload();
+    if (!payload) {
+      pushToast({
+        tone: 'danger',
+        title: 'Исправьте блок «Комментарии»',
+        description: 'В блоке есть ошибки, их нужно исправить перед сохранением.',
+      });
+      return;
+    }
+
+    try {
+      await mutateCommentsAsync(payload);
+      closeSection('comments');
     } catch {
       // Errors are handled by the mutation.
     }
@@ -8467,6 +8616,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           </div>
                         </>
                       ) : null}
+
+                      <p className="settings-drilldown__footer-note">
+                        Изменения сохраняются автоматически после переключения. Кнопка ниже нужна,
+                        если хотите сохранить сразу.
+                      </p>
+                      <div className="settings-drilldown__footer-actions">
+                        <button
+                          type="button"
+                          className="button button--accent"
+                          onClick={() => void handleSaveComments()}
+                          disabled={isSavingComments || !isCommentsDirty()}
+                        >
+                          {isSavingComments ? 'Сохраняем...' : 'Сохранить сейчас'}
+                        </button>
+                      </div>
                     </div>
                   ) : null}
                 </div>
