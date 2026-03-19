@@ -611,24 +611,29 @@ function SpammerCandidateCard({
   return (
     <article className={`candidate-review-card ${isExpanded ? 'is-expanded' : ''} stagger-in`}>
       <div className="candidate-review-card__shell">
-        <label
+        <button
+          type="button"
+          role="checkbox"
+          aria-checked={isSelected}
           className="candidate-review-card__select"
-          onClick={(event) => event.stopPropagation()}
+          disabled={isBusy}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleSelect(candidate.userId);
+          }}
+          aria-label={`Выбрать ${displayName}`}
         >
-          <input
-            type="checkbox"
-            checked={isSelected}
-            disabled={isBusy}
-            onChange={() => onToggleSelect(candidate.userId)}
-            aria-label={`Выбрать ${displayName}`}
+          <span
+            className={`candidate-review-card__select-indicator ${isSelected ? 'is-selected' : ''}`}
+            aria-hidden="true"
           />
-          <span className="candidate-review-card__select-indicator" aria-hidden="true" />
-        </label>
+        </button>
 
         <button
           type="button"
           className="candidate-review-card__trigger"
           onClick={() => onToggleExpand(candidate.userId)}
+          disabled={isBusy}
           aria-expanded={isExpanded}
         >
           <span className="candidate-review-card__avatar">

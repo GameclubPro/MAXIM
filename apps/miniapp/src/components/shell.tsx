@@ -20,6 +20,36 @@ type ScreenInfo = {
 
 type BottomNavIconName = 'chats' | 'channels' | 'settings' | 'events';
 
+function isTextEntryElement(element: Element | null): boolean {
+  if (element instanceof HTMLTextAreaElement) {
+    return !element.disabled && !element.readOnly;
+  }
+
+  if (element instanceof HTMLInputElement) {
+    const type = (element.type || 'text').toLowerCase();
+    return (
+      !element.disabled &&
+      !element.readOnly &&
+      [
+        'text',
+        'search',
+        'url',
+        'tel',
+        'email',
+        'password',
+        'number',
+        'date',
+        'datetime-local',
+        'month',
+        'time',
+        'week',
+      ].includes(type)
+    );
+  }
+
+  return element instanceof HTMLElement && element.isContentEditable;
+}
+
 function BottomNavIcon({ name }: { name: BottomNavIconName }) {
   if (name === 'chats') {
     return (
@@ -275,18 +305,11 @@ export function Shell() {
     let baselineHeight = viewport?.height ?? window.innerHeight;
     const keyboardThreshold = 120;
 
-    const hasEditableFocus = () => {
-      const activeElement = document.activeElement;
-      return (
-        activeElement instanceof HTMLInputElement ||
-        activeElement instanceof HTMLTextAreaElement ||
-        (activeElement instanceof HTMLElement && activeElement.isContentEditable)
-      );
-    };
-
     const updateKeyboardState = () => {
       const currentHeight = viewport?.height ?? window.innerHeight;
-      const isOpened = hasEditableFocus() && baselineHeight - currentHeight > keyboardThreshold;
+      const isOpened =
+        isTextEntryElement(document.activeElement) &&
+        baselineHeight - currentHeight > keyboardThreshold;
 
       if (!isOpened) {
         baselineHeight = currentHeight;
@@ -311,6 +334,18 @@ export function Shell() {
       window.removeEventListener('focusout', updateKeyboardState);
     };
   }, []);
+
+  useEffect(() => {
+    const frameId = window.requestAnimationFrame(() => {
+      if (!isTextEntryElement(document.activeElement)) {
+        setIsKeyboardOpen(false);
+      }
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [location.pathname, location.search]);
 
   useEffect(() => {
     const shouldShowNativeBack = !isChatsRoute;
