@@ -501,7 +501,7 @@ function createInitialState(): PreviewState {
     commentsEnabled: true,
     commentsAdminsEnabled: true,
     commentsAllEnabled: false,
-    commentsChatBroadcastsEnabled: true,
+    commentsChatBroadcastsEnabled: false,
     commentsModerationEnabled: true,
     commentsBlockLinksEnabled: true,
     commentsAntiSpamEnabled: true,
