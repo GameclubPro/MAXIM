@@ -9,6 +9,7 @@ export const BOT_SPEECH_EDITABLE_FIELD_KEYS = [
   'linkBotMessageText',
   'linkWarnMessageText',
   'requiredSubscriptionBotMessageText',
+  'requiredSubscriptionWarnMessageText',
   'textFiltersBotMessageText',
   'textFiltersWarnMessageText',
   'duplicateBotMessageText',
@@ -23,6 +24,8 @@ export type BotSpeechSettingsSubset = {
 
 export const BOT_SPEECH_SYSTEM_TEMPLATE_KEYS = [
   'linkKick',
+  'requiredSubscriptionKick',
+  'requiredSubscriptionBan',
   'textFiltersKickCommercial',
   'textFiltersKickProfanity',
   'textFiltersKickGeneric',
@@ -91,6 +94,8 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
       linkWarnMessageText: 'Система: {user}. Предупреждение. Повторная отправка ссылок запрещена.',
       requiredSubscriptionBotMessageText:
         'Система: {user}. Для сообщений в этом чате нужна подписка на {channels}. Подпишитесь и отправьте сообщение снова. Текущий статус: {message_status}.',
+      requiredSubscriptionWarnMessageText:
+        'Система: {user}. Предупреждение. Для сообщений в этом чате по-прежнему нужна подписка на {channels}. Причина: {reason}.',
       textFiltersBotMessageText: 'Система: {user}. Сообщение удалено. Причина: {reason}.',
       textFiltersWarnMessageText: 'Система: {user}. Предупреждение. Причина: {reason}.',
       duplicateBotMessageText: 'Система: {user}. Зафиксирован повтор сообщения. {sanction}',
@@ -101,6 +106,10 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
     },
     system: {
       linkKick: 'Система: {user}. Доступ к чату ограничен за повторную отправку ссылок.',
+      requiredSubscriptionKick:
+        'Система: {user}. Доступ к чату ограничен за повторные сообщения без подписки на {channels}.',
+      requiredSubscriptionBan:
+        'Система: {user}. Установлен тайм-аут на {ban_duration}. Для сообщений требуется подписка на {channels}.',
       textFiltersKickCommercial: 'Система: {user}. Доступ к чату ограничен за повторную рекламу.',
       textFiltersKickProfanity:
         'Система: {user}. Доступ к чату ограничен за повторную грубую лексику.',
@@ -132,6 +141,8 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         '{user}, это уже предупреждение. Здесь нельзя отправлять ссылки. Давайте дальше без них.',
       requiredSubscriptionBotMessageText:
         '{user}, чтобы писать в этом чате, нужна подписка на {channels}. Подпишитесь и отправьте сообщение ещё раз. Текущее сообщение: {message_status}.',
+      requiredSubscriptionWarnMessageText:
+        '{user}, это уже предупреждение. Чтобы писать в чате, всё ещё нужна подписка на {channels}.',
       textFiltersBotMessageText:
         '{user}, сообщение убрал. Причина: {reason}. Если поправить формулировку, можно отправить снова.',
       textFiltersWarnMessageText: '{user}, это предупреждение. Давайте дальше без такого текста.',
@@ -144,6 +155,10 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
     },
     system: {
       linkKick: '{user}, ссылки повторились несколько раз, поэтому пришлось вывести вас из чата.',
+      requiredSubscriptionKick:
+        '{user}, сообщения без подписки повторились, поэтому пришлось вывести вас из чата. Сначала подпишитесь на {channels}.',
+      requiredSubscriptionBan:
+        '{user}, нужна пауза на {ban_duration}. Чтобы писать дальше, сначала подпишитесь на {channels}.',
       textFiltersKickCommercial:
         '{user}, реклама повторилась, поэтому пришлось вывести вас из чата.',
       textFiltersKickProfanity:
@@ -177,6 +192,8 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         'Товарищ {user}, предупреждение за ссылки оформил 👮‍♂️ Ещё один такой заход, и разговор будет короче.',
       requiredSubscriptionBotMessageText:
         'Товарищ {user}, для доступа к переписке нужна подписка на {channels} 👮‍♂️ Сначала оформите подписку, потом подавайте сообщение заново. Текущее: {message_status}.',
+      requiredSubscriptionWarnMessageText:
+        'Товарищ {user}, предупреждение по подписке оформил 👮‍♂️ Для сообщений нужна подписка на {channels}.',
       textFiltersBotMessageText:
         'Товарищ {user}, сообщение изъял 👮‍♂️ Причина: {reason}. Поправьте по форме и разъедемся красиво.',
       textFiltersWarnMessageText:
@@ -193,6 +210,10 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
     system: {
       linkKick:
         'Товарищ {user}, со ссылками устроили повторное правонарушение. Пришлось вывести вас из чата.',
+      requiredSubscriptionKick:
+        'Товарищ {user}, без подписки на {channels} сообщения пошли по второму кругу. Пришлось оформить выход из чата.',
+      requiredSubscriptionBan:
+        'Товарищ {user}, оформляю паузу на {ban_duration} 👮‍♂️ Для сообщений нужна подписка на {channels}.',
       textFiltersKickCommercial:
         'Товарищ {user}, рекламу повторили, а у нас с этим короткий разговор. Дальше чат без вас.',
       textFiltersKickProfanity: 'Товарищ {user}, по лексике пошёл рецидив. Дальше чат без вас.',
@@ -224,6 +245,8 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
       linkWarnMessageText: '{user}, со ссылками снова та же история. Это уже предупреждение.',
       requiredSubscriptionBotMessageText:
         '{user}, писать сюда можно после подписки на {channels}. Да, сначала подписка, потом реплика. Текущее сообщение: {message_status}.',
+      requiredSubscriptionWarnMessageText:
+        '{user}, это уже предупреждение. Без подписки на {channels} сообщения сюда всё ещё не проходят.',
       textFiltersBotMessageText:
         '{user}, сообщение убрал. Причина: {reason}. Формулировка явно просилась на пересборку.',
       textFiltersWarnMessageText:
@@ -238,6 +261,10 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
     },
     system: {
       linkKick: '{user}, со ссылками вышел небольшой сериал, поэтому дальше чат без вас.',
+      requiredSubscriptionKick:
+        '{user}, попытки писать без подписки на {channels} уже выглядят как серия, поэтому дальше чат без вас.',
+      requiredSubscriptionBan:
+        '{user}, пауза на {ban_duration}. Без подписки на {channels} писать сюда всё равно не получится.',
       textFiltersKickCommercial: '{user}, реклама решила задержаться, поэтому дальше чат без вас.',
       textFiltersKickProfanity:
         '{user}, запас резких слов оказался лишним, поэтому дальше чат без вас.',

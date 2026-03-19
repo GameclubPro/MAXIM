@@ -355,7 +355,12 @@ const SETTINGS_SECTION_KEYS = {
   requiredSubscription: [
     'requiredSubscriptionEnabled',
     'requiredSubscriptionChannelIds',
+    'requiredSubscriptionBotMessageEnabled',
     'requiredSubscriptionBotMessageText',
+    'requiredSubscriptionWarnEnabled',
+    'requiredSubscriptionWarnMessageText',
+    'requiredSubscriptionBanEnabled',
+    'requiredSubscriptionKickEnabled',
   ],
   extra: [
     'deleteSpammersEnabled',

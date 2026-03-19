@@ -15,6 +15,7 @@ function createBotSpeechSettings(
     linkBotMessageText: '',
     linkWarnMessageText: '',
     requiredSubscriptionBotMessageText: '',
+    requiredSubscriptionWarnMessageText: '',
     textFiltersBotMessageText: '',
     textFiltersWarnMessageText: '',
     duplicateBotMessageText: '',
@@ -70,6 +71,16 @@ describe('bot speech styles', () => {
 
     expect((service as any).buildLinkExplanation(userLabel, true, '', 'ROBOT')).toBe(
       'Система: **Алексей**. Ссылка удалена. Причина: в этом чате ссылки не проходят, без ссылок.',
+    );
+    expect(
+      (service as any).buildRequiredSubscriptionWarnExplanation(
+        userLabel,
+        ['Новости MAX'],
+        '',
+        'ROBOT',
+      ),
+    ).toBe(
+      'Система: **Алексей**. Предупреждение. Для сообщений в этом чате по-прежнему нужна подписка на Новости MAX. Причина: для сообщений нужна подписка на обязательные каналы.',
     );
 
     expect(
@@ -176,6 +187,15 @@ describe('bot speech styles', () => {
     expect(
       (service as any).buildMessageLimitsWarnExplanation(userLabel, 'MESSAGE_TOO_LONG', 'FRIENDLY'),
     ).toBe('**Алексей**, это предупреждение. Причина: слишком длинное сообщение.');
+    expect(
+      (service as any).buildRequiredSubscriptionKickExplanation(
+        userLabel,
+        ['Новости MAX'],
+        'FRIENDLY',
+      ),
+    ).toBe(
+      '**Алексей**, сообщения без подписки повторились, поэтому пришлось вывести вас из чата. Сначала подпишитесь на Новости MAX.',
+    );
 
     expect((service as any).buildGreetingMessage(userLabel, '', 'IRONIC')).toBe(
       '**Алексей**, добро пожаловать 🙂 Осваивайтесь, правила тут тоже не бездельничают.',

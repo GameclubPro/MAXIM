@@ -91,6 +91,7 @@ const LINK_ESCALATION_WINDOW_HOURS = 24;
 const TEXT_FILTER_ESCALATION_WINDOW_HOURS = 24;
 const TOPIC_FILTER_ESCALATION_WINDOW_HOURS = 24;
 const MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS = 12;
+const REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS = 24;
 const REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC = 30;
 const REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC = 10;
 const REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC = 15 * 60;
@@ -1549,6 +1550,29 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  private buildRequiredSubscriptionWarnExplanation(
+    userLabel: string,
+    channelTitles: readonly string[],
+    templateText: string,
+    botSpeechStyle: BotSpeechStyle | null,
+  ): string {
+    const channelsLabel = this.formatRequiredSubscriptionChannels(channelTitles);
+    const reason = 'для сообщений нужна подписка на обязательные каналы';
+    const warning = 'вынесено предупреждение за отсутствие обязательной подписки';
+
+    return this.renderEditableBotSpeechTemplate({
+      style: botSpeechStyle,
+      fieldKey: 'requiredSubscriptionWarnMessageText',
+      overrideText: templateText,
+      replacements: {
+        user: userLabel,
+        channels: channelsLabel,
+        reason,
+        warning,
+      },
+    });
+  }
+
   private buildLinkWarnExplanation(
     userLabel: string,
     templateText: string,
@@ -1580,6 +1604,38 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return normalizedTitles.join(', ');
+  }
+
+  private buildRequiredSubscriptionKickExplanation(
+    userLabel: string,
+    channelTitles: readonly string[],
+    botSpeechStyle: BotSpeechStyle | null,
+  ): string {
+    return this.renderSystemBotSpeechTemplate({
+      style: botSpeechStyle,
+      templateKey: 'requiredSubscriptionKick',
+      replacements: {
+        user: userLabel,
+        channels: this.formatRequiredSubscriptionChannels(channelTitles),
+      },
+    });
+  }
+
+  private buildRequiredSubscriptionBanExplanation(
+    userLabel: string,
+    channelTitles: readonly string[],
+    banDurationHours: number,
+    botSpeechStyle: BotSpeechStyle | null,
+  ): string {
+    return this.renderSystemBotSpeechTemplate({
+      style: botSpeechStyle,
+      templateKey: 'requiredSubscriptionBan',
+      replacements: {
+        user: userLabel,
+        channels: this.formatRequiredSubscriptionChannels(channelTitles),
+        ban_duration: this.formatBanDurationLabel(banDurationHours),
+      },
+    });
   }
 
   private buildLinkKickExplanation(
@@ -1953,6 +2009,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     botMessageOptions?: MaxSendMessageOptions;
     banNoticeText?: string;
     botSpeechStyle: BotSpeechStyle | null;
+    trackAsGlobalSpammer?: boolean;
   }) {
     const {
       chatId,
@@ -1966,17 +2023,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       botMessageOptions,
       banNoticeText,
       botSpeechStyle,
+      trackAsGlobalSpammer = true,
     } = params;
     if (action === SanctionAction.KICK) {
-      await this.upsertGlobalSpammerEntry({
-        userId,
-        sourceChatId: chatId,
-        reason: 'SANCTION_KICK',
-        evidence: {
-          action: 'KICK',
-          source: 'sanction',
-        },
-      });
+      if (trackAsGlobalSpammer) {
+        await this.upsertGlobalSpammerEntry({
+          userId,
+          sourceChatId: chatId,
+          reason: 'SANCTION_KICK',
+          evidence: {
+            action: 'KICK',
+            source: 'sanction',
+          },
+        });
+      }
       try {
         await this.maxClient.kickMember(chatId, userId);
       } catch (error: unknown) {
@@ -1997,15 +2057,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    await this.upsertGlobalSpammerEntry({
-      userId,
-      sourceChatId: chatId,
-      reason: 'SANCTION_BAN',
-      evidence: {
-        action: 'BAN',
-        source: 'sanction',
-      },
-    });
+    if (trackAsGlobalSpammer) {
+      await this.upsertGlobalSpammerEntry({
+        userId,
+        sourceChatId: chatId,
+        reason: 'SANCTION_BAN',
+        evidence: {
+          action: 'BAN',
+          source: 'sanction',
+        },
+      });
+    }
 
     // Soft-ban mode: do not remove member from chat, enforce ban via active-ban auto-delete window.
     await this.sendBanNotice({
@@ -2122,6 +2184,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return SanctionAction.NONE;
+  }
+
+  private resolveRequiredSubscriptionEscalationAction(
+    requiredSubscriptionViolationCount24h: number,
+    settings: { warnEnabled: boolean; banEnabled: boolean; kickEnabled: boolean },
+  ): SanctionAction {
+    return this.resolveLinkEscalationAction(requiredSubscriptionViolationCount24h, settings);
   }
 
   private resolveTextFilterEscalationAction(
@@ -3065,6 +3134,40 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId,
         userId,
         ruleCode: 'LINK_BLOCKED',
+        createdAt: { gte: since },
+      },
+    });
+
+    return Number.isInteger(count) && count > 0 ? count : 1;
+  }
+
+  private async countRecentRequiredSubscriptionViolations(
+    chatId: string,
+    userId: string,
+  ): Promise<number> {
+    const violationModel = this.prisma.violation as unknown as {
+      count?: (args: {
+        where: {
+          chatId: string;
+          userId: string;
+          ruleCode: string;
+          createdAt: { gte: Date };
+        };
+      }) => Promise<number>;
+    };
+
+    if (typeof violationModel.count !== 'function') {
+      return 1;
+    }
+
+    const since = new Date(
+      Date.now() - REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000,
+    );
+    const count = await violationModel.count({
+      where: {
+        chatId,
+        userId,
+        ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
         createdAt: { gte: since },
       },
     });
@@ -4549,11 +4652,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       ChatSettings,
       | 'requiredSubscriptionEnabled'
       | 'requiredSubscriptionChannelIds'
+      | 'requiredSubscriptionBotMessageEnabled'
       | 'requiredSubscriptionBotMessageText'
+      | 'requiredSubscriptionWarnEnabled'
+      | 'requiredSubscriptionWarnMessageText'
+      | 'requiredSubscriptionBanEnabled'
+      | 'requiredSubscriptionKickEnabled'
       | 'botSpeechStyle'
       | 'rulesAttachViolationsEnabled'
       | 'deleteBotMessagesEnabled'
       | 'deleteBotMessagesDelayMinutes'
+      | 'banDurationHours'
     >;
     rulesPublishedUrl: string | null;
     rulesPublishedMessageId: string | null;
@@ -4607,6 +4716,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         score: 1,
       },
     });
+
+    const requiredSubscriptionViolationCount24h =
+      await this.countRecentRequiredSubscriptionViolations(params.chatId, params.userId);
+    const action = this.resolveRequiredSubscriptionEscalationAction(
+      requiredSubscriptionViolationCount24h,
+      {
+        warnEnabled: params.settings.requiredSubscriptionWarnEnabled,
+        banEnabled: params.settings.requiredSubscriptionBanEnabled,
+        kickEnabled: params.settings.requiredSubscriptionKickEnabled,
+      },
+    );
+    const isFirstRequiredSubscriptionViolation = requiredSubscriptionViolationCount24h === 1;
+
     await this.prisma.moderationEvent.create({
       data: {
         chatId: params.chatId,
@@ -4619,20 +4741,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         score: 1,
         operator: Operator.BOT,
         metadata: {
+          action: SanctionAction.DELETE_MESSAGE,
           requiredChannelIds,
           missingChannelIds: membership.missingChannelIds,
           missingChannelTitles,
         },
       },
     });
-
-    const noticeOnCooldown = await this.hasRequiredSubscriptionNoticeCooldown(
-      params.chatId,
-      params.userId,
-    );
-    if (noticeOnCooldown) {
-      return true;
-    }
 
     const requiredSubscriptionMessageOptions =
       this.buildRequiredSubscriptionMessageOptions(
@@ -4642,32 +4757,143 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         params.rulesPublishedMessageId,
       ) ?? undefined;
 
-    try {
-      await this.sendBotMessageWithOptionalAutoDelete({
+    const sendRequiredSubscriptionBotMessage = async (textValue: string) =>
+      this.sendBotMessageWithOptionalAutoDelete({
         chatId: params.chatId,
-        text: this.buildRequiredSubscriptionExplanation(
-          params.userLabel,
-          canDeleteMessage,
-          missingChannelTitles,
-          params.settings.requiredSubscriptionBotMessageText,
-          params.settings.botSpeechStyle,
-        ),
+        text: textValue,
         messageOptions: requiredSubscriptionMessageOptions,
         deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
       });
-      await this.markRequiredSubscriptionNoticeSent(params.chatId, params.userId);
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId: params.chatId,
-          userId: params.userId,
-          messageId: params.messageId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to send required subscription explanation message',
-      );
+
+    if (action === SanctionAction.NONE) {
+      if (
+        isFirstRequiredSubscriptionViolation &&
+        params.settings.requiredSubscriptionBotMessageEnabled
+      ) {
+        const noticeOnCooldown = await this.hasRequiredSubscriptionNoticeCooldown(
+          params.chatId,
+          params.userId,
+        );
+        if (!noticeOnCooldown) {
+          try {
+            await sendRequiredSubscriptionBotMessage(
+              this.buildRequiredSubscriptionExplanation(
+                params.userLabel,
+                canDeleteMessage,
+                missingChannelTitles,
+                params.settings.requiredSubscriptionBotMessageText,
+                params.settings.botSpeechStyle,
+              ),
+            );
+            await this.markRequiredSubscriptionNoticeSent(params.chatId, params.userId);
+          } catch (error: unknown) {
+            this.logger.warn(
+              {
+                chatId: params.chatId,
+                userId: params.userId,
+                messageId: params.messageId,
+                error: error instanceof Error ? error.message : 'Unknown error',
+              },
+              'Failed to send required subscription explanation message',
+            );
+          }
+        }
+      }
+    } else if (action === SanctionAction.WARN) {
+      try {
+        await sendRequiredSubscriptionBotMessage(
+          this.buildRequiredSubscriptionWarnExplanation(
+            params.userLabel,
+            missingChannelTitles,
+            params.settings.requiredSubscriptionWarnMessageText,
+            params.settings.botSpeechStyle,
+          ),
+        );
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId: params.chatId,
+            userId: params.userId,
+            messageId: params.messageId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to send required subscription warning message',
+        );
+      }
     }
+
+    if (action !== SanctionAction.NONE) {
+      await this.applySanctionAction({
+        chatId: params.chatId,
+        userId: params.userId,
+        action,
+        userLabel: params.userLabel,
+        messageId: params.messageId,
+        banDurationHours: params.settings.banDurationHours,
+        deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
+        botMessageOptions: requiredSubscriptionMessageOptions,
+        banNoticeText:
+          action === SanctionAction.BAN
+            ? this.buildRequiredSubscriptionBanExplanation(
+                params.userLabel,
+                missingChannelTitles,
+                params.settings.banDurationHours,
+                params.settings.botSpeechStyle,
+              )
+            : undefined,
+        botSpeechStyle: params.settings.botSpeechStyle,
+        trackAsGlobalSpammer: false,
+      });
+
+      if (action === SanctionAction.KICK) {
+        try {
+          await sendRequiredSubscriptionBotMessage(
+            this.buildRequiredSubscriptionKickExplanation(
+              params.userLabel,
+              missingChannelTitles,
+              params.settings.botSpeechStyle,
+            ),
+          );
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId: params.chatId,
+              userId: params.userId,
+              messageId: params.messageId,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to send required subscription kick message',
+          );
+        }
+      }
+    }
+
+    await this.prisma.moderationEvent.create({
+      data: {
+        chatId: params.chatId,
+        userId: params.userId,
+        messageId: params.messageId,
+        eventType: EventType.MESSAGE,
+        ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
+        action,
+        maskedExcerpt: maskText(params.text),
+        score: 1,
+        operator: Operator.BOT,
+        metadata: {
+          action,
+          requiredChannelIds,
+          missingChannelIds: membership.missingChannelIds,
+          missingChannelTitles,
+          requiredSubscriptionViolationCount24h,
+          requiredSubscriptionEscalationWindowHours: REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS,
+          ...(action === SanctionAction.BAN
+            ? { banDurationHours: params.settings.banDurationHours }
+            : {}),
+        },
+      },
+    });
 
     return true;
   }

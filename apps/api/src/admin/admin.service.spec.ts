@@ -701,7 +701,11 @@ describe('AdminService required subscription settings', () => {
     const result = await service.updateSettings('chat-1', actor, {
       requiredSubscriptionEnabled: true,
       requiredSubscriptionChannelIds: [' channel-1 ', 'channel-1'],
+      requiredSubscriptionBotMessageEnabled: true,
       requiredSubscriptionBotMessageText: 'Проверьте подписку.',
+      requiredSubscriptionWarnEnabled: true,
+      requiredSubscriptionWarnMessageText: 'Сначала подпишитесь на канал.',
+      requiredSubscriptionBanEnabled: true,
     });
 
     expect(result.requiredSubscriptionChannelIds).toEqual(['channel-1']);
@@ -713,12 +717,20 @@ describe('AdminService required subscription settings', () => {
               update: expect.objectContaining({
                 requiredSubscriptionEnabled: true,
                 requiredSubscriptionChannelIds: ['channel-1'],
+                requiredSubscriptionBotMessageEnabled: true,
                 requiredSubscriptionBotMessageText: 'Проверьте подписку.',
+                requiredSubscriptionWarnEnabled: true,
+                requiredSubscriptionWarnMessageText: 'Сначала подпишитесь на канал.',
+                requiredSubscriptionBanEnabled: true,
               }),
               create: expect.objectContaining({
                 requiredSubscriptionEnabled: true,
                 requiredSubscriptionChannelIds: ['channel-1'],
+                requiredSubscriptionBotMessageEnabled: true,
                 requiredSubscriptionBotMessageText: 'Проверьте подписку.',
+                requiredSubscriptionWarnEnabled: true,
+                requiredSubscriptionWarnMessageText: 'Сначала подпишитесь на канал.',
+                requiredSubscriptionBanEnabled: true,
               }),
             },
           },
@@ -844,7 +856,11 @@ describe('AdminService required subscription settings', () => {
       chatSettingsSchema.parse({
         requiredSubscriptionEnabled: true,
         requiredSubscriptionChannelIds: ['channel-1'],
+        requiredSubscriptionBotMessageEnabled: true,
         requiredSubscriptionBotMessageText: 'Следите за подпиской.',
+        requiredSubscriptionWarnEnabled: true,
+        requiredSubscriptionWarnMessageText: 'Сначала подпишитесь.',
+        requiredSubscriptionBanEnabled: true,
         deleteSpammersEnabled: true,
       }),
     );
@@ -861,35 +877,39 @@ describe('AdminService required subscription settings', () => {
       ([args]) => args?.where?.id === 'chat-2',
     )?.[0];
     expect(chat2Call).toBeDefined();
-    expect(chat2Call).toEqual(
+    expect(chat2Call?.create?.settings?.create).toEqual(
       expect.objectContaining({
-        create: expect.objectContaining({
-          settings: {
-            create: expect.objectContaining({
-              requiredSubscriptionEnabled: true,
-              requiredSubscriptionChannelIds: ['channel-1'],
-              requiredSubscriptionBotMessageText: 'Следите за подпиской.',
-              deleteSpammersEnabled: false,
-            }),
-          },
-        }),
-        update: {
-          settings: {
-            upsert: {
-              update: {
-                requiredSubscriptionEnabled: true,
-                requiredSubscriptionChannelIds: ['channel-1'],
-                requiredSubscriptionBotMessageText: 'Следите за подпиской.',
-              },
-              create: expect.objectContaining({
-                requiredSubscriptionEnabled: true,
-                requiredSubscriptionChannelIds: ['channel-1'],
-                requiredSubscriptionBotMessageText: 'Следите за подпиской.',
-                deleteSpammersEnabled: false,
-              }),
-            },
-          },
-        },
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+        requiredSubscriptionBotMessageEnabled: true,
+        requiredSubscriptionBotMessageText: 'Следите за подпиской.',
+        requiredSubscriptionWarnEnabled: true,
+        requiredSubscriptionWarnMessageText: 'Сначала подпишитесь.',
+        requiredSubscriptionBanEnabled: true,
+        deleteSpammersEnabled: false,
+      }),
+    );
+    expect(chat2Call?.update?.settings?.upsert?.update).toEqual(
+      expect.objectContaining({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+        requiredSubscriptionBotMessageEnabled: true,
+        requiredSubscriptionBotMessageText: 'Следите за подпиской.',
+        requiredSubscriptionWarnEnabled: true,
+        requiredSubscriptionWarnMessageText: 'Сначала подпишитесь.',
+        requiredSubscriptionBanEnabled: true,
+      }),
+    );
+    expect(chat2Call?.update?.settings?.upsert?.create).toEqual(
+      expect.objectContaining({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+        requiredSubscriptionBotMessageEnabled: true,
+        requiredSubscriptionBotMessageText: 'Следите за подпиской.',
+        requiredSubscriptionWarnEnabled: true,
+        requiredSubscriptionWarnMessageText: 'Сначала подпишитесь.',
+        requiredSubscriptionBanEnabled: true,
+        deleteSpammersEnabled: false,
       }),
     );
   });

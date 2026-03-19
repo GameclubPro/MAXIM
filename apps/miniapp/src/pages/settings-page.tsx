@@ -242,6 +242,7 @@ type HintKey =
   | 'requiredSubscriptionEnabled'
   | 'requiredSubscriptionChannels'
   | 'requiredSubscriptionBotMessage'
+  | 'requiredSubscriptionWarnMessage'
   | 'deleteBotMessages'
   | 'removeBotsFromGroup'
   | 'mailingText'
@@ -259,7 +260,7 @@ type BotMessageEditorKey =
   | 'messageLimits'
   | 'night'
   | 'nightOpen';
-type WarnMessageEditorKey = 'linkWarn' | 'textFiltersWarn';
+type WarnMessageEditorKey = 'linkWarn' | 'requiredSubscriptionWarn' | 'textFiltersWarn';
 type SettingsSectionKey =
   | 'links'
   | 'rules'
@@ -424,7 +425,12 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
   requiredSubscription: [
     'requiredSubscriptionEnabled',
     'requiredSubscriptionChannelIds',
+    'requiredSubscriptionBotMessageEnabled',
     'requiredSubscriptionBotMessageText',
+    'requiredSubscriptionWarnEnabled',
+    'requiredSubscriptionWarnMessageText',
+    'requiredSubscriptionBanEnabled',
+    'requiredSubscriptionKickEnabled',
   ],
   extra: [
     'deleteSpammersEnabled',
@@ -513,6 +519,7 @@ const BOT_MESSAGE_EDITOR_FIELD_KEYS: Record<BotMessageEditorKey, BotSpeechEditab
 
 const WARN_MESSAGE_EDITOR_FIELD_KEYS: Record<WarnMessageEditorKey, BotSpeechEditableFieldKey> = {
   linkWarn: 'linkWarnMessageText',
+  requiredSubscriptionWarn: 'requiredSubscriptionWarnMessageText',
   textFiltersWarn: 'textFiltersWarnMessageText',
 };
 
@@ -553,6 +560,8 @@ const BOT_MESSAGE_TEMPLATE_HINTS: Record<BotMessageEditorKey, string> = {
 
 const WARN_MESSAGE_TEMPLATE_HINTS: Record<WarnMessageEditorKey, string> = {
   linkWarn: 'Плейсхолдеры: {user}, {warning}, {reason}. Поддерживается Markdown MAX.',
+  requiredSubscriptionWarn:
+    'Плейсхолдеры: {user}, {warning}, {reason}, {channels}. Поддерживается Markdown MAX.',
   textFiltersWarn: 'Плейсхолдеры: {user}, {warning}, {reason}. Поддерживается Markdown MAX.',
 };
 
@@ -590,6 +599,10 @@ function buildAutoRulesText(settings: ChatSettings): string {
   const codeword = settings.thematicCodeword.trim();
   if (settings.thematicCodewordEnabled && codeword) {
     lines.push(`Объявления начинайте с кодового слова «${codeword}».`);
+  }
+
+  if (settings.requiredSubscriptionEnabled && settings.requiredSubscriptionChannelIds.length > 0) {
+    lines.push('Для сообщений нужна подписка на обязательные каналы чата.');
   }
 
   if (settings.antiDuplicateEnabled) {
@@ -3114,10 +3127,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       : 'Выключено';
   const requiredSubscriptionSelectedCount = draft?.requiredSubscriptionChannelIds.length ?? 0;
   const requiredSubscriptionStaleCount = staleRequiredSubscriptionChannelIds.length;
+  const requiredSubscriptionStagesEnabledCount = [
+    draft?.requiredSubscriptionBotMessageEnabled,
+    draft?.requiredSubscriptionWarnEnabled,
+    draft?.requiredSubscriptionBanEnabled,
+    draft?.requiredSubscriptionKickEnabled,
+  ].filter(Boolean).length;
   const requiredSubscriptionHeaderSummary = draft?.requiredSubscriptionEnabled
     ? requiredSubscriptionStaleCount > 0
       ? `Нужно исправить: ${requiredSubscriptionStaleCount} недоступен`
-      : `${formatRequiredSubscriptionCount(requiredSubscriptionSelectedCount)} · сообщения без подписки удаляются`
+      : `${formatRequiredSubscriptionCount(requiredSubscriptionSelectedCount)} · ${requiredSubscriptionStagesEnabledCount}/4 ступени`
     : 'Выключено';
   const requiredSubscriptionCardStatus = draft?.requiredSubscriptionEnabled
     ? requiredSubscriptionStaleCount > 0
@@ -8471,7 +8490,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         role="separator"
                         aria-label="Действия бота для обязательной подписки"
                       >
-                        <span>Действия бота</span>
+                        <span>Стандартные действия бота</span>
                       </div>
 
                       <div className="settings-native-toggle">
@@ -8482,7 +8501,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               <EditToggleButton
                                 label="Редактировать объяснение об обязательной подписке"
                                 onClick={() => toggleBotMessageEditor('requiredSubscription')}
-                                disabled={!draft.requiredSubscriptionEnabled}
                                 isOpen={openBotEditorKey === 'requiredSubscription'}
                               />
                               <button
@@ -8500,6 +8518,25 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </button>
                             </div>
                           </div>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить объяснение для обязательной подписки"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.requiredSubscriptionBotMessageEnabled}
+                              onChange={(event) => {
+                                setFieldValue(
+                                  'requiredSubscriptionBotMessageEnabled',
+                                  event.target.checked,
+                                );
+                              }}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
                         </div>
 
                         {openHintKey === 'requiredSubscriptionBotMessage' ? (
@@ -8507,11 +8544,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             id="required-subscription-bot-message-hint"
                             className="settings-native-toggle__hint"
                           >
-                            Берётся из текущего стиля речи. Можно заменить своим текстом.
+                            Санкции усиливаются по ступеням, если пользователь повторно пишет без
+                            подписки в течение 24 часов: сначала объяснение, затем предупреждение,
+                            потом бан на 6 часов и далее удаление из группы.
                           </p>
                         ) : null}
 
-                        {openBotEditorKey === 'requiredSubscription' ? (
+                        {draft.requiredSubscriptionBotMessageEnabled &&
+                        openBotEditorKey === 'requiredSubscription' ? (
                           <BotMessageEditor
                             editorKey="requiredSubscription"
                             botSpeechStyle={draft.botSpeechStyle}
@@ -8525,6 +8565,135 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             onReset={() => setFieldValue('requiredSubscriptionBotMessageText', '')}
                           />
                         ) : null}
+                      </div>
+
+                      <div className="settings-native-toggle settings-native-toggle--nested">
+                        <div className="settings-native-toggle__row">
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="settings-native-toggle__title">2. Предупреждение</span>
+                            <div className="settings-native-toggle__title-actions">
+                              <EditToggleButton
+                                label="Редактировать предупреждение об обязательной подписке"
+                                onClick={() => toggleWarnMessageEditor('requiredSubscriptionWarn')}
+                                isOpen={openWarnEditorKey === 'requiredSubscriptionWarn'}
+                              />
+                              <button
+                                type="button"
+                                className={cn(
+                                  'settings-info-button',
+                                  openHintKey === 'requiredSubscriptionWarnMessage' && 'is-open',
+                                )}
+                                aria-label="Пояснение для предупреждения об обязательной подписке"
+                                aria-controls="required-subscription-warn-message-hint"
+                                aria-expanded={openHintKey === 'requiredSubscriptionWarnMessage'}
+                                onClick={() => toggleHint('requiredSubscriptionWarnMessage')}
+                              >
+                                <span aria-hidden>i</span>
+                              </button>
+                            </div>
+                          </div>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить предупреждение за второе сообщение без подписки"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.requiredSubscriptionWarnEnabled}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('requiredSubscriptionWarnEnabled', enabled);
+                                if (enabled) {
+                                  setFieldValue('requiredSubscriptionBotMessageEnabled', true);
+                                }
+                              }}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+
+                        {openHintKey === 'requiredSubscriptionWarnMessage' ? (
+                          <p
+                            id="required-subscription-warn-message-hint"
+                            className="settings-native-toggle__hint"
+                          >
+                            Текст отправляется при 2-м сообщении без подписки за 24 часа, если
+                            ступень включена.
+                          </p>
+                        ) : null}
+
+                        {openWarnEditorKey === 'requiredSubscriptionWarn' ? (
+                          <WarnMessageEditor
+                            editorKey="requiredSubscriptionWarn"
+                            botSpeechStyle={draft.botSpeechStyle}
+                            value={draft.requiredSubscriptionWarnMessageText}
+                            onChange={(nextValue) =>
+                              setFieldValue(
+                                'requiredSubscriptionWarnMessageText',
+                                nextValue as ChatSettings['requiredSubscriptionWarnMessageText'],
+                              )
+                            }
+                            onReset={() => setFieldValue('requiredSubscriptionWarnMessageText', '')}
+                          />
+                        ) : null}
+                      </div>
+
+                      <div className="settings-native-toggle settings-native-toggle--nested">
+                        <div className="settings-native-toggle__row">
+                          <span className="settings-native-toggle__title">3. Бан на 6ч</span>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить бан за третье сообщение без подписки"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.requiredSubscriptionBanEnabled}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('requiredSubscriptionBanEnabled', enabled);
+                                if (enabled) {
+                                  setFieldValue('requiredSubscriptionWarnEnabled', true);
+                                  setFieldValue('requiredSubscriptionBotMessageEnabled', true);
+                                }
+                              }}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+                      </div>
+
+                      <div className="settings-native-toggle settings-native-toggle--nested">
+                        <div className="settings-native-toggle__row">
+                          <span className="settings-native-toggle__title">
+                            4. Удаление из группы
+                          </span>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить удаление из группы за четвертое сообщение без подписки"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.requiredSubscriptionKickEnabled}
+                              onChange={(event) => {
+                                const enabled = event.target.checked;
+                                setFieldValue('requiredSubscriptionKickEnabled', enabled);
+                                if (enabled) {
+                                  setFieldValue('requiredSubscriptionWarnEnabled', true);
+                                  setFieldValue('requiredSubscriptionBotMessageEnabled', true);
+                                }
+                              }}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
                       </div>
                     </div>
                   ) : null}

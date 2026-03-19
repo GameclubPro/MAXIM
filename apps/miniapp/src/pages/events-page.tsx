@@ -143,6 +143,7 @@ function formatViolationRule(ruleCode: string): string {
     GLOBAL_SPAMMER_KICK: 'Глобальная база спаммеров',
     BAN_ACTIVE_DELETE: 'Активный бан',
     NIGHT_MODE_DELETE: 'Ночной режим',
+    REQUIRED_SUBSCRIPTION: 'Обязательная подписка',
   };
 
   if (ruleCode in labels) {
@@ -199,7 +200,9 @@ function resolveViolationBlurb(violation: LogsDashboardResponse['violations'][nu
         ? violation.metadata
         : null;
     const banDurationHours =
-      metadata && typeof metadata.banDurationHours === 'number' && Number.isFinite(metadata.banDurationHours)
+      metadata &&
+      typeof metadata.banDurationHours === 'number' &&
+      Number.isFinite(metadata.banDurationHours)
         ? metadata.banDurationHours
         : null;
 
@@ -360,8 +363,11 @@ function ViolationModerationControls({
   });
 
   const confirmAndApply = (action: ManualModerationAction, hours?: number) => {
-    const normalizedHours = action === 'BAN' ? clampBanDurationHours(hours ?? banDurationHours) : null;
-    const confirmed = window.confirm(resolveConfirmMessage(action, normalizedHours ?? banDurationHours));
+    const normalizedHours =
+      action === 'BAN' ? clampBanDurationHours(hours ?? banDurationHours) : null;
+    const confirmed = window.confirm(
+      resolveConfirmMessage(action, normalizedHours ?? banDurationHours),
+    );
     if (!confirmed) {
       return;
     }
@@ -475,7 +481,9 @@ function ViolationModerationControls({
             disabled={applyMutation.isPending}
             onClick={() => confirmAndApply('BAN', banDurationHours)}
           >
-            {applyMutation.isPending ? 'Применяем…' : resolveApplyActionLabel('BAN', banDurationHours)}
+            {applyMutation.isPending
+              ? 'Применяем…'
+              : resolveApplyActionLabel('BAN', banDurationHours)}
           </button>
         </div>
       ) : null}
@@ -575,7 +583,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     initialPage: dashboard?.activityFeed ?? EMPTY_ACTIVITY_PAGE,
     loadPage: (query) => getChatActivityFeed(api, chatId ?? '', query),
   });
-  const filterOptions = useMemo<Array<{ value: EventsFilter; label: string; count: number }>>(() => {
+  const filterOptions = useMemo<
+    Array<{ value: EventsFilter; label: string; count: number }>
+  >(() => {
     if (!dashboard) {
       return [{ value: 'ALL', label: 'Все', count: 0 }];
     }
@@ -583,7 +593,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     const options: Array<{ value: EventsFilter; label: string; count: number }> = [
       { value: 'ALL', label: 'Все', count: dashboard.violationsSummary.total },
       { value: 'WARN', label: 'Предупр.', count: dashboard.violationsSummary.warn },
-      { value: 'DELETE_MESSAGE', label: 'Удаления', count: dashboard.violationsSummary.deleteMessage },
+      {
+        value: 'DELETE_MESSAGE',
+        label: 'Удаления',
+        count: dashboard.violationsSummary.deleteMessage,
+      },
       { value: 'KICK', label: 'Кики', count: dashboard.violationsSummary.kick },
       { value: 'BAN', label: 'Баны', count: dashboard.violationsSummary.ban },
       { value: 'UNBAN', label: 'Разбаны', count: dashboard.violationsSummary.unban },
@@ -611,7 +625,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       return dashboard.violations;
     }
 
-    return dashboard.violations.filter((violation) => resolveDisplayAction(violation) === eventsFilter);
+    return dashboard.violations.filter(
+      (violation) => resolveDisplayAction(violation) === eventsFilter,
+    );
   }, [dashboard, eventsFilter]);
 
   const hardMeasures = dashboard
@@ -713,9 +729,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   ];
   const dashboardTitle = section === 'activity' ? 'Входы и выходы' : 'Модерация';
   const dashboardSubtitle =
-    section === 'activity'
-      ? 'Баланс и движение участников'
-      : 'Люди и меры за выбранный период';
+    section === 'activity' ? 'Баланс и движение участников' : 'Люди и меры за выбранный период';
   return (
     <div className="events-screen page-enter">
       <section className={`events-stage events-stage--${section}`}>
@@ -740,13 +754,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
             <div className="events-stage__appbar-side">
               {dashboardQuery.isFetching ? (
-                <span
-                  className="events-stage__pulse"
-                  aria-label="Обновляем"
-                  title="Обновляем"
-                />
+                <span className="events-stage__pulse" aria-label="Обновляем" title="Обновляем" />
               ) : (
-                <span className="events-stage__pulse events-stage__pulse--idle" aria-hidden="true" />
+                <span
+                  className="events-stage__pulse events-stage__pulse--idle"
+                  aria-hidden="true"
+                />
               )}
             </div>
           </div>
