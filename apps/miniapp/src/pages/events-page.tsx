@@ -1062,7 +1062,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     section === 'activity'
       ? 'Баланс и движение участников'
       : section === 'candidates'
-        ? 'Очередь на согласование перед глобальным баном'
+        ? 'Сначала согласование, потом глобальный бан'
         : 'Люди и меры за выбранный период';
   const isActiveSectionFetching =
     section === 'candidates' ? candidatesQuery.isFetching : dashboardQuery.isFetching;
@@ -1162,7 +1162,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               </div>
 
               {section === 'candidates' ? (
-                <span className="events-dashboard__live-pill">Live queue</span>
+                <span className="events-dashboard__live-pill">На согласовании</span>
               ) : (
                 <SegmentedControl
                   value={range}
@@ -1347,12 +1347,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                   <strong>
                     {selectedCandidateCount > 0
                       ? `Выбрано ${selectedCandidateCount}`
-                      : 'Пакетное согласование'}
+                      : 'Выберите кандидатов'}
                   </strong>
                   <span>
                     {selectedCandidateCount > 0
-                      ? 'Можно удалить или оставить сразу несколько кандидатов.'
-                      : 'Отмечайте кандидатов чекбоксами для массовой обработки.'}
+                      ? 'Их можно решить одним действием.'
+                      : 'Отметьте несколько карточек для массовой обработки.'}
                   </span>
                 </div>
 
@@ -1363,7 +1363,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                     disabled={selectedCandidateCount === 0 || reviewCandidatesMutation.isPending}
                     onClick={() => handleCandidateDecision('APPROVE', selectedCandidateIds)}
                   >
-                    {reviewCandidatesMutation.isPending ? 'Применяем…' : 'Удалить выбранных'}
+                    {reviewCandidatesMutation.isPending ? 'Применяем…' : 'Удалить'}
                   </button>
 
                   <button

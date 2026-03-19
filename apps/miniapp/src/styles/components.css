@@ -8454,18 +8454,19 @@
 
 .events-dashboard__live-pill {
   min-height: 30px;
-  padding: 0 11px;
+  padding: 0 10px;
   border: 1px solid rgba(239, 194, 118, 0.45);
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  justify-self: start;
   background: rgba(255, 248, 236, 0.98);
   color: #8a5b0f;
   font-size: 0.68rem;
   font-weight: 800;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 .events-dashboard__range .segmented-control__item,
@@ -8879,12 +8880,12 @@
 
 .candidate-review-batch__copy {
   display: grid;
-  gap: 4px;
+  gap: 3px;
 }
 
 .candidate-review-batch__copy strong {
   color: #17324a;
-  font-size: 0.96rem;
+  font-size: 0.92rem;
   font-weight: 800;
   letter-spacing: -0.02em;
 }
@@ -8899,6 +8900,13 @@
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.candidate-review-batch__actions .button,
+.candidate-review-card__actions .button {
+  min-height: 42px;
+  padding-left: 12px;
+  padding-right: 12px;
 }
 
 .candidate-review-board {
@@ -10112,9 +10120,9 @@
   }
 
   .events-dashboard__live-pill {
-    min-height: 28px;
-    padding: 0 9px;
-    font-size: 0.64rem;
+    min-height: 26px;
+    padding: 0 8px;
+    font-size: 0.62rem;
   }
 
   .events-dashboard {
@@ -10274,6 +10282,14 @@
   .candidate-review-batch__actions {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .candidate-review-card__actions .button,
+  .candidate-review-batch__actions .button {
+    min-height: 40px;
+    padding-left: 10px;
+    padding-right: 10px;
+    font-size: 0.82rem;
   }
 
   .membership-feed__toolbar {
