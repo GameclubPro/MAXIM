@@ -8,7 +8,7 @@ import type {
   SpammerCandidateDecision,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { startTransition, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
 import { BackChevronIcon } from '../components/ui/entity-header-icons';
@@ -27,6 +27,7 @@ import { getChats } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
+import { isMaxWebViewRuntime, navigateWithMaxRouteHandoff } from '../lib/max-route-handoff';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 
@@ -850,8 +851,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([]);
   const [candidateStatus, setCandidateStatus] = useState<CandidateReviewStatus>(null);
   const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader();
-  const isMaxWebView =
-    typeof window !== 'undefined' && Boolean(window.MAX?.WebApp ?? window.WebApp);
+  const isMaxWebView = isMaxWebViewRuntime();
 
   const routeChatTitle = getRouteChatTitle(location.state);
 
@@ -1326,10 +1326,16 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             onClick={(event) => {
               event.currentTarget.blur();
               if (isMaxWebView) {
-                window.location.assign(`/app${buildManagedEntitiesRoute('chat')}`);
+                navigateWithMaxRouteHandoff({
+                  target: buildManagedEntitiesRoute('chat'),
+                  currentRoute: `${location.pathname}${location.search}`,
+                  navigate: (next, options) => {
+                    startTransition(() => navigate(next, options));
+                  },
+                });
                 return;
               }
-              navigate(buildManagedEntitiesRoute('chat'));
+              startTransition(() => navigate(buildManagedEntitiesRoute('chat')));
             }}
           >
             <BackChevronIcon />
