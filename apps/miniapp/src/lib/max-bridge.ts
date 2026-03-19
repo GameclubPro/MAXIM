@@ -13,6 +13,16 @@ export function readyMaxMiniApp(): void {
   resolveBridge()?.ready?.();
 }
 
+export function closeMaxMiniApp(fallback?: () => void): void {
+  const bridge = resolveBridge();
+  if (typeof bridge?.close === 'function') {
+    bridge.close();
+    return;
+  }
+
+  fallback?.();
+}
+
 export function openMaxBotLink(url: string): void {
   const bridge = resolveBridge();
   if (typeof bridge?.openMaxLink === 'function') {

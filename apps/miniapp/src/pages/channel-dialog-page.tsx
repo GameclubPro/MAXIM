@@ -1,9 +1,10 @@
 import type { ChannelDialogType } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Link, useLocation, useParams, useSearchParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
+import { BackChevronIcon } from '../components/ui/entity-header-icons';
 import {
   createChatDialogMessage,
   createChannelDialogMessage,
@@ -11,6 +12,7 @@ import {
   getChannelDialog,
 } from '../lib/api/channel-dialog-client';
 import { getMe } from '../lib/api/root-client';
+import { closeMaxMiniApp, maxImpact } from '../lib/max-bridge';
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
 import { readChatTitle } from '../lib/chat-titles';
@@ -70,32 +72,6 @@ function buildAuthorBadge(value: string | null | undefined): string {
   return normalized.slice(0, 2).toUpperCase();
 }
 
-function formatCompactCount(value: number): string {
-  return new Intl.NumberFormat('ru-RU', {
-    notation: value >= 1_000 ? 'compact' : 'standard',
-    maximumFractionDigits: value >= 1_000 ? 1 : 0,
-  }).format(value);
-}
-
-function formatPlural(value: number, one: string, few: string, many: string): string {
-  const lastTwoDigits = value % 100;
-  const lastDigit = value % 10;
-
-  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) {
-    return many;
-  }
-
-  if (lastDigit === 1) {
-    return one;
-  }
-
-  if (lastDigit >= 2 && lastDigit <= 4) {
-    return few;
-  }
-
-  return many;
-}
-
 type DialogViewModel = {
   title: string;
   placeholder: string;
@@ -105,13 +81,13 @@ function buildViewModel(dialogType: ChannelDialogType): DialogViewModel {
   if (dialogType === 'suggest') {
     return {
       title: 'Предложить новость',
-      placeholder: 'Напишите идею поста',
+      placeholder: 'Идея поста',
     };
   }
 
   return {
     title: 'Комментарии',
-    placeholder: 'Напишите комментарий',
+    placeholder: 'Комментарий',
   };
 }
 
@@ -122,10 +98,12 @@ function resolveDialogEntityType(pathname: string): LastEntityType {
 export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const { chatId = '', mode } = useParams();
   const location = useLocation();
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const token = searchParams.get('token')?.trim() ?? '';
   const dialogType = resolveDialogType(mode);
   const entityType = resolveDialogEntityType(location.pathname);
+  const shouldCloseOnBack = dialogType === 'comments';
   const [draft, setDraft] = useState('');
   const composeFieldRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollViewportRef = useRef<HTMLElement | null>(null);
@@ -135,7 +113,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   const chatTitle = useMemo(() => readChatTitle(chatId), [chatId]);
   const view = useMemo(() => buildViewModel(dialogType), [dialogType]);
-  const showTopbar = dialogType !== 'comments';
   const meQuery = useQuery({
     queryKey: ['me'],
     queryFn: () => getMe(api),
@@ -160,28 +137,20 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const messages = dialogQuery.data?.messages ?? [];
   const introText = dialogQuery.data?.introText?.trim() ?? '';
   const draftLength = draft.trim().length;
-  const participantCount = useMemo(
-    () => new Set(messages.map((message) => message.authorUserId)).size,
-    [messages],
-  );
-  const lastMessageAt = messages[messages.length - 1]?.createdAt ?? null;
-  const threadSummary = useMemo(() => {
-    if (!messages.length) {
-      return dialogType === 'comments'
-        ? 'Тред открыт, ждём первый ответ.'
-        : 'Идея уйдёт напрямую команде админов.';
+  const showComposeMeta = dialogType === 'suggest' || draftLength > 0;
+
+  const handleDismiss = () => {
+    maxImpact('light');
+
+    if (shouldCloseOnBack) {
+      closeMaxMiniApp(() => {
+        navigate(buildManagedEntitiesRoute(entityType), { replace: true });
+      });
+      return;
     }
 
-    return [
-      `${formatCompactCount(messages.length)} ${formatPlural(messages.length, 'сообщение', 'сообщения', 'сообщений')}`,
-      `${formatCompactCount(participantCount)} ${formatPlural(participantCount, 'участник', 'участника', 'участников')}`,
-      lastMessageAt ? `обновлено ${formatDateTime(lastMessageAt)}` : null,
-    ]
-      .filter(Boolean)
-      .join(' • ');
-  }, [dialogType, lastMessageAt, messages.length, participantCount]);
-  const composerHint =
-    dialogType === 'comments' ? 'Тред вне ленты.' : 'Только для админов.';
+    navigate(buildManagedEntitiesRoute(entityType), { replace: true });
+  };
 
   useEffect(() => {
     const field = composeFieldRef.current;
@@ -313,44 +282,30 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     >
       <div className="channel-dialog-screen__backdrop" aria-hidden />
 
-      <div className={cn('channel-dialog-shell', !showTopbar && 'channel-dialog-shell--no-topbar')}>
-        {showTopbar ? (
-          <header className="channel-dialog-topbar">
-            <div className="channel-dialog-topbar__title">
-              <h1>{view.title}</h1>
-              <span>{chatTitle || chatId}</span>
-            </div>
-            <Link to={buildManagedEntitiesRoute(entityType)} className="channel-dialog-close">
+      <div className="channel-dialog-shell">
+        <header className="channel-dialog-topbar">
+          <button
+            type="button"
+            className="channel-dialog-nav"
+            onClick={handleDismiss}
+            aria-label={shouldCloseOnBack ? 'Закрыть комментарии' : 'Назад'}
+          >
+            <BackChevronIcon />
+          </button>
+
+          <div className="channel-dialog-topbar__title">
+            <h1>{view.title}</h1>
+            <span>{chatTitle || chatId}</span>
+          </div>
+
+          {!shouldCloseOnBack ? (
+            <button type="button" className="channel-dialog-close" onClick={handleDismiss}>
               Закрыть
-            </Link>
-          </header>
-        ) : null}
+            </button>
+          ) : null}
+        </header>
 
         <section ref={scrollViewportRef} className="channel-dialog-body">
-          <section className="channel-dialog-thread">
-            <div className="channel-dialog-thread__utility">
-              <Link
-                to={buildManagedEntitiesRoute(entityType)}
-                className="channel-dialog-thread__back"
-              >
-                Назад
-              </Link>
-              <span className="channel-dialog-thread__live">
-                {dialogType === 'comments' ? 'Тред открыт' : 'Личный inbox'}
-              </span>
-            </div>
-            <div className="channel-dialog-thread__headline">
-              <div>
-                <p>{dialogType === 'comments' ? 'Комментарии к сообщению' : 'Прямой канал связи'}</p>
-                <h1>{view.title}</h1>
-              </div>
-              <span className="channel-dialog-thread__badge">
-                {chatTitle || chatId}
-              </span>
-            </div>
-            <p className="channel-dialog-thread__summary">{threadSummary}</p>
-          </section>
-
           {dialogQuery.isLoading ? (
             <div className="channel-dialog-skeletons" aria-label="Загрузка">
               {Array.from({ length: 3 }, (_, index) => (
@@ -388,9 +343,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             <div className="channel-dialog-message-list">
               {introText ? (
                 <div className="channel-dialog-intro">
-                  <span className="channel-dialog-intro__label">
-                    {dialogType === 'comments' ? 'Как читать тред' : 'Как это работает'}
-                  </span>
                   <p>{introText}</p>
                 </div>
               ) : null}
@@ -439,10 +391,17 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
         <section className="channel-dialog-compose">
           <div className="channel-dialog-compose__surface">
-            <div className="channel-dialog-compose__meta">
-              <span>{composerHint}</span>
-              <span>{draftLength}/2000</span>
-            </div>
+            {showComposeMeta ? (
+              <div
+                className={cn(
+                  'channel-dialog-compose__meta',
+                  dialogType !== 'suggest' && 'channel-dialog-compose__meta--solo',
+                )}
+              >
+                {dialogType === 'suggest' ? <span>Только для админов</span> : null}
+                <span>{draftLength}/2000</span>
+              </div>
+            ) : null}
 
             <div className="channel-dialog-compose__row">
               <label className="channel-dialog-compose__field">

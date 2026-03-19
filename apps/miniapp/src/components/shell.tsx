@@ -2,7 +2,12 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { cn } from '../lib/cn';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
-import { bindMaxBackButton, maxImpact, setMaxBackButtonVisible } from '../lib/max-bridge';
+import {
+  bindMaxBackButton,
+  closeMaxMiniApp,
+  maxImpact,
+  setMaxBackButtonVisible,
+} from '../lib/max-bridge';
 import {
   buildManagedEntitiesRoute,
   normalizeEntityType,
@@ -247,6 +252,7 @@ export function Shell() {
   const isDialogRoute =
     location.pathname.includes('/dialog/') &&
     (location.pathname.includes('/channel/') || location.pathname.includes('/chat/'));
+  const shouldCloseDialogOnBack = isDialogRoute && location.pathname.includes('/dialog/comments');
   const isSettingsRoute = location.pathname.includes('/settings');
   const isEventsRoute = location.pathname.includes('/events');
   const isChannelStatsRoute =
@@ -318,6 +324,13 @@ export function Shell() {
 
     const cleanup = bindMaxBackButton(() => {
       maxImpact('light');
+      if (shouldCloseDialogOnBack) {
+        closeMaxMiniApp(() => {
+          navigate(homeRoute, { replace: true });
+        });
+        return;
+      }
+
       if (window.history.length > 1) {
         navigate(-1);
         return;
@@ -330,7 +343,7 @@ export function Shell() {
       cleanup();
       setMaxBackButtonVisible(false);
     };
-  }, [homeRoute, isChatsRoute, navigate]);
+  }, [homeRoute, isChatsRoute, navigate, shouldCloseDialogOnBack]);
 
   return (
     <div
