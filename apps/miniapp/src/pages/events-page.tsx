@@ -607,6 +607,11 @@ function SpammerCandidateCard({
 }) {
   const displayName = resolveCandidateName(candidate);
   const primaryChat = resolveCandidatePrimaryChat(candidate, chatId);
+  const blurCurrentButton = (target: EventTarget | null) => {
+    if (target instanceof HTMLButtonElement) {
+      target.blur();
+    }
+  };
 
   return (
     <article className={`candidate-review-card ${isExpanded ? 'is-expanded' : ''} stagger-in`}>
@@ -619,6 +624,7 @@ function SpammerCandidateCard({
           disabled={isBusy}
           onClick={(event) => {
             event.stopPropagation();
+            blurCurrentButton(event.currentTarget);
             onToggleSelect(candidate.userId);
           }}
           aria-label={`Выбрать ${displayName}`}
@@ -632,7 +638,10 @@ function SpammerCandidateCard({
         <button
           type="button"
           className="candidate-review-card__trigger"
-          onClick={() => onToggleExpand(candidate.userId)}
+          onClick={(event) => {
+            blurCurrentButton(event.currentTarget);
+            onToggleExpand(candidate.userId);
+          }}
           disabled={isBusy}
           aria-expanded={isExpanded}
         >
@@ -700,7 +709,10 @@ function SpammerCandidateCard({
               type="button"
               className="button button--danger"
               disabled={isBusy}
-              onClick={() => onApplyDecision('APPROVE', [candidate.userId])}
+              onClick={(event) => {
+                blurCurrentButton(event.currentTarget);
+                onApplyDecision('APPROVE', [candidate.userId]);
+              }}
             >
               Удалить
             </button>
@@ -708,7 +720,10 @@ function SpammerCandidateCard({
               type="button"
               className="button button--ghost"
               disabled={isBusy}
-              onClick={() => onApplyDecision('REJECT', [candidate.userId])}
+              onClick={(event) => {
+                blurCurrentButton(event.currentTarget);
+                onApplyDecision('REJECT', [candidate.userId]);
+              }}
             >
               Оставить
             </button>
@@ -878,6 +893,10 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   useEffect(() => {
     setExpandedViolationId(null);
     setExpandedCandidateId(null);
+    const activeElement = document.activeElement;
+    if (activeElement instanceof HTMLElement && activeElement !== document.body) {
+      activeElement.blur();
+    }
     if (section !== 'candidates') {
       setCandidateStatus(null);
     }
@@ -1085,7 +1104,10 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               type="button"
               className="events-stage__back"
               aria-label="К списку чатов"
-              onClick={() => navigate(buildManagedEntitiesRoute('chat'))}
+              onClick={(event) => {
+                event.currentTarget.blur();
+                navigate(buildManagedEntitiesRoute('chat'));
+              }}
             >
               <BackChevronIcon />
             </button>
@@ -1116,7 +1138,10 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 role="tab"
                 aria-selected={section === 'moderation'}
                 className={`events-primary-tab ${section === 'moderation' ? 'is-active' : ''}`}
-                onClick={() => setSection('moderation')}
+                onClick={(event) => {
+                  event.currentTarget.blur();
+                  setSection('moderation');
+                }}
               >
                 <span className="events-primary-tab__icon" aria-hidden="true">
                   <ModerationTabIcon />
@@ -1129,7 +1154,10 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 role="tab"
                 aria-selected={section === 'activity'}
                 className={`events-primary-tab ${section === 'activity' ? 'is-active' : ''}`}
-                onClick={() => setSection('activity')}
+                onClick={(event) => {
+                  event.currentTarget.blur();
+                  setSection('activity');
+                }}
               >
                 <span className="events-primary-tab__icon" aria-hidden="true">
                   <ActivityTabIcon />
@@ -1142,7 +1170,10 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 role="tab"
                 aria-selected={section === 'candidates'}
                 className={`events-primary-tab ${section === 'candidates' ? 'is-active' : ''}`}
-                onClick={() => setSection('candidates')}
+                onClick={(event) => {
+                  event.currentTarget.blur();
+                  setSection('candidates');
+                }}
               >
                 <span className="events-primary-tab__icon" aria-hidden="true">
                   <CandidatesTabIcon />
@@ -1368,7 +1399,10 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                     type="button"
                     className="button button--danger"
                     disabled={selectedCandidateCount === 0 || reviewCandidatesMutation.isPending}
-                    onClick={() => handleCandidateDecision('APPROVE', selectedCandidateIds)}
+                    onClick={(event) => {
+                      event.currentTarget.blur();
+                      handleCandidateDecision('APPROVE', selectedCandidateIds);
+                    }}
                   >
                     {reviewCandidatesMutation.isPending ? 'Применяем…' : 'Удалить'}
                   </button>
@@ -1377,7 +1411,10 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                     type="button"
                     className="button button--ghost"
                     disabled={selectedCandidateCount === 0 || reviewCandidatesMutation.isPending}
-                    onClick={() => handleCandidateDecision('REJECT', selectedCandidateIds)}
+                    onClick={(event) => {
+                      event.currentTarget.blur();
+                      handleCandidateDecision('REJECT', selectedCandidateIds);
+                    }}
                   >
                     Оставить
                   </button>

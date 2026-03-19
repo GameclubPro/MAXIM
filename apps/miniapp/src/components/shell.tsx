@@ -50,6 +50,17 @@ function isTextEntryElement(element: Element | null): boolean {
   return element instanceof HTMLElement && element.isContentEditable;
 }
 
+function blurNonTextEntryFocus(): void {
+  const activeElement = document.activeElement;
+  if (
+    activeElement instanceof HTMLElement &&
+    activeElement !== document.body &&
+    !isTextEntryElement(activeElement)
+  ) {
+    activeElement.blur();
+  }
+}
+
 function BottomNavIcon({ name }: { name: BottomNavIconName }) {
   if (name === 'chats') {
     return (
@@ -296,6 +307,7 @@ export function Shell() {
       return;
     }
 
+    blurNonTextEntryFocus();
     maxImpact('light');
     navigate(target);
   };
@@ -348,6 +360,23 @@ export function Shell() {
   }, [location.pathname, location.search]);
 
   useEffect(() => {
+    const handlePointerDown = (event: Event) => {
+      const target = event.target;
+      if (!(target instanceof Element) || isTextEntryElement(target)) {
+        return;
+      }
+
+      blurNonTextEntryFocus();
+    };
+
+    window.addEventListener('pointerdown', handlePointerDown, true);
+
+    return () => {
+      window.removeEventListener('pointerdown', handlePointerDown, true);
+    };
+  }, []);
+
+  useEffect(() => {
     const shouldShowNativeBack = !isChatsRoute;
     setMaxBackButtonVisible(shouldShowNativeBack);
 
@@ -358,6 +387,7 @@ export function Shell() {
     }
 
     const cleanup = bindMaxBackButton(() => {
+      blurNonTextEntryFocus();
       maxImpact('light');
       if (window.history.length > 1) {
         navigate(-1);
