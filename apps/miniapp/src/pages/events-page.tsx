@@ -757,6 +757,86 @@ function getInitialSection(search: string): EventsSection {
   return 'moderation';
 }
 
+type DebugElementSnapshot = {
+  tag: string | null;
+  role: string | null;
+  id: string | null;
+  className: string | null;
+  text: string | null;
+};
+
+function toDebugText(value: string | null | undefined, maxLength = 96): string | null {
+  const normalized = value?.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  return normalized.length > maxLength ? `${normalized.slice(0, maxLength)}...` : normalized;
+}
+
+function describeDebugElement(element: Element | null): DebugElementSnapshot | null {
+  if (!element) {
+    return null;
+  }
+
+  const htmlElement = element instanceof HTMLElement ? element : null;
+  return {
+    tag: element.tagName?.toLowerCase() ?? null,
+    role: htmlElement?.getAttribute('role') ?? null,
+    id: htmlElement?.id || null,
+    className:
+      htmlElement && typeof htmlElement.className === 'string'
+        ? toDebugText(htmlElement.className, 160)
+        : null,
+    text: toDebugText(htmlElement?.textContent ?? null, 80),
+  };
+}
+
+function getSelectorCenterSnapshot(selector: string) {
+  const element = document.querySelector(selector);
+  if (!(element instanceof Element)) {
+    return null;
+  }
+
+  const rect = element.getBoundingClientRect();
+  const x = rect.left + rect.width / 2;
+  const y = rect.top + rect.height / 2;
+  const hit = document.elementFromPoint(x, y);
+
+  return {
+    selector,
+    rect: {
+      x: Math.round(rect.left),
+      y: Math.round(rect.top),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+    },
+    hit: describeDebugElement(hit),
+    interactive: describeDebugElement(hit?.closest('button, a, [role="button"]') ?? null),
+  };
+}
+
+function postClientDebug(
+  api: ApiTransport,
+  payload: {
+    stage: string;
+    path: string;
+    chatId?: string;
+    meta?: Record<string, unknown>;
+  },
+) {
+  void api
+    .request('/system/client-debug', {
+      method: 'POST',
+      body: JSON.stringify({
+        source: 'chat-events',
+        ...payload,
+      }),
+      keepalive: true,
+    })
+    .catch(() => undefined);
+}
+
 export function EventsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
@@ -792,6 +872,108 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       window.clearTimeout(settleTimeoutId);
     };
   }, []);
+
+  useEffect(() => {
+    const isMaxWebView =
+      typeof window !== 'undefined' && Boolean(window.MAX?.WebApp ?? window.WebApp);
+    if (!chatId || !isMaxWebView) {
+      return;
+    }
+
+    let pointerSamples = 0;
+    let clickSamples = 0;
+    const routePath = `${location.pathname}${location.search}`;
+
+    const buildSnapshot = (event?: Event) => {
+      const activeElement =
+        document.activeElement instanceof Element ? document.activeElement : null;
+      const pointerEvent =
+        event instanceof PointerEvent || event instanceof MouseEvent ? event : null;
+      const hitElement =
+        pointerEvent && Number.isFinite(pointerEvent.clientX) && Number.isFinite(pointerEvent.clientY)
+          ? document.elementFromPoint(pointerEvent.clientX, pointerEvent.clientY)
+          : null;
+
+      return {
+        section,
+        activeElement: describeDebugElement(activeElement),
+        target: event?.target instanceof Element ? describeDebugElement(event.target) : null,
+        hitElement: describeDebugElement(hitElement),
+        interactiveTarget:
+          event?.target instanceof Element
+            ? describeDebugElement(event.target.closest('button, a, [role="button"]'))
+            : null,
+        pointer:
+          pointerEvent && Number.isFinite(pointerEvent.clientX) && Number.isFinite(pointerEvent.clientY)
+            ? {
+                x: Math.round(pointerEvent.clientX),
+                y: Math.round(pointerEvent.clientY),
+              }
+            : null,
+        viewport: {
+          width: window.innerWidth,
+          height: window.innerHeight,
+        },
+        bodyOverflow: document.body.style.overflow || null,
+        htmlOverflow: document.documentElement.style.overflow || null,
+        backButton: getSelectorCenterSnapshot('.events-screen__back'),
+        bottomNav: getSelectorCenterSnapshot('.bottom-nav__item:not(.is-active)'),
+      };
+    };
+
+    postClientDebug(api, {
+      stage: 'mount',
+      path: routePath,
+      chatId,
+      meta: buildSnapshot(),
+    });
+
+    const settledTimeoutId = window.setTimeout(() => {
+      postClientDebug(api, {
+        stage: 'settled',
+        path: routePath,
+        chatId,
+        meta: buildSnapshot(),
+      });
+    }, 450);
+
+    const handlePointerDown = (event: Event) => {
+      if (pointerSamples >= 4) {
+        return;
+      }
+
+      pointerSamples += 1;
+      postClientDebug(api, {
+        stage: `pointerdown-${pointerSamples}`,
+        path: routePath,
+        chatId,
+        meta: buildSnapshot(event),
+      });
+    };
+
+    const handleClick = (event: Event) => {
+      if (clickSamples >= 4) {
+        return;
+      }
+
+      clickSamples += 1;
+      postClientDebug(api, {
+        stage: `click-${clickSamples}`,
+        path: routePath,
+        chatId,
+        meta: buildSnapshot(event),
+      });
+    };
+
+    window.addEventListener('pointerdown', handlePointerDown, true);
+    window.addEventListener('click', handleClick, true);
+
+    return () => {
+      window.clearTimeout(settledTimeoutId);
+      window.removeEventListener('pointerdown', handlePointerDown, true);
+      window.removeEventListener('click', handleClick, true);
+    };
+  }, [api, chatId, location.pathname, location.search, section]);
 
   useEffect(() => {
     if (chatId) {
