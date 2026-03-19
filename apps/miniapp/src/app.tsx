@@ -147,20 +147,14 @@ function AppRoutes({
 export function App() {
   const initData = getInitData();
   const preview = getPreviewBootstrap(initData);
+  const isMaxWebView = Boolean(
+    typeof window !== 'undefined' && (window.MAX?.WebApp ?? window.WebApp),
+  );
   const previewApiRef = useRef<ReturnType<typeof createApiTransport> | null>(null);
   const [previewRuntime, setPreviewRuntime] = useState<PreviewRuntime | null>(null);
 
   useEffect(() => {
     readyMaxMiniApp();
-
-    const isMaxWebView = Boolean(window.MAX?.WebApp ?? window.WebApp);
-    document.documentElement.classList.toggle('max-webview', isMaxWebView);
-    document.body.classList.toggle('max-webview', isMaxWebView);
-
-    return () => {
-      document.documentElement.classList.remove('max-webview');
-      document.body.classList.remove('max-webview');
-    };
   }, []);
 
   useEffect(() => {
@@ -199,56 +193,62 @@ export function App() {
 
   if (!apiClient) {
     return (
-      <div className="app-shell app-shell--centered">
-        <GlassCard className="init-missing-card" elevated>
-          <h1>Майор Максимов</h1>
-          <StatusState
-            tone="warning"
-            title="Init Data не найден"
-            description="Откройте приложение в MAX через кнопку в боте. При открытии напрямую в браузере авторизация не пройдет."
-          />
-          <div className="init-missing-help">
-            <p>Проверьте:</p>
-            <ul>
-              <li>Запуск идет из MAX, а не по прямой ссылке.</li>
-              <li>В URL сохраняется query-параметр `init_data`.</li>
-              <li>Редирект на `/app/` не теряет query-параметры.</li>
-              <li>Для дизайн-preview можно открыть `/app/?preview=1`.</li>
-            </ul>
-          </div>
-        </GlassCard>
+      <div className={isMaxWebView ? 'max-webview' : undefined}>
+        <div className="app-shell app-shell--centered">
+          <GlassCard className="init-missing-card" elevated>
+            <h1>Майор Максимов</h1>
+            <StatusState
+              tone="warning"
+              title="Init Data не найден"
+              description="Откройте приложение в MAX через кнопку в боте. При открытии напрямую в браузере авторизация не пройдет."
+            />
+            <div className="init-missing-help">
+              <p>Проверьте:</p>
+              <ul>
+                <li>Запуск идет из MAX, а не по прямой ссылке.</li>
+                <li>В URL сохраняется query-параметр `init_data`.</li>
+                <li>Редирект на `/app/` не теряет query-параметры.</li>
+                <li>Для дизайн-preview можно открыть `/app/?preview=1`.</li>
+              </ul>
+            </div>
+          </GlassCard>
+        </div>
       </div>
     );
   }
 
   if (preview.enabled && !previewRuntime) {
     return (
-      <div className="app-shell app-shell--centered">
-        <GlassCard className="init-missing-card" elevated>
-          <h1>Design Preview</h1>
-          <StatusState
-            tone="neutral"
-            title="Подготавливаю preview"
-            description="Загружаю мобильную рамку и моковые данные для дизайн-режима."
-          />
-        </GlassCard>
+      <div className={isMaxWebView ? 'max-webview' : undefined}>
+        <div className="app-shell app-shell--centered">
+          <GlassCard className="init-missing-card" elevated>
+            <h1>Design Preview</h1>
+            <StatusState
+              tone="neutral"
+              title="Подготавливаю preview"
+              description="Загружаю мобильную рамку и моковые данные для дизайн-режима."
+            />
+          </GlassCard>
+        </div>
       </div>
     );
   }
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <ToastProvider>
-        <Router basename="/app">
-          {preview.enabled && PreviewScaffold ? (
-            <PreviewScaffold initialDevice={preview.device}>
-              <AppRoutes apiClient={apiClient} launchInitData={null} />
-            </PreviewScaffold>
-          ) : (
-            <AppRoutes apiClient={apiClient} launchInitData={initData} />
-          )}
-        </Router>
-      </ToastProvider>
-    </QueryClientProvider>
+    <div className={isMaxWebView ? 'max-webview' : undefined}>
+      <QueryClientProvider client={queryClient}>
+        <ToastProvider>
+          <Router basename="/app">
+            {preview.enabled && PreviewScaffold ? (
+              <PreviewScaffold initialDevice={preview.device}>
+                <AppRoutes apiClient={apiClient} launchInitData={null} />
+              </PreviewScaffold>
+            ) : (
+              <AppRoutes apiClient={apiClient} launchInitData={initData} />
+            )}
+          </Router>
+        </ToastProvider>
+      </QueryClientProvider>
+    </div>
   );
 }
