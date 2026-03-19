@@ -850,6 +850,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([]);
   const [candidateStatus, setCandidateStatus] = useState<CandidateReviewStatus>(null);
   const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader();
+  const isMaxWebView =
+    typeof window !== 'undefined' && Boolean(window.MAX?.WebApp ?? window.WebApp);
 
   const routeChatTitle = getRouteChatTitle(location.state);
 
@@ -1323,6 +1325,10 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             aria-label="К списку чатов"
             onClick={(event) => {
               event.currentTarget.blur();
+              if (isMaxWebView) {
+                window.location.assign(`/app${buildManagedEntitiesRoute('chat')}`);
+                return;
+              }
               navigate(buildManagedEntitiesRoute('chat'));
             }}
           >

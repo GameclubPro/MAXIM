@@ -57,6 +57,14 @@ function blurActiveElement(): void {
   }
 }
 
+function isMaxWebViewRuntime(): boolean {
+  return typeof window !== 'undefined' && Boolean(window.MAX?.WebApp ?? window.WebApp);
+}
+
+function buildAppUrl(target: string): string {
+  return `/app${target}`;
+}
+
 function BottomNavIcon({ name }: { name: BottomNavIconName }) {
   if (name === 'chats') {
     return (
@@ -284,8 +292,10 @@ export function Shell() {
     location.pathname.includes('/channel/') && location.pathname.includes('/dialog/');
   const isSettingsRoute = location.pathname.includes('/settings');
   const isEventsRoute = location.pathname.includes('/events');
+  const isChatEventsRoute = location.pathname.includes('/chat/') && location.pathname.includes('/events');
   const isChannelStatsRoute =
     location.pathname.includes('/channel/') && location.pathname.includes('/stats');
+  const isMaxWebView = isMaxWebViewRuntime();
   const hasTopbar =
     !isChatsRoute &&
     !isSettingsRoute &&
@@ -302,6 +312,15 @@ export function Shell() {
     blurActiveElement();
     setIsKeyboardOpen(false);
   };
+  const leaveRoute = (target: string, options?: { replace?: boolean }) => {
+    const url = buildAppUrl(target);
+    if (options?.replace) {
+      window.location.replace(url);
+      return;
+    }
+
+    window.location.assign(url);
+  };
   const handleBottomNav = (target: string) => {
     if (!target || `${location.pathname}${location.search}` === target) {
       return;
@@ -309,6 +328,10 @@ export function Shell() {
 
     dismissActiveFocus();
     maxImpact('light');
+    if (isMaxWebView && isChatEventsRoute) {
+      leaveRoute(target);
+      return;
+    }
     navigate(target);
   };
 
@@ -387,6 +410,10 @@ export function Shell() {
     const cleanup = bindMaxBackButton(() => {
       dismissActiveFocus();
       maxImpact('light');
+      if (isMaxWebView && isChatEventsRoute) {
+        leaveRoute(buildManagedEntitiesRoute('chat'));
+        return;
+      }
       if (window.history.length > 1) {
         navigate(-1);
         return;
@@ -399,7 +426,7 @@ export function Shell() {
       cleanup();
       setMaxBackButtonVisible(false);
     };
-  }, [homeRoute, isChatsRoute, navigate]);
+  }, [homeRoute, isChatEventsRoute, isChatsRoute, isMaxWebView, navigate]);
 
   return (
     <div
