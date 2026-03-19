@@ -104,6 +104,7 @@ function createPrismaMock() {
     },
     auditLog: {
       findMany: jest.fn().mockResolvedValue([]),
+      count: jest.fn().mockResolvedValue(0),
       create: jest.fn().mockResolvedValue(undefined),
     },
     managedBroadcast: {
@@ -3650,7 +3651,7 @@ describe('AdminService.sendBroadcast', () => {
       customButtonUrl: '',
     });
 
-    expect(buttons).toMatchObject([[{ text: '💬 Комментарии', type: 'link' }]]);
+    expect(buttons).toMatchObject([[{ text: '💬 Комментарии · 0', type: 'link' }]]);
     const commentsButton = buttons[0]?.[0];
     const commentsStartParam = new URL(commentsButton.url).searchParams.get('startapp');
     const commentsLaunch = decodeBase64UrlJson<{ k: string; c: string; m: string; t: string }>(
@@ -3749,6 +3750,78 @@ describe('AdminService.sendBroadcast', () => {
             equals: commentsTokenPayload.d,
           },
         }),
+      }),
+    );
+  });
+
+  it('updates the chat comments button counter after a new comment', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatSettings.findUnique.mockResolvedValue(
+      chatSettingsSchema.parse({
+        commentsEnabled: true,
+        commentsAdminsEnabled: true,
+        commentsAllEnabled: true,
+        commentsChatBroadcastsEnabled: false,
+      }),
+    );
+    prisma.auditLog.count.mockResolvedValue(7);
+    prisma.auditLog.findMany.mockResolvedValue([
+      {
+        id: 'chat-comments-ref-1',
+        action: 'AUTO_ATTACH_CHAT_COMMENTS',
+        payload: {
+          threadId: 'chat-thread-counter',
+          deliveryMode: 'replace_with_bot_message',
+          replacementMessageId: 'mid-bot-copy-7',
+        },
+      },
+    ]);
+    prisma.auditLog.create.mockResolvedValue({
+      id: 'chat-comment-counter-1',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-20T08:00:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = createChatContextCacheMock();
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const commentsToken = (
+      service as unknown as { buildEntityDialogToken: Function }
+    ).buildEntityDialogToken('chat', 'chat-1', 'comments', 'chat-thread-counter') as string;
+
+    await service.createChatDialogMessage(
+      'chat-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        text: 'Комментарий в чате',
+      },
+    );
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'chat-1',
+      'mid-bot-copy-7',
+      null,
+      expect.objectContaining({
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 7', type: 'link' })]],
       }),
     );
   });
@@ -4097,7 +4170,7 @@ describe('AdminService.sendChannelBroadcast', () => {
     expect(dispatch).toEqual({ immediate: true });
     expect(options).toMatchObject({
       textFormat: 'html',
-      buttons: [[expect.objectContaining({ text: '💬 Комментарии', type: 'link' })]],
+      buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0', type: 'link' })]],
     });
     expect(options.buttons[0][0].url).toContain('https://max.ru/777000_bot?startapp=');
   });
@@ -4718,7 +4791,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(options.buttons?.[1]).toHaveLength(1);
     expect(commentsButton).toMatchObject({
       type: 'link',
-      text: 'Комментарии',
+      text: 'Комментарии · 0',
     });
     expect(suggestButton).toMatchObject({
       type: 'link',
@@ -4964,6 +5037,88 @@ describe('AdminService.publishChannelEngagementMessage', () => {
             equals: commentsTokenPayload.d,
           },
         }),
+      }),
+    );
+  });
+
+  it('updates the published channel comments button counter after a new comment', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+      }),
+    );
+    prisma.auditLog.count.mockResolvedValue(4);
+    prisma.auditLog.findMany.mockResolvedValue([
+      {
+        id: 'channel-engagement-ref-1',
+        action: 'PUBLISH_CHANNEL_ENGAGEMENT',
+        payload: {
+          messageId: 'mid-channel-engagement-99',
+          threadId: 'channel-thread-counter',
+          commentsButtonText: 'Комментарии',
+          includeCommentsButton: true,
+          includeSuggestButton: true,
+          suggestButtonText: 'Предложить пост',
+        },
+      },
+    ]);
+    prisma.auditLog.create.mockResolvedValue({
+      id: 'channel-comment-count-1',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-20T09:00:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = createChatContextCacheMock();
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const commentsToken = (
+      service as unknown as { buildEntityDialogToken: Function }
+    ).buildEntityDialogToken(
+      'channel',
+      'channel-1',
+      'comments',
+      'channel-thread-counter',
+    ) as string;
+
+    await service.createChannelDialogMessage(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        text: 'Новый комментарий в канале',
+      },
+    );
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-engagement-99',
+      null,
+      expect.objectContaining({
+        buttons: [
+          [expect.objectContaining({ text: 'Комментарии · 4', type: 'link' })],
+          [expect.objectContaining({ text: 'Предложить пост', type: 'link' })],
+        ],
       }),
     );
   });

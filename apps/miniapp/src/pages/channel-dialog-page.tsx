@@ -40,15 +40,13 @@ function resolveDialogType(mode: string | undefined): ChannelDialogType {
   return mode === 'suggest' ? 'suggest' : 'comments';
 }
 
-function formatDateTime(value: string): string {
+function formatMessageTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
     return value;
   }
 
-  return date.toLocaleString('ru-RU', {
-    day: '2-digit',
-    month: 'short',
+  return date.toLocaleTimeString('ru-RU', {
     hour: '2-digit',
     minute: '2-digit',
   });
@@ -399,7 +397,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                           <strong>
                             {message.authorDisplayName || `Участник ${message.authorUserId}`}
                           </strong>
-                          <span>{formatDateTime(message.createdAt)}</span>
+                          <time dateTime={message.createdAt}>
+                            {formatMessageTime(message.createdAt)}
+                          </time>
                         </div>
                         <p>{message.text}</p>
                         {dialogType === 'suggest' ? (

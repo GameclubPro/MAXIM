@@ -108,7 +108,7 @@ describe('ModerationService channel auto post buttons', () => {
           [
             expect.objectContaining({
               type: 'link',
-              text: '💬 Комментарии',
+              text: '💬 Комментарии · 0',
             }),
           ],
           [
@@ -240,7 +240,7 @@ describe('ModerationService channel auto post buttons', () => {
       'mid-channel-1',
       'Новый пост в канале',
       expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: '💬 Комментарии' })]],
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0' })]],
       }),
     );
   });
@@ -399,7 +399,7 @@ describe('ModerationService channel auto post buttons', () => {
       'Пост из канала',
       expect.objectContaining({
         buttons: [
-          [expect.objectContaining({ text: '💬 Комментарии' })],
+          [expect.objectContaining({ text: '💬 Комментарии · 0' })],
           [expect.objectContaining({ text: '📰 Предложить пост' })],
         ],
         debugContext: {

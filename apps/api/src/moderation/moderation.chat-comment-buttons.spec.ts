@@ -103,6 +103,10 @@ function createService(settingsOverrides: Record<string, unknown>, adminUserIds:
       messageId: 'mid-bot-copy-1',
       url: 'https://max.ru/chats/chat-1/message/bot-copy-1',
     }),
+    sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+      messageId: 'mid-bot-reply-1',
+      url: 'https://max.ru/chats/chat-1/message/bot-reply-1',
+    }),
     deleteMessage: jest.fn(),
     sendMessage: jest.fn(),
     kickMember: jest.fn(),
@@ -151,7 +155,7 @@ describe('ModerationService chat comment buttons', () => {
       'mid-admin-1',
       'Пост админа',
       expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: '💬 Комментарии', type: 'link' })]],
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0', type: 'link' })]],
         debugContext: {
           screen: 'chat-auto-comments',
           action: 'replace-admin-message-with-bot-copy',
@@ -207,7 +211,7 @@ describe('ModerationService chat comment buttons', () => {
       'mid-admin-fallback',
       'Пост админа для fallback',
       expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: '💬 Комментарии', type: 'link' })]],
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0', type: 'link' })]],
       }),
     );
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
@@ -246,7 +250,59 @@ describe('ModerationService chat comment buttons', () => {
       'mid-user-2',
       'Сообщение участника',
       expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: '💬 Комментарии' })]],
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0' })]],
+      }),
+    );
+  });
+
+  it('stores reply message id when MAX falls back to a bot reply for comments', async () => {
+    const { prisma, maxClient, service } = createService({
+      commentsEnabled: true,
+      commentsAdminsEnabled: false,
+      commentsAllEnabled: true,
+      commentsChatBroadcastsEnabled: false,
+    });
+    maxClient.editMessageInlineKeyboard.mockRejectedValue({
+      response: {
+        status: 200,
+        data: {
+          success: false,
+          message: 'Error on message edit',
+        },
+      },
+      message: 'Error on message edit',
+    });
+
+    await service.handleUpdate(
+      createChatMessageUpdate({
+        senderId: 'user-9',
+        senderName: 'Участник',
+        messageId: 'mid-user-fallback-1',
+        text: 'Нужно открыть обсуждение',
+      }),
+    );
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'chat-1',
+      'Открыть комментарии',
+      expect.objectContaining({
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0', type: 'link' })]],
+        messageLink: {
+          type: 'reply',
+          mid: 'mid-user-fallback-1',
+        },
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'AUTO_ATTACH_CHAT_COMMENTS',
+          payload: expect.objectContaining({
+            messageId: 'mid-user-fallback-1',
+            deliveryMode: 'reply_message',
+            replyMessageId: 'mid-bot-reply-1',
+          }),
+        }),
       }),
     );
   });

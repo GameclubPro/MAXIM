@@ -117,6 +117,7 @@ import {
   renderSupportedMarkdownAsHtml,
   stripSupportedMarkdownToPlainText,
 } from '../common/max-markdown.util';
+import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 
@@ -234,6 +235,7 @@ const CHANNEL_DIALOG_ACTION_COMMENT = 'CHANNEL_DIALOG_COMMENT';
 const CHANNEL_DIALOG_ACTION_SUGGEST = 'CHANNEL_DIALOG_SUGGESTION';
 const CHANNEL_DIALOG_ACTION_PUBLISH = 'PUBLISH_CHANNEL_ENGAGEMENT';
 const CHANNEL_DIALOG_ACTION_AUTO_ATTACH = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
+const CHAT_DIALOG_ACTION_AUTO_ATTACH = 'AUTO_ATTACH_CHAT_COMMENTS';
 const MANAGED_POLL_ACTION_UPDATE = 'UPDATE_MANAGED_POLL';
 const MANAGED_POLL_ACTION_PUBLISH = 'PUBLISH_MANAGED_POLL';
 const MANAGED_POLL_ACTION_CLOSE = 'CLOSE_MANAGED_POLL';
@@ -2290,19 +2292,19 @@ export class AdminService {
     const commentsButton: MaxMessageButton = commentsUrl
       ? {
           type: 'link',
-          text: parsed.data.commentsButtonText,
+          text: formatCommentsButtonText(parsed.data.commentsButtonText, 0),
           url: commentsUrl,
         }
       : commentsWebAppUrl && botContactId
         ? {
             type: 'open_app',
-            text: parsed.data.commentsButtonText,
+            text: formatCommentsButtonText(parsed.data.commentsButtonText, 0),
             webApp: commentsWebAppUrl,
             contactId: botContactId,
           }
         : {
             type: 'link',
-            text: parsed.data.commentsButtonText,
+            text: formatCommentsButtonText(parsed.data.commentsButtonText, 0),
             url: commentsWebAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
           };
     const suggestButton: MaxMessageButton = suggestUrl
@@ -2541,6 +2543,14 @@ export class AdminService {
         : {}),
     };
 
+    if (dialogType === 'comments' && threadId) {
+      await this.syncCommentsButtonCount({
+        chatId,
+        entityType: 'channel',
+        threadId,
+      });
+    }
+
     return createChannelDialogMessageResponseSchema.parse({
       ok: true,
       message,
@@ -2653,6 +2663,14 @@ export class AdminService {
       avatarUrl: authorAvatarUrl ?? null,
       createdAt: created.createdAt.toISOString(),
     };
+
+    if (threadId) {
+      await this.syncCommentsButtonCount({
+        chatId,
+        entityType: 'chat',
+        threadId,
+      });
+    }
 
     return createChannelDialogMessageResponseSchema.parse({
       ok: true,
@@ -5155,7 +5173,14 @@ export class AdminService {
       const threadId = randomUUID();
 
       if (this.shouldIncludeChatCommentsButton(chatSettings)) {
-        rows.push([this.buildChatDialogButton(chatId, 'comments', threadId, '💬 Комментарии')]);
+        rows.push([
+          this.buildChatDialogButton(
+            chatId,
+            'comments',
+            threadId,
+            formatCommentsButtonText('💬 Комментарии', 0),
+          ),
+        ]);
       }
 
       return rows;
@@ -5183,7 +5208,14 @@ export class AdminService {
       channelSettings.autoPostButtonsMode === 'BOTH' ||
       (channelSettings.autoPostButtonsMode === 'OFF' && channelSettings.commentsEnabled)
     ) {
-      rows.push([this.buildChannelDialogButton(chatId, 'comments', threadId, '💬 Комментарии')]);
+      rows.push([
+        this.buildChannelDialogButton(
+          chatId,
+          'comments',
+          threadId,
+          formatCommentsButtonText('💬 Комментарии', 0),
+        ),
+      ]);
     }
 
     if (channelSettings.postSuggestionsEnabled) {
@@ -7402,6 +7434,230 @@ export class AdminService {
   private readLowerString(value: unknown): string | null {
     const normalized = this.readTrimmedString(value);
     return normalized ? normalized.toLowerCase() : null;
+  }
+
+  private async syncCommentsButtonCount(params: {
+    chatId: string;
+    entityType: ManagedEntityType;
+    threadId: string;
+  }): Promise<void> {
+    const { chatId, entityType, threadId } = params;
+
+    try {
+      const count = await this.prisma.auditLog.count({
+        where: {
+          chatId,
+          action: CHANNEL_DIALOG_ACTION_COMMENT,
+          payload: {
+            path: ['threadId'],
+            equals: threadId,
+          },
+        },
+      });
+
+      if (entityType === 'channel') {
+        await this.syncChannelCommentsButtonCount(chatId, threadId, count);
+        return;
+      }
+
+      await this.syncChatCommentsButtonCount(chatId, threadId, count);
+    } catch (error) {
+      this.logger.warn(
+        {
+          chatId,
+          entityType,
+          threadId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to sync comments button count',
+      );
+    }
+  }
+
+  private async syncChannelCommentsButtonCount(
+    chatId: string,
+    threadId: string,
+    count: number,
+  ): Promise<void> {
+    const rows = await this.prisma.auditLog.findMany({
+      where: {
+        chatId,
+        action: {
+          in: [CHANNEL_DIALOG_ACTION_PUBLISH, CHANNEL_DIALOG_ACTION_AUTO_ATTACH],
+        },
+        payload: {
+          path: ['threadId'],
+          equals: threadId,
+        },
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+      select: {
+        id: true,
+        action: true,
+        payload: true,
+      },
+    });
+
+    for (const row of rows) {
+      const payload = this.readObjectPayload(row.payload);
+      if (row.action === CHANNEL_DIALOG_ACTION_PUBLISH) {
+        const messageId = this.readTrimmedString(payload.messageId);
+        const includeCommentsButton = payload.includeCommentsButton !== false;
+        if (!messageId || !includeCommentsButton) {
+          continue;
+        }
+
+        const buttons: MaxMessageButton[][] = [
+          [
+            this.buildChannelDialogButton(
+              chatId,
+              'comments',
+              threadId,
+              formatCommentsButtonText(this.readTrimmedString(payload.commentsButtonText), count),
+            ),
+          ],
+        ];
+
+        if (payload.includeSuggestButton === true) {
+          buttons.push([
+            this.buildChannelDialogButton(
+              chatId,
+              'suggest',
+              threadId,
+              this.readTrimmedString(payload.suggestButtonText) || '📰 Предложить пост',
+            ),
+          ]);
+        }
+
+        await this.safeUpdateCommentsButton(chatId, messageId, buttons, 'channel');
+        continue;
+      }
+
+      if (row.action !== CHANNEL_DIALOG_ACTION_AUTO_ATTACH) {
+        continue;
+      }
+
+      const messageId = this.readTrimmedString(payload.messageId);
+      const includeCommentsButton = payload.includeCommentsButton !== false;
+      if (!messageId || !includeCommentsButton) {
+        continue;
+      }
+
+      const buttons: MaxMessageButton[][] = [
+        [
+          this.buildChannelDialogButton(
+            chatId,
+            'comments',
+            threadId,
+            formatCommentsButtonText('💬 Комментарии', count),
+          ),
+        ],
+      ];
+
+      if (payload.includeSuggestButton === true) {
+        buttons.push([
+          this.buildChannelDialogButton(
+            chatId,
+            'suggest',
+            threadId,
+            this.readTrimmedString(payload.suggestButtonText) || '📰 Предложить пост',
+          ),
+        ]);
+      }
+
+      await this.safeUpdateCommentsButton(chatId, messageId, buttons, 'channel');
+    }
+  }
+
+  private async syncChatCommentsButtonCount(
+    chatId: string,
+    threadId: string,
+    count: number,
+  ): Promise<void> {
+    const rows = await this.prisma.auditLog.findMany({
+      where: {
+        chatId,
+        action: CHAT_DIALOG_ACTION_AUTO_ATTACH,
+        payload: {
+          path: ['threadId'],
+          equals: threadId,
+        },
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+      select: {
+        id: true,
+        action: true,
+        payload: true,
+      },
+    });
+
+    for (const row of rows) {
+      if (row.action !== CHAT_DIALOG_ACTION_AUTO_ATTACH) {
+        continue;
+      }
+
+      const messageId = this.resolveChatCommentsTargetMessageId(this.readObjectPayload(row.payload));
+      if (!messageId) {
+        continue;
+      }
+
+      await this.safeUpdateCommentsButton(
+        chatId,
+        messageId,
+        [
+          [
+            this.buildChatDialogButton(
+              chatId,
+              'comments',
+              threadId,
+              formatCommentsButtonText('💬 Комментарии', count),
+            ),
+          ],
+        ],
+        'chat',
+      );
+    }
+  }
+
+  private resolveChatCommentsTargetMessageId(payload: Record<string, unknown>): string | null {
+    const deliveryMode = this.readTrimmedString(payload.deliveryMode);
+
+    if (deliveryMode === 'replace_with_bot_message') {
+      return this.readTrimmedString(payload.replacementMessageId);
+    }
+
+    if (deliveryMode === 'reply_message') {
+      return this.readTrimmedString(payload.replyMessageId);
+    }
+
+    return this.readTrimmedString(payload.messageId);
+  }
+
+  private async safeUpdateCommentsButton(
+    chatId: string,
+    messageId: string,
+    buttons: MaxMessageButton[][],
+    entityType: ManagedEntityType,
+  ): Promise<void> {
+    try {
+      await this.maxClient.editMessageInlineKeyboard(chatId, messageId, null, {
+        buttons,
+      });
+    } catch (error) {
+      this.logger.warn(
+        {
+          chatId,
+          entityType,
+          messageId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to refresh comments button counter',
+      );
+    }
   }
 
   private async deliverSuggestionToAdminPrivate(

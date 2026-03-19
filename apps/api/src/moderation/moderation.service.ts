@@ -46,6 +46,7 @@ import {
   normalizeManagedPollDraft,
   parseManagedPollCallbackPayload,
 } from '../common/managed-poll.util';
+import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 
 type ProcessWebhookJob = {
   webhookEventId: string;
@@ -6923,7 +6924,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const rows: MaxMessageButton[][] = [];
 
     if (includeCommentsButton) {
-      rows.push([this.buildChannelDialogButton(chatId, 'comments', threadId, '💬 Комментарии')]);
+      rows.push([
+        this.buildChannelDialogButton(
+          chatId,
+          'comments',
+          threadId,
+          formatCommentsButtonText('💬 Комментарии', 0),
+        ),
+      ]);
     }
 
     if (includeSuggestButton) {
@@ -6983,10 +6991,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const threadId = randomUUID();
-    const buttons = [[this.buildChatDialogButton(chatId, 'comments', threadId, '💬 Комментарии')]];
+    const buttons = [
+      [
+        this.buildChatDialogButton(
+          chatId,
+          'comments',
+          threadId,
+          formatCommentsButtonText('💬 Комментарии', 0),
+        ),
+      ],
+    ];
     let deliveryMode: 'edit_message' | 'reply_message' | 'replace_with_bot_message' =
       'edit_message';
     let replacementMessageId: string | null = null;
+    let replyMessageId: string | null = null;
     let originalDeleted = false;
 
     if (senderIsAdmin) {
@@ -7079,7 +7097,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           'Failed to edit chat message inline keyboard; falling back to bot reply',
         );
         try {
-          await this.maxClient.sendMessage(
+          const sent = await this.maxClient.sendMessageImmediateWithResolvedLink(
             chatId,
             CHAT_COMMENTS_REPLY_TEXT,
             {
@@ -7089,11 +7107,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 mid: messageId,
               },
             },
-            {
-              immediate: true,
-            },
           );
           deliveryMode = 'reply_message';
+          replyMessageId = sent.messageId;
         } catch (fallbackError: unknown) {
           const fallbackStatus = this.extractStatusCode(fallbackError);
           if (fallbackStatus && fallbackStatus < 500 && fallbackStatus !== 429) {
@@ -7126,6 +7142,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           source: 'webhook',
           deliveryMode,
           ...(replacementMessageId ? { replacementMessageId } : {}),
+          ...(replyMessageId ? { replyMessageId } : {}),
           originalDeleted,
         },
       },
