@@ -6,6 +6,7 @@ import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
 import { getChannels, getChats } from '../lib/api/root-client';
+import { describeApiError } from '../lib/api-error';
 import type { ApiTransport } from '../lib/api/transport';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
 import {
@@ -27,7 +28,10 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
   const [refreshNonce, setRefreshNonce] = useState(0);
-  const [entities, setEntities] = useState<{ chats: Awaited<ReturnType<typeof getChats>>; channels: Awaited<ReturnType<typeof getChannels>> } | null>(null);
+  const [entities, setEntities] = useState<{
+    chats: Awaited<ReturnType<typeof getChats>>;
+    channels: Awaited<ReturnType<typeof getChannels>>;
+  } | null>(null);
   const [loadingState, setLoadingState] = useState<'idle' | 'loading' | 'refreshing' | 'error'>(
     'loading',
   );
@@ -85,8 +89,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const isFetching = loadingState === 'refreshing';
   const queryError = !entities && loadingState === 'error' ? loadError : null;
 
-  const isNoEntitiesForTab =
-    !isLoading && !queryError && activeEntities.length === 0;
+  const isNoEntitiesForTab = !isLoading && !queryError && activeEntities.length === 0;
 
   const filteredEntities = useMemo(() => {
     const normalized = deferredQuery.trim().toLowerCase();
@@ -202,13 +205,9 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
           <StatusState
             tone="danger"
             title="Не удалось загрузить список"
-            description={queryError.message}
+            description={describeApiError(queryError, 'Не удалось загрузить список.')}
             action={
-              <button
-                type="button"
-                className="button button--danger"
-                onClick={handleRefresh}
-              >
+              <button type="button" className="button button--danger" onClick={handleRefresh}>
                 Повторить
               </button>
             }
@@ -311,10 +310,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         </GlassCard>
       ) : null}
 
-      {!isLoading &&
-      !queryError &&
-      !isNoEntitiesForTab &&
-      filteredEntities.length === 0 ? (
+      {!isLoading && !queryError && !isNoEntitiesForTab && filteredEntities.length === 0 ? (
         <GlassCard>
           <StatusState
             tone="neutral"
@@ -324,10 +320,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         </GlassCard>
       ) : null}
 
-      {!isLoading &&
-      !queryError &&
-      !isNoEntitiesForTab &&
-      filteredEntities.length > 0 ? (
+      {!isLoading && !queryError && !isNoEntitiesForTab && filteredEntities.length > 0 ? (
         <section className="chat-grid" aria-label="Список">
           {filteredEntities.map((entity, index) => (
             <GlassCard

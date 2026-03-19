@@ -71,6 +71,8 @@ import {
   updateManagedPollRequestSchema,
 } from '@maxim/contracts';
 
+import { buildApiErrorMessage } from './api-error';
+
 const API_BASE = '/api/v1';
 
 export type ApplySettingsToAllChatsResult = {
@@ -398,7 +400,10 @@ export class ApiClient {
     return managedBroadcastDetailsSchema.parse(response);
   }
 
-  async retryManagedBroadcast(chatId: string, broadcastId: string): Promise<ManagedBroadcastDetails> {
+  async retryManagedBroadcast(
+    chatId: string,
+    broadcastId: string,
+  ): Promise<ManagedBroadcastDetails> {
     const response = await this.request(`/chats/${chatId}/broadcasts/${broadcastId}/retry`, {
       method: 'POST',
     });
@@ -708,7 +713,9 @@ export class ApiClient {
 
     if (!response.ok) {
       const payload = await response.text();
-      throw new Error(`API request failed: ${response.status} ${payload}`);
+      throw new Error(
+        buildApiErrorMessage(response.status, payload, response.headers.get('content-type')),
+      );
     }
 
     if (response.status === 204 || response.status === 205) {

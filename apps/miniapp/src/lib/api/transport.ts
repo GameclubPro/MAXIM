@@ -1,3 +1,5 @@
+import { buildApiErrorMessage } from '../api-error';
+
 const API_BASE = '/api/v1';
 
 export type ApiTransport = {
@@ -23,20 +25,9 @@ export function createApiTransport(initData: string): ApiTransport {
 
       if (!response.ok) {
         const payload = await response.text();
-        let apiMessage: string | null = null;
-        try {
-          const parsed = JSON.parse(payload) as { message?: unknown };
-          if (typeof parsed.message === 'string' && parsed.message.trim()) {
-            apiMessage = parsed.message.trim();
-          }
-        } catch {
-          // Ignore invalid JSON error payloads and fall back to raw text.
-        }
-
-        if (apiMessage) {
-          throw new Error(apiMessage);
-        }
-        throw new Error(`API request failed: ${response.status} ${payload}`);
+        throw new Error(
+          buildApiErrorMessage(response.status, payload, response.headers.get('content-type')),
+        );
       }
 
       if (response.status === 204 || response.status === 205) {
