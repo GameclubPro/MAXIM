@@ -2478,6 +2478,10 @@ export class AdminService {
       throw new BadRequestException('Комментарии для этого канала сейчас закрыты.');
     }
 
+    if (dialogType === 'comments') {
+      await this.assertChannelCommentsAudience(chatId, user.userId, channelSettings);
+    }
+
     if (dialogType === 'suggest' && !channelSettings.postSuggestionsEnabled && !threadId) {
       throw new BadRequestException('Предложить пост для этого канала сейчас нельзя.');
     }
@@ -5032,14 +5036,16 @@ export class AdminService {
         postSuggestionsEnabled: true,
         postSuggestionsButtonText: true,
         commentsEnabled: true,
+        commentsAdminsEnabled: true,
+        commentsAllEnabled: true,
+        commentsChatBroadcastsEnabled: true,
       },
     });
     const threadId = randomUUID();
 
     if (
-      channelSettings.autoPostButtonsMode === 'COMMENTS' ||
-      channelSettings.autoPostButtonsMode === 'BOTH' ||
-      (channelSettings.autoPostButtonsMode === 'OFF' && channelSettings.commentsEnabled)
+      this.shouldIncludeChannelCommentsButton(channelSettings) &&
+      channelSettings.commentsChatBroadcastsEnabled
     ) {
       rows.push([this.buildChannelDialogButton(chatId, 'comments', threadId, '💬 Комментарии')]);
     }
@@ -7005,6 +7011,57 @@ export class AdminService {
       ...settings,
       autoPostButtonsMode: this.normalizeChannelAutoPostButtonsMode(settings),
     };
+  }
+
+  private hasChannelCommentsAudience(
+    settings: Pick<ChannelSettings, 'commentsAdminsEnabled' | 'commentsAllEnabled'>,
+  ): boolean {
+    return settings.commentsAdminsEnabled || settings.commentsAllEnabled;
+  }
+
+  private shouldIncludeChannelCommentsButton(
+    settings: Pick<
+      ChannelSettings,
+      'autoPostButtonsMode' | 'commentsEnabled' | 'commentsAdminsEnabled' | 'commentsAllEnabled'
+    >,
+  ): boolean {
+    if (!settings.commentsEnabled || !this.hasChannelCommentsAudience(settings)) {
+      return false;
+    }
+
+    return settings.autoPostButtonsMode === 'COMMENTS' || settings.autoPostButtonsMode === 'BOTH'
+      ? true
+      : settings.autoPostButtonsMode === 'OFF'
+        ? settings.commentsEnabled
+        : false;
+  }
+
+  private async assertChannelCommentsAudience(
+    chatId: string,
+    userId: string,
+    settings: Pick<ChannelSettings, 'commentsAdminsEnabled' | 'commentsAllEnabled'>,
+  ): Promise<void> {
+    if (settings.commentsAllEnabled) {
+      return;
+    }
+
+    if (!settings.commentsAdminsEnabled) {
+      throw new ForbiddenException('Комментарии для этого канала сейчас закрыты.');
+    }
+
+    const access = await this.resolveUserAndBotAdminAccess(chatId, userId);
+    if (access.status === 'granted') {
+      await this.upsertUserChatAccess(chatId, userId, null, 'channel');
+      return;
+    }
+
+    if (access.status === 'unknown') {
+      throw new ServiceUnavailableException(
+        'Не удалось проверить права администратора в MAX. Повторите попытку.',
+      );
+    }
+
+    throw new ForbiddenException('Комментарии для этого канала доступны только администраторам.');
   }
 
   private normalizeChannelAutoPostButtonsMode(

@@ -1,4 +1,4 @@
-import { chatRulesSchema, chatSettingsSchema } from '@maxim/contracts';
+import { channelSettingsSchema, chatRulesSchema, chatSettingsSchema } from '@maxim/contracts';
 import {
   BadRequestException,
   ForbiddenException,
@@ -73,6 +73,10 @@ function createPrismaMock() {
         autoPostButtonsMode: 'OFF',
         postSuggestionsEnabled: false,
         postSuggestionsButtonText: 'Предложить пост',
+        commentsEnabled: true,
+        commentsAdminsEnabled: true,
+        commentsAllEnabled: true,
+        commentsChatBroadcastsEnabled: true,
         engagementPublishedMessageId: null,
         engagementPublishedThreadId: null,
         engagementPublishedAt: null,
@@ -3716,6 +3720,19 @@ describe('AdminService.sendChannelBroadcast', () => {
       entityType: 'CHANNEL',
       createdAt: new Date('2026-03-01T00:00:00.000Z'),
     });
+    prisma.channelSettings.upsert.mockResolvedValue({
+      chatId: 'channel-1',
+      autoPostButtonsMode: 'OFF',
+      postSuggestionsEnabled: false,
+      postSuggestionsButtonText: '📰 Предложить пост',
+      commentsEnabled: false,
+      commentsAdminsEnabled: false,
+      commentsAllEnabled: false,
+      commentsChatBroadcastsEnabled: false,
+      engagementPublishedMessageId: null,
+      engagementPublishedThreadId: null,
+      engagementPublishedAt: null,
+    });
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -3786,6 +3803,9 @@ describe('AdminService.sendChannelBroadcast', () => {
       postSuggestionsEnabled: false,
       postSuggestionsButtonText: '📰 Предложить пост',
       commentsEnabled: true,
+      commentsAdminsEnabled: true,
+      commentsAllEnabled: false,
+      commentsChatBroadcastsEnabled: true,
       engagementPublishedMessageId: null,
       engagementPublishedThreadId: null,
       engagementPublishedAt: null,
@@ -4614,6 +4634,13 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     prisma.chat.findUnique.mockResolvedValue({
       entityType: 'CHANNEL',
     });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+        commentsAdminsEnabled: false,
+        commentsAllEnabled: true,
+      }),
+    );
     prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
       id: 'message-1',
       actorUserId: 'user-1',
@@ -4852,13 +4879,17 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     prisma.chat.findUnique.mockResolvedValue({
       entityType: 'CHANNEL',
     });
-    prisma.channelSettings.findUnique.mockResolvedValue({
-      commentsEnabled: true,
-      commentsModerationEnabled: true,
-      commentsBlockLinksEnabled: true,
-      commentsAntiSpamEnabled: false,
-      commentsLimitTwoInRowEnabled: false,
-    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+        commentsAdminsEnabled: false,
+        commentsAllEnabled: true,
+        commentsModerationEnabled: true,
+        commentsBlockLinksEnabled: true,
+        commentsAntiSpamEnabled: false,
+        commentsLimitTwoInRowEnabled: false,
+      }),
+    );
     prisma.auditLog.create.mockResolvedValueOnce(undefined);
 
     const maxClient = {
@@ -4905,13 +4936,17 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     prisma.chat.findUnique.mockResolvedValue({
       entityType: 'CHANNEL',
     });
-    prisma.channelSettings.findUnique.mockResolvedValue({
-      commentsEnabled: true,
-      commentsModerationEnabled: true,
-      commentsBlockLinksEnabled: false,
-      commentsAntiSpamEnabled: false,
-      commentsLimitTwoInRowEnabled: true,
-    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+        commentsAdminsEnabled: false,
+        commentsAllEnabled: true,
+        commentsModerationEnabled: true,
+        commentsBlockLinksEnabled: false,
+        commentsAntiSpamEnabled: false,
+        commentsLimitTwoInRowEnabled: true,
+      }),
+    );
     prisma.auditLog.create.mockResolvedValueOnce(undefined);
     prisma.auditLog.findMany
       .mockResolvedValueOnce([

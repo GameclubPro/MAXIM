@@ -126,6 +126,14 @@ const scenarios = [
     path: '/channel/preview-channel/settings',
   },
   {
+    name: 'channel-settings-comments',
+    path: '/channel/preview-channel/settings',
+    beforeShot: async (page) => {
+      await page.getByRole('button', { name: /Комментарии/u }).click();
+      await page.waitForTimeout(300);
+    },
+  },
+  {
     name: 'channel-settings-broadcast',
     path: '/channel/preview-channel/settings',
     searchParams: {

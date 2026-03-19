@@ -499,6 +499,9 @@ function createInitialState(): PreviewState {
   ];
   const channelSettings = channelSettingsSchema.parse({
     commentsEnabled: true,
+    commentsAdminsEnabled: true,
+    commentsAllEnabled: false,
+    commentsChatBroadcastsEnabled: true,
     commentsModerationEnabled: true,
     commentsBlockLinksEnabled: true,
     commentsAntiSpamEnabled: true,
