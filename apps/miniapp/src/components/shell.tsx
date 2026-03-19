@@ -50,19 +50,15 @@ function isTextEntryElement(element: Element | null): boolean {
   return element instanceof HTMLElement && element.isContentEditable;
 }
 
-function blurActiveElement(): void {
+function blurNonTextEntryFocus(): void {
   const activeElement = document.activeElement;
-  if (activeElement instanceof HTMLElement && activeElement !== document.body) {
+  if (
+    activeElement instanceof HTMLElement &&
+    activeElement !== document.body &&
+    !isTextEntryElement(activeElement)
+  ) {
     activeElement.blur();
   }
-}
-
-function isMaxWebViewRuntime(): boolean {
-  return typeof window !== 'undefined' && Boolean(window.MAX?.WebApp ?? window.WebApp);
-}
-
-function buildAppUrl(target: string): string {
-  return `/app${target}`;
 }
 
 function BottomNavIcon({ name }: { name: BottomNavIconName }) {
@@ -292,11 +288,8 @@ export function Shell() {
     location.pathname.includes('/channel/') && location.pathname.includes('/dialog/');
   const isSettingsRoute = location.pathname.includes('/settings');
   const isEventsRoute = location.pathname.includes('/events');
-  const isChatEventsRoute =
-    location.pathname.includes('/chat/') && location.pathname.includes('/events');
   const isChannelStatsRoute =
     location.pathname.includes('/channel/') && location.pathname.includes('/stats');
-  const isMaxWebView = isMaxWebViewRuntime();
   const hasTopbar =
     !isChatsRoute &&
     !isSettingsRoute &&
@@ -309,30 +302,13 @@ export function Shell() {
     () => resolveScreenInfo(location.pathname, resolvedChatTitle || resolvedChatId),
     [location.pathname, resolvedChatId, resolvedChatTitle],
   );
-  const dismissActiveFocus = () => {
-    blurActiveElement();
-    setIsKeyboardOpen(false);
-  };
-  const leaveRoute = (target: string, options?: { replace?: boolean }) => {
-    const url = buildAppUrl(target);
-    if (options?.replace) {
-      window.location.replace(url);
-      return;
-    }
-
-    window.location.assign(url);
-  };
   const handleBottomNav = (target: string) => {
     if (!target || `${location.pathname}${location.search}` === target) {
       return;
     }
 
-    dismissActiveFocus();
+    blurNonTextEntryFocus();
     maxImpact('light');
-    if (isMaxWebView && isChatEventsRoute) {
-      leaveRoute(target);
-      return;
-    }
     navigate(target);
   };
 
@@ -373,13 +349,15 @@ export function Shell() {
 
   useEffect(() => {
     const frameId = window.requestAnimationFrame(() => {
-      dismissActiveFocus();
+      if (!isTextEntryElement(document.activeElement)) {
+        setIsKeyboardOpen(false);
+      }
     });
 
     return () => {
       window.cancelAnimationFrame(frameId);
     };
-  }, [location.pathname]);
+  }, [location.pathname, location.search]);
 
   useEffect(() => {
     const handlePointerDown = (event: Event) => {
@@ -388,7 +366,7 @@ export function Shell() {
         return;
       }
 
-      dismissActiveFocus();
+      blurNonTextEntryFocus();
     };
 
     window.addEventListener('pointerdown', handlePointerDown, true);
@@ -409,12 +387,8 @@ export function Shell() {
     }
 
     const cleanup = bindMaxBackButton(() => {
-      dismissActiveFocus();
+      blurNonTextEntryFocus();
       maxImpact('light');
-      if (isMaxWebView && isChatEventsRoute) {
-        leaveRoute(buildManagedEntitiesRoute('chat'));
-        return;
-      }
       if (window.history.length > 1) {
         navigate(-1);
         return;
@@ -427,7 +401,7 @@ export function Shell() {
       cleanup();
       setMaxBackButtonVisible(false);
     };
-  }, [homeRoute, isChatEventsRoute, isChatsRoute, isMaxWebView, navigate]);
+  }, [homeRoute, isChatsRoute, navigate]);
 
   return (
     <div

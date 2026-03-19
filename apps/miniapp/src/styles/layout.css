@@ -98,14 +98,13 @@
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
-  z-index: 120;
+  z-index: 20;
   transition:
     transform 0.24s ease,
     opacity 0.2s ease,
     box-shadow 0.2s ease;
   will-change: transform, opacity;
   backface-visibility: hidden;
-  transform: translateZ(0);
 }
 
 .bottom-nav.is-keyboard-open {
