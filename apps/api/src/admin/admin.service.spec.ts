@@ -688,6 +688,16 @@ describe('AdminService required subscription settings', () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-1',
+        title: 'Новости MAX',
+        participantsCount: 125,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/news',
+        lastEventAt: null,
+        entityType: 'channel',
+      }),
     };
 
     const service = new AdminService(
@@ -696,17 +706,6 @@ describe('AdminService required subscription settings', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
-    jest.spyOn(service, 'listChannels').mockResolvedValue([
-      {
-        id: 'channel-1',
-        title: 'Новости MAX',
-        createdAt: '2026-03-01T00:00:00.000Z',
-        entityType: 'channel',
-        link: 'https://max.ru/news',
-        channelOverview: null,
-      },
-    ]);
-
     const result = await service.updateSettings('chat-1', actor, {
       requiredSubscriptionEnabled: true,
       requiredSubscriptionChannelIds: [' channel-1 ', 'channel-1'],
@@ -748,6 +747,155 @@ describe('AdminService required subscription settings', () => {
     );
   });
 
+  it('resolves an external required subscription channel by public link when the bot is admin there', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockImplementation(async (chatId: string) => {
+        if (chatId === 'chat-1') {
+          return ['admin-1'];
+        }
+        if (chatId === 'channel-ext-1') {
+          return ['partner-owner'];
+        }
+        return [];
+      }),
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'channel-ext-1',
+          title: 'Партнерские новости',
+          lastEventTime: 1,
+          entityType: 'channel',
+          link: 'https://max.ru/channels/partner-news',
+        },
+      ]),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-ext-1',
+        title: 'Партнерские новости',
+        participantsCount: 318,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/channels/partner-news',
+        lastEventAt: null,
+        entityType: 'channel',
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.resolveRequiredSubscriptionChannel('chat-1', actor, {
+      value: 'max.ru/channels/partner-news',
+    });
+
+    expect(result).toEqual({
+      channel: {
+        id: 'channel-ext-1',
+        title: 'Партнерские новости',
+        entityType: 'channel',
+        link: 'https://max.ru/channels/partner-news',
+        participantsCount: 318,
+      },
+    });
+    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+    expect(chatContextCache.setManagedEntityHeader).toHaveBeenCalledWith({
+      id: 'channel-ext-1',
+      title: 'Партнерские новости',
+      entityType: 'channel',
+      link: 'https://max.ru/channels/partner-news',
+      participantsCount: 318,
+    });
+  });
+
+  it('accepts an external required subscription channel on update when the bot is admin there', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-ext-1',
+        title: 'Партнерские новости',
+        participantsCount: 318,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/channels/partner-news',
+        lastEventAt: null,
+        entityType: 'channel',
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.updateSettings('chat-1', actor, {
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: ['channel-ext-1'],
+    });
+
+    expect(result.requiredSubscriptionChannelIds).toEqual(['channel-ext-1']);
+    expect(maxClient.getChatSnapshot).toHaveBeenCalledWith('channel-ext-1');
+  });
+
+  it('rejects an external required subscription channel when the bot is not its admin', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockImplementation(async (chatId: string) => {
+        if (chatId === 'chat-1') {
+          return ['admin-1'];
+        }
+
+        throw {
+          response: {
+            status: 403,
+            data: {
+              message: 'Method is available only for chat administrator',
+            },
+          },
+          message: 'Method is available only for chat administrator',
+        };
+      }),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-ext-1',
+        title: 'Партнерские новости',
+        participantsCount: 318,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/channels/partner-news',
+        lastEventAt: null,
+        entityType: 'channel',
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.updateSettings('chat-1', actor, {
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-ext-1'],
+      }),
+    ).rejects.toMatchObject({
+      response: {
+        requiredSubscriptionChannelIds: {
+          _errors: [
+            'Для обязательной подписки нужны каналы с публичной ссылкой. Для внешнего канала бот должен быть его администратором.',
+          ],
+        },
+      },
+    });
+  });
+
   it('rejects enabled required subscription without channels', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -783,6 +931,16 @@ describe('AdminService required subscription settings', () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-1',
+        title: 'Новости MAX',
+        participantsCount: 125,
+        status: 'active',
+        isPublic: false,
+        link: null,
+        lastEventAt: null,
+        entityType: 'channel',
+      }),
     };
 
     const service = new AdminService(
@@ -791,17 +949,6 @@ describe('AdminService required subscription settings', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
-    jest.spyOn(service, 'listChannels').mockResolvedValue([
-      {
-        id: 'channel-1',
-        title: 'Новости MAX',
-        createdAt: '2026-03-01T00:00:00.000Z',
-        entityType: 'channel',
-        link: null,
-        channelOverview: null,
-      },
-    ]);
-
     let thrown: unknown;
     try {
       await service.updateSettings('chat-1', actor, {
@@ -816,7 +963,7 @@ describe('AdminService required subscription settings', () => {
     expect((thrown as BadRequestException).getResponse()).toMatchObject({
       requiredSubscriptionChannelIds: {
         _errors: [
-          'Для обязательной подписки доступны только управляемые каналы с рабочей ссылкой.',
+          'Для обязательной подписки нужны каналы с публичной ссылкой. Для внешнего канала бот должен быть его администратором.',
         ],
       },
     });
@@ -843,6 +990,16 @@ describe('AdminService required subscription settings', () => {
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-1',
+        title: 'Новости MAX',
+        participantsCount: 125,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/news',
+        lastEventAt: null,
+        entityType: 'channel',
+      }),
     };
 
     const service = new AdminService(
@@ -851,16 +1008,6 @@ describe('AdminService required subscription settings', () => {
       createChatContextCacheMock() as never,
       createConfigMock() as never,
     );
-    jest.spyOn(service, 'listChannels').mockResolvedValue([
-      {
-        id: 'channel-1',
-        title: 'Новости MAX',
-        createdAt: '2026-03-01T00:00:00.000Z',
-        entityType: 'channel',
-        link: 'https://max.ru/news',
-        channelOverview: null,
-      },
-    ]);
     jest.spyOn(service, 'getSettings').mockResolvedValue(
       chatSettingsSchema.parse({
         requiredSubscriptionEnabled: true,
@@ -2327,6 +2474,7 @@ describe('AdminService settings screen endpoints', () => {
         link: null,
         participantsCount: 128,
       },
+      requiredSubscriptionChannels: [],
       domains: [
         {
           domain: 'https://example.com',

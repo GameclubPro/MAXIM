@@ -1083,6 +1083,20 @@ export const managedEntityHeaderSchema = z.object({
 });
 export type ManagedEntityHeader = z.infer<typeof managedEntityHeaderSchema>;
 
+export const resolveRequiredSubscriptionChannelRequestSchema = z.object({
+  value: z.string().trim().min(1).max(2048),
+});
+export type ResolveRequiredSubscriptionChannelRequest = z.infer<
+  typeof resolveRequiredSubscriptionChannelRequestSchema
+>;
+
+export const resolveRequiredSubscriptionChannelResponseSchema = z.object({
+  channel: managedEntityHeaderSchema,
+});
+export type ResolveRequiredSubscriptionChannelResponse = z.infer<
+  typeof resolveRequiredSubscriptionChannelResponseSchema
+>;
+
 export const applySectionToAllRequestSchema = z.object({
   section: applySettingsSectionSchema,
 });
@@ -1672,8 +1686,9 @@ export const chatSettingsScreenResponseSchema = z.object({
   settings: chatSettingsSchema,
   rules: chatRulesSchema,
   header: managedEntityHeaderSchema,
+  requiredSubscriptionChannels: z.array(managedEntityHeaderSchema).default([]),
   domains: z.array(domainAllowlistEntrySchema),
-  managedBroadcasts: z.array(managedBroadcastSummarySchema),
+  managedBroadcasts: z.array(managedBroadcastSummarySchema).default([]),
 });
 export type ChatSettingsScreenResponse = z.infer<typeof chatSettingsScreenResponseSchema>;
 

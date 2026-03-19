@@ -21,6 +21,8 @@ import {
   membershipActivityPageSchema,
   publishChannelEngagementResultSchema,
   publishChatRulesResultSchema,
+  resolveRequiredSubscriptionChannelRequestSchema,
+  resolveRequiredSubscriptionChannelResponseSchema,
   type BroadcastHandoffResponse,
   type BroadcastHandoffState,
   type ChannelDialogMessage,
@@ -910,6 +912,18 @@ function buildChatSettingsScreen(state: PreviewState, chatId: string): ChatSetti
       link: null,
       participantsCount: state.chatHeaderParticipantsCount,
     },
+    requiredSubscriptionChannels: (state.chatSettings.requiredSubscriptionChannelIds ?? []).map(
+      (channelId) => {
+        const channel = state.channels.find((item) => item.id === channelId);
+        return {
+          id: channelId,
+          title: channel?.title ?? resolveChannelTitle(channelId, state),
+          entityType: 'channel',
+          link: channel?.link ?? null,
+          participantsCount: null,
+        };
+      },
+    ),
     domains: state.chatDomains,
     managedBroadcasts: state.chatBroadcasts.map(buildBroadcastSummary),
   });
@@ -1350,6 +1364,41 @@ async function handleChatRequest(
 
   if (tail[0] === 'settings-screen' && method === 'GET') {
     return cloneJson(buildChatSettingsScreen(state, chatId));
+  }
+
+  if (
+    tail[0] === 'required-subscription' &&
+    tail[1] === 'channels' &&
+    tail[2] === 'resolve' &&
+    method === 'POST'
+  ) {
+    const payload = resolveRequiredSubscriptionChannelRequestSchema.parse(parseJsonBody(init));
+    const normalizedValue = payload.value.trim().toLowerCase();
+    const normalizedLink = normalizedValue.startsWith('http')
+      ? normalizedValue
+      : normalizedValue.startsWith('max.ru/')
+        ? `https://${normalizedValue}`
+        : normalizedValue;
+    const channel = state.channels.find(
+      (item) =>
+        item.id === payload.value.trim() ||
+        item.link?.trim().toLowerCase() === normalizedLink ||
+        item.link?.trim().toLowerCase() === payload.value.trim().toLowerCase(),
+    );
+
+    if (!channel) {
+      throw new Error('Канал по этой ссылке не найден.');
+    }
+
+    return resolveRequiredSubscriptionChannelResponseSchema.parse({
+      channel: {
+        id: channel.id,
+        title: channel.title,
+        entityType: 'channel',
+        link: channel.link ?? null,
+        participantsCount: null,
+      },
+    });
   }
 
   if (tail[0] === 'dialog' && tail[1]) {

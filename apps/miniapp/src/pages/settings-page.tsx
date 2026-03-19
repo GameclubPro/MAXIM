@@ -17,6 +17,7 @@ import {
   type ChatSettingsScreenResponse,
   type DomainAllowlistEntry,
   type ManagedBroadcastDetails,
+  type ManagedEntityHeader,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
@@ -51,6 +52,7 @@ import {
   handoffBroadcast,
   publishRules,
   removeDomain,
+  resolveRequiredSubscriptionChannel,
   resetPublishedRules,
   retryManagedBroadcast,
   scheduleDomainRemoval,
@@ -1400,6 +1402,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [mailingImageError, setMailingImageError] = useState('');
   const [mailingScheduleError, setMailingScheduleError] = useState('');
   const [mailingCycleError, setMailingCycleError] = useState('');
+  const [requiredSubscriptionExternalChannelValue, setRequiredSubscriptionExternalChannelValue] =
+    useState('');
+  const [requiredSubscriptionExternalChannelError, setRequiredSubscriptionExternalChannelError] =
+    useState('');
+  const [resolvedRequiredSubscriptionChannels, setResolvedRequiredSubscriptionChannels] = useState<
+    ManagedEntityHeader[]
+  >([]);
   const [mailingPlannerResetKey, setMailingPlannerResetKey] = useState(0);
   const [mailingPlannerState, setMailingPlannerState] =
     useState<BroadcastSchedulePlannerSelectionState>(EMPTY_BROADCAST_PLANNER_STATE);
@@ -1481,6 +1490,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageError('');
     setMailingScheduleError('');
     setMailingCycleError('');
+    setRequiredSubscriptionExternalChannelValue('');
+    setRequiredSubscriptionExternalChannelError('');
+    setResolvedRequiredSubscriptionChannels([]);
     resetMailingPlanner();
     setEditingManagedBroadcast(null);
     setExpandedManagedBroadcastId(null);
@@ -1553,12 +1565,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     [channelsQuery.data],
   );
   const availableRequiredSubscriptionChannelById = useMemo(() => {
-    const map = new Map<string, (typeof availableRequiredSubscriptionChannels)[number]>();
+    const map = new Map<string, ManagedEntityHeader>();
     for (const channel of availableRequiredSubscriptionChannels) {
+      map.set(channel.id, {
+        id: channel.id,
+        title: channel.title,
+        entityType: 'channel',
+        link: channel.link?.trim() ?? null,
+        participantsCount: null,
+      });
+    }
+    for (const channel of resolvedRequiredSubscriptionChannels) {
       map.set(channel.id, channel);
     }
     return map;
-  }, [availableRequiredSubscriptionChannels]);
+  }, [availableRequiredSubscriptionChannels, resolvedRequiredSubscriptionChannels]);
   const selectedRequiredSubscriptionChannels = useMemo(() => {
     const selectedIds = draft?.requiredSubscriptionChannelIds ?? [];
     return selectedIds
@@ -1650,6 +1671,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setFieldErrors({});
     setDuplicateWindowInputValues({});
   }, [settingsQuery.data]);
+
+  useEffect(() => {
+    setResolvedRequiredSubscriptionChannels(settingsScreenQuery.data?.requiredSubscriptionChannels ?? []);
+  }, [settingsScreenQuery.data?.requiredSubscriptionChannels]);
 
   useEffect(() => {
     if (!broadcastHandoffStateQuery.data) {
@@ -1802,6 +1827,33 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   });
   const isSavingComments = saveCommentsMutation.isPending;
   const mutateCommentsAsync = saveCommentsMutation.mutateAsync;
+
+  const resolveRequiredSubscriptionChannelMutation = useMutation({
+    mutationFn: (value: string) => resolveRequiredSubscriptionChannel(api, chatId ?? '', value),
+    onSuccess: ({ channel }) => {
+      const alreadySelected = draft?.requiredSubscriptionChannelIds.includes(channel.id) ?? false;
+      setResolvedRequiredSubscriptionChannels((current) => {
+        const next = current.filter((item) => item.id !== channel.id);
+        next.push(channel);
+        return next;
+      });
+      if (!alreadySelected) {
+        addRequiredSubscriptionChannel(channel.id);
+      }
+      setRequiredSubscriptionExternalChannelValue('');
+      setRequiredSubscriptionExternalChannelError('');
+      pushToast({
+        tone: 'success',
+        title: alreadySelected ? 'Канал уже в списке' : `Канал «${channel.title}» добавлен`,
+      });
+      maxNotify('success');
+    },
+    onError: (error) => {
+      setRequiredSubscriptionExternalChannelError(formatApiError(error));
+      maxNotify('error');
+    },
+  });
+  const isResolvingRequiredSubscriptionChannel = resolveRequiredSubscriptionChannelMutation.isPending;
 
   const saveSpeechStyleMutation = useMutation({
     mutationFn: ({ style, payload }: { style: BotSpeechStyle; payload: ChatSettings }) =>
@@ -2200,6 +2252,28 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         : current,
     );
     clearFieldError('requiredSubscriptionChannelIds');
+  }
+
+  function handleResolveRequiredSubscriptionExternalChannel() {
+    const normalizedValue = requiredSubscriptionExternalChannelValue.trim();
+    if (!chatId) {
+      return;
+    }
+
+    if (!normalizedValue) {
+      setRequiredSubscriptionExternalChannelError('Укажите публичную ссылку или ID канала.');
+      return;
+    }
+
+    if ((draft?.requiredSubscriptionChannelIds.length ?? 0) >= REQUIRED_SUBSCRIPTION_MAX_CHANNELS) {
+      setRequiredSubscriptionExternalChannelError(
+        `Можно выбрать максимум ${REQUIRED_SUBSCRIPTION_MAX_CHANNELS} каналов.`,
+      );
+      return;
+    }
+
+    setRequiredSubscriptionExternalChannelError('');
+    resolveRequiredSubscriptionChannelMutation.mutate(normalizedValue);
   }
 
   function clearSectionErrors(section: ApplySectionKey) {
@@ -8755,7 +8829,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             onToggleHint={toggleHint}
                             label="Пояснение для списка обязательных каналов"
                           >
-                            Только ваши каналы с рабочей ссылкой.
+                            Можно выбрать свои каналы ниже или добавить чужой канал по
+                            публичной ссылке. Чтобы MAX проверял подписку, бот должен быть
+                            администратором этого канала.
                           </SettingsHintAnchor>
                         </div>
 
@@ -8865,6 +8941,56 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 </button>
                               ))
                             : null}
+                        </div>
+
+                        <div className="managed-giveaway__editor-grid">
+                          <label
+                            className={cn(
+                              'field settings-text-field',
+                              requiredSubscriptionExternalChannelError && 'field--error',
+                            )}
+                          >
+                            <span>Чужой канал</span>
+                            <input
+                              type="text"
+                              value={requiredSubscriptionExternalChannelValue}
+                              onChange={(event) => {
+                                setRequiredSubscriptionExternalChannelValue(event.target.value);
+                                if (requiredSubscriptionExternalChannelError) {
+                                  setRequiredSubscriptionExternalChannelError('');
+                                }
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key === 'Enter') {
+                                  event.preventDefault();
+                                  handleResolveRequiredSubscriptionExternalChannel();
+                                }
+                              }}
+                              placeholder="https://max.ru/..."
+                              disabled={isResolvingRequiredSubscriptionChannel}
+                            />
+                            {requiredSubscriptionExternalChannelError ? (
+                              <small className="field__hint">
+                                {requiredSubscriptionExternalChannelError}
+                              </small>
+                            ) : null}
+                          </label>
+                          <div className="managed-giveaway__section-actions managed-giveaway__section-actions--align-end">
+                            <button
+                              type="button"
+                              className="button button--ghost managed-giveaway__channel-action"
+                              disabled={
+                                isResolvingRequiredSubscriptionChannel ||
+                                requiredSubscriptionSelectedCount >=
+                                  REQUIRED_SUBSCRIPTION_MAX_CHANNELS
+                              }
+                              onClick={handleResolveRequiredSubscriptionExternalChannel}
+                            >
+                              {isResolvingRequiredSubscriptionChannel
+                                ? 'Проверяем канал...'
+                                : 'Добавить чужой канал'}
+                            </button>
+                          </div>
                         </div>
                       </div>
 

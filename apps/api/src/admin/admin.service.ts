@@ -23,6 +23,8 @@ import {
   membershipActivityPageSchema,
   membershipActivityQuerySchema,
   publishChatRulesResultSchema,
+  resolveRequiredSubscriptionChannelRequestSchema,
+  resolveRequiredSubscriptionChannelResponseSchema,
   type ChannelDialogMessage,
   type ChannelDialogType,
   type ChannelStatsBucket,
@@ -61,6 +63,7 @@ import {
   type SendBroadcastResult,
   type ChatSummary,
   type ManagedEntityHeader,
+  type ResolveRequiredSubscriptionChannelResponse,
   managedPollSchema,
   updateManagedPollRequestSchema,
   type ManagedPoll,
@@ -1779,14 +1782,35 @@ export class AdminService {
       this.getDomainAllowlistDetails(chatId, user),
       this.listManagedBroadcasts(chatId, user),
     ]);
+    const requiredSubscriptionChannels = await this.resolveRequiredSubscriptionChannelHeaders(
+      settings.requiredSubscriptionChannelIds,
+    );
 
     return chatSettingsScreenResponseSchema.parse({
       settings,
       rules,
       header,
+      requiredSubscriptionChannels,
       domains,
       managedBroadcasts,
     });
+  }
+
+  async resolveRequiredSubscriptionChannel(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+  ): Promise<ResolveRequiredSubscriptionChannelResponse> {
+    await this.assertChatAdmin(chatId, user.userId, 'chat');
+    await this.ensureEntityType(chatId, user.userId, 'chat');
+
+    const parsed = resolveRequiredSubscriptionChannelRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const channel = await this.resolveRequiredSubscriptionChannelReference(parsed.data.value);
+    return resolveRequiredSubscriptionChannelResponseSchema.parse({ channel });
   }
 
   async updateSettings(
@@ -1818,7 +1842,7 @@ export class AdminService {
       nightModeForceCloseDays: currentSettings?.nightModeForceCloseDays ?? 0,
       nightModeForceCloseUntil: currentSettings?.nightModeForceCloseUntil ?? '',
     });
-    await this.assertRequiredSubscriptionSettings(normalizedSettings, user);
+    await this.assertRequiredSubscriptionSettings(normalizedSettings);
 
     await this.prisma.chat.upsert({
       where: { id: chatId },
@@ -2725,7 +2749,7 @@ export class AdminService {
         ),
       );
     if (shouldValidateRequiredSubscription) {
-      await this.assertRequiredSubscriptionSettings(normalizedSettings, user);
+      await this.assertRequiredSubscriptionSettings(normalizedSettings);
     }
 
     for (const chatId of appliedChatIds) {
@@ -2851,10 +2875,222 @@ export class AdminService {
     };
   }
 
-  private async assertRequiredSubscriptionSettings(
-    settings: ChatSettings,
-    user: AuthUser,
-  ): Promise<void> {
+  private async resolveRequiredSubscriptionChannelHeaders(
+    channelIds: readonly string[],
+  ): Promise<ManagedEntityHeader[]> {
+    const normalizedChannelIds = Array.from(
+      new Set(
+        channelIds
+          .map((value) => value.trim())
+          .filter((value): value is string => value.length > 0),
+      ),
+    );
+    const channels: ManagedEntityHeader[] = [];
+
+    for (const channelId of normalizedChannelIds) {
+      try {
+        channels.push(await this.resolveRequiredSubscriptionChannelById(channelId));
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            channelId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to resolve required subscription channel for settings screen',
+        );
+      }
+    }
+
+    return channels;
+  }
+
+  private async resolveRequiredSubscriptionChannelReference(
+    value: string,
+  ): Promise<ManagedEntityHeader> {
+    const normalizedValue = value.trim();
+    if (!normalizedValue) {
+      throw new BadRequestException('Укажите публичную ссылку или ID канала.');
+    }
+
+    const normalizedLink = this.normalizeRequiredSubscriptionChannelLink(normalizedValue);
+    if (normalizedLink) {
+      const chatId = await this.resolveRequiredSubscriptionChannelIdByLink(normalizedLink);
+      return this.resolveRequiredSubscriptionChannelById(chatId);
+    }
+
+    return this.resolveRequiredSubscriptionChannelById(normalizedValue);
+  }
+
+  private async resolveRequiredSubscriptionChannelIdByLink(link: string): Promise<string> {
+    const normalizedLink = this.normalizeRequiredSubscriptionChannelLink(link);
+    if (!normalizedLink) {
+      throw new BadRequestException('Укажите корректную ссылку канала MAX.');
+    }
+
+    try {
+      const chats = await this.maxClient.listBotChats();
+      const matched = chats.find(
+        (chat) =>
+          chat.entityType === 'channel' &&
+          this.normalizeRequiredSubscriptionChannelLink(chat.link) === normalizedLink,
+      );
+
+      if (matched?.chatId) {
+        return matched.chatId;
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          link: normalizedLink,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve required subscription channel by public link',
+      );
+      throw new ServiceUnavailableException(
+        'Не удалось проверить публичную ссылку канала в MAX. Повторите попытку.',
+      );
+    }
+
+    throw new BadRequestException(
+      'Канал по этой ссылке не найден. Проверьте ссылку и убедитесь, что бот состоит в канале.',
+    );
+  }
+
+  private async resolveRequiredSubscriptionChannelById(chatId: string): Promise<ManagedEntityHeader> {
+    const normalizedChatId = chatId.trim();
+    if (!normalizedChatId) {
+      throw new BadRequestException('Укажите корректный ID канала.');
+    }
+
+    let snapshot: Awaited<ReturnType<MaxClientService['getChatSnapshot']>>;
+    try {
+      snapshot = await this.maxClient.getChatSnapshot(normalizedChatId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: normalizedChatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to load required subscription channel snapshot',
+      );
+      throw new BadRequestException('Канал не найден в MAX или бот не имеет к нему доступа.');
+    }
+
+    if (snapshot.entityType !== 'channel') {
+      throw new BadRequestException('Этот идентификатор относится к чату, а не к каналу.');
+    }
+
+    const link = snapshot.link?.trim() ?? '';
+    if (!link) {
+      throw new BadRequestException(
+        'Для обязательной подписки нужен публичный канал с рабочей ссылкой.',
+      );
+    }
+
+    await this.assertBotCanInspectRequiredSubscriptionChannel(normalizedChatId);
+
+    const header: ManagedEntityHeader = {
+      id: normalizedChatId,
+      title: snapshot.title?.trim() || normalizedChatId,
+      entityType: 'channel',
+      link,
+      participantsCount: snapshot.participantsCount,
+    };
+
+    try {
+      await this.prisma.chat.upsert({
+        where: { id: normalizedChatId },
+        create: {
+          id: normalizedChatId,
+          title: header.title,
+          entityType: ChatEntityType.CHANNEL,
+        },
+        update: {
+          title: header.title,
+          entityType: ChatEntityType.CHANNEL,
+        },
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: normalizedChatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to persist resolved required subscription channel title',
+      );
+    }
+
+    await this.chatContextCache.setManagedEntityHeader?.(header);
+    return header;
+  }
+
+  private async assertBotCanInspectRequiredSubscriptionChannel(chatId: string): Promise<void> {
+    try {
+      await this.maxClient.getChatAdminIds(chatId);
+    } catch (error: unknown) {
+      if (this.isBotAdminLookupDeniedError(error)) {
+        throw new BadRequestException(
+          'Бот должен быть администратором этого канала, чтобы проверять подписку.',
+        );
+      }
+
+      this.logger.warn(
+        {
+          chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to verify bot admin access for required subscription channel',
+      );
+      throw new ServiceUnavailableException(
+        'Не удалось проверить права бота в канале MAX. Повторите попытку.',
+      );
+    }
+  }
+
+  private normalizeRequiredSubscriptionChannelLink(value: string | null | undefined): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const candidates = [trimmed];
+    if (!/^[a-z][a-z0-9+.-]*:\/\//iu.test(trimmed)) {
+      if (trimmed.startsWith('/')) {
+        candidates.unshift(`https://max.ru${trimmed}`);
+      } else if (trimmed.startsWith('max.ru/') || trimmed.startsWith('www.max.ru/')) {
+        candidates.unshift(`https://${trimmed}`);
+      } else if (trimmed.includes('/') && !/\s/u.test(trimmed)) {
+        candidates.unshift(`https://max.ru/${trimmed.replace(/^\/+/u, '')}`);
+      }
+    }
+
+    for (const candidate of candidates) {
+      try {
+        const parsed = new URL(candidate);
+        const hostname = parsed.hostname.trim().toLowerCase();
+        if (hostname !== 'max.ru' && hostname !== 'www.max.ru') {
+          continue;
+        }
+
+        const pathname = parsed.pathname.replace(/\/+$/u, '');
+        if (!pathname) {
+          continue;
+        }
+
+        return `https://max.ru${pathname}`;
+      } catch {
+        // Ignore invalid candidate and try the next one.
+      }
+    }
+
+    return null;
+  }
+
+  private async assertRequiredSubscriptionSettings(settings: ChatSettings): Promise<void> {
     if (!settings.requiredSubscriptionEnabled) {
       return;
     }
@@ -2868,18 +3104,20 @@ export class AdminService {
       });
     }
 
-    const availableChannels = await this.listChannels(user, { refresh: true });
-    const availableById = new Map(availableChannels.map((channel) => [channel.id, channel]));
-    const invalidChannelIds = selectedChannelIds.filter((channelId) => {
-      const channel = availableById.get(channelId);
-      return !channel || channel.entityType !== 'channel' || !channel.link?.trim();
-    });
+    const invalidChannelIds: string[] = [];
+    for (const channelId of selectedChannelIds) {
+      try {
+        await this.resolveRequiredSubscriptionChannelById(channelId);
+      } catch {
+        invalidChannelIds.push(channelId);
+      }
+    }
 
     if (invalidChannelIds.length > 0) {
       throw new BadRequestException({
         requiredSubscriptionChannelIds: {
           _errors: [
-            'Для обязательной подписки доступны только управляемые каналы с рабочей ссылкой.',
+            'Для обязательной подписки нужны каналы с публичной ссылкой. Для внешнего канала бот должен быть его администратором.',
           ],
         },
       });

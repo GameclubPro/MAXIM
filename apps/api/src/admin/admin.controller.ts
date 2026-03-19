@@ -70,6 +70,15 @@ export class AdminController {
     return this.adminService.getChatSettingsScreen(chatId, user);
   }
 
+  @Post('chats/:chatId/required-subscription/channels/resolve')
+  resolveRequiredSubscriptionChannel(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.resolveRequiredSubscriptionChannel(chatId, user, body);
+  }
+
   @Put('chats/:chatId/settings')
   updateSettings(
     @Param('chatId') chatId: string,

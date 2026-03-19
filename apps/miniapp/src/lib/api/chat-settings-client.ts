@@ -12,6 +12,8 @@ import {
   managedEntityHeaderSchema,
   managedPollSchema,
   publishChatRulesResultSchema,
+  resolveRequiredSubscriptionChannelRequestSchema,
+  resolveRequiredSubscriptionChannelResponseSchema,
   scheduleDomainRemovalRequestSchema,
   sendBroadcastRequestSchema,
   sendBroadcastResultSchema,
@@ -28,6 +30,7 @@ import {
   type ManagedEntityHeader,
   type ManagedPoll,
   type PublishChatRulesResult,
+  type ResolveRequiredSubscriptionChannelResponse,
   type SendBroadcastResult,
 } from '@maxim/contracts';
 import type {
@@ -56,6 +59,19 @@ export async function getSettingsScreen(
 ): Promise<ChatSettingsScreenResponse> {
   const response = await api.request(`/chats/${chatId}/settings-screen`);
   return chatSettingsScreenResponseSchema.parse(response);
+}
+
+export async function resolveRequiredSubscriptionChannel(
+  api: ApiTransport,
+  chatId: string,
+  value: string,
+): Promise<ResolveRequiredSubscriptionChannelResponse> {
+  const requestBody = resolveRequiredSubscriptionChannelRequestSchema.parse({ value });
+  const response = await api.request(`/chats/${chatId}/required-subscription/channels/resolve`, {
+    method: 'POST',
+    body: JSON.stringify(requestBody),
+  });
+  return resolveRequiredSubscriptionChannelResponseSchema.parse(response);
 }
 
 export async function updateSettings(
