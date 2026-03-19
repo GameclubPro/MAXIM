@@ -1460,8 +1460,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     refetchOnWindowFocus: false,
   });
   const channelsQuery = useQuery({
-    queryKey: ['channels'],
-    queryFn: () => getChannels(api),
+    queryKey: ['channels', 'required-subscription'],
+    queryFn: () => getChannels(api, { refresh: true }),
     enabled: Boolean(chatId),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
