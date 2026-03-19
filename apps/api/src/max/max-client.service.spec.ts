@@ -133,6 +133,48 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('throws when MAX mutation responds with success=false under HTTP 200', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    attachments: [],
+                  },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              success: false,
+              message: 'Error on message edit',
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    await expect(
+      service.editMessageInlineKeyboard('chat-1', 'mid-edit-1', 'Текст', {
+        button: {
+          text: 'Открыть',
+          url: 'https://maxim.play-team.ru/app/',
+        },
+      }),
+    ).rejects.toThrow('Error on message edit');
+
+    await service.onModuleDestroy();
+  });
+
   it('publishes message and resolves post link via follow-up message fetch', async () => {
     const httpService = {
       request: jest

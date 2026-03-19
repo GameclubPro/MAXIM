@@ -54,6 +54,23 @@ export type MaxPublishedMessage = {
 };
 
 const MAX_CHAT_POST_LINK_BASE_URL = 'https://max.ru';
+const DEFAULT_SUCCESS_FALSE_STATUS = 200;
+
+class MaxApiRequestRejectedError extends Error {
+  readonly response: {
+    status: number;
+    data: unknown;
+  };
+
+  constructor(status: number, payload: unknown, message: string) {
+    super(message);
+    this.name = 'MaxApiRequestRejectedError';
+    this.response = {
+      status,
+      data: payload,
+    };
+  }
+}
 
 export type MaxButtonIntent = 'default' | 'positive' | 'negative';
 
@@ -1894,6 +1911,7 @@ export class MaxClientService implements OnModuleDestroy {
         },
       }),
     );
+    this.assertSuccessfulMutationResponse(method, response.status, response.data);
 
     return response.data;
   }
@@ -1917,6 +1935,36 @@ export class MaxClientService implements OnModuleDestroy {
     );
 
     return response.data;
+  }
+
+  private assertSuccessfulMutationResponse(
+    method: 'delete' | 'post' | 'get' | 'put',
+    status: number | undefined,
+    payload: unknown,
+  ) {
+    if (method === 'get') {
+      return;
+    }
+
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return;
+    }
+
+    const row = payload as Record<string, unknown>;
+    if (row.success !== false) {
+      return;
+    }
+
+    const message =
+      typeof row.message === 'string' && row.message.trim().length > 0
+        ? row.message.trim()
+        : `MAX API ${method.toUpperCase()} request returned success=false`;
+
+    throw new MaxApiRequestRejectedError(
+      typeof status === 'number' ? status : DEFAULT_SUCCESS_FALSE_STATUS,
+      payload,
+      message,
+    );
   }
 
   private isChatAdminMemberRow(row: Record<string, unknown>): boolean {

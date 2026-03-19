@@ -123,6 +123,7 @@ const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
 const CHANNEL_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
 const CHAT_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHAT_COMMENTS';
+const CHAT_COMMENTS_REPLY_TEXT = 'Открыть комментарии';
 const GLOBAL_SPAMMER_WINDOW_SEC = 2 * 60;
 const GLOBAL_SPAMMER_REDIS_TTL_SEC = GLOBAL_SPAMMER_WINDOW_SEC + 5;
 const GLOBAL_SPAMMER_WARN_MIN_CHATS = 4;
@@ -6980,6 +6981,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const threadId = randomUUID();
     const buttons = [[this.buildChatDialogButton(chatId, 'comments', threadId, '💬 Комментарии')]];
+    let deliveryMode: 'edit_message' | 'reply_message' = 'edit_message';
 
     try {
       await this.maxClient.editMessageInlineKeyboard(chatId, messageId, text, {
@@ -6999,11 +7001,43 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             status,
             error: error instanceof Error ? error.message : 'Unknown error',
           },
-          'Failed to auto-attach chat comments button; skipping retry',
+          'Failed to edit chat message inline keyboard; falling back to bot reply',
         );
-        return;
+        try {
+          await this.maxClient.sendMessage(
+            chatId,
+            CHAT_COMMENTS_REPLY_TEXT,
+            {
+              buttons,
+              messageLink: {
+                type: 'reply',
+                mid: messageId,
+              },
+            },
+            {
+              immediate: true,
+            },
+          );
+          deliveryMode = 'reply_message';
+        } catch (fallbackError: unknown) {
+          const fallbackStatus = this.extractStatusCode(fallbackError);
+          if (fallbackStatus && fallbackStatus < 500 && fallbackStatus !== 429) {
+            this.logger.warn(
+              {
+                chatId,
+                messageId,
+                status: fallbackStatus,
+                error: fallbackError instanceof Error ? fallbackError.message : 'Unknown error',
+              },
+              'Failed to send fallback chat comments reply; skipping retry',
+            );
+            return;
+          }
+          throw fallbackError;
+        }
+      } else {
+        throw error;
       }
-      throw error;
     }
 
     await this.prisma.auditLog.create({
@@ -7015,6 +7049,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           messageId,
           threadId,
           source: 'webhook',
+          deliveryMode,
         },
       },
     });

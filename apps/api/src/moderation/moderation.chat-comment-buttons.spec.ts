@@ -166,6 +166,55 @@ describe('ModerationService chat comment buttons', () => {
     expect(ruleEngine.detect).not.toHaveBeenCalled();
   });
 
+  it('falls back to a bot reply when MAX rejects editing a chat message', async () => {
+    const { prisma, maxClient, service } = createService({
+      commentsEnabled: true,
+      commentsAdminsEnabled: true,
+      commentsAllEnabled: false,
+      commentsChatBroadcastsEnabled: false,
+    });
+    maxClient.editMessageInlineKeyboard.mockRejectedValue({
+      response: {
+        status: 200,
+      },
+      message: 'Error on message edit',
+    });
+
+    await service.handleUpdate(
+      createChatMessageUpdate({
+        senderId: 'admin-1',
+        senderName: 'Админ',
+        messageId: 'mid-admin-fallback',
+        text: 'Пост админа для fallback',
+      }),
+    );
+
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      'Открыть комментарии',
+      expect.objectContaining({
+        buttons: [[expect.objectContaining({ text: '💬 Комментарии', type: 'link' })]],
+        messageLink: {
+          type: 'reply',
+          mid: 'mid-admin-fallback',
+        },
+      }),
+      {
+        immediate: true,
+      },
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            messageId: 'mid-admin-fallback',
+            deliveryMode: 'reply_message',
+          }),
+        }),
+      }),
+    );
+  });
+
   it('auto-attaches the comments button to a regular message when the all toggle is enabled', async () => {
     const { maxClient, service } = createService({
       commentsEnabled: true,
