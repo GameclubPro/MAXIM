@@ -1,12 +1,17 @@
 import {
   applySectionToAllResponseSchema,
   broadcastHandoffStateSchema,
+  channelDialogMessageSchema,
+  channelDialogResponseSchema,
+  channelDialogTypeSchema,
   channelSettingsSchema,
   channelSettingsScreenResponseSchema,
   channelStatsResponseSchema,
   chatRulesSchema,
   chatSettingsSchema,
   chatSettingsScreenResponseSchema,
+  createChannelDialogMessageRequestSchema,
+  createChannelDialogMessageResponseSchema,
   domainAllowlistEntrySchema,
   logsDashboardResponseSchema,
   managedBroadcastDetailsSchema,
@@ -18,6 +23,9 @@ import {
   publishChatRulesResultSchema,
   type BroadcastHandoffResponse,
   type BroadcastHandoffState,
+  type ChannelDialogMessage,
+  type ChannelDialogResponse,
+  type ChannelDialogType,
   type ChannelSettings,
   type ChannelSettingsScreenResponse,
   type ChannelStatsRange,
@@ -54,6 +62,8 @@ type PreviewState = {
   me: Me;
   chats: ChatSummary[];
   channels: ChatSummary[];
+  chatDialogs: Record<ChannelDialogType, PreviewDialogBucket>;
+  channelDialogs: Record<ChannelDialogType, PreviewDialogBucket>;
   chatHeaderParticipantsCount: number;
   chatSettings: ChatSettings;
   chatRules: ChatRules;
@@ -69,6 +79,11 @@ type PreviewState = {
   channelPoll: ManagedPoll;
   channelGiveaways: ManagedGiveawayDetails[];
   channelActivity: MembershipActivityItem[];
+};
+
+type PreviewDialogBucket = {
+  introText: string;
+  messages: ChannelDialogMessage[];
 };
 
 function cloneJson<T>(value: T): T {
@@ -229,6 +244,43 @@ function resolveChatTitle(chatId: string, state: PreviewState): string {
 
 function resolveChannelTitle(channelId: string, state: PreviewState): string {
   return state.channels.find((item) => item.id === channelId)?.title ?? PREVIEW_CHANNEL_TITLE;
+}
+
+function buildPreviewDialogMessage(payload: {
+  id: string;
+  type: ChannelDialogType;
+  text: string;
+  authorUserId: string;
+  authorDisplayName: string | null;
+  createdAt: string;
+  delivered?: boolean;
+  deliveredToUserId?: string | null;
+}): ChannelDialogMessage {
+  return channelDialogMessageSchema.parse({
+    id: payload.id,
+    type: payload.type,
+    text: payload.text,
+    authorUserId: payload.authorUserId,
+    authorDisplayName: payload.authorDisplayName,
+    createdAt: payload.createdAt,
+    ...(payload.delivered !== undefined ? { delivered: payload.delivered } : {}),
+    ...(payload.deliveredToUserId !== undefined
+      ? { deliveredToUserId: payload.deliveredToUserId }
+      : {}),
+  });
+}
+
+function buildPreviewDialogResponse(
+  chatId: string,
+  dialogType: ChannelDialogType,
+  bucket: PreviewDialogBucket,
+): ChannelDialogResponse {
+  return channelDialogResponseSchema.parse({
+    chatId,
+    type: dialogType,
+    introText: bucket.introText,
+    messages: bucket.messages,
+  });
 }
 
 function createActivityItems(
@@ -599,6 +651,108 @@ function createInitialState(): PreviewState {
       lastError: null,
     }),
   ];
+  const chatDialogs: Record<ChannelDialogType, PreviewDialogBucket> = {
+    comments: {
+      introText:
+        'Тихий тред к сообщению админа: короткие ответы, без флуда, ссылки режет модерация.',
+      messages: [
+        buildPreviewDialogMessage({
+          id: 'chat-comments-1',
+          type: 'comments',
+          text: 'Сделал компактную парковку для самокатов у 3-го подъезда. Проверьте, не мешает ли проходу.',
+          authorUserId: 'preview-admin-2',
+          authorDisplayName: 'Александр',
+          createdAt: addHours(now, -5.2).toISOString(),
+        }),
+        buildPreviewDialogMessage({
+          id: 'chat-comments-2',
+          type: 'comments',
+          text: 'Смотрится аккуратно. Если добавить отражатель со стороны дорожки, вечером будет безопаснее.',
+          authorUserId: 'preview-user-8',
+          authorDisplayName: 'Марина Орлова',
+          createdAt: addHours(now, -4.8).toISOString(),
+        }),
+        buildPreviewDialogMessage({
+          id: 'chat-comments-3',
+          type: 'comments',
+          text: 'Поддерживаю. Утром с коляской стало свободнее, раньше самокаты лежали прямо у перил.',
+          authorUserId: 'preview-user-4',
+          authorDisplayName: 'Наталья',
+          createdAt: addHours(now, -4.5).toISOString(),
+        }),
+        buildPreviewDialogMessage({
+          id: 'chat-comments-4',
+          type: 'comments',
+          text: 'Добавлю светоотражающую ленту и перенесу стойку на полметра ближе к клумбе.',
+          authorUserId: 'preview-admin-2',
+          authorDisplayName: 'Александр',
+          createdAt: addHours(now, -4.1).toISOString(),
+        }),
+        buildPreviewDialogMessage({
+          id: 'chat-comments-5',
+          type: 'comments',
+          text: 'Отлично. Тогда оставим тестом на неделю и посмотрим, как поведёт себя поток вечером.',
+          authorUserId: 'preview-admin',
+          authorDisplayName: 'Алексей',
+          createdAt: addHours(now, -3.9).toISOString(),
+        }),
+      ],
+    },
+    suggest: {
+      introText: 'Идеи для постов приходят тихо: участник пишет, админы получают сообщение в очередь.',
+      messages: [
+        buildPreviewDialogMessage({
+          id: 'chat-suggest-1',
+          type: 'suggest',
+          text: 'Можно сделать короткий пост про новые контейнеры для батареек у офиса управляющей компании.',
+          authorUserId: 'preview-admin',
+          authorDisplayName: 'Алексей',
+          createdAt: addHours(now, -7.2).toISOString(),
+          delivered: true,
+          deliveredToUserId: 'preview-admin-2',
+        }),
+      ],
+    },
+  };
+  const channelDialogs: Record<ChannelDialogType, PreviewDialogBucket> = {
+    comments: {
+      introText:
+        'Комментарии к посту канала идут отдельным потоком, чтобы лента канала оставалась чистой.',
+      messages: [
+        buildPreviewDialogMessage({
+          id: 'channel-comments-1',
+          type: 'comments',
+          text: 'Спасибо за карту отключений. Наконец-то видно точный интервал по улице Сиреневой.',
+          authorUserId: 'preview-user-11',
+          authorDisplayName: 'Татьяна',
+          createdAt: addHours(now, -10.5).toISOString(),
+        }),
+        buildPreviewDialogMessage({
+          id: 'channel-comments-2',
+          type: 'comments',
+          text: 'Если добавите следующий апдейт про развоз воды, закрепите его в начале треда.',
+          authorUserId: 'preview-admin',
+          authorDisplayName: 'Алексей',
+          createdAt: addHours(now, -9.8).toISOString(),
+        }),
+      ],
+    },
+    suggest: {
+      introText: 'Предложение поста сразу уходит редактору канала и не шумит в основном чате.',
+      messages: [
+        buildPreviewDialogMessage({
+          id: 'channel-suggest-1',
+          type: 'suggest',
+          text: 'Подборка ярмарок выходного дня отлично зайдёт на воскресенье утром.',
+          authorUserId: 'preview-admin',
+          authorDisplayName: 'Алексей',
+          createdAt: addHours(now, -6.4).toISOString(),
+          delivered: true,
+          deliveredToUserId: 'preview-admin-2',
+        }),
+      ],
+    },
+  };
 
   return {
     me: {
@@ -653,6 +807,7 @@ function createInitialState(): PreviewState {
       },
     ],
     chatHeaderParticipantsCount: 1_584,
+    chatDialogs,
     chatSettings,
     chatRules,
     chatDomains,
@@ -670,6 +825,7 @@ function createInitialState(): PreviewState {
     ),
     chatViolations: createChatViolations(now),
     channelHeaderParticipantsCount: 9_240,
+    channelDialogs,
     channelSettings,
     channelPoll,
     channelBroadcasts,
@@ -1139,6 +1295,37 @@ async function handleChatRequest(
     return cloneJson(buildChatSettingsScreen(state, chatId));
   }
 
+  if (tail[0] === 'dialog' && tail[1]) {
+    const dialogType = channelDialogTypeSchema.parse(tail[1]);
+
+    if (tail.length === 2 && method === 'GET') {
+      return cloneJson(buildPreviewDialogResponse(chatId, dialogType, state.chatDialogs[dialogType]));
+    }
+
+    if (tail[2] === 'messages' && method === 'POST') {
+      const payload = createChannelDialogMessageRequestSchema.parse(parseJsonBody(init));
+      const message = buildPreviewDialogMessage({
+        id: `chat-${dialogType}-${Date.now()}`,
+        type: dialogType,
+        text: payload.text,
+        authorUserId: state.me.userId,
+        authorDisplayName: state.me.displayName ?? state.me.username ?? null,
+        createdAt: new Date().toISOString(),
+        ...(dialogType === 'suggest'
+          ? {
+              delivered: true,
+              deliveredToUserId: 'preview-admin-2',
+            }
+          : {}),
+      });
+      state.chatDialogs[dialogType].messages.push(message);
+      return createChannelDialogMessageResponseSchema.parse({
+        ok: true,
+        message,
+      });
+    }
+  }
+
   if (tail[0] === 'settings' && tail.length === 1) {
     if (method === 'GET') {
       return cloneJson(state.chatSettings);
@@ -1516,6 +1703,39 @@ async function handleChannelRequest(
 
   if (tail[0] === 'settings-screen' && method === 'GET') {
     return cloneJson(buildChannelSettingsScreen(state, channelId));
+  }
+
+  if (tail[0] === 'dialog' && tail[1]) {
+    const dialogType = channelDialogTypeSchema.parse(tail[1]);
+
+    if (tail.length === 2 && method === 'GET') {
+      return cloneJson(
+        buildPreviewDialogResponse(channelId, dialogType, state.channelDialogs[dialogType]),
+      );
+    }
+
+    if (tail[2] === 'messages' && method === 'POST') {
+      const payload = createChannelDialogMessageRequestSchema.parse(parseJsonBody(init));
+      const message = buildPreviewDialogMessage({
+        id: `channel-${dialogType}-${Date.now()}`,
+        type: dialogType,
+        text: payload.text,
+        authorUserId: state.me.userId,
+        authorDisplayName: state.me.displayName ?? state.me.username ?? null,
+        createdAt: new Date().toISOString(),
+        ...(dialogType === 'suggest'
+          ? {
+              delivered: true,
+              deliveredToUserId: 'preview-admin-2',
+            }
+          : {}),
+      });
+      state.channelDialogs[dialogType].messages.push(message);
+      return createChannelDialogMessageResponseSchema.parse({
+        ok: true,
+        message,
+      });
+    }
   }
 
   if (tail[0] === 'settings' && tail.length === 1) {

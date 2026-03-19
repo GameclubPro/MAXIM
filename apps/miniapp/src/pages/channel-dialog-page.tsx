@@ -70,6 +70,32 @@ function buildAuthorBadge(value: string | null | undefined): string {
   return normalized.slice(0, 2).toUpperCase();
 }
 
+function formatCompactCount(value: number): string {
+  return new Intl.NumberFormat('ru-RU', {
+    notation: value >= 1_000 ? 'compact' : 'standard',
+    maximumFractionDigits: value >= 1_000 ? 1 : 0,
+  }).format(value);
+}
+
+function formatPlural(value: number, one: string, few: string, many: string): string {
+  const lastTwoDigits = value % 100;
+  const lastDigit = value % 10;
+
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) {
+    return many;
+  }
+
+  if (lastDigit === 1) {
+    return one;
+  }
+
+  if (lastDigit >= 2 && lastDigit <= 4) {
+    return few;
+  }
+
+  return many;
+}
+
 type DialogViewModel = {
   title: string;
   placeholder: string;
@@ -101,6 +127,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const dialogType = resolveDialogType(mode);
   const entityType = resolveDialogEntityType(location.pathname);
   const [draft, setDraft] = useState('');
+  const composeFieldRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollViewportRef = useRef<HTMLElement | null>(null);
   const lastMessageIdRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
@@ -132,6 +159,42 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   const messages = dialogQuery.data?.messages ?? [];
   const introText = dialogQuery.data?.introText?.trim() ?? '';
+  const draftLength = draft.trim().length;
+  const participantCount = useMemo(
+    () => new Set(messages.map((message) => message.authorUserId)).size,
+    [messages],
+  );
+  const lastMessageAt = messages[messages.length - 1]?.createdAt ?? null;
+  const threadSummary = useMemo(() => {
+    if (!messages.length) {
+      return dialogType === 'comments'
+        ? 'Тред открыт, ждём первый ответ.'
+        : 'Идея уйдёт напрямую команде админов.';
+    }
+
+    return [
+      `${formatCompactCount(messages.length)} ${formatPlural(messages.length, 'сообщение', 'сообщения', 'сообщений')}`,
+      `${formatCompactCount(participantCount)} ${formatPlural(participantCount, 'участник', 'участника', 'участников')}`,
+      lastMessageAt ? `обновлено ${formatDateTime(lastMessageAt)}` : null,
+    ]
+      .filter(Boolean)
+      .join(' • ');
+  }, [dialogType, lastMessageAt, messages.length, participantCount]);
+  const composerHint =
+    dialogType === 'comments'
+      ? 'Ответ уйдёт в отдельный тред и не засорит основную ленту.'
+      : 'Сообщение увидят только админы канала.';
+
+  useEffect(() => {
+    const field = composeFieldRef.current;
+    if (!field) {
+      return;
+    }
+
+    field.style.height = '0px';
+    const nextHeight = Math.max(46, Math.min(field.scrollHeight, 132));
+    field.style.height = `${nextHeight}px`;
+  }, [draft]);
 
   useEffect(() => {
     const viewport = scrollViewportRef.current;
@@ -266,6 +329,30 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         ) : null}
 
         <section ref={scrollViewportRef} className="channel-dialog-body">
+          <section className="channel-dialog-thread">
+            <div className="channel-dialog-thread__utility">
+              <Link
+                to={buildManagedEntitiesRoute(entityType)}
+                className="channel-dialog-thread__back"
+              >
+                Назад
+              </Link>
+              <span className="channel-dialog-thread__live">
+                {dialogType === 'comments' ? 'Тред открыт' : 'Личный inbox'}
+              </span>
+            </div>
+            <div className="channel-dialog-thread__headline">
+              <div>
+                <p>{dialogType === 'comments' ? 'Комментарии к сообщению' : 'Прямой канал связи'}</p>
+                <h1>{view.title}</h1>
+              </div>
+              <span className="channel-dialog-thread__badge">
+                {chatTitle || chatId}
+              </span>
+            </div>
+            <p className="channel-dialog-thread__summary">{threadSummary}</p>
+          </section>
+
           {dialogQuery.isLoading ? (
             <div className="channel-dialog-skeletons" aria-label="Загрузка">
               {Array.from({ length: 3 }, (_, index) => (
@@ -303,6 +390,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             <div className="channel-dialog-message-list">
               {introText ? (
                 <div className="channel-dialog-intro">
+                  <span className="channel-dialog-intro__label">
+                    {dialogType === 'comments' ? 'Как читать тред' : 'Как это работает'}
+                  </span>
                   <p>{introText}</p>
                 </div>
               ) : null}
@@ -351,25 +441,33 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
         <section className="channel-dialog-compose">
           <div className="channel-dialog-compose__surface">
-            <label className="channel-dialog-compose__field">
-              <textarea
-                rows={1}
-                value={draft}
-                onChange={(event) => setDraft(event.target.value)}
-                placeholder={view.placeholder}
-                maxLength={2_000}
-              />
-            </label>
+            <div className="channel-dialog-compose__meta">
+              <span>{composerHint}</span>
+              <span>{draftLength}/2000</span>
+            </div>
 
-            <div className="channel-dialog-compose__actions">
-              <button
-                type="button"
-                className="channel-dialog-submit"
-                onClick={onSubmit}
-                disabled={!draft.trim() || sendMutation.isPending}
-              >
-                {sendMutation.isPending ? '...' : 'Отправить'}
-              </button>
+            <div className="channel-dialog-compose__row">
+              <label className="channel-dialog-compose__field">
+                <textarea
+                  ref={composeFieldRef}
+                  rows={1}
+                  value={draft}
+                  onChange={(event) => setDraft(event.target.value)}
+                  placeholder={view.placeholder}
+                  maxLength={2_000}
+                />
+              </label>
+
+              <div className="channel-dialog-compose__actions">
+                <button
+                  type="button"
+                  className="channel-dialog-submit"
+                  onClick={onSubmit}
+                  disabled={!draft.trim() || sendMutation.isPending}
+                >
+                  {sendMutation.isPending ? '...' : 'Отправить'}
+                </button>
+              </div>
             </div>
           </div>
         </section>

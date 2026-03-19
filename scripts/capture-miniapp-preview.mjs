@@ -56,6 +56,16 @@ const scenarios = [
     path: '/chat/preview-chat/settings',
   },
   {
+    name: 'chat-dialog-comments',
+    path: '/chat/preview-chat/dialog/comments',
+    searchParams: {
+      token: 'preview-comments-token-0001',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(500);
+    },
+  },
+  {
     name: 'chat-settings-comments',
     path: '/chat/preview-chat/settings',
     searchParams: {
@@ -204,6 +214,20 @@ const scenarios = [
     path: '/channel/preview-channel/stats',
   },
 ];
+const requestedScenarioNames = (process.env.MINIAPP_SCREENSHOT_SCENARIOS ?? '')
+  .split(',')
+  .map((value) => value.trim())
+  .filter(Boolean);
+const activeScenarios =
+  requestedScenarioNames.length > 0
+    ? scenarios.filter((scenario) => requestedScenarioNames.includes(scenario.name))
+    : scenarios;
+
+if (requestedScenarioNames.length > 0 && activeScenarios.length === 0) {
+  throw new Error(
+    `No screenshot scenarios matched MINIAPP_SCREENSHOT_SCENARIOS=${requestedScenarioNames.join(',')}`,
+  );
+}
 
 function buildPreviewUrl(baseUrl, routePath, queryDevice, scenarioSearchParams = {}) {
   const base = new URL(baseUrl);
@@ -251,7 +275,7 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir) {
   const shotDir = path.join(outputDir, profile.outputDirName);
   await ensureDir(shotDir);
 
-  for (const scenario of scenarios) {
+  for (const scenario of activeScenarios) {
     const url = buildPreviewUrl(baseUrl, scenario.path, profile.queryDevice, scenario.searchParams);
     await page.goto(url, { waitUntil: 'domcontentloaded' });
     await waitForPreviewApp(page);
