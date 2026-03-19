@@ -7,6 +7,7 @@ import {
   chatRulesSchema,
   chatSettingsSchema,
   getBotSpeechEditableTemplate,
+  getBotSpeechSystemTemplate,
   hasBotSpeechEditableOverrides,
   normalizeAllowlistLink,
   type BotSpeechEditableFieldKey,
@@ -634,6 +635,13 @@ function getSpeechTemplateFallback(
   return getBotSpeechEditableTemplate(style, fieldKey);
 }
 
+function getSpeechSystemTemplateFallback(
+  style: ChatSettings['botSpeechStyle'],
+  templateKey: Parameters<typeof getBotSpeechSystemTemplate>[1],
+): string {
+  return getBotSpeechSystemTemplate(style, templateKey);
+}
+
 function resolveBotMessageTemplate(customValue: string, fallbackTemplate: string): string {
   return customValue.trim().length > 0 ? customValue : fallbackTemplate;
 }
@@ -666,6 +674,8 @@ function buildSpeechStylePreviewSamples(style: BotSpeechStyle): {
   greeting: string;
   explanation: string;
   warning: string;
+  bye: string;
+  pause: string;
 } {
   return {
     greeting: renderBotMessageTemplatePreview(
@@ -691,6 +701,13 @@ function buildSpeechStylePreviewSamples(style: BotSpeechStyle): {
         reason: 'грубая лексика запрещена правилами чата',
       },
     ),
+    bye: renderBotMessageTemplatePreview(getSpeechSystemTemplateFallback(style, 'linkKick'), {
+      user: 'Алексей',
+    }),
+    pause: renderBotMessageTemplatePreview(getSpeechSystemTemplateFallback(style, 'banNotice'), {
+      user: 'Алексей',
+      ban_duration: '24 часа',
+    }),
   };
 }
 
@@ -3543,6 +3560,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     <span className="settings-speech-preview__label">Предупреждение</span>
                     <p className="settings-speech-preview__text">
                       {pendingSpeechStyleSamples.warning}
+                    </p>
+                  </article>
+
+                  <article className="settings-speech-preview__item">
+                    <span className="settings-speech-preview__label">Bye / вывод из чата</span>
+                    <p className="settings-speech-preview__text">{pendingSpeechStyleSamples.bye}</p>
+                  </article>
+
+                  <article className="settings-speech-preview__item">
+                    <span className="settings-speech-preview__label">Пауза</span>
+                    <p className="settings-speech-preview__text">
+                      {pendingSpeechStyleSamples.pause}
                     </p>
                   </article>
                 </div>
@@ -8282,7 +8311,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             className="settings-native-toggle__hint"
                           >
                             Если пользователь не подписан хотя бы на один обязательный канал, бот
-                            удалит сообщение и попросит подписаться перед повторной отправкой.
+                            удалит сообщение, покажет стандартное объяснение и попросит подписаться
+                            перед повторной отправкой.
                           </p>
                         ) : null}
                       </div>
@@ -8422,11 +8452,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         <div className="settings-native-toggle__row">
                           <div className="settings-native-toggle__title-wrap">
                             <span className="settings-native-toggle__title">
-                              Текст предупреждения
+                              Стандартное объяснение
                             </span>
                             <div className="settings-native-toggle__title-actions">
                               <EditToggleButton
-                                label="Редактировать текст предупреждения об обязательной подписке"
+                                label="Редактировать стандартное объяснение об обязательной подписке"
                                 onClick={() => toggleBotMessageEditor('requiredSubscription')}
                                 disabled={!draft.requiredSubscriptionEnabled}
                                 isOpen={openBotEditorKey === 'requiredSubscription'}
@@ -8437,7 +8467,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   'settings-info-button',
                                   openHintKey === 'requiredSubscriptionBotMessage' && 'is-open',
                                 )}
-                                aria-label="Пояснение для текста предупреждения об обязательной подписке"
+                                aria-label="Пояснение для стандартного объяснения об обязательной подписке"
                                 aria-controls="required-subscription-bot-message-hint"
                                 aria-expanded={openHintKey === 'requiredSubscriptionBotMessage'}
                                 onClick={() => toggleHint('requiredSubscriptionBotMessage')}
@@ -8459,8 +8489,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             id="required-subscription-bot-message-hint"
                             className="settings-native-toggle__hint"
                           >
-                            В сообщение можно подставлять имя пользователя, список недостающих
-                            каналов и статус удалённого сообщения.
+                            По умолчанию здесь используется стандартное объяснение из выбранного
+                            стиля речи бота. Для этого правила бот не выдает предупреждение или bye:
+                            он удаляет сообщение и отправляет только объяснение с кнопками
+                            недостающих каналов.
                           </p>
                         ) : null}
 
