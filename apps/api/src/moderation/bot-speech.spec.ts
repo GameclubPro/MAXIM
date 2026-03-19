@@ -14,6 +14,7 @@ function createBotSpeechSettings(
     greetingBotMessageText: '',
     linkBotMessageText: '',
     linkWarnMessageText: '',
+    requiredSubscriptionBotMessageText: '',
     textFiltersBotMessageText: '',
     textFiltersWarnMessageText: '',
     duplicateBotMessageText: '',
@@ -64,13 +65,7 @@ describe('bot speech styles', () => {
       'Система: **Алексей**, доступ в чат открыт.',
     );
     expect(
-      (service as any).buildNightModeOpenedNotice(
-        23 * 60,
-        8 * 60,
-        'Europe/Moscow',
-        '',
-        'ROBOT',
-      ),
+      (service as any).buildNightModeOpenedNotice(23 * 60, 8 * 60, 'Europe/Moscow', '', 'ROBOT'),
     ).toBe('Система: ночной режим завершен. Группа снова открыта.');
 
     expect((service as any).buildLinkExplanation(userLabel, true, '', 'ROBOT')).toBe(
@@ -84,6 +79,8 @@ describe('bot speech styles', () => {
         true,
         1,
         5,
+        1,
+        5,
         187,
         100,
         '',
@@ -93,9 +90,9 @@ describe('bot speech styles', () => {
       'Система: **Алексей**. Сообщение отклонено. Причина: слишком длинное сообщение: 187 символов при лимите 100.',
     );
 
-    expect(
-      (service as any).buildDuplicateHitExplanation(userLabel, true, '', 'ROBOT'),
-    ).toBe('Система: **Алексей**. Зафиксирован повтор сообщения. Сообщение удалено.');
+    expect((service as any).buildDuplicateHitExplanation(userLabel, true, '', 'ROBOT')).toBe(
+      'Система: **Алексей**. Зафиксирован повтор сообщения. Сообщение удалено.',
+    );
 
     expect(
       (service as any).buildDuplicateExplanation(
@@ -114,9 +111,9 @@ describe('bot speech styles', () => {
       ),
     ).toBe('Система: **Алексей**. Зафиксирован повтор сообщения. Предупреждение зарегистрировано.');
 
-    expect((service as any).buildMessageLimitsWarnExplanation(userLabel, 'MESSAGE_TOO_LONG', 'ROBOT')).toBe(
-      'Система: **Алексей**. Предупреждение. Причина: слишком длинное сообщение.',
-    );
+    expect(
+      (service as any).buildMessageLimitsWarnExplanation(userLabel, 'MESSAGE_TOO_LONG', 'ROBOT'),
+    ).toBe('Система: **Алексей**. Предупреждение. Причина: слишком длинное сообщение.');
 
     expect((service as any).buildGreetingMessage(userLabel, '', 'POLICE')).toBe(
       'Здравия желаю, **Алексей** 🤝 Майор Максимов на месте. Осваивайтесь, но без самодеятельности.',
@@ -130,13 +127,7 @@ describe('bot speech styles', () => {
       'Привет, **Алексей** 🙂 Рады видеть тебя в чате.',
     );
     expect(
-      (service as any).buildNightModeOpenedNotice(
-        23 * 60,
-        8 * 60,
-        'Europe/Moscow',
-        '',
-        'FRIENDLY',
-      ),
+      (service as any).buildNightModeOpenedNotice(23 * 60, 8 * 60, 'Europe/Moscow', '', 'FRIENDLY'),
     ).toBe('Доброе утро ☀️ Группа снова открыта. Можно возвращаться к разговору.');
 
     expect((service as any).buildLinkExplanation(userLabel, true, '', 'FRIENDLY')).toBe(
@@ -150,6 +141,8 @@ describe('bot speech styles', () => {
         true,
         1,
         5,
+        1,
+        5,
         187,
         100,
         '',
@@ -159,9 +152,9 @@ describe('bot speech styles', () => {
       '**Алексей**, сообщение не прошло: слишком длинное сообщение: 187 символов при лимите 100. Чуть поправьте и можно снова.',
     );
 
-    expect(
-      (service as any).buildDuplicateHitExplanation(userLabel, true, '', 'FRIENDLY'),
-    ).toBe('**Алексей**, такое сообщение уже было. Пока просто убрал повтор.');
+    expect((service as any).buildDuplicateHitExplanation(userLabel, true, '', 'FRIENDLY')).toBe(
+      '**Алексей**, такое сообщение уже было. Пока просто убрал повтор.',
+    );
 
     expect(
       (service as any).buildDuplicateExplanation(
@@ -180,30 +173,24 @@ describe('bot speech styles', () => {
       ),
     ).toBe('**Алексей**, такое сообщение уже было. Это уже предупреждение.');
 
-    expect((service as any).buildMessageLimitsWarnExplanation(userLabel, 'MESSAGE_TOO_LONG', 'FRIENDLY')).toBe(
-      '**Алексей**, это предупреждение. Причина: слишком длинное сообщение.',
-    );
+    expect(
+      (service as any).buildMessageLimitsWarnExplanation(userLabel, 'MESSAGE_TOO_LONG', 'FRIENDLY'),
+    ).toBe('**Алексей**, это предупреждение. Причина: слишком длинное сообщение.');
 
     expect((service as any).buildGreetingMessage(userLabel, '', 'IRONIC')).toBe(
       '**Алексей**, добро пожаловать 🙂 Осваивайтесь, правила тут тоже не бездельничают.',
     );
     expect(
-      (service as any).buildNightModeOpenedNotice(
-        23 * 60,
-        8 * 60,
-        'Europe/Moscow',
-        '',
-        'IRONIC',
-      ),
+      (service as any).buildNightModeOpenedNotice(23 * 60, 8 * 60, 'Europe/Moscow', '', 'IRONIC'),
     ).toBe('Доброе утро ☀️ Группа снова открыта. Тишина закончилась, можно снова писать.');
 
     expect((service as any).buildLinkExplanation(userLabel, true, '', 'IRONIC')).toBe(
       '**Алексей**, ссылку убрал. Интернет, конечно, огромный, но сюда его тащить не надо.',
     );
 
-    expect(
-      (service as any).buildDuplicateHitExplanation(userLabel, true, '', 'IRONIC'),
-    ).toBe('**Алексей**, это сообщение уже было. Повтор убрал. Коллекцию можно не собирать.');
+    expect((service as any).buildDuplicateHitExplanation(userLabel, true, '', 'IRONIC')).toBe(
+      '**Алексей**, это сообщение уже было. Повтор убрал. Коллекцию можно не собирать.',
+    );
 
     expect(
       (service as any).buildDuplicateExplanation(
@@ -234,11 +221,11 @@ describe('bot speech styles', () => {
         'Ручной разбор для {user}. Причина: {reason}.',
         'IRONIC',
       ),
-    ).toBe(
-      'Ручной разбор для **Алексей**. Причина: в этом чате ссылки не проходят, без ссылок.',
-    );
+    ).toBe('Ручной разбор для **Алексей**. Причина: в этом чате ссылки не проходят, без ссылок.');
 
-    expect((service as any).buildMessageLimitsWarnExplanation(userLabel, 'MESSAGE_TOO_LONG', 'IRONIC')).toBe(
+    expect(
+      (service as any).buildMessageLimitsWarnExplanation(userLabel, 'MESSAGE_TOO_LONG', 'IRONIC'),
+    ).toBe(
       '**Алексей**, это уже предупреждение. Причина: слишком длинное сообщение. Лимиты тут правда считают.',
     );
 

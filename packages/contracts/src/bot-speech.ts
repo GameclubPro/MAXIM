@@ -8,6 +8,7 @@ export const BOT_SPEECH_EDITABLE_FIELD_KEYS = [
   'greetingBotMessageText',
   'linkBotMessageText',
   'linkWarnMessageText',
+  'requiredSubscriptionBotMessageText',
   'textFiltersBotMessageText',
   'textFiltersWarnMessageText',
   'duplicateBotMessageText',
@@ -86,46 +87,36 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
   ROBOT: {
     editable: {
       greetingBotMessageText: 'Система: {user}, доступ в чат открыт.',
-      linkBotMessageText:
-        'Система: {user}. Ссылка удалена. Причина: {reason}.',
-      linkWarnMessageText:
-        'Система: {user}. Предупреждение. Повторная отправка ссылок запрещена.',
-      textFiltersBotMessageText:
-        'Система: {user}. Сообщение удалено. Причина: {reason}.',
-      textFiltersWarnMessageText:
-        'Система: {user}. Предупреждение. Причина: {reason}.',
-      duplicateBotMessageText:
-        'Система: {user}. Зафиксирован повтор сообщения. {sanction}',
-      messageLimitsBotMessageText:
-        'Система: {user}. Сообщение отклонено. Причина: {reason}.',
+      linkBotMessageText: 'Система: {user}. Ссылка удалена. Причина: {reason}.',
+      linkWarnMessageText: 'Система: {user}. Предупреждение. Повторная отправка ссылок запрещена.',
+      requiredSubscriptionBotMessageText:
+        'Система: {user}. Для сообщений в этом чате нужна подписка на {channels}. Подпишитесь и отправьте сообщение снова. Текущий статус: {message_status}.',
+      textFiltersBotMessageText: 'Система: {user}. Сообщение удалено. Причина: {reason}.',
+      textFiltersWarnMessageText: 'Система: {user}. Предупреждение. Причина: {reason}.',
+      duplicateBotMessageText: 'Система: {user}. Зафиксирован повтор сообщения. {sanction}',
+      messageLimitsBotMessageText: 'Система: {user}. Сообщение отклонено. Причина: {reason}.',
       nightModeBotMessageText:
         'Система: активен ночной режим. Интервал: {night_window} ({night_timezone}). {night_status}',
-      nightModeOpenMessageText:
-        'Система: ночной режим завершен. {opening_status}',
+      nightModeOpenMessageText: 'Система: ночной режим завершен. {opening_status}',
     },
     system: {
       linkKick: 'Система: {user}. Доступ к чату ограничен за повторную отправку ссылок.',
-      textFiltersKickCommercial:
-        'Система: {user}. Доступ к чату ограничен за повторную рекламу.',
+      textFiltersKickCommercial: 'Система: {user}. Доступ к чату ограничен за повторную рекламу.',
       textFiltersKickProfanity:
         'Система: {user}. Доступ к чату ограничен за повторную грубую лексику.',
       textFiltersKickGeneric:
         'Система: {user}. Доступ к чату ограничен за повторные текстовые нарушения.',
-      topicExplainAnnouncement:
-        'Система: {user}. Объявление отклонено. Причина: {reason}.',
-      topicExplainMessage:
-        'Система: {user}. Сообщение отклонено. Причина: {reason}.',
+      topicExplainAnnouncement: 'Система: {user}. Объявление отклонено. Причина: {reason}.',
+      topicExplainMessage: 'Система: {user}. Сообщение отклонено. Причина: {reason}.',
       topicWarn: 'Система: {user}. Предупреждение. Причина: {reason}.',
       topicKickAnnouncement:
         'Система: {user}. Доступ к чату ограничен за повторные объявления с неверным форматом.',
       topicKickMessage:
         'Система: {user}. Доступ к чату ограничен за повторные сообщения с неверным форматом.',
-      topicBan:
-        'Система: {user}. Установлен тайм-аут на {ban_duration}. Причина: {reason}.',
+      topicBan: 'Система: {user}. Установлен тайм-аут на {ban_duration}. Причина: {reason}.',
       banNotice:
         'Система: {user}. Установлен тайм-аут на {ban_duration}. Доступ будет восстановлен после окончания ограничения.',
-      messageLimitsWarn:
-        'Система: {user}. Предупреждение. Причина: {reason}.',
+      messageLimitsWarn: 'Система: {user}. Предупреждение. Причина: {reason}.',
       messageLimitsKick:
         'Система: {user}. Доступ к чату ограничен за повторное нарушение ограничений. Причина: {reason}.',
       messageLimitsBan:
@@ -139,22 +130,20 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         '{user}, ссылку пришлось убрать. В этом чате они отключены. Если она по делу, лучше сначала уточнить у админа.',
       linkWarnMessageText:
         '{user}, это уже предупреждение. Здесь нельзя отправлять ссылки. Давайте дальше без них.',
+      requiredSubscriptionBotMessageText:
+        '{user}, чтобы писать в этом чате, нужна подписка на {channels}. Подпишитесь и отправьте сообщение ещё раз. Текущее сообщение: {message_status}.',
       textFiltersBotMessageText:
         '{user}, сообщение убрал. Причина: {reason}. Если поправить формулировку, можно отправить снова.',
-      textFiltersWarnMessageText:
-        '{user}, это предупреждение. Давайте дальше без такого текста.',
-      duplicateBotMessageText:
-        '{user}, такое сообщение уже было. {sanction}',
+      textFiltersWarnMessageText: '{user}, это предупреждение. Давайте дальше без такого текста.',
+      duplicateBotMessageText: '{user}, такое сообщение уже было. {sanction}',
       messageLimitsBotMessageText:
         '{user}, сообщение не прошло: {reason}. Чуть поправьте и можно снова.',
       nightModeBotMessageText:
         'Сейчас тихий режим 🌙 {night_window} ({night_timezone}). {night_status}',
-      nightModeOpenMessageText:
-        'Доброе утро ☀️ {opening_status} Можно возвращаться к разговору.',
+      nightModeOpenMessageText: 'Доброе утро ☀️ {opening_status} Можно возвращаться к разговору.',
     },
     system: {
-      linkKick:
-        '{user}, ссылки повторились несколько раз, поэтому пришлось вывести вас из чата.',
+      linkKick: '{user}, ссылки повторились несколько раз, поэтому пришлось вывести вас из чата.',
       textFiltersKickCommercial:
         '{user}, реклама повторилась, поэтому пришлось вывести вас из чата.',
       textFiltersKickProfanity:
@@ -165,21 +154,17 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         '{user}, объявление не подошло по формату: {reason}. Поправьте и можно отправить снова.',
       topicExplainMessage:
         '{user}, сообщение не подошло по формату: {reason}. Поправьте и можно отправить снова.',
-      topicWarn:
-        '{user}, это предупреждение. Причина: {reason}.',
+      topicWarn: '{user}, это предупреждение. Причина: {reason}.',
       topicKickAnnouncement:
         '{user}, объявления снова были не по формату, поэтому пришлось вывести вас из чата.',
       topicKickMessage:
         '{user}, сообщения снова были не по формату, поэтому пришлось вывести вас из чата.',
       topicBan: '{user}, нужна пауза на {ban_duration}. Причина: {reason}.',
-      banNotice:
-        '{user}, для вас временная пауза на {ban_duration}. Возвращайтесь спокойно.',
-      messageLimitsWarn:
-        '{user}, это предупреждение. Причина: {reason}.',
+      banNotice: '{user}, для вас временная пауза на {ban_duration}. Возвращайтесь спокойно.',
+      messageLimitsWarn: '{user}, это предупреждение. Причина: {reason}.',
       messageLimitsKick:
         '{user}, ограничения по сообщениям снова нарушились, поэтому пришлось вывести вас из чата. Причина: {reason}.',
-      messageLimitsBan:
-        '{user}, нужна пауза на {ban_duration}. Причина: {reason}.',
+      messageLimitsBan: '{user}, нужна пауза на {ban_duration}. Причина: {reason}.',
     },
   },
   POLICE: {
@@ -190,6 +175,8 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         'Товарищ {user}, ссылочку изъял 👮‍♂️ В этом чате с ними строго. Поправьте и работаем дальше.',
       linkWarnMessageText:
         'Товарищ {user}, предупреждение за ссылки оформил 👮‍♂️ Ещё один такой заход, и разговор будет короче.',
+      requiredSubscriptionBotMessageText:
+        'Товарищ {user}, для доступа к переписке нужна подписка на {channels} 👮‍♂️ Сначала оформите подписку, потом подавайте сообщение заново. Текущее: {message_status}.',
       textFiltersBotMessageText:
         'Товарищ {user}, сообщение изъял 👮‍♂️ Причина: {reason}. Поправьте по форме и разъедемся красиво.',
       textFiltersWarnMessageText:
@@ -208,8 +195,7 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         'Товарищ {user}, со ссылками устроили повторное правонарушение. Пришлось вывести вас из чата.',
       textFiltersKickCommercial:
         'Товарищ {user}, рекламу повторили, а у нас с этим короткий разговор. Дальше чат без вас.',
-      textFiltersKickProfanity:
-        'Товарищ {user}, по лексике пошёл рецидив. Дальше чат без вас.',
+      textFiltersKickProfanity: 'Товарищ {user}, по лексике пошёл рецидив. Дальше чат без вас.',
       textFiltersKickGeneric:
         'Товарищ {user}, нарушения пошли по второму кругу. Дальше чат без вас.',
       topicExplainAnnouncement:
@@ -221,16 +207,12 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         'Товарищ {user}, объявления снова мимо формы. Пришлось оформить выход из чата.',
       topicKickMessage:
         'Товарищ {user}, сообщения снова мимо формы. Пришлось оформить выход из чата.',
-      topicBan:
-        'Товарищ {user}, оформляю паузу на {ban_duration} 👮‍♂️ Причина: {reason}.',
-      banNotice:
-        'Товарищ {user}, оформляю паузу на {ban_duration}. Возвращайтесь без приключений.',
-      messageLimitsWarn:
-        'Товарищ {user}, предупреждение оформил 👮‍♂️ Причина: {reason}.',
+      topicBan: 'Товарищ {user}, оформляю паузу на {ban_duration} 👮‍♂️ Причина: {reason}.',
+      banNotice: 'Товарищ {user}, оформляю паузу на {ban_duration}. Возвращайтесь без приключений.',
+      messageLimitsWarn: 'Товарищ {user}, предупреждение оформил 👮‍♂️ Причина: {reason}.',
       messageLimitsKick:
         'Товарищ {user}, ограничения снова решили проверить на прочность. Пришлось вывести из чата. Причина: {reason}.',
-      messageLimitsBan:
-        'Товарищ {user}, оформляю паузу на {ban_duration} 👮‍♂️ Причина: {reason}.',
+      messageLimitsBan: 'Товарищ {user}, оформляю паузу на {ban_duration} 👮‍♂️ Причина: {reason}.',
     },
   },
   IRONIC: {
@@ -239,14 +221,14 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         '{user}, добро пожаловать 🙂 Осваивайтесь, правила тут тоже не бездельничают.',
       linkBotMessageText:
         '{user}, ссылку убрал. Интернет, конечно, огромный, но сюда его тащить не надо.',
-      linkWarnMessageText:
-        '{user}, со ссылками снова та же история. Это уже предупреждение.',
+      linkWarnMessageText: '{user}, со ссылками снова та же история. Это уже предупреждение.',
+      requiredSubscriptionBotMessageText:
+        '{user}, писать сюда можно после подписки на {channels}. Да, сначала подписка, потом реплика. Текущее сообщение: {message_status}.',
       textFiltersBotMessageText:
         '{user}, сообщение убрал. Причина: {reason}. Формулировка явно просилась на пересборку.',
       textFiltersWarnMessageText:
         '{user}, это уже предупреждение за {reason}. Давайте без таких эффектов.',
-      duplicateBotMessageText:
-        '{user}, это сообщение уже было. {sanction}',
+      duplicateBotMessageText: '{user}, это сообщение уже было. {sanction}',
       messageLimitsBotMessageText:
         '{user}, сообщение не прошло: {reason}. Лимиты тут не для интерьера.',
       nightModeBotMessageText:
@@ -255,14 +237,11 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         'Доброе утро ☀️ {opening_status} Тишина закончилась, можно снова писать.',
     },
     system: {
-      linkKick:
-        '{user}, со ссылками вышел небольшой сериал, поэтому дальше чат без вас.',
-      textFiltersKickCommercial:
-        '{user}, реклама решила задержаться, поэтому дальше чат без вас.',
+      linkKick: '{user}, со ссылками вышел небольшой сериал, поэтому дальше чат без вас.',
+      textFiltersKickCommercial: '{user}, реклама решила задержаться, поэтому дальше чат без вас.',
       textFiltersKickProfanity:
         '{user}, запас резких слов оказался лишним, поэтому дальше чат без вас.',
-      textFiltersKickGeneric:
-        '{user}, текст снова пошел мимо правил, поэтому дальше чат без вас.',
+      textFiltersKickGeneric: '{user}, текст снова пошел мимо правил, поэтому дальше чат без вас.',
       topicExplainAnnouncement:
         '{user}, объявление убрал. Причина: {reason}. Формат тут все-таки не для декора.',
       topicExplainMessage:
@@ -271,12 +250,10 @@ export const BOT_SPEECH_PRESETS: Record<BotSpeechStyle, BotSpeechPreset> = {
         '{user}, это уже предупреждение. Причина: {reason}. Коллекцию таких эпизодов лучше не собирать.',
       topicKickAnnouncement:
         '{user}, объявления снова пошли мимо формата, поэтому дальше чат без вас.',
-      topicKickMessage:
-        '{user}, сообщения снова пошли мимо формата, поэтому дальше чат без вас.',
+      topicKickMessage: '{user}, сообщения снова пошли мимо формата, поэтому дальше чат без вас.',
       topicBan:
         '{user}, пауза на {ban_duration}. Причина: {reason}. Иногда это самый полезный формат.',
-      banNotice:
-        '{user}, пауза на {ban_duration}. Возвращайтесь без новых сюжетных поворотов.',
+      banNotice: '{user}, пауза на {ban_duration}. Возвращайтесь без новых сюжетных поворотов.',
       messageLimitsWarn:
         '{user}, это уже предупреждение. Причина: {reason}. Лимиты тут правда считают.',
       messageLimitsKick:

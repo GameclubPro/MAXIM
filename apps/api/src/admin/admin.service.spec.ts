@@ -1,5 +1,9 @@
 import { chatRulesSchema, chatSettingsSchema } from '@maxim/contracts';
-import { ForbiddenException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { AdminService } from './admin.service';
 
 function createPrismaMock() {
@@ -658,6 +662,222 @@ describe('AdminService night mode settings normalization', () => {
           nightModeForceCloseEnabled: false,
           nightModeForceCloseUntil: '',
         }),
+      }),
+    );
+  });
+});
+
+describe('AdminService required subscription settings', () => {
+  const actor = {
+    userId: 'admin-1',
+    username: null,
+    displayName: null,
+    chatTitle: null,
+  };
+
+  it('normalizes and persists required subscription channel ids on update', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service, 'listChannels').mockResolvedValue([
+      {
+        id: 'channel-1',
+        title: 'Новости MAX',
+        createdAt: '2026-03-01T00:00:00.000Z',
+        entityType: 'channel',
+        link: 'https://max.ru/news',
+        channelOverview: null,
+      },
+    ]);
+
+    const result = await service.updateSettings('chat-1', actor, {
+      requiredSubscriptionEnabled: true,
+      requiredSubscriptionChannelIds: [' channel-1 ', 'channel-1'],
+      requiredSubscriptionBotMessageText: 'Проверьте подписку.',
+    });
+
+    expect(result.requiredSubscriptionChannelIds).toEqual(['channel-1']);
+    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: {
+          settings: {
+            upsert: {
+              update: expect.objectContaining({
+                requiredSubscriptionEnabled: true,
+                requiredSubscriptionChannelIds: ['channel-1'],
+                requiredSubscriptionBotMessageText: 'Проверьте подписку.',
+              }),
+              create: expect.objectContaining({
+                requiredSubscriptionEnabled: true,
+                requiredSubscriptionChannelIds: ['channel-1'],
+                requiredSubscriptionBotMessageText: 'Проверьте подписку.',
+              }),
+            },
+          },
+        },
+      }),
+    );
+  });
+
+  it('rejects enabled required subscription without channels', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    let thrown: unknown;
+    try {
+      await service.updateSettings('chat-1', actor, {
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: [],
+      });
+    } catch (error: unknown) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(BadRequestException);
+    expect((thrown as BadRequestException).getResponse()).toMatchObject({
+      requiredSubscriptionChannelIds: {
+        _errors: ['Выберите хотя бы один канал для обязательной подписки.'],
+      },
+    });
+  });
+
+  it('rejects required subscription channels without a working link', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service, 'listChannels').mockResolvedValue([
+      {
+        id: 'channel-1',
+        title: 'Новости MAX',
+        createdAt: '2026-03-01T00:00:00.000Z',
+        entityType: 'channel',
+        link: null,
+        channelOverview: null,
+      },
+    ]);
+
+    let thrown: unknown;
+    try {
+      await service.updateSettings('chat-1', actor, {
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+      });
+    } catch (error: unknown) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(BadRequestException);
+    expect((thrown as BadRequestException).getResponse()).toMatchObject({
+      requiredSubscriptionChannelIds: {
+        _errors: [
+          'Для обязательной подписки доступны только управляемые каналы с рабочей ссылкой.',
+        ],
+      },
+    });
+  });
+
+  it('applies the required subscription section to every cached chat', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'chat-2',
+      title: 'Клуб соседей',
+      entityType: 'CHAT',
+      createdAt: new Date('2026-03-02T00:00:00.000Z'),
+    });
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-2',
+          title: 'Клуб соседей',
+          createdAt: new Date('2026-03-02T00:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service, 'listChannels').mockResolvedValue([
+      {
+        id: 'channel-1',
+        title: 'Новости MAX',
+        createdAt: '2026-03-01T00:00:00.000Z',
+        entityType: 'channel',
+        link: 'https://max.ru/news',
+        channelOverview: null,
+      },
+    ]);
+    jest.spyOn(service, 'getSettings').mockResolvedValue(
+      chatSettingsSchema.parse({
+        requiredSubscriptionEnabled: true,
+        requiredSubscriptionChannelIds: ['channel-1'],
+        requiredSubscriptionBotMessageText: 'Следите за подпиской.',
+      }),
+    );
+
+    const result = await service.applySettingsSectionToAllChats('chat-1', actor, {
+      section: 'requiredSubscription',
+    });
+
+    expect(result.section).toBe('requiredSubscription');
+    expect(result.updatedChats).toBe(2);
+    expect(result.appliedChatIds).toEqual(['chat-1', 'chat-2']);
+
+    const chat2Call = prisma.chat.upsert.mock.calls.find(
+      ([args]) => args?.where?.id === 'chat-2',
+    )?.[0];
+    expect(chat2Call).toBeDefined();
+    expect(chat2Call).toEqual(
+      expect.objectContaining({
+        update: {
+          settings: {
+            upsert: {
+              update: {
+                requiredSubscriptionEnabled: true,
+                requiredSubscriptionChannelIds: ['channel-1'],
+                requiredSubscriptionBotMessageText: 'Следите за подпиской.',
+              },
+              create: expect.objectContaining({
+                requiredSubscriptionEnabled: true,
+                requiredSubscriptionChannelIds: ['channel-1'],
+                requiredSubscriptionBotMessageText: 'Следите за подпиской.',
+              }),
+            },
+          },
+        },
       }),
     );
   });

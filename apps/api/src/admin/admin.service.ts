@@ -351,6 +351,11 @@ const SETTINGS_SECTION_KEYS = {
     'nightModeForceCloseDays',
     'nightModeForceCloseUntil',
   ],
+  requiredSubscription: [
+    'requiredSubscriptionEnabled',
+    'requiredSubscriptionChannelIds',
+    'requiredSubscriptionBotMessageText',
+  ],
   extra: [
     'deleteSpammersEnabled',
     'deleteBotMessagesEnabled',
@@ -358,6 +363,7 @@ const SETTINGS_SECTION_KEYS = {
     'removeBotsFromGroupEnabled',
   ],
 } as const satisfies Record<string, readonly (keyof ChatSettings)[]>;
+const REQUIRED_SUBSCRIPTION_SETTING_KEYS = SETTINGS_SECTION_KEYS.requiredSubscription;
 const CHANNEL_STATS_POST_ACTIONS = [
   CHANNEL_DIALOG_ACTION_PUBLISH,
   CHANNEL_DIALOG_ACTION_AUTO_ATTACH,
@@ -1802,6 +1808,7 @@ export class AdminService {
       nightModeForceCloseDays: currentSettings?.nightModeForceCloseDays ?? 0,
       nightModeForceCloseUntil: currentSettings?.nightModeForceCloseUntil ?? '',
     });
+    await this.assertRequiredSubscriptionSettings(normalizedSettings, user);
 
     await this.prisma.chat.upsert({
       where: { id: chatId },
@@ -2558,6 +2565,16 @@ export class AdminService {
             return acc;
           }, {})
         : normalizedSettings;
+    const shouldValidateRequiredSubscription =
+      filteredSettingKeys.length === 0 ||
+      filteredSettingKeys.some((key) =>
+        REQUIRED_SUBSCRIPTION_SETTING_KEYS.includes(
+          key as (typeof REQUIRED_SUBSCRIPTION_SETTING_KEYS)[number],
+        ),
+      );
+    if (shouldValidateRequiredSubscription) {
+      await this.assertRequiredSubscriptionSettings(normalizedSettings, user);
+    }
 
     for (const chatId of appliedChatIds) {
       await this.prisma.chat.upsert({
@@ -2661,7 +2678,60 @@ export class AdminService {
       | 'nightModeForceCloseUntil'
     > | null,
   ): ChatSettings {
-    return this.normalizeNightModeSettings(settings, currentState);
+    return this.normalizeNightModeSettings(
+      this.normalizeRequiredSubscriptionSettings(settings),
+      currentState,
+    );
+  }
+
+  private normalizeRequiredSubscriptionSettings(settings: ChatSettings): ChatSettings {
+    const requiredSubscriptionChannelIds = Array.from(
+      new Set(
+        settings.requiredSubscriptionChannelIds
+          .map((item) => item.trim())
+          .filter((item) => item.length > 0),
+      ),
+    );
+
+    return {
+      ...settings,
+      requiredSubscriptionChannelIds,
+    };
+  }
+
+  private async assertRequiredSubscriptionSettings(
+    settings: ChatSettings,
+    user: AuthUser,
+  ): Promise<void> {
+    if (!settings.requiredSubscriptionEnabled) {
+      return;
+    }
+
+    const selectedChannelIds = settings.requiredSubscriptionChannelIds;
+    if (selectedChannelIds.length === 0) {
+      throw new BadRequestException({
+        requiredSubscriptionChannelIds: {
+          _errors: ['Выберите хотя бы один канал для обязательной подписки.'],
+        },
+      });
+    }
+
+    const availableChannels = await this.listChannels(user, { refresh: true });
+    const availableById = new Map(availableChannels.map((channel) => [channel.id, channel]));
+    const invalidChannelIds = selectedChannelIds.filter((channelId) => {
+      const channel = availableById.get(channelId);
+      return !channel || channel.entityType !== 'channel' || !channel.link?.trim();
+    });
+
+    if (invalidChannelIds.length > 0) {
+      throw new BadRequestException({
+        requiredSubscriptionChannelIds: {
+          _errors: [
+            'Для обязательной подписки доступны только управляемые каналы с рабочей ссылкой.',
+          ],
+        },
+      });
+    }
   }
 
   private normalizeNightModeSettings(

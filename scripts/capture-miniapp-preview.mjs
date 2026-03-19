@@ -56,6 +56,16 @@ const scenarios = [
     path: '/chat/preview-chat/settings',
   },
   {
+    name: 'chat-settings-required-subscription',
+    path: '/chat/preview-chat/settings',
+    searchParams: {
+      focus: 'requiredSubscription',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(500);
+    },
+  },
+  {
     name: 'chat-settings-broadcast',
     path: '/chat/preview-chat/settings',
     searchParams: {

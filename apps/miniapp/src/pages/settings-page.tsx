@@ -2,6 +2,7 @@ import {
   BOT_SPEECH_EDITABLE_FIELD_KEYS,
   BOT_SPEECH_STYLE_METADATA,
   BOT_SPEECH_STYLE_OPTIONS,
+  REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
   applyBotSpeechStylePreset,
   chatRulesSchema,
   chatSettingsSchema,
@@ -56,7 +57,7 @@ import {
   updateRules,
   updateSettings,
 } from '../lib/api/chat-settings-client';
-import { getChats, getMe } from '../lib/api/root-client';
+import { getChannels, getChats, getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import type {
   BroadcastHandoffPayload,
@@ -237,6 +238,9 @@ type HintKey =
   | 'nightBotMessage'
   | 'nightOpenMessage'
   | 'nightBotButton'
+  | 'requiredSubscriptionEnabled'
+  | 'requiredSubscriptionChannels'
+  | 'requiredSubscriptionBotMessage'
   | 'deleteBotMessages'
   | 'removeBotsFromGroup'
   | 'mailingText'
@@ -248,6 +252,7 @@ type HintKey =
 type BotMessageEditorKey =
   | 'link'
   | 'greeting'
+  | 'requiredSubscription'
   | 'textFilters'
   | 'duplicate'
   | 'messageLimits'
@@ -266,6 +271,7 @@ type SettingsSectionKey =
   | 'duplicates'
   | 'limits'
   | 'night'
+  | 'requiredSubscription'
   | 'mailing'
   | 'extra';
 type ApplySectionKey = Exclude<SettingsSectionKey, 'mailing' | 'rules' | 'poll' | 'giveaway'>;
@@ -282,6 +288,7 @@ const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
   duplicates: false,
   limits: false,
   night: false,
+  requiredSubscription: false,
   mailing: false,
   extra: false,
 };
@@ -295,6 +302,7 @@ const SECTION_LABELS: Record<ApplySectionKey, string> = {
   duplicates: 'Повторы',
   limits: 'Ограничения',
   night: 'Ночной режим',
+  requiredSubscription: 'Обязательная подписка',
   extra: 'Сервисные',
 };
 
@@ -412,6 +420,11 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'nightModeForceCloseDays',
     'nightModeForceCloseUntil',
   ],
+  requiredSubscription: [
+    'requiredSubscriptionEnabled',
+    'requiredSubscriptionChannelIds',
+    'requiredSubscriptionBotMessageText',
+  ],
   extra: [
     'deleteSpammersEnabled',
     'deleteBotMessagesEnabled',
@@ -489,6 +502,7 @@ const RUSSIAN_TIMEZONE_OPTIONS = [
 const BOT_MESSAGE_EDITOR_FIELD_KEYS: Record<BotMessageEditorKey, BotSpeechEditableFieldKey> = {
   link: 'linkBotMessageText',
   greeting: 'greetingBotMessageText',
+  requiredSubscription: 'requiredSubscriptionBotMessageText',
   textFilters: 'textFiltersBotMessageText',
   duplicate: 'duplicateBotMessageText',
   messageLimits: 'messageLimitsBotMessageText',
@@ -523,6 +537,8 @@ const BOT_SPEECH_STYLE_SELECTOR_LABELS: Record<BotSpeechStyle, string> = {
 const BOT_MESSAGE_TEMPLATE_HINTS: Record<BotMessageEditorKey, string> = {
   link: 'Плейсхолдеры: {user}, {message_status}, {reason}. Поддерживается Markdown MAX.',
   greeting: 'Плейсхолдеры: {user}, {greeting}. Поддерживается Markdown MAX.',
+  requiredSubscription:
+    'Плейсхолдеры: {user}, {channels}, {message_status}. Поддерживается Markdown MAX.',
   textFilters: 'Плейсхолдеры: {user}, {message_status}, {reason}. Поддерживается Markdown MAX.',
   duplicate:
     'Плейсхолдеры: {user}, {duplicate_context}, {sanction}, {ban_duration}. Поддерживается Markdown MAX.',
@@ -974,6 +990,20 @@ function mergeSectionSettings(
   return nextSettings;
 }
 
+function formatRequiredSubscriptionCount(count: number): string {
+  const safeCount = Math.max(0, Math.trunc(count));
+  const mod10 = safeCount % 10;
+  const mod100 = safeCount % 100;
+
+  if (mod10 === 1 && mod100 !== 11) {
+    return `${safeCount} канал`;
+  }
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
+    return `${safeCount} канала`;
+  }
+  return `${safeCount} каналов`;
+}
+
 function getRouteChatTitle(state: unknown): string {
   if (
     typeof state === 'object' &&
@@ -1325,13 +1355,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const handoffRequested = searchParams.get('handoff') === '1';
 
   useEffect(() => {
-    if (focusSection !== 'giveaway' && focusSection !== 'broadcast') {
+    if (
+      focusSection !== 'giveaway' &&
+      focusSection !== 'broadcast' &&
+      focusSection !== 'requiredSubscription'
+    ) {
       return;
     }
 
     setExpandedSections({
       ...INITIAL_EXPANDED_SECTIONS,
-      ...(focusSection === 'giveaway' ? { giveaway: true } : { mailing: true }),
+      ...(focusSection === 'giveaway'
+        ? { giveaway: true }
+        : focusSection === 'requiredSubscription'
+          ? { requiredSubscription: true }
+          : { mailing: true }),
     });
   }, [focusSection]);
 
@@ -1404,6 +1442,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
+  const channelsQuery = useQuery({
+    queryKey: ['channels'],
+    queryFn: () => getChannels(api),
+    enabled: Boolean(chatId),
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
   const settingsQuery = {
     data: settingsScreenQuery.data?.settings,
     isLoading: settingsScreenQuery.isLoading,
@@ -1428,6 +1473,60 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     isLoading: settingsScreenQuery.isLoading,
     error: settingsScreenQuery.error,
   };
+  const availableRequiredSubscriptionChannels = useMemo(
+    () =>
+      (channelsQuery.data ?? []).filter(
+        (channel) => channel.entityType === 'channel' && Boolean(channel.link?.trim()),
+      ),
+    [channelsQuery.data],
+  );
+  const availableRequiredSubscriptionChannelById = useMemo(() => {
+    const map = new Map<string, (typeof availableRequiredSubscriptionChannels)[number]>();
+    for (const channel of availableRequiredSubscriptionChannels) {
+      map.set(channel.id, channel);
+    }
+    return map;
+  }, [availableRequiredSubscriptionChannels]);
+  const selectedRequiredSubscriptionChannels = useMemo(() => {
+    const selectedIds = draft?.requiredSubscriptionChannelIds ?? [];
+    return selectedIds
+      .map((channelId) => {
+        const channel = availableRequiredSubscriptionChannelById.get(channelId);
+        return channel
+          ? {
+              id: channel.id,
+              title: channel.title,
+              link: channel.link?.trim() ?? '',
+            }
+          : null;
+      })
+      .filter(
+        (
+          channel,
+        ): channel is {
+          id: string;
+          title: string;
+          link: string;
+        } => channel !== null,
+      );
+  }, [availableRequiredSubscriptionChannelById, draft?.requiredSubscriptionChannelIds]);
+  const staleRequiredSubscriptionChannelIds = useMemo(() => {
+    if (!channelsQuery.isSuccess) {
+      return [];
+    }
+
+    return (draft?.requiredSubscriptionChannelIds ?? []).filter(
+      (channelId) => !availableRequiredSubscriptionChannelById.has(channelId),
+    );
+  }, [
+    availableRequiredSubscriptionChannelById,
+    channelsQuery.isSuccess,
+    draft?.requiredSubscriptionChannelIds,
+  ]);
+  const availableRequiredSubscriptionChannelChoices = useMemo(() => {
+    const selectedIds = new Set(draft?.requiredSubscriptionChannelIds ?? []);
+    return availableRequiredSubscriptionChannels.filter((channel) => !selectedIds.has(channel.id));
+  }, [availableRequiredSubscriptionChannels, draft?.requiredSubscriptionChannelIds]);
 
   const chatTitle = useMemo(() => {
     if (!chatId) {
@@ -1972,6 +2071,42 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     clearFieldError(key);
   }
 
+  function addRequiredSubscriptionChannel(channelId: string) {
+    setDraft((current) => {
+      if (!current) {
+        return current;
+      }
+
+      if (current.requiredSubscriptionChannelIds.includes(channelId)) {
+        return current;
+      }
+
+      if (current.requiredSubscriptionChannelIds.length >= REQUIRED_SUBSCRIPTION_MAX_CHANNELS) {
+        return current;
+      }
+
+      return {
+        ...current,
+        requiredSubscriptionChannelIds: [...current.requiredSubscriptionChannelIds, channelId],
+      };
+    });
+    clearFieldError('requiredSubscriptionChannelIds');
+  }
+
+  function removeRequiredSubscriptionChannel(channelId: string) {
+    setDraft((current) =>
+      current
+        ? {
+            ...current,
+            requiredSubscriptionChannelIds: current.requiredSubscriptionChannelIds.filter(
+              (item) => item !== channelId,
+            ),
+          }
+        : current,
+    );
+    clearFieldError('requiredSubscriptionChannelIds');
+  }
+
   function clearSectionErrors(section: ApplySectionKey) {
     setFieldErrors((current) => {
       let changed = false;
@@ -2115,8 +2250,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     const parsed = chatSettingsSchema.safeParse(value);
 
     if (parsed.success) {
-      setFieldErrors({});
-      return parsed.data;
+      const nextErrors: FieldErrors = {};
+
+      if (
+        parsed.data.requiredSubscriptionEnabled &&
+        staleRequiredSubscriptionChannelIds.length > 0
+      ) {
+        nextErrors.requiredSubscriptionChannelIds =
+          'Удалите недоступные каналы без рабочей ссылки и выберите каналы заново.';
+      }
+
+      if (Object.keys(nextErrors).length === 0) {
+        setFieldErrors({});
+        return parsed.data;
+      }
+
+      setFieldErrors(nextErrors);
+      return null;
     }
 
     const nextErrors: FieldErrors = {};
@@ -2681,7 +2831,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   function closeSection(section: SettingsSectionKey) {
     if (
       (section === 'mailing' && focusSection === 'broadcast') ||
-      (section === 'giveaway' && focusSection === 'giveaway')
+      (section === 'giveaway' && focusSection === 'giveaway') ||
+      (section === 'requiredSubscription' && focusSection === 'requiredSubscription')
     ) {
       const nextSearchParams = new URLSearchParams(location.search);
       nextSearchParams.delete('focus');
@@ -2727,6 +2878,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }
 
   const linkPolicyError = fieldErrors.linkPolicy;
+  const requiredSubscriptionChannelsError = fieldErrors.requiredSubscriptionChannelIds;
   const allowlistEntries: DomainAllowlistEntry[] = domainsQuery.data ?? [];
   const allowlistDomains = allowlistEntries.map((entry) => entry.domain);
   const isDomainMutationPending =
@@ -2943,6 +3095,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : draft?.nightModeEnabled
       ? `${nightWindowLabel} • ${nightTimezoneLabel}`
       : 'Выключено';
+  const requiredSubscriptionSelectedCount = draft?.requiredSubscriptionChannelIds.length ?? 0;
+  const requiredSubscriptionStaleCount = staleRequiredSubscriptionChannelIds.length;
+  const requiredSubscriptionHeaderSummary = draft?.requiredSubscriptionEnabled
+    ? requiredSubscriptionStaleCount > 0
+      ? `Нужно исправить: ${requiredSubscriptionStaleCount} недоступен`
+      : `${formatRequiredSubscriptionCount(requiredSubscriptionSelectedCount)} · сообщения без подписки удаляются`
+    : 'Выключено';
+  const requiredSubscriptionCardStatus = draft?.requiredSubscriptionEnabled
+    ? requiredSubscriptionStaleCount > 0
+      ? 'Ошибка'
+      : formatRequiredSubscriptionCount(requiredSubscriptionSelectedCount)
+    : 'Выкл';
   const profanityFilterHeaderSummary = draft?.russianProfanityFilterEnabled
     ? `${profanityStagesEnabledCount}/4 ступени включено`
     : 'Выключено';
@@ -4648,7 +4812,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           ) : null}
                         </>
                       ) : null}
-
                     </div>
                   ) : null}
                 </div>
@@ -7434,7 +7597,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           <div className="settings-native-toggle">
                             <div className="settings-native-toggle__row">
                               <div className="settings-native-toggle__title-wrap">
-                                <span className="settings-native-toggle__title">Закрыть группу</span>
+                                <span className="settings-native-toggle__title">
+                                  Закрыть группу
+                                </span>
                                 <button
                                   type="button"
                                   className={cn(
@@ -7484,8 +7649,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 id="night-force-close-hint"
                                 className="settings-native-toggle__hint"
                               >
-                                Пока ручное закрытие активно, бот молча удаляет сообщения
-                                не-админов без дополнительного текста.
+                                Пока ручное закрытие активно, бот молча удаляет сообщения не-админов
+                                без дополнительного текста.
                               </p>
                             ) : null}
                           </div>
@@ -7527,8 +7692,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </div>
                           ) : null}
 
-                          {draft.nightModeForceCloseEnabled &&
-                          !draft.nightModeForceCloseForever ? (
+                          {draft.nightModeForceCloseEnabled && !draft.nightModeForceCloseForever ? (
                             <div
                               className={cn(
                                 'settings-native-toggle',
@@ -8017,6 +8181,288 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <GlassCard
               className="settings-section stagger-in"
               style={{ animationDelay: '360ms' }}
+              aria-label="Обязательная подписка"
+            >
+              <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
+                <SettingsSectionToggle
+                  title="Обязательная подписка"
+                  summary={requiredSubscriptionHeaderSummary}
+                  status={requiredSubscriptionCardStatus}
+                  icon="shield"
+                  tone="sky"
+                  open={expandedSections.requiredSubscription}
+                  controls="settings-required-subscription-content"
+                  onClick={() => toggleSection('requiredSubscription')}
+                />
+              </div>
+
+              <SettingsDrilldownPanel
+                id="settings-required-subscription-content"
+                open={expandedSections.requiredSubscription}
+                title="Обязательная подписка"
+                summary={requiredSubscriptionHeaderSummary}
+                onClose={() => toggleSection('requiredSubscription')}
+                footer={renderSectionSaveFooter('requiredSubscription')}
+              >
+                <div
+                  id="settings-required-subscription-content"
+                  className={cn(
+                    'settings-section__collapse',
+                    expandedSections.requiredSubscription && 'is-open',
+                  )}
+                >
+                  {expandedSections.requiredSubscription ? (
+                    <div className="settings-section__collapse-inner managed-giveaway">
+                      <div className="settings-native-toggle">
+                        <div className="settings-native-toggle__row">
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="settings-native-toggle__title">
+                              Требовать подписку перед сообщением
+                            </span>
+                            <button
+                              type="button"
+                              className={cn(
+                                'settings-info-button',
+                                openHintKey === 'requiredSubscriptionEnabled' && 'is-open',
+                              )}
+                              aria-label="Пояснение для обязательной подписки"
+                              aria-controls="required-subscription-enabled-hint"
+                              aria-expanded={openHintKey === 'requiredSubscriptionEnabled'}
+                              onClick={() => toggleHint('requiredSubscriptionEnabled')}
+                            >
+                              <span aria-hidden>i</span>
+                            </button>
+                          </div>
+
+                          <label
+                            className="settings-native-switch"
+                            aria-label="Включить обязательную подписку перед отправкой сообщений"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={draft.requiredSubscriptionEnabled}
+                              onChange={(event) => {
+                                setFieldValue('requiredSubscriptionEnabled', event.target.checked);
+                                if (!event.target.checked) {
+                                  clearFieldError('requiredSubscriptionChannelIds');
+                                }
+                              }}
+                            />
+                            <span className="toggle-switch" aria-hidden>
+                              <span className="toggle-switch__thumb" />
+                            </span>
+                          </label>
+                        </div>
+
+                        {openHintKey === 'requiredSubscriptionEnabled' ? (
+                          <p
+                            id="required-subscription-enabled-hint"
+                            className="settings-native-toggle__hint"
+                          >
+                            Если пользователь не подписан хотя бы на один обязательный канал, бот
+                            удалит сообщение и попросит подписаться перед повторной отправкой.
+                          </p>
+                        ) : null}
+                      </div>
+
+                      <div className="managed-giveaway__section">
+                        <div className="managed-giveaway__section-head">
+                          <div className="managed-giveaway__section-copy">
+                            <strong>Каналы для проверки</strong>
+                            <small>
+                              {requiredSubscriptionSelectedCount}/
+                              {REQUIRED_SUBSCRIPTION_MAX_CHANNELS} выбрано
+                            </small>
+                          </div>
+
+                          <SettingsHintAnchor
+                            hintKey="requiredSubscriptionChannels"
+                            openHintKey={openHintKey}
+                            onToggleHint={toggleHint}
+                            label="Пояснение для списка обязательных каналов"
+                          >
+                            Можно выбрать только ваши управляемые каналы с рабочей ссылкой.
+                            Недоступные ID нужно удалить, иначе включённое правило не сохранится.
+                          </SettingsHintAnchor>
+                        </div>
+
+                        <div className="managed-giveaway__chips">
+                          <span className="managed-giveaway__chip">
+                            Без подписки сообщения удаляются
+                          </span>
+                          <span className="managed-giveaway__chip">
+                            Проверка до антиспама и санкций
+                          </span>
+                        </div>
+
+                        {selectedRequiredSubscriptionChannels.length > 0 ? (
+                          <div className="managed-giveaway__prize-editor-list">
+                            {selectedRequiredSubscriptionChannels.map((channel, index) => (
+                              <div
+                                key={`required-subscription-channel-${channel.id}`}
+                                className="managed-giveaway__prize-editor-row"
+                              >
+                                <span className="managed-giveaway__prize-position">
+                                  {index + 1}
+                                </span>
+                                <span
+                                  className="managed-giveaway__selected-channel"
+                                  title={channel.link}
+                                >
+                                  {channel.title}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="managed-giveaway__prize-remove"
+                                  onClick={() => removeRequiredSubscriptionChannel(channel.id)}
+                                  aria-label={`Удалить канал ${channel.title}`}
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        {staleRequiredSubscriptionChannelIds.length > 0 ? (
+                          <div className="managed-giveaway__prize-editor-list">
+                            {staleRequiredSubscriptionChannelIds.map((channelId, index) => (
+                              <div
+                                key={`required-subscription-stale-${channelId}`}
+                                className="managed-giveaway__prize-editor-row"
+                              >
+                                <span className="managed-giveaway__prize-position">
+                                  {selectedRequiredSubscriptionChannels.length + index + 1}
+                                </span>
+                                <span
+                                  className="managed-giveaway__selected-channel"
+                                  title={channelId}
+                                >
+                                  Недоступен: {channelId}
+                                </span>
+                                <button
+                                  type="button"
+                                  className="managed-giveaway__prize-remove"
+                                  onClick={() => removeRequiredSubscriptionChannel(channelId)}
+                                  aria-label={`Удалить недоступный канал ${channelId}`}
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        {requiredSubscriptionChannelsError ? (
+                          <small className="field__hint">{requiredSubscriptionChannelsError}</small>
+                        ) : null}
+
+                        <div className="managed-giveaway__channel-picker">
+                          {channelsQuery.isLoading ? <span>Загружаем ваши каналы...</span> : null}
+                          {channelsQuery.error ? (
+                            <span>
+                              Ошибка загрузки каналов: {formatApiError(channelsQuery.error)}
+                            </span>
+                          ) : null}
+                          {!channelsQuery.isLoading &&
+                          !channelsQuery.error &&
+                          availableRequiredSubscriptionChannelChoices.length === 0 ? (
+                            <span>
+                              {requiredSubscriptionSelectedCount >=
+                              REQUIRED_SUBSCRIPTION_MAX_CHANNELS
+                                ? 'Достигнут лимит выбранных каналов.'
+                                : 'Нет доступных каналов с рабочей ссылкой для добавления.'}
+                            </span>
+                          ) : null}
+                          {!channelsQuery.isLoading && !channelsQuery.error
+                            ? availableRequiredSubscriptionChannelChoices.map((channel) => (
+                                <button
+                                  key={`required-subscription-choice-${channel.id}`}
+                                  type="button"
+                                  className="managed-giveaway__channel-picker-item"
+                                  onClick={() => addRequiredSubscriptionChannel(channel.id)}
+                                  disabled={
+                                    requiredSubscriptionSelectedCount >=
+                                    REQUIRED_SUBSCRIPTION_MAX_CHANNELS
+                                  }
+                                >
+                                  {channel.title}
+                                </button>
+                              ))
+                            : null}
+                        </div>
+                      </div>
+
+                      <div className="settings-native-toggle">
+                        <div className="settings-native-toggle__row">
+                          <div className="settings-native-toggle__title-wrap">
+                            <span className="settings-native-toggle__title">
+                              Текст предупреждения
+                            </span>
+                            <div className="settings-native-toggle__title-actions">
+                              <EditToggleButton
+                                label="Редактировать текст предупреждения об обязательной подписке"
+                                onClick={() => toggleBotMessageEditor('requiredSubscription')}
+                                disabled={!draft.requiredSubscriptionEnabled}
+                                isOpen={openBotEditorKey === 'requiredSubscription'}
+                              />
+                              <button
+                                type="button"
+                                className={cn(
+                                  'settings-info-button',
+                                  openHintKey === 'requiredSubscriptionBotMessage' && 'is-open',
+                                )}
+                                aria-label="Пояснение для текста предупреждения об обязательной подписке"
+                                aria-controls="required-subscription-bot-message-hint"
+                                aria-expanded={openHintKey === 'requiredSubscriptionBotMessage'}
+                                onClick={() => toggleHint('requiredSubscriptionBotMessage')}
+                              >
+                                <span aria-hidden>i</span>
+                              </button>
+                            </div>
+                          </div>
+
+                          <span className="chip">
+                            {draft.requiredSubscriptionBotMessageText.trim()
+                              ? 'Кастомный'
+                              : 'По умолчанию'}
+                          </span>
+                        </div>
+
+                        {openHintKey === 'requiredSubscriptionBotMessage' ? (
+                          <p
+                            id="required-subscription-bot-message-hint"
+                            className="settings-native-toggle__hint"
+                          >
+                            В сообщение можно подставлять имя пользователя, список недостающих
+                            каналов и статус удалённого сообщения.
+                          </p>
+                        ) : null}
+
+                        {openBotEditorKey === 'requiredSubscription' ? (
+                          <BotMessageEditor
+                            editorKey="requiredSubscription"
+                            botSpeechStyle={draft.botSpeechStyle}
+                            value={draft.requiredSubscriptionBotMessageText}
+                            onChange={(nextValue) =>
+                              setFieldValue(
+                                'requiredSubscriptionBotMessageText',
+                                nextValue as ChatSettings['requiredSubscriptionBotMessageText'],
+                              )
+                            }
+                            onReset={() => setFieldValue('requiredSubscriptionBotMessageText', '')}
+                          />
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              </SettingsDrilldownPanel>
+            </GlassCard>
+
+            <GlassCard
+              className="settings-section stagger-in"
+              style={{ animationDelay: '372ms' }}
               aria-label="Сервисные настройки"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>

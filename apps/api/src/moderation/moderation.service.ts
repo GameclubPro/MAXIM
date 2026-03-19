@@ -91,6 +91,10 @@ const LINK_ESCALATION_WINDOW_HOURS = 24;
 const TEXT_FILTER_ESCALATION_WINDOW_HOURS = 24;
 const TOPIC_FILTER_ESCALATION_WINDOW_HOURS = 24;
 const MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS = 12;
+const REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC = 30;
+const REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC = 10;
+const REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC = 15 * 60;
+const REQUIRED_SUBSCRIPTION_RULE_CODE = 'REQUIRED_SUBSCRIPTION';
 const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
 const CHAT_ADMIN_CACHE_TTL_SEC = Math.ceil(CHAT_ADMIN_CACHE_TTL_MS / 1_000);
 const CHAT_ADMIN_SHARED_CACHE_KEY_PREFIX = 'chat-admins:v2';
@@ -553,6 +557,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         nightModeEndTimeMinutes: settings.nightModeEndTimeMinutes,
         nightModeTimezone: settings.nightModeTimezone,
       });
+      return;
+    }
+
+    const requiredSubscriptionHandled = await this.handleRequiredSubscriptionMessage({
+      chatId,
+      userId: senderId,
+      userLabel,
+      messageId,
+      text,
+      createdAt,
+      settings,
+      rulesPublishedUrl,
+      rulesPublishedMessageId,
+    });
+    if (requiredSubscriptionHandled) {
       return;
     }
 
@@ -1509,6 +1528,27 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
   }
 
+  private buildRequiredSubscriptionExplanation(
+    userLabel: string,
+    canDeleteMessage: boolean,
+    channelTitles: readonly string[],
+    templateText: string,
+    botSpeechStyle: BotSpeechStyle | null,
+  ): string {
+    const channelsLabel = this.formatRequiredSubscriptionChannels(channelTitles);
+
+    return this.renderEditableBotSpeechTemplate({
+      style: botSpeechStyle,
+      fieldKey: 'requiredSubscriptionBotMessageText',
+      overrideText: templateText,
+      replacements: {
+        user: userLabel,
+        channels: channelsLabel,
+        message_status: this.buildMessageStatusLabel(canDeleteMessage),
+      },
+    });
+  }
+
   private buildLinkWarnExplanation(
     userLabel: string,
     templateText: string,
@@ -1527,6 +1567,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         warning,
       },
     });
+  }
+
+  private formatRequiredSubscriptionChannels(channelTitles: readonly string[]): string {
+    const normalizedTitles = channelTitles
+      .map((item) => item.replace(/\s+/g, ' ').trim())
+      .filter((item) => item.length > 0)
+      .map((item) => this.escapeMaxMarkdownText(item));
+
+    if (normalizedTitles.length === 0) {
+      return 'обязательные каналы';
+    }
+
+    return normalizedTitles.join(', ');
   }
 
   private buildLinkKickExplanation(
@@ -2843,6 +2896,53 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
       : {
           messageLink: rulesMessageLink,
+        };
+  }
+
+  private buildRequiredSubscriptionMessageOptions(
+    channels: ReadonlyArray<{ id: string; title: string; link: string | null }>,
+    rulesButtonEnabled: boolean,
+    rulesPublishedUrl: string | null,
+    rulesPublishedMessageId: string | null,
+  ): MaxSendMessageOptions | null {
+    const buttons = channels
+      .map((channel) => {
+        const normalizedUrl = this.normalizeBotButtonUrl(channel.link ?? '');
+        if (!normalizedUrl) {
+          return null;
+        }
+
+        return {
+          text: this.normalizeBotButtonText(channel.title),
+          url: normalizedUrl,
+        } satisfies MaxLinkButton;
+      })
+      .filter((button): button is MaxLinkButton => button !== null);
+    const rulesMessageLink = this.buildRulesMessageLink(
+      rulesButtonEnabled,
+      rulesPublishedUrl,
+      rulesPublishedMessageId,
+    );
+
+    if (buttons.length === 0 && !rulesMessageLink) {
+      return null;
+    }
+
+    return buttons.length > 0
+      ? {
+          buttons: [buttons],
+          ...(rulesMessageLink ? { messageLink: rulesMessageLink } : {}),
+          debugContext: {
+            screen: 'moderation',
+            action: 'required-subscription-notice',
+          },
+        }
+      : {
+          messageLink: rulesMessageLink,
+          debugContext: {
+            screen: 'moderation',
+            action: 'required-subscription-notice',
+          },
         };
   }
 
@@ -4436,6 +4536,297 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         `Сообщение от ${userId} попало в ручное закрытие группы, но старше 24 часов и не может быть удалено`,
       );
     }
+  }
+
+  private async handleRequiredSubscriptionMessage(params: {
+    chatId: string;
+    userId: string;
+    userLabel: string;
+    messageId: string;
+    text: string;
+    createdAt: string;
+    settings: Pick<
+      ChatSettings,
+      | 'requiredSubscriptionEnabled'
+      | 'requiredSubscriptionChannelIds'
+      | 'requiredSubscriptionBotMessageText'
+      | 'botSpeechStyle'
+      | 'rulesAttachViolationsEnabled'
+      | 'deleteBotMessagesEnabled'
+      | 'deleteBotMessagesDelayMinutes'
+    >;
+    rulesPublishedUrl: string | null;
+    rulesPublishedMessageId: string | null;
+  }): Promise<boolean> {
+    if (!params.settings.requiredSubscriptionEnabled) {
+      return false;
+    }
+
+    const requiredChannelIds = this.readRequiredSubscriptionChannelIds(
+      params.settings.requiredSubscriptionChannelIds,
+    );
+    if (requiredChannelIds.length === 0) {
+      return false;
+    }
+
+    const membership = await this.resolveRequiredSubscriptionMembership(
+      params.chatId,
+      params.userId,
+      requiredChannelIds,
+    );
+    if (!membership || membership.missingChannelIds.length === 0) {
+      return false;
+    }
+
+    const messageAgeMs = Date.now() - new Date(params.createdAt).getTime();
+    const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1_000;
+    if (!canDeleteMessage) {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          userId: params.userId,
+          messageId: params.messageId,
+        },
+        'Required subscription violation arrived too late to delete message',
+      );
+      return false;
+    }
+
+    await this.maxClient.deleteMessage(params.chatId, params.messageId);
+
+    const missingChannels = await this.resolveRequiredSubscriptionChannels(
+      membership.missingChannelIds,
+    );
+    const missingChannelTitles = missingChannels.map((channel) => channel.title);
+
+    await this.prisma.violation.create({
+      data: {
+        chatId: params.chatId,
+        userId: params.userId,
+        ruleCode: REQUIRED_SUBSCRIPTION_RULE_CODE,
+        score: 1,
+      },
+    });
+    await this.prisma.moderationEvent.create({
+      data: {
+        chatId: params.chatId,
+        userId: params.userId,
+        messageId: params.messageId,
+        eventType: EventType.MESSAGE,
+        ruleCode: `${REQUIRED_SUBSCRIPTION_RULE_CODE}_DELETE`,
+        action: SanctionAction.DELETE_MESSAGE,
+        maskedExcerpt: maskText(params.text),
+        score: 1,
+        operator: Operator.BOT,
+        metadata: {
+          requiredChannelIds,
+          missingChannelIds: membership.missingChannelIds,
+          missingChannelTitles,
+        },
+      },
+    });
+
+    const shouldSendNotice = await this.shouldSendRequiredSubscriptionNotice(
+      params.chatId,
+      params.userId,
+    );
+    if (!shouldSendNotice) {
+      return true;
+    }
+
+    const requiredSubscriptionMessageOptions =
+      this.buildRequiredSubscriptionMessageOptions(
+        missingChannels,
+        params.settings.rulesAttachViolationsEnabled,
+        params.rulesPublishedUrl,
+        params.rulesPublishedMessageId,
+      ) ?? undefined;
+
+    try {
+      await this.sendBotMessageWithOptionalAutoDelete({
+        chatId: params.chatId,
+        text: this.buildRequiredSubscriptionExplanation(
+          params.userLabel,
+          canDeleteMessage,
+          missingChannelTitles,
+          params.settings.requiredSubscriptionBotMessageText,
+          params.settings.botSpeechStyle,
+        ),
+        messageOptions: requiredSubscriptionMessageOptions,
+        deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
+        deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: params.chatId,
+          userId: params.userId,
+          messageId: params.messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to send required subscription explanation message',
+      );
+    }
+
+    return true;
+  }
+
+  private readRequiredSubscriptionChannelIds(value: Prisma.JsonValue): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return Array.from(
+      new Set(
+        value
+          .map((item) => (typeof item === 'string' ? item.trim() : ''))
+          .filter((item) => item.length > 0),
+      ),
+    );
+  }
+
+  private async resolveRequiredSubscriptionMembership(
+    chatId: string,
+    userId: string,
+    requiredChannelIds: readonly string[],
+  ): Promise<{ missingChannelIds: string[] } | null> {
+    const missingChannelIds: string[] = [];
+
+    for (const channelId of requiredChannelIds) {
+      const membership = await this.getRequiredSubscriptionMembership(channelId, userId);
+      if (membership === null) {
+        this.logger.warn(
+          {
+            chatId,
+            userId,
+            channelId,
+          },
+          'Required subscription check failed; skipping enforcement',
+        );
+        return null;
+      }
+
+      if (!membership) {
+        missingChannelIds.push(channelId);
+      }
+    }
+
+    return { missingChannelIds };
+  }
+
+  private async getRequiredSubscriptionMembership(
+    channelId: string,
+    userId: string,
+  ): Promise<boolean | null> {
+    const cacheKey = this.buildRequiredSubscriptionMembershipCacheKey(channelId, userId);
+    const cached = await this.redisCounter?.getString(cacheKey);
+    if (cached === '1') {
+      return true;
+    }
+    if (cached === '0') {
+      return false;
+    }
+
+    try {
+      const isMember = await this.maxClient.hasChatMember(channelId, userId);
+      await this.redisCounter?.setStringWithTtl(
+        cacheKey,
+        isMember ? '1' : '0',
+        isMember
+          ? REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC
+          : REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC,
+      );
+      return isMember;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          channelId,
+          userId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to resolve required subscription membership',
+      );
+      return null;
+    }
+  }
+
+  private async resolveRequiredSubscriptionChannels(
+    channelIds: readonly string[],
+  ): Promise<Array<{ id: string; title: string; link: string | null }>> {
+    const channels: Array<{ id: string; title: string; link: string | null }> = [];
+
+    for (const channelId of channelIds) {
+      const cached = await this.chatContextCache?.getManagedEntityHeader(channelId, 'channel');
+      const cachedLink = cached?.link?.trim() || null;
+      const cachedTitle = cached?.title?.trim() || '';
+      if (cached && cachedLink) {
+        channels.push({
+          id: channelId,
+          title: cachedTitle || `Канал ${channelId}`,
+          link: cachedLink,
+        });
+        continue;
+      }
+
+      try {
+        const snapshot = await this.maxClient.getChatSnapshot(channelId);
+        const title = snapshot.title?.trim() || `Канал ${channelId}`;
+        const link = snapshot.link?.trim() || null;
+        await this.chatContextCache?.setManagedEntityHeader({
+          id: channelId,
+          title,
+          entityType: 'channel',
+          link,
+          participantsCount: snapshot.participantsCount,
+        });
+        channels.push({
+          id: channelId,
+          title,
+          link,
+        });
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            channelId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to resolve required subscription channel metadata',
+        );
+        channels.push({
+          id: channelId,
+          title: cachedTitle || `Канал ${channelId}`,
+          link: null,
+        });
+      }
+    }
+
+    return channels;
+  }
+
+  private async shouldSendRequiredSubscriptionNotice(
+    chatId: string,
+    userId: string,
+  ): Promise<boolean> {
+    const cacheKey = this.buildRequiredSubscriptionNoticeCooldownKey(chatId, userId);
+    const cached = await this.redisCounter?.getString(cacheKey);
+    if (cached === '1') {
+      return false;
+    }
+
+    await this.redisCounter?.setStringWithTtl(
+      cacheKey,
+      '1',
+      REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC,
+    );
+    return true;
+  }
+
+  private buildRequiredSubscriptionMembershipCacheKey(channelId: string, userId: string): string {
+    return `required-subscription:member:v1:${channelId}:${userId}`;
+  }
+
+  private buildRequiredSubscriptionNoticeCooldownKey(chatId: string, userId: string): string {
+    return `required-subscription:notice:v1:${chatId}:${userId}`;
   }
 
   private isNightModeActiveNow(settings: {

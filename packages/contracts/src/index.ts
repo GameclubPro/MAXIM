@@ -34,6 +34,7 @@ export const applySettingsSectionSchema = z.enum([
   'duplicates',
   'limits',
   'night',
+  'requiredSubscription',
   'extra',
 ]);
 export const channelAutoPostButtonsModeSchema = z.enum(['OFF', 'COMMENTS', 'SUGGEST', 'BOTH']);
@@ -73,6 +74,7 @@ export const MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS = 10;
 export const MANAGED_GIVEAWAY_TITLE_MAX_LENGTH = 120;
 export const MANAGED_GIVEAWAY_DESCRIPTION_MAX_LENGTH = 2_000;
 export const MANAGED_GIVEAWAY_PRIZE_TITLE_MAX_LENGTH = 120;
+export const REQUIRED_SUBSCRIPTION_MAX_CHANNELS = 10;
 
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
 const duplicateMaxCountSchema = z.number().int().min(2).max(20);
@@ -81,6 +83,10 @@ const botButtonTextSchema = z.string().trim().max(32).default('Открыть');
 const botMessageTextSchema = z.string().max(1_000).default('');
 const thematicCodewordSchema = z.string().trim().max(32).default('');
 const nightModeForceCloseUntilSchema = z.string().trim().max(64).default('');
+const requiredSubscriptionChannelIdsSchema = z
+  .array(z.string().trim().min(1).max(128))
+  .max(REQUIRED_SUBSCRIPTION_MAX_CHANNELS)
+  .default([]);
 const chatRulesTextSchema = z.string().max(2_000).default('');
 const chatRulesImageBase64Schema = z.string().trim().max(1_500_000).default('');
 const chatRulesImageMimeTypeSchema = z.string().trim().max(128).default('');
@@ -271,6 +277,9 @@ export const chatSettingsSchema = z
     greetingBotButtonUrl: botButtonUrlSchema,
     greetingBotButtonText: botButtonTextSchema,
     greetingRulesButtonEnabled: z.boolean().default(false),
+    requiredSubscriptionEnabled: z.boolean().default(false),
+    requiredSubscriptionChannelIds: requiredSubscriptionChannelIdsSchema,
+    requiredSubscriptionBotMessageText: botMessageTextSchema,
     deleteBotMessagesEnabled: z.boolean().default(true),
     deleteBotMessagesDelayMinutes: z.number().int().min(1).max(60).default(2),
     removeBotsFromGroupEnabled: z.boolean().default(true),
@@ -461,6 +470,14 @@ export const chatSettingsSchema = z
         code: z.ZodIssueCode.custom,
         path: ['greetingBotButtonText'],
         message: 'Введите название кнопки.',
+      });
+    }
+
+    if (value.requiredSubscriptionEnabled && value.requiredSubscriptionChannelIds.length === 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['requiredSubscriptionChannelIds'],
+        message: 'Выберите хотя бы один канал для обязательной подписки.',
       });
     }
 

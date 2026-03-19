@@ -376,6 +376,10 @@ function createInitialState(): PreviewState {
     nightModeEnabled: true,
     nightModeOpenMessageEnabled: true,
     nightModeOpenMessageText: 'Ночью чат закрыт. Напишите утром.',
+    requiredSubscriptionEnabled: true,
+    requiredSubscriptionChannelIds: [PREVIEW_CHANNEL_ID, 'preview-channel-2'],
+    requiredSubscriptionBotMessageText:
+      'Для сообщений в этом чате нужна подписка на {channels}. Подпишитесь и отправьте сообщение ещё раз. Статус: {message_status}.',
     banDurationHours: 12,
     warnThreshold: 2,
   });
