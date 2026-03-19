@@ -3550,26 +3550,26 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   </article>
 
                   <article className="settings-speech-preview__item">
-                    <span className="settings-speech-preview__label">Объяснение удаления</span>
+                    <span className="settings-speech-preview__label">1. Объяснение</span>
                     <p className="settings-speech-preview__text">
                       {pendingSpeechStyleSamples.explanation}
                     </p>
                   </article>
 
                   <article className="settings-speech-preview__item">
-                    <span className="settings-speech-preview__label">Предупреждение</span>
+                    <span className="settings-speech-preview__label">2. Предупреждение</span>
                     <p className="settings-speech-preview__text">
                       {pendingSpeechStyleSamples.warning}
                     </p>
                   </article>
 
                   <article className="settings-speech-preview__item">
-                    <span className="settings-speech-preview__label">Bye / вывод из чата</span>
+                    <span className="settings-speech-preview__label">3. Вывод из чата</span>
                     <p className="settings-speech-preview__text">{pendingSpeechStyleSamples.bye}</p>
                   </article>
 
                   <article className="settings-speech-preview__item">
-                    <span className="settings-speech-preview__label">Пауза</span>
+                    <span className="settings-speech-preview__label">4. Пауза</span>
                     <p className="settings-speech-preview__text">
                       {pendingSpeechStyleSamples.pause}
                     </p>
@@ -8249,8 +8249,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 onClose={() => toggleSection('requiredSubscription')}
                 footer={renderSectionSaveFooter('requiredSubscription', {
                   note: canApplyToAllChats
-                    ? 'Сначала проверьте каналы и текст в текущем чате. Массовое применение лучше запускать только после локальной проверки.'
-                    : 'Сначала сохраните правило в текущем чате. Для массового применения нужен хотя бы ещё один чат.',
+                    ? 'Сначала сохраните в этом чате.'
+                    : 'Сначала сохраните здесь.',
                   applyToAllLabel: 'Применить во всех чатах',
                   emphasize: 'save',
                 })}
@@ -8310,9 +8310,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             id="required-subscription-enabled-hint"
                             className="settings-native-toggle__hint"
                           >
-                            Если пользователь не подписан хотя бы на один обязательный канал, бот
-                            удалит сообщение, покажет стандартное объяснение и попросит подписаться
-                            перед повторной отправкой.
+                            Без подписки сообщение удаляется.
                           </p>
                         ) : null}
                       </div>
@@ -8333,8 +8331,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             onToggleHint={toggleHint}
                             label="Пояснение для списка обязательных каналов"
                           >
-                            Можно выбрать только ваши управляемые каналы с рабочей ссылкой.
-                            Недоступные ID нужно удалить, иначе включённое правило не сохранится.
+                            Только ваши каналы с рабочей ссылкой.
                           </SettingsHintAnchor>
                         </div>
 
@@ -8346,8 +8343,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           )}
                         >
                           {requiredSubscriptionStaleCount > 0
-                            ? 'В списке есть недоступные каналы. Пока вы их не удалите или не выберете заново, правило нельзя безопасно включать во всех чатах.'
-                            : 'Проверка проходит до антиспама и санкций: если подписки нет, сообщение удаляется сразу, а бот показывает кнопки только для недостающих каналов.'}
+                            ? 'Есть недоступные каналы. Удалите их.'
+                            : 'Без подписки сообщение удаляется.'}
                         </p>
 
                         {selectedRequiredSubscriptionChannels.length > 0 ? (
@@ -8489,10 +8486,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             id="required-subscription-bot-message-hint"
                             className="settings-native-toggle__hint"
                           >
-                            По умолчанию здесь используется стандартное объяснение из выбранного
-                            стиля речи бота. Для этого правила бот не выдает предупреждение или bye:
-                            он удаляет сообщение и отправляет только объяснение с кнопками
-                            недостающих каналов.
+                            Берётся из текущего стиля речи. Можно заменить своим текстом.
                           </p>
                         ) : null}
 
