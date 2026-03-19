@@ -674,8 +674,8 @@ function buildSpeechStylePreviewSamples(style: BotSpeechStyle): {
   greeting: string;
   explanation: string;
   warning: string;
-  bye: string;
-  pause: string;
+  ban: string;
+  kick: string;
 } {
   return {
     greeting: renderBotMessageTemplatePreview(
@@ -701,12 +701,12 @@ function buildSpeechStylePreviewSamples(style: BotSpeechStyle): {
         reason: 'грубая лексика запрещена правилами чата',
       },
     ),
-    bye: renderBotMessageTemplatePreview(getSpeechSystemTemplateFallback(style, 'linkKick'), {
-      user: 'Алексей',
-    }),
-    pause: renderBotMessageTemplatePreview(getSpeechSystemTemplateFallback(style, 'banNotice'), {
+    ban: renderBotMessageTemplatePreview(getSpeechSystemTemplateFallback(style, 'banNotice'), {
       user: 'Алексей',
       ban_duration: '24 часа',
+    }),
+    kick: renderBotMessageTemplatePreview(getSpeechSystemTemplateFallback(style, 'linkKick'), {
+      user: 'Алексей',
     }),
   };
 }
@@ -3541,39 +3541,61 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           >
             {pendingSpeechStyleMeta && pendingSpeechStyleSamples ? (
               <div className="settings-speech-preview">
-                <div className="settings-speech-preview__list">
-                  <article className="settings-speech-preview__item">
-                    <span className="settings-speech-preview__label">Приветствие</span>
-                    <p className="settings-speech-preview__text">
-                      {pendingSpeechStyleSamples.greeting}
-                    </p>
-                  </article>
+                <div
+                  className="settings-subsection-divider"
+                  role="separator"
+                  aria-label="Приветствие"
+                >
+                  <span>Приветствие</span>
+                </div>
 
-                  <article className="settings-speech-preview__item">
-                    <span className="settings-speech-preview__label">1. Объяснение</span>
-                    <p className="settings-speech-preview__text">
-                      {pendingSpeechStyleSamples.explanation}
-                    </p>
-                  </article>
+                <div className="settings-native-toggle">
+                  <div className="settings-native-toggle__row">
+                    <span className="settings-native-toggle__title">Новые участники</span>
+                  </div>
+                  <p className="settings-native-toggle__hint">
+                    {pendingSpeechStyleSamples.greeting}
+                  </p>
+                </div>
 
-                  <article className="settings-speech-preview__item">
-                    <span className="settings-speech-preview__label">2. Предупреждение</span>
-                    <p className="settings-speech-preview__text">
-                      {pendingSpeechStyleSamples.warning}
-                    </p>
-                  </article>
+                <div
+                  className="settings-subsection-divider"
+                  role="separator"
+                  aria-label="Стандартные действия бота"
+                >
+                  <span>Стандартные действия бота</span>
+                </div>
 
-                  <article className="settings-speech-preview__item">
-                    <span className="settings-speech-preview__label">3. Вывод из чата</span>
-                    <p className="settings-speech-preview__text">{pendingSpeechStyleSamples.bye}</p>
-                  </article>
+                <div className="settings-native-toggle">
+                  <div className="settings-native-toggle__row">
+                    <span className="settings-native-toggle__title">1. Объяснение</span>
+                  </div>
+                  <p className="settings-native-toggle__hint">
+                    {pendingSpeechStyleSamples.explanation}
+                  </p>
+                </div>
 
-                  <article className="settings-speech-preview__item">
-                    <span className="settings-speech-preview__label">4. Пауза</span>
-                    <p className="settings-speech-preview__text">
-                      {pendingSpeechStyleSamples.pause}
-                    </p>
-                  </article>
+                <div className="settings-native-toggle settings-native-toggle--nested">
+                  <div className="settings-native-toggle__row">
+                    <span className="settings-native-toggle__title">2. Предупреждение</span>
+                  </div>
+                  <p className="settings-native-toggle__hint">
+                    {pendingSpeechStyleSamples.warning}
+                  </p>
+                </div>
+
+                <div className="settings-native-toggle settings-native-toggle--nested">
+                  <div className="settings-native-toggle__row">
+                    <span className="settings-native-toggle__title">3. Бан на 24ч</span>
+                  </div>
+                  <p className="settings-native-toggle__hint">{pendingSpeechStyleSamples.ban}</p>
+                </div>
+
+                <div className="settings-native-toggle settings-native-toggle--nested">
+                  <div className="settings-native-toggle__row">
+                    <span className="settings-native-toggle__title">4. Удаление из группы</span>
+                  </div>
+                  <p className="settings-native-toggle__hint">{pendingSpeechStyleSamples.kick}</p>
                 </div>
               </div>
             ) : null}
@@ -8335,17 +8357,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           </SettingsHintAnchor>
                         </div>
 
-                        <p
-                          className={cn(
-                            'settings-native-toggle__hint',
-                            requiredSubscriptionStaleCount > 0 &&
+                        {requiredSubscriptionStaleCount > 0 ? (
+                          <p
+                            className={cn(
+                              'settings-native-toggle__hint',
                               'settings-native-toggle__hint--danger',
-                          )}
-                        >
-                          {requiredSubscriptionStaleCount > 0
-                            ? 'Есть недоступные каналы. Удалите их.'
-                            : 'Без подписки сообщение удаляется.'}
-                        </p>
+                            )}
+                          >
+                            Есть недоступные каналы. Удалите их.
+                          </p>
+                        ) : null}
 
                         {selectedRequiredSubscriptionChannels.length > 0 ? (
                           <div className="managed-giveaway__prize-editor-list">
@@ -8445,15 +8466,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         </div>
                       </div>
 
+                      <div
+                        className="settings-subsection-divider"
+                        role="separator"
+                        aria-label="Действия бота для обязательной подписки"
+                      >
+                        <span>Действия бота</span>
+                      </div>
+
                       <div className="settings-native-toggle">
                         <div className="settings-native-toggle__row">
                           <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">
-                              Стандартное объяснение
-                            </span>
+                            <span className="settings-native-toggle__title">1. Объяснение</span>
                             <div className="settings-native-toggle__title-actions">
                               <EditToggleButton
-                                label="Редактировать стандартное объяснение об обязательной подписке"
+                                label="Редактировать объяснение об обязательной подписке"
                                 onClick={() => toggleBotMessageEditor('requiredSubscription')}
                                 disabled={!draft.requiredSubscriptionEnabled}
                                 isOpen={openBotEditorKey === 'requiredSubscription'}
@@ -8464,7 +8491,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   'settings-info-button',
                                   openHintKey === 'requiredSubscriptionBotMessage' && 'is-open',
                                 )}
-                                aria-label="Пояснение для стандартного объяснения об обязательной подписке"
+                                aria-label="Пояснение для объяснения об обязательной подписке"
                                 aria-controls="required-subscription-bot-message-hint"
                                 aria-expanded={openHintKey === 'requiredSubscriptionBotMessage'}
                                 onClick={() => toggleHint('requiredSubscriptionBotMessage')}
@@ -8473,12 +8500,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </button>
                             </div>
                           </div>
-
-                          <span className="chip">
-                            {draft.requiredSubscriptionBotMessageText.trim()
-                              ? 'Кастомный'
-                              : 'По умолчанию'}
-                          </span>
                         </div>
 
                         {openHintKey === 'requiredSubscriptionBotMessage' ? (
