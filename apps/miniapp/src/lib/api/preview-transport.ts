@@ -90,6 +90,24 @@ function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
 }
 
+function buildAuthorBadge(value: string | null | undefined): string {
+  const normalized = value?.trim() ?? '';
+  if (!normalized) {
+    return 'MX';
+  }
+
+  const words = normalized
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/u)
+    .filter(Boolean);
+
+  if (words.length >= 2) {
+    return `${words[0]?.[0] ?? ''}${words[1]?.[0] ?? ''}`.toUpperCase();
+  }
+
+  return normalized.slice(0, 2).toUpperCase();
+}
+
 function addHours(value: Date, hours: number): Date {
   return new Date(value.getTime() + hours * 60 * 60 * 1_000);
 }
@@ -252,6 +270,7 @@ function buildPreviewDialogMessage(payload: {
   text: string;
   authorUserId: string;
   authorDisplayName: string | null;
+  avatarUrl?: string | null;
   createdAt: string;
   delivered?: boolean;
   deliveredToUserId?: string | null;
@@ -262,6 +281,7 @@ function buildPreviewDialogMessage(payload: {
     text: payload.text,
     authorUserId: payload.authorUserId,
     authorDisplayName: payload.authorDisplayName,
+    avatarUrl: payload.avatarUrl ?? null,
     createdAt: payload.createdAt,
     ...(payload.delivered !== undefined ? { delivered: payload.delivered } : {}),
     ...(payload.deliveredToUserId !== undefined
@@ -281,6 +301,33 @@ function buildPreviewDialogResponse(
     introText: bucket.introText,
     messages: bucket.messages,
   });
+}
+
+function buildPreviewAvatarDataUrl(label: string, startColor: string, endColor: string): string {
+  const initials = buildAuthorBadge(label);
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
+      <defs>
+        <linearGradient id="avatar-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+          <stop offset="0%" stop-color="${startColor}" />
+          <stop offset="100%" stop-color="${endColor}" />
+        </linearGradient>
+      </defs>
+      <rect width="96" height="96" rx="28" fill="url(#avatar-gradient)" />
+      <text
+        x="50%"
+        y="52%"
+        dominant-baseline="middle"
+        text-anchor="middle"
+        font-family="Manrope, Arial, sans-serif"
+        font-size="34"
+        font-weight="700"
+        fill="#ffffff"
+      >${initials}</text>
+    </svg>
+  `.trim();
+
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 }
 
 function createActivityItems(
@@ -662,6 +709,7 @@ function createInitialState(): PreviewState {
           text: 'Сделал компактную парковку для самокатов у 3-го подъезда. Проверьте, не мешает ли проходу.',
           authorUserId: 'preview-admin-2',
           authorDisplayName: 'Александр',
+          avatarUrl: buildPreviewAvatarDataUrl('Александр', '#4d94ff', '#2b64dd'),
           createdAt: addHours(now, -5.2).toISOString(),
         }),
         buildPreviewDialogMessage({
@@ -670,6 +718,7 @@ function createInitialState(): PreviewState {
           text: 'Смотрится аккуратно. Если добавить отражатель со стороны дорожки, вечером будет безопаснее.',
           authorUserId: 'preview-user-8',
           authorDisplayName: 'Марина Орлова',
+          avatarUrl: buildPreviewAvatarDataUrl('Марина Орлова', '#3cc58b', '#0f9f70'),
           createdAt: addHours(now, -4.8).toISOString(),
         }),
         buildPreviewDialogMessage({
@@ -678,6 +727,7 @@ function createInitialState(): PreviewState {
           text: 'Поддерживаю. Утром с коляской стало свободнее, раньше самокаты лежали прямо у перил.',
           authorUserId: 'preview-user-4',
           authorDisplayName: 'Наталья',
+          avatarUrl: buildPreviewAvatarDataUrl('Наталья', '#6aa8ff', '#3b7ef0'),
           createdAt: addHours(now, -4.5).toISOString(),
         }),
         buildPreviewDialogMessage({
@@ -686,6 +736,7 @@ function createInitialState(): PreviewState {
           text: 'Добавлю светоотражающую ленту и перенесу стойку на полметра ближе к клумбе.',
           authorUserId: 'preview-admin-2',
           authorDisplayName: 'Александр',
+          avatarUrl: buildPreviewAvatarDataUrl('Александр', '#4d94ff', '#2b64dd'),
           createdAt: addHours(now, -4.1).toISOString(),
         }),
         buildPreviewDialogMessage({
@@ -694,6 +745,7 @@ function createInitialState(): PreviewState {
           text: 'Отлично. Тогда оставим тестом на неделю и посмотрим, как поведёт себя поток вечером.',
           authorUserId: 'preview-admin',
           authorDisplayName: 'Алексей',
+          avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
           createdAt: addHours(now, -3.9).toISOString(),
         }),
       ],
@@ -707,6 +759,7 @@ function createInitialState(): PreviewState {
           text: 'Можно сделать короткий пост про новые контейнеры для батареек у офиса управляющей компании.',
           authorUserId: 'preview-admin',
           authorDisplayName: 'Алексей',
+          avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
           createdAt: addHours(now, -7.2).toISOString(),
           delivered: true,
           deliveredToUserId: 'preview-admin-2',
@@ -725,6 +778,7 @@ function createInitialState(): PreviewState {
           text: 'Спасибо за карту отключений. Наконец-то видно точный интервал по улице Сиреневой.',
           authorUserId: 'preview-user-11',
           authorDisplayName: 'Татьяна',
+          avatarUrl: buildPreviewAvatarDataUrl('Татьяна', '#f1a44b', '#ea7b4b'),
           createdAt: addHours(now, -10.5).toISOString(),
         }),
         buildPreviewDialogMessage({
@@ -733,6 +787,7 @@ function createInitialState(): PreviewState {
           text: 'Если добавите следующий апдейт про развоз воды, закрепите его в начале треда.',
           authorUserId: 'preview-admin',
           authorDisplayName: 'Алексей',
+          avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
           createdAt: addHours(now, -9.8).toISOString(),
         }),
       ],
@@ -746,6 +801,7 @@ function createInitialState(): PreviewState {
           text: 'Подборка ярмарок выходного дня отлично зайдёт на воскресенье утром.',
           authorUserId: 'preview-admin',
           authorDisplayName: 'Алексей',
+          avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
           createdAt: addHours(now, -6.4).toISOString(),
           delivered: true,
           deliveredToUserId: 'preview-admin-2',
@@ -759,6 +815,7 @@ function createInitialState(): PreviewState {
       userId: 'preview-admin',
       username: 'designer',
       displayName: 'Алексей',
+      avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
     },
     chats: [
       {
@@ -1310,6 +1367,7 @@ async function handleChatRequest(
         text: payload.text,
         authorUserId: state.me.userId,
         authorDisplayName: state.me.displayName ?? state.me.username ?? null,
+        avatarUrl: state.me.avatarUrl ?? null,
         createdAt: new Date().toISOString(),
         ...(dialogType === 'suggest'
           ? {
@@ -1722,6 +1780,7 @@ async function handleChannelRequest(
         text: payload.text,
         authorUserId: state.me.userId,
         authorDisplayName: state.me.displayName ?? state.me.username ?? null,
+        avatarUrl: state.me.avatarUrl ?? null,
         createdAt: new Date().toISOString(),
         ...(dialogType === 'suggest'
           ? {

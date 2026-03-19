@@ -2808,6 +2808,19 @@
   background: color-mix(in srgb, var(--dialog-accent) 16%, white);
   border: 1px solid color-mix(in srgb, var(--dialog-accent) 22%, white);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  overflow: hidden;
+}
+
+.channel-dialog-message__avatar.has-image {
+  color: transparent;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.channel-dialog-message__avatar img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
 }
 
 .channel-dialog-message__meta {

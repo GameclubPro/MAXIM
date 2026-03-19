@@ -1100,6 +1100,7 @@ export const meSchema = z.object({
   userId: z.string(),
   username: z.string().nullable(),
   displayName: z.string().nullable(),
+  avatarUrl: z.string().trim().url().nullable().default(null),
 });
 export type Me = z.infer<typeof meSchema>;
 
@@ -1733,6 +1734,7 @@ export const channelDialogMessageSchema = z.object({
   text: z.string(),
   authorUserId: z.string(),
   authorDisplayName: z.string().nullable(),
+  avatarUrl: z.string().trim().url().nullable().default(null),
   createdAt: z.string().datetime(),
   delivered: z.boolean().optional(),
   deliveredToUserId: z.string().nullable().optional(),

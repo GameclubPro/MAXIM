@@ -27,12 +27,20 @@ describe('InitDataService', () => {
   it('validates correct init data', () => {
     const service = new InitDataService(configService);
     const params = new URLSearchParams();
-    params.set('user', JSON.stringify({ id: '42', username: 'mod' }));
+    params.set(
+      'user',
+      JSON.stringify({
+        id: '42',
+        username: 'mod',
+        photo_url: 'https://cdn.max.ru/u/42/avatar.jpg',
+      }),
+    );
     params.set('auth_date', '1700000000');
     params.set('hash', sign(params));
 
     const user = service.validate(params.toString());
     expect(user.userId).toBe('42');
+    expect(user.avatarUrl).toBe('https://cdn.max.ru/u/42/avatar.jpg');
   });
 
   it('throws on invalid hash', () => {

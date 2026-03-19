@@ -69,6 +69,11 @@ export class InitDataService {
         : parsedUser.first_name
           ? String(parsedUser.first_name)
           : null,
+      avatarUrl: parsedUser.photo_url
+        ? String(parsedUser.photo_url)
+        : parsedUser.photoUrl
+          ? String(parsedUser.photoUrl)
+          : null,
       ...(parsedChat ? parsedChat : {}),
     };
   }

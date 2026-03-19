@@ -48,6 +48,12 @@ export type MaxWebhookSubscription = {
   updateTypes: string[];
 };
 
+export type MaxChatMemberProfile = {
+  userId: string;
+  displayName: string | null;
+  avatarUrl: string | null;
+};
+
 export type MaxPublishedMessage = {
   messageId: string;
   url: string | null;
@@ -954,6 +960,53 @@ export class MaxClientService implements OnModuleDestroy {
     return members.some((member) => this.readMemberUserId(member) === normalizedUserId);
   }
 
+  async getChatMemberProfiles(
+    chatId: string,
+    userIds: readonly string[],
+  ): Promise<Map<string, MaxChatMemberProfile>> {
+    const normalizedUserIds = Array.from(
+      new Set(
+        userIds
+          .map((value) => value.trim())
+          .filter((value): value is string => value.length > 0),
+      ),
+    );
+    if (normalizedUserIds.length === 0) {
+      return new Map();
+    }
+
+    const profiles = new Map<string, MaxChatMemberProfile>();
+
+    for (let index = 0; index < normalizedUserIds.length; index += 100) {
+      const chunk = normalizedUserIds.slice(index, index + 100);
+      const query = new URLSearchParams();
+      for (const userId of chunk) {
+        query.append('user_ids', userId);
+      }
+
+      const data = await this.request<Record<string, unknown>>(
+        'get',
+        `/chats/${chatId}/members?${query.toString()}`,
+      );
+      const members = Array.isArray(data.members)
+        ? data.members
+        : Array.isArray(data.users)
+          ? data.users
+          : [];
+
+      for (const member of members) {
+        const profile = this.parseChatMemberProfile(member);
+        if (!profile) {
+          continue;
+        }
+
+        profiles.set(profile.userId, profile);
+      }
+    }
+
+    return profiles;
+  }
+
   async listBotChats(): Promise<MaxBotChat[]> {
     const results: MaxBotChat[] = [];
     const seenMarkers = new Set<string>();
@@ -1092,6 +1145,49 @@ export class MaxClientService implements OnModuleDestroy {
 
     const normalized = String(candidate).trim();
     return normalized.length > 0 ? normalized : null;
+  }
+
+  private parseChatMemberProfile(value: unknown): MaxChatMemberProfile | null {
+    if (!value || typeof value !== 'object') {
+      return null;
+    }
+
+    const userId = this.readMemberUserId(value);
+    if (!userId) {
+      return null;
+    }
+
+    const row = value as Record<string, unknown>;
+    const nestedUser =
+      row.user && typeof row.user === 'object' && !Array.isArray(row.user)
+        ? (row.user as Record<string, unknown>)
+        : null;
+
+    return {
+      userId,
+      displayName: this.readTrimmedString(
+        row.first_name ??
+          row.firstName ??
+          row.display_name ??
+          row.displayName ??
+          row.name ??
+          nestedUser?.first_name ??
+          nestedUser?.firstName ??
+          nestedUser?.display_name ??
+          nestedUser?.displayName ??
+          nestedUser?.name,
+      ),
+      avatarUrl: this.readTrimmedString(
+        row.full_avatar_url ??
+          row.fullAvatarUrl ??
+          row.avatar_url ??
+          row.avatarUrl ??
+          nestedUser?.full_avatar_url ??
+          nestedUser?.fullAvatarUrl ??
+          nestedUser?.avatar_url ??
+          nestedUser?.avatarUrl,
+      ),
+    };
   }
 
   private parseChatLink(row: Record<string, unknown>): string | null {

@@ -67,6 +67,7 @@ function parseMe(value: unknown): Me {
     userId: value.userId,
     username: typeof value.username === 'string' ? value.username : null,
     displayName: typeof value.displayName === 'string' ? value.displayName : null,
+    avatarUrl: typeof value.avatarUrl === 'string' ? value.avatarUrl : null,
   };
 }
 

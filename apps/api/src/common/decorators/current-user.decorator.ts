@@ -4,6 +4,7 @@ export type AuthUser = {
   userId: string;
   username: string | null;
   displayName: string | null;
+  avatarUrl?: string | null;
   chatId?: string;
   chatTitle?: string | null;
 };

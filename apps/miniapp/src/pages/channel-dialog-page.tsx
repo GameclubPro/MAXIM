@@ -72,6 +72,28 @@ function buildAuthorBadge(value: string | null | undefined): string {
   return normalized.slice(0, 2).toUpperCase();
 }
 
+function DialogAvatar({
+  avatarUrl,
+  label,
+}: {
+  avatarUrl: string | null | undefined;
+  label: string | null | undefined;
+}) {
+  const [imageBroken, setImageBroken] = useState(false);
+  const resolvedAvatarUrl = avatarUrl?.trim() ?? '';
+  const showImage = resolvedAvatarUrl.length > 0 && !imageBroken;
+
+  return (
+    <div className={cn('channel-dialog-message__avatar', showImage && 'has-image')}>
+      {showImage ? (
+        <img src={resolvedAvatarUrl} alt="" loading="lazy" onError={() => setImageBroken(true)} />
+      ) : (
+        buildAuthorBadge(label)
+      )}
+    </div>
+  );
+}
+
 type DialogViewModel = {
   title: string;
   placeholder: string;
@@ -355,9 +377,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                       key={message.id}
                       className={cn('channel-dialog-message', isOwnMessage && 'is-own')}
                     >
-                      <div className="channel-dialog-message__avatar">
-                        {buildAuthorBadge(message.authorDisplayName || message.authorUserId)}
-                      </div>
+                      <DialogAvatar
+                        avatarUrl={message.avatarUrl}
+                        label={message.authorDisplayName || message.authorUserId}
+                      />
                       <div className="channel-dialog-message__bubble">
                         <div className="channel-dialog-message__meta">
                           <strong>

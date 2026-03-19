@@ -804,6 +804,55 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('returns chat member profiles with avatar urls', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            members: [
+              {
+                user_id: 'user-1',
+                first_name: 'Алексей',
+                avatar_url: 'https://cdn.max.ru/u/1/avatar-small.jpg',
+                full_avatar_url: 'https://cdn.max.ru/u/1/avatar-full.jpg',
+              },
+              {
+                user: {
+                  user_id: 'user-2',
+                  first_name: 'Марина',
+                  avatar_url: 'https://cdn.max.ru/u/2/avatar-small.jpg',
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.getChatMemberProfiles('chat-1', ['user-1', 'user-2']);
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api.max.ru/chats/chat-1/members?user_ids=user-1&user_ids=user-2',
+      }),
+    );
+    expect(result.get('user-1')).toEqual({
+      userId: 'user-1',
+      displayName: 'Алексей',
+      avatarUrl: 'https://cdn.max.ru/u/1/avatar-full.jpg',
+    });
+    expect(result.get('user-2')).toEqual({
+      userId: 'user-2',
+      displayName: 'Марина',
+      avatarUrl: 'https://cdn.max.ru/u/2/avatar-small.jpg',
+    });
+
+    await service.onModuleDestroy();
+  });
+
   it('extends webhook subscriptions with churn update types', async () => {
     const httpService = {
       request: jest

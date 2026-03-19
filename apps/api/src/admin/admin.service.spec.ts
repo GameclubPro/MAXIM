@@ -3752,6 +3752,109 @@ describe('AdminService.sendBroadcast', () => {
       }),
     );
   });
+
+  it('keeps avatar url on new chat comments and enriches missing avatars from MAX members', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatSettings.findUnique.mockResolvedValue(
+      chatSettingsSchema.parse({
+        commentsEnabled: true,
+        commentsAdminsEnabled: true,
+        commentsAllEnabled: true,
+        commentsChatBroadcastsEnabled: true,
+      }),
+    );
+    prisma.auditLog.create.mockResolvedValue({
+      id: 'chat-comment-2',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-06T08:05:00.000Z'),
+    });
+    prisma.auditLog.findMany.mockResolvedValue([
+      {
+        id: 'chat-comment-old-1',
+        actorUserId: 'user-2',
+        payload: {
+          type: 'comments',
+          text: 'Старый комментарий',
+          authorDisplayName: 'Марина',
+        },
+        createdAt: new Date('2026-03-06T07:50:00.000Z'),
+      },
+    ]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatMemberProfiles: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'user-2',
+            {
+              userId: 'user-2',
+              displayName: 'Марина',
+              avatarUrl: 'https://cdn.max.ru/u/2/avatar-full.jpg',
+            },
+          ],
+        ]),
+      ),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = createChatContextCacheMock();
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const threadId = 'chat-thread-avatars';
+    const commentsToken = (
+      service as unknown as { buildEntityDialogToken: Function }
+    ).buildEntityDialogToken('chat', 'chat-1', 'comments', threadId) as string;
+
+    const created = await service.createChatDialogMessage(
+      'chat-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        avatarUrl: 'https://cdn.max.ru/u/1/photo.jpg',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        text: 'Новый комментарий',
+      },
+    );
+
+    const loaded = await service.getChatDialog(
+      'chat-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      commentsToken,
+    );
+
+    const commentAuditCall = prisma.auditLog.create.mock.calls.find(
+      (call) => call?.[0]?.data?.action === 'CHANNEL_DIALOG_COMMENT',
+    );
+    expect(commentAuditCall?.[0]?.data?.payload).toEqual(
+      expect.objectContaining({
+        authorAvatarUrl: 'https://cdn.max.ru/u/1/photo.jpg',
+      }),
+    );
+    expect(created.message.avatarUrl).toBe('https://cdn.max.ru/u/1/photo.jpg');
+    expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['user-2']);
+    expect(loaded.messages[0]).toMatchObject({
+      authorUserId: 'user-2',
+      avatarUrl: 'https://cdn.max.ru/u/2/avatar-full.jpg',
+    });
+  });
 });
 
 describe('AdminService.sendChannelBroadcast', () => {

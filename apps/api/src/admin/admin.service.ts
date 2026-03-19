@@ -23,6 +23,7 @@ import {
   membershipActivityPageSchema,
   membershipActivityQuerySchema,
   publishChatRulesResultSchema,
+  type ChannelDialogMessage,
   type ChannelDialogType,
   type ChannelStatsBucket,
   type ChannelStatsRange,
@@ -420,6 +421,7 @@ export class AdminService {
       userId: user.userId,
       username: user.username,
       displayName: user.displayName,
+      avatarUrl: this.readTrimmedString(user.avatarUrl) ?? null,
     };
   }
 
@@ -2444,10 +2446,13 @@ export class AdminService {
       take: CHANNEL_DIALOG_MESSAGES_LIMIT,
     });
 
-    const messages = rows
-      .slice()
-      .reverse()
-      .map((row) => this.mapChannelDialogAuditLog(row, dialogType));
+    const messages = await this.enrichDialogMessagesWithAuthorAvatars(
+      chatId,
+      rows
+        .slice()
+        .reverse()
+        .map((row) => this.mapChannelDialogAuditLog(row, dialogType)),
+    );
 
     return channelDialogResponseSchema.parse({
       chatId,
@@ -2472,6 +2477,7 @@ export class AdminService {
     const threadId = this.resolveChannelDialogThreadId(chatId, dialogType, parsed.data.token);
     const text = parsed.data.text.trim();
     const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
+    const authorAvatarUrl = this.readTrimmedString(user.avatarUrl);
     const channelSettings = await this.getPublicChannelSettings(chatId);
 
     if (dialogType === 'comments' && !channelSettings.commentsEnabled) {
@@ -2511,6 +2517,7 @@ export class AdminService {
           threadId,
           text,
           authorDisplayName: authorDisplayName ?? null,
+          authorAvatarUrl: authorAvatarUrl ?? null,
           delivered,
           deliveredToUserId,
           source: 'miniapp_dialog',
@@ -2524,6 +2531,7 @@ export class AdminService {
       text,
       authorUserId: user.userId,
       authorDisplayName: authorDisplayName ?? null,
+      avatarUrl: authorAvatarUrl ?? null,
       createdAt: created.createdAt.toISOString(),
       ...(dialogType === 'suggest'
         ? {
@@ -2576,10 +2584,13 @@ export class AdminService {
       take: CHANNEL_DIALOG_MESSAGES_LIMIT,
     });
 
-    const messages = rows
-      .slice()
-      .reverse()
-      .map((row) => this.mapChannelDialogAuditLog(row, dialogType));
+    const messages = await this.enrichDialogMessagesWithAuthorAvatars(
+      chatId,
+      rows
+        .slice()
+        .reverse()
+        .map((row) => this.mapChannelDialogAuditLog(row, dialogType)),
+    );
 
     return channelDialogResponseSchema.parse({
       chatId,
@@ -2608,6 +2619,7 @@ export class AdminService {
     const threadId = this.resolveChatDialogThreadId(chatId, dialogType, parsed.data.token);
     const text = parsed.data.text.trim();
     const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
+    const authorAvatarUrl = this.readTrimmedString(user.avatarUrl);
     const chatSettings = await this.getPublicChatCommentSettings(chatId);
 
     if (!chatSettings.commentsEnabled) {
@@ -2624,6 +2636,7 @@ export class AdminService {
           threadId,
           text,
           authorDisplayName: authorDisplayName ?? null,
+          authorAvatarUrl: authorAvatarUrl ?? null,
           delivered: true,
           deliveredToUserId: null,
           source: 'miniapp_dialog',
@@ -2637,6 +2650,7 @@ export class AdminService {
       text,
       authorUserId: user.userId,
       authorDisplayName: authorDisplayName ?? null,
+      avatarUrl: authorAvatarUrl ?? null,
       createdAt: created.createdAt.toISOString(),
     };
 
@@ -7293,12 +7307,13 @@ export class AdminService {
   private mapChannelDialogAuditLog(
     row: { id: string; actorUserId: string; payload: Prisma.JsonValue; createdAt: Date },
     fallbackType: ChannelDialogType,
-  ) {
+  ): ChannelDialogMessage {
     const payload = this.readObjectPayload(row.payload);
     const rawType = this.readLowerString(payload.type);
     const type: ChannelDialogType =
       rawType === 'suggest' || rawType === 'comments' ? rawType : fallbackType;
     const authorDisplayName = this.readTrimmedString(payload.authorDisplayName);
+    const avatarUrl = this.readTrimmedString(payload.authorAvatarUrl);
     const text = this.readTrimmedString(payload.text) ?? '';
     const delivered = payload.delivered === true;
     const deliveredToUserId = this.readTrimmedString(payload.deliveredToUserId);
@@ -7309,9 +7324,55 @@ export class AdminService {
       text,
       authorUserId: row.actorUserId,
       authorDisplayName,
+      avatarUrl: avatarUrl ?? null,
       createdAt: row.createdAt.toISOString(),
       ...(type === 'suggest' ? { delivered, deliveredToUserId: deliveredToUserId ?? null } : {}),
     };
+  }
+
+  private async enrichDialogMessagesWithAuthorAvatars(
+    chatId: string,
+    messages: ChannelDialogMessage[],
+  ): Promise<ChannelDialogMessage[]> {
+    const missingUserIds = Array.from(
+      new Set(
+        messages
+          .filter((message) => !this.readTrimmedString(message.avatarUrl))
+          .map((message) => message.authorUserId.trim())
+          .filter((value): value is string => value.length > 0),
+      ),
+    );
+    if (missingUserIds.length === 0) {
+      return messages;
+    }
+
+    try {
+      const profiles = await this.maxClient.getChatMemberProfiles(chatId, missingUserIds);
+      if (profiles.size === 0) {
+        return messages;
+      }
+
+      return messages.map((message) => {
+        if (this.readTrimmedString(message.avatarUrl)) {
+          return message;
+        }
+
+        return {
+          ...message,
+          avatarUrl: profiles.get(message.authorUserId)?.avatarUrl ?? null,
+        };
+      });
+    } catch (error) {
+      this.logger.warn(
+        {
+          chatId,
+          missingUserIds,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to enrich dialog messages with author avatars',
+      );
+      return messages;
+    }
   }
 
   private channelCommentContainsLink(value: string): boolean {
