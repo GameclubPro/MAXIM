@@ -181,9 +181,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       .join(' • ');
   }, [dialogType, lastMessageAt, messages.length, participantCount]);
   const composerHint =
-    dialogType === 'comments'
-      ? 'Ответ уйдёт в отдельный тред и не засорит основную ленту.'
-      : 'Сообщение увидят только админы канала.';
+    dialogType === 'comments' ? 'Тред вне ленты.' : 'Только для админов.';
 
   useEffect(() => {
     const field = composeFieldRef.current;

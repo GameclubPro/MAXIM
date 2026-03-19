@@ -3026,8 +3026,9 @@
   justify-content: space-between;
   gap: 12px;
   color: rgba(32, 53, 69, 0.62);
-  font-size: 0.72rem;
-  font-weight: 700;
+  font-size: 0.69rem;
+  font-weight: 800;
+  letter-spacing: 0.01em;
 }
 
 .channel-dialog-compose__meta span:last-child {
@@ -3125,7 +3126,7 @@
   }
 
   .channel-dialog-compose__meta {
-    font-size: 0.68rem;
+    font-size: 0.64rem;
     gap: 8px;
   }
 
