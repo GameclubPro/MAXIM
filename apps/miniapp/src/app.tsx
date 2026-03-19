@@ -71,33 +71,6 @@ function LaunchRouteSync({ launchInitData }: { launchInitData: string }) {
   return null;
 }
 
-function RouteUiReset() {
-  const location = useLocation();
-
-  useEffect(() => {
-    if (typeof document !== 'undefined') {
-      const activeElement = document.activeElement;
-      if (activeElement instanceof HTMLElement && activeElement !== document.body) {
-        activeElement.blur();
-      }
-
-      document.body.classList.remove('settings-drilldown-open');
-      document.body.style.overflow = '';
-      document.documentElement.style.overflow = '';
-    }
-
-    const frameId = window.requestAnimationFrame(() => {
-      window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
-    });
-
-    return () => {
-      window.cancelAnimationFrame(frameId);
-    };
-  }, [location.pathname, location.search]);
-
-  return null;
-}
-
 type PreviewRuntime = {
   DesignPreviewScaffold: ComponentType<{
     children: ReactNode;
@@ -116,7 +89,6 @@ function AppRoutes({
   return (
     <>
       {launchInitData ? <LaunchRouteSync launchInitData={launchInitData} /> : null}
-      <RouteUiReset />
       <Suspense fallback={<RouteFallback />}>
         <Routes>
           <Route element={<Shell />}>
@@ -147,9 +119,6 @@ function AppRoutes({
 export function App() {
   const initData = getInitData();
   const preview = getPreviewBootstrap(initData);
-  const isMaxWebView = Boolean(
-    typeof window !== 'undefined' && (window.MAX?.WebApp ?? window.WebApp),
-  );
   const previewApiRef = useRef<ReturnType<typeof createApiTransport> | null>(null);
   const [previewRuntime, setPreviewRuntime] = useState<PreviewRuntime | null>(null);
 
@@ -193,62 +162,56 @@ export function App() {
 
   if (!apiClient) {
     return (
-      <div className={isMaxWebView ? 'max-webview' : undefined}>
-        <div className="app-shell app-shell--centered">
-          <GlassCard className="init-missing-card" elevated>
-            <h1>Майор Максимов</h1>
-            <StatusState
-              tone="warning"
-              title="Init Data не найден"
-              description="Откройте приложение в MAX через кнопку в боте. При открытии напрямую в браузере авторизация не пройдет."
-            />
-            <div className="init-missing-help">
-              <p>Проверьте:</p>
-              <ul>
-                <li>Запуск идет из MAX, а не по прямой ссылке.</li>
-                <li>В URL сохраняется query-параметр `init_data`.</li>
-                <li>Редирект на `/app/` не теряет query-параметры.</li>
-                <li>Для дизайн-preview можно открыть `/app/?preview=1`.</li>
-              </ul>
-            </div>
-          </GlassCard>
-        </div>
+      <div className="app-shell app-shell--centered">
+        <GlassCard className="init-missing-card" elevated>
+          <h1>Майор Максимов</h1>
+          <StatusState
+            tone="warning"
+            title="Init Data не найден"
+            description="Откройте приложение в MAX через кнопку в боте. При открытии напрямую в браузере авторизация не пройдет."
+          />
+          <div className="init-missing-help">
+            <p>Проверьте:</p>
+            <ul>
+              <li>Запуск идет из MAX, а не по прямой ссылке.</li>
+              <li>В URL сохраняется query-параметр `init_data`.</li>
+              <li>Редирект на `/app/` не теряет query-параметры.</li>
+              <li>Для дизайн-preview можно открыть `/app/?preview=1`.</li>
+            </ul>
+          </div>
+        </GlassCard>
       </div>
     );
   }
 
   if (preview.enabled && !previewRuntime) {
     return (
-      <div className={isMaxWebView ? 'max-webview' : undefined}>
-        <div className="app-shell app-shell--centered">
-          <GlassCard className="init-missing-card" elevated>
-            <h1>Design Preview</h1>
-            <StatusState
-              tone="neutral"
-              title="Подготавливаю preview"
-              description="Загружаю мобильную рамку и моковые данные для дизайн-режима."
-            />
-          </GlassCard>
-        </div>
+      <div className="app-shell app-shell--centered">
+        <GlassCard className="init-missing-card" elevated>
+          <h1>Design Preview</h1>
+          <StatusState
+            tone="neutral"
+            title="Подготавливаю preview"
+            description="Загружаю мобильную рамку и моковые данные для дизайн-режима."
+          />
+        </GlassCard>
       </div>
     );
   }
 
   return (
-    <div className={isMaxWebView ? 'max-webview' : undefined}>
-      <QueryClientProvider client={queryClient}>
-        <ToastProvider>
-          <Router basename="/app">
-            {preview.enabled && PreviewScaffold ? (
-              <PreviewScaffold initialDevice={preview.device}>
-                <AppRoutes apiClient={apiClient} launchInitData={null} />
-              </PreviewScaffold>
-            ) : (
-              <AppRoutes apiClient={apiClient} launchInitData={initData} />
-            )}
-          </Router>
-        </ToastProvider>
-      </QueryClientProvider>
-    </div>
+    <QueryClientProvider client={queryClient}>
+      <ToastProvider>
+        <Router basename="/app">
+          {preview.enabled && PreviewScaffold ? (
+            <PreviewScaffold initialDevice={preview.device}>
+              <AppRoutes apiClient={apiClient} launchInitData={null} />
+            </PreviewScaffold>
+          ) : (
+            <AppRoutes apiClient={apiClient} launchInitData={initData} />
+          )}
+        </Router>
+      </ToastProvider>
+    </QueryClientProvider>
   );
 }

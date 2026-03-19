@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { cn } from '../../lib/cn';
 import { BackChevronIcon } from './entity-header-icons';
 
@@ -22,8 +22,6 @@ export function CompactStickyHeader({
   compact = false,
   className,
 }: CompactStickyHeaderProps) {
-  const navigate = useNavigate();
-
   return (
     <header
       className={cn(
@@ -34,14 +32,9 @@ export function CompactStickyHeader({
       )}
     >
       <div className="compact-page-header__bar">
-        <button
-          type="button"
-          className="compact-page-header__back"
-          aria-label={backLabel}
-          onClick={() => navigate(backTo)}
-        >
+        <Link to={backTo} className="compact-page-header__back" aria-label={backLabel}>
           <BackChevronIcon />
-        </button>
+        </Link>
 
         <div className="compact-page-header__title-wrap">
           <h1 className="compact-page-header__title">{title}</h1>

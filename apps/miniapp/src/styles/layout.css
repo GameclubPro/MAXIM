@@ -79,11 +79,10 @@
 
 .bottom-nav {
   position: fixed;
-  left: 0;
-  right: 0;
+  left: 50%;
   bottom: calc(var(--safe-bottom) + var(--bottom-nav-offset));
+  transform: translate(-50%, 0);
   width: min(calc(100% - (var(--space-2) * 2)), 500px);
-  margin-inline: auto;
   padding: 6px;
   border-radius: 24px;
   border: 1px solid rgba(255, 255, 255, 0.9);
@@ -110,13 +109,13 @@
 .bottom-nav.is-keyboard-open {
   opacity: 0;
   pointer-events: none;
-  transform: translateY(calc(100% + var(--space-6)));
+  transform: translate(-50%, calc(100% + var(--space-6)));
 }
 
 body.settings-drilldown-open .bottom-nav {
   opacity: 0;
   pointer-events: none;
-  transform: translateY(calc(100% + var(--space-6)));
+  transform: translate(-50%, calc(100% + var(--space-6)));
 }
 
 .bottom-nav__item {
@@ -136,7 +135,6 @@ body.settings-drilldown-open .bottom-nav {
     border-color 0.2s ease,
     background-color 0.2s ease,
     color 0.2s ease;
-  touch-action: manipulation;
 }
 
 .bottom-nav__icon {

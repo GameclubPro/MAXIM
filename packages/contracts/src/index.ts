@@ -275,7 +275,6 @@ export const chatSettingsSchema = z
     deleteBotMessagesDelayMinutes: z.number().int().min(1).max(60).default(2),
     removeBotsFromGroupEnabled: z.boolean().default(true),
     deleteSpammersEnabled: z.boolean().default(false),
-    deleteSpammersRequireApproval: z.boolean().default(false),
     antiSpamEnabled: z.boolean().default(true),
     messageCountLimitEnabled: z.boolean().default(false),
     messageCountLimitMessages: z.number().int().min(1).max(10).default(5),
@@ -1278,62 +1277,11 @@ export const logsDashboardResponseSchema = z.object({
   }),
   violations: z.array(logsDashboardViolationSchema),
   activityFeed: membershipActivityPageSchema,
-  spammerCandidates: z.object({
-    reviewEnabled: z.boolean(),
-    pendingCount: z.number().int().min(0),
-  }),
 });
 export type LogsDashboardResponse = z.infer<typeof logsDashboardResponseSchema>;
 
 export const manualModerationActionSchema = z.enum(['KICK', 'BAN', 'UNBAN']);
 export type ManualModerationAction = z.infer<typeof manualModerationActionSchema>;
-
-export const spammerCandidateVisibleChatSchema = z.object({
-  chatId: z.string(),
-  title: z.string(),
-  detectionsCount: z.number().int().min(1),
-  lastDetectedAt: z.string().datetime(),
-  excerpt: z.string().nullable(),
-});
-export type SpammerCandidateVisibleChat = z.infer<typeof spammerCandidateVisibleChatSchema>;
-
-export const spammerCandidateSchema = z.object({
-  userId: z.string(),
-  userDisplayName: z.string().nullable(),
-  detectionsCount: z.number().int().min(1),
-  firstDetectedAt: z.string().datetime(),
-  lastDetectedAt: z.string().datetime(),
-  lastReason: z.string(),
-  excerpt: z.string().nullable(),
-  totalAffectedChats: z.number().int().min(1),
-  visibleChats: z.array(spammerCandidateVisibleChatSchema),
-});
-export type SpammerCandidate = z.infer<typeof spammerCandidateSchema>;
-
-export const spammerCandidateListResponseSchema = z.object({
-  items: z.array(spammerCandidateSchema),
-  total: z.number().int().min(0),
-});
-export type SpammerCandidateListResponse = z.infer<typeof spammerCandidateListResponseSchema>;
-
-export const spammerCandidateDecisionSchema = z.enum(['APPROVE', 'REJECT']);
-export type SpammerCandidateDecision = z.infer<typeof spammerCandidateDecisionSchema>;
-
-export const reviewSpammerCandidatesRequestSchema = z.object({
-  userIds: z.array(z.string().trim().min(1)).min(1).max(100),
-  decision: spammerCandidateDecisionSchema,
-});
-export type ReviewSpammerCandidatesRequest = z.infer<typeof reviewSpammerCandidatesRequestSchema>;
-
-export const reviewSpammerCandidatesResultSchema = z.object({
-  ok: z.literal(true),
-  decision: spammerCandidateDecisionSchema,
-  processed: z.number().int().min(0),
-  approved: z.number().int().min(0),
-  rejected: z.number().int().min(0),
-  message: z.string().min(1),
-});
-export type ReviewSpammerCandidatesResult = z.infer<typeof reviewSpammerCandidatesResultSchema>;
 
 export const manualModerationActionRequestSchema = z
   .object({

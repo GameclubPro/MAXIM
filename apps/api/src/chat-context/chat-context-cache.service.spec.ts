@@ -39,7 +39,6 @@ function buildSettings(chatId: string): ChatSettings {
     deleteBotMessagesDelayMinutes: 2,
     removeBotsFromGroupEnabled: false,
     deleteSpammersEnabled: false,
-    deleteSpammersRequireApproval: false,
 
     antiSpamEnabled: true,
     messageCountLimitEnabled: false,

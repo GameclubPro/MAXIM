@@ -23,9 +23,6 @@ import {
   membershipActivityPageSchema,
   membershipActivityQuerySchema,
   publishChatRulesResultSchema,
-  reviewSpammerCandidatesRequestSchema,
-  reviewSpammerCandidatesResultSchema,
-  spammerCandidateListResponseSchema,
   type ChannelDialogType,
   type ChannelStatsBucket,
   type ChannelStatsRange,
@@ -52,9 +49,7 @@ import {
   type ManualModerationActionResult,
   type Me,
   type ModerationEvent,
-  type ReviewSpammerCandidatesResult,
   type StickerLabShareResponse,
-  type SpammerCandidateListResponse,
   publishChannelEngagementRequestSchema,
   publishChannelEngagementResultSchema,
   type UpdateChatRulesRequest,
@@ -121,7 +116,6 @@ import {
   renderSupportedMarkdownAsHtml,
   stripSupportedMarkdownToPlainText,
 } from '../common/max-markdown.util';
-import { maskText } from '../moderation/text-mask.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 
@@ -233,7 +227,6 @@ const MANAGED_BROADCAST_LOCK_STALE_MS = 60_000;
 const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 30;
 const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
 const ONE_HOUR_MS = 60 * 60 * 1000;
-const GLOBAL_SPAMMER_CANDIDATE_SUPPRESS_DAYS = 30;
 const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 5;
 const CHANNEL_DIALOG_MESSAGES_LIMIT = 80;
 const CHANNEL_DIALOG_ACTION_COMMENT = 'CHANNEL_DIALOG_COMMENT';
@@ -360,7 +353,6 @@ const SETTINGS_SECTION_KEYS = {
   ],
   extra: [
     'deleteSpammersEnabled',
-    'deleteSpammersRequireApproval',
     'deleteBotMessagesEnabled',
     'deleteBotMessagesDelayMinutes',
     'removeBotsFromGroupEnabled',
@@ -5630,7 +5622,6 @@ export class AdminService {
     };
 
     const [
-      chatSettings,
       warnCount,
       deleteMessageCount,
       kickCount,
@@ -5638,15 +5629,7 @@ export class AdminService {
       unbanCount,
       affectedUsers,
       violationRows,
-      pendingSpammerCandidatesCount,
     ] = await Promise.all([
-      this.prisma.chatSettings.findUnique({
-        where: { chatId },
-        select: {
-          deleteSpammersEnabled: true,
-          deleteSpammersRequireApproval: true,
-        },
-      }),
       this.prisma.moderationEvent.count({
         where: {
           chatId,
@@ -5693,17 +5676,6 @@ export class AdminService {
         orderBy: { createdAt: 'desc' },
         take: LOGS_DASHBOARD_VIOLATIONS_LIMIT,
       }),
-      this.prisma.globalSpammerCandidate.count({
-        where: {
-          status: 'PENDING',
-          OR: [{ suppressedUntil: null }, { suppressedUntil: { lt: now } }],
-          chats: {
-            some: {
-              chatId,
-            },
-          },
-        },
-      }),
     ]);
     const userDisplayNames = await this.resolveUserDisplayNames(
       chatId,
@@ -5718,9 +5690,6 @@ export class AdminService {
       filter: 'all',
       limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
     });
-    const spammerCandidatesReviewEnabled = Boolean(
-      chatSettings?.deleteSpammersEnabled && chatSettings?.deleteSpammersRequireApproval,
-    );
     const response: LogsDashboardResponse = {
       chat: {
         id: chatId,
@@ -5759,10 +5728,6 @@ export class AdminService {
             : null,
       })),
       activityFeed,
-      spammerCandidates: {
-        reviewEnabled: spammerCandidatesReviewEnabled,
-        pendingCount: pendingSpammerCandidatesCount,
-      },
     };
 
     return logsDashboardResponseSchema.parse(response);
@@ -5784,273 +5749,6 @@ export class AdminService {
     const now = new Date();
     const from = this.resolveLogsDashboardFrom(parsed.data.range, now);
     return this.getMembershipActivityFeedPage(chatId, from, now, parsed.data);
-  }
-
-  async listChatSpammerCandidates(
-    chatId: string,
-    user: AuthUser,
-  ): Promise<SpammerCandidateListResponse> {
-    await this.assertChatAdmin(chatId, user.userId);
-    await this.ensureEntityType(chatId, user.userId, 'chat');
-
-    const availableChats = await this.listChats(user);
-    const visibleChatIds = Array.from(new Set([chatId, ...availableChats.map((chat) => chat.id)]));
-    const visibleChatTitles = new Map(
-      availableChats.map((chat) => [chat.id, chat.title?.trim() || `Chat ${chat.id}`]),
-    );
-    if (!visibleChatTitles.has(chatId)) {
-      visibleChatTitles.set(chatId, `Chat ${chatId}`);
-    }
-
-    const now = new Date();
-    const rows = await this.prisma.globalSpammerCandidate.findMany({
-      where: {
-        status: 'PENDING',
-        OR: [{ suppressedUntil: null }, { suppressedUntil: { lt: now } }],
-        chats: {
-          some: {
-            chatId,
-          },
-        },
-      },
-      orderBy: {
-        lastDetectedAt: 'desc',
-      },
-      select: {
-        userId: true,
-        firstDetectedAt: true,
-        lastDetectedAt: true,
-        detectionsCount: true,
-        lastReason: true,
-        lastUserLabel: true,
-        chats: {
-          where: {
-            chatId: {
-              in: visibleChatIds,
-            },
-          },
-          orderBy: {
-            lastDetectedAt: 'desc',
-          },
-          select: {
-            chatId: true,
-            detectionsCount: true,
-            lastDetectedAt: true,
-            lastExcerpt: true,
-            lastUserLabel: true,
-          },
-        },
-        _count: {
-          select: {
-            chats: true,
-          },
-        },
-      },
-    });
-
-    return spammerCandidateListResponseSchema.parse({
-      items: rows.map((row) => {
-        const primaryChat =
-          row.chats.find((item) => item.chatId === chatId) ?? row.chats[0] ?? null;
-        return {
-          userId: row.userId,
-          userDisplayName: primaryChat?.lastUserLabel?.trim() || row.lastUserLabel?.trim() || null,
-          detectionsCount: row.detectionsCount,
-          firstDetectedAt: row.firstDetectedAt.toISOString(),
-          lastDetectedAt: row.lastDetectedAt.toISOString(),
-          lastReason: row.lastReason,
-          excerpt: primaryChat?.lastExcerpt ?? row.chats[0]?.lastExcerpt ?? null,
-          totalAffectedChats: row._count.chats,
-          visibleChats: row.chats.map((chatRow) => ({
-            chatId: chatRow.chatId,
-            title: visibleChatTitles.get(chatRow.chatId) ?? `Chat ${chatRow.chatId}`,
-            detectionsCount: chatRow.detectionsCount,
-            lastDetectedAt: chatRow.lastDetectedAt.toISOString(),
-            excerpt: chatRow.lastExcerpt ?? null,
-          })),
-        };
-      }),
-      total: rows.length,
-    });
-  }
-
-  async reviewChatSpammerCandidates(
-    chatId: string,
-    user: AuthUser,
-    body: unknown,
-    source: AdminActionSource = 'miniapp',
-  ): Promise<ReviewSpammerCandidatesResult> {
-    await this.assertChatAdmin(chatId, user.userId);
-    await this.ensureEntityType(chatId, user.userId, 'chat');
-
-    const parsed = reviewSpammerCandidatesRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-
-    const requestedUserIds = Array.from(
-      new Set(parsed.data.userIds.map((item) => item.trim()).filter(Boolean)),
-    );
-    if (requestedUserIds.length === 0) {
-      throw new BadRequestException('Нужен хотя бы один кандидат.');
-    }
-
-    const availableChats = await this.listChats(user);
-    const visibleChatIds = Array.from(new Set([chatId, ...availableChats.map((chat) => chat.id)]));
-    const now = new Date();
-    const rows = await this.prisma.globalSpammerCandidate.findMany({
-      where: {
-        userId: {
-          in: requestedUserIds,
-        },
-        status: 'PENDING',
-        OR: [{ suppressedUntil: null }, { suppressedUntil: { lt: now } }],
-        chats: {
-          some: {
-            chatId,
-          },
-        },
-      },
-      select: {
-        userId: true,
-        detectionsCount: true,
-        lastReason: true,
-        lastChatId: true,
-        lastEvidence: true,
-        lastUserLabel: true,
-        chats: {
-          where: {
-            chatId: {
-              in: visibleChatIds,
-            },
-          },
-          select: {
-            chatId: true,
-            lastExcerpt: true,
-            lastUserLabel: true,
-          },
-        },
-      },
-    });
-
-    if (rows.length === 0) {
-      return reviewSpammerCandidatesResultSchema.parse({
-        ok: true,
-        decision: parsed.data.decision,
-        processed: 0,
-        approved: 0,
-        rejected: 0,
-        message: 'Подходящих кандидатов не найдено.',
-      });
-    }
-
-    if (parsed.data.decision === 'REJECT') {
-      const suppressedUntil = new Date(
-        now.getTime() + GLOBAL_SPAMMER_CANDIDATE_SUPPRESS_DAYS * 24 * ONE_HOUR_MS,
-      );
-
-      for (const row of rows) {
-        await this.prisma.$transaction([
-          this.prisma.globalSpammerCandidate.update({
-            where: {
-              userId: row.userId,
-            },
-            data: {
-              status: 'REJECTED',
-              suppressedUntil,
-              reviewedAt: now,
-              reviewedByUserId: user.userId,
-            },
-          }),
-          this.prisma.auditLog.create({
-            data: {
-              chatId,
-              actorUserId: user.userId,
-              action: 'REJECT_GLOBAL_SPAMMER_CANDIDATE',
-              payload: {
-                userId: row.userId,
-                source,
-                suppressedUntil: suppressedUntil.toISOString(),
-                visibleChatIds: row.chats.map((item) => item.chatId),
-              },
-            },
-          }),
-        ]);
-      }
-
-      return reviewSpammerCandidatesResultSchema.parse({
-        ok: true,
-        decision: 'REJECT',
-        processed: rows.length,
-        approved: 0,
-        rejected: rows.length,
-        message:
-          rows.length === 1
-            ? 'Кандидат оставлен и скрыт из очереди на 30 дней.'
-            : `Кандидаты оставлены и скрыты из очереди на 30 дней: ${rows.length}.`,
-      });
-    }
-
-    for (const row of rows) {
-      await this.prisma.$transaction([
-        this.prisma.globalSpammer.upsert({
-          where: {
-            userId: row.userId,
-          },
-          create: {
-            userId: row.userId,
-            detectionsCount: row.detectionsCount,
-            lastReason: row.lastReason,
-            lastChatId: row.lastChatId ?? row.chats[0]?.chatId ?? chatId,
-            lastEvidence: row.lastEvidence ?? Prisma.JsonNull,
-          },
-          update: {
-            detectionsCount: {
-              increment: row.detectionsCount,
-            },
-            lastReason: row.lastReason,
-            lastChatId: row.lastChatId ?? row.chats[0]?.chatId ?? chatId,
-            lastEvidence: row.lastEvidence ?? Prisma.JsonNull,
-          },
-        }),
-        this.prisma.auditLog.create({
-          data: {
-            chatId,
-            actorUserId: user.userId,
-            action: 'APPROVE_GLOBAL_SPAMMER_CANDIDATE',
-            payload: {
-              userId: row.userId,
-              source,
-              visibleChatIds: row.chats.map((item) => item.chatId),
-            },
-          },
-        }),
-        this.prisma.globalSpammerCandidate.delete({
-          where: {
-            userId: row.userId,
-          },
-        }),
-      ]);
-
-      await this.kickApprovedGlobalSpammerCandidate({
-        candidate: row,
-        actorUserId: user.userId,
-        source,
-        approvedFromChatId: chatId,
-      });
-    }
-
-    return reviewSpammerCandidatesResultSchema.parse({
-      ok: true,
-      decision: 'APPROVE',
-      processed: rows.length,
-      approved: rows.length,
-      rejected: 0,
-      message:
-        rows.length === 1
-          ? 'Кандидат подтвержден и добавлен в глобальную базу спаммеров.'
-          : `Кандидаты подтверждены и добавлены в глобальную базу спаммеров: ${rows.length}.`,
-    });
   }
 
   async applyManualModerationAction(
@@ -6262,55 +5960,6 @@ export class AdminService {
         },
       }),
     ]);
-  }
-
-  private async kickApprovedGlobalSpammerCandidate(params: {
-    candidate: {
-      userId: string;
-      chats: Array<{
-        chatId: string;
-        lastExcerpt: string | null;
-        lastUserLabel: string | null;
-      }>;
-    };
-    actorUserId: string;
-    source: AdminActionSource;
-    approvedFromChatId: string;
-  }): Promise<void> {
-    const { candidate, actorUserId, source, approvedFromChatId } = params;
-
-    for (const chat of candidate.chats) {
-      try {
-        await this.maxClient.kickMember(chat.chatId, candidate.userId, { immediate: true });
-        await this.prisma.moderationEvent.create({
-          data: {
-            chatId: chat.chatId,
-            userId: candidate.userId,
-            eventType: EventType.MEMBER_ACTION,
-            ruleCode: 'GLOBAL_SPAMMER_KICK',
-            action: SanctionAction.KICK,
-            operator: Operator.ADMIN,
-            maskedExcerpt: chat.lastExcerpt ? maskText(chat.lastExcerpt) : null,
-            metadata: {
-              source,
-              initiatedByUserId: actorUserId,
-              approvedFromChatId,
-              reason: 'Approved pending global spammer candidate',
-              userDisplayName: chat.lastUserLabel?.trim() || null,
-            },
-          },
-        });
-      } catch (error: unknown) {
-        this.logger.warn(
-          {
-            chatId: chat.chatId,
-            userId: candidate.userId,
-            error: error instanceof Error ? error.message : 'Unknown error',
-          },
-          'Failed to kick approved global spammer candidate',
-        );
-      }
-    }
   }
 
   async getEvents(chatId: string, user: AuthUser, query: unknown): Promise<ModerationEvent[]> {

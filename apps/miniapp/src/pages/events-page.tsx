@@ -4,12 +4,10 @@ import type {
   ManualModerationAction,
   ManualModerationActionRequest,
   MembershipActivityPage,
-  SpammerCandidate,
-  SpammerCandidateDecision,
 } from '@maxim/contracts';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useParams } from 'react-router-dom';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
 import { BackChevronIcon } from '../components/ui/entity-header-icons';
 import { GlassCard } from '../components/ui/glass-card';
@@ -20,8 +18,6 @@ import {
   applyManualModerationAction,
   getChatActivityFeed,
   getLogsDashboard,
-  getSpammerCandidates,
-  reviewSpammerCandidates,
 } from '../lib/api/events-client';
 import { getChats } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
@@ -32,11 +28,9 @@ import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 
 type ViolationAction = LogsDashboardResponse['violations'][number]['action'];
 type ViolationItem = LogsDashboardResponse['violations'][number];
-type CandidateItem = SpammerCandidate;
 type DisplayAction = Exclude<ViolationAction, 'NONE'> | 'UNBAN';
 type EventsFilter = 'ALL' | DisplayAction;
-type EventsSection = 'activity' | 'moderation' | 'candidates';
-type CandidateReviewStatus = { tone: 'success' | 'danger'; text: string } | null;
+type EventsSection = 'activity' | 'moderation';
 
 const BAN_DURATION_MIN_HOURS = 1;
 const BAN_DURATION_MAX_HOURS = 336;
@@ -112,41 +106,6 @@ function ActivityTabIcon() {
   );
 }
 
-function CandidatesTabIcon() {
-  return (
-    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
-      <path
-        d="M4 5.2h12"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M4 10h12"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M4 14.8h7.6"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="m13.8 14.2 1.3 1.3 2.3-2.7"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </svg>
-  );
-}
-
 function getRouteChatTitle(state: unknown): string {
   if (
     typeof state === 'object' &&
@@ -182,7 +141,6 @@ function formatViolationRule(ruleCode: string): string {
     GLOBAL_CROSS_CHAT_SPAM: 'Кросс-чат спам',
     GLOBAL_CROSS_CHAT_SPAM_DELETE: 'Кросс-чат спам',
     GLOBAL_SPAMMER_KICK: 'Глобальная база спаммеров',
-    GLOBAL_SPAMMER_CANDIDATE_DELETE: 'Кандидат на удаление',
     BAN_ACTIVE_DELETE: 'Активный бан',
     NIGHT_MODE_DELETE: 'Ночной режим',
   };
@@ -241,9 +199,7 @@ function resolveViolationBlurb(violation: LogsDashboardResponse['violations'][nu
         ? violation.metadata
         : null;
     const banDurationHours =
-      metadata &&
-      typeof metadata.banDurationHours === 'number' &&
-      Number.isFinite(metadata.banDurationHours)
+      metadata && typeof metadata.banDurationHours === 'number' && Number.isFinite(metadata.banDurationHours)
         ? metadata.banDurationHours
         : null;
 
@@ -259,6 +215,18 @@ function formatSignedCount(value: number): string {
   }
 
   return String(value);
+}
+
+function resolveRangeDescription(range: LogsDashboardRange): string {
+  if (range === '24h') {
+    return 'за 24 часа';
+  }
+
+  if (range === '7d') {
+    return 'за 7 дней';
+  }
+
+  return 'за 30 дней';
 }
 
 function clampBanDurationHours(value: number): number {
@@ -360,68 +328,6 @@ function normalizeActionErrorMessage(error: unknown): string {
   return raw;
 }
 
-function pluralize(value: number, one: string, few: string, many: string): string {
-  const mod10 = value % 10;
-  const mod100 = value % 100;
-
-  if (mod10 === 1 && mod100 !== 11) {
-    return one;
-  }
-
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) {
-    return few;
-  }
-
-  return many;
-}
-
-function formatChatsCount(value: number): string {
-  return `${value} ${pluralize(value, 'чат', 'чата', 'чатов')}`;
-}
-
-function formatDetectionsCount(value: number): string {
-  return `${value} ${pluralize(value, 'сигнал', 'сигнала', 'сигналов')}`;
-}
-
-function formatCandidateReason(reason: string): string {
-  const labels: Record<string, string> = {
-    HIGH_FANOUT_5_CHATS_2M: 'Массовая рассылка по чатам за 2 минуты',
-    HIGH_FANOUT_4_CHATS_WARN_THRESHOLD: 'Повторный кросс-чат спам после предупреждений',
-    PENDING_REVIEW_ACTIVITY: 'Новая активность во время ожидания согласования',
-  };
-
-  return labels[reason] ?? reason.replaceAll('_', ' ').toLowerCase();
-}
-
-function resolveCandidateName(candidate: CandidateItem): string {
-  const fromPayload = candidate.userDisplayName?.trim();
-  if (fromPayload) {
-    return fromPayload;
-  }
-
-  return `Пользователь ${candidate.userId}`;
-}
-
-function resolveCandidatePrimaryChat(candidate: CandidateItem, chatId: string) {
-  return (
-    candidate.visibleChats.find((item) => item.chatId === chatId) ??
-    candidate.visibleChats[0] ??
-    null
-  );
-}
-
-function buildCandidateConfirmMessage(decision: SpammerCandidateDecision, count: number): string {
-  if (decision === 'APPROVE') {
-    return count === 1
-      ? 'Добавить кандидата в глобальную базу спаммеров и кикнуть из доступных чатов?'
-      : `Добавить в глобальную базу спаммеров и кикнуть ${count} кандидатов из доступных чатов?`;
-  }
-
-  return count === 1
-    ? 'Оставить кандидата и скрыть его из очереди на 30 дней?'
-    : `Оставить ${count} кандидатов и скрыть их из очереди на 30 дней?`;
-}
-
 function ViolationModerationControls({
   api,
   chatId,
@@ -454,11 +360,8 @@ function ViolationModerationControls({
   });
 
   const confirmAndApply = (action: ManualModerationAction, hours?: number) => {
-    const normalizedHours =
-      action === 'BAN' ? clampBanDurationHours(hours ?? banDurationHours) : null;
-    const confirmed = window.confirm(
-      resolveConfirmMessage(action, normalizedHours ?? banDurationHours),
-    );
+    const normalizedHours = action === 'BAN' ? clampBanDurationHours(hours ?? banDurationHours) : null;
+    const confirmed = window.confirm(resolveConfirmMessage(action, normalizedHours ?? banDurationHours));
     if (!confirmed) {
       return;
     }
@@ -572,9 +475,7 @@ function ViolationModerationControls({
             disabled={applyMutation.isPending}
             onClick={() => confirmAndApply('BAN', banDurationHours)}
           >
-            {applyMutation.isPending
-              ? 'Применяем…'
-              : resolveApplyActionLabel('BAN', banDurationHours)}
+            {applyMutation.isPending ? 'Применяем…' : resolveApplyActionLabel('BAN', banDurationHours)}
           </button>
         </div>
       ) : null}
@@ -583,154 +484,6 @@ function ViolationModerationControls({
         <p className={`logs-violation-item__action-status is-${status.tone}`}>{status.text}</p>
       ) : null}
     </section>
-  );
-}
-
-function SpammerCandidateCard({
-  candidate,
-  chatId,
-  isExpanded,
-  isSelected,
-  isBusy,
-  onToggleExpand,
-  onToggleSelect,
-  onApplyDecision,
-}: {
-  candidate: CandidateItem;
-  chatId: string;
-  isExpanded: boolean;
-  isSelected: boolean;
-  isBusy: boolean;
-  onToggleExpand: (userId: string) => void;
-  onToggleSelect: (userId: string) => void;
-  onApplyDecision: (decision: SpammerCandidateDecision, userIds: string[]) => void;
-}) {
-  const displayName = resolveCandidateName(candidate);
-  const primaryChat = resolveCandidatePrimaryChat(candidate, chatId);
-  const blurCurrentButton = (target: EventTarget | null) => {
-    if (target instanceof HTMLButtonElement) {
-      target.blur();
-    }
-  };
-
-  return (
-    <article className={`candidate-review-card ${isExpanded ? 'is-expanded' : ''} stagger-in`}>
-      <div className="candidate-review-card__shell">
-        <button
-          type="button"
-          role="checkbox"
-          aria-checked={isSelected}
-          className="candidate-review-card__select"
-          disabled={isBusy}
-          onClick={(event) => {
-            event.stopPropagation();
-            blurCurrentButton(event.currentTarget);
-            onToggleSelect(candidate.userId);
-          }}
-          aria-label={`Выбрать ${displayName}`}
-        >
-          <span
-            className={`candidate-review-card__select-indicator ${isSelected ? 'is-selected' : ''}`}
-            aria-hidden="true"
-          />
-        </button>
-
-        <button
-          type="button"
-          className="candidate-review-card__trigger"
-          onClick={(event) => {
-            blurCurrentButton(event.currentTarget);
-            onToggleExpand(candidate.userId);
-          }}
-          disabled={isBusy}
-          aria-expanded={isExpanded}
-        >
-          <span className="candidate-review-card__avatar">
-            {resolveOffenderInitial(displayName)}
-          </span>
-
-          <div className="candidate-review-card__body">
-            <div className="candidate-review-card__headline">
-              <div className="candidate-review-card__identity">
-                <strong>{displayName}</strong>
-                <span>{candidate.userId}</span>
-              </div>
-
-              <span className="candidate-review-card__toggle" aria-hidden="true">
-                {isExpanded ? '−' : '+'}
-              </span>
-            </div>
-
-            <div className="candidate-review-card__meta">
-              <span className="candidate-review-card__pill candidate-review-card__pill--danger">
-                {formatChatsCount(candidate.totalAffectedChats)}
-              </span>
-              <span className="candidate-review-card__pill">
-                {formatDetectionsCount(candidate.detectionsCount)}
-              </span>
-              <time dateTime={candidate.lastDetectedAt}>
-                {formatViolationDate(candidate.lastDetectedAt)}
-              </time>
-            </div>
-
-            <p className="candidate-review-card__summary">
-              {formatCandidateReason(candidate.lastReason)}
-            </p>
-          </div>
-        </button>
-      </div>
-
-      {isExpanded ? (
-        <div className="candidate-review-card__details">
-          {primaryChat?.excerpt || candidate.excerpt ? (
-            <div className="candidate-review-card__excerpt">
-              <span>Последний фрагмент</span>
-              <p>{primaryChat?.excerpt ?? candidate.excerpt}</p>
-            </div>
-          ) : null}
-
-          {candidate.visibleChats.length > 0 ? (
-            <div className="candidate-review-card__visible">
-              <span className="candidate-review-card__visible-title">Затронутые чаты</span>
-              <div className="candidate-review-card__visible-list">
-                {candidate.visibleChats.map((item) => (
-                  <div key={item.chatId} className="candidate-review-card__visible-chip">
-                    <strong>{item.title}</strong>
-                    <span>{formatDetectionsCount(item.detectionsCount)}</span>
-                    <small>{formatViolationDate(item.lastDetectedAt)}</small>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          <div className="candidate-review-card__actions">
-            <button
-              type="button"
-              className="button button--danger"
-              disabled={isBusy}
-              onClick={(event) => {
-                blurCurrentButton(event.currentTarget);
-                onApplyDecision('APPROVE', [candidate.userId]);
-              }}
-            >
-              Удалить
-            </button>
-            <button
-              type="button"
-              className="button button--ghost"
-              disabled={isBusy}
-              onClick={(event) => {
-                blurCurrentButton(event.currentTarget);
-                onApplyDecision('REJECT', [candidate.userId]);
-              }}
-            >
-              Оставить
-            </button>
-          </div>
-        </div>
-      ) : null}
-    </article>
   );
 }
 
@@ -745,29 +498,16 @@ function formatViolationDate(value: string): string {
 
 function getInitialSection(search: string): EventsSection {
   const value = new URLSearchParams(search).get('section');
-  if (value === 'activity') {
-    return 'activity';
-  }
-
-  if (value === 'candidates') {
-    return 'candidates';
-  }
-
-  return 'moderation';
+  return value === 'activity' ? 'activity' : 'moderation';
 }
 
 export function EventsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const [range, setRange] = useState<LogsDashboardRange>('7d');
   const [section, setSection] = useState<EventsSection>(() => getInitialSection(location.search));
   const [eventsFilter, setEventsFilter] = useState<EventsFilter>('ALL');
   const [expandedViolationId, setExpandedViolationId] = useState<string | null>(null);
-  const [expandedCandidateId, setExpandedCandidateId] = useState<string | null>(null);
-  const [selectedCandidateIds, setSelectedCandidateIds] = useState<string[]>([]);
-  const [candidateStatus, setCandidateStatus] = useState<CandidateReviewStatus>(null);
   const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader();
 
   const routeChatTitle = getRouteChatTitle(location.state);
@@ -792,31 +532,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     enabled: Boolean(chatId),
     refetchInterval: () => (document.hidden ? false : 10_000),
     refetchOnWindowFocus: true,
-  });
-  const candidatesQuery = useQuery({
-    queryKey: ['spammer-candidates', chatId],
-    queryFn: () => getSpammerCandidates(api, chatId ?? ''),
-    enabled: Boolean(chatId) && section === 'candidates',
-    refetchInterval: () => (section === 'candidates' && !document.hidden ? 10_000 : false),
-    refetchOnWindowFocus: section === 'candidates',
-  });
-  const reviewCandidatesMutation = useMutation({
-    mutationFn: (payload: { decision: SpammerCandidateDecision; userIds: string[] }) =>
-      reviewSpammerCandidates(api, chatId ?? '', payload),
-    onSuccess: (result, variables) => {
-      setCandidateStatus({ tone: 'success', text: result.message });
-      setSelectedCandidateIds((current) =>
-        current.filter((item) => !variables.userIds.includes(item)),
-      );
-      setExpandedCandidateId((current) =>
-        current && variables.userIds.includes(current) ? null : current,
-      );
-      void queryClient.invalidateQueries({ queryKey: ['spammer-candidates', chatId] });
-      void queryClient.invalidateQueries({ queryKey: ['logs-dashboard', chatId] });
-    },
-    onError: (error: unknown) => {
-      setCandidateStatus({ tone: 'danger', text: normalizeActionErrorMessage(error) });
-    },
   });
 
   const chatTitle = useMemo(() => {
@@ -855,21 +570,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   }, [chatId, chatTitle]);
 
   const dashboard = dashboardQuery.data ?? null;
-  const candidates = candidatesQuery.data?.items ?? [];
-  const candidateReviewEnabled = dashboard?.spammerCandidates.reviewEnabled ?? false;
-  const pendingCandidateCount = dashboard?.spammerCandidates.pendingCount ?? 0;
-  const isCandidatesSectionAvailable =
-    !dashboard || candidateReviewEnabled || pendingCandidateCount > 0;
-  const renderSection: EventsSection =
-    section === 'candidates' && !isCandidatesSectionAvailable ? 'moderation' : section;
   const activityFeed = useMembershipActivityFeed({
     range,
     initialPage: dashboard?.activityFeed ?? EMPTY_ACTIVITY_PAGE,
     loadPage: (query) => getChatActivityFeed(api, chatId ?? '', query),
   });
-  const filterOptions = useMemo<
-    Array<{ value: EventsFilter; label: string; count: number }>
-  >(() => {
+  const filterOptions = useMemo<Array<{ value: EventsFilter; label: string; count: number }>>(() => {
     if (!dashboard) {
       return [{ value: 'ALL', label: 'Все', count: 0 }];
     }
@@ -877,11 +583,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     const options: Array<{ value: EventsFilter; label: string; count: number }> = [
       { value: 'ALL', label: 'Все', count: dashboard.violationsSummary.total },
       { value: 'WARN', label: 'Предупр.', count: dashboard.violationsSummary.warn },
-      {
-        value: 'DELETE_MESSAGE',
-        label: 'Удаления',
-        count: dashboard.violationsSummary.deleteMessage,
-      },
+      { value: 'DELETE_MESSAGE', label: 'Удаления', count: dashboard.violationsSummary.deleteMessage },
       { value: 'KICK', label: 'Кики', count: dashboard.violationsSummary.kick },
       { value: 'BAN', label: 'Баны', count: dashboard.violationsSummary.ban },
       { value: 'UNBAN', label: 'Разбаны', count: dashboard.violationsSummary.unban },
@@ -897,28 +599,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   }, [eventsFilter, filterOptions]);
 
   useEffect(() => {
-    if (section !== renderSection) {
-      setSection(renderSection);
-    }
-  }, [renderSection, section]);
-
-  useEffect(() => {
     setExpandedViolationId(null);
-    setExpandedCandidateId(null);
-    const activeElement = document.activeElement;
-    if (activeElement instanceof HTMLElement && activeElement !== document.body) {
-      activeElement.blur();
-    }
-    if (renderSection !== 'candidates') {
-      setCandidateStatus(null);
-    }
-  }, [eventsFilter, range, renderSection]);
-
-  useEffect(() => {
-    const availableIds = new Set(candidates.map((item) => item.userId));
-    setSelectedCandidateIds((current) => current.filter((item) => availableIds.has(item)));
-    setExpandedCandidateId((current) => (current && availableIds.has(current) ? current : null));
-  }, [candidates]);
+  }, [eventsFilter, range, section]);
 
   const filteredViolations = useMemo(() => {
     if (!dashboard) {
@@ -929,49 +611,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       return dashboard.violations;
     }
 
-    return dashboard.violations.filter(
-      (violation) => resolveDisplayAction(violation) === eventsFilter,
-    );
+    return dashboard.violations.filter((violation) => resolveDisplayAction(violation) === eventsFilter);
   }, [dashboard, eventsFilter]);
 
   const hardMeasures = dashboard
     ? dashboard.violationsSummary.kick + dashboard.violationsSummary.ban
     : 0;
-  const moderationViolations = dashboard?.violations ?? [];
-  const selectedCandidateCount = selectedCandidateIds.length;
-  const visibleCandidateChatCount = useMemo(
-    () =>
-      new Set(candidates.flatMap((candidate) => candidate.visibleChats.map((item) => item.chatId)))
-        .size,
-    [candidates],
-  );
-
-  const toggleCandidateSelection = (userId: string) => {
-    setCandidateStatus(null);
-    setSelectedCandidateIds((current) =>
-      current.includes(userId) ? current.filter((item) => item !== userId) : [...current, userId],
-    );
-  };
-
-  const handleCandidateDecision = (decision: SpammerCandidateDecision, userIds: string[]) => {
-    const normalizedUserIds = Array.from(new Set(userIds));
-    if (!chatId || normalizedUserIds.length === 0 || reviewCandidatesMutation.isPending) {
-      return;
-    }
-
-    const confirmed = window.confirm(
-      buildCandidateConfirmMessage(decision, normalizedUserIds.length),
-    );
-    if (!confirmed) {
-      return;
-    }
-
-    setCandidateStatus(null);
-    reviewCandidatesMutation.mutate({
-      decision,
-      userIds: normalizedUserIds,
-    });
-  };
 
   if (!chatId) {
     return (
@@ -1025,32 +670,37 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     return null;
   }
 
-  const membership = dashboard.membership;
-  const violationsSummary = dashboard.violationsSummary;
+  const rangeDescription = resolveRangeDescription(range);
   const activityBalanceTone =
-    membership.netUsers > 0 ? 'success' : membership.netUsers < 0 ? 'danger' : 'neutral';
-  const activityMovementsTotal = membership.joinedUsers + membership.leftUsers;
+    dashboard.membership.netUsers > 0
+      ? 'success'
+      : dashboard.membership.netUsers < 0
+        ? 'danger'
+        : 'neutral';
+  const activityMovementsTotal = dashboard.membership.joinedUsers + dashboard.membership.leftUsers;
   const joinedShare = activityMovementsTotal
-    ? Math.round((membership.joinedUsers / activityMovementsTotal) * 100)
+    ? Math.round((dashboard.membership.joinedUsers / activityMovementsTotal) * 100)
     : 50;
   const leftShare = activityMovementsTotal ? 100 - joinedShare : 50;
   const activityBalanceLabel =
-    membership.netUsers > 0
+    dashboard.membership.netUsers > 0
       ? 'Рост участников'
-      : membership.netUsers < 0
+      : dashboard.membership.netUsers < 0
         ? 'Отток участников'
         : 'Баланс без изменений';
   const moderationHeroMetric = {
     label: 'События',
-    value: String(violationsSummary.total),
+    value: String(dashboard.violationsSummary.total),
     note:
-      violationsSummary.total > 0 ? 'Зафиксировано за период' : 'За период нарушений не найдено',
+      dashboard.violationsSummary.total > 0
+        ? 'Зафиксировано за период'
+        : 'За период нарушений не найдено',
     tone: 'accent' as const,
   };
   const moderationSecondaryMetrics = [
     {
       label: 'Люди',
-      value: String(violationsSummary.affectedUsers),
+      value: String(dashboard.violationsSummary.affectedUsers),
       note: 'Участников затронуто',
       tone: 'neutral' as const,
     },
@@ -1061,67 +711,27 @@ export function EventsPage({ api }: { api: ApiTransport }) {
       tone: hardMeasures > 0 ? ('danger' as const) : ('neutral' as const),
     },
   ];
-  const candidateHeroMetric = {
-    label: 'В очереди',
-    value: String(pendingCandidateCount),
-    note: candidateReviewEnabled
-      ? pendingCandidateCount > 0
-        ? 'Ждут согласования админа'
-        : 'Очередь сейчас пустая'
-      : 'Новые кандидаты сюда больше не попадают',
-    tone: pendingCandidateCount > 0 ? ('warning' as const) : ('accent' as const),
-  };
-  const candidateSecondaryMetrics = [
-    {
-      label: 'Чаты',
-      value: String(visibleCandidateChatCount),
-      note: visibleCandidateChatCount > 0 ? 'Доступны вам' : 'Пока нет совпадений',
-      tone: visibleCandidateChatCount > 0 ? ('accent' as const) : ('neutral' as const),
-    },
-    {
-      label: 'Выбрано',
-      value: String(selectedCandidateCount),
-      note: selectedCandidateCount > 0 ? 'Готово к пакетному решению' : 'Можно выбрать несколько',
-      tone: selectedCandidateCount > 0 ? ('warning' as const) : ('neutral' as const),
-    },
-  ];
-  const dashboardTitle =
-    renderSection === 'activity'
-      ? 'Входы и выходы'
-      : renderSection === 'candidates'
-        ? 'Кандидаты на удаление'
-        : 'Модерация';
+  const dashboardTitle = section === 'activity' ? 'Входы и выходы' : 'Модерация';
   const dashboardSubtitle =
-    renderSection === 'activity'
+    section === 'activity'
       ? 'Баланс и движение участников'
-      : renderSection === 'candidates'
-        ? candidateReviewEnabled
-          ? 'Сначала согласование, потом глобальный бан'
-          : 'Осталось разобрать очередь после отключения согласования'
-        : 'Люди и меры за выбранный период';
-  const isActiveSectionFetching =
-    renderSection === 'candidates' ? candidatesQuery.isFetching : dashboardQuery.isFetching;
-  const settingsRoute = `/chat/${chatId}/settings`;
+      : 'Люди и меры за выбранный период';
   return (
     <div className="events-screen page-enter">
-      <section className={`events-stage events-stage--${renderSection}`}>
+      <section className={`events-stage events-stage--${section}`}>
         <header
           className={`events-stage__appbar ${isHeaderCompact ? 'is-compact' : ''} ${
             isHeaderHidden ? 'is-hidden' : ''
           }`}
         >
           <div className="events-stage__appbar-bar">
-            <button
-              type="button"
+            <Link
+              to={buildManagedEntitiesRoute('chat')}
               className="events-stage__back"
               aria-label="К списку чатов"
-              onClick={(event) => {
-                event.currentTarget.blur();
-                navigate(buildManagedEntitiesRoute('chat'));
-              }}
             >
               <BackChevronIcon />
-            </button>
+            </Link>
 
             <div className="events-stage__appbar-copy">
               <strong>События</strong>
@@ -1129,13 +739,14 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             </div>
 
             <div className="events-stage__appbar-side">
-              {isActiveSectionFetching ? (
-                <span className="events-stage__pulse" aria-label="Обновляем" title="Обновляем" />
-              ) : (
+              {dashboardQuery.isFetching ? (
                 <span
-                  className="events-stage__pulse events-stage__pulse--idle"
-                  aria-hidden="true"
+                  className="events-stage__pulse"
+                  aria-label="Обновляем"
+                  title="Обновляем"
                 />
+              ) : (
+                <span className="events-stage__pulse events-stage__pulse--idle" aria-hidden="true" />
               )}
             </div>
           </div>
@@ -1147,12 +758,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               <button
                 type="button"
                 role="tab"
-                aria-selected={renderSection === 'moderation'}
-                className={`events-primary-tab ${renderSection === 'moderation' ? 'is-active' : ''}`}
-                onClick={(event) => {
-                  event.currentTarget.blur();
-                  setSection('moderation');
-                }}
+                aria-selected={section === 'moderation'}
+                className={`events-primary-tab ${section === 'moderation' ? 'is-active' : ''}`}
+                onClick={() => setSection('moderation')}
               >
                 <span className="events-primary-tab__icon" aria-hidden="true">
                   <ModerationTabIcon />
@@ -1163,47 +771,22 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               <button
                 type="button"
                 role="tab"
-                aria-selected={renderSection === 'activity'}
-                className={`events-primary-tab ${renderSection === 'activity' ? 'is-active' : ''}`}
-                onClick={(event) => {
-                  event.currentTarget.blur();
-                  setSection('activity');
-                }}
+                aria-selected={section === 'activity'}
+                className={`events-primary-tab ${section === 'activity' ? 'is-active' : ''}`}
+                onClick={() => setSection('activity')}
               >
                 <span className="events-primary-tab__icon" aria-hidden="true">
                   <ActivityTabIcon />
                 </span>
                 <span className="events-primary-tab__label">Входы и выходы</span>
               </button>
-
-              {isCandidatesSectionAvailable ? (
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={renderSection === 'candidates'}
-                  className={`events-primary-tab ${renderSection === 'candidates' ? 'is-active' : ''}`}
-                  onClick={(event) => {
-                    event.currentTarget.blur();
-                    setSection('candidates');
-                  }}
-                >
-                  <span className="events-primary-tab__icon" aria-hidden="true">
-                    <CandidatesTabIcon />
-                  </span>
-                  <span className="events-primary-tab__label">Кандидаты</span>
-                </button>
-              ) : null}
             </div>
           </div>
 
           <section
-            className={`events-dashboard events-dashboard--${renderSection}`}
+            className={`events-dashboard events-dashboard--${section}`}
             aria-label={
-              renderSection === 'activity'
-                ? 'Сводка по входам и выходам'
-                : renderSection === 'candidates'
-                  ? 'Очередь кандидатов'
-                  : 'Сводка по модерации'
+              section === 'activity' ? 'Сводка по входам и выходам' : 'Сводка по модерации'
             }
           >
             <div className="events-dashboard__head">
@@ -1212,40 +795,34 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 <span className="events-dashboard__eyebrow">{dashboardSubtitle}</span>
               </div>
 
-              {renderSection === 'candidates' ? (
-                <span className="events-dashboard__live-pill">
-                  {candidateReviewEnabled ? 'На согласовании' : 'Очередь закрыта'}
-                </span>
-              ) : (
-                <SegmentedControl
-                  value={range}
-                  options={periodOptions}
-                  onChange={(next) => setRange(next as LogsDashboardRange)}
-                  className="events-dashboard__range"
-                />
-              )}
+              <SegmentedControl
+                value={range}
+                options={periodOptions}
+                onChange={(next) => setRange(next as LogsDashboardRange)}
+                className="events-dashboard__range"
+              />
             </div>
 
-            {renderSection === 'activity' ? (
+            {section === 'activity' ? (
               <div className="events-dashboard__activity">
                 <article
                   className={`events-dashboard__activity-balance events-dashboard__activity-balance--${activityBalanceTone}`}
                 >
                   <small>Баланс</small>
-                  <strong>{formatSignedCount(membership.netUsers)}</strong>
+                  <strong>{formatSignedCount(dashboard.membership.netUsers)}</strong>
                   <span>{activityBalanceLabel}</span>
                 </article>
 
                 <div className="events-dashboard__activity-ledger">
                   <article className="events-dashboard__flow-card events-dashboard__flow-card--joined">
                     <small>Вошли</small>
-                    <strong>{membership.joinedUsers}</strong>
+                    <strong>{dashboard.membership.joinedUsers}</strong>
                     <span>{joinedShare}% всего движения</span>
                   </article>
 
                   <article className="events-dashboard__flow-card events-dashboard__flow-card--left">
                     <small>Вышли</small>
-                    <strong>{membership.leftUsers}</strong>
+                    <strong>{dashboard.membership.leftUsers}</strong>
                     <span>{leftShare}% всего движения</span>
                   </article>
 
@@ -1257,29 +834,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                     <small>Вошли {joinedShare}%</small>
                     <small>Вышли {leftShare}%</small>
                   </div>
-                </div>
-              </div>
-            ) : renderSection === 'candidates' ? (
-              <div className="events-dashboard__body events-dashboard__body--moderation">
-                <article
-                  className={`events-dashboard__hero events-dashboard__hero--${candidateHeroMetric.tone}`}
-                >
-                  <small>{candidateHeroMetric.label}</small>
-                  <strong>{candidateHeroMetric.value}</strong>
-                  <span>{candidateHeroMetric.note}</span>
-                </article>
-
-                <div className="events-dashboard__stack">
-                  {candidateSecondaryMetrics.map((item) => (
-                    <article
-                      key={item.label}
-                      className={`events-dashboard__metric events-dashboard__metric--${item.tone}`}
-                    >
-                      <small>{item.label}</small>
-                      <strong>{item.value}</strong>
-                      <span>{item.note}</span>
-                    </article>
-                  ))}
                 </div>
               </div>
             ) : (
@@ -1308,7 +862,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             )}
           </section>
 
-          {renderSection === 'moderation' ? (
+          {section === 'moderation' ? (
             <div className="events-screen__filters" role="tablist" aria-label="Фильтр модерации">
               {filterOptions.map((option) => {
                 const active = option.value === eventsFilter;
@@ -1332,7 +886,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         </div>
       </section>
 
-      {renderSection === 'activity' ? (
+      {section === 'activity' ? (
         <MembershipActivityFeed
           joinedLabel="чату"
           leftLabel="чат"
@@ -1348,152 +902,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
         />
       ) : null}
 
-      {renderSection === 'candidates' ? (
+      {section === 'moderation' ? (
         <>
-          {!candidateReviewEnabled ? (
-            <GlassCard className="events-inline-state">
-              <StatusState
-                tone="warning"
-                title="Согласование выключено"
-                description="Новые кандидаты больше не попадают в очередь. Можно разобрать остаток или снова включить «Только после согласования» в настройках чата."
-                action={
-                  <Link to={settingsRoute} className="button button--ghost">
-                    Настройки чата
-                  </Link>
-                }
-              />
-            </GlassCard>
-          ) : null}
-
-          {candidateStatus ? (
-            <GlassCard className="events-inline-state">
-              <p className={`logs-violation-item__action-status is-${candidateStatus.tone}`}>
-                {candidateStatus.text}
-              </p>
-            </GlassCard>
-          ) : null}
-
-          {candidatesQuery.isLoading && !candidatesQuery.data ? (
-            <GlassCard className="events-inline-state">
-              <SkeletonCard lines={10} />
-            </GlassCard>
-          ) : null}
-
-          {candidatesQuery.error ? (
-            <GlassCard className="events-inline-state">
-              <StatusState
-                tone="warning"
-                title="Не удалось загрузить очередь"
-                description={(candidatesQuery.error as Error).message}
-                action={
-                  <button
-                    type="button"
-                    className="button button--ghost"
-                    onClick={() => void candidatesQuery.refetch()}
-                  >
-                    Обновить
-                  </button>
-                }
-              />
-            </GlassCard>
-          ) : null}
-
-          {!candidatesQuery.error && !candidatesQuery.isLoading && candidates.length === 0 ? (
-            <GlassCard className="events-inline-state">
-              <StatusState
-                tone="neutral"
-                title="Очередь пуста"
-                description={
-                  candidateReviewEnabled
-                    ? 'Когда бот заметит межчатовый спам, кандидаты появятся здесь для согласования.'
-                    : 'Остаток очереди уже разобран. Новые кандидаты появятся только после повторного включения согласования.'
-                }
-              />
-            </GlassCard>
-          ) : null}
-
-          {candidates.length > 0 ? (
-            <>
-              <section className="candidate-review-batch" aria-label="Пакетные действия">
-                <div className="candidate-review-batch__copy">
-                  <strong>
-                    {selectedCandidateCount > 0
-                      ? `Выбрано ${selectedCandidateCount}`
-                      : 'Выберите кандидатов'}
-                  </strong>
-                  <span>
-                    {selectedCandidateCount > 0
-                      ? 'Их можно решить одним действием.'
-                      : 'Отметьте несколько карточек для массовой обработки.'}
-                  </span>
-                </div>
-
-                <div className="candidate-review-batch__actions">
-                  <button
-                    type="button"
-                    className="button button--danger"
-                    disabled={selectedCandidateCount === 0 || reviewCandidatesMutation.isPending}
-                    onClick={(event) => {
-                      event.currentTarget.blur();
-                      handleCandidateDecision('APPROVE', selectedCandidateIds);
-                    }}
-                  >
-                    {reviewCandidatesMutation.isPending ? 'Применяем…' : 'Удалить'}
-                  </button>
-
-                  <button
-                    type="button"
-                    className="button button--ghost"
-                    disabled={selectedCandidateCount === 0 || reviewCandidatesMutation.isPending}
-                    onClick={(event) => {
-                      event.currentTarget.blur();
-                      handleCandidateDecision('REJECT', selectedCandidateIds);
-                    }}
-                  >
-                    Оставить
-                  </button>
-                </div>
-              </section>
-
-              <section className="candidate-review-board" aria-label="Кандидаты на удаление">
-                {candidates.map((candidate) => (
-                  <SpammerCandidateCard
-                    key={candidate.userId}
-                    candidate={candidate}
-                    chatId={chatId}
-                    isExpanded={expandedCandidateId === candidate.userId}
-                    isSelected={selectedCandidateIds.includes(candidate.userId)}
-                    isBusy={reviewCandidatesMutation.isPending}
-                    onToggleExpand={(userId) =>
-                      setExpandedCandidateId((current) => (current === userId ? null : userId))
-                    }
-                    onToggleSelect={toggleCandidateSelection}
-                    onApplyDecision={handleCandidateDecision}
-                  />
-                ))}
-              </section>
-            </>
-          ) : null}
-        </>
-      ) : null}
-
-      {renderSection === 'moderation' ? (
-        <>
-          {!isCandidatesSectionAvailable ? (
-            <GlassCard className="events-inline-state">
-              <StatusState
-                tone="neutral"
-                title="Кандидаты выключены"
-                description="Чтобы бот собирал очередь на согласование, включите «Удалять спаммеров» и «Только после согласования» в настройках чата."
-                action={
-                  <Link to={settingsRoute} className="button button--accent">
-                    Открыть настройки
-                  </Link>
-                }
-              />
-            </GlassCard>
-          ) : null}
-
           {dashboardQuery.error ? (
             <GlassCard className="events-inline-state">
               <StatusState
@@ -1513,7 +923,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
           ) : null}
 
-          {moderationViolations.length === 0 ? (
+          {dashboard.violations.length === 0 ? (
             <GlassCard className="events-inline-state">
               <StatusState
                 tone="neutral"
@@ -1523,7 +933,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
           ) : null}
 
-          {moderationViolations.length > 0 && filteredViolations.length === 0 ? (
+          {dashboard.violations.length > 0 && filteredViolations.length === 0 ? (
             <GlassCard className="events-inline-state">
               <StatusState
                 tone="neutral"

@@ -6,11 +6,6 @@
   animation: riseIn 0.45s ease both;
 }
 
-.max-webview .page-enter,
-.max-webview .stagger-in {
-  animation: none;
-}
-
 .button:not(:disabled):active,
 .bottom-nav__item:active,
 .policy-card:active,

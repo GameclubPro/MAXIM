@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { cn } from '../lib/cn';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { bindMaxBackButton, maxImpact, setMaxBackButtonVisible } from '../lib/max-bridge';
@@ -19,47 +19,6 @@ type ScreenInfo = {
 };
 
 type BottomNavIconName = 'chats' | 'channels' | 'settings' | 'events';
-
-function isTextEntryElement(element: Element | null): boolean {
-  if (element instanceof HTMLTextAreaElement) {
-    return !element.disabled && !element.readOnly;
-  }
-
-  if (element instanceof HTMLInputElement) {
-    const type = (element.type || 'text').toLowerCase();
-    return (
-      !element.disabled &&
-      !element.readOnly &&
-      [
-        'text',
-        'search',
-        'url',
-        'tel',
-        'email',
-        'password',
-        'number',
-        'date',
-        'datetime-local',
-        'month',
-        'time',
-        'week',
-      ].includes(type)
-    );
-  }
-
-  return element instanceof HTMLElement && element.isContentEditable;
-}
-
-function blurNonTextEntryFocus(): void {
-  const activeElement = document.activeElement;
-  if (
-    activeElement instanceof HTMLElement &&
-    activeElement !== document.body &&
-    !isTextEntryElement(activeElement)
-  ) {
-    activeElement.blur();
-  }
-}
 
 function BottomNavIcon({ name }: { name: BottomNavIconName }) {
   if (name === 'chats') {
@@ -302,26 +261,24 @@ export function Shell() {
     () => resolveScreenInfo(location.pathname, resolvedChatTitle || resolvedChatId),
     [location.pathname, resolvedChatId, resolvedChatTitle],
   );
-  const handleBottomNav = (target: string) => {
-    if (!target || `${location.pathname}${location.search}` === target) {
-      return;
-    }
-
-    blurNonTextEntryFocus();
-    maxImpact('light');
-    navigate(target);
-  };
 
   useEffect(() => {
     const viewport = window.visualViewport;
     let baselineHeight = viewport?.height ?? window.innerHeight;
     const keyboardThreshold = 120;
 
+    const hasEditableFocus = () => {
+      const activeElement = document.activeElement;
+      return (
+        activeElement instanceof HTMLInputElement ||
+        activeElement instanceof HTMLTextAreaElement ||
+        (activeElement instanceof HTMLElement && activeElement.isContentEditable)
+      );
+    };
+
     const updateKeyboardState = () => {
       const currentHeight = viewport?.height ?? window.innerHeight;
-      const isOpened =
-        isTextEntryElement(document.activeElement) &&
-        baselineHeight - currentHeight > keyboardThreshold;
+      const isOpened = hasEditableFocus() && baselineHeight - currentHeight > keyboardThreshold;
 
       if (!isOpened) {
         baselineHeight = currentHeight;
@@ -348,35 +305,6 @@ export function Shell() {
   }, []);
 
   useEffect(() => {
-    const frameId = window.requestAnimationFrame(() => {
-      if (!isTextEntryElement(document.activeElement)) {
-        setIsKeyboardOpen(false);
-      }
-    });
-
-    return () => {
-      window.cancelAnimationFrame(frameId);
-    };
-  }, [location.pathname, location.search]);
-
-  useEffect(() => {
-    const handlePointerDown = (event: Event) => {
-      const target = event.target;
-      if (!(target instanceof Element) || isTextEntryElement(target)) {
-        return;
-      }
-
-      blurNonTextEntryFocus();
-    };
-
-    window.addEventListener('pointerdown', handlePointerDown, true);
-
-    return () => {
-      window.removeEventListener('pointerdown', handlePointerDown, true);
-    };
-  }, []);
-
-  useEffect(() => {
     const shouldShowNativeBack = !isChatsRoute;
     setMaxBackButtonVisible(shouldShowNativeBack);
 
@@ -387,7 +315,6 @@ export function Shell() {
     }
 
     const cleanup = bindMaxBackButton(() => {
-      blurNonTextEntryFocus();
       maxImpact('light');
       if (window.history.length > 1) {
         navigate(-1);
@@ -435,116 +362,104 @@ export function Shell() {
           className={cn('bottom-nav glass-card', isKeyboardOpen && 'is-keyboard-open')}
           aria-label="Навигация приложения"
         >
-          <button
-            type="button"
+          <Link
+            to={buildManagedEntitiesRoute('chat')}
             className={cn('bottom-nav__item', isChatsListRoute && 'is-active')}
-            aria-current={isChatsListRoute ? 'page' : undefined}
-            onClick={() => handleBottomNav(buildManagedEntitiesRoute('chat'))}
           >
             <span className="bottom-nav__icon" aria-hidden>
               <BottomNavIcon name="chats" />
             </span>
             <span className="bottom-nav__label">Чаты</span>
-          </button>
+          </Link>
 
-          <button
-            type="button"
+          <Link
+            to={buildManagedEntitiesRoute('channel')}
             className={cn('bottom-nav__item', isChannelsListRoute && 'is-active')}
-            aria-current={isChannelsListRoute ? 'page' : undefined}
-            onClick={() => handleBottomNav(buildManagedEntitiesRoute('channel'))}
           >
             <span className="bottom-nav__icon" aria-hidden>
               <BottomNavIcon name="channels" />
             </span>
             <span className="bottom-nav__label">Каналы</span>
-          </button>
+          </Link>
 
           {resolvedEntityType === 'channel' ? (
             <>
               {resolvedChatId ? (
-                <button
-                  type="button"
-                  className={cn('bottom-nav__item', isSettingsRoute && 'is-active')}
-                  aria-current={isSettingsRoute ? 'page' : undefined}
-                  onClick={() => handleBottomNav(settingsRoute)}
+                <NavLink
+                  to={settingsRoute}
+                  className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
                 >
                   <span className="bottom-nav__icon" aria-hidden>
                     <BottomNavIcon name="settings" />
                   </span>
                   <span className="bottom-nav__label">Настройки</span>
-                </button>
+                </NavLink>
               ) : (
-                <button type="button" className="bottom-nav__item is-disabled" disabled>
+                <span className="bottom-nav__item is-disabled" aria-disabled>
                   <span className="bottom-nav__icon" aria-hidden>
                     <BottomNavIcon name="settings" />
                   </span>
                   <span className="bottom-nav__label">Настройки</span>
-                </button>
+                </span>
               )}
 
               {resolvedChatId ? (
-                <button
-                  type="button"
-                  className={cn('bottom-nav__item', isChannelStatsRoute && 'is-active')}
-                  aria-current={isChannelStatsRoute ? 'page' : undefined}
-                  onClick={() => handleBottomNav(activityRoute)}
+                <NavLink
+                  to={activityRoute}
+                  className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
                 >
                   <span className="bottom-nav__icon" aria-hidden>
                     <BottomNavIcon name="events" />
                   </span>
                   <span className="bottom-nav__label">Статистика</span>
-                </button>
+                </NavLink>
               ) : (
-                <button type="button" className="bottom-nav__item is-disabled" disabled>
+                <span className="bottom-nav__item is-disabled" aria-disabled>
                   <span className="bottom-nav__icon" aria-hidden>
                     <BottomNavIcon name="events" />
                   </span>
                   <span className="bottom-nav__label">Статистика</span>
-                </button>
+                </span>
               )}
             </>
           ) : (
             <>
               {resolvedChatId ? (
-                <button
-                  type="button"
-                  className={cn('bottom-nav__item', isSettingsRoute && 'is-active')}
-                  aria-current={isSettingsRoute ? 'page' : undefined}
-                  onClick={() => handleBottomNav(settingsRoute)}
+                <NavLink
+                  to={settingsRoute}
+                  className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
                 >
                   <span className="bottom-nav__icon" aria-hidden>
                     <BottomNavIcon name="settings" />
                   </span>
                   <span className="bottom-nav__label">Настройки</span>
-                </button>
+                </NavLink>
               ) : (
-                <button type="button" className="bottom-nav__item is-disabled" disabled>
+                <span className="bottom-nav__item is-disabled" aria-disabled>
                   <span className="bottom-nav__icon" aria-hidden>
                     <BottomNavIcon name="settings" />
                   </span>
                   <span className="bottom-nav__label">Настройки</span>
-                </button>
+                </span>
               )}
 
               {resolvedChatId ? (
-                <button
-                  type="button"
-                  className={cn('bottom-nav__item', isEventsRoute && 'is-active')}
-                  aria-current={isEventsRoute ? 'page' : undefined}
-                  onClick={() => handleBottomNav(activityRoute)}
+                <NavLink
+                  to={activityRoute}
+                  className={({ isActive }) => cn('bottom-nav__item', isActive && 'is-active')}
                 >
                   <span className="bottom-nav__icon" aria-hidden>
                     <BottomNavIcon name="events" />
                   </span>
                   <span className="bottom-nav__label">Статистика</span>
-                </button>
+                </NavLink>
               ) : (
-                <button type="button" className="bottom-nav__item is-disabled" disabled>
+                <span className="bottom-nav__item is-disabled" aria-disabled>
                   <span className="bottom-nav__icon" aria-hidden>
                     <BottomNavIcon name="events" />
                   </span>
                   <span className="bottom-nav__label">Статистика</span>
-                </button>
+                </span>
               )}
             </>
           )}

@@ -169,10 +169,6 @@ type GlobalSpammerTrackingResult = {
   handled: boolean;
   skipKnownSpammerCheck: boolean;
 };
-type GlobalSpammerCandidateUpsertResult = {
-  created: boolean;
-  suppressed: boolean;
-};
 const TEXT_FILTER_RULE_CODES = new Set(['PROFANITY', 'COMMERCIAL_AD']);
 const TOPIC_FILTER_RULE_CODES = new Set(['TOPIC_FILTER_MISMATCH']);
 type PrivateControlCommand = 'menu' | 'chats' | 'channels' | 'help';
@@ -502,10 +498,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       userLabel,
       messageId,
       text,
-      createdAt,
       deleteSpammersEnabled: settings.deleteSpammersEnabled,
-      deleteSpammersRequireApproval:
-        settings.deleteSpammersEnabled && settings.deleteSpammersRequireApproval === true,
     });
     if (globalSpammerTracking.handled) {
       return;
@@ -520,20 +513,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
       if (handled) {
         return;
-      }
-
-      if (settings.deleteSpammersRequireApproval) {
-        const pendingHandled = await this.handlePendingSpammerCandidateSenderMessage({
-          chatId,
-          userId: senderId,
-          userLabel,
-          messageId,
-          text,
-          createdAt,
-        });
-        if (pendingHandled) {
-          return;
-        }
       }
     }
 
@@ -3607,43 +3586,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return true;
   }
 
-  private async handlePendingSpammerCandidateSenderMessage(params: {
-    chatId: string;
-    userId: string;
-    userLabel: string;
-    messageId: string;
-    text: string;
-    createdAt: string;
-  }): Promise<boolean> {
-    const { chatId, userId, userLabel, messageId, text, createdAt } = params;
-    const isPendingCandidate = await this.isUserPendingGlobalSpammerCandidate(userId);
-    if (!isPendingCandidate) {
-      return false;
-    }
-
-    await this.refreshPendingSpammerCandidateEvidence({
-      chatId,
-      userId,
-      userLabel,
-      messageId,
-      text,
-      reason: 'PENDING_REVIEW_ACTIVITY',
-      evidence: {
-        chatId,
-        createdAt,
-      },
-    });
-    await this.deletePendingSpammerCandidateMessage({
-      chatId,
-      userId,
-      messageId,
-      text,
-      createdAt,
-      reason: 'Pending approval for global spammer candidate',
-    });
-    return true;
-  }
-
   private async handleServiceKnownSpammerMembersEvent(params: {
     chatId: string;
     messageId: string;
@@ -3728,9 +3670,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userLabel: string;
     messageId: string;
     text: string;
-    createdAt: string;
     deleteSpammersEnabled: boolean;
-    deleteSpammersRequireApproval: boolean;
   }): Promise<GlobalSpammerTrackingResult> {
     const baseResult: GlobalSpammerTrackingResult = {
       handled: false,
@@ -3740,16 +3680,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return baseResult;
     }
 
-    const {
-      chatId,
-      userId,
-      userLabel,
-      messageId,
-      text,
-      createdAt,
-      deleteSpammersEnabled,
-      deleteSpammersRequireApproval,
-    } = params;
+    const { chatId, userId, userLabel, messageId, text, deleteSpammersEnabled } = params;
 
     try {
       const uniqueChatsState = await this.redisCounter.addToSetWithTtl(
@@ -3763,45 +3694,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (uniqueChatsState.size >= GLOBAL_SPAMMER_HIGH_FANOUT_MIN_CHATS) {
-        if (deleteSpammersRequireApproval) {
-          const reviewCandidate = await this.upsertGlobalSpammerCandidate({
-            chatId,
-            userId,
-            userLabel,
-            messageId,
-            text,
-            reason: 'HIGH_FANOUT_5_CHATS_2M',
-            detectionsDelta: uniqueChatsState.size,
-            evidence: {
-              uniqueChats: uniqueChatsState.size,
-              windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
-            },
-          });
-          if (reviewCandidate.suppressed) {
-            return baseResult;
-          }
-          if (reviewCandidate.created) {
-            await this.notifyModeratorsAboutSpammerCandidate({
-              chatId,
-              userId,
-              userLabel,
-              affectedChats: uniqueChatsState.size,
-            });
-          }
-          await this.deletePendingSpammerCandidateMessage({
-            chatId,
-            userId,
-            messageId,
-            text,
-            createdAt,
-            reason: 'Detected in 5 unique chats within 2 minutes and queued for approval',
-          });
-          return {
-            handled: true,
-            skipKnownSpammerCheck: true,
-          };
-        }
-
         await this.upsertGlobalSpammerEntry({
           userId,
           sourceChatId: chatId,
@@ -3848,47 +3740,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       if (warningCount >= GLOBAL_SPAMMER_WARN_THRESHOLD) {
-        if (deleteSpammersRequireApproval) {
-          const reviewCandidate = await this.upsertGlobalSpammerCandidate({
-            chatId,
-            userId,
-            userLabel,
-            messageId,
-            text,
-            reason: 'HIGH_FANOUT_4_CHATS_WARN_THRESHOLD',
-            detectionsDelta: uniqueChatsState.size,
-            evidence: {
-              uniqueChats: uniqueChatsState.size,
-              windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
-              warningCount,
-              warningThreshold: GLOBAL_SPAMMER_WARN_THRESHOLD,
-            },
-          });
-          if (reviewCandidate.suppressed) {
-            return baseResult;
-          }
-          if (reviewCandidate.created) {
-            await this.notifyModeratorsAboutSpammerCandidate({
-              chatId,
-              userId,
-              userLabel,
-              affectedChats: uniqueChatsState.size,
-            });
-          }
-          await this.deletePendingSpammerCandidateMessage({
-            chatId,
-            userId,
-            messageId,
-            text,
-            createdAt,
-            reason: 'Repeated 4-chat fanout reached approval queue threshold',
-          });
-          return {
-            handled: true,
-            skipKnownSpammerCheck: true,
-          };
-        }
-
         await this.upsertGlobalSpammerEntry({
           userId,
           sourceChatId: chatId,
@@ -3904,7 +3755,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
       return {
         handled: false,
-        skipKnownSpammerCheck: deleteSpammersEnabled && !deleteSpammersRequireApproval,
+        skipKnownSpammerCheck: deleteSpammersEnabled,
       };
     } catch (error: unknown) {
       this.logger.warn(
@@ -3941,57 +3792,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async deletePendingSpammerCandidateMessage(params: {
-    chatId: string;
-    userId: string;
-    messageId: string;
-    text: string;
-    createdAt: string;
-    reason: string;
-  }): Promise<void> {
-    const { chatId, userId, messageId, text, createdAt, reason } = params;
-    const messageAgeMs = Date.now() - new Date(createdAt).getTime();
-    const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
-
-    if (!canDeleteMessage) {
-      await this.maxClient.notifyModerators(
-        chatId,
-        `Кандидат на удаление ${userId} ждёт согласования, но сообщение старше 24 часов и не может быть удалено`,
-      );
-      return;
-    }
-
-    try {
-      await this.maxClient.deleteMessage(chatId, messageId);
-      await this.prisma.moderationEvent.create({
-        data: {
-          chatId,
-          userId,
-          messageId,
-          eventType: EventType.MESSAGE,
-          ruleCode: 'GLOBAL_SPAMMER_CANDIDATE_DELETE',
-          action: SanctionAction.DELETE_MESSAGE,
-          maskedExcerpt: maskText(text),
-          score: 0.92,
-          operator: Operator.BOT,
-          metadata: {
-            reason,
-          },
-        },
-      });
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          userId,
-          messageId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to delete message from pending global spammer candidate',
-      );
-    }
-  }
-
   private async deleteAndKickDetectedGlobalSpammer(params: {
     chatId: string;
     userId: string;
@@ -4020,212 +3820,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       messageId,
       text,
       reason,
-    });
-  }
-
-  private buildSpammerCandidateExcerpt(text: string): string | null {
-    const normalized = text.replace(/\s+/g, ' ').trim();
-    if (!normalized) {
-      return null;
-    }
-
-    return normalized.slice(0, 240);
-  }
-
-  private async notifyModeratorsAboutSpammerCandidate(params: {
-    chatId: string;
-    userId: string;
-    userLabel: string;
-    affectedChats: number;
-  }): Promise<void> {
-    const { chatId, userId, userLabel, affectedChats } = params;
-    try {
-      await this.maxClient.notifyModerators(
-        chatId,
-        `Кандидат на удаление: ${userLabel} (${userId}), затронуто чатов: ${affectedChats}. Откройте мини-апп → События → Кандидаты.`,
-      );
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId,
-          userId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to notify moderators about pending global spammer candidate',
-      );
-    }
-  }
-
-  private async isUserPendingGlobalSpammerCandidate(userId: string): Promise<boolean> {
-    const row = await this.prisma.globalSpammerCandidate.findUnique({
-      where: {
-        userId,
-      },
-      select: {
-        status: true,
-        suppressedUntil: true,
-      },
-    });
-    if (!row || row.status !== 'PENDING') {
-      return false;
-    }
-
-    return !row.suppressedUntil || row.suppressedUntil.getTime() <= Date.now();
-  }
-
-  private async upsertGlobalSpammerCandidate(params: {
-    chatId: string;
-    userId: string;
-    userLabel: string;
-    messageId: string;
-    text: string;
-    reason: string;
-    detectionsDelta: number;
-    evidence?: Prisma.InputJsonValue;
-  }): Promise<GlobalSpammerCandidateUpsertResult> {
-    const { chatId, userId, userLabel, messageId, text, reason, detectionsDelta, evidence } =
-      params;
-    const now = new Date();
-    const excerpt = this.buildSpammerCandidateExcerpt(text);
-    const normalizedDelta = Math.max(1, Math.trunc(detectionsDelta));
-    const existing = await this.prisma.globalSpammerCandidate.findUnique({
-      where: {
-        userId,
-      },
-      select: {
-        status: true,
-        suppressedUntil: true,
-      },
-    });
-
-    if (
-      existing?.status === 'REJECTED' &&
-      existing.suppressedUntil &&
-      existing.suppressedUntil.getTime() > now.getTime()
-    ) {
-      return {
-        created: false,
-        suppressed: true,
-      };
-    }
-
-    await this.prisma.globalSpammerCandidate.upsert({
-      where: {
-        userId,
-      },
-      create: {
-        userId,
-        status: 'PENDING',
-        detectionsCount: normalizedDelta,
-        lastReason: reason,
-        lastChatId: chatId,
-        lastEvidence: evidence ?? Prisma.JsonNull,
-        lastUserLabel: userLabel,
-      },
-      update: {
-        status: 'PENDING',
-        suppressedUntil: null,
-        reviewedAt: null,
-        reviewedByUserId: null,
-        detectionsCount: {
-          increment: normalizedDelta,
-        },
-        lastReason: reason,
-        lastChatId: chatId,
-        lastEvidence: evidence ?? Prisma.JsonNull,
-        lastUserLabel: userLabel,
-      },
-    });
-
-    await this.prisma.globalSpammerCandidateChat.upsert({
-      where: {
-        candidateUserId_chatId: {
-          candidateUserId: userId,
-          chatId,
-        },
-      },
-      create: {
-        candidateUserId: userId,
-        chatId,
-        detectionsCount: 1,
-        lastMessageId: messageId,
-        lastExcerpt: excerpt,
-        lastUserLabel: userLabel,
-        lastEvidence: evidence ?? Prisma.JsonNull,
-      },
-      update: {
-        detectionsCount: {
-          increment: 1,
-        },
-        lastMessageId: messageId,
-        lastExcerpt: excerpt,
-        lastUserLabel: userLabel,
-        lastEvidence: evidence ?? Prisma.JsonNull,
-      },
-    });
-
-    return {
-      created: !existing || existing.status !== 'PENDING',
-      suppressed: false,
-    };
-  }
-
-  private async refreshPendingSpammerCandidateEvidence(params: {
-    chatId: string;
-    userId: string;
-    userLabel: string;
-    messageId: string;
-    text: string;
-    reason: string;
-    evidence?: Prisma.InputJsonValue;
-  }): Promise<void> {
-    const { chatId, userId, userLabel, messageId, text, reason, evidence } = params;
-    const excerpt = this.buildSpammerCandidateExcerpt(text);
-
-    try {
-      await this.prisma.globalSpammerCandidate.update({
-        where: {
-          userId,
-        },
-        data: {
-          detectionsCount: {
-            increment: 1,
-          },
-          lastReason: reason,
-          lastChatId: chatId,
-          lastEvidence: evidence ?? Prisma.JsonNull,
-          lastUserLabel: userLabel,
-        },
-      });
-    } catch {
-      return;
-    }
-
-    await this.prisma.globalSpammerCandidateChat.upsert({
-      where: {
-        candidateUserId_chatId: {
-          candidateUserId: userId,
-          chatId,
-        },
-      },
-      create: {
-        candidateUserId: userId,
-        chatId,
-        detectionsCount: 1,
-        lastMessageId: messageId,
-        lastExcerpt: excerpt,
-        lastUserLabel: userLabel,
-        lastEvidence: evidence ?? Prisma.JsonNull,
-      },
-      update: {
-        detectionsCount: {
-          increment: 1,
-        },
-        lastMessageId: messageId,
-        lastExcerpt: excerpt,
-        lastUserLabel: userLabel,
-        lastEvidence: evidence ?? Prisma.JsonNull,
-      },
     });
   }
 

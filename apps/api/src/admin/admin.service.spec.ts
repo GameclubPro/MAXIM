@@ -182,15 +182,6 @@ function createPrismaMock() {
       count: jest.fn(),
       findMany: jest.fn(),
     },
-    globalSpammerCandidate: {
-      count: jest.fn().mockResolvedValue(0),
-      findMany: jest.fn().mockResolvedValue([]),
-      update: jest.fn().mockResolvedValue(undefined),
-      delete: jest.fn().mockResolvedValue(undefined),
-    },
-    globalSpammer: {
-      upsert: jest.fn().mockResolvedValue(undefined),
-    },
     $queryRaw: jest.fn(),
     $transaction: jest.fn((items: unknown[]) => Promise.all(items as Promise<unknown>[])),
   };
@@ -1230,11 +1221,6 @@ describe('AdminService.getLogsDashboard', () => {
 
   it('returns membership and violations summary for selected chat', async () => {
     const prisma = createPrismaMock();
-    prisma.chatSettings.findUnique.mockResolvedValue({
-      deleteSpammersEnabled: true,
-      deleteSpammersRequireApproval: true,
-    });
-    prisma.globalSpammerCandidate.count.mockResolvedValue(2);
     prisma.$queryRaw
       .mockResolvedValueOnce([{ joined_users: '5', left_users: '2' }])
       .mockResolvedValueOnce([
@@ -1335,10 +1321,6 @@ describe('AdminService.getLogsDashboard', () => {
     expect(result.violations[0]?.userDisplayName).toBe('Алексей');
     expect(result.violations[1]?.userDisplayName).toBe('Мария');
     expect(result.violations[2]?.ruleCode).toBe('MANUAL_UNBAN');
-    expect(result.spammerCandidates).toEqual({
-      reviewEnabled: true,
-      pendingCount: 2,
-    });
     expect(result.activityFeed).toEqual({
       items: [
         {
@@ -1419,10 +1401,6 @@ describe('AdminService.getLogsDashboard', () => {
     expect(result.period.range).toBe('24h');
     expect(result.period.from).toBe('2026-03-01T12:00:00.000Z');
     expect(result.period.to).toBe('2026-03-02T12:00:00.000Z');
-    expect(result.spammerCandidates).toEqual({
-      reviewEnabled: false,
-      pendingCount: 0,
-    });
 
     const countArgs = prisma.moderationEvent.count.mock.calls[0]?.[0];
     const createdAt = countArgs.where.createdAt;

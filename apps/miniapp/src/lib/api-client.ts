@@ -23,8 +23,6 @@ import {
   logsDashboardResponseSchema,
   manualModerationActionRequestSchema,
   manualModerationActionResultSchema,
-  reviewSpammerCandidatesRequestSchema,
-  reviewSpammerCandidatesResultSchema,
   managedGiveawayDetailsSchema,
   managedGiveawayHandoffRequestSchema,
   managedGiveawayParticipantStateSchema,
@@ -58,13 +56,9 @@ import {
   type ManagedEntityHeader,
   type ManualModerationActionRequest,
   type ManualModerationActionResult,
-  type ReviewSpammerCandidatesRequest,
-  type ReviewSpammerCandidatesResult,
   type PublishChannelEngagementRequest,
   type PublishChannelEngagementResult,
   type PublishChatRulesResult,
-  spammerCandidateListResponseSchema,
-  type SpammerCandidateListResponse,
   type UpdateManagedGiveawayRequest,
   type BroadcastTextFormat,
   type BroadcastHandoffResponse,
@@ -404,10 +398,7 @@ export class ApiClient {
     return managedBroadcastDetailsSchema.parse(response);
   }
 
-  async retryManagedBroadcast(
-    chatId: string,
-    broadcastId: string,
-  ): Promise<ManagedBroadcastDetails> {
+  async retryManagedBroadcast(chatId: string, broadcastId: string): Promise<ManagedBroadcastDetails> {
     const response = await this.request(`/chats/${chatId}/broadcasts/${broadcastId}/retry`, {
       method: 'POST',
     });
@@ -699,23 +690,6 @@ export class ApiClient {
       },
     );
     return manualModerationActionResultSchema.parse(response);
-  }
-
-  async getSpammerCandidates(chatId: string): Promise<SpammerCandidateListResponse> {
-    const response = await this.request(`/chats/${chatId}/spammer-candidates`);
-    return spammerCandidateListResponseSchema.parse(response);
-  }
-
-  async reviewSpammerCandidates(
-    chatId: string,
-    payload: ReviewSpammerCandidatesRequest,
-  ): Promise<ReviewSpammerCandidatesResult> {
-    const requestBody = reviewSpammerCandidatesRequestSchema.parse(payload);
-    const response = await this.request(`/chats/${chatId}/spammer-candidates/review`, {
-      method: 'POST',
-      body: JSON.stringify(requestBody),
-    });
-    return reviewSpammerCandidatesResultSchema.parse(response);
   }
 
   private async request(path: string, init: RequestInit = {}) {

@@ -119,7 +119,6 @@
   min-width: 36px;
   height: 36px;
   border-radius: 13px;
-  padding: 0;
   border: 1px solid rgba(62, 96, 127, 0.14);
   background: rgba(255, 255, 255, 0.86);
   color: var(--text-primary);
@@ -1976,7 +1975,6 @@
   min-width: 34px;
   height: 34px;
   border-radius: 999px;
-  padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -8197,6 +8195,30 @@
   box-shadow: 0 14px 24px rgba(22, 44, 67, 0.05);
 }
 
+.events-stage::before,
+.events-stage::after {
+  content: none;
+  position: absolute;
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+.events-stage::before {
+  top: -44px;
+  right: -36px;
+  width: 168px;
+  height: 168px;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.54), transparent 70%);
+}
+
+.events-stage::after {
+  left: -48px;
+  bottom: -68px;
+  width: 220px;
+  height: 220px;
+  background: radial-gradient(circle, rgba(188, 221, 255, 0.18), transparent 72%);
+}
+
 .events-stage--moderation {
   background: linear-gradient(180deg, rgba(246, 249, 253, 0.99), rgba(239, 245, 251, 0.97));
 }
@@ -8207,7 +8229,7 @@
 
 .events-stage__appbar {
   position: relative;
-  z-index: 4;
+  z-index: 2;
 }
 
 .events-stage__appbar-bar {
@@ -8229,14 +8251,10 @@
   padding: calc(env(safe-area-inset-top, 0px) + 8px) 18px 8px;
 }
 
-.events-stage__appbar.is-hidden {
-  min-height: 0;
-}
-
 .events-stage__appbar.is-hidden .events-stage__appbar-bar {
-  transform: translate3d(0, calc(-100% - env(safe-area-inset-top, 0px) - 8px), 0);
-  opacity: 0;
-  pointer-events: none;
+  transform: none;
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .events-stage__back {
@@ -8244,7 +8262,6 @@
   min-width: 34px;
   height: 34px;
   border-radius: 999px;
-  padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -8253,7 +8270,6 @@
   border: 1px solid rgba(212, 223, 235, 0.94);
   background: rgba(255, 255, 255, 0.9);
   box-shadow: none;
-  touch-action: manipulation;
 }
 
 .events-stage__back svg {
@@ -8328,8 +8344,7 @@
 
 .events-primary-tabs__track {
   display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: minmax(0, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0;
   padding: 0 6px;
 }
@@ -8347,7 +8362,6 @@
   color: #6e859a;
   text-align: center;
   position: relative;
-  touch-action: manipulation;
   transition:
     color 0.18s ease,
     opacity 0.18s ease;
@@ -8435,23 +8449,6 @@
 .events-dashboard__range {
   width: auto;
   max-width: 100%;
-}
-
-.events-dashboard__live-pill {
-  min-height: 30px;
-  padding: 0 10px;
-  border: 1px solid rgba(239, 194, 118, 0.45);
-  border-radius: 999px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  justify-self: start;
-  background: rgba(255, 248, 236, 0.98);
-  color: #8a5b0f;
-  font-size: 0.68rem;
-  font-weight: 800;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
 }
 
 .events-dashboard__range .segmented-control__item,
@@ -8848,299 +8845,6 @@
 
 .events-inline-state {
   border-radius: 20px;
-}
-
-.candidate-review-batch {
-  margin: 0 18px 10px;
-  padding: 14px 15px;
-  border: 1px solid rgba(214, 225, 237, 0.96);
-  border-radius: 22px;
-  background:
-    radial-gradient(circle at top right, rgba(255, 211, 122, 0.15), transparent 42%),
-    linear-gradient(180deg, rgba(255, 253, 248, 0.98), rgba(255, 255, 255, 0.98));
-  box-shadow: 0 12px 24px rgba(19, 41, 61, 0.05);
-  display: grid;
-  gap: 12px;
-}
-
-.candidate-review-batch__copy {
-  display: grid;
-  gap: 3px;
-}
-
-.candidate-review-batch__copy strong {
-  color: #17324a;
-  font-size: 0.92rem;
-  font-weight: 800;
-  letter-spacing: -0.02em;
-}
-
-.candidate-review-batch__copy span {
-  color: #6d869a;
-  font-size: 0.73rem;
-  line-height: 1.25;
-}
-
-.candidate-review-batch__actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.candidate-review-batch__actions .button,
-.candidate-review-card__actions .button {
-  min-height: 42px;
-  padding-left: 12px;
-  padding-right: 12px;
-  touch-action: manipulation;
-}
-
-.candidate-review-board {
-  display: grid;
-  gap: 10px;
-  padding: 0 18px 4px;
-}
-
-.candidate-review-card {
-  border: 1px solid rgba(214, 225, 237, 0.94);
-  border-radius: 22px;
-  overflow: hidden;
-  background: rgba(255, 255, 255, 0.98);
-  box-shadow: 0 12px 26px rgba(20, 43, 66, 0.05);
-}
-
-.candidate-review-card.is-expanded {
-  border-color: rgba(240, 164, 43, 0.32);
-}
-
-.candidate-review-card__shell {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: stretch;
-}
-
-.candidate-review-card__select {
-  position: relative;
-  border: 0;
-  padding: 18px 0 0 15px;
-  display: inline-flex;
-  align-items: flex-start;
-  cursor: pointer;
-  background: transparent;
-  touch-action: manipulation;
-}
-
-.candidate-review-card__select-indicator {
-  width: 20px;
-  height: 20px;
-  border-radius: 7px;
-  border: 1.5px solid rgba(169, 187, 205, 0.95);
-  background: rgba(248, 251, 253, 0.98);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition:
-    border-color 0.18s ease,
-    background 0.18s ease,
-    box-shadow 0.18s ease;
-}
-
-.candidate-review-card__select-indicator.is-selected {
-  border-color: rgba(240, 164, 43, 0.82);
-  background: linear-gradient(180deg, rgba(255, 211, 122, 0.92), rgba(248, 181, 54, 0.92));
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);
-}
-
-.candidate-review-card__select-indicator.is-selected::after {
-  content: '';
-  width: 9px;
-  height: 5px;
-  border-left: 2px solid #fffdf8;
-  border-bottom: 2px solid #fffdf8;
-  transform: translateY(-1px) rotate(-45deg);
-}
-
-.candidate-review-card__select:focus-visible .candidate-review-card__select-indicator {
-  box-shadow: 0 0 0 3px rgba(46, 133, 247, 0.18);
-}
-
-.candidate-review-card__trigger {
-  padding: 14px 15px 14px 10px;
-  border: 0;
-  background: transparent;
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: flex-start;
-  gap: 12px;
-  text-align: left;
-  width: 100%;
-  touch-action: manipulation;
-}
-
-.candidate-review-card__avatar {
-  width: 42px;
-  height: 42px;
-  border-radius: 14px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background:
-    radial-gradient(circle at top left, rgba(255, 214, 136, 0.42), transparent 60%),
-    linear-gradient(180deg, rgba(255, 248, 235, 0.98), rgba(248, 242, 232, 0.94));
-  color: #7e5412;
-  font-size: 0.96rem;
-  font-weight: 820;
-}
-
-.candidate-review-card__body {
-  display: grid;
-  gap: 8px;
-  min-width: 0;
-}
-
-.candidate-review-card__headline {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.candidate-review-card__identity {
-  display: grid;
-  gap: 3px;
-  min-width: 0;
-}
-
-.candidate-review-card__identity strong {
-  color: #17324a;
-  font-size: 0.95rem;
-  font-weight: 810;
-  line-height: 1.08;
-  letter-spacing: -0.02em;
-}
-
-.candidate-review-card__identity span {
-  color: #7690a5;
-  font-size: 0.72rem;
-  line-height: 1.15;
-  word-break: break-all;
-}
-
-.candidate-review-card__toggle {
-  color: #8398ab;
-  font-size: 1.18rem;
-  line-height: 1;
-  transform: translateY(-1px);
-}
-
-.candidate-review-card__meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.candidate-review-card__meta time {
-  color: #8097ab;
-  font-size: 0.7rem;
-  line-height: 1.1;
-}
-
-.candidate-review-card__pill {
-  min-height: 24px;
-  padding: 0 8px;
-  border-radius: 999px;
-  border: 1px solid rgba(214, 225, 237, 0.94);
-  display: inline-flex;
-  align-items: center;
-  background: rgba(247, 250, 253, 0.98);
-  color: #4a667d;
-  font-size: 0.68rem;
-  font-weight: 760;
-}
-
-.candidate-review-card__pill--danger {
-  border-color: rgba(240, 164, 43, 0.36);
-  background: rgba(255, 248, 236, 0.98);
-  color: #8d5b07;
-}
-
-.candidate-review-card__summary {
-  margin: 0;
-  color: #5f7a91;
-  font-size: 0.77rem;
-  line-height: 1.3;
-}
-
-.candidate-review-card__details {
-  display: grid;
-  gap: 12px;
-  padding: 0 15px 15px 54px;
-  border-top: 1px solid rgba(217, 227, 238, 0.9);
-  background: rgba(251, 253, 255, 0.96);
-}
-
-.candidate-review-card__excerpt {
-  display: grid;
-  gap: 6px;
-  padding: 12px 13px;
-  border-radius: 16px;
-  background: rgba(247, 250, 253, 0.98);
-  border: 1px solid rgba(214, 225, 237, 0.88);
-}
-
-.candidate-review-card__excerpt span,
-.candidate-review-card__visible-title {
-  color: #6f889c;
-  font-size: 0.66rem;
-  font-weight: 800;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-}
-
-.candidate-review-card__excerpt p {
-  margin: 0;
-  color: #213c53;
-  font-size: 0.78rem;
-  line-height: 1.35;
-}
-
-.candidate-review-card__visible {
-  display: grid;
-  gap: 9px;
-}
-
-.candidate-review-card__visible-list {
-  display: grid;
-  gap: 8px;
-}
-
-.candidate-review-card__visible-chip {
-  display: grid;
-  gap: 3px;
-  padding: 11px 12px;
-  border-radius: 15px;
-  border: 1px solid rgba(214, 225, 237, 0.9);
-  background: rgba(255, 255, 255, 0.98);
-}
-
-.candidate-review-card__visible-chip strong {
-  color: #17324a;
-  font-size: 0.8rem;
-  font-weight: 760;
-}
-
-.candidate-review-card__visible-chip span,
-.candidate-review-card__visible-chip small {
-  color: #6f879d;
-  font-size: 0.7rem;
-  line-height: 1.2;
-}
-
-.candidate-review-card__actions {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
 }
 
 .events-feed {
@@ -10102,12 +9806,6 @@
     font-size: 0.74rem;
   }
 
-  .events-dashboard__live-pill {
-    min-height: 26px;
-    padding: 0 8px;
-    font-size: 0.62rem;
-  }
-
   .events-dashboard {
     gap: 9px;
     padding: 11px;
@@ -10240,39 +9938,6 @@
 
   .event-feed-item__excerpt {
     padding-left: 0;
-  }
-
-  .candidate-review-batch {
-    margin-left: 14px;
-    margin-right: 14px;
-  }
-
-  .candidate-review-board {
-    padding-left: 14px;
-    padding-right: 14px;
-  }
-
-  .candidate-review-card__trigger {
-    gap: 10px;
-    padding-right: 13px;
-  }
-
-  .candidate-review-card__details {
-    padding: 0 13px 13px 46px;
-  }
-
-  .candidate-review-card__actions,
-  .candidate-review-batch__actions {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .candidate-review-card__actions .button,
-  .candidate-review-batch__actions .button {
-    min-height: 40px;
-    padding-left: 10px;
-    padding-right: 10px;
-    font-size: 0.82rem;
   }
 
   .membership-feed__toolbar {
