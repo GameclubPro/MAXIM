@@ -1129,266 +1129,264 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const settingsRoute = `/chat/${chatId}/settings`;
   return (
     <div className="events-screen page-enter">
-      <section className={`events-stage events-stage--${renderSection}`}>
-        <header
-          className={`events-stage__appbar ${isHeaderCompact ? 'is-compact' : ''} ${
-            isHeaderHidden ? 'is-hidden' : ''
-          }`}
-        >
-          <div className="events-stage__appbar-bar">
-            <button
-              type="button"
-              className="events-stage__back"
-              aria-label="К списку чатов"
-              onClick={(event) => {
-                event.currentTarget.blur();
-                navigate(buildManagedEntitiesRoute('chat'));
-              }}
-            >
-              <BackChevronIcon />
-            </button>
+      <header
+        className={`events-screen__appbar ${isHeaderCompact ? 'is-compact' : ''} ${
+          isHeaderHidden ? 'is-hidden' : ''
+        }`}
+      >
+        <div className="events-screen__appbar-bar">
+          <button
+            type="button"
+            className="events-screen__back"
+            aria-label="К списку чатов"
+            onClick={(event) => {
+              event.currentTarget.blur();
+              navigate(buildManagedEntitiesRoute('chat'));
+            }}
+          >
+            <BackChevronIcon />
+          </button>
 
-            <div className="events-stage__appbar-copy">
-              <strong>События</strong>
-              <span className="events-stage__appbar-label">{chatTitle}</span>
-            </div>
-
-            <div className="events-stage__appbar-side">
-              {isActiveSectionFetching ? (
-                <span className="events-stage__pulse" aria-label="Обновляем" title="Обновляем" />
-              ) : (
-                <span
-                  className="events-stage__pulse events-stage__pulse--idle"
-                  aria-hidden="true"
-                />
-              )}
-            </div>
+          <div className="events-screen__appbar-copy">
+            <strong>События</strong>
+            <span className="events-screen__appbar-label">{chatTitle}</span>
           </div>
-        </header>
 
-        <div className="events-stage__panel stagger-in">
-          <div className="events-primary-tabs" role="tablist" aria-label="Раздел событий">
-            <div className="events-primary-tabs__track">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={renderSection === 'moderation'}
-                className={`events-primary-tab ${renderSection === 'moderation' ? 'is-active' : ''}`}
-                onClick={(event) => {
-                  event.currentTarget.blur();
-                  setSection('moderation');
-                }}
-              >
-                <span className="events-primary-tab__icon" aria-hidden="true">
-                  <ModerationTabIcon />
-                </span>
-                <span className="events-primary-tab__label">Модерация</span>
-              </button>
+          <div className="events-screen__appbar-side">
+            {isActiveSectionFetching ? (
+              <span className="events-screen__pulse" aria-label="Обновляем" title="Обновляем" />
+            ) : (
+              <span className="events-screen__pulse events-screen__pulse--idle" aria-hidden="true" />
+            )}
+          </div>
+        </div>
+      </header>
 
-              <button
-                type="button"
-                role="tab"
-                aria-selected={renderSection === 'activity'}
-                className={`events-primary-tab ${renderSection === 'activity' ? 'is-active' : ''}`}
-                onClick={(event) => {
-                  event.currentTarget.blur();
-                  setSection('activity');
-                }}
-              >
-                <span className="events-primary-tab__icon" aria-hidden="true">
-                  <ActivityTabIcon />
-                </span>
-                <span className="events-primary-tab__label">Входы и выходы</span>
-              </button>
-
-              {isCandidatesSectionAvailable ? (
+      <div className="events-screen__body">
+        <section className={`events-stage events-stage--${renderSection}`}>
+          <div className="events-stage__panel stagger-in">
+            <div className="events-primary-tabs" role="tablist" aria-label="Раздел событий">
+              <div className="events-primary-tabs__track">
                 <button
                   type="button"
                   role="tab"
-                  aria-selected={renderSection === 'candidates'}
-                  className={`events-primary-tab ${renderSection === 'candidates' ? 'is-active' : ''}`}
+                  aria-selected={renderSection === 'moderation'}
+                  className={`events-primary-tab ${renderSection === 'moderation' ? 'is-active' : ''}`}
                   onClick={(event) => {
                     event.currentTarget.blur();
-                    setSection('candidates');
+                    setSection('moderation');
                   }}
                 >
                   <span className="events-primary-tab__icon" aria-hidden="true">
-                    <CandidatesTabIcon />
+                    <ModerationTabIcon />
                   </span>
-                  <span className="events-primary-tab__label">Кандидаты</span>
+                  <span className="events-primary-tab__label">Модерация</span>
                 </button>
-              ) : null}
-            </div>
-          </div>
 
-          <section
-            className={`events-dashboard events-dashboard--${renderSection}`}
-            aria-label={
-              renderSection === 'activity'
-                ? 'Сводка по входам и выходам'
-                : renderSection === 'candidates'
-                  ? 'Очередь кандидатов'
-                  : 'Сводка по модерации'
-            }
-          >
-            <div className="events-dashboard__head">
-              <div className="events-dashboard__head-copy">
-                <strong>{dashboardTitle}</strong>
-                <span className="events-dashboard__eyebrow">{dashboardSubtitle}</span>
-              </div>
-
-              {renderSection === 'candidates' ? (
-                <span className="events-dashboard__live-pill">
-                  {candidateReviewEnabled ? 'На согласовании' : 'Очередь закрыта'}
-                </span>
-              ) : (
-                <SegmentedControl
-                  value={range}
-                  options={periodOptions}
-                  onChange={(next) => setRange(next as LogsDashboardRange)}
-                  className="events-dashboard__range"
-                />
-              )}
-            </div>
-
-            {renderSection === 'activity' ? (
-              <div className="events-dashboard__activity">
-                <article
-                  className={`events-dashboard__activity-balance events-dashboard__activity-balance--${activityBalanceTone}`}
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={renderSection === 'activity'}
+                  className={`events-primary-tab ${renderSection === 'activity' ? 'is-active' : ''}`}
+                  onClick={(event) => {
+                    event.currentTarget.blur();
+                    setSection('activity');
+                  }}
                 >
-                  <small>Баланс</small>
-                  <strong>{formatSignedCount(membership.netUsers)}</strong>
-                  <span>{activityBalanceLabel}</span>
-                </article>
+                  <span className="events-primary-tab__icon" aria-hidden="true">
+                    <ActivityTabIcon />
+                  </span>
+                  <span className="events-primary-tab__label">Входы и выходы</span>
+                </button>
 
-                <div className="events-dashboard__activity-ledger">
-                  <article className="events-dashboard__flow-card events-dashboard__flow-card--joined">
-                    <small>Вошли</small>
-                    <strong>{membership.joinedUsers}</strong>
-                    <span>{joinedShare}% всего движения</span>
-                  </article>
-
-                  <article className="events-dashboard__flow-card events-dashboard__flow-card--left">
-                    <small>Вышли</small>
-                    <strong>{membership.leftUsers}</strong>
-                    <span>{leftShare}% всего движения</span>
-                  </article>
-
-                  <div className="events-dashboard__flow-bar" aria-hidden="true">
-                    <span style={{ width: `${joinedShare}%` }} />
-                  </div>
-
-                  <div className="events-dashboard__flow-meta">
-                    <small>Вошли {joinedShare}%</small>
-                    <small>Вышли {leftShare}%</small>
-                  </div>
-                </div>
-              </div>
-            ) : renderSection === 'candidates' ? (
-              <div className="events-dashboard__body events-dashboard__body--moderation">
-                <article
-                  className={`events-dashboard__hero events-dashboard__hero--${candidateHeroMetric.tone}`}
-                >
-                  <small>{candidateHeroMetric.label}</small>
-                  <strong>{candidateHeroMetric.value}</strong>
-                  <span>{candidateHeroMetric.note}</span>
-                </article>
-
-                <div className="events-dashboard__stack">
-                  {candidateSecondaryMetrics.map((item) => (
-                    <article
-                      key={item.label}
-                      className={`events-dashboard__metric events-dashboard__metric--${item.tone}`}
-                    >
-                      <small>{item.label}</small>
-                      <strong>{item.value}</strong>
-                      <span>{item.note}</span>
-                    </article>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <div className="events-dashboard__body events-dashboard__body--moderation">
-                <article
-                  className={`events-dashboard__hero events-dashboard__hero--${moderationHeroMetric.tone}`}
-                >
-                  <small>{moderationHeroMetric.label}</small>
-                  <strong>{moderationHeroMetric.value}</strong>
-                  <span>{moderationHeroMetric.note}</span>
-                </article>
-
-                <div className="events-dashboard__stack">
-                  {moderationSecondaryMetrics.map((item) => (
-                    <article
-                      key={item.label}
-                      className={`events-dashboard__metric events-dashboard__metric--${item.tone}`}
-                    >
-                      <small>{item.label}</small>
-                      <strong>{item.value}</strong>
-                      <span>{item.note}</span>
-                    </article>
-                  ))}
-                </div>
-              </div>
-            )}
-          </section>
-
-          {renderSection === 'moderation' ? (
-            <div className="events-screen__filters" role="tablist" aria-label="Фильтр модерации">
-              {filterOptions.map((option) => {
-                const active = option.value === eventsFilter;
-
-                return (
+                {isCandidatesSectionAvailable ? (
                   <button
-                    key={option.value}
                     type="button"
-                    className={`events-filter-chip ${active ? 'is-active' : ''}`}
-                    onClick={() => setEventsFilter(option.value)}
                     role="tab"
-                    aria-selected={active}
+                    aria-selected={renderSection === 'candidates'}
+                    className={`events-primary-tab ${renderSection === 'candidates' ? 'is-active' : ''}`}
+                    onClick={(event) => {
+                      event.currentTarget.blur();
+                      setSection('candidates');
+                    }}
                   >
-                    <span>{option.label}</span>
-                    <small>{option.count}</small>
+                    <span className="events-primary-tab__icon" aria-hidden="true">
+                      <CandidatesTabIcon />
+                    </span>
+                    <span className="events-primary-tab__label">Кандидаты</span>
                   </button>
-                );
-              })}
+                ) : null}
+              </div>
             </div>
-          ) : null}
-        </div>
-      </section>
 
-      {renderSection === 'activity' ? (
-        <MembershipActivityFeed
-          joinedLabel="чату"
-          leftLabel="чат"
-          filter={activityFeed.filter}
-          onFilterChange={activityFeed.setFilter}
-          items={activityFeed.items}
-          hasMore={activityFeed.hasMore}
-          isReloading={activityFeed.isReloading}
-          isLoadingMore={activityFeed.isLoadingMore}
-          error={activityFeed.error}
-          onLoadMore={() => void activityFeed.loadMore()}
-          onRetry={() => void activityFeed.retry()}
-        />
-      ) : null}
+            <section
+              className={`events-dashboard events-dashboard--${renderSection}`}
+              aria-label={
+                renderSection === 'activity'
+                  ? 'Сводка по входам и выходам'
+                  : renderSection === 'candidates'
+                    ? 'Очередь кандидатов'
+                    : 'Сводка по модерации'
+              }
+            >
+              <div className="events-dashboard__head">
+                <div className="events-dashboard__head-copy">
+                  <strong>{dashboardTitle}</strong>
+                  <span className="events-dashboard__eyebrow">{dashboardSubtitle}</span>
+                </div>
 
-      {renderSection === 'candidates' ? (
-        <>
-          {!candidateReviewEnabled ? (
-            <GlassCard className="events-inline-state">
-              <StatusState
-                tone="warning"
-                title="Согласование выключено"
-                description="Новые кандидаты больше не попадают в очередь. Можно разобрать остаток или снова включить «Только после согласования» в настройках чата."
-                action={
-                  <Link to={settingsRoute} className="button button--ghost">
-                    Настройки чата
-                  </Link>
-                }
-              />
-            </GlassCard>
-          ) : null}
+                {renderSection === 'candidates' ? (
+                  <span className="events-dashboard__live-pill">
+                    {candidateReviewEnabled ? 'На согласовании' : 'Очередь закрыта'}
+                  </span>
+                ) : (
+                  <SegmentedControl
+                    value={range}
+                    options={periodOptions}
+                    onChange={(next) => setRange(next as LogsDashboardRange)}
+                    className="events-dashboard__range"
+                  />
+                )}
+              </div>
+
+              {renderSection === 'activity' ? (
+                <div className="events-dashboard__activity">
+                  <article
+                    className={`events-dashboard__activity-balance events-dashboard__activity-balance--${activityBalanceTone}`}
+                  >
+                    <small>Баланс</small>
+                    <strong>{formatSignedCount(membership.netUsers)}</strong>
+                    <span>{activityBalanceLabel}</span>
+                  </article>
+
+                  <div className="events-dashboard__activity-ledger">
+                    <article className="events-dashboard__flow-card events-dashboard__flow-card--joined">
+                      <small>Вошли</small>
+                      <strong>{membership.joinedUsers}</strong>
+                      <span>{joinedShare}% всего движения</span>
+                    </article>
+
+                    <article className="events-dashboard__flow-card events-dashboard__flow-card--left">
+                      <small>Вышли</small>
+                      <strong>{membership.leftUsers}</strong>
+                      <span>{leftShare}% всего движения</span>
+                    </article>
+
+                    <div className="events-dashboard__flow-bar" aria-hidden="true">
+                      <span style={{ width: `${joinedShare}%` }} />
+                    </div>
+
+                    <div className="events-dashboard__flow-meta">
+                      <small>Вошли {joinedShare}%</small>
+                      <small>Вышли {leftShare}%</small>
+                    </div>
+                  </div>
+                </div>
+              ) : renderSection === 'candidates' ? (
+                <div className="events-dashboard__body events-dashboard__body--moderation">
+                  <article
+                    className={`events-dashboard__hero events-dashboard__hero--${candidateHeroMetric.tone}`}
+                  >
+                    <small>{candidateHeroMetric.label}</small>
+                    <strong>{candidateHeroMetric.value}</strong>
+                    <span>{candidateHeroMetric.note}</span>
+                  </article>
+
+                  <div className="events-dashboard__stack">
+                    {candidateSecondaryMetrics.map((item) => (
+                      <article
+                        key={item.label}
+                        className={`events-dashboard__metric events-dashboard__metric--${item.tone}`}
+                      >
+                        <small>{item.label}</small>
+                        <strong>{item.value}</strong>
+                        <span>{item.note}</span>
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                <div className="events-dashboard__body events-dashboard__body--moderation">
+                  <article
+                    className={`events-dashboard__hero events-dashboard__hero--${moderationHeroMetric.tone}`}
+                  >
+                    <small>{moderationHeroMetric.label}</small>
+                    <strong>{moderationHeroMetric.value}</strong>
+                    <span>{moderationHeroMetric.note}</span>
+                  </article>
+
+                  <div className="events-dashboard__stack">
+                    {moderationSecondaryMetrics.map((item) => (
+                      <article
+                        key={item.label}
+                        className={`events-dashboard__metric events-dashboard__metric--${item.tone}`}
+                      >
+                        <small>{item.label}</small>
+                        <strong>{item.value}</strong>
+                        <span>{item.note}</span>
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
+
+            {renderSection === 'moderation' ? (
+              <div className="events-screen__filters" role="tablist" aria-label="Фильтр модерации">
+                {filterOptions.map((option) => {
+                  const active = option.value === eventsFilter;
+
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      className={`events-filter-chip ${active ? 'is-active' : ''}`}
+                      onClick={() => setEventsFilter(option.value)}
+                      role="tab"
+                      aria-selected={active}
+                    >
+                      <span>{option.label}</span>
+                      <small>{option.count}</small>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+          </div>
+        </section>
+
+        {renderSection === 'activity' ? (
+          <MembershipActivityFeed
+            joinedLabel="чату"
+            leftLabel="чат"
+            filter={activityFeed.filter}
+            onFilterChange={activityFeed.setFilter}
+            items={activityFeed.items}
+            hasMore={activityFeed.hasMore}
+            isReloading={activityFeed.isReloading}
+            isLoadingMore={activityFeed.isLoadingMore}
+            error={activityFeed.error}
+            onLoadMore={() => void activityFeed.loadMore()}
+            onRetry={() => void activityFeed.retry()}
+          />
+        ) : null}
+
+        {renderSection === 'candidates' ? (
+          <>
+            {!candidateReviewEnabled ? (
+              <GlassCard className="events-inline-state">
+                <StatusState
+                  tone="warning"
+                  title="Согласование выключено"
+                  description="Новые кандидаты больше не попадают в очередь. Можно разобрать остаток или снова включить «Только после согласования» в настройках чата."
+                  action={
+                    <Link to={settingsRoute} className="button button--ghost">
+                      Настройки чата
+                    </Link>
+                  }
+                />
+              </GlassCard>
+            ) : null}
 
           {candidateStatus ? (
             <GlassCard className="events-inline-state">
@@ -1499,29 +1497,29 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               </section>
             </>
           ) : null}
-        </>
-      ) : null}
+          </>
+        ) : null}
 
-      {renderSection === 'moderation' ? (
-        <>
-          {dashboardQuery.error ? (
-            <GlassCard className="events-inline-state">
-              <StatusState
-                tone="warning"
-                title="Данные могли устареть"
-                description={(dashboardQuery.error as Error).message}
-                action={
-                  <button
-                    type="button"
-                    className="button button--ghost"
-                    onClick={() => void dashboardQuery.refetch()}
-                  >
-                    Обновить
-                  </button>
-                }
-              />
-            </GlassCard>
-          ) : null}
+        {renderSection === 'moderation' ? (
+          <>
+            {dashboardQuery.error ? (
+              <GlassCard className="events-inline-state">
+                <StatusState
+                  tone="warning"
+                  title="Данные могли устареть"
+                  description={(dashboardQuery.error as Error).message}
+                  action={
+                    <button
+                      type="button"
+                      className="button button--ghost"
+                      onClick={() => void dashboardQuery.refetch()}
+                    >
+                      Обновить
+                    </button>
+                  }
+                />
+              </GlassCard>
+            ) : null}
 
           {moderationViolations.length === 0 ? (
             <GlassCard className="events-inline-state">
@@ -1620,8 +1618,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               })}
             </section>
           ) : null}
-        </>
-      ) : null}
+          </>
+        ) : null}
+      </div>
     </div>
   );
 }
