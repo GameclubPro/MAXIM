@@ -3317,7 +3317,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     retryManagedBroadcastMutation.isPending;
   const commentsTargetSummary = [
     draft?.commentsAdminsEnabled ? 'посты админов' : null,
-    draft?.commentsChatBroadcastsEnabled ? 'рассылки в чатах' : null,
+    draft?.commentsChatBroadcastsEnabled ? 'рассылки' : null,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -8588,7 +8588,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             <div className="settings-native-toggle__row">
                               <div className="settings-native-toggle__title-wrap">
                                 <span className="settings-native-toggle__title">
-                                  Для рассылки в чатах
+                                  Для рассылки
                                 </span>
                                 <div className="settings-native-toggle__title-actions">
                                   <SettingsHintAnchor
