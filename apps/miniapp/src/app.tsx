@@ -71,6 +71,33 @@ function LaunchRouteSync({ launchInitData }: { launchInitData: string }) {
   return null;
 }
 
+function RouteUiReset() {
+  const location = useLocation();
+
+  useEffect(() => {
+    if (typeof document !== 'undefined') {
+      const activeElement = document.activeElement;
+      if (activeElement instanceof HTMLElement && activeElement !== document.body) {
+        activeElement.blur();
+      }
+
+      document.body.classList.remove('settings-drilldown-open');
+      document.body.style.overflow = '';
+      document.documentElement.style.overflow = '';
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [location.pathname, location.search]);
+
+  return null;
+}
+
 type PreviewRuntime = {
   DesignPreviewScaffold: ComponentType<{
     children: ReactNode;
@@ -89,6 +116,7 @@ function AppRoutes({
   return (
     <>
       {launchInitData ? <LaunchRouteSync launchInitData={launchInitData} /> : null}
+      <RouteUiReset />
       <Suspense fallback={<RouteFallback />}>
         <Routes>
           <Route element={<Shell />}>

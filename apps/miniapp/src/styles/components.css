@@ -8251,10 +8251,14 @@
   padding: calc(env(safe-area-inset-top, 0px) + 8px) 18px 8px;
 }
 
+.events-stage__appbar.is-hidden {
+  min-height: 0;
+}
+
 .events-stage__appbar.is-hidden .events-stage__appbar-bar {
-  transform: none;
-  opacity: 1;
-  pointer-events: auto;
+  transform: translate3d(0, calc(-100% - env(safe-area-inset-top, 0px) - 8px), 0);
+  opacity: 0;
+  pointer-events: none;
 }
 
 .events-stage__back {
