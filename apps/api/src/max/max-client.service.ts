@@ -391,6 +391,8 @@ export class MaxClientService implements OnModuleDestroy {
     const sourceBody = this.asRecord(sourceMessage?.body);
     const attachments = this.buildEditableMessageAttachments(sourceMessage, options);
     const replyLink = this.extractReplyMessageLink(sourceMessage);
+    const textFormat =
+      typeof sourceBody?.text === 'string' ? this.extractMessageTextFormat(sourceMessage) : null;
     const text =
       typeof sourceBody?.text === 'string'
         ? sourceBody.text
@@ -400,6 +402,7 @@ export class MaxClientService implements OnModuleDestroy {
 
     return this.sendCustomMessageImmediateWithResolvedLink(chatId, {
       ...(typeof text === 'string' && text.length > 0 ? { text } : {}),
+      ...(textFormat ? { textFormat } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(replyLink ? { messageLink: replyLink } : {}),
     });
@@ -424,6 +427,7 @@ export class MaxClientService implements OnModuleDestroy {
   ) {
     const message = await this.getMessageById(messageId);
     const attachments = this.buildEditableMessageAttachments(message, options);
+    const textFormat = typeof text === 'string' ? this.extractMessageTextFormat(message) : null;
 
     await this.executeMutation(chatId, async () => {
       await this.request('put', '/messages', {
@@ -432,7 +436,12 @@ export class MaxClientService implements OnModuleDestroy {
           message_id: messageId,
         },
         data: {
-          ...(typeof text === 'string' ? { text } : {}),
+          ...(typeof text === 'string'
+            ? {
+                text,
+                ...(textFormat ? { format: textFormat } : {}),
+              }
+            : {}),
           attachments,
         },
       });
@@ -1657,6 +1666,13 @@ export class MaxClientService implements OnModuleDestroy {
           mid,
         }
       : null;
+  }
+
+  private extractMessageTextFormat(message: Record<string, unknown> | null): MaxTextFormat | null {
+    const body = this.asRecord(message?.body);
+    const format = this.readLowerString(body?.format ?? message?.format);
+
+    return format === 'markdown' || format === 'html' ? format : null;
   }
 
   private extractEditableAttachments(

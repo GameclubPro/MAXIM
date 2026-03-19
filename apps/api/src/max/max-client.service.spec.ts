@@ -144,6 +144,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
               messages: [
                 {
                   body: {
+                    format: 'html',
                     attachments: [],
                   },
                 },
@@ -171,6 +172,21 @@ describe('MaxClientService inline keyboard guardrails', () => {
         },
       }),
     ).rejects.toThrow('Error on message edit');
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'put',
+        url: 'https://platform-api.max.ru/messages',
+        params: {
+          chat_id: 'chat-1',
+          message_id: 'mid-edit-1',
+        },
+        data: expect.objectContaining({
+          text: 'Текст',
+          format: 'html',
+        }),
+      }),
+    );
 
     await service.onModuleDestroy();
   });
@@ -188,6 +204,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
                   body: {
                     mid: 'mid-source-1',
                     text: 'Исходный пост админа',
+                    format: 'markdown',
                     attachments: [
                       {
                         type: 'image',
@@ -250,6 +267,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
         params: { chat_id: 'chat-1' },
         data: {
           text: 'Исходный пост админа',
+          format: 'markdown',
           link: {
             type: 'reply',
             mid: 'mid-parent-1',
