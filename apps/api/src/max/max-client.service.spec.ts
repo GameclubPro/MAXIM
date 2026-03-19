@@ -144,6 +144,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
               messages: [
                 {
                   body: {
+                    text: 'Текст',
                     format: 'html',
                     attachments: [],
                   },
@@ -204,7 +205,13 @@ describe('MaxClientService inline keyboard guardrails', () => {
                   body: {
                     mid: 'mid-source-1',
                     text: 'Исходный пост админа',
-                    format: 'markdown',
+                    markup: [
+                      {
+                        from: 0,
+                        type: 'strong',
+                        length: 8,
+                      },
+                    ],
                     attachments: [
                       {
                         type: 'image',
@@ -266,8 +273,8 @@ describe('MaxClientService inline keyboard guardrails', () => {
         url: 'https://platform-api.max.ru/messages',
         params: { chat_id: 'chat-1' },
         data: {
-          text: 'Исходный пост админа',
-          format: 'markdown',
+          text: '<strong>Исходный</strong> пост админа',
+          format: 'html',
           link: {
             type: 'reply',
             mid: 'mid-parent-1',
@@ -285,6 +292,69 @@ describe('MaxClientService inline keyboard guardrails', () => {
             },
           ],
         },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('preserves MAX body markup when editing inline keyboard on an existing message', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    text: 'Привет мир',
+                    markup: [
+                      {
+                        from: 0,
+                        type: 'strong',
+                        length: 6,
+                      },
+                    ],
+                    attachments: [],
+                  },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              success: true,
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    await service.editMessageInlineKeyboard('chat-1', 'mid-edit-markup-1', 'Привет мир', {
+      button: {
+        text: 'Открыть',
+        url: 'https://maxim.play-team.ru/app/',
+      },
+    });
+
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'put',
+        url: 'https://platform-api.max.ru/messages',
+        params: {
+          chat_id: 'chat-1',
+          message_id: 'mid-edit-markup-1',
+        },
+        data: expect.objectContaining({
+          text: '<strong>Привет</strong> мир',
+          format: 'html',
+        }),
       }),
     );
 

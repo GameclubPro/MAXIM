@@ -59,6 +59,22 @@ export type MaxPublishedMessage = {
   url: string | null;
 };
 
+type MaxMessageMarkup = {
+  from: number;
+  length: number;
+  type:
+    | 'emphasized'
+    | 'heading'
+    | 'link'
+    | 'monospaced'
+    | 'strikethrough'
+    | 'strong'
+    | 'underline'
+    | 'user_mention';
+  url: string | null;
+  userLink: string | null;
+};
+
 const MAX_CHAT_POST_LINK_BASE_URL = 'https://max.ru';
 const DEFAULT_SUCCESS_FALSE_STATUS = 200;
 
@@ -388,21 +404,15 @@ export class MaxClientService implements OnModuleDestroy {
     options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext'>,
   ): Promise<MaxPublishedMessage> {
     const sourceMessage = await this.getMessageById(sourceMessageId);
-    const sourceBody = this.asRecord(sourceMessage?.body);
     const attachments = this.buildEditableMessageAttachments(sourceMessage, options);
     const replyLink = this.extractReplyMessageLink(sourceMessage);
-    const textFormat =
-      typeof sourceBody?.text === 'string' ? this.extractMessageTextFormat(sourceMessage) : null;
-    const text =
-      typeof sourceBody?.text === 'string'
-        ? sourceBody.text
-        : typeof fallbackText === 'string'
-          ? fallbackText
-          : null;
+    const messageTextPayload = this.buildOutgoingMessageTextPayload(sourceMessage, fallbackText);
 
     return this.sendCustomMessageImmediateWithResolvedLink(chatId, {
-      ...(typeof text === 'string' && text.length > 0 ? { text } : {}),
-      ...(textFormat ? { textFormat } : {}),
+      ...(typeof messageTextPayload.text === 'string' && messageTextPayload.text.length > 0
+        ? { text: messageTextPayload.text }
+        : {}),
+      ...(messageTextPayload.textFormat ? { textFormat: messageTextPayload.textFormat } : {}),
       ...(attachments.length > 0 ? { attachments } : {}),
       ...(replyLink ? { messageLink: replyLink } : {}),
     });
@@ -427,7 +437,8 @@ export class MaxClientService implements OnModuleDestroy {
   ) {
     const message = await this.getMessageById(messageId);
     const attachments = this.buildEditableMessageAttachments(message, options);
-    const textFormat = typeof text === 'string' ? this.extractMessageTextFormat(message) : null;
+    const messageTextPayload =
+      typeof text === 'string' ? this.buildOutgoingMessageTextPayload(message, text) : null;
 
     await this.executeMutation(chatId, async () => {
       await this.request('put', '/messages', {
@@ -436,10 +447,10 @@ export class MaxClientService implements OnModuleDestroy {
           message_id: messageId,
         },
         data: {
-          ...(typeof text === 'string'
+          ...(messageTextPayload && typeof messageTextPayload.text === 'string'
             ? {
-                text,
-                ...(textFormat ? { format: textFormat } : {}),
+                text: messageTextPayload.text,
+                ...(messageTextPayload.textFormat ? { format: messageTextPayload.textFormat } : {}),
               }
             : {}),
           attachments,
@@ -1673,6 +1684,221 @@ export class MaxClientService implements OnModuleDestroy {
     const format = this.readLowerString(body?.format ?? message?.format);
 
     return format === 'markdown' || format === 'html' ? format : null;
+  }
+
+  private buildOutgoingMessageTextPayload(
+    message: Record<string, unknown> | null,
+    fallbackText: string | null,
+  ): { text: string | null; textFormat: MaxTextFormat | null } {
+    const body = this.asRecord(message?.body);
+    const sourceText = typeof body?.text === 'string' ? body.text : null;
+    const text = sourceText ?? fallbackText;
+
+    if (typeof sourceText === 'string' && typeof text === 'string' && text === sourceText) {
+      const html = this.renderMessageMarkupAsHtml(sourceText, this.extractMessageMarkup(message));
+      if (html && html !== sourceText) {
+        return {
+          text: html,
+          textFormat: 'html',
+        };
+      }
+
+      const textFormat = this.extractMessageTextFormat(message);
+      if (textFormat) {
+        return {
+          text,
+          textFormat,
+        };
+      }
+    }
+
+    return {
+      text,
+      textFormat: null,
+    };
+  }
+
+  private extractMessageMarkup(message: Record<string, unknown> | null): MaxMessageMarkup[] {
+    const body = this.asRecord(message?.body);
+    const rawMarkup = Array.isArray(body?.markup)
+      ? body.markup
+      : Array.isArray(message?.markup)
+        ? message.markup
+        : [];
+
+    return rawMarkup
+      .map((item) => this.normalizeMessageMarkup(item))
+      .filter((item): item is MaxMessageMarkup => item !== null);
+  }
+
+  private normalizeMessageMarkup(value: unknown): MaxMessageMarkup | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+
+    const row = value as Record<string, unknown>;
+    const type = this.readLowerString(row.type);
+    const from = this.readNullableInteger(row.from);
+    const length = this.readNullableInteger(row.length);
+
+    if (
+      !type ||
+      from === null ||
+      length === null ||
+      from < 0 ||
+      length <= 0 ||
+      ![
+        'emphasized',
+        'heading',
+        'link',
+        'monospaced',
+        'strikethrough',
+        'strong',
+        'underline',
+        'user_mention',
+      ].includes(type)
+    ) {
+      return null;
+    }
+
+    return {
+      from,
+      length,
+      type: type as MaxMessageMarkup['type'],
+      url: this.readTrimmedString(row.url),
+      userLink: this.readTrimmedString(row.user_link ?? row.userLink),
+    };
+  }
+
+  private renderMessageMarkupAsHtml(text: string, markup: MaxMessageMarkup[]): string | null {
+    if (markup.length === 0) {
+      return null;
+    }
+
+    const chars = Array.from(text);
+    const openTags = new Map<number, Array<{ open: string; close: string; end: number }>>();
+    const closeTags = new Map<number, Array<{ close: string; start: number; end: number }>>();
+
+    for (const item of markup) {
+      const start = item.from;
+      const end = item.from + item.length;
+
+      if (start < 0 || end <= start || end > chars.length) {
+        continue;
+      }
+
+      const tag = this.resolveMarkupHtmlTags(item, chars.slice(start, end).join(''));
+      if (!tag) {
+        continue;
+      }
+
+      const openBucket = openTags.get(start) ?? [];
+      openBucket.push({
+        open: tag.open,
+        close: tag.close,
+        end,
+      });
+      openTags.set(start, openBucket);
+
+      const closeBucket = closeTags.get(end) ?? [];
+      closeBucket.push({
+        close: tag.close,
+        start,
+        end,
+      });
+      closeTags.set(end, closeBucket);
+    }
+
+    if (openTags.size === 0 && closeTags.size === 0) {
+      return null;
+    }
+
+    let html = '';
+
+    for (let index = 0; index < chars.length; index += 1) {
+      const closing = closeTags.get(index);
+      if (closing) {
+        closing
+          .slice()
+          .sort((left, right) => right.start - left.start || left.end - right.end)
+          .forEach((tag) => {
+            html += tag.close;
+          });
+      }
+
+      const opening = openTags.get(index);
+      if (opening) {
+        opening
+          .slice()
+          .sort((left, right) => right.end - left.end)
+          .forEach((tag) => {
+            html += tag.open;
+          });
+      }
+
+      html += this.escapeHtml(chars[index] ?? '');
+    }
+
+    const trailing = closeTags.get(chars.length);
+    if (trailing) {
+      trailing
+        .slice()
+        .sort((left, right) => right.start - left.start || left.end - right.end)
+        .forEach((tag) => {
+          html += tag.close;
+        });
+    }
+
+    return html;
+  }
+
+  private resolveMarkupHtmlTags(
+    markup: MaxMessageMarkup,
+    visibleText: string,
+  ): { open: string; close: string } | null {
+    switch (markup.type) {
+      case 'strong':
+      case 'heading':
+        return { open: '<strong>', close: '</strong>' };
+      case 'emphasized':
+        return { open: '<em>', close: '</em>' };
+      case 'underline':
+        return { open: '<u>', close: '</u>' };
+      case 'strikethrough':
+        return { open: '<del>', close: '</del>' };
+      case 'monospaced':
+        return visibleText.includes('\n')
+          ? { open: '<pre>', close: '</pre>' }
+          : { open: '<code>', close: '</code>' };
+      case 'link':
+        return markup.url
+          ? {
+              open: `<a href="${this.escapeHtmlAttribute(markup.url)}">`,
+              close: '</a>',
+            }
+          : null;
+      case 'user_mention':
+        return markup.userLink
+          ? {
+              open: `<a href="${this.escapeHtmlAttribute(`https://max.ru/${markup.userLink}`)}">`,
+              close: '</a>',
+            }
+          : null;
+      default:
+        return null;
+    }
+  }
+
+  private escapeHtml(value: string): string {
+    return value
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;');
+  }
+
+  private escapeHtmlAttribute(value: string): string {
+    return this.escapeHtml(value).replaceAll("'", '&#39;');
   }
 
   private extractEditableAttachments(
