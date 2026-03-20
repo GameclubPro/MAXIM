@@ -4738,7 +4738,9 @@ describe('AdminService chat rules', () => {
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'chat-1',
       'Опубликуйте только по теме.',
-      undefined,
+      {
+        textFormat: 'markdown',
+      },
     );
     expect(prisma.chatRules.update).toHaveBeenCalledWith({
       where: { chatId: 'chat-1' },
@@ -4840,6 +4842,13 @@ describe('AdminService chat rules', () => {
       '✅ Правила опубликованы.',
       undefined,
       { immediate: true },
+    );
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'chat-1',
+      'Правила без прямой ссылки.',
+      {
+        textFormat: 'markdown',
+      },
     );
   });
 

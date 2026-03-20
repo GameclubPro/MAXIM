@@ -2001,7 +2001,10 @@ export class AdminService {
       published = await this.publishRulesMessageWithRetry(
         chatId,
         messageText,
-        imagePayload ? { imagePayload } : undefined,
+        {
+          textFormat: 'markdown',
+          ...(imagePayload ? { imagePayload } : {}),
+        },
       );
     } catch (error: unknown) {
       const maxApiMessage = this.extractMaxApiErrorMessage(error);
@@ -5543,7 +5546,7 @@ export class AdminService {
   private async publishRulesMessageWithRetry(
     chatId: string,
     text: string,
-    options: Pick<MaxSendMessageOptions, 'imagePayload'> | undefined,
+    options: Pick<MaxSendMessageOptions, 'imagePayload' | 'textFormat'> | undefined,
   ): Promise<{ messageId: string; url: string | null }> {
     let lastError: unknown = null;
     const attempts = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length + 1;
