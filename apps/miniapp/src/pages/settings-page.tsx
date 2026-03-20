@@ -3355,7 +3355,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       ? 'Мягко'
       : draft?.linkPolicy === 'ALLOWLIST_ONLY'
         ? allowlistDomains.length > 0
-          ? String(allowlistDomains.length)
+          ? `${allowlistDomains.length} ok`
           : 'Лист'
         : linkStagesEnabledCount > 0
           ? `${linkStagesEnabledCount}/4`

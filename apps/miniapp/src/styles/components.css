@@ -3831,7 +3831,6 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex-shrink: 0;
 }
 
 .settings-section__chevron {
@@ -3847,7 +3846,6 @@
   color: rgba(25, 55, 80, 0.9);
   display: grid;
   place-items: center;
-  flex-shrink: 0;
   transition:
     transform 0.2s ease,
     border-color 0.2s ease,
@@ -3942,10 +3940,6 @@
   font-size: 0.95rem;
   font-weight: 800;
   line-height: 1.12;
-  display: block;
-  overflow: visible;
-  -webkit-line-clamp: unset;
-  -webkit-box-orient: initial;
 }
 
 .settings-home-entry--priority .settings-section__toggle-main {
