@@ -1194,8 +1194,8 @@ describe('PrivateControlService', () => {
     const buttonTexts = getLastButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(buttonTexts).toContain('Текст');
-    expect(buttonTexts).toContain('Фото');
+    expect(buttonTexts).toContain('Изменить текст');
+    expect(buttonTexts).toContain('Добавить фото');
   });
 
   it('hands off chat rules from miniapp into private bot rules flow', async () => {
@@ -1251,7 +1251,24 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateTextUpdate('Новый текст правил'));
 
     expect(adminService.updateRules).not.toHaveBeenCalled();
-    expect(getLastSentText(maxClient)).toContain('Нажмите «Текст» или «Фото»');
+    expect(getLastSentText(maxClient)).toContain('Сначала нажмите «Изменить текст» или «Добавить фото»');
+  });
+
+  it('keeps the user on the rules screen after pressing the text button', async () => {
+    const { service, maxClient, chats } = createHarness();
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_input_prompt|text'));
+
+    expect(getLastEditedText(maxClient)).toContain('Правила');
+    expect(getLastEditedText(maxClient)).toContain('Жду: Жду новый текст одним сообщением.');
+
+    const buttonTexts = getLastEditedButtons(maxClient)
+      .flat()
+      .map((button) => String((button as { text?: string }).text ?? ''));
+    expect(buttonTexts).toContain('Изменить текст');
+    expect(buttonTexts).toContain('Добавить фото');
   });
 
   it('updates rules photo from image and image-file messages in private bot', async () => {

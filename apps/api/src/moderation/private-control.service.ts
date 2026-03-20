@@ -1272,7 +1272,7 @@ export class PrivateControlService {
       const view = await this.renderRulesScreen(
         context,
         session,
-        'Нажмите «Текст» или «Фото», затем отправьте следующим сообщением только этот тип контента.',
+        'Сначала нажмите «Изменить текст» или «Добавить фото».',
       );
       await this.respond(context, session, view, {
         callbackId: null,
@@ -2159,7 +2159,11 @@ export class PrivateControlService {
         }
 
         session.screen = 'rules';
-        const view = this.renderInputPrompt(session.pendingInput);
+        const view = await this.renderRulesScreen(
+          context,
+          session,
+          mode === 'photo' ? 'Жду новое фото одним сообщением.' : 'Жду новый текст одним сообщением.',
+        );
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: mode === 'photo' ? 'Жду фото правил' : 'Жду текст правил',
@@ -5321,10 +5325,12 @@ export class PrivateControlService {
     const hasText = rules.text.trim().length > 0;
     const hasImage = rules.imageBase64.trim().length > 0;
     const hasPublishedPost = Boolean(rules.publishedMessageId || rules.publishedUrl);
-    const waitingLabel =
-      session.pendingInput?.kind === 'rules_text' || session.pendingInput?.kind === 'rules_photo'
-        ? this.describeInputPrompt(session.pendingInput).title
-        : null;
+    const waitingHint =
+      session.pendingInput?.kind === 'rules_text'
+        ? 'Жду новый текст одним сообщением.'
+        : session.pendingInput?.kind === 'rules_photo'
+          ? 'Жду новое фото одним сообщением.'
+          : null;
 
     const lines: string[] = [
       this.markdownTitle('Правила'),
@@ -5346,8 +5352,10 @@ export class PrivateControlService {
       lines.push(`Ссылка: ${rules.publishedUrl}`);
     }
 
-    if (waitingLabel) {
-      lines.push(`Жду: ${waitingLabel}`);
+    if (waitingHint) {
+      lines.push(`Жду: ${this.escapeMarkdown(waitingHint)}`);
+    } else {
+      lines.push('Действия: «Изменить текст» или «Добавить фото».');
     }
 
     if (notice) {
@@ -5358,8 +5366,13 @@ export class PrivateControlService {
     lines.push(hasText ? this.escapeMarkdown(rules.text) : 'не задан');
 
     const rows: MaxMessageButton[][] = [
-      [this.callbackButton('Текст', this.cb('rules_input_prompt', 'text'))],
-      [this.callbackButton('Фото', this.cb('rules_input_prompt', 'photo'))],
+      [this.callbackButton('Изменить текст', this.cb('rules_input_prompt', 'text'))],
+      [
+        this.callbackButton(
+          hasImage ? 'Обновить фото' : 'Добавить фото',
+          this.cb('rules_input_prompt', 'photo'),
+        ),
+      ],
     ];
 
     if (hasImage) {
