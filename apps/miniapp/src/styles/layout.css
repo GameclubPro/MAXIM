@@ -192,6 +192,18 @@ body.settings-drilldown-open .bottom-nav {
   transform: translateY(-1px) scale(1.03);
 }
 
+body.settings-home-page-open .bottom-nav {
+  border-color: rgba(216, 228, 239, 0.92);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(244, 249, 253, 0.92)),
+    rgba(255, 255, 255, 0.9);
+  box-shadow:
+    0 8px 16px rgba(24, 55, 83, 0.08),
+    0 1px 0 rgba(255, 255, 255, 0.46) inset;
+  backdrop-filter: blur(10px) saturate(118%);
+  -webkit-backdrop-filter: blur(10px) saturate(118%);
+}
+
 .bottom-nav__item.is-disabled {
   opacity: 0.45;
   pointer-events: none;
@@ -339,6 +351,10 @@ body.settings-drilldown-open .bottom-nav {
   gap: var(--space-2);
 }
 
+.settings-sections--chat-home {
+  gap: 12px;
+}
+
 .chat-card,
 .settings-section,
 .logs-violation-item {
@@ -352,9 +368,9 @@ body.settings-drilldown-open .bottom-nav {
 
 .settings-sections-shell {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 152px), 1fr));
-  align-items: stretch;
-  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 10px;
 }
 
 .settings-section--wide {
@@ -364,6 +380,12 @@ body.settings-drilldown-open .bottom-nav {
 .settings-sections-shell > .settings-section {
   gap: 0;
   min-width: 0;
+}
+
+.settings-home-group-head,
+.settings-home-entry--list,
+.settings-home-entry--speech {
+  grid-column: 1 / -1;
 }
 
 .logs-head {
@@ -596,5 +618,15 @@ body.settings-drilldown-open .bottom-nav {
 @media (max-width: 1023px) {
   .design-preview .bottom-nav {
     width: min(calc(100% - 24px), 500px);
+  }
+}
+
+@media (max-width: 520px) {
+  .settings-sections--chat-home {
+    gap: 10px;
+  }
+
+  .settings-sections-shell {
+    gap: 8px;
   }
 }

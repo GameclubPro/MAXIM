@@ -204,6 +204,21 @@ function MaxMessageLengthSlider({ value, min, max, step, onCommit }: MaxMessageL
   );
 }
 
+function formatCountLabel(count: number, singular: string, few: string, plural: string): string {
+  const remainder10 = count % 10;
+  const remainder100 = count % 100;
+
+  if (remainder10 === 1 && remainder100 !== 11) {
+    return `${count} ${singular}`;
+  }
+
+  if (remainder10 >= 2 && remainder10 <= 4 && (remainder100 < 12 || remainder100 > 14)) {
+    return `${count} ${few}`;
+  }
+
+  return `${count} ${plural}`;
+}
+
 type DuplicateEnabledKey = 'duplicateWarnEnabled' | 'duplicateKickEnabled' | 'duplicateBanEnabled';
 type DuplicateWindowKey =
   | 'duplicateWarnWindowSec'
@@ -1407,6 +1422,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     useState('');
   const [requiredSubscriptionExternalChannelError, setRequiredSubscriptionExternalChannelError] =
     useState('');
+
+  useEffect(() => {
+    const { body } = document;
+    body.classList.add('settings-home-page-open');
+
+    return () => {
+      body.classList.remove('settings-home-page-open');
+    };
+  }, []);
   const [resolvedRequiredSubscriptionChannels, setResolvedRequiredSubscriptionChannels] = useState<
     ManagedEntityHeader[]
   >([]);
@@ -3523,6 +3547,62 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingImageEnabled ||
     mailingButtonEnabled;
   const mailingSendDisabled = isMailingBusy;
+  const enabledProtectionCount = [
+    Boolean(draft && draft.linkPolicy !== 'ALERT_ONLY'),
+    draft?.russianProfanityFilterEnabled,
+    draft?.commercialAdsFilterEnabled,
+    draft?.thematicCodewordEnabled,
+    draft?.antiDuplicateEnabled,
+    limitsRulesEnabledCount > 0,
+    draft?.nightModeEnabled || draft?.nightModeForceCloseEnabled,
+    draft?.requiredSubscriptionEnabled,
+  ].filter(Boolean).length;
+  const enabledScenarioCount = [
+    draft?.greetingEnabled,
+    draft?.commentsEnabled,
+    editingManagedBroadcast !== null ||
+      managedBroadcasts.length > 0 ||
+      mailingBotHasContent ||
+      showMailingInlineReset,
+  ].filter(Boolean).length;
+  const overviewStatusLabel = isHeaderSaving
+    ? 'Сохраняем'
+    : hasPendingHeaderChanges
+      ? 'Черновик'
+      : 'Сохранено';
+  const overviewStatusTone = isHeaderSaving
+    ? 'saving'
+    : hasPendingHeaderChanges
+      ? 'draft'
+      : 'live';
+  const overviewProtectionCountLabel = formatCountLabel(
+    enabledProtectionCount,
+    'модуль',
+    'модуля',
+    'модулей',
+  );
+  const overviewScenarioCountLabel = formatCountLabel(
+    enabledScenarioCount,
+    'сценарий',
+    'сценария',
+    'сценариев',
+  );
+  const overviewTitle =
+    enabledProtectionCount > 0
+      ? enabledProtectionCount === 1
+        ? '1 модуль защиты активен'
+        : `${overviewProtectionCountLabel} защиты активны`
+      : 'Защита пока не активирована';
+  const overviewSummary = isHeaderSaving
+    ? 'Изменения применяются прямо сейчас.'
+    : hasPendingHeaderChanges
+      ? 'Есть локальные изменения, которые ещё не сохранены.'
+      : 'Экран синхронизирован с текущими настройками чата.';
+  const overviewStatusSummary = isHeaderSaving
+    ? 'идёт запись'
+    : hasPendingHeaderChanges
+      ? 'есть черновик'
+      : 'без очереди';
   const mailingDrilldownFooter = (
     <>
       <p className="settings-drilldown__footer-note">
@@ -3795,14 +3875,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       ) : null}
 
       {!settingsQuery.isLoading && !settingsQuery.error && draft ? (
-        <section className="settings-sections" aria-label="Настройки модерации">
+        <section
+          className="settings-sections settings-sections--chat-home"
+          aria-label="Настройки модерации"
+        >
           <CompactStickyHeader
             backTo={buildManagedEntitiesRoute('chat')}
             backLabel="Назад к чатам"
             title={chatTitle || chatId || 'Настройки'}
             compact={isHeaderCompact}
             hidden={isHeaderHidden}
-            className="settings-sections__sticky-header stagger-in"
+            className="settings-home-sticky-header stagger-in"
             aside={
               showHeaderStatus ? (
                 <span
@@ -3823,46 +3906,41 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             }
           />
 
-          <GlassCard className="settings-speech-style-card stagger-in">
-            <div className="settings-speech-style-card__head">
-              <h3 className="settings-speech-style-card__title">Стиль речи</h3>
-            </div>
-
-            <div className="settings-speech-style-grid" role="group" aria-label="Стили речи бота">
-              {BOT_SPEECH_STYLE_OPTIONS.map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  className={cn(
-                    'settings-speech-style-option',
-                    activeSpeechStyle === option.value && 'is-active',
-                  )}
-                  onClick={() => setPendingSpeechStyle(option.value)}
-                  disabled={isSavingSpeechStyle}
-                  aria-label={option.label}
-                >
-                  {activeSpeechStyle === option.value ? (
-                    <span className="settings-speech-style-option__badge" aria-hidden>
-                      <StyleSelectedIcon />
-                    </span>
-                  ) : null}
-                  <span className="settings-speech-style-option__icon" aria-hidden>
-                    <BotSpeechStyleIcon iconKey={option.iconKey} />
-                  </span>
-                  <span className="settings-speech-style-option__label">
-                    {BOT_SPEECH_STYLE_SELECTOR_LABELS[option.value]}
-                  </span>
-                </button>
-              ))}
-            </div>
-
-            {!activeSpeechStyle ? (
-              <div className="settings-speech-style-card__status">
-                <span className="chip">
-                  {hasSpeechOverrides ? 'Свои тексты' : 'Стиль не выбран'}
-                </span>
+          <GlassCard className="settings-home-overview stagger-in">
+            <div className="settings-home-overview__top">
+              <div className="settings-home-overview__copy">
+                <span className="settings-home-overview__eyebrow">Обзор чата</span>
+                <h2 className="settings-home-overview__title">{overviewTitle}</h2>
+                <p className="settings-home-overview__summary">{overviewSummary}</p>
               </div>
-            ) : null}
+
+              <span
+                className={cn('settings-home-overview__status', `is-${overviewStatusTone}`)}
+                aria-label={`Статус: ${overviewStatusLabel}`}
+              >
+                {overviewStatusLabel}
+              </span>
+            </div>
+
+            <div className="settings-home-overview__metrics" aria-label="Сводка по настройкам">
+              <div className="settings-home-overview__metric">
+                <small>Защита</small>
+                <strong>{enabledProtectionCount}</strong>
+                <span>{overviewProtectionCountLabel}</span>
+              </div>
+
+              <div className="settings-home-overview__metric">
+                <small>Сценарии</small>
+                <strong>{enabledScenarioCount}</strong>
+                <span>{overviewScenarioCountLabel}</span>
+              </div>
+
+              <div className="settings-home-overview__metric">
+                <small>Статус</small>
+                <strong>{overviewStatusLabel}</strong>
+                <span>{overviewStatusSummary}</span>
+              </div>
+            </div>
           </GlassCard>
 
           <SettingsDrilldownPanel
@@ -3960,7 +4038,31 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           </SettingsDrilldownPanel>
 
           <div className="settings-sections-shell">
-            <GlassCard className="settings-section stagger-in">
+            <div className="settings-home-group-head stagger-in" style={{ order: 10 }}>
+              <span className="settings-home-group-head__eyebrow">Модерация</span>
+              <p className="settings-home-group-head__summary">
+                Автоматические защиты и санкции для сообщений.
+              </p>
+            </div>
+
+            <div className="settings-home-group-head stagger-in" style={{ order: 20 }}>
+              <span className="settings-home-group-head__eyebrow">Контент и рост</span>
+              <p className="settings-home-group-head__summary">
+                Публичные сценарии, вовлечение и ручные активности.
+              </p>
+            </div>
+
+            <div className="settings-home-group-head stagger-in" style={{ order: 30 }}>
+              <span className="settings-home-group-head__eyebrow">Бот и сервис</span>
+              <p className="settings-home-group-head__summary">
+                Поведение бота и сервисные защитные тумблеры.
+              </p>
+            </div>
+
+            <GlassCard
+              className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
+              style={{ order: 1 }}
+            >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Ссылки"
@@ -4593,8 +4695,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
 
             <GlassCard
-              className="settings-section stagger-in"
-              style={{ animationDelay: '45ms' }}
+              className="settings-section settings-home-entry settings-home-entry--list stagger-in"
+              style={{ animationDelay: '45ms', order: 21 }}
               aria-label="Правила"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
@@ -4810,8 +4912,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
             {chatId ? (
               <GlassCard
-                className="settings-section stagger-in"
-                style={{ animationDelay: '52ms' }}
+                className="settings-section settings-home-entry settings-home-entry--list stagger-in"
+                style={{ animationDelay: '52ms', order: 24 }}
                 aria-label="Опрос чата"
               >
                 <div
@@ -4819,7 +4921,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 >
                   <SettingsSectionToggle
                     title="Опросы"
-                    summary=""
+                    summary="Голосование в отдельном посте"
                     status="Пост"
                     icon="poll"
                     tone="ink"
@@ -4852,8 +4954,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
             {chatId ? (
               <GlassCard
-                className="settings-section stagger-in"
-                style={{ animationDelay: '56ms' }}
+                className="settings-section settings-home-entry settings-home-entry--list stagger-in"
+                style={{ animationDelay: '56ms', order: 25 }}
                 aria-label="Розыгрыши"
               >
                 <div
@@ -4861,7 +4963,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 >
                   <SettingsSectionToggle
                     title="Розыгрыши"
-                    summary=""
+                    summary="Создание и управление в личке бота"
                     status="Бот"
                     icon="gift"
                     tone="amber"
@@ -4896,14 +4998,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             ) : null}
 
             <GlassCard
-              className="settings-section stagger-in"
-              style={{ animationDelay: '60ms' }}
+              className="settings-section settings-home-entry settings-home-entry--list stagger-in"
+              style={{ animationDelay: '60ms', order: 22 }}
               aria-label="Приветствие новых участников"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Приветствие"
-                  summary=""
+                  summary={greetingHeaderSummary}
                   status={greetingCardStatus}
                   icon="greeting"
                   tone="mint"
@@ -5183,14 +5285,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
 
             <GlassCard
-              className="settings-section stagger-in"
-              style={{ animationDelay: '90ms' }}
+              className="settings-section settings-home-entry settings-home-entry--list stagger-in"
+              style={{ animationDelay: '90ms', order: 11 }}
               aria-label="Мат и грубость"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Мат и грубость"
-                  summary=""
+                  summary={profanityFilterHeaderSummary}
                   status={profanityCardStatus}
                   icon="warning"
                   tone="rose"
@@ -5396,14 +5498,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
 
             <GlassCard
-              className="settings-section stagger-in"
-              style={{ animationDelay: '135ms' }}
+              className="settings-section settings-home-entry settings-home-entry--list stagger-in"
+              style={{ animationDelay: '135ms', order: 12 }}
               aria-label="Коммерция"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Коммерция"
-                  summary=""
+                  summary={commercialFilterHeaderSummary}
                   status={commercialCardStatus}
                   icon="ads"
                   tone="amber"
@@ -5888,8 +5990,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
             {canSeeThematicFilters ? (
               <GlassCard
-                className="settings-section stagger-in"
-                style={{ animationDelay: '157ms' }}
+                className="settings-section settings-home-entry settings-home-entry--list stagger-in"
+                style={{ animationDelay: '157ms', order: 13 }}
                 aria-label="Объявления по теме"
               >
                 <div
@@ -5897,7 +5999,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 >
                   <SettingsSectionToggle
                     title="Объявления по теме"
-                    summary=""
+                    summary={thematicFiltersHeaderSummary}
                     status={thematicFiltersCardStatus}
                     icon="topic"
                     tone="sky"
@@ -6213,14 +6315,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             ) : null}
 
             <GlassCard
-              className="settings-section stagger-in"
-              style={{ animationDelay: '180ms' }}
+              className="settings-section settings-home-entry settings-home-entry--list stagger-in"
+              style={{ animationDelay: '180ms', order: 14 }}
               aria-label="Повторы"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Повторы"
-                  summary=""
+                  summary={duplicatesHeaderSummary}
                   status={duplicatesCardStatus}
                   icon="repeat"
                   tone="rose"
@@ -6693,8 +6795,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
 
             <GlassCard
-              className="settings-section stagger-in"
-              style={{ animationDelay: '225ms' }}
+              className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
+              style={{ animationDelay: '225ms', order: 2 }}
               aria-label="Ограничения"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
@@ -7521,14 +7623,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
 
             <GlassCard
-              className="settings-section stagger-in"
-              style={{ animationDelay: '270ms' }}
+              className="settings-section settings-home-entry settings-home-entry--list stagger-in"
+              style={{ animationDelay: '270ms', order: 15 }}
               aria-label="Ночной режим"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Ночной режим"
-                  summary=""
+                  summary={nightHeaderSummary}
                   status={nightCardStatus}
                   icon="moon"
                   tone="ink"
@@ -8160,8 +8262,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
 
             <GlassCard
-              className="settings-section stagger-in"
-              style={{ animationDelay: '315ms' }}
+              className="settings-section settings-home-entry settings-home-entry--list stagger-in"
+              style={{ animationDelay: '315ms', order: 23 }}
               aria-label="Рассылки"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
@@ -8553,8 +8655,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
 
             <GlassCard
-              className="settings-section stagger-in"
-              style={{ animationDelay: '338ms' }}
+              className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
+              style={{ animationDelay: '338ms', order: 3 }}
               aria-label="Комментарии"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
@@ -8745,8 +8847,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
 
             <GlassCard
-              className="settings-section stagger-in"
-              style={{ animationDelay: '360ms' }}
+              className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
+              style={{ animationDelay: '360ms', order: 4 }}
               aria-label="Обязательная подписка"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
@@ -9234,14 +9336,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
 
             <GlassCard
-              className="settings-section stagger-in"
-              style={{ animationDelay: '372ms' }}
+              className="settings-section settings-home-entry settings-home-entry--list stagger-in"
+              style={{ animationDelay: '372ms', order: 31 }}
               aria-label="Сервисные настройки"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Сервисные"
-                  summary=""
+                  summary={extraHeaderSummary}
                   status={extraCardStatus}
                   icon="tools"
                   tone="amber"
@@ -9461,6 +9563,54 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   ) : null}
                 </div>
               </SettingsDrilldownPanel>
+            </GlassCard>
+
+            <GlassCard
+              className="settings-speech-style-card settings-home-entry settings-home-entry--speech stagger-in"
+              style={{ order: 32 }}
+            >
+              <div className="settings-speech-style-card__head">
+                <div className="settings-speech-style-card__title-copy">
+                  <span className="settings-speech-style-card__eyebrow">Стиль речи</span>
+                  <h3 className="settings-speech-style-card__title">Как бот разговаривает в чате</h3>
+                </div>
+              </div>
+
+              <div className="settings-speech-style-grid" role="group" aria-label="Стили речи бота">
+                {BOT_SPEECH_STYLE_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    className={cn(
+                      'settings-speech-style-option',
+                      activeSpeechStyle === option.value && 'is-active',
+                    )}
+                    onClick={() => setPendingSpeechStyle(option.value)}
+                    disabled={isSavingSpeechStyle}
+                    aria-label={option.label}
+                  >
+                    {activeSpeechStyle === option.value ? (
+                      <span className="settings-speech-style-option__badge" aria-hidden>
+                        <StyleSelectedIcon />
+                      </span>
+                    ) : null}
+                    <span className="settings-speech-style-option__icon" aria-hidden>
+                      <BotSpeechStyleIcon iconKey={option.iconKey} />
+                    </span>
+                    <span className="settings-speech-style-option__label">
+                      {BOT_SPEECH_STYLE_SELECTOR_LABELS[option.value]}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              {!activeSpeechStyle ? (
+                <div className="settings-speech-style-card__status">
+                  <span className="chip">
+                    {hasSpeechOverrides ? 'Свои тексты' : 'Стиль не выбран'}
+                  </span>
+                </div>
+              ) : null}
             </GlassCard>
           </div>
         </section>
