@@ -7,6 +7,7 @@ type CompactStickyHeaderProps = {
   backTo: string;
   backLabel: string;
   title: string;
+  subtitle?: string;
   aside?: ReactNode;
   hidden?: boolean;
   compact?: boolean;
@@ -17,6 +18,7 @@ export function CompactStickyHeader({
   backTo,
   backLabel,
   title,
+  subtitle,
   aside = null,
   hidden = false,
   compact = false,
@@ -37,6 +39,7 @@ export function CompactStickyHeader({
         </Link>
 
         <div className="compact-page-header__title-wrap">
+          {subtitle ? <span className="compact-page-header__subtitle">{subtitle}</span> : null}
           <h1 className="compact-page-header__title">{title}</h1>
         </div>
 

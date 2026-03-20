@@ -136,6 +136,18 @@
 
 .compact-page-header__title-wrap {
   min-width: 0;
+  display: grid;
+  align-content: center;
+  gap: 2px;
+}
+
+.compact-page-header__subtitle {
+  color: #7a90a3;
+  font-size: 0.62rem;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .compact-page-header__title {
@@ -146,6 +158,10 @@
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.compact-page-header.is-compact .compact-page-header__subtitle {
+  display: none;
 }
 
 .compact-page-header__aside,
@@ -235,113 +251,52 @@
 }
 
 .settings-home-sticky-header.compact-page-header {
-  min-height: calc(env(safe-area-inset-top, 0px) + 58px);
+  min-height: calc(env(safe-area-inset-top, 0px) + 56px);
 }
 
 .settings-home-sticky-header .compact-page-header__bar {
-  padding: calc(env(safe-area-inset-top, 0px) + 7px) 14px 8px;
-  border-bottom-color: rgba(224, 233, 241, 0.88);
-  border-radius: 0 0 18px 18px;
+  padding: calc(env(safe-area-inset-top, 0px) + 6px) 14px 8px;
+  border-bottom-color: rgba(225, 233, 241, 0.86);
+  border-radius: 0 0 14px 14px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(248, 251, 253, 0.9)),
-    rgba(255, 255, 255, 0.92);
-  box-shadow:
-    0 5px 12px rgba(24, 55, 83, 0.03),
-    0 1px 0 rgba(255, 255, 255, 0.38) inset;
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 251, 253, 0.88)),
+    rgba(255, 255, 255, 0.9);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.34) inset;
 }
 
 .settings-home-sticky-header.compact-page-header.is-compact .compact-page-header__bar {
   padding: calc(env(safe-area-inset-top, 0px) + 5px) 14px 7px;
-  border-radius: 0 0 16px 16px;
-  box-shadow:
-    0 4px 10px rgba(24, 55, 83, 0.026),
-    0 1px 0 rgba(255, 255, 255, 0.38) inset;
+  border-radius: 0 0 12px 12px;
 }
 
 .settings-home-sticky-header .compact-page-header__back {
-  width: 34px;
-  min-width: 34px;
-  height: 34px;
-  border-radius: 12px;
-  border-color: rgba(205, 220, 233, 0.92);
-  background: rgba(255, 255, 255, 0.82);
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  border-radius: 11px;
+  border-color: rgba(218, 228, 237, 0.76);
+  background: rgba(247, 250, 252, 0.86);
   box-shadow: none;
 }
 
+.settings-home-sticky-header .compact-page-header__title-wrap {
+  gap: 1px;
+}
+
+.settings-home-sticky-header .compact-page-header__subtitle {
+  color: #879aac;
+}
+
 .settings-home-sticky-header .compact-page-header__title {
-  font-size: clamp(0.95rem, 0.93rem + 0.18vw, 1.04rem);
+  font-size: clamp(0.94rem, 0.92rem + 0.16vw, 1.01rem);
+  letter-spacing: -0.02em;
 }
 
 .settings-home-sticky-header .compact-page-header__status {
-  min-height: 22px;
-  padding: 0 7px;
-  font-size: 0.6rem;
+  min-height: 20px;
+  padding: 0 6px;
+  font-size: 0.58rem;
   letter-spacing: 0.02em;
-}
-
-.settings-home-overview {
-  display: grid;
-  gap: 10px;
-  padding: 14px 15px;
-  border-radius: 20px;
-  border: 1px solid rgba(217, 228, 238, 0.96);
-  background:
-    radial-gradient(circle at top left, rgba(126, 184, 255, 0.08), transparent 38%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 251, 253, 0.95));
-  box-shadow: 0 7px 16px rgba(24, 55, 83, 0.035);
-}
-
-.settings-home-overview__copy {
-  min-width: 0;
-  display: grid;
-}
-
-.settings-home-overview__title {
-  margin: 0;
-  color: #17324a;
-  font-family: var(--font-heading);
-  font-size: clamp(1.04rem, 1rem + 0.26vw, 1.2rem);
-  line-height: 1.04;
-  letter-spacing: -0.04em;
-}
-
-.settings-home-overview__metrics {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0;
-}
-
-.settings-home-overview__metric {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  padding: 0;
-  border: none;
-  background: transparent;
-}
-
-.settings-home-overview__metric + .settings-home-overview__metric {
-  margin-left: 14px;
-  padding-left: 14px;
-  border-left: 1px solid rgba(218, 229, 238, 0.96);
-}
-
-.settings-home-overview__metric small {
-  order: 2;
-  color: #70889d;
-  font-size: 0.65rem;
-  font-weight: 800;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.settings-home-overview__metric strong {
-  order: 1;
-  color: #17324a;
-  font-size: 0.98rem;
-  line-height: 1;
-  letter-spacing: -0.03em;
 }
 
 .settings-home-group-head {

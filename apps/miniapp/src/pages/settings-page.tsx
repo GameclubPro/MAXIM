@@ -204,21 +204,6 @@ function MaxMessageLengthSlider({ value, min, max, step, onCommit }: MaxMessageL
   );
 }
 
-function formatCountLabel(count: number, singular: string, few: string, plural: string): string {
-  const remainder10 = count % 10;
-  const remainder100 = count % 100;
-
-  if (remainder10 === 1 && remainder100 !== 11) {
-    return `${count} ${singular}`;
-  }
-
-  if (remainder10 >= 2 && remainder10 <= 4 && (remainder100 < 12 || remainder100 > 14)) {
-    return `${count} ${few}`;
-  }
-
-  return `${count} ${plural}`;
-}
-
 type DuplicateEnabledKey = 'duplicateWarnEnabled' | 'duplicateKickEnabled' | 'duplicateBanEnabled';
 type DuplicateWindowKey =
   | 'duplicateWarnWindowSec'
@@ -3492,36 +3477,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingScheduledSlots.length > 0 ||
     mailingText.trim().length > 0 ||
     mailingImageEnabled ||
-    mailingButtonEnabled;
+      mailingButtonEnabled;
   const mailingSendDisabled = isMailingBusy;
-  const enabledProtectionCount = [
-    Boolean(draft && draft.linkPolicy !== 'ALERT_ONLY'),
-    draft?.russianProfanityFilterEnabled,
-    draft?.commercialAdsFilterEnabled,
-    draft?.thematicCodewordEnabled,
-    draft?.antiDuplicateEnabled,
-    limitsRulesEnabledCount > 0,
-    draft?.nightModeEnabled || draft?.nightModeForceCloseEnabled,
-    draft?.requiredSubscriptionEnabled,
-  ].filter(Boolean).length;
-  const enabledScenarioCount = [
-    draft?.greetingEnabled,
-    draft?.commentsEnabled,
-    editingManagedBroadcast !== null ||
-      managedBroadcasts.length > 0 ||
-      mailingBotHasContent ||
-      showMailingInlineReset,
-  ].filter(Boolean).length;
-  const overviewProtectionCountLabel = formatCountLabel(
-    enabledProtectionCount,
-    'модуль защиты',
-    'модуля защиты',
-    'модулей защиты',
-  );
-  const overviewTitle =
-    enabledProtectionCount > 0
-      ? overviewProtectionCountLabel
-      : 'Защита выключена';
   const mailingDrilldownFooter = (
     <>
       <p className="settings-drilldown__footer-note">
@@ -3802,6 +3759,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             backTo={buildManagedEntitiesRoute('chat')}
             backLabel="Назад к чатам"
             title={chatTitle || chatId || 'Настройки'}
+            subtitle="Настройки чата"
             compact={isHeaderCompact}
             hidden={isHeaderHidden}
             className="settings-home-sticky-header stagger-in"
@@ -3824,24 +3782,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               ) : null
             }
           />
-
-          <GlassCard className="settings-home-overview stagger-in">
-            <div className="settings-home-overview__copy">
-              <h2 className="settings-home-overview__title">{overviewTitle}</h2>
-            </div>
-
-            <div className="settings-home-overview__metrics" aria-label="Сводка по настройкам">
-              <div className="settings-home-overview__metric">
-                <small>Защита</small>
-                <strong>{enabledProtectionCount}</strong>
-              </div>
-
-              <div className="settings-home-overview__metric">
-                <small>Сценарии</small>
-                <strong>{enabledScenarioCount}</strong>
-              </div>
-            </div>
-          </GlassCard>
 
           <SettingsDrilldownPanel
             id="settings-bot-speech-style"
