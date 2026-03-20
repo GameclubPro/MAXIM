@@ -309,14 +309,14 @@ const INITIAL_EXPANDED_SECTIONS: Record<SettingsSectionKey, boolean> = {
 const SECTION_LABELS: Record<ApplySectionKey, string> = {
   links: 'Ссылки',
   greeting: 'Приветствие',
-  profanityFilter: 'Мат и грубость',
-  commercialFilter: 'Коммерция',
-  thematicFilters: 'Объявления по теме',
+  profanityFilter: 'Мат и оскорбления',
+  commercialFilter: 'Реклама',
+  thematicFilters: 'Кодовые слова',
   duplicates: 'Повторы',
   limits: 'Ограничения',
   night: 'Ночной режим',
-  requiredSubscription: 'Обязательная подписка',
-  extra: 'Сервисные',
+  requiredSubscription: 'Подписка на канал',
+  extra: 'Сервис',
 };
 
 const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings)[]> = {
@@ -5107,11 +5107,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--list stagger-in"
               style={{ animationDelay: '90ms', order: 11 }}
-              aria-label="Мат и грубость"
+              aria-label="Мат и оскорбления"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
-                  title="Мат и грубость"
+                  title="Мат и оскорбления"
                   icon="warning"
                   tone="rose"
                   open={expandedSections.profanityFilter}
@@ -5123,7 +5123,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <SettingsDrilldownPanel
                 id="settings-profanity-filter-content"
                 open={expandedSections.profanityFilter}
-                title="Мат и грубость"
+                title="Мат и оскорбления"
                 summary={profanityFilterHeaderSummary}
                 onClose={() => toggleSection('profanityFilter')}
                 footer={renderSectionSaveFooter('profanityFilter')}
@@ -5318,11 +5318,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--list stagger-in"
               style={{ animationDelay: '135ms', order: 12 }}
-              aria-label="Коммерция"
+              aria-label="Реклама"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
-                  title="Коммерция"
+                  title="Реклама"
                   icon="ads"
                   tone="amber"
                   open={expandedSections.commercialFilter}
@@ -5334,7 +5334,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <SettingsDrilldownPanel
                 id="settings-commercial-filter-content"
                 open={expandedSections.commercialFilter}
-                title="Коммерция"
+                title="Реклама"
                 summary={commercialFilterHeaderSummary}
                 onClose={() => toggleSection('commercialFilter')}
                 footer={renderSectionSaveFooter('commercialFilter')}
@@ -5407,7 +5407,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             role="separator"
                             aria-label="Параметры коммерческого фильтра"
                           >
-                            <span>Коммерция</span>
+                            <span>Реклама</span>
                           </div>
 
                           <div className="settings-native-toggle commercial-settings-panel">
@@ -5808,14 +5808,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <GlassCard
                 className="settings-section settings-home-entry settings-home-entry--list stagger-in"
                 style={{ animationDelay: '157ms', order: 13 }}
-                aria-label="Объявления по теме"
+                aria-label="Кодовые слова"
               >
                 <div
                   className={cn('settings-section__head', 'settings-section__head--interactive')}
                 >
                   <SettingsSectionToggle
-                    title="Объявления по теме"
-                    icon="topic"
+                    title="Кодовые слова"
+                    icon="keywords"
                     tone="sky"
                     open={expandedSections.thematicFilters}
                     controls="settings-thematic-filters-content"
@@ -5826,7 +5826,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 <SettingsDrilldownPanel
                   id="settings-thematic-filters-content"
                   open={expandedSections.thematicFilters}
-                  title="Объявления по теме"
+                  title="Кодовые слова"
                   summary={thematicFiltersHeaderSummary}
                   onClose={() => toggleSection('thematicFilters')}
                   footer={renderSectionSaveFooter('thematicFilters')}
@@ -8653,12 +8653,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--priority stagger-in"
               style={{ animationDelay: '360ms', order: 4 }}
-              aria-label="Обязательная подписка"
+              aria-label="Подписка на канал"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
-                  title="Обязательная подписка"
-                  icon="shield"
+                  title="Подписка"
+                  icon="subscription"
                   tone="sky"
                   open={expandedSections.requiredSubscription}
                   controls="settings-required-subscription-content"
@@ -8669,7 +8669,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <SettingsDrilldownPanel
                 id="settings-required-subscription-content"
                 open={expandedSections.requiredSubscription}
-                title="Обязательная подписка"
+                title="Подписка на канал"
                 summary={requiredSubscriptionHeaderSummary}
                 onClose={() => toggleSection('requiredSubscription')}
                 footer={renderSectionSaveFooter('requiredSubscription', {
@@ -9140,11 +9140,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             <GlassCard
               className="settings-section settings-home-entry settings-home-entry--list stagger-in"
               style={{ animationDelay: '372ms', order: 31 }}
-              aria-label="Сервисные настройки"
+              aria-label="Сервис"
             >
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
-                  title="Сервисные"
+                  title="Сервис"
                   icon="tools"
                   tone="amber"
                   open={expandedSections.extra}
@@ -9156,7 +9156,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <SettingsDrilldownPanel
                 id="settings-extra-content"
                 open={expandedSections.extra}
-                title="Сервисные"
+                title="Сервис"
                 summary={extraHeaderSummary}
                 onClose={() => toggleSection('extra')}
                 footer={renderSectionSaveFooter('extra')}

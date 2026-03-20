@@ -6,9 +6,10 @@ export type SettingsSectionIconName =
   | 'greeting'
   | 'warning'
   | 'ads'
-  | 'topic'
+  | 'keywords'
   | 'repeat'
   | 'shield'
+  | 'subscription'
   | 'moon'
   | 'send'
   | 'tools'
@@ -129,11 +130,11 @@ function SettingsSectionIcon({ name }: { name: SettingsSectionIconName }) {
     );
   }
 
-  if (name === 'topic') {
+  if (name === 'keywords') {
     return (
       <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
         <path
-          d="M9.6 4.8L4.8 12l4.8 7.2M14.4 4.8L19.2 12l-4.8 7.2M12 3.8v16.4"
+          d="M9.1 4.8 7.3 19.2M16.7 4.8l-1.8 14.4M5.4 9.5h13.2M4.8 14.5H18"
           stroke="currentColor"
           strokeWidth="1.85"
           strokeLinecap="round"
@@ -183,6 +184,27 @@ function SettingsSectionIcon({ name }: { name: SettingsSectionIconName }) {
         />
         <path
           d="M9.1 10.2h5.8M9.1 13.2h5.8"
+          stroke="currentColor"
+          strokeWidth="1.85"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    );
+  }
+
+  if (name === 'subscription') {
+    return (
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
+        <path
+          d="M6.7 6.8h10.6A1.7 1.7 0 0 1 19 8.5v7A1.7 1.7 0 0 1 17.3 17.2H6.7A1.7 1.7 0 0 1 5 15.5v-7a1.7 1.7 0 0 1 1.7-1.7Z"
+          stroke="currentColor"
+          strokeWidth="1.85"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <path
+          d="m8.7 12 2.1 2.1 4.6-4.6"
           stroke="currentColor"
           strokeWidth="1.85"
           strokeLinecap="round"
