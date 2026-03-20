@@ -2,6 +2,16 @@ import type { ChannelDialogType } from '@maxim/contracts';
 
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const GIVEAWAY_START_PARAM_PREFIX = 'gg-';
+const MINIAPP_ROUTE_START_PARAM_PREFIX = 'mr-';
+
+const CHAT_SETTINGS_FOCUS = new Set([
+  'broadcast',
+  'comments',
+  'giveaway',
+  'requiredSubscription',
+  'rules',
+]);
+const CHANNEL_SETTINGS_FOCUS = new Set(['broadcast', 'giveaway']);
 
 type ChannelDialogLaunchPayload = {
   v: 1;
@@ -15,6 +25,12 @@ type GiveawayLaunchPayload = {
   v: 1;
   k: 'giveaway';
   g: string;
+};
+
+type MiniappRouteLaunchPayload = {
+  v: 1;
+  k: 'route';
+  r: string;
 };
 
 function readString(value: unknown): string {
@@ -148,11 +164,105 @@ function parseGiveawayStartParam(value: string): GiveawayLaunchPayload | null {
   }
 }
 
+function normalizeRouteLaunchPath(value: string): string | null {
+  const normalized = readString(value);
+  if (!normalized.startsWith('/')) {
+    return null;
+  }
+
+  try {
+    const parsed = new URL(normalized, 'https://miniapp.local');
+    if (parsed.origin !== 'https://miniapp.local') {
+      return null;
+    }
+
+    const pathname = parsed.pathname;
+    if (pathname === '/') {
+      return `${pathname}${parsed.search}`;
+    }
+
+    if (/^\/chat\/[^/?#]+\/settings$/u.test(pathname)) {
+      if (!hasAllowedSearchParams(parsed, CHAT_SETTINGS_FOCUS)) {
+        return null;
+      }
+      return `${pathname}${parsed.search}`;
+    }
+
+    if (/^\/channel\/[^/?#]+\/settings$/u.test(pathname)) {
+      if (!hasAllowedSearchParams(parsed, CHANNEL_SETTINGS_FOCUS)) {
+        return null;
+      }
+      return `${pathname}${parsed.search}`;
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function hasAllowedSearchParams(parsed: URL, allowedFocus: Set<string>): boolean {
+  const focusValues = parsed.searchParams.getAll('focus');
+  const handoffValues = parsed.searchParams.getAll('handoff');
+
+  if (focusValues.length > 1 || handoffValues.length > 1) {
+    return false;
+  }
+
+  for (const [key, value] of parsed.searchParams.entries()) {
+    if (key === 'focus') {
+      if (!allowedFocus.has(value)) {
+        return false;
+      }
+      continue;
+    }
+
+    if (key === 'handoff') {
+      if (value !== '1') {
+        return false;
+      }
+      continue;
+    }
+
+    return false;
+  }
+
+  return true;
+}
+
+function parseMiniappRouteStartParam(value: string): string | null {
+  const normalized = value.trim();
+  if (!normalized.startsWith(MINIAPP_ROUTE_START_PARAM_PREFIX)) {
+    return null;
+  }
+
+  const encodedPayload = normalized.slice(MINIAPP_ROUTE_START_PARAM_PREFIX.length);
+  if (!encodedPayload) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(decodeBase64Url(encodedPayload)) as Partial<MiniappRouteLaunchPayload>;
+    if (parsed.v !== 1 || parsed.k !== 'route') {
+      return null;
+    }
+
+    return normalizeRouteLaunchPath(parsed.r ?? '');
+  } catch {
+    return null;
+  }
+}
+
 export function resolveLaunchRoute(initData: string): string | null {
   const startParam =
     readStartParamFromLocation() ||
     readStartParamFromBridge() ||
     readStartParamFromInitData(initData);
+
+  const routeLaunch = parseMiniappRouteStartParam(startParam);
+  if (routeLaunch) {
+    return routeLaunch;
+  }
 
   const giveawayLaunch = parseGiveawayStartParam(startParam);
   if (giveawayLaunch) {

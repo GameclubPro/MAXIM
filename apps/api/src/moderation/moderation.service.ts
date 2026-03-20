@@ -101,6 +101,7 @@ const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
 const CHAT_ADMIN_CACHE_TTL_SEC = Math.ceil(CHAT_ADMIN_CACHE_TTL_MS / 1_000);
 const CHAT_ADMIN_SHARED_CACHE_KEY_PREFIX = 'chat-admins:v2';
 const SUPPORT_CHAT_URL = 'https://max.ru/join/qX7U_Hj-L-xMJG8V7wlF6dD-6a6cXIzTBGRtU2mRMzk';
+const MINIAPP_ROUTE_START_PARAM_PREFIX = 'mr-';
 const PRIVATE_MENU_CALLBACK_MENU = 'private_menu:menu';
 const PRIVATE_MENU_CALLBACK_CHATS = 'private_menu:chats';
 const PRIVATE_MENU_CALLBACK_CHANNELS = 'private_menu:channels';
@@ -5814,20 +5815,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private buildPrivateMenuOptions(): MaxSendMessageOptions {
     const miniappUrl = this.resolveMiniappUrl();
-    const botContactId = this.resolveBotContactId();
-    const miniappButton: MaxMessageButton =
-      miniappUrl && botContactId
-        ? {
-            type: 'open_app',
-            text: 'Открыть приложение',
-            webApp: miniappUrl,
-            contactId: botContactId,
-          }
-        : {
-            type: 'link',
-            text: 'Открыть приложение',
-            url: miniappUrl ?? 'https://maxim.play-team.ru/app/',
-          };
+    const miniappButton = this.buildMiniappLaunchButton('Открыть приложение', '/', miniappUrl);
 
     const buttons: MaxSendMessageOptions['buttons'] = [
       [
@@ -5887,6 +5875,51 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return `${this.appBaseUrl}/app/`;
+  }
+
+  private buildMiniappLaunchButton(
+    text: string,
+    route: string,
+    fallbackWebAppUrl: string | null,
+  ): MaxMessageButton {
+    const launchUrl = this.buildMiniappRouteLaunchUrl(route);
+    if (launchUrl) {
+      return {
+        type: 'link',
+        text,
+        url: launchUrl,
+      };
+    }
+
+    const botContactId = this.resolveBotContactId();
+    if (fallbackWebAppUrl && botContactId) {
+      return {
+        type: 'open_app',
+        text,
+        webApp: fallbackWebAppUrl,
+        contactId: botContactId,
+      };
+    }
+
+    return {
+      type: 'link',
+      text,
+      url: fallbackWebAppUrl ?? 'https://maxim.play-team.ru/app/',
+    };
+  }
+
+  private buildMiniappRouteLaunchUrl(route: string): string | null {
+    return this.buildMiniappStartUrl(this.buildMiniappRouteStartParam(route));
+  }
+
+  private buildMiniappRouteStartParam(route: string): string {
+    const payload = JSON.stringify({
+      v: 1,
+      k: 'route',
+      r: route,
+    });
+    const encoded = Buffer.from(payload, 'utf8').toString('base64url');
+    return `${MINIAPP_ROUTE_START_PARAM_PREFIX}${encoded}`;
   }
 
   private resolveBotContactId(): string | null {

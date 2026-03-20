@@ -2788,6 +2788,21 @@ describe('ModerationService', () => {
       ruleEngine as never,
       sanctionService as never,
       maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn((key: string) => {
+          if (key === 'MAX_BOT_ID') {
+            return '777000_bot';
+          }
+
+          if (key === 'APP_BASE_URL') {
+            return 'https://maxim.play-team.ru';
+          }
+
+          return undefined;
+        }),
+      } as never,
     );
 
     await service.handleUpdate(createPrivateCommandUpdate('/menu'));
@@ -2808,7 +2823,13 @@ describe('ModerationService', () => {
             expect.objectContaining({ type: 'callback', text: 'Чаты' }),
             expect.objectContaining({ type: 'callback', text: 'Каналы' }),
           ]),
-          expect.arrayContaining([expect.objectContaining({ text: 'Открыть приложение' })]),
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'link',
+              text: 'Открыть приложение',
+              url: expect.stringContaining('https://max.ru/777000_bot?startapp='),
+            }),
+          ]),
         ]),
       }),
     );

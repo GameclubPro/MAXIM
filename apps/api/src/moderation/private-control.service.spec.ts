@@ -10,6 +10,24 @@ import {
 } from '@maxim/contracts';
 import { PrivateControlService } from './private-control.service';
 
+function decodeStartAppRoute(url: string): string | null {
+  const startParam = new URL(url).searchParams.get('startapp');
+  if (!startParam?.startsWith('mr-')) {
+    return null;
+  }
+
+  const encodedPayload = startParam.slice(3);
+  const normalized = encodedPayload.replace(/-/g, '+').replace(/_/g, '/');
+  const padding = '='.repeat((4 - (normalized.length % 4)) % 4);
+  const payload = JSON.parse(
+    Buffer.from(`${normalized}${padding}`, 'base64').toString('utf8'),
+  ) as { v?: number; k?: string; r?: string };
+
+  return payload.v === 1 && payload.k === 'route' && typeof payload.r === 'string'
+    ? payload.r
+    : null;
+}
+
 function createPrivateTextUpdate(text: string): MaxUpdate {
   return {
     updateId: `upd-text-${Date.now()}`,
@@ -1258,16 +1276,17 @@ describe('PrivateControlService', () => {
       ) as
       | {
           type?: string;
-          webApp?: string;
-          contactId?: string;
+          url?: string;
         }
       | undefined;
 
     expect(miniappButton).toMatchObject({
-      type: 'open_app',
-      webApp: `https://maxim.play-team.ru/app/chat/${chats[0].id}/settings?focus=rules&handoff=1`,
-      contactId: '777000',
+      type: 'link',
     });
+    expect(String(miniappButton?.url ?? '')).toContain('https://max.ru/777000_bot?startapp=');
+    expect(decodeStartAppRoute(String(miniappButton?.url ?? ''))).toBe(
+      `/chat/${encodeURIComponent(chats[0].id)}/settings?focus=rules&handoff=1`,
+    );
   });
 
   it('hands off chat rules from miniapp into private bot rules flow', async () => {

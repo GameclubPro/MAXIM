@@ -313,6 +313,7 @@ const BUTTON_TEXT_MAX_SINGLE_COLUMN = 36;
 const BUTTON_TEXT_MAX_TWO_COLUMNS = 14;
 const SUPPORT_CHAT_URL = 'https://max.ru/join/qX7U_Hj-L-xMJG8V7wlF6dD-6a6cXIzTBGRtU2mRMzk';
 const STICKER_IMAGE_MAX_BYTES = 1_000_000;
+const MINIAPP_ROUTE_START_PARAM_PREFIX = 'mr-';
 const MAX_CALLBACK_PREFIX = 'pc2';
 const LEGACY_CALLBACK_PREFIX = 'pc';
 const CALLBACK_REFRESH_NOTIFICATION = 'Меню обновлено';
@@ -5357,6 +5358,7 @@ export class PrivateControlService {
     const hasImage = rules.imageBase64.trim().length > 0;
     const hasPublishedPost = Boolean(rules.publishedMessageId || rules.publishedUrl);
     const rulesSettingsMiniappUrl = this.buildRulesSettingsMiniappUrl(session.selectedChatId);
+    const rulesSettingsMiniappRoute = this.buildRulesSettingsMiniappRoute(session.selectedChatId);
     const waitingHint =
       session.pendingInput?.kind === 'rules_text'
         ? 'Жду новый текст одним сообщением.'
@@ -5433,7 +5435,12 @@ export class PrivateControlService {
       this.callbackButton('⬅️ Назад', this.cb('back')),
       this.callbackButton('Главный экран', this.cb('home')),
     ]);
-    rows.push(...this.buildFooterButtons({ miniappUrl: rulesSettingsMiniappUrl }));
+    rows.push(
+      ...this.buildFooterButtons({
+        miniappRoute: rulesSettingsMiniappRoute,
+        miniappUrl: rulesSettingsMiniappUrl,
+      }),
+    );
 
     return {
       text: lines.join('\n'),
@@ -5473,6 +5480,11 @@ export class PrivateControlService {
       session.selectedChatId,
       session.selectedEntityType ?? 'chat',
     );
+    const plannerRoute = this.buildBroadcastSettingsMiniappRoute(
+      session.selectedChatId,
+      session.selectedEntityType ?? 'chat',
+    );
+    const plannerLaunchUrl = this.buildMiniappRouteLaunchUrl(plannerRoute);
 
     const lines: string[] = [
       this.markdownTitle(isChannel ? 'Рассылка в канал' : 'Рассылка'),
@@ -5510,8 +5522,8 @@ export class PrivateControlService {
           ),
         ]);
       }
-      if (plannerUrl) {
-        rows.push([this.buildMiniappOpenButton('🗓 Календарь', plannerUrl)]);
+      if (plannerLaunchUrl || plannerUrl) {
+        rows.push([this.buildMiniappLaunchButton('🗓 Календарь', plannerRoute, plannerUrl)]);
       }
       rows.push([this.callbackButton('🚀 Отправить', this.cb('broadcast_send'), 'positive')]);
       rows.push([this.callbackButton('⚙️ Ещё параметры', this.cb('broadcast_view', 'advanced'))]);
@@ -5548,8 +5560,10 @@ export class PrivateControlService {
       }
 
       if (isCalendarMode) {
-        if (plannerUrl) {
-          rows.push([this.buildMiniappOpenButton('🗓 Изменить календарь', plannerUrl)]);
+        if (plannerLaunchUrl || plannerUrl) {
+          rows.push([
+            this.buildMiniappLaunchButton('🗓 Изменить календарь', plannerRoute, plannerUrl),
+          ]);
         }
       } else {
         rows.push([
@@ -7559,14 +7573,17 @@ export class PrivateControlService {
 
   private buildFooterButtons(config?: {
     miniappText?: string;
+    miniappRoute?: string | null;
     miniappUrl?: string | null;
   }): MaxMessageButton[][] {
     const row: MaxMessageButton[] = [];
+    const miniappRoute = config?.miniappRoute?.trim() || '/';
     const miniappUrl = config?.miniappUrl ?? this.resolveMiniappUrl();
     const miniappText = config?.miniappText?.trim() || 'Мини-апп';
+    const miniappLaunchUrl = this.buildMiniappRouteLaunchUrl(miniappRoute);
 
-    if (miniappUrl) {
-      row.push(this.buildMiniappOpenButton(miniappText, miniappUrl));
+    if (miniappLaunchUrl || miniappUrl) {
+      row.push(this.buildMiniappLaunchButton(miniappText, miniappRoute, miniappUrl));
     }
 
     row.push({
@@ -7576,6 +7593,31 @@ export class PrivateControlService {
     });
 
     return [row];
+  }
+
+  private buildMiniappLaunchButton(
+    text: string,
+    route: string,
+    fallbackWebAppUrl: string | null,
+  ): MaxMessageButton {
+    const launchUrl = this.buildMiniappRouteLaunchUrl(route);
+    if (launchUrl) {
+      return {
+        type: 'link',
+        text,
+        url: launchUrl,
+      };
+    }
+
+    if (fallbackWebAppUrl) {
+      return this.buildMiniappOpenButton(text, fallbackWebAppUrl);
+    }
+
+    return {
+      type: 'link',
+      text,
+      url: 'https://maxim.play-team.ru/app/',
+    };
   }
 
   private buildMiniappOpenButton(text: string, webAppUrl: string): MaxMessageButton {
@@ -7631,6 +7673,16 @@ export class PrivateControlService {
       : `${this.appBaseUrl}/app/chat/${encodedChatId}/settings?focus=broadcast&handoff=1`;
   }
 
+  private buildBroadcastSettingsMiniappRoute(
+    chatId: string,
+    entityType: ManagedEntityType,
+  ): string {
+    const encodedChatId = encodeURIComponent(chatId);
+    return entityType === 'channel'
+      ? `/channel/${encodedChatId}/settings?focus=broadcast&handoff=1`
+      : `/chat/${encodedChatId}/settings?focus=broadcast&handoff=1`;
+  }
+
   private buildRulesSettingsMiniappUrl(chatId: string): string | null {
     if (!this.appBaseUrl) {
       return null;
@@ -7638,6 +7690,32 @@ export class PrivateControlService {
 
     const encodedChatId = encodeURIComponent(chatId);
     return `${this.appBaseUrl}/app/chat/${encodedChatId}/settings?focus=rules&handoff=1`;
+  }
+
+  private buildRulesSettingsMiniappRoute(chatId: string): string {
+    return `/chat/${encodeURIComponent(chatId)}/settings?focus=rules&handoff=1`;
+  }
+
+  private buildMiniappRouteLaunchUrl(route: string): string | null {
+    return this.buildMiniappStartUrl(this.buildMiniappRouteStartParam(route));
+  }
+
+  private buildMiniappRouteStartParam(route: string): string {
+    const payload = JSON.stringify({
+      v: 1,
+      k: 'route',
+      r: route,
+    });
+    const encoded = Buffer.from(payload, 'utf8').toString('base64url');
+    return `${MINIAPP_ROUTE_START_PARAM_PREFIX}${encoded}`;
+  }
+
+  private buildMiniappStartUrl(startParam: string): string | null {
+    if (!this.botDeepLinkId) {
+      return null;
+    }
+
+    return `https://max.ru/${encodeURIComponent(this.botDeepLinkId)}?startapp=${encodeURIComponent(startParam)}`;
   }
 
   private buildBotStartUrl(startPayload: string): string | null {
