@@ -1179,7 +1179,7 @@ describe('PrivateControlService', () => {
   it('opens the rules screen from chat home', async () => {
     const { service, maxClient, chats } = createHarness({
       rules: createRules({
-        text: 'Соблюдайте правила чата.',
+        text: 'Соблюдайте **правила** чата.',
       }),
     });
 
@@ -1188,7 +1188,7 @@ describe('PrivateControlService', () => {
 
     expect(getLastUiText(maxClient)).toContain('Правила');
     expect(getLastUiText(maxClient)).toContain('Текст правил:');
-    expect(getLastUiText(maxClient)).toContain('Соблюдайте правила чата.');
+    expect(getLastUiText(maxClient)).toContain('Соблюдайте **правила** чата.');
     expect(getLastUiText(maxClient)).not.toContain('Превью:');
 
     const buttonTexts = getLastButtons(maxClient)
@@ -1196,6 +1196,10 @@ describe('PrivateControlService', () => {
       .map((button) => String((button as { text?: string }).text ?? ''));
     expect(buttonTexts).toContain('Изменить текст');
     expect(buttonTexts).toContain('Добавить фото');
+    expect(buttonTexts).not.toContain('Опубликовать');
+    expect(buttonTexts).not.toContain('Сбросить публикацию');
+    expect(buttonTexts).not.toContain('✅ Кнопка "Правила" в нарушениях');
+    expect(maxClient.answerCallback.mock.calls.at(-1)?.[2]?.options?.textFormat).toBe('markdown');
   });
 
   it('hands off chat rules from miniapp into private bot rules flow', async () => {

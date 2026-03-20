@@ -4684,6 +4684,7 @@ describe('AdminService chat rules', () => {
         messageId: 'mid-rules-2',
         url: 'https://max.ru/chats/chat-1/message/456',
       }),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
       resolveMessageLink: jest.fn(),
       uploadImage: jest.fn(),
     };
@@ -4730,6 +4731,7 @@ describe('AdminService chat rules', () => {
       userId: 'admin-1',
       username: null,
       displayName: null,
+      chatId: '152517912',
       chatTitle: null,
     });
 
@@ -4752,6 +4754,12 @@ describe('AdminService chat rules', () => {
       url: 'https://max.ru/chats/chat-1/message/456',
       publishedAt: expect.any(String),
     });
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      '152517912',
+      '✅ Правила опубликованы.\nhttps://max.ru/chats/chat-1/message/456',
+      undefined,
+      { immediate: true },
+    );
     expect(prisma.auditLog.create).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
@@ -4790,6 +4798,7 @@ describe('AdminService chat rules', () => {
         messageId: 'mid-rules-3',
         url: null,
       }),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
       resolveMessageLink: jest.fn().mockResolvedValue(null),
       uploadImage: jest.fn(),
     };
@@ -4808,6 +4817,7 @@ describe('AdminService chat rules', () => {
       userId: 'admin-1',
       username: null,
       displayName: null,
+      chatId: '152517912',
       chatTitle: null,
     });
 
@@ -4825,6 +4835,12 @@ describe('AdminService chat rules', () => {
       url: null,
       publishedAt: expect.any(String),
     });
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      '152517912',
+      '✅ Правила опубликованы.',
+      undefined,
+      { immediate: true },
+    );
   });
 
   it('records private bot as the rules source in audit log payloads', async () => {

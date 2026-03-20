@@ -3962,6 +3962,7 @@ export class PrivateControlService {
     }
 
     const currentRules = await this.adminService.getRules(session.selectedChatId!, context.actor);
+    const requiresRepublish = Boolean(currentRules.publishedMessageId || currentRules.publishedUrl);
     let imageBase64 = currentRules.imageBase64;
     let imageMimeType = currentRules.imageMimeType;
     let imageFileName = currentRules.imageFileName;
@@ -3994,13 +3995,14 @@ export class PrivateControlService {
     session.pendingInput = null;
     session.screen = 'rules';
 
+    const republishHint = requiresRepublish ? ' Переопубликуйте правила в mini app.' : '';
     if (normalizedText && imageSourceAttachment) {
-      return 'Текст и фото правил обновлены.';
+      return `Текст и фото правил обновлены.${republishHint}`;
     }
     if (imageSourceAttachment) {
-      return 'Фото правил обновлено.';
+      return `Фото правил обновлено.${republishHint}`;
     }
-    return 'Текст правил обновлён.';
+    return `Текст правил обновлён.${republishHint}`;
   }
 
   private async captureBroadcastContent(
@@ -5316,9 +5318,8 @@ export class PrivateControlService {
       return this.renderChannelHomeScreen(context, session);
     }
 
-    const [rules, settings, chatTitle] = await Promise.all([
+    const [rules, chatTitle] = await Promise.all([
       this.adminService.getRules(session.selectedChatId, context.actor),
-      this.adminService.getSettings(session.selectedChatId, context.actor),
       this.resolveManagedEntityTitle(context.actor, 'chat', session.selectedChatId),
     ]);
 
@@ -5341,7 +5342,6 @@ export class PrivateControlService {
       }`,
       `Текст: ${hasText ? `${rules.text.trim().length} симв.` : 'нет'}`,
       `Фото: ${hasImage ? 'добавлено' : 'нет'}`,
-      `Кнопка в нарушениях: ${settings.rulesAttachViolationsEnabled ? 'вкл' : 'выкл'}`,
     ];
 
     if (rules.publishedAt) {
@@ -5355,7 +5355,7 @@ export class PrivateControlService {
     if (waitingHint) {
       lines.push(`Жду: ${this.escapeMarkdown(waitingHint)}`);
     } else {
-      lines.push('Действия: «Изменить текст» или «Добавить фото».');
+      lines.push('Действия: «Изменить текст» или «Добавить фото». Публикация и кнопка «Правила» — в mini app.');
     }
 
     if (notice) {
@@ -5363,7 +5363,7 @@ export class PrivateControlService {
     }
 
     lines.push('', 'Текст правил:');
-    lines.push(hasText ? this.escapeMarkdown(rules.text) : 'не задан');
+    lines.push(hasText ? rules.text : 'не задан');
 
     const rows: MaxMessageButton[][] = [
       [this.callbackButton('Изменить текст', this.cb('rules_input_prompt', 'text'))],
@@ -5380,35 +5380,6 @@ export class PrivateControlService {
     }
 
     rows.push([
-      this.callbackButton(
-        `${settings.rulesAttachViolationsEnabled ? '✅' : '⬜'} Кнопка "Правила" в нарушениях`,
-        this.cb('rules_toggle_attach'),
-      ),
-    ]);
-
-    if (rules.publishedUrl) {
-      rows.push([
-        {
-          type: 'link',
-          text: 'Открыть пост',
-          url: rules.publishedUrl,
-        },
-      ]);
-    }
-
-    rows.push([this.callbackButton('Опубликовать', this.cb('rules_publish'), 'positive')]);
-
-    if (hasPublishedPost) {
-      rows.push([
-        this.callbackButton(
-          'Сбросить публикацию',
-          this.cb('rules_reset_publication'),
-          'negative',
-        ),
-      ]);
-    }
-
-    rows.push([
       this.callbackButton('⬅️ Назад', this.cb('back')),
       this.callbackButton('Главный экран', this.cb('home')),
     ]);
@@ -5418,6 +5389,7 @@ export class PrivateControlService {
       text: lines.join('\n'),
       options: {
         buttons: rows,
+        textFormat: 'markdown',
       },
     };
   }

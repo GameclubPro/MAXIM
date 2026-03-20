@@ -2113,7 +2113,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       pushToast({
         tone: 'info',
         title: 'Открываем личный чат бота',
-        description: 'Текст, фото, публикация и кнопка нарушений теперь управляются там.',
+        description: 'Отправьте там текст или фото. Публикация и кнопка «Правила» остаются здесь.',
       });
       openMaxBotLink(result.botUrl);
     },
@@ -2123,6 +2123,58 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         title: 'Не удалось открыть правила в боте',
         description: formatApiError(error),
       });
+    },
+  });
+
+  const updateRulesAttachMutation = useMutation({
+    mutationFn: (enabled: boolean) => {
+      const base = settingsQuery.data ?? draft;
+      if (!chatId || !base) {
+        throw new Error('Чат не выбран');
+      }
+
+      return updateSettings(api, chatId, {
+        ...base,
+        rulesAttachViolationsEnabled: enabled,
+      });
+    },
+    onSuccess: (saved) => {
+      setDraft((current) =>
+        current
+          ? {
+              ...current,
+              rulesAttachViolationsEnabled: saved.rulesAttachViolationsEnabled,
+            }
+          : saved,
+      );
+      queryClient.setQueryData<ChatSettingsScreenResponse | undefined>(
+        ['settings-screen', chatId],
+        (current) =>
+          current
+            ? {
+                ...current,
+                settings: {
+                  ...current.settings,
+                  rulesAttachViolationsEnabled: saved.rulesAttachViolationsEnabled,
+                },
+              }
+            : current,
+      );
+      pushToast({
+        tone: 'success',
+        title: saved.rulesAttachViolationsEnabled
+          ? 'Кнопка «Правила» включена'
+          : 'Кнопка «Правила» выключена',
+      });
+      maxNotify('success');
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось обновить кнопку «Правила»',
+        description: formatApiError(error),
+      });
+      maxNotify('error');
     },
   });
 
@@ -4633,11 +4685,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               <div className="rules-media-card__head">
                                 <div className="rules-media-card__title-wrap">
                                   <span className="rules-media-card__title">
-                                    Редактирование в чат-боте
+                                    Ввод контента в чат-боте
                                   </span>
                                   <small className="rules-media-card__subtitle">
-                                    Текст, фото, публикация и кнопку «Правила» в сообщениях о
-                                    нарушениях теперь нужно настраивать в личном чате бота.
+                                    В личном чате бота меняются только текст и фото правил.
+                                    Публикация и кнопка «Правила» настраиваются в mini app.
                                   </small>
                                 </div>
                               </div>
@@ -4654,33 +4706,93 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   ? rulesDraft.imageFileName || 'прикреплено'
                                   : 'не добавлено'}
                               </small>
-                              <small className="field__hint">
-                                Кнопка в сообщениях о нарушениях:{' '}
-                                {draft?.rulesAttachViolationsEnabled ? 'включена' : 'выключена'}.
-                              </small>
+                            </div>
+
+                            <div className="settings-native-toggle">
+                              <div className="settings-native-toggle__row">
+                                <div className="settings-native-toggle__title-wrap">
+                                  <span className="settings-native-toggle__title">
+                                    Кнопка «Правила» в сообщениях о нарушениях
+                                  </span>
+                                </div>
+
+                                <label
+                                  className="settings-native-switch"
+                                  aria-label="Включить кнопку Правила в сообщениях о нарушениях"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={Boolean(draft?.rulesAttachViolationsEnabled)}
+                                    disabled={updateRulesAttachMutation.isPending}
+                                    onChange={(event) =>
+                                      updateRulesAttachMutation.mutate(event.target.checked)
+                                    }
+                                  />
+                                  <span className="toggle-switch" aria-hidden>
+                                    <span className="toggle-switch__thumb" />
+                                  </span>
+                                </label>
+                              </div>
+
+                              <p className="settings-native-toggle__hint">
+                                Эта кнопка остаётся в mini app, а в боте редактируется только сам
+                                контент правил.
+                              </p>
                             </div>
 
                             <div className="rules-action-panel">
                               <div className="rules-action-panel__content">
                                 <div className="rules-action-panel__draft-chip">
-                                  <span className="chip chip--warning">Редактирование в боте</span>
+                                  <span className="chip chip--warning">Контент через бота</span>
+                                </div>
+                                <div className="rules-link-row__actions">
+                                  <button
+                                    type="button"
+                                    className="button button--accent"
+                                    onClick={() => handoffRulesMutation.mutate()}
+                                    disabled={
+                                      rulesQuery.isLoading ||
+                                      Boolean(rulesQuery.error) ||
+                                      handoffRulesMutation.isPending
+                                    }
+                                  >
+                                    {handoffRulesMutation.isPending
+                                      ? 'Открываем бота...'
+                                      : 'Открыть в боте'}
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    className="button button--accent"
+                                    onClick={() => void handlePublishRules()}
+                                    disabled={
+                                      rulesQuery.isLoading ||
+                                      Boolean(rulesQuery.error) ||
+                                      isPublishingRules ||
+                                      isSavingRules
+                                    }
+                                  >
+                                    {isPublishingRules
+                                      ? 'Публикуем...'
+                                      : hasPublishedRules
+                                        ? 'Переопубликовать'
+                                        : 'Опубликовать'}
+                                  </button>
+
+                                  {hasPublishedRules ? (
+                                    <button
+                                      type="button"
+                                      className="button button--ghost"
+                                      onClick={handleResetPublishedRules}
+                                      disabled={isResettingPublishedRules}
+                                    >
+                                      {isResettingPublishedRules
+                                        ? 'Сбрасываем...'
+                                        : 'Сбросить публикацию'}
+                                    </button>
+                                  ) : null}
                                 </div>
                               </div>
-
-                              <button
-                                type="button"
-                                className="button button--accent rules-action-panel__publish"
-                                onClick={() => handoffRulesMutation.mutate()}
-                                disabled={
-                                  rulesQuery.isLoading ||
-                                  Boolean(rulesQuery.error) ||
-                                  handoffRulesMutation.isPending
-                                }
-                              >
-                                {handoffRulesMutation.isPending
-                                  ? 'Открываем бота...'
-                                  : 'Открыть в боте'}
-                              </button>
                             </div>
                           </>
                         ) : null}

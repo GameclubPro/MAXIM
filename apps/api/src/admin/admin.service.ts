@@ -2041,6 +2041,10 @@ export class AdminService {
     });
     await this.chatContextCache?.invalidate(chatId);
 
+    if (source === 'miniapp') {
+      await this.sendRulesPublishedPrivateConfirmation(user, hydratedRules.publishedUrl);
+    }
+
     return publishChatRulesResultSchema.parse({
       chatId,
       messageId: published.messageId,
@@ -7994,6 +7998,33 @@ export class AdminService {
     }
 
     return this.findLatestPrivateChatIdForUser(user.userId);
+  }
+
+  private async sendRulesPublishedPrivateConfirmation(
+    user: AuthUser,
+    publishedUrl: string | null,
+  ): Promise<void> {
+    const privateChatId = await this.resolvePrivateDialogChatId(user);
+    if (!privateChatId) {
+      return;
+    }
+
+    const message = publishedUrl
+      ? `✅ Правила опубликованы.\n${publishedUrl}`
+      : '✅ Правила опубликованы.';
+
+    try {
+      await this.maxClient.sendMessage(privateChatId, message, undefined, { immediate: true });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          userId: user.userId,
+          privateChatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to send private confirmation after rules publish',
+      );
+    }
   }
 
   private async resolveChannelTitle(chatId: string): Promise<string> {
