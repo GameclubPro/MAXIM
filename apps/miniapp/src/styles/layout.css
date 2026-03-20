@@ -193,6 +193,8 @@ body.settings-drilldown-open .bottom-nav {
 }
 
 body.settings-home-page-open .bottom-nav {
+  padding: 4px;
+  border-radius: 20px;
   border-color: rgba(221, 231, 239, 0.9);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(247, 250, 252, 0.9)),
@@ -202,6 +204,37 @@ body.settings-home-page-open .bottom-nav {
     0 1px 0 rgba(255, 255, 255, 0.42) inset;
   backdrop-filter: blur(8px) saturate(112%);
   -webkit-backdrop-filter: blur(8px) saturate(112%);
+}
+
+body.settings-home-page-open .bottom-nav__item {
+  min-height: 56px;
+  border-radius: 16px;
+  gap: 3px;
+  padding: 7px 4px 6px;
+}
+
+body.settings-home-page-open .bottom-nav__item.is-active {
+  border-color: rgba(11, 132, 255, 0.16);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(232, 243, 253, 0.86)),
+    rgba(255, 255, 255, 0.82);
+  box-shadow:
+    0 3px 8px rgba(11, 132, 255, 0.08),
+    0 1px 0 rgba(255, 255, 255, 0.68) inset;
+}
+
+body.settings-home-page-open .bottom-nav__icon {
+  width: 26px;
+  height: 26px;
+}
+
+body.settings-home-page-open .bottom-nav__icon-svg {
+  width: 20px;
+  height: 20px;
+}
+
+body.settings-home-page-open .bottom-nav__label {
+  font-size: 0.67rem;
 }
 
 .bottom-nav__item.is-disabled {
