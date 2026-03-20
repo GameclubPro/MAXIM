@@ -148,21 +148,21 @@ function SettingsSectionIcon({ name }: { name: SettingsSectionIconName }) {
     return (
       <svg viewBox="0 0 24 24" fill="none" aria-hidden focusable="false">
         <path
-          d="M8.2 8.2h7.4a3.2 3.2 0 0 1 0 6.4H7.7"
+          d="M8.2 6h7.6A2.2 2.2 0 0 1 18 8.2v7.6A2.2 2.2 0 0 1 15.8 18H8.2A2.2 2.2 0 0 1 6 15.8V8.2A2.2 2.2 0 0 1 8.2 6Z"
           stroke="currentColor"
           strokeWidth="1.85"
           strokeLinecap="round"
           strokeLinejoin="round"
         />
         <path
-          d="M10.1 4.9L6.7 8.2l3.4 3.4M15.8 15.8H8.4a3.2 3.2 0 1 1 0-6.4h7.9"
+          d="M15.9 6V5.6A1.6 1.6 0 0 0 14.3 4H6.7A1.6 1.6 0 0 0 5 5.6v7.7A1.6 1.6 0 0 0 6.7 15h.3"
           stroke="currentColor"
           strokeWidth="1.85"
           strokeLinecap="round"
           strokeLinejoin="round"
         />
         <path
-          d="M13.9 19.1l3.4-3.3-3.4-3.4"
+          d="M9.2 10.1h5.6M9.2 13.1h5.6"
           stroke="currentColor"
           strokeWidth="1.85"
           strokeLinecap="round"
