@@ -3759,7 +3759,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             backTo={buildManagedEntitiesRoute('chat')}
             backLabel="Назад к чатам"
             title={chatTitle || chatId || 'Настройки'}
-            subtitle="Настройки чата"
             compact={isHeaderCompact}
             hidden={isHeaderHidden}
             className="settings-home-sticky-header stagger-in"

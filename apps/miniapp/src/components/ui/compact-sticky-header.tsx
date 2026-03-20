@@ -43,7 +43,7 @@ export function CompactStickyHeader({
           <h1 className="compact-page-header__title">{title}</h1>
         </div>
 
-        {aside ? <div className="compact-page-header__aside">{aside}</div> : null}
+        <div className="compact-page-header__aside">{aside}</div>
       </div>
     </header>
   );
