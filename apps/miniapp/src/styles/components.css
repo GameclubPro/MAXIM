@@ -3907,8 +3907,8 @@
 
 .settings-home-entry--priority .settings-section__toggle {
   position: relative;
-  min-height: 134px;
-  height: 134px;
+  min-height: 122px;
+  height: 122px;
   padding: 14px;
   border-color: rgba(214, 225, 236, 0.94);
   border-radius: 22px;
@@ -3939,9 +3939,9 @@
 
 .settings-home-entry--priority .settings-section__toggle-main h3 {
   min-height: 0;
-  font-size: 0.9rem;
+  font-size: 0.95rem;
   font-weight: 800;
-  line-height: 1.08;
+  line-height: 1.12;
   display: block;
   overflow: visible;
   -webkit-line-clamp: unset;
@@ -3949,13 +3949,13 @@
 }
 
 .settings-home-entry--priority .settings-section__toggle-main {
-  gap: 7px;
+  gap: 5px;
 }
 
 .settings-home-entry--priority .settings-section__toggle-main small {
-  min-height: 2.3em;
-  font-size: 0.69rem;
-  line-height: 1.22;
+  min-height: 2.45em;
+  font-size: 0.72rem;
+  line-height: 1.24;
   color: #71859a;
 }
 
