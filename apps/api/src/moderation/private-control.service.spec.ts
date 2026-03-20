@@ -1196,10 +1196,29 @@ describe('PrivateControlService', () => {
       .map((button) => String((button as { text?: string }).text ?? ''));
     expect(buttonTexts).toContain('Изменить текст');
     expect(buttonTexts).toContain('Добавить фото');
-    expect(buttonTexts).not.toContain('Опубликовать');
+    expect(buttonTexts).toContain('Опубликовать');
+    expect(buttonTexts).toContain('Мини-апп');
     expect(buttonTexts).not.toContain('Сбросить публикацию');
     expect(buttonTexts).not.toContain('✅ Кнопка "Правила" в нарушениях');
     expect(maxClient.answerCallback.mock.calls.at(-1)?.[2]?.options?.textFormat).toBe('markdown');
+
+    const miniappButton = getLastButtons(maxClient)
+      .flat()
+      .find(
+        (button) => String((button as { text?: string }).text ?? '') === 'Мини-апп',
+      ) as
+      | {
+          type?: string;
+          webApp?: string;
+          contactId?: string;
+        }
+      | undefined;
+
+    expect(miniappButton).toMatchObject({
+      type: 'open_app',
+      webApp: `https://maxim.play-team.ru/app/chat/${chats[0].id}/settings?focus=rules&handoff=1`,
+      contactId: '777000',
+    });
   });
 
   it('hands off chat rules from miniapp into private bot rules flow', async () => {

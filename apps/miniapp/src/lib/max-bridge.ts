@@ -9,6 +9,19 @@ function resolveBridge() {
   return window.MAX?.WebApp ?? window.WebApp;
 }
 
+function isMaxMiniAppLink(url: string): boolean {
+  try {
+    const parsed = new URL(url, window.location.href);
+    if (parsed.hostname !== 'max.ru' && parsed.hostname !== 'www.max.ru') {
+      return false;
+    }
+
+    return parsed.searchParams.has('startapp');
+  } catch {
+    return false;
+  }
+}
+
 export function readyMaxMiniApp(): void {
   resolveBridge()?.ready?.();
 }
@@ -25,8 +38,13 @@ export function closeMaxMiniApp(fallback?: () => void): void {
 
 export function openMaxBotLink(url: string): void {
   const bridge = resolveBridge();
-  if (typeof bridge?.openMaxLink === 'function') {
+  if (isMaxMiniAppLink(url) && typeof bridge?.openMaxLink === 'function') {
     bridge.openMaxLink(url);
+    return;
+  }
+
+  if (typeof bridge?.openLink === 'function') {
+    bridge.openLink(url);
     return;
   }
 

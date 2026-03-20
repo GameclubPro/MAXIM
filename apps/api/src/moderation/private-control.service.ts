@@ -2227,10 +2227,10 @@ export class PrivateControlService {
         this.assertSelectedEntityType(session, 'chat');
         await this.adminService.publishRules(session.selectedChatId!, context.actor, 'private_bot');
         session.screen = 'rules';
-        const view = await this.renderRulesScreen(context, session, 'Правила опубликованы.');
+        const view = await this.renderRulesScreen(context, session, '✅ Правила опубликованы.');
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: 'Правила опубликованы',
+          notification: '✅ Правила опубликованы',
         });
         return;
       }
@@ -3995,7 +3995,9 @@ export class PrivateControlService {
     session.pendingInput = null;
     session.screen = 'rules';
 
-    const republishHint = requiresRepublish ? ' Переопубликуйте правила в mini app.' : '';
+    const republishHint = requiresRepublish
+      ? ' Переопубликуйте правила здесь или в mini app.'
+      : '';
     if (normalizedText && imageSourceAttachment) {
       return `Текст и фото правил обновлены.${republishHint}`;
     }
@@ -5326,6 +5328,7 @@ export class PrivateControlService {
     const hasText = rules.text.trim().length > 0;
     const hasImage = rules.imageBase64.trim().length > 0;
     const hasPublishedPost = Boolean(rules.publishedMessageId || rules.publishedUrl);
+    const rulesSettingsMiniappUrl = this.buildRulesSettingsMiniappUrl(session.selectedChatId);
     const waitingHint =
       session.pendingInput?.kind === 'rules_text'
         ? 'Жду новый текст одним сообщением.'
@@ -5355,7 +5358,9 @@ export class PrivateControlService {
     if (waitingHint) {
       lines.push(`Жду: ${this.escapeMarkdown(waitingHint)}`);
     } else {
-      lines.push('Действия: «Изменить текст» или «Добавить фото». Публикация и кнопка «Правила» — в mini app.');
+      lines.push(
+        'Действия: «Изменить текст», «Добавить фото» или «Опубликовать». Кнопка «Правила» остаётся в mini app.',
+      );
     }
 
     if (notice) {
@@ -5379,11 +5384,28 @@ export class PrivateControlService {
       rows.push([this.callbackButton('Убрать фото', this.cb('rules_clear_photo'), 'negative')]);
     }
 
+    rows.push([this.callbackButton('Опубликовать', this.cb('rules_publish'), 'positive')]);
+
+    if (hasPublishedPost) {
+      const publicationRow: MaxMessageButton[] = [];
+      if (rules.publishedUrl) {
+        publicationRow.push({
+          type: 'link',
+          text: 'Открыть пост',
+          url: rules.publishedUrl,
+        });
+      }
+      publicationRow.push(
+        this.callbackButton('Сбросить публикацию', this.cb('rules_reset_publication'), 'negative'),
+      );
+      rows.push(publicationRow);
+    }
+
     rows.push([
       this.callbackButton('⬅️ Назад', this.cb('back')),
       this.callbackButton('Главный экран', this.cb('home')),
     ]);
-    rows.push(...this.buildFooterButtons());
+    rows.push(...this.buildFooterButtons({ miniappUrl: rulesSettingsMiniappUrl }));
 
     return {
       text: lines.join('\n'),
@@ -7294,24 +7316,16 @@ export class PrivateControlService {
     };
   }
 
-  private buildFooterButtons(): MaxMessageButton[][] {
+  private buildFooterButtons(config?: {
+    miniappText?: string;
+    miniappUrl?: string | null;
+  }): MaxMessageButton[][] {
     const row: MaxMessageButton[] = [];
-    const miniappUrl = this.resolveMiniappUrl();
-    const botContactId = this.resolveBotContactId();
+    const miniappUrl = config?.miniappUrl ?? this.resolveMiniappUrl();
+    const miniappText = config?.miniappText?.trim() || 'Мини-апп';
 
-    if (miniappUrl && botContactId) {
-      row.push({
-        type: 'open_app',
-        text: 'Мини-апп',
-        webApp: miniappUrl,
-        contactId: botContactId,
-      });
-    } else if (miniappUrl) {
-      row.push({
-        type: 'link',
-        text: 'Мини-апп',
-        url: miniappUrl,
-      });
+    if (miniappUrl) {
+      row.push(this.buildMiniappOpenButton(miniappText, miniappUrl));
     }
 
     row.push({
@@ -7374,6 +7388,15 @@ export class PrivateControlService {
     return entityType === 'channel'
       ? `${this.appBaseUrl}/app/channel/${encodedChatId}/settings?focus=broadcast&handoff=1`
       : `${this.appBaseUrl}/app/chat/${encodedChatId}/settings?focus=broadcast&handoff=1`;
+  }
+
+  private buildRulesSettingsMiniappUrl(chatId: string): string | null {
+    if (!this.appBaseUrl) {
+      return null;
+    }
+
+    const encodedChatId = encodeURIComponent(chatId);
+    return `${this.appBaseUrl}/app/chat/${encodedChatId}/settings?focus=rules&handoff=1`;
   }
 
   private buildBotStartUrl(startPayload: string): string | null {

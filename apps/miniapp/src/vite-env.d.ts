@@ -15,6 +15,7 @@ type MaxWebAppBridge = {
   start_param?: string;
   ready?: () => void;
   close?: () => void;
+  openLink?: (url: string) => void;
   openMaxLink?: (url: string) => void;
   enableClosingConfirmation?: () => void;
   disableClosingConfirmation?: () => void;

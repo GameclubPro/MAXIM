@@ -1435,6 +1435,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   useEffect(() => {
     if (
+      focusSection !== 'rules' &&
       focusSection !== 'comments' &&
       focusSection !== 'giveaway' &&
       focusSection !== 'broadcast' &&
@@ -1445,7 +1446,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     setExpandedSections({
       ...INITIAL_EXPANDED_SECTIONS,
-      ...(focusSection === 'comments'
+      ...(focusSection === 'rules'
+        ? { rules: true }
+        : focusSection === 'comments'
         ? { comments: true }
         : focusSection === 'giveaway'
         ? { giveaway: true }
@@ -2113,7 +2116,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       pushToast({
         tone: 'info',
         title: 'Открываем личный чат бота',
-        description: 'Отправьте там текст или фото. Публикация и кнопка «Правила» остаются здесь.',
+        description:
+          'Отправьте там текст или фото. Публиковать можно и там, и здесь. Кнопка «Правила» остаётся в mini app.',
       });
       openMaxBotLink(result.botUrl);
     },
@@ -4689,7 +4693,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   </span>
                                   <small className="rules-media-card__subtitle">
                                     В личном чате бота меняются только текст и фото правил.
-                                    Публикация и кнопка «Правила» настраиваются в mini app.
+                                    Публиковать можно и в боте, и в mini app. Кнопка «Правила»
+                                    настраивается в mini app.
                                   </small>
                                 </div>
                               </div>
