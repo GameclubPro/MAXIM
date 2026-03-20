@@ -193,48 +193,43 @@ body.settings-drilldown-open .bottom-nav {
 }
 
 body.settings-home-page-open .bottom-nav {
-  padding: 4px;
-  border-radius: 20px;
-  border-color: rgba(221, 231, 239, 0.9);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(247, 250, 252, 0.9)),
-    rgba(255, 255, 255, 0.88);
+  padding: 3px;
+  border-radius: 18px;
+  border-color: rgba(226, 234, 241, 0.82);
+  background: rgba(255, 255, 255, 0.8);
   box-shadow:
-    0 6px 12px rgba(24, 55, 83, 0.055),
-    0 1px 0 rgba(255, 255, 255, 0.42) inset;
-  backdrop-filter: blur(8px) saturate(112%);
-  -webkit-backdrop-filter: blur(8px) saturate(112%);
+    0 5px 12px rgba(24, 55, 83, 0.045),
+    0 1px 0 rgba(255, 255, 255, 0.38) inset;
+  backdrop-filter: blur(7px);
 }
 
 body.settings-home-page-open .bottom-nav__item {
-  min-height: 56px;
-  border-radius: 16px;
+  min-height: 54px;
+  border-radius: 15px;
   gap: 3px;
   padding: 7px 4px 6px;
 }
 
 body.settings-home-page-open .bottom-nav__item.is-active {
-  border-color: rgba(11, 132, 255, 0.16);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(232, 243, 253, 0.86)),
-    rgba(255, 255, 255, 0.82);
+  border-color: rgba(11, 132, 255, 0.14);
+  background: rgba(234, 243, 252, 0.82);
   box-shadow:
-    0 3px 8px rgba(11, 132, 255, 0.08),
+    0 3px 7px rgba(11, 132, 255, 0.065),
     0 1px 0 rgba(255, 255, 255, 0.68) inset;
 }
 
 body.settings-home-page-open .bottom-nav__icon {
-  width: 26px;
-  height: 26px;
+  width: 25px;
+  height: 25px;
 }
 
 body.settings-home-page-open .bottom-nav__icon-svg {
-  width: 20px;
-  height: 20px;
+  width: 19px;
+  height: 19px;
 }
 
 body.settings-home-page-open .bottom-nav__label {
-  font-size: 0.67rem;
+  font-size: 0.65rem;
 }
 
 .bottom-nav__item.is-disabled {
@@ -385,7 +380,7 @@ body.settings-home-page-open .bottom-nav__label {
 }
 
 .settings-sections--chat-home {
-  gap: 10px;
+  gap: 9px;
 }
 
 .chat-card,
@@ -403,7 +398,7 @@ body.settings-home-page-open .bottom-nav__label {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
-  gap: 8px;
+  gap: 10px 8px;
 }
 
 .settings-section--wide {

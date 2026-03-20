@@ -3878,15 +3878,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
           <div className="settings-sections-shell">
             <div className="settings-home-group-head stagger-in" style={{ order: 10 }}>
-              <h2 className="settings-home-group-head__title">Модерация</h2>
+              <h2 className="settings-home-group-head__title">Защита</h2>
             </div>
 
             <div className="settings-home-group-head stagger-in" style={{ order: 20 }}>
-              <h2 className="settings-home-group-head__title">Контент и рост</h2>
+              <h2 className="settings-home-group-head__title">Контент</h2>
             </div>
 
             <div className="settings-home-group-head stagger-in" style={{ order: 30 }}>
-              <h2 className="settings-home-group-head__title">Бот и сервис</h2>
+              <h2 className="settings-home-group-head__title">Бот</h2>
             </div>
 
             <GlassCard
