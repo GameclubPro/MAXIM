@@ -620,13 +620,3 @@ body.settings-home-page-open .bottom-nav {
     width: min(calc(100% - 24px), 500px);
   }
 }
-
-@media (max-width: 520px) {
-  .settings-sections--chat-home {
-    gap: 10px;
-  }
-
-  .settings-sections-shell {
-    gap: 8px;
-  }
-}

@@ -281,8 +281,8 @@
 
 .settings-home-overview {
   display: grid;
-  gap: 14px;
-  padding: 16px;
+  gap: 16px;
+  padding: 18px;
   border-radius: 24px;
   border: 1px solid rgba(212, 225, 236, 0.94);
   background:
@@ -370,7 +370,7 @@
 .settings-home-overview__metric {
   display: grid;
   gap: 4px;
-  padding: 12px;
+  padding: 14px 12px;
   border-radius: 18px;
   border: 1px solid rgba(220, 231, 240, 0.96);
   background: rgba(255, 255, 255, 0.86);
@@ -399,15 +399,13 @@
 
 .settings-home-group-head {
   display: grid;
-  gap: 4px;
-  padding: 2px 2px 0;
+  padding: 8px 2px 0;
 }
 
 .settings-home-group-head__summary {
   margin: 0;
   color: #688198;
   font-size: 0.78rem;
-  line-height: 1.28;
 }
 
 @keyframes compact-header-pulse {
@@ -3829,7 +3827,7 @@
 }
 
 .settings-home-entry--priority .settings-section__toggle {
-  min-height: 98px;
+  min-height: 108px;
   padding: 12px;
   border-color: rgba(209, 223, 236, 0.94);
   border-radius: 22px;
@@ -3853,8 +3851,8 @@
 }
 
 .settings-home-entry--priority .settings-section__icon-badge {
-  width: 42px;
-  height: 42px;
+  width: 44px;
+  height: 44px;
   border-radius: 14px;
   box-shadow: none;
 }
