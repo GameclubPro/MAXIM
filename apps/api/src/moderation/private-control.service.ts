@@ -923,6 +923,10 @@ export class PrivateControlService {
       return;
     }
 
+    const callback = context.callbackPayload
+      ? this.parseCallbackAction(context.callbackPayload)
+      : null;
+
     try {
       if (context.callbackPayload) {
         await this.processCallback(context);
@@ -937,12 +941,26 @@ export class PrivateControlService {
         error.message.trim().length > 0
           ? error.message
           : 'Что-то пошло не так. Попробуйте ещё раз через несколько секунд.';
+      const session = await this.loadSessionForDiagnostics(context.actor.userId);
+      const badRequestResponse =
+        error instanceof BadRequestException ? error.getResponse() : null;
+      const badRequestDetails = this.extractBadRequestDetails(error);
 
       this.logger.warn(
         {
           chatId: context.chatId,
           userId: context.actor.userId,
           err: error instanceof Error ? error.message : String(error),
+          badRequestDetails,
+          ...(badRequestResponse ? { badRequestResponse } : {}),
+          callbackAction: callback?.action ?? null,
+          callbackArgs: callback?.args ?? [],
+          callbackPayload: context.callbackPayload,
+          selectedChatId: session?.selectedChatId ?? null,
+          selectedEntityType: session?.selectedEntityType ?? null,
+          screen: session?.screen ?? null,
+          pendingInput: session?.pendingInput?.kind ?? null,
+          pendingMassAction: session?.pendingMassAction?.kind ?? null,
         },
         'Private control flow failed',
       );
@@ -7912,6 +7930,69 @@ export class PrivateControlService {
     }
 
     return this.createDefaultSession();
+  }
+
+  private async loadSessionForDiagnostics(userId: string): Promise<PrivateSession | null> {
+    try {
+      return await this.loadSession(userId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to load private control session for diagnostics',
+      );
+      return null;
+    }
+  }
+
+  private extractBadRequestDetails(error: unknown): string | null {
+    if (error instanceof BadRequestException) {
+      return this.normalizeBadRequestResponse(error.getResponse());
+    }
+
+    if (error instanceof Error && error.message.trim().length > 0) {
+      return error.message.trim();
+    }
+
+    return null;
+  }
+
+  private normalizeBadRequestResponse(response: unknown): string | null {
+    if (typeof response === 'string' && response.trim().length > 0) {
+      return response.trim();
+    }
+
+    if (!response || typeof response !== 'object') {
+      return null;
+    }
+
+    const row = response as Record<string, unknown>;
+    const message = row.message;
+    if (typeof message === 'string' && message.trim().length > 0) {
+      return message.trim();
+    }
+
+    if (Array.isArray(message)) {
+      const normalized = message
+        .map((item) => this.normalizeBadRequestResponse(item))
+        .filter((item): item is string => Boolean(item));
+      if (normalized.length > 0) {
+        return normalized.join('; ');
+      }
+    }
+
+    const errorLabel = row.error;
+    if (typeof errorLabel === 'string' && errorLabel.trim().length > 0) {
+      return errorLabel.trim();
+    }
+
+    try {
+      return JSON.stringify(response);
+    } catch {
+      return null;
+    }
   }
 
   private async saveSession(userId: string, session: PrivateSession): Promise<void> {

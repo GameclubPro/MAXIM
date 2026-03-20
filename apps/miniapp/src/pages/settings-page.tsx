@@ -3419,7 +3419,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         ? 'контент сохранён'
         : 'без контента'
     : mailingBotHasContent
-      ? 'контент уже в боте'
+      ? 'контент хранится в боте'
       : 'контент в боте';
   const mailingHeaderSummary = `${mailingTargetLabel} · ${mailingContentLabel} · ${mailingDayCount} дн. · ${mailingScheduledSlots.length} слота`;
   const mailingCardStatus = editingManagedBroadcast
@@ -3458,7 +3458,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       <p className="settings-drilldown__footer-note">
         {editingManagedBroadcast
           ? 'Сохраним обновлённый календарь и CTA прямо здесь.'
-          : 'В боте останется только подтверждение отправки.'}
+          : mailingBotHasContent
+            ? 'Контент уже сохранён в личке бота. Кнопка ниже снова откроет бота для замены или подтверждения.'
+            : 'В боте останется только подтверждение отправки.'}
       </p>
       <div className="settings-drilldown__footer-actions is-single-action">
         <button
@@ -3473,7 +3475,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               ? 'Передаём в бота...'
               : editingManagedBroadcast
                 ? 'Сохранить рассылку'
-                : 'Передать в бота'}
+                : mailingBotHasContent
+                  ? 'Открыть бота'
+                  : 'Передать в бота'}
         </button>
       </div>
     </>
@@ -8188,6 +8192,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             {editingManagedBroadcast.sentCount > 0
                               ? `Уже отправлено: ${editingManagedBroadcast.sentCount} из ${editingManagedBroadcast.cycleCount}.`
                               : 'Контент уже сохранён. Здесь вы меняете календарь, охват и CTA.'}
+                          </small>
+                        </div>
+                      ) : null}
+
+                      {!editingManagedBroadcast && mailingBotHasContent ? (
+                        <div className="managed-broadcast-editor-note">
+                          <strong>Контент хранится в личке бота</strong>
+                          <small>
+                            Текст или фото уже сохранены. Здесь остаются календарь, охват и CTA,
+                            а сам контент редактируется в боте.
                           </small>
                         </div>
                       ) : null}

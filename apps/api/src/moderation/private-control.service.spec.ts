@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import {
   channelSettingsSchema,
   chatSettingsSchema,
@@ -1310,6 +1311,53 @@ describe('PrivateControlService', () => {
     } finally {
       global.fetch = originalFetch;
     }
+  });
+
+  it('logs callback and session details for bad request errors in broadcast flow', async () => {
+    const sendChannelBroadcast = jest.fn().mockRejectedValue(
+      new BadRequestException({
+        message: 'Рассылка недоступна',
+        reason: 'quota',
+      }),
+    );
+    const { service, channels, maxClient } = createHarness({
+      adminService: {
+        sendChannelBroadcast,
+      },
+    });
+    const warnSpy = jest.spyOn(
+      (service as unknown as { logger: { warn: (...args: unknown[]) => void } }).logger,
+      'warn',
+    );
+
+    await service.handleUpdate(
+      createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
+    );
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
+    await service.handleUpdate(createPrivateTextUpdate('Новый пост для канала'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+
+    expect(sendChannelBroadcast).toHaveBeenCalledTimes(1);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        badRequestDetails: 'Рассылка недоступна',
+        badRequestResponse: expect.objectContaining({
+          message: 'Рассылка недоступна',
+          reason: 'quota',
+        }),
+        callbackAction: 'broadcast_send',
+        callbackArgs: [],
+        callbackPayload: 'pc2|broadcast_send',
+        selectedChatId: channels[0].id,
+        selectedEntityType: 'channel',
+        screen: 'broadcast',
+        pendingInput: null,
+        pendingMassAction: null,
+      }),
+      'Private control flow failed',
+    );
+    expect(getLastSentText(maxClient)).toContain('Рассылка недоступна');
   });
 
   it('hands off giveaway from miniapp into private bot management flow', async () => {

@@ -961,7 +961,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     broadcastImageEnabled ||
     broadcastButtonEnabled;
   const broadcastHeaderSummary = [
-    broadcastBotHasContent ? 'контент уже в боте' : 'контент в боте',
+    broadcastBotHasContent ? 'контент хранится в боте' : 'контент в боте',
     broadcastHasButton ? 'CTA' : null,
     broadcastScheduledSlots.length > 0 ? `календарь ${broadcastSchedulePreview}` : null,
   ]
@@ -986,7 +986,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastDrilldownFooter = (
     <>
       <p className="settings-drilldown__footer-note">
-        В боте останется только подтверждение отправки.
+        {broadcastBotHasContent
+          ? 'Контент уже сохранён в личке бота. Кнопка ниже снова откроет бота для замены или подтверждения.'
+          : 'В боте останется только подтверждение отправки.'}
       </p>
       <div className="settings-drilldown__footer-actions is-single-action">
         <button
@@ -995,7 +997,11 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           onClick={handleSendChannelBroadcast}
           disabled={handoffBroadcastMutation.isPending}
         >
-          {handoffBroadcastMutation.isPending ? 'Передаём в бота...' : 'Передать в бота'}
+          {handoffBroadcastMutation.isPending
+            ? 'Передаём в бота...'
+            : broadcastBotHasContent
+              ? 'Открыть бота'
+              : 'Передать в бота'}
         </button>
       </div>
     </>
@@ -1407,6 +1413,16 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             {expandedSections.broadcast ? (
               <div className="settings-section__collapse-inner">
                 <div className="channel-broadcast-studio">
+                  {broadcastBotHasContent ? (
+                    <div className="managed-broadcast-editor-note">
+                      <strong>Контент хранится в личке бота</strong>
+                      <small>
+                        Текст или фото уже сохранены. Здесь остаются календарь и CTA, а сам
+                        контент редактируется в боте.
+                      </small>
+                    </div>
+                  ) : null}
+
                   {showBroadcastInlineReset ? (
                     <div className="mailing-inline-tools">
                       <button
