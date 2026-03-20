@@ -193,15 +193,15 @@ body.settings-drilldown-open .bottom-nav {
 }
 
 body.settings-home-page-open .bottom-nav {
-  border-color: rgba(216, 228, 239, 0.92);
+  border-color: rgba(221, 231, 239, 0.9);
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(244, 249, 253, 0.92)),
-    rgba(255, 255, 255, 0.9);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(247, 250, 252, 0.9)),
+    rgba(255, 255, 255, 0.88);
   box-shadow:
-    0 8px 16px rgba(24, 55, 83, 0.08),
-    0 1px 0 rgba(255, 255, 255, 0.46) inset;
-  backdrop-filter: blur(10px) saturate(118%);
-  -webkit-backdrop-filter: blur(10px) saturate(118%);
+    0 6px 12px rgba(24, 55, 83, 0.055),
+    0 1px 0 rgba(255, 255, 255, 0.42) inset;
+  backdrop-filter: blur(8px) saturate(112%);
+  -webkit-backdrop-filter: blur(8px) saturate(112%);
 }
 
 .bottom-nav__item.is-disabled {
@@ -352,7 +352,7 @@ body.settings-home-page-open .bottom-nav {
 }
 
 .settings-sections--chat-home {
-  gap: 12px;
+  gap: 10px;
 }
 
 .chat-card,
@@ -370,7 +370,7 @@ body.settings-home-page-open .bottom-nav {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
-  gap: 10px;
+  gap: 8px;
 }
 
 .settings-section--wide {

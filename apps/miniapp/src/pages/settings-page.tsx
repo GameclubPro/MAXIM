@@ -1942,7 +1942,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     return draft.botSpeechStyle;
   }, [draft]);
-  const hasSpeechOverrides = draft ? hasBotSpeechEditableOverrides(draft) : false;
   const pendingSpeechStyleMeta = pendingSpeechStyle
     ? BOT_SPEECH_STYLE_METADATA[pendingSpeechStyle]
     : null;
@@ -3319,12 +3318,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       : draft?.linkPolicy === 'ALLOWLIST_ONLY'
         ? `Разрешено: ${allowlistDomains.length}`
         : `${linkStagesEnabledCount}/4 ступени включено`;
-  const linksCardStatus =
-    draft?.linkPolicy === 'ALERT_ONLY'
-      ? 'Мягко'
-      : draft?.linkPolicy === 'ALLOWLIST_ONLY'
-        ? 'Список'
-        : 'Блок';
   const rulesPublishedAtLabel = formatRemovalDateTime(
     rulesDraft?.publishedAt ?? rulesQuery.data?.publishedAt ?? null,
   );
@@ -3335,11 +3328,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : rulesDraft?.text.trim()
       ? `Черновик · ${rulesDraft.text.trim().length}/${MAX_CHAT_RULES_TEXT_LENGTH}`
       : 'Не настроено';
-  const rulesCardStatus = hasPublishedRules
-    ? 'Пост'
-    : rulesDraft?.text.trim()
-      ? 'Черновик'
-      : 'Пусто';
   const greetingHeaderSummary = draft?.greetingEnabled
     ? draft?.greetingBotMessageEnabled
       ? draft?.greetingBotButtonEnabled
@@ -3347,7 +3335,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         : 'Только сообщение'
       : 'Сообщение выключено'
     : 'Выключено';
-  const greetingCardStatus = draft?.greetingEnabled ? 'Вкл' : 'Выкл';
   const duplicateStagesEnabledCount = [
     draft?.duplicateWarnEnabled,
     draft?.duplicateBanEnabled,
@@ -3356,9 +3343,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const duplicatesHeaderSummary = draft?.antiDuplicateEnabled
     ? `${duplicateStagesEnabledCount}/3 ступени включено`
     : 'Выключено';
-  const duplicatesCardStatus = draft?.antiDuplicateEnabled
-    ? `${duplicateStagesEnabledCount}/3`
-    : 'Выкл';
   const profanityStagesEnabledCount = draft?.russianProfanityFilterEnabled
     ? [
         draft?.profanityBotMessageEnabled,
@@ -3434,29 +3418,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       ? `Нужно исправить: ${requiredSubscriptionStaleCount} недоступен`
       : `${formatRequiredSubscriptionCount(requiredSubscriptionSelectedCount)} · ${requiredSubscriptionStagesEnabledCount}/4 ступени`
     : 'Выключено';
-  const requiredSubscriptionCardStatus = draft?.requiredSubscriptionEnabled
-    ? requiredSubscriptionStaleCount > 0
-      ? 'Ошибка'
-      : formatRequiredSubscriptionCount(requiredSubscriptionSelectedCount)
-    : 'Выкл';
   const profanityFilterHeaderSummary = draft?.russianProfanityFilterEnabled
     ? `${profanityStagesEnabledCount}/4 ступени включено`
     : 'Выключено';
-  const profanityCardStatus = draft?.russianProfanityFilterEnabled
-    ? `${profanityStagesEnabledCount}/4`
-    : 'Выкл';
   const commercialFilterHeaderSummary = draft?.commercialAdsFilterEnabled
     ? `${textFiltersStagesEnabledCount}/4 ступени · ${commercialSensitivityLabel.toLowerCase()}`
     : 'Выключено';
-  const commercialCardStatus = draft?.commercialAdsFilterEnabled
-    ? commercialSensitivityLabel
-    : 'Выкл';
   const thematicFiltersHeaderSummary = thematicFiltersEnabledCount
     ? `код: ${draft?.thematicCodeword?.trim() || 'не задан'} · ${thematicFiltersStagesEnabledCount}/4 ступени`
     : 'Выключено';
-  const thematicFiltersCardStatus = thematicFiltersEnabledCount
-    ? `${thematicFiltersStagesEnabledCount}/4`
-    : 'Выкл';
   const extraEnabledCount = [
     draft?.deleteSpammersEnabled,
     draft?.deleteBotMessagesEnabled,
@@ -3464,13 +3434,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   ].filter(Boolean).length;
   const extraHeaderSummary =
     extraEnabledCount > 0 ? `${extraEnabledCount} опции включено` : 'Выключено';
-  const extraCardStatus = extraEnabledCount > 0 ? `${extraEnabledCount}` : 'Выкл';
-  const limitsCardStatus = limitsRulesEnabledCount > 0 ? `${limitsRulesEnabledCount}` : 'Выкл';
-  const nightCardStatus = draft?.nightModeForceCloseEnabled
-    ? 'Закрыто'
-    : draft?.nightModeEnabled
-      ? 'Ночь'
-      : 'Выкл';
   const chatsCount = chatsQuery.data?.length ?? 0;
   const canApplyToAllChats = chatsCount > 1;
   const managedBroadcasts = managedBroadcastsQuery.data ?? [];
@@ -3492,15 +3455,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const commentsCardSummary = !draft?.commentsEnabled
     ? 'обсуждение выключено'
     : commentsTargetSummary || 'не выбрано, где бот публикует кнопку';
-  const commentsCardStatus = !draft?.commentsEnabled
-    ? 'Выкл'
-    : draft?.commentsAdminsEnabled
-      ? draft?.commentsChatBroadcastsEnabled
-        ? 'Адм+'
-        : 'Адм'
-      : draft?.commentsChatBroadcastsEnabled
-        ? 'Рассылки'
-        : 'Вкл';
   const mailingTargetLabel =
     mailingApplyToAllChats && canApplyToAllChats
       ? `Во все чаты (${chatsCount})`
@@ -3516,13 +3470,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       ? 'контент хранится в боте'
       : 'контент в боте';
   const mailingHeaderSummary = `${mailingTargetLabel} · ${mailingContentLabel} · ${mailingDayCount} дн. · ${mailingScheduledSlots.length} слота`;
-  const mailingCardStatus = editingManagedBroadcast
-    ? 'План'
-    : mailingScheduledSlots.length > 0
-      ? 'Календ'
-      : mailingApplyToAllChats && canApplyToAllChats
-        ? 'Все'
-        : 'Бот';
   const normalizedMailingButtonUrl = mailingButtonUrl.trim();
   const normalizedMailingButtonText = mailingButtonText.trim();
   const mailingButtonDraftValid =
@@ -3565,44 +3512,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       mailingBotHasContent ||
       showMailingInlineReset,
   ].filter(Boolean).length;
-  const overviewStatusLabel = isHeaderSaving
-    ? 'Сохраняем'
-    : hasPendingHeaderChanges
-      ? 'Черновик'
-      : 'Сохранено';
-  const overviewStatusTone = isHeaderSaving
-    ? 'saving'
-    : hasPendingHeaderChanges
-      ? 'draft'
-      : 'live';
   const overviewProtectionCountLabel = formatCountLabel(
     enabledProtectionCount,
-    'модуль',
-    'модуля',
-    'модулей',
-  );
-  const overviewScenarioCountLabel = formatCountLabel(
-    enabledScenarioCount,
-    'сценарий',
-    'сценария',
-    'сценариев',
+    'модуль защиты',
+    'модуля защиты',
+    'модулей защиты',
   );
   const overviewTitle =
     enabledProtectionCount > 0
-      ? enabledProtectionCount === 1
-        ? '1 модуль защиты активен'
-        : `${overviewProtectionCountLabel} защиты активны`
-      : 'Защита пока не активирована';
-  const overviewSummary = isHeaderSaving
-    ? 'Изменения применяются прямо сейчас.'
-    : hasPendingHeaderChanges
-      ? 'Есть локальные изменения, которые ещё не сохранены.'
-      : 'Экран синхронизирован с текущими настройками чата.';
-  const overviewStatusSummary = isHeaderSaving
-    ? 'идёт запись'
-    : hasPendingHeaderChanges
-      ? 'есть черновик'
-      : 'без очереди';
+      ? overviewProtectionCountLabel
+      : 'Защита выключена';
   const mailingDrilldownFooter = (
     <>
       <p className="settings-drilldown__footer-note">
@@ -3907,38 +3826,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
           />
 
           <GlassCard className="settings-home-overview stagger-in">
-            <div className="settings-home-overview__top">
-              <div className="settings-home-overview__copy">
-                <span className="settings-home-overview__eyebrow">Обзор чата</span>
-                <h2 className="settings-home-overview__title">{overviewTitle}</h2>
-                <p className="settings-home-overview__summary">{overviewSummary}</p>
-              </div>
-
-              <span
-                className={cn('settings-home-overview__status', `is-${overviewStatusTone}`)}
-                aria-label={`Статус: ${overviewStatusLabel}`}
-              >
-                {overviewStatusLabel}
-              </span>
+            <div className="settings-home-overview__copy">
+              <h2 className="settings-home-overview__title">{overviewTitle}</h2>
             </div>
 
             <div className="settings-home-overview__metrics" aria-label="Сводка по настройкам">
               <div className="settings-home-overview__metric">
                 <small>Защита</small>
                 <strong>{enabledProtectionCount}</strong>
-                <span>{overviewProtectionCountLabel}</span>
               </div>
 
               <div className="settings-home-overview__metric">
                 <small>Сценарии</small>
                 <strong>{enabledScenarioCount}</strong>
-                <span>{overviewScenarioCountLabel}</span>
-              </div>
-
-              <div className="settings-home-overview__metric">
-                <small>Статус</small>
-                <strong>{overviewStatusLabel}</strong>
-                <span>{overviewStatusSummary}</span>
               </div>
             </div>
           </GlassCard>
@@ -4039,24 +3939,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
           <div className="settings-sections-shell">
             <div className="settings-home-group-head stagger-in" style={{ order: 10 }}>
-              <span className="settings-home-group-head__eyebrow">Модерация</span>
-              <p className="settings-home-group-head__summary">
-                Автоматические защиты и санкции для сообщений.
-              </p>
+              <h2 className="settings-home-group-head__title">Модерация</h2>
             </div>
 
             <div className="settings-home-group-head stagger-in" style={{ order: 20 }}>
-              <span className="settings-home-group-head__eyebrow">Контент и рост</span>
-              <p className="settings-home-group-head__summary">
-                Публичные сценарии, вовлечение и ручные активности.
-              </p>
+              <h2 className="settings-home-group-head__title">Контент и рост</h2>
             </div>
 
             <div className="settings-home-group-head stagger-in" style={{ order: 30 }}>
-              <span className="settings-home-group-head__eyebrow">Бот и сервис</span>
-              <p className="settings-home-group-head__summary">
-                Поведение бота и сервисные защитные тумблеры.
-              </p>
+              <h2 className="settings-home-group-head__title">Бот и сервис</h2>
             </div>
 
             <GlassCard
@@ -4066,8 +3957,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Ссылки"
-                  summary={linksHeaderSummary}
-                  status={linksCardStatus}
                   icon="links"
                   tone="sky"
                   open={expandedSections.links}
@@ -4702,8 +4591,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Правила"
-                  summary={rulesHeaderSummary}
-                  status={rulesCardStatus}
                   icon="rules"
                   tone="ink"
                   open={expandedSections.rules}
@@ -4921,8 +4808,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 >
                   <SettingsSectionToggle
                     title="Опросы"
-                    summary="Голосование в отдельном посте"
-                    status="Пост"
                     icon="poll"
                     tone="ink"
                     open={expandedSections.poll}
@@ -4963,8 +4848,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 >
                   <SettingsSectionToggle
                     title="Розыгрыши"
-                    summary="Создание и управление в личке бота"
-                    status="Бот"
                     icon="gift"
                     tone="amber"
                     open={expandedSections.giveaway}
@@ -5005,8 +4888,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Приветствие"
-                  summary={greetingHeaderSummary}
-                  status={greetingCardStatus}
                   icon="greeting"
                   tone="mint"
                   open={expandedSections.greeting}
@@ -5292,8 +5173,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Мат и грубость"
-                  summary={profanityFilterHeaderSummary}
-                  status={profanityCardStatus}
                   icon="warning"
                   tone="rose"
                   open={expandedSections.profanityFilter}
@@ -5505,8 +5384,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Коммерция"
-                  summary={commercialFilterHeaderSummary}
-                  status={commercialCardStatus}
                   icon="ads"
                   tone="amber"
                   open={expandedSections.commercialFilter}
@@ -5999,8 +5876,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 >
                   <SettingsSectionToggle
                     title="Объявления по теме"
-                    summary={thematicFiltersHeaderSummary}
-                    status={thematicFiltersCardStatus}
                     icon="topic"
                     tone="sky"
                     open={expandedSections.thematicFilters}
@@ -6322,8 +6197,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Повторы"
-                  summary={duplicatesHeaderSummary}
-                  status={duplicatesCardStatus}
                   icon="repeat"
                   tone="rose"
                   open={expandedSections.duplicates}
@@ -6802,8 +6675,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Ограничения"
-                  summary={`${limitsRulesEnabledCount} ограничений активно`}
-                  status={limitsCardStatus}
                   icon="shield"
                   tone="ink"
                   open={expandedSections.limits}
@@ -7630,8 +7501,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Ночной режим"
-                  summary={nightHeaderSummary}
-                  status={nightCardStatus}
                   icon="moon"
                   tone="ink"
                   open={expandedSections.night}
@@ -8269,8 +8138,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Рассылки"
-                  summary={mailingHeaderSummary}
-                  status={mailingCardStatus}
                   icon="send"
                   tone="sky"
                   open={expandedSections.mailing}
@@ -8662,8 +8529,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Комментарии"
-                  summary={commentsCardSummary}
-                  status={commentsCardStatus}
                   icon="comments"
                   tone="mint"
                   open={expandedSections.comments}
@@ -8854,8 +8719,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Обязательная подписка"
-                  summary={requiredSubscriptionHeaderSummary}
-                  status={requiredSubscriptionCardStatus}
                   icon="shield"
                   tone="sky"
                   open={expandedSections.requiredSubscription}
@@ -9343,8 +9206,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
               <div className={cn('settings-section__head', 'settings-section__head--interactive')}>
                 <SettingsSectionToggle
                   title="Сервисные"
-                  summary={extraHeaderSummary}
-                  status={extraCardStatus}
                   icon="tools"
                   tone="amber"
                   open={expandedSections.extra}
@@ -9571,8 +9432,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             >
               <div className="settings-speech-style-card__head">
                 <div className="settings-speech-style-card__title-copy">
-                  <span className="settings-speech-style-card__eyebrow">Стиль речи</span>
-                  <h3 className="settings-speech-style-card__title">Как бот разговаривает в чате</h3>
+                  <h3 className="settings-speech-style-card__title">Стиль речи</h3>
                 </div>
               </div>
 
@@ -9603,14 +9463,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   </button>
                 ))}
               </div>
-
-              {!activeSpeechStyle ? (
-                <div className="settings-speech-style-card__status">
-                  <span className="chip">
-                    {hasSpeechOverrides ? 'Свои тексты' : 'Стиль не выбран'}
-                  </span>
-                </div>
-              ) : null}
             </GlassCard>
           </div>
         </section>

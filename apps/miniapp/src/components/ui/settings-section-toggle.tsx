@@ -22,7 +22,7 @@ export type SettingsSectionTone = 'sky' | 'mint' | 'amber' | 'rose' | 'ink';
 type SettingsSectionToggleProps = {
   title: string;
   summary?: string;
-  status: string;
+  status?: string;
   icon: SettingsSectionIconName;
   tone: SettingsSectionTone;
   open: boolean;
@@ -343,11 +343,17 @@ export function SettingsSectionToggle({
 }: SettingsSectionToggleProps) {
   const trimmedSummary = summary?.trim() ?? '';
   const hasSummary = trimmedSummary.length > 0;
+  const trimmedStatus = status?.trim() ?? '';
+  const hasStatus = trimmedStatus.length > 0;
 
   return (
     <button
       type="button"
-      className={cn('settings-section__toggle', !hasSummary && 'is-compact')}
+      className={cn(
+        'settings-section__toggle',
+        !hasSummary && 'is-compact',
+        !hasStatus && 'is-stateless',
+      )}
       aria-expanded={open}
       aria-controls={controls}
       onClick={onClick}
@@ -356,7 +362,9 @@ export function SettingsSectionToggle({
         <span className={cn('settings-section__icon-badge', `is-${tone}`)} aria-hidden>
           <SettingsSectionIcon name={icon} />
         </span>
-        <span className={cn('settings-section__status-chip', `is-${tone}`)}>{status}</span>
+        {hasStatus ? (
+          <span className={cn('settings-section__status-chip', `is-${tone}`)}>{trimmedStatus}</span>
+        ) : null}
       </span>
 
       <span className="settings-section__toggle-main">
