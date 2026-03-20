@@ -375,7 +375,6 @@ export function SettingsSectionToggle({
         'settings-section__toggle',
         !hasSummary && 'is-compact',
         !hasStatus && 'is-stateless',
-        hasStatus && 'has-status',
       )}
       aria-expanded={open}
       aria-controls={controls}
@@ -385,30 +384,9 @@ export function SettingsSectionToggle({
         <span className={cn('settings-section__icon-badge', `is-${tone}`)} aria-hidden>
           <SettingsSectionIcon name={icon} />
         </span>
-
-        <span className="settings-section__toggle-trailing" aria-hidden>
-          {hasStatus ? (
-            <span className={cn('settings-section__status-chip', `is-${tone}`)}>
-              {trimmedStatus}
-            </span>
-          ) : null}
-          <span className={cn('settings-section__chevron', open && 'is-open')}>
-            <svg
-              className="settings-section__chevron-icon"
-              viewBox="0 0 20 20"
-              fill="none"
-              focusable="false"
-            >
-              <path
-                d="M5.5 7.75L10 12.25L14.5 7.75"
-                stroke="currentColor"
-                strokeWidth="2.2"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </span>
-        </span>
+        {hasStatus ? (
+          <span className={cn('settings-section__status-chip', `is-${tone}`)}>{trimmedStatus}</span>
+        ) : null}
       </span>
 
       <span className="settings-section__toggle-main">
