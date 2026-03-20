@@ -5,6 +5,7 @@ import {
   broadcastHandoffResponseSchema,
   broadcastHandoffStateSchema,
   managedGiveawayHandoffRequestSchema,
+  type BroadcastTextFormat,
   type BroadcastHandoffState,
   type BroadcastHandoffResponse,
   type BroadcastScheduleMode,
@@ -113,6 +114,7 @@ type PendingMassAction =
 
 type PrivateBroadcastDraft = {
   text: string;
+  textFormat: BroadcastTextFormat;
   applyToAllChats: boolean;
   buttonEnabled: boolean;
   buttonUrl: string;
@@ -191,6 +193,22 @@ type PrivateContext = {
   text: string;
   callbackId: string | null;
   callbackPayload: string | null;
+};
+
+type IncomingMessageMarkup = {
+  from: number;
+  length: number;
+  type:
+    | 'emphasized'
+    | 'heading'
+    | 'link'
+    | 'monospaced'
+    | 'strikethrough'
+    | 'strong'
+    | 'underline'
+    | 'user_mention';
+  url: string | null;
+  userLink: string | null;
 };
 
 type PrivateView = {
@@ -876,6 +894,7 @@ const SECTION_CARD_FIELDS: Record<
 
 const DEFAULT_BROADCAST_DRAFT: PrivateBroadcastDraft = {
   text: '',
+  textFormat: 'plain',
   applyToAllChats: false,
   buttonEnabled: false,
   buttonUrl: '',
@@ -3462,7 +3481,11 @@ export class PrivateControlService {
       }
 
       case 'broadcast_text': {
-        session.broadcastDraft.text = rawText;
+        const formattedText = this.extractIncomingFormattedText(context.update, rawText);
+        session.broadcastDraft.text = formattedText;
+        session.broadcastDraft.textFormat = this.shouldUseMarkdown(formattedText)
+          ? 'markdown'
+          : 'plain';
         session.pendingInput = null;
         session.screen = 'broadcast';
         const view = await this.renderBroadcastScreen(context, session);
@@ -3920,7 +3943,8 @@ export class PrivateControlService {
   ): Promise<string> {
     this.assertSelectedEntityType(session, 'chat');
 
-    const normalizedText = rawText.trim();
+    const formattedText = this.extractIncomingFormattedText(context.update, rawText);
+    const normalizedText = formattedText.trim();
     const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
     const fileAttachment = this.extractFirstFileAttachment(context.update);
     const hasVideoAttachment = this.hasVideoAttachment(context.update);
@@ -3977,7 +4001,7 @@ export class PrivateControlService {
       imageFileName = downloaded.fileName;
     }
 
-    const nextText = normalizedText ? rawText : currentRules.text;
+    const nextText = normalizedText ? formattedText : currentRules.text;
 
     await this.adminService.updateRules(
       session.selectedChatId!,
@@ -4012,7 +4036,8 @@ export class PrivateControlService {
     session: PrivateSession,
     rawText: string,
   ): Promise<void> {
-    const normalizedText = rawText.trim();
+    const formattedText = this.extractIncomingFormattedText(context.update, rawText);
+    const normalizedText = formattedText.trim();
     const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
 
     if (!normalizedText && !imageSourceAttachment) {
@@ -4025,7 +4050,10 @@ export class PrivateControlService {
     }
 
     if (normalizedText) {
-      session.broadcastDraft.text = rawText;
+      session.broadcastDraft.text = formattedText;
+      session.broadcastDraft.textFormat = this.shouldUseMarkdown(formattedText)
+        ? 'markdown'
+        : 'plain';
     }
 
     if (imageSourceAttachment) {
@@ -7243,7 +7271,220 @@ export class PrivateControlService {
   }
 
   private shouldUseMarkdown(text: string): boolean {
-    return text.includes('**');
+    return /(?:\*\*[^*\n]+?\*\*|__[^_\n]+?__|\*[^*\n]+?\*|_[^_\n]+?_|~~[^~\n]+?~~|\+\+[^+\n]+?\+\+|`[^`\n]+`|\[[^\]\n]+\]\((?:https?:\/\/|max:\/\/)[^)]+\))/u.test(
+      text,
+    );
+  }
+
+  private extractIncomingFormattedText(update: MaxUpdate, fallbackText: string): string {
+    const messageNode = this.extractIncomingMessageNode(update);
+    const body = this.asRecord(messageNode?.body);
+    const sourceText = this.readString(body?.text ?? messageNode?.text) || fallbackText;
+    if (!sourceText) {
+      return fallbackText;
+    }
+
+    const markup = this.extractIncomingMessageMarkup(messageNode);
+    const rendered = this.renderIncomingMarkupAsMarkdown(sourceText, markup);
+    return rendered || sourceText;
+  }
+
+  private extractIncomingMessageNode(update: MaxUpdate): Record<string, unknown> | null {
+    const raw = this.asRecord(update.raw);
+    if (!raw) {
+      return null;
+    }
+
+    const data = this.asRecord(raw.data);
+    const event = this.asRecord(raw.event);
+    return (
+      this.asRecord(raw.message) ??
+      (data ? this.asRecord(data.message) : null) ??
+      (event ? this.asRecord(event.message) : null) ??
+      null
+    );
+  }
+
+  private extractIncomingMessageMarkup(messageNode: Record<string, unknown> | null): IncomingMessageMarkup[] {
+    const body = this.asRecord(messageNode?.body);
+    const rawMarkup = Array.isArray(body?.markup)
+      ? body.markup
+      : Array.isArray(messageNode?.markup)
+        ? messageNode.markup
+        : [];
+
+    return rawMarkup
+      .map((item) => this.normalizeIncomingMessageMarkup(item))
+      .filter((item): item is IncomingMessageMarkup => item !== null);
+  }
+
+  private normalizeIncomingMessageMarkup(value: unknown): IncomingMessageMarkup | null {
+    const row = this.asRecord(value);
+    if (!row) {
+      return null;
+    }
+
+    const type = this.readLowerString(row.type);
+    const from = this.readOptionalInteger(row.from);
+    const length = this.readOptionalInteger(row.length);
+    if (
+      !type ||
+      from === null ||
+      length === null ||
+      from < 0 ||
+      length <= 0 ||
+      ![
+        'emphasized',
+        'heading',
+        'link',
+        'monospaced',
+        'strikethrough',
+        'strong',
+        'underline',
+        'user_mention',
+      ].includes(type)
+    ) {
+      return null;
+    }
+
+    return {
+      from,
+      length,
+      type: type as IncomingMessageMarkup['type'],
+      url: this.readString(row.url) || null,
+      userLink: this.readString(row.user_link ?? row.userLink) || null,
+    };
+  }
+
+  private renderIncomingMarkupAsMarkdown(
+    text: string,
+    markup: IncomingMessageMarkup[],
+  ): string | null {
+    if (markup.length === 0) {
+      return null;
+    }
+
+    const chars = Array.from(text);
+    const openTags = new Map<number, Array<{ open: string; close: string; end: number }>>();
+    const closeTags = new Map<number, Array<{ close: string; start: number; end: number }>>();
+
+    for (const item of markup) {
+      const start = item.from;
+      const end = item.from + item.length;
+      if (start < 0 || end <= start || end > chars.length) {
+        continue;
+      }
+
+      const delimiters = this.resolveIncomingMarkupMarkdownDelimiters(
+        item,
+        chars.slice(start, end).join(''),
+      );
+      if (!delimiters) {
+        continue;
+      }
+
+      const openBucket = openTags.get(start) ?? [];
+      openBucket.push({
+        open: delimiters.open,
+        close: delimiters.close,
+        end,
+      });
+      openTags.set(start, openBucket);
+
+      const closeBucket = closeTags.get(end) ?? [];
+      closeBucket.push({
+        close: delimiters.close,
+        start,
+        end,
+      });
+      closeTags.set(end, closeBucket);
+    }
+
+    if (openTags.size === 0 && closeTags.size === 0) {
+      return null;
+    }
+
+    let markdown = '';
+    for (let index = 0; index < chars.length; index += 1) {
+      const closing = closeTags.get(index);
+      if (closing) {
+        closing
+          .slice()
+          .sort((left, right) => right.start - left.start || left.end - right.end)
+          .forEach((tag) => {
+            markdown += tag.close;
+          });
+      }
+
+      const opening = openTags.get(index);
+      if (opening) {
+        opening
+          .slice()
+          .sort((left, right) => right.end - left.end)
+          .forEach((tag) => {
+            markdown += tag.open;
+          });
+      }
+
+      markdown += this.escapeMarkdownText(chars[index] ?? '');
+    }
+
+    const trailing = closeTags.get(chars.length);
+    if (trailing) {
+      trailing
+        .slice()
+        .sort((left, right) => right.start - left.start || left.end - right.end)
+        .forEach((tag) => {
+          markdown += tag.close;
+        });
+    }
+
+    return markdown;
+  }
+
+  private resolveIncomingMarkupMarkdownDelimiters(
+    markup: IncomingMessageMarkup,
+    visibleText: string,
+  ): { open: string; close: string } | null {
+    switch (markup.type) {
+      case 'strong':
+      case 'heading':
+        return { open: '**', close: '**' };
+      case 'emphasized':
+        return { open: '_', close: '_' };
+      case 'underline':
+        return { open: '++', close: '++' };
+      case 'strikethrough':
+        return { open: '~~', close: '~~' };
+      case 'monospaced':
+        return visibleText.includes('\n') ? null : { open: '`', close: '`' };
+      case 'link':
+        return markup.url
+          ? {
+              open: '[',
+              close: `](${markup.url})`,
+            }
+          : null;
+      case 'user_mention': {
+        const mentionTarget = markup.userLink
+          ? markup.userLink.startsWith('max://')
+            ? markup.userLink
+            : `https://max.ru/${markup.userLink}`
+          : null;
+        return mentionTarget
+          ? {
+              open: '[',
+              close: `](${mentionTarget})`,
+            }
+          : null;
+      }
+      default:
+        return null;
+    }
+  }
+
+  private escapeMarkdownText(value: string): string {
+    return value.replace(/([\\`*_[\]()~+])/g, '\\$1');
   }
 
   private withDebugContext(
@@ -8731,6 +8972,7 @@ export class PrivateControlService {
 
     return {
       text: typeof row.text === 'string' ? row.text : '',
+      textFormat: row.textFormat === 'markdown' ? 'markdown' : 'plain',
       applyToAllChats: row.applyToAllChats === true,
       buttonEnabled: row.buttonEnabled === true,
       buttonUrl: typeof row.buttonUrl === 'string' ? row.buttonUrl : '',

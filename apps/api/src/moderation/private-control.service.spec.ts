@@ -41,6 +41,55 @@ function createPrivateTextUpdate(text: string): MaxUpdate {
   };
 }
 
+function createPrivateFormattedTextUpdate(
+  text: string,
+  markup: Array<{
+    type:
+      | 'emphasized'
+      | 'heading'
+      | 'link'
+      | 'monospaced'
+      | 'strikethrough'
+      | 'strong'
+      | 'underline'
+      | 'user_mention';
+    from: number;
+    length: number;
+    url?: string;
+    user_link?: string;
+  }>,
+): MaxUpdate {
+  return {
+    updateId: `upd-formatted-text-${Date.now()}`,
+    type: 'message_created',
+    message: {
+      messageId: `msg-formatted-${Date.now()}`,
+      chatId: '152517912',
+      senderId: 'user-1',
+      senderName: 'Тестовый пользователь',
+      text,
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'message_created',
+      message: {
+        body: {
+          text,
+          markup,
+        },
+        sender: {
+          user_id: 'user-1',
+          name: 'Тестовый пользователь',
+        },
+        recipient: {
+          chat_id: 152517912,
+          chat_type: 'dialog',
+        },
+      },
+    },
+  };
+}
+
 function createPrivatePhotoUpdate(): MaxUpdate {
   return {
     updateId: `upd-photo-${Date.now()}`,
@@ -1266,6 +1315,33 @@ describe('PrivateControlService', () => {
     );
   });
 
+  it('preserves incoming MAX text markup when saving rules from private bot', async () => {
+    const { service, adminService, chats } = createHarness();
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_input_prompt|text'));
+    await service.handleUpdate(
+      createPrivateFormattedTextUpdate('Жирный текст правил', [
+        {
+          type: 'strong',
+          from: 0,
+          length: 6,
+        },
+      ]),
+    );
+
+    expect(adminService.updateRules).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        text: '**Жирный** текст правил',
+        autoTextEnabled: false,
+      }),
+      'private_bot',
+    );
+  });
+
   it('does not autosave rules content without an explicit input button', async () => {
     const { service, adminService, maxClient, chats } = createHarness();
 
@@ -1437,6 +1513,37 @@ describe('PrivateControlService', () => {
       expect.objectContaining({ userId: 'user-1' }),
       expect.objectContaining({
         text: 'Новый пост для канала',
+        applyToAllChats: false,
+      }),
+      'private_bot',
+    );
+  });
+
+  it('preserves incoming MAX text markup when sending broadcast from private bot', async () => {
+    const { service, adminService, channels } = createHarness();
+
+    await service.handleUpdate(
+      createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
+    );
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
+    await service.handleUpdate(
+      createPrivateFormattedTextUpdate('Важный анонс', [
+        {
+          type: 'strong',
+          from: 0,
+          length: 6,
+        },
+      ]),
+    );
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+
+    expect(adminService.sendChannelBroadcast).toHaveBeenCalledWith(
+      channels[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        text: '**Важный** анонс',
+        textFormat: 'markdown',
         applyToAllChats: false,
       }),
       'private_bot',

@@ -4172,7 +4172,7 @@ describe('AdminService.sendChannelBroadcast', () => {
     });
   });
 
-  it('falls back to plain text when channel broadcast has no button', async () => {
+  it('preserves markdown formatting when channel broadcast has no button', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       id: 'channel-1',
@@ -4240,8 +4240,10 @@ describe('AdminService.sendChannelBroadcast', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'channel-1',
-      'Новый выпуск уже в канале.',
-      undefined,
+      '<p><strong>Новый выпуск</strong> уже в <a href="https://max.ru/channel/maxim">канале</a>.</p>',
+      {
+        textFormat: 'html',
+      },
       { immediate: true },
     );
   });

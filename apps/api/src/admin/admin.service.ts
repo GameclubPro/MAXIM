@@ -118,7 +118,6 @@ import {
 } from '../common/managed-poll.util';
 import {
   renderSupportedMarkdownAsHtml,
-  stripSupportedMarkdownToPlainText,
 } from '../common/max-markdown.util';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import { PrismaService } from '../prisma/prisma.service';
@@ -4486,15 +4485,10 @@ export class AdminService {
       customButtonText: payload.buttonText.trim(),
       customButtonUrl: payload.buttonUrl.trim(),
     });
-    const shouldUseRichText =
-      payload.textFormat === 'markdown' &&
-      normalizedSourceText.length > 0 &&
-      (entityType !== 'channel' || broadcastButtons.length > 0);
+    const shouldUseRichText = payload.textFormat === 'markdown' && normalizedSourceText.length > 0;
     const renderedText = shouldUseRichText
       ? renderSupportedMarkdownAsHtml(normalizedSourceText)
-      : entityType === 'channel' && payload.textFormat === 'markdown'
-        ? stripSupportedMarkdownToPlainText(normalizedSourceText)
-        : normalizedSourceText;
+      : normalizedSourceText;
     const messageText = renderedText || (payload.imageEnabled ? ' ' : '');
     const textFormat: MaxSendMessageOptions['textFormat'] = shouldUseRichText ? 'html' : undefined;
     const messageOptions =
