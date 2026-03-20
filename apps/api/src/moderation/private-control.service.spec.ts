@@ -1187,7 +1187,9 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
 
     expect(getLastUiText(maxClient)).toContain('Правила');
-    expect(getLastUiText(maxClient)).toContain('Превью: Соблюдайте правила чата.');
+    expect(getLastUiText(maxClient)).toContain('Текст правил:');
+    expect(getLastUiText(maxClient)).toContain('Соблюдайте правила чата.');
+    expect(getLastUiText(maxClient)).not.toContain('Превью:');
 
     const buttonTexts = getLastButtons(maxClient)
       .flat()
@@ -1219,11 +1221,12 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).toContain('Правила из handoff.');
   });
 
-  it('updates rules text from a private bot message', async () => {
+  it('updates rules text only after choosing the text button', async () => {
     const { service, adminService, chats } = createHarness();
 
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_input_prompt|text'));
     await service.handleUpdate(createPrivateTextUpdate('Новый текст правил'));
 
     expect(adminService.updateRules).toHaveBeenCalledWith(
@@ -1240,6 +1243,17 @@ describe('PrivateControlService', () => {
     );
   });
 
+  it('does not autosave rules content without an explicit input button', async () => {
+    const { service, adminService, maxClient, chats } = createHarness();
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+    await service.handleUpdate(createPrivateTextUpdate('Новый текст правил'));
+
+    expect(adminService.updateRules).not.toHaveBeenCalled();
+    expect(getLastSentText(maxClient)).toContain('Нажмите «Текст» или «Фото»');
+  });
+
   it('updates rules photo from image and image-file messages in private bot', async () => {
     const { service, adminService, chats } = createHarness({
       rules: createRules({
@@ -1251,7 +1265,9 @@ describe('PrivateControlService', () => {
     try {
       await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
       await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_input_prompt|photo'));
       await service.handleUpdate(createPrivatePhotoUpdate());
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_input_prompt|photo'));
       await service.handleUpdate(createPrivateImageFileUpdate());
 
       expect(adminService.updateRules).toHaveBeenNthCalledWith(
@@ -1281,25 +1297,19 @@ describe('PrivateControlService', () => {
     }
   });
 
-  it('updates rules text and photo from a single private bot message', async () => {
-    const { service, adminService, chats } = createHarness();
+  it('rejects mixed text and photo when text mode is selected', async () => {
+    const { service, adminService, maxClient, chats } = createHarness();
     const { restore } = mockImageFetch(TINY_PNG, 'image/jpeg');
 
     try {
       await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
       await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_input_prompt|text'));
       await service.handleUpdate(createPrivateTextAndPhotoUpdate('Правила + фото'));
 
-      expect(adminService.updateRules).toHaveBeenCalledWith(
-        chats[0].id,
-        expect.objectContaining({ userId: 'user-1' }),
-        expect.objectContaining({
-          text: 'Правила + фото',
-          imageMimeType: 'image/jpeg',
-          imageFileName: expect.stringContaining('private-rules-rules-photo-1'),
-          autoTextEnabled: false,
-        }),
-        'private_bot',
+      expect(adminService.updateRules).not.toHaveBeenCalled();
+      expect(getLastSentText(maxClient)).toContain(
+        'Для текста правил отправьте только текст без вложений.',
       );
     } finally {
       restore();

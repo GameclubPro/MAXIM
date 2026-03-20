@@ -1262,14 +1262,18 @@ export class PrivateControlService {
       session.screen === 'rules' &&
       session.selectedChatId &&
       session.selectedEntityType !== 'channel' &&
+      !context.text.trim().startsWith('/') &&
       (context.text.trim().length > 0 ||
         imageSourceAttachment !== null ||
         stickerAttachment !== null ||
         this.hasVideoAttachment(context.update) ||
         this.extractFirstFileAttachment(context.update) !== null)
     ) {
-      const notice = await this.captureRulesContent(context, session, context.text);
-      const view = await this.renderRulesScreen(context, session, notice);
+      const view = await this.renderRulesScreen(
+        context,
+        session,
+        'Нажмите «Текст» или «Фото», затем отправьте следующим сообщением только этот тип контента.',
+      );
       await this.respond(context, session, view, {
         callbackId: null,
         notification: null,
@@ -3416,6 +3420,7 @@ export class PrivateControlService {
       case 'rules_text': {
         const notice = await this.captureRulesContent(context, session, rawText, {
           requireText: true,
+          textOnly: true,
         });
         session.pendingInput = null;
         session.screen = 'rules';
@@ -3430,6 +3435,7 @@ export class PrivateControlService {
       case 'rules_photo': {
         const notice = await this.captureRulesContent(context, session, rawText, {
           requireImage: true,
+          imageOnly: true,
         });
         session.pendingInput = null;
         session.screen = 'rules';
@@ -3901,7 +3907,12 @@ export class PrivateControlService {
     context: PrivateContext,
     session: PrivateSession,
     rawText: string,
-    options: { requireText?: boolean; requireImage?: boolean } = {},
+    options: {
+      requireText?: boolean;
+      requireImage?: boolean;
+      textOnly?: boolean;
+      imageOnly?: boolean;
+    } = {},
   ): Promise<string> {
     this.assertSelectedEntityType(session, 'chat');
 
@@ -3918,6 +3929,14 @@ export class PrivateControlService {
 
     if (fileAttachment && !imageSourceAttachment) {
       throw new BadRequestException('Поддерживаются только фото или PNG/WebP/JPG файлом.');
+    }
+
+    if (options.textOnly && imageSourceAttachment) {
+      throw new BadRequestException('Для текста правил отправьте только текст без вложений.');
+    }
+
+    if (options.imageOnly && normalizedText) {
+      throw new BadRequestException('Для фото правил отправьте только изображение без текста.');
     }
 
     if (!normalizedText && !imageSourceAttachment) {
@@ -5306,9 +5325,6 @@ export class PrivateControlService {
       session.pendingInput?.kind === 'rules_text' || session.pendingInput?.kind === 'rules_photo'
         ? this.describeInputPrompt(session.pendingInput).title
         : null;
-    const textPreview = hasText
-      ? this.compactText(rules.text.replace(/\s+/gu, ' '), 140)
-      : 'не задан';
 
     const lines: string[] = [
       this.markdownTitle('Правила'),
@@ -5318,7 +5334,6 @@ export class PrivateControlService {
         hasPublishedPost ? 'опубликованы' : hasText || hasImage ? 'черновик' : 'не настроены'
       }`,
       `Текст: ${hasText ? `${rules.text.trim().length} симв.` : 'нет'}`,
-      `Превью: ${this.escapeMarkdown(textPreview)}`,
       `Фото: ${hasImage ? 'добавлено' : 'нет'}`,
       `Кнопка в нарушениях: ${settings.rulesAttachViolationsEnabled ? 'вкл' : 'выкл'}`,
     ];
@@ -5339,11 +5354,12 @@ export class PrivateControlService {
       lines.push('', `Статус: ${this.escapeMarkdown(notice)}`);
     }
 
+    lines.push('', 'Текст правил:');
+    lines.push(hasText ? this.escapeMarkdown(rules.text) : 'не задан');
+
     const rows: MaxMessageButton[][] = [
-      [
-        this.callbackButton('Текст', this.cb('rules_input_prompt', 'text')),
-        this.callbackButton('Фото', this.cb('rules_input_prompt', 'photo')),
-      ],
+      [this.callbackButton('Текст', this.cb('rules_input_prompt', 'text'))],
+      [this.callbackButton('Фото', this.cb('rules_input_prompt', 'photo'))],
     ];
 
     if (hasImage) {
@@ -6807,12 +6823,12 @@ export class PrivateControlService {
       case 'rules_text':
         return {
           title: 'Текст правил',
-          description: 'Отправьте текст правил следующим сообщением.',
+          description: 'Отправьте только текст правил следующим сообщением.',
         };
       case 'rules_photo':
         return {
           title: 'Фото правил',
-          description: 'Отправьте фото или PNG/WebP/JPG файлом следующим сообщением.',
+          description: 'Отправьте только фото или PNG/WebP/JPG файлом следующим сообщением.',
         };
       case 'sticker_photo':
         return {
