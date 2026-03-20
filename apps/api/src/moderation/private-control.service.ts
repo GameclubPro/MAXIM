@@ -86,6 +86,8 @@ type PendingInput =
   | { kind: 'broadcast_cycle_every_hours' }
   | { kind: 'broadcast_cycle_count' }
   | { kind: 'broadcast_photo' }
+  | { kind: 'rules_text' }
+  | { kind: 'rules_photo' }
   | { kind: 'sticker_photo' }
   | { kind: 'giveaway_title' }
   | { kind: 'giveaway_description' }
@@ -140,6 +142,7 @@ type PrivateScreen =
   | 'section'
   | 'channel_section'
   | 'domains'
+  | 'rules'
   | 'broadcast'
   | 'poll'
   | 'giveaway'
@@ -280,6 +283,7 @@ type StickerDeliveryMode = 'sticker' | 'image_variant' | 'image_fallback';
 const SESSION_TTL_SEC = 45 * 60;
 const SESSION_KEY_PREFIX = 'private-ui:v2';
 const BROADCAST_HANDOFF_START_PAYLOAD = 'broadcast_handoff';
+const RULES_HANDOFF_START_PAYLOAD = 'rules_handoff';
 const GIVEAWAY_HANDOFF_START_PAYLOAD = 'giveaway_handoff';
 const GIVEAWAY_HANDOFF_START_PREFIX = 'ggh-';
 const PAGE_SIZE_CHATS = 8;
@@ -306,6 +310,12 @@ const CHAT_ONLY_CALLBACK_ACTIONS = new Set<string>([
   'set_input',
   'section_view',
   'open_search',
+  'open_rules',
+  'rules_input_prompt',
+  'rules_clear_photo',
+  'rules_toggle_attach',
+  'rules_publish',
+  'rules_reset_publication',
   'search_jump',
   'apply_section_preview',
   'open_domains',
@@ -1136,6 +1146,36 @@ export class PrivateControlService {
     });
   }
 
+  async handoffRulesFromMiniapp(
+    sourceChatId: string,
+    user: AuthUser,
+  ): Promise<BroadcastHandoffResponse> {
+    await this.adminService.getRules(sourceChatId, user);
+
+    const session = await this.loadSession(user.userId);
+    session.selectedChatId = sourceChatId;
+    session.selectedEntityType = 'chat';
+    session.managedGiveawayId = null;
+    session.entityTab = 'chat';
+    session.uiMode = 'modern';
+    session.screen = 'rules';
+    session.section = null;
+    session.channelSection = null;
+    session.searchQuery = null;
+    session.pendingMassAction = null;
+    session.pendingInput = null;
+    session.lastScreenStack = [];
+
+    await this.saveSession(user.userId, session);
+
+    const botUrl = this.buildBotStartUrl(RULES_HANDOFF_START_PAYLOAD);
+    if (!botUrl) {
+      throw new BadRequestException('Ссылка на личный чат бота не настроена.');
+    }
+
+    return broadcastHandoffResponseSchema.parse({ botUrl });
+  }
+
   async handoffGiveawayFromMiniapp(
     sourceChatId: string,
     user: AuthUser,
@@ -1211,6 +1251,25 @@ export class PrivateControlService {
     ) {
       await this.captureBroadcastContent(context, session, context.text);
       const view = await this.renderBroadcastScreen(context, session, 'Контент сохранён.');
+      await this.respond(context, session, view, {
+        callbackId: null,
+        notification: null,
+      });
+      return;
+    }
+
+    if (
+      session.screen === 'rules' &&
+      session.selectedChatId &&
+      session.selectedEntityType !== 'channel' &&
+      (context.text.trim().length > 0 ||
+        imageSourceAttachment !== null ||
+        stickerAttachment !== null ||
+        this.hasVideoAttachment(context.update) ||
+        this.extractFirstFileAttachment(context.update) !== null)
+    ) {
+      const notice = await this.captureRulesContent(context, session, context.text);
+      const view = await this.renderRulesScreen(context, session, notice);
       await this.respond(context, session, view, {
         callbackId: null,
         notification: null,
@@ -1532,6 +1591,20 @@ export class PrivateControlService {
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Разделы настроек',
+        });
+        return;
+      }
+
+      case 'open_rules': {
+        this.assertSelectedEntityType(session, 'chat');
+        this.pushHistory(session);
+        session.screen = 'rules';
+        session.pendingInput = null;
+        session.pendingMassAction = null;
+        const view = await this.renderRulesScreen(context, session);
+        await this.respond(context, session, view, {
+          callbackId: context.callbackId,
+          notification: 'Правила чата',
         });
         return;
       }
@@ -2066,6 +2139,106 @@ export class PrivateControlService {
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Жду дату удаления',
+        });
+        return;
+      }
+
+      case 'rules_input_prompt': {
+        this.assertSelectedEntityType(session, 'chat');
+        const mode = callback.args[0] ?? '';
+        if (mode === 'text') {
+          session.pendingInput = { kind: 'rules_text' };
+        } else if (mode === 'photo') {
+          session.pendingInput = { kind: 'rules_photo' };
+        } else {
+          throw new BadRequestException('Неизвестный режим редактирования правил.');
+        }
+
+        session.screen = 'rules';
+        const view = this.renderInputPrompt(session.pendingInput);
+        await this.respond(context, session, view, {
+          callbackId: context.callbackId,
+          notification: mode === 'photo' ? 'Жду фото правил' : 'Жду текст правил',
+        });
+        return;
+      }
+
+      case 'rules_clear_photo': {
+        this.assertSelectedEntityType(session, 'chat');
+        const rules = await this.adminService.getRules(session.selectedChatId!, context.actor);
+        await this.adminService.updateRules(
+          session.selectedChatId!,
+          context.actor,
+          {
+            text: rules.text,
+            imageBase64: '',
+            imageMimeType: '',
+            imageFileName: '',
+            autoTextEnabled: false,
+          },
+          'private_bot',
+        );
+        session.screen = 'rules';
+        const view = await this.renderRulesScreen(context, session, 'Фото правил убрано.');
+        await this.respond(context, session, view, {
+          callbackId: context.callbackId,
+          notification: 'Фото убрано',
+        });
+        return;
+      }
+
+      case 'rules_toggle_attach': {
+        this.assertSelectedEntityType(session, 'chat');
+        const current = await this.adminService.getSettings(session.selectedChatId!, context.actor);
+        const nextSettings: ChatSettings = {
+          ...current,
+          rulesAttachViolationsEnabled: !current.rulesAttachViolationsEnabled,
+        };
+        await this.adminService.updateSettings(
+          session.selectedChatId!,
+          context.actor,
+          nextSettings,
+          'private_bot',
+        );
+        session.screen = 'rules';
+        const view = await this.renderRulesScreen(
+          context,
+          session,
+          nextSettings.rulesAttachViolationsEnabled
+            ? 'Кнопка «Правила» включена.'
+            : 'Кнопка «Правила» выключена.',
+        );
+        await this.respond(context, session, view, {
+          callbackId: context.callbackId,
+          notification: nextSettings.rulesAttachViolationsEnabled ? 'Кнопка включена' : 'Кнопка выключена',
+        });
+        return;
+      }
+
+      case 'rules_publish': {
+        this.assertSelectedEntityType(session, 'chat');
+        await this.adminService.publishRules(session.selectedChatId!, context.actor, 'private_bot');
+        session.screen = 'rules';
+        const view = await this.renderRulesScreen(context, session, 'Правила опубликованы.');
+        await this.respond(context, session, view, {
+          callbackId: context.callbackId,
+          notification: 'Правила опубликованы',
+        });
+        return;
+      }
+
+      case 'rules_reset_publication': {
+        this.assertSelectedEntityType(session, 'chat');
+        await this.adminService.resetPublishedRules(
+          session.selectedChatId!,
+          context.actor,
+          'private_bot',
+        );
+        session.screen = 'rules';
+        const view = await this.renderRulesScreen(context, session, 'Публикация правил сброшена.');
+        await this.respond(context, session, view, {
+          callbackId: context.callbackId,
+          notification: 'Публикация сброшена',
         });
         return;
       }
@@ -2954,6 +3127,15 @@ export class PrivateControlService {
           return;
         }
 
+        if (session.screen === 'rules') {
+          const view = await this.renderRulesScreen(context, session);
+          await this.respond(context, session, view, {
+            callbackId: context.callbackId,
+            notification: 'Отменено',
+          });
+          return;
+        }
+
         if (session.screen === 'manual_actions') {
           const view = this.renderManualActionsScreen(session.manualTargetUserId);
           await this.respond(context, session, view, {
@@ -3059,6 +3241,15 @@ export class PrivateControlService {
 
       if (session.screen === 'domains') {
         const view = await this.renderDomainsScreen(context, session);
+        await this.respond(context, session, view, {
+          callbackId: null,
+          notification: null,
+        });
+        return;
+      }
+
+      if (session.screen === 'rules') {
+        const view = await this.renderRulesScreen(context, session);
         await this.respond(context, session, view, {
           callbackId: null,
           notification: null,
@@ -3215,6 +3406,34 @@ export class PrivateControlService {
         session.pendingInput = null;
         session.screen = 'domains';
         const view = await this.renderDomainsScreen(context, session);
+        await this.respond(context, session, view, {
+          callbackId: null,
+          notification: null,
+        });
+        return;
+      }
+
+      case 'rules_text': {
+        const notice = await this.captureRulesContent(context, session, rawText, {
+          requireText: true,
+        });
+        session.pendingInput = null;
+        session.screen = 'rules';
+        const view = await this.renderRulesScreen(context, session, notice);
+        await this.respond(context, session, view, {
+          callbackId: null,
+          notification: null,
+        });
+        return;
+      }
+
+      case 'rules_photo': {
+        const notice = await this.captureRulesContent(context, session, rawText, {
+          requireImage: true,
+        });
+        session.pendingInput = null;
+        session.screen = 'rules';
+        const view = await this.renderRulesScreen(context, session, notice);
         await this.respond(context, session, view, {
           callbackId: null,
           notification: null,
@@ -3676,6 +3895,89 @@ export class PrivateControlService {
     };
 
     await this.adminService.updateChannelSettings(chatId, actor, nextSettings, 'private_bot');
+  }
+
+  private async captureRulesContent(
+    context: PrivateContext,
+    session: PrivateSession,
+    rawText: string,
+    options: { requireText?: boolean; requireImage?: boolean } = {},
+  ): Promise<string> {
+    this.assertSelectedEntityType(session, 'chat');
+
+    const normalizedText = rawText.trim();
+    const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
+    const fileAttachment = this.extractFirstFileAttachment(context.update);
+    const hasVideoAttachment = this.hasVideoAttachment(context.update);
+
+    if (hasVideoAttachment) {
+      throw new BadRequestException(
+        'Видео в правилах не поддерживается. Отправьте текст или изображение.',
+      );
+    }
+
+    if (fileAttachment && !imageSourceAttachment) {
+      throw new BadRequestException('Поддерживаются только фото или PNG/WebP/JPG файлом.');
+    }
+
+    if (!normalizedText && !imageSourceAttachment) {
+      throw new BadRequestException('Отправьте текст, фото или PNG/WebP/JPG файлом.');
+    }
+
+    if (options.requireText && !normalizedText) {
+      throw new BadRequestException('Отправьте текст правил следующим сообщением.');
+    }
+
+    if (options.requireImage && !imageSourceAttachment) {
+      if (hasVideoAttachment) {
+        throw new BadRequestException('Нужно изображение, не видео.');
+      }
+      if (fileAttachment) {
+        throw new BadRequestException('Нужен PNG/WebP/JPG файлом или обычное фото.');
+      }
+      throw new BadRequestException('Отправьте фото или PNG/WebP/JPG файлом.');
+    }
+
+    const currentRules = await this.adminService.getRules(session.selectedChatId!, context.actor);
+    let imageBase64 = currentRules.imageBase64;
+    let imageMimeType = currentRules.imageMimeType;
+    let imageFileName = currentRules.imageFileName;
+
+    if (imageSourceAttachment) {
+      const downloaded = await this.downloadImageSourceAttachment(
+        imageSourceAttachment,
+        'private-rules',
+      );
+      imageBase64 = downloaded.base64;
+      imageMimeType = downloaded.mimeType;
+      imageFileName = downloaded.fileName;
+    }
+
+    const nextText = normalizedText ? rawText : currentRules.text;
+
+    await this.adminService.updateRules(
+      session.selectedChatId!,
+      context.actor,
+      {
+        text: nextText,
+        imageBase64,
+        imageMimeType,
+        imageFileName,
+        autoTextEnabled: false,
+      },
+      'private_bot',
+    );
+
+    session.pendingInput = null;
+    session.screen = 'rules';
+
+    if (normalizedText && imageSourceAttachment) {
+      return 'Текст и фото правил обновлены.';
+    }
+    if (imageSourceAttachment) {
+      return 'Фото правил обновлено.';
+    }
+    return 'Текст правил обновлён.';
   }
 
   private async captureBroadcastContent(
@@ -4476,6 +4778,9 @@ export class PrivateControlService {
     if (session.screen === 'domains') {
       return this.renderDomainsScreen(context, session);
     }
+    if (session.screen === 'rules') {
+      return this.renderRulesScreen(context, session);
+    }
     if (session.screen === 'broadcast') {
       return this.renderBroadcastScreen(context, session);
     }
@@ -4629,20 +4934,21 @@ export class PrivateControlService {
     const rows: MaxMessageButton[][] = [
       [
         this.callbackButton('Настройки', this.cb('open_settings_hub')),
+        this.callbackButton('Правила', this.cb('open_rules')),
+      ],
+      [
         this.callbackButton('Рассылка', this.cb('open_broadcast')),
-      ],
-      [
         this.callbackButton('Опрос', this.cb('open_poll')),
+      ],
+      [
         this.callbackButton('Розыгрыш', this.cb('open_giveaway')),
-      ],
-      [
         this.callbackButton('События', this.cb('open_events')),
-        this.callbackButton('Статистика', this.cb('open_logs')),
       ],
       [
+        this.callbackButton('Статистика', this.cb('open_logs')),
         this.callbackButton('Поиск', this.cb('open_search')),
-        this.callbackButton('Ручной бан', this.cb('open_manual_users')),
       ],
+      [this.callbackButton('Ручной бан', this.cb('open_manual_users'))],
       [this.callbackButton('Стикер из фото', this.cb('sticker_photo_prompt'), 'positive')],
       [this.callbackButton('Сменить чат', this.cb('change_chat'))],
     ];
@@ -4799,16 +5105,17 @@ export class PrivateControlService {
       ],
       [
         this.callbackButton('Ещё', this.cb('open_section', 'extra')),
+        this.callbackButton('Правила', this.cb('open_rules')),
+      ],
+      [
         this.callbackButton('Рассылка', this.cb('open_broadcast')),
-      ],
-      [
         this.callbackButton('Опрос', this.cb('open_poll')),
-        this.callbackButton('Розыгрыш', this.cb('open_giveaway')),
       ],
       [
+        this.callbackButton('Розыгрыш', this.cb('open_giveaway')),
         this.callbackButton('Нарушения', this.cb('open_events')),
-        this.callbackButton('Статистика', this.cb('open_logs')),
       ],
+      [this.callbackButton('Статистика', this.cb('open_logs'))],
       [this.callbackButton('Стикер из фото', this.cb('sticker_photo_prompt'), 'positive')],
       [this.callbackButton('Ручной бан', this.cb('open_manual_users'))],
       [this.callbackButton('Другой чат', this.cb('change_chat'))],
@@ -4963,6 +5270,119 @@ export class PrivateControlService {
     } else {
       rows.push([this.callbackButton('⬅️ К разделу «Ссылки»', this.cb('open_section', 'links'))]);
     }
+    rows.push(...this.buildFooterButtons());
+
+    return {
+      text: lines.join('\n'),
+      options: {
+        buttons: rows,
+      },
+    };
+  }
+
+  private async renderRulesScreen(
+    context: PrivateContext,
+    session: PrivateSession,
+    notice: string | null = null,
+  ): Promise<PrivateView> {
+    if (!session.selectedChatId) {
+      return this.renderChatSelection(context, session);
+    }
+
+    if (session.selectedEntityType === 'channel') {
+      return this.renderChannelHomeScreen(context, session);
+    }
+
+    const [rules, settings, chatTitle] = await Promise.all([
+      this.adminService.getRules(session.selectedChatId, context.actor),
+      this.adminService.getSettings(session.selectedChatId, context.actor),
+      this.resolveManagedEntityTitle(context.actor, 'chat', session.selectedChatId),
+    ]);
+
+    const hasText = rules.text.trim().length > 0;
+    const hasImage = rules.imageBase64.trim().length > 0;
+    const hasPublishedPost = Boolean(rules.publishedMessageId || rules.publishedUrl);
+    const waitingLabel =
+      session.pendingInput?.kind === 'rules_text' || session.pendingInput?.kind === 'rules_photo'
+        ? this.describeInputPrompt(session.pendingInput).title
+        : null;
+    const textPreview = hasText
+      ? this.compactText(rules.text.replace(/\s+/gu, ' '), 140)
+      : 'не задан';
+
+    const lines: string[] = [
+      this.markdownTitle('Правила'),
+      '',
+      `Чат: ${this.escapeMarkdown(chatTitle)}`,
+      `Статус: ${
+        hasPublishedPost ? 'опубликованы' : hasText || hasImage ? 'черновик' : 'не настроены'
+      }`,
+      `Текст: ${hasText ? `${rules.text.trim().length} симв.` : 'нет'}`,
+      `Превью: ${this.escapeMarkdown(textPreview)}`,
+      `Фото: ${hasImage ? 'добавлено' : 'нет'}`,
+      `Кнопка в нарушениях: ${settings.rulesAttachViolationsEnabled ? 'вкл' : 'выкл'}`,
+    ];
+
+    if (rules.publishedAt) {
+      lines.push(`Опубликовано: ${this.formatIsoDate(rules.publishedAt)}`);
+    }
+
+    if (rules.publishedUrl) {
+      lines.push(`Ссылка: ${rules.publishedUrl}`);
+    }
+
+    if (waitingLabel) {
+      lines.push(`Жду: ${waitingLabel}`);
+    }
+
+    if (notice) {
+      lines.push('', `Статус: ${this.escapeMarkdown(notice)}`);
+    }
+
+    const rows: MaxMessageButton[][] = [
+      [
+        this.callbackButton('Текст', this.cb('rules_input_prompt', 'text')),
+        this.callbackButton('Фото', this.cb('rules_input_prompt', 'photo')),
+      ],
+    ];
+
+    if (hasImage) {
+      rows.push([this.callbackButton('Убрать фото', this.cb('rules_clear_photo'), 'negative')]);
+    }
+
+    rows.push([
+      this.callbackButton(
+        `${settings.rulesAttachViolationsEnabled ? '✅' : '⬜'} Кнопка "Правила" в нарушениях`,
+        this.cb('rules_toggle_attach'),
+      ),
+    ]);
+
+    if (rules.publishedUrl) {
+      rows.push([
+        {
+          type: 'link',
+          text: 'Открыть пост',
+          url: rules.publishedUrl,
+        },
+      ]);
+    }
+
+    rows.push([this.callbackButton('Опубликовать', this.cb('rules_publish'), 'positive')]);
+
+    if (hasPublishedPost) {
+      rows.push([
+        this.callbackButton(
+          'Сбросить публикацию',
+          this.cb('rules_reset_publication'),
+          'negative',
+        ),
+      ]);
+    }
+
+    rows.push([
+      this.callbackButton('⬅️ Назад', this.cb('back')),
+      this.callbackButton('Главный экран', this.cb('home')),
+    ]);
     rows.push(...this.buildFooterButtons());
 
     return {
@@ -6383,6 +6803,16 @@ export class PrivateControlService {
         return {
           title: 'Фото для рассылки',
           description: 'Отправьте фото следующим сообщением. Бот добавит его в черновик.',
+        };
+      case 'rules_text':
+        return {
+          title: 'Текст правил',
+          description: 'Отправьте текст правил следующим сообщением.',
+        };
+      case 'rules_photo':
+        return {
+          title: 'Фото правил',
+          description: 'Отправьте фото или PNG/WebP/JPG файлом следующим сообщением.',
         };
       case 'sticker_photo':
         return {
@@ -8200,6 +8630,8 @@ export class PrivateControlService {
       'broadcast_cycle_every_hours',
       'broadcast_cycle_count',
       'broadcast_photo',
+      'rules_text',
+      'rules_photo',
       'sticker_photo',
       'giveaway_title',
       'giveaway_description',
@@ -8348,6 +8780,7 @@ export class PrivateControlService {
       value === 'section' ||
       value === 'channel_section' ||
       value === 'domains' ||
+      value === 'rules' ||
       value === 'broadcast' ||
       value === 'poll' ||
       value === 'giveaway' ||

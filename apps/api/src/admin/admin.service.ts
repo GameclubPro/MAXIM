@@ -1895,7 +1895,12 @@ export class AdminService {
     return this.mapChatRules(hydratedRules);
   }
 
-  async updateRules(chatId: string, user: AuthUser, body: unknown): Promise<ChatRules> {
+  async updateRules(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ChatRules> {
     await this.assertChatAdmin(chatId, user.userId, 'chat');
     await this.ensureEntityType(chatId, user.userId, 'chat');
 
@@ -1935,7 +1940,7 @@ export class AdminService {
           autoTextEnabled: normalizedDraft.autoTextEnabled,
           hasImage: Boolean(normalizedDraft.imageBase64),
           textLength: normalizedDraft.text.length,
-          source: 'miniapp',
+          source,
         },
       },
     });
@@ -1944,7 +1949,11 @@ export class AdminService {
     return this.mapChatRules(rules);
   }
 
-  async publishRules(chatId: string, user: AuthUser): Promise<PublishChatRulesResult> {
+  async publishRules(
+    chatId: string,
+    user: AuthUser,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<PublishChatRulesResult> {
     await this.assertChatAdmin(chatId, user.userId, 'chat');
     await this.ensureEntityType(chatId, user.userId, 'chat');
 
@@ -2019,7 +2028,7 @@ export class AdminService {
           url: published.url,
           publishedAt: publishedAt.toISOString(),
           hasImage: Boolean(imagePayload),
-          source: 'miniapp',
+          source,
         },
       },
     });
@@ -2040,7 +2049,11 @@ export class AdminService {
     });
   }
 
-  async resetPublishedRules(chatId: string, user: AuthUser): Promise<ChatRules> {
+  async resetPublishedRules(
+    chatId: string,
+    user: AuthUser,
+    source: AdminActionSource = 'miniapp',
+  ): Promise<ChatRules> {
     await this.assertChatAdmin(chatId, user.userId, 'chat');
     await this.ensureEntityType(chatId, user.userId, 'chat');
 
@@ -2077,7 +2090,7 @@ export class AdminService {
         payload: {
           deletedPost: Boolean(publishedMessageId),
           messageId: publishedMessageId || null,
-          source: 'miniapp',
+          source,
         },
       },
     });

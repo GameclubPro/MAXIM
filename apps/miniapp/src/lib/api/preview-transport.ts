@@ -1491,6 +1491,10 @@ async function handleChatRequest(
     }
   }
 
+  if (tail[0] === 'rules' && tail[1] === 'handoff' && method === 'POST') {
+    return createBroadcastHandoffResponse();
+  }
+
   if (tail[0] === 'poll' && tail.length === 1) {
     if (method === 'GET') {
       return cloneJson(state.chatPoll);

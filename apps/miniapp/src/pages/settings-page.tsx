@@ -50,6 +50,7 @@ import {
   getRules,
   getSettingsScreen,
   handoffBroadcast,
+  handoffRules,
   publishRules,
   removeDomain,
   resolveRequiredSubscriptionChannel,
@@ -1720,22 +1721,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }, [draft, settingsQuery.data]);
 
   useEffect(() => {
-    if (!rulesQuery.data || rulesDraft) {
+    if (!rulesQuery.data) {
       return;
     }
 
-    setRulesDraft(
-      chatRulesSchema.parse({
-        ...rulesQuery.data,
-        autoTextEnabled: false,
-        text: rulesQuery.data.autoTextEnabled ? '' : rulesQuery.data.text,
-      }),
-    );
+    setRulesDraft(chatRulesSchema.parse(rulesQuery.data));
     setRulesAutoFillEnabled(false);
     setRulesAutoFillSeedText(null);
     setRulesTextError('');
     setRulesImageError('');
-  }, [rulesDraft, rulesQuery.data]);
+  }, [rulesQuery.data]);
 
   useEffect(() => {
     if (!scheduleDomain) {
@@ -2107,6 +2102,25 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось открыть сбор контента',
+        description: formatApiError(error),
+      });
+    },
+  });
+
+  const handoffRulesMutation = useMutation({
+    mutationFn: () => handoffRules(api, chatId ?? ''),
+    onSuccess: (result) => {
+      pushToast({
+        tone: 'info',
+        title: 'Открываем личный чат бота',
+        description: 'Текст, фото, публикация и кнопка нарушений теперь управляются там.',
+      });
+      openMaxBotLink(result.botUrl);
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось открыть правила в боте',
         description: formatApiError(error),
       });
     },
@@ -4607,187 +4621,65 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     Открыть пост
                                   </a>
                                 ) : null}
-                                {hasPublishedRules ? (
-                                  <button
-                                    type="button"
-                                    className="button button--ghost rules-link-row__reset"
-                                    onClick={handleResetPublishedRules}
-                                    disabled={isResettingPublishedRules}
-                                  >
-                                    {isResettingPublishedRules ? 'Сбрасываем...' : 'Сбросить'}
-                                  </button>
-                                ) : null}
                               </div>
-                            </div>
-
-                            {draft ? (
-                              <div className="settings-native-toggle">
-                                <div className="settings-native-toggle__row">
-                                  <span className="settings-native-toggle__title">
-                                    Показывать кнопку «Правила» в сообщениях о нарушениях
-                                  </span>
-
-                                  <label
-                                    className="settings-native-switch"
-                                    aria-label="Показывать кнопку Правила в сообщениях о нарушениях"
-                                  >
-                                    <input
-                                      type="checkbox"
-                                      checked={draft.rulesAttachViolationsEnabled}
-                                      onChange={(event) =>
-                                        setFieldValue(
-                                          'rulesAttachViolationsEnabled',
-                                          event.target.checked,
-                                        )
-                                      }
-                                    />
-                                    <span className="toggle-switch" aria-hidden>
-                                      <span className="toggle-switch__thumb" />
-                                    </span>
-                                  </label>
-                                </div>
-                                {!hasPublishedRules ? (
-                                  <p className="settings-native-toggle__hint">
-                                    Кнопка начнет показываться после публикации правил.
-                                  </p>
-                                ) : null}
-                              </div>
-                            ) : null}
-
-                            <div
-                              className={cn(
-                                'field settings-text-field mailing-message-field',
-                                'rules-editor-field',
-                                rulesTextError && 'field--error',
-                              )}
-                            >
-                              <div className="mailing-message-field__meta rules-editor-field__meta">
-                                <span className="rules-editor-field__title-group">
-                                  <label className="field__label" htmlFor="rules-text">
-                                    Текст правил
-                                  </label>
-                                  <span className="chip">
-                                    {rulesDraft.text.length}/{MAX_CHAT_RULES_TEXT_LENGTH}
-                                  </span>
-                                </span>
-                                <div className="rules-editor-field__meta-actions">
-                                  <label className="rules-inline-toggle">
-                                    <span className="rules-inline-toggle__label">
-                                      Заполнить по настройкам
-                                    </span>
-                                    <span
-                                      className="settings-native-switch"
-                                      aria-label="Заполнить текст правил по настройкам"
-                                    >
-                                      <input
-                                        type="checkbox"
-                                        checked={rulesAutoFillEnabled}
-                                        onChange={(event) =>
-                                          handleRulesAutoTextToggle(event.target.checked)
-                                        }
-                                      />
-                                      <span className="toggle-switch" aria-hidden>
-                                        <span className="toggle-switch__thumb" />
-                                      </span>
-                                    </span>
-                                  </label>
-                                </div>
-                              </div>
-                              <textarea
-                                id="rules-text"
-                                rows={7}
-                                value={rulesDraft.text}
-                                onChange={(event) => setRulesFieldValue('text', event.target.value)}
-                                placeholder="Правила чата"
-                              />
-                              {rulesTextError ? (
-                                <small className="field__hint">{rulesTextError}</small>
-                              ) : rulesAutoFillEnabled ? (
-                                <small className="field__hint rules-editor-field__hint">
-                                  Текст уже подставлен по текущим настройкам. Дальше его можно
-                                  редактировать вручную.
-                                </small>
-                              ) : null}
                             </div>
 
                             <div
                               className={cn(
                                 'rules-media-card',
                                 Boolean(rulesDraft.imageBase64) && 'is-enabled',
-                                rulesImageError && 'field--error',
                               )}
                             >
                               <div className="rules-media-card__head">
                                 <div className="rules-media-card__title-wrap">
-                                  <span className="rules-media-card__title">Картинка</span>
+                                  <span className="rules-media-card__title">
+                                    Редактирование в чат-боте
+                                  </span>
                                   <small className="rules-media-card__subtitle">
-                                    Одна картинка до 1 MB. Необязательно.
+                                    Текст, фото, публикация и кнопку «Правила» в сообщениях о
+                                    нарушениях теперь нужно настраивать в личном чате бота.
                                   </small>
-                                </div>
-
-                                <div className="rules-media-card__actions">
-                                  <label className="rules-upload-button">
-                                    <input
-                                      type="file"
-                                      accept="image/*"
-                                      onChange={(event) => {
-                                        void handleRulesImageChange(
-                                          event.target.files?.[0] ?? null,
-                                        );
-                                        event.currentTarget.value = '';
-                                      }}
-                                    />
-                                    {rulesDraft.imageBase64 ? 'Заменить' : 'Добавить'}
-                                  </label>
-                                  {rulesDraft.imageBase64 ? (
-                                    <button
-                                      type="button"
-                                      className="rules-remove-button"
-                                      onClick={clearRulesImage}
-                                    >
-                                      Убрать
-                                    </button>
-                                  ) : null}
                                 </div>
                               </div>
 
-                              {rulesImageError ? (
-                                <small className="field__hint">{rulesImageError}</small>
-                              ) : rulesDraft.imageFileName ? (
-                                <small className="field__hint">{rulesDraft.imageFileName}</small>
-                              ) : null}
+                              <small className="field__hint">
+                                Текст:{' '}
+                                {rulesDraft.text.trim()
+                                  ? `${rulesDraft.text.length} символов`
+                                  : 'не задан'}
+                              </small>
+                              <small className="field__hint">
+                                Фото:{' '}
+                                {rulesDraft.imageBase64
+                                  ? rulesDraft.imageFileName || 'прикреплено'
+                                  : 'не добавлено'}
+                              </small>
+                              <small className="field__hint">
+                                Кнопка в сообщениях о нарушениях:{' '}
+                                {draft?.rulesAttachViolationsEnabled ? 'включена' : 'выключена'}.
+                              </small>
                             </div>
 
                             <div className="rules-action-panel">
                               <div className="rules-action-panel__content">
-                                {hasRulesChanges ? (
-                                  <div className="rules-action-panel__draft-chip">
-                                    <span className="chip chip--warning">
-                                      {isSavingRules
-                                        ? 'Сохраняем черновик...'
-                                        : 'Черновик обновлён'}
-                                    </span>
-                                  </div>
-                                ) : null}
+                                <div className="rules-action-panel__draft-chip">
+                                  <span className="chip chip--warning">Редактирование в боте</span>
+                                </div>
                               </div>
 
                               <button
                                 type="button"
                                 className="button button--accent rules-action-panel__publish"
-                                onClick={() => void handlePublishRules()}
+                                onClick={() => handoffRulesMutation.mutate()}
                                 disabled={
-                                  !rulesDraft.text.trim() ||
-                                  isPublishingRules ||
-                                  isResettingPublishedRules ||
                                   rulesQuery.isLoading ||
-                                  Boolean(rulesQuery.error)
+                                  Boolean(rulesQuery.error) ||
+                                  handoffRulesMutation.isPending
                                 }
                               >
-                                {isPublishingRules
-                                  ? 'Публикуем...'
-                                  : isSavingRules && hasRulesChanges
-                                    ? 'Сохраняем черновик...'
-                                    : 'Опубликовать правила'}
+                                {handoffRulesMutation.isPending
+                                  ? 'Открываем бота...'
+                                  : 'Открыть в боте'}
                               </button>
                             </div>
                           </>

@@ -2,6 +2,7 @@ import { BadRequestException } from '@nestjs/common';
 import {
   channelSettingsSchema,
   chatSettingsSchema,
+  type ChatRules,
   type ManagedGiveawayDetails,
   type ManagedGiveawayWinner,
   type ManagedPoll,
@@ -62,6 +63,46 @@ function createPrivatePhotoUpdate(): MaxUpdate {
               payload: {
                 url: 'https://example.test/broadcast-photo.jpg',
                 photo_id: 'photo-1',
+              },
+            },
+          ],
+        },
+        sender: {
+          user_id: 'user-1',
+          name: 'Тестовый пользователь',
+        },
+        recipient: {
+          chat_id: 152517912,
+          chat_type: 'dialog',
+        },
+      },
+    },
+  };
+}
+
+function createPrivateTextAndPhotoUpdate(text: string): MaxUpdate {
+  return {
+    updateId: `upd-text-photo-${Date.now()}`,
+    type: 'message_created',
+    message: {
+      messageId: `msg-text-photo-${Date.now()}`,
+      chatId: '152517912',
+      senderId: 'user-1',
+      senderName: 'Тестовый пользователь',
+      text,
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'message_created',
+      message: {
+        body: {
+          text,
+          attachments: [
+            {
+              type: 'image',
+              payload: {
+                url: 'https://example.test/rules-photo.jpg',
+                photo_id: 'rules-photo-1',
               },
             },
           ],
@@ -285,6 +326,20 @@ function createPoll(overrides: Partial<ManagedPoll> = {}): ManagedPoll {
   };
 }
 
+function createRules(overrides: Partial<ChatRules> = {}): ChatRules {
+  return {
+    text: '',
+    imageBase64: '',
+    imageMimeType: '',
+    imageFileName: '',
+    autoTextEnabled: false,
+    publishedMessageId: null,
+    publishedUrl: null,
+    publishedAt: null,
+    ...overrides,
+  };
+}
+
 function createGiveawayWinner(
   overrides: Partial<ManagedGiveawayWinner> = {},
 ): ManagedGiveawayWinner {
@@ -354,6 +409,7 @@ function createHarness(
     channelSettings?: typeof defaultChannelSettings;
     adminService?: Record<string, unknown>;
     managedGiveaway?: ManagedGiveawayDetails | null;
+    rules?: ChatRules;
   } = {},
 ) {
   const chats = [
@@ -380,6 +436,8 @@ function createHarness(
     answerCallback: jest.fn().mockResolvedValue(undefined),
   };
 
+  let currentRules = overrides.rules ?? createRules();
+
   const adminService = {
     listManagedEntities: jest.fn().mockImplementation(async (_actor, entityType = 'all') => {
       if (entityType === 'channel') {
@@ -402,6 +460,41 @@ function createHarness(
     addDomain: jest.fn().mockResolvedValue(undefined),
     removeDomain: jest.fn().mockResolvedValue(undefined),
     scheduleDomainRemoval: jest.fn().mockResolvedValue(undefined),
+    getRules: jest.fn().mockImplementation(async () => currentRules),
+    updateRules: jest.fn().mockImplementation(async (_chatId, _actor, payload) => {
+      currentRules = createRules({
+        ...currentRules,
+        text: payload.text,
+        imageBase64: payload.imageBase64,
+        imageMimeType: payload.imageMimeType,
+        imageFileName: payload.imageFileName,
+        autoTextEnabled: payload.autoTextEnabled,
+      });
+      return currentRules;
+    }),
+    publishRules: jest.fn().mockImplementation(async () => {
+      currentRules = createRules({
+        ...currentRules,
+        publishedMessageId: 'mid-rules-1',
+        publishedUrl: 'https://max.ru/chats/chat-1/message/1',
+        publishedAt: new Date().toISOString(),
+      });
+      return {
+        chatId: chats[0].id,
+        messageId: currentRules.publishedMessageId!,
+        url: currentRules.publishedUrl,
+        publishedAt: currentRules.publishedAt!,
+      };
+    }),
+    resetPublishedRules: jest.fn().mockImplementation(async () => {
+      currentRules = createRules({
+        ...currentRules,
+        publishedMessageId: null,
+        publishedUrl: null,
+        publishedAt: null,
+      });
+      return currentRules;
+    }),
     sendBroadcast: jest.fn().mockResolvedValue({ targetChats: 1, sentChats: 1, failedChats: 0 }),
     sendChannelBroadcast: jest
       .fn()
@@ -1081,6 +1174,201 @@ describe('PrivateControlService', () => {
 
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|back'));
     expect(getLastEditedText(maxClient)).toContain('Разделы настроек');
+  });
+
+  it('opens the rules screen from chat home', async () => {
+    const { service, maxClient, chats } = createHarness({
+      rules: createRules({
+        text: 'Соблюдайте правила чата.',
+      }),
+    });
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+
+    expect(getLastUiText(maxClient)).toContain('Правила');
+    expect(getLastUiText(maxClient)).toContain('Превью: Соблюдайте правила чата.');
+
+    const buttonTexts = getLastButtons(maxClient)
+      .flat()
+      .map((button) => String((button as { text?: string }).text ?? ''));
+    expect(buttonTexts).toContain('Текст');
+    expect(buttonTexts).toContain('Фото');
+  });
+
+  it('hands off chat rules from miniapp into private bot rules flow', async () => {
+    const { service, maxClient, chats } = createHarness({
+      rules: createRules({
+        text: 'Правила из handoff.',
+      }),
+    });
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: chats[0].id,
+      chatTitle: chats[0].title,
+    };
+
+    const result = await service.handoffRulesFromMiniapp(chats[0].id, actor);
+    expect(result.botUrl).toBe('https://max.ru/777000_bot?start=rules_handoff');
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate('rules_handoff'));
+
+    expect(getLastSentText(maxClient)).toContain('Правила');
+    expect(getLastSentText(maxClient)).toContain('Правила из handoff.');
+  });
+
+  it('updates rules text from a private bot message', async () => {
+    const { service, adminService, chats } = createHarness();
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+    await service.handleUpdate(createPrivateTextUpdate('Новый текст правил'));
+
+    expect(adminService.updateRules).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        text: 'Новый текст правил',
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        autoTextEnabled: false,
+      }),
+      'private_bot',
+    );
+  });
+
+  it('updates rules photo from image and image-file messages in private bot', async () => {
+    const { service, adminService, chats } = createHarness({
+      rules: createRules({
+        text: 'Правила с фото.',
+      }),
+    });
+    const { restore } = mockImageFetch(TINY_PNG, 'image/png');
+
+    try {
+      await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+      await service.handleUpdate(createPrivatePhotoUpdate());
+      await service.handleUpdate(createPrivateImageFileUpdate());
+
+      expect(adminService.updateRules).toHaveBeenNthCalledWith(
+        1,
+        chats[0].id,
+        expect.objectContaining({ userId: 'user-1' }),
+        expect.objectContaining({
+          text: 'Правила с фото.',
+          imageMimeType: 'image/png',
+          imageFileName: expect.stringContaining('private-rules-photo-1'),
+        }),
+        'private_bot',
+      );
+      expect(adminService.updateRules).toHaveBeenNthCalledWith(
+        2,
+        chats[0].id,
+        expect.objectContaining({ userId: 'user-1' }),
+        expect.objectContaining({
+          text: 'Правила с фото.',
+          imageMimeType: 'image/png',
+          imageFileName: 'photo-as-file.png',
+        }),
+        'private_bot',
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it('updates rules text and photo from a single private bot message', async () => {
+    const { service, adminService, chats } = createHarness();
+    const { restore } = mockImageFetch(TINY_PNG, 'image/jpeg');
+
+    try {
+      await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+      await service.handleUpdate(createPrivateTextAndPhotoUpdate('Правила + фото'));
+
+      expect(adminService.updateRules).toHaveBeenCalledWith(
+        chats[0].id,
+        expect.objectContaining({ userId: 'user-1' }),
+        expect.objectContaining({
+          text: 'Правила + фото',
+          imageMimeType: 'image/jpeg',
+          imageFileName: expect.stringContaining('private-rules-rules-photo-1'),
+          autoTextEnabled: false,
+        }),
+        'private_bot',
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it('supports rules photo cleanup, toggle, publish, and publication reset in private bot', async () => {
+    const { service, adminService, chats } = createHarness({
+      rules: createRules({
+        text: 'Правила чата',
+        imageBase64: TINY_PNG.toString('base64'),
+        imageMimeType: 'image/png',
+        imageFileName: 'rules.png',
+      }),
+      settings: {
+        ...defaultSettings,
+        rulesAttachViolationsEnabled: false,
+      },
+    });
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_clear_photo'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_toggle_attach'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_publish'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_reset_publication'));
+
+    expect(adminService.updateRules).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        text: 'Правила чата',
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        autoTextEnabled: false,
+      }),
+      'private_bot',
+    );
+    expect(adminService.updateSettings).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({ rulesAttachViolationsEnabled: true }),
+      'private_bot',
+    );
+    expect(adminService.publishRules).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      'private_bot',
+    );
+    expect(adminService.resetPublishedRules).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      'private_bot',
+    );
+  });
+
+  it('surfaces publish error when rules text is empty', async () => {
+    const { service, maxClient, chats } = createHarness({
+      adminService: {
+        publishRules: jest.fn().mockRejectedValue(new BadRequestException('Сначала заполните текст правил.')),
+      },
+    });
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_rules'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|rules_publish'));
+
+    expect(getLastSentText(maxClient)).toContain('Сначала заполните текст правил.');
   });
 
   it('sends a channel broadcast from private control', async () => {

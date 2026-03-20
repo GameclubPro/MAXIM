@@ -4720,6 +4720,9 @@ describe('AdminService chat rules', () => {
       data: expect.objectContaining({
         chatId: 'chat-1',
         action: 'UPDATE_CHAT_RULES',
+        payload: expect.objectContaining({
+          source: 'miniapp',
+        }),
       }),
     });
 
@@ -4749,6 +4752,18 @@ describe('AdminService chat rules', () => {
       url: 'https://max.ru/chats/chat-1/message/456',
       publishedAt: expect.any(String),
     });
+    expect(prisma.auditLog.create).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          chatId: 'chat-1',
+          action: 'PUBLISH_CHAT_RULES',
+          payload: expect.objectContaining({
+            source: 'miniapp',
+          }),
+        }),
+      }),
+    );
     expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
   });
 
@@ -4810,6 +4825,108 @@ describe('AdminService chat rules', () => {
       url: null,
       publishedAt: expect.any(String),
     });
+  });
+
+  it('records private bot as the rules source in audit log payloads', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatRules.upsert.mockResolvedValue({
+      id: 'rules-1',
+      chatId: 'chat-1',
+      text: 'Правила от бота',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      autoTextEnabled: false,
+      publishedMessageId: 'mid-rules-7',
+      publishedUrl: 'https://max.ru/chats/chat-1/message/777',
+      publishedAt: new Date('2026-03-09T11:00:00.000Z'),
+      createdAt: new Date('2026-03-09T09:00:00.000Z'),
+      updatedAt: new Date('2026-03-09T11:00:00.000Z'),
+    });
+    prisma.chatRules.update.mockResolvedValue({
+      id: 'rules-1',
+      chatId: 'chat-1',
+      text: 'Правила от бота',
+      imageBase64: '',
+      imageMimeType: '',
+      imageFileName: '',
+      autoTextEnabled: false,
+      publishedMessageId: null,
+      publishedUrl: null,
+      publishedAt: null,
+      createdAt: new Date('2026-03-09T09:00:00.000Z'),
+      updatedAt: new Date('2026-03-09T11:05:00.000Z'),
+    });
+
+    const maxClient = {
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      resolveMessageLink: jest.fn(),
+      uploadImage: jest.fn(),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'mid-rules-7',
+        url: 'https://max.ru/chats/chat-1/message/777',
+      }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+    const actor = {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await service.updateRules(
+      'chat-1',
+      actor,
+      {
+        text: 'Правила от бота',
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        autoTextEnabled: false,
+      },
+      'private_bot',
+    );
+    await service.publishRules('chat-1', actor, 'private_bot');
+    await service.resetPublishedRules('chat-1', actor, 'private_bot');
+
+    expect(prisma.auditLog.create).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'UPDATE_CHAT_RULES',
+          payload: expect.objectContaining({ source: 'private_bot' }),
+        }),
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'PUBLISH_CHAT_RULES',
+          payload: expect.objectContaining({ source: 'private_bot' }),
+        }),
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'RESET_CHAT_RULES_PUBLICATION',
+          payload: expect.objectContaining({ source: 'private_bot' }),
+        }),
+      }),
+    );
   });
 
   it('resets published rules and deletes the existing MAX post', async () => {
@@ -4886,6 +5003,15 @@ describe('AdminService chat rules', () => {
       publishedMessageId: null,
       publishedUrl: null,
       publishedAt: null,
+    });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        action: 'RESET_CHAT_RULES_PUBLICATION',
+        payload: expect.objectContaining({
+          source: 'miniapp',
+        }),
+      }),
     });
   });
 });

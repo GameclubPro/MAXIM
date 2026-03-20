@@ -36,6 +36,11 @@ export class PrivateControlController {
     return this.privateControlService.getBroadcastHandoffState(chatId, user, 'channel');
   }
 
+  @Post('chats/:chatId/rules/handoff')
+  handoffChatRules(@Param('chatId') chatId: string, @CurrentUser() user: AuthUser) {
+    return this.privateControlService.handoffRulesFromMiniapp(chatId, user);
+  }
+
   @Post('chats/:chatId/giveaway/handoff')
   handoffChatGiveaway(
     @Param('chatId') chatId: string,
