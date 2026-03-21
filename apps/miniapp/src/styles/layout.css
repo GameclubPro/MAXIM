@@ -360,14 +360,6 @@ body.settings-home-page-open .bottom-nav__label {
   gap: var(--space-3);
 }
 
-.sticker-lab-page,
-.sticker-lab-hero,
-.sticker-lab-card,
-.sticker-lab-entry {
-  display: grid;
-  gap: var(--space-3);
-}
-
 .chat-grid,
 .settings-sections,
 .events-list {

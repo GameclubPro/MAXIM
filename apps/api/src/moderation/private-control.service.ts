@@ -31,7 +31,6 @@ import {
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
 import { RedisCounterService } from './redis-counter.service';
-import sharp from 'sharp';
 
 type PrivateSectionKey =
   | 'links'
@@ -89,7 +88,6 @@ type PendingInput =
   | { kind: 'broadcast_photo' }
   | { kind: 'rules_text' }
   | { kind: 'rules_photo' }
-  | { kind: 'sticker_photo' }
   | { kind: 'giveaway_title' }
   | { kind: 'giveaway_content' }
   | { kind: 'giveaway_description' }
@@ -273,31 +271,11 @@ type ParsedFileAttachment = {
   payloadKeys: string[];
 };
 
-type ParsedStickerAttachment = {
-  code: string;
-  url: string | null;
-  smileId: string | null;
-  smileType: string | null;
-  width: number | null;
-  height: number | null;
-  mimeType: string | null;
-  mediaType: string | null;
-  payloadKeys: string[];
-};
-
-type PreparedStickerAsset = {
-  buffer: Buffer<ArrayBufferLike>;
-  mimeType: 'image/png' | 'image/webp';
-  fileName: string;
-};
-
 type DownloadedImageAsset = {
   base64: string;
   mimeType: string;
   fileName: string;
 };
-
-type StickerDeliveryMode = 'sticker' | 'image_variant' | 'image_fallback';
 
 const SESSION_TTL_SEC = 45 * 60;
 const SESSION_KEY_PREFIX = 'private-ui:v2';
@@ -313,7 +291,6 @@ const SEARCH_RESULT_LIMIT = 8;
 const BUTTON_TEXT_MAX_SINGLE_COLUMN = 36;
 const BUTTON_TEXT_MAX_TWO_COLUMNS = 14;
 const SUPPORT_CHAT_URL = 'https://max.ru/join/qX7U_Hj-L-xMJG8V7wlF6dD-6a6cXIzTBGRtU2mRMzk';
-const STICKER_IMAGE_MAX_BYTES = 1_000_000;
 const MINIAPP_ROUTE_START_PARAM_PREFIX = 'mr-';
 const MAX_CALLBACK_PREFIX = 'pc2';
 const LEGACY_CALLBACK_PREFIX = 'pc';
@@ -1255,7 +1232,6 @@ export class PrivateControlService {
   private async processTextMessage(context: PrivateContext): Promise<void> {
     const session = await this.loadSession(context.actor.userId);
     const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
-    const stickerAttachment = this.extractFirstStickerAttachment(context.update);
     const fileAttachment = this.extractFirstFileAttachment(context.update);
     const hasVideoAttachment = this.hasVideoAttachment(context.update);
 
@@ -1309,7 +1285,6 @@ export class PrivateControlService {
       !context.text.trim().startsWith('/') &&
       (context.text.trim().length > 0 ||
         imageSourceAttachment !== null ||
-        stickerAttachment !== null ||
         hasVideoAttachment ||
         fileAttachment !== null)
     ) {
@@ -1490,16 +1465,6 @@ export class PrivateControlService {
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Открываю помощь',
-        });
-        return;
-      }
-
-      case 'sticker_photo_prompt': {
-        session.pendingInput = null;
-        const view = await this.renderByCurrentScreen(context, session);
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: 'Стикер из фото убран',
         });
         return;
       }
@@ -3619,16 +3584,6 @@ export class PrivateControlService {
         return;
       }
 
-      case 'sticker_photo': {
-        session.pendingInput = null;
-        const view = await this.renderByCurrentScreen(context, session);
-        await this.respond(context, session, view, {
-          callbackId: null,
-          notification: null,
-        });
-        return;
-      }
-
       case 'giveaway_title': {
         this.assertSelectedEntityType(session, session.selectedEntityType ?? 'chat');
         const draft = await this.getManagedGiveawayDraftForSession(context.actor, session);
@@ -4157,453 +4112,6 @@ export class PrivateControlService {
       : nextHasImage
         ? 'Текст публикации обновлён.'
         : 'Текст публикации обновлён. Можно сразу прислать фото.';
-  }
-
-  private async handleStickerImageSourceMessage(
-    context: PrivateContext,
-    session: PrivateSession,
-    imageSourceAttachment: ParsedImageSourceAttachment,
-  ): Promise<void> {
-    if (imageSourceAttachment.kind === 'image') {
-      const imageAttachment = imageSourceAttachment.attachment;
-      const imageUrlMetadata = this.parseAttachmentUrlMetadata(imageAttachment.url);
-      this.logger.log(
-        {
-          chatId: context.chatId,
-          actorUserId: context.actor.userId,
-          actorDisplayName: context.actor.displayName ?? null,
-          messageId: context.update.message?.messageId ?? null,
-          pendingInputKind: session.pendingInput?.kind ?? null,
-          sourceType: 'image',
-          imageUrl: imageAttachment.url,
-          imageUrlHost: imageUrlMetadata.host,
-          imageUrlPath: imageUrlMetadata.path,
-          imageToken: imageAttachment.token,
-          imagePhotoId: imageAttachment.photoId,
-          imageWidth: imageAttachment.width,
-          imageHeight: imageAttachment.height,
-          imageMimeType: imageAttachment.mimeType,
-          imageMediaType: imageAttachment.mediaType,
-          imagePayloadKeys: imageAttachment.payloadKeys,
-        },
-        'Incoming image attachment for sticker flow',
-      );
-    } else {
-      const fileAttachment = imageSourceAttachment.attachment;
-      const fileUrlMetadata = this.parseAttachmentUrlMetadata(fileAttachment.url);
-      this.logger.log(
-        {
-          chatId: context.chatId,
-          actorUserId: context.actor.userId,
-          actorDisplayName: context.actor.displayName ?? null,
-          messageId: context.update.message?.messageId ?? null,
-          pendingInputKind: session.pendingInput?.kind ?? null,
-          sourceType: 'file',
-          fileUrl: fileAttachment.url,
-          fileUrlHost: fileUrlMetadata.host,
-          fileUrlPath: fileUrlMetadata.path,
-          fileToken: fileAttachment.token,
-          fileId: fileAttachment.fileId,
-          fileName: fileAttachment.fileName,
-          fileSize: fileAttachment.size,
-          fileMimeType: fileAttachment.mimeType,
-          fileMediaType: fileAttachment.mediaType,
-          filePayloadKeys: fileAttachment.payloadKeys,
-        },
-        'Incoming image file attachment for sticker flow',
-      );
-    }
-
-    const downloaded = await this.downloadImageSourceAttachment(
-      imageSourceAttachment,
-      'private-sticker-source',
-    );
-    const sourceBuffer = Buffer.from(downloaded.base64, 'base64');
-    const preparedSticker = await this.prepareStickerAsset(sourceBuffer, downloaded.fileName);
-    const fallbackPng =
-      preparedSticker.mimeType === 'image/png'
-        ? preparedSticker
-        : await this.preparePngStickerFallbackAsset(sourceBuffer, downloaded.fileName);
-    const uploadPayload = await this.maxClient.uploadImage(
-      preparedSticker.buffer,
-      preparedSticker.fileName,
-      preparedSticker.mimeType,
-    );
-    this.logger.log(
-      {
-        chatId: context.chatId,
-        preparedFileName: preparedSticker.fileName,
-        preparedMimeType: preparedSticker.mimeType,
-        preparedBytes: preparedSticker.buffer.length,
-        uploadPayloadKeys: Object.keys(uploadPayload).sort(),
-      },
-      'Prepared private sticker asset uploaded',
-    );
-    const deliveryMode = await this.deliverPreparedSticker(
-      context.chatId,
-      uploadPayload,
-      preparedSticker.mimeType,
-      fallbackPng,
-    );
-
-    session.pendingInput = null;
-    const view = this.renderStickerResultView(session, deliveryMode);
-    await this.respond(context, session, view, {
-      callbackId: null,
-      notification: null,
-    });
-  }
-
-  private async handleStickerAttachmentMessage(
-    context: PrivateContext,
-    session: PrivateSession,
-    stickerAttachment: ParsedStickerAttachment,
-  ): Promise<void> {
-    const urlMetadata = this.parseStickerUrlMetadata(stickerAttachment.url);
-    const stickerSmileId = stickerAttachment.smileId ?? urlMetadata.smileId;
-    const stickerSmileType = stickerAttachment.smileType ?? urlMetadata.smileType;
-    const likelyPasteFlow = urlMetadata.isGetSmile && Boolean(stickerSmileId);
-
-    this.logger.log(
-      {
-        chatId: context.chatId,
-        actorUserId: context.actor.userId,
-        actorDisplayName: context.actor.displayName ?? null,
-        messageId: context.update.message?.messageId ?? null,
-        pendingInputKind: session.pendingInput?.kind ?? null,
-        stickerCode: stickerAttachment.code,
-        stickerUrl: stickerAttachment.url,
-        stickerUrlHost: urlMetadata.host,
-        stickerUrlPath: urlMetadata.path,
-        stickerSmileId,
-        stickerSmileType,
-        stickerWidth: stickerAttachment.width,
-        stickerHeight: stickerAttachment.height,
-        stickerMimeType: stickerAttachment.mimeType,
-        stickerMediaType: stickerAttachment.mediaType,
-        stickerPayloadKeys: stickerAttachment.payloadKeys,
-        likelyPasteFlow,
-      },
-      likelyPasteFlow
-        ? 'Incoming sticker likely produced by client copy/paste flow'
-        : 'Incoming sticker attachment observed',
-    );
-
-    await this.maxClient.sendCustomMessageImmediate(context.chatId, {
-      text: '',
-      attachments: [
-        {
-          type: 'sticker',
-          payload: {
-            code: stickerAttachment.code,
-          },
-        },
-      ],
-    });
-
-    session.pendingInput = null;
-    const view = this.renderStickerResultView(session, 'sticker');
-    await this.respond(context, session, view, {
-      callbackId: null,
-      notification: null,
-    });
-  }
-
-  private async prepareStickerAsset(
-    sourceBuffer: Buffer,
-    sourceFileName: string,
-  ): Promise<PreparedStickerAsset> {
-    const qualityLevels = [92, 84, 76, 68] as const;
-    let outputBuffer: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-    const baseName = sourceFileName.replace(/\.[^.]+$/u, '').trim() || `sticker-${Date.now()}`;
-
-    try {
-      const pngBuffer = await this.renderSquareStickerPng(sourceBuffer);
-
-      if (pngBuffer.length > 0 && pngBuffer.length <= STICKER_IMAGE_MAX_BYTES) {
-        return {
-          buffer: pngBuffer,
-          mimeType: 'image/png',
-          fileName: `${baseName}.png`,
-        };
-      }
-
-      for (const quality of qualityLevels) {
-        outputBuffer = await sharp(sourceBuffer)
-          .rotate()
-          .resize(512, 512, {
-            fit: 'contain',
-            background: {
-              r: 0,
-              g: 0,
-              b: 0,
-              alpha: 0,
-            },
-          })
-          .webp({
-            quality,
-            alphaQuality: 100,
-            effort: 4,
-            nearLossless: quality >= 84,
-          })
-          .toBuffer();
-
-        if (outputBuffer.length <= STICKER_IMAGE_MAX_BYTES) {
-          break;
-        }
-      }
-    } catch {
-      throw new BadRequestException('Не удалось подготовить sticker из фото.');
-    }
-
-    if (outputBuffer.length === 0) {
-      throw new BadRequestException('Не удалось подготовить sticker из фото.');
-    }
-
-    return {
-      buffer: outputBuffer,
-      mimeType: 'image/webp',
-      fileName: `${baseName}.webp`,
-    };
-  }
-
-  private async preparePngStickerFallbackAsset(
-    sourceBuffer: Buffer,
-    sourceFileName: string,
-  ): Promise<PreparedStickerAsset> {
-    const baseName = sourceFileName.replace(/\.[^.]+$/u, '').trim() || `sticker-${Date.now()}`;
-
-    try {
-      const pngBuffer = await this.renderSquareStickerPng(sourceBuffer);
-      if (pngBuffer.length === 0) {
-        throw new BadRequestException('Не удалось подготовить PNG из фото.');
-      }
-
-      return {
-        buffer: pngBuffer,
-        mimeType: 'image/png',
-        fileName: `${baseName}.png`,
-      };
-    } catch (error: unknown) {
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-
-      throw new BadRequestException('Не удалось подготовить PNG из фото.');
-    }
-  }
-
-  private async renderSquareStickerPng(sourceBuffer: Buffer): Promise<Buffer<ArrayBufferLike>> {
-    return sharp(sourceBuffer)
-      .rotate()
-      .resize(512, 512, {
-        fit: 'contain',
-        background: {
-          r: 0,
-          g: 0,
-          b: 0,
-          alpha: 0,
-        },
-      })
-      .png({
-        compressionLevel: 9,
-        adaptiveFiltering: true,
-        palette: true,
-        quality: 100,
-        effort: 10,
-      })
-      .toBuffer();
-  }
-
-  private async deliverPreparedSticker(
-    chatId: string,
-    uploadPayload: Record<string, unknown>,
-    preparedMimeType: PreparedStickerAsset['mimeType'],
-    fallbackPngAsset: PreparedStickerAsset,
-  ): Promise<StickerDeliveryMode> {
-    const attempts: Array<{
-      name: string;
-      deliveryMode: StickerDeliveryMode;
-      attachments: Record<string, unknown>[];
-    }> = [
-      {
-        name: 'sticker_payload',
-        deliveryMode: 'sticker',
-        attachments: [
-          {
-            type: 'sticker',
-            payload: uploadPayload,
-          },
-        ],
-      },
-      {
-        name: 'sticker_payload_with_mime',
-        deliveryMode: 'sticker',
-        attachments: [
-          {
-            type: 'sticker',
-            payload: {
-              ...uploadPayload,
-              mime_type: preparedMimeType,
-            },
-          },
-        ],
-      },
-    ];
-    if (preparedMimeType === 'image/png') {
-      attempts.push({
-        name: 'image_payload_with_media_type_sticker',
-        deliveryMode: 'image_variant',
-        attachments: [
-          {
-            type: 'image',
-            payload: {
-              ...uploadPayload,
-              mime_type: preparedMimeType,
-              media_type: 'sticker',
-            },
-          },
-        ],
-      });
-    }
-    const failedAttempts: Array<{
-      attempt: number;
-      name: string;
-      attachmentType: string;
-      error: string;
-    }> = [];
-
-    for (const [index, attempt] of attempts.entries()) {
-      try {
-        await this.maxClient.sendCustomMessageImmediate(chatId, {
-          text: '',
-          attachments: attempt.attachments,
-        });
-
-        const attachmentType =
-          typeof attempt.attachments[0]?.type === 'string'
-            ? attempt.attachments[0].type
-            : 'unknown';
-
-        if (attempt.deliveryMode === 'sticker') {
-          this.logger.log(
-            {
-              chatId,
-              attempt: index + 1,
-              name: attempt.name,
-              attachmentType,
-            },
-            'MAX accepted sticker attachment',
-          );
-          return 'sticker';
-        }
-
-        this.logger.warn(
-          {
-            chatId,
-            attempt: index + 1,
-            name: attempt.name,
-            attachmentType,
-          },
-          'MAX accepted only image-based sticker variant',
-        );
-        return 'image_variant';
-      } catch (error: unknown) {
-        failedAttempts.push({
-          attempt: index + 1,
-          name: attempt.name,
-          attachmentType:
-            typeof attempt.attachments[0]?.type === 'string'
-              ? attempt.attachments[0].type
-              : 'unknown',
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    this.logger.warn(
-      {
-        chatId,
-        preparedMimeType,
-        fallbackMimeType: fallbackPngAsset.mimeType,
-        fallbackFileName: fallbackPngAsset.fileName,
-        failedAttempts,
-      },
-      'MAX rejected all sticker attachment variants, falling back to PNG image',
-    );
-    const fallbackUploadPayload =
-      preparedMimeType === 'image/png'
-        ? uploadPayload
-        : await this.maxClient.uploadImage(
-            fallbackPngAsset.buffer,
-            fallbackPngAsset.fileName,
-            fallbackPngAsset.mimeType,
-          );
-
-    if (preparedMimeType !== 'image/png') {
-      this.logger.log(
-        {
-          chatId,
-          fallbackFileName: fallbackPngAsset.fileName,
-          fallbackMimeType: fallbackPngAsset.mimeType,
-          fallbackBytes: fallbackPngAsset.buffer.length,
-          uploadPayloadKeys: Object.keys(fallbackUploadPayload).sort(),
-        },
-        'Prepared PNG fallback uploaded for private sticker flow',
-      );
-    }
-
-    await this.maxClient.sendCustomMessageImmediate(chatId, {
-      text: '',
-      attachments: [
-        {
-          type: 'image',
-          payload: fallbackUploadPayload,
-        },
-      ],
-    });
-
-    return 'image_fallback';
-  }
-
-  private renderStickerResultView(
-    session: PrivateSession,
-    deliveryMode: StickerDeliveryMode,
-  ): PrivateView {
-    const lines =
-      deliveryMode === 'sticker'
-        ? [
-            'Стикер из фото',
-            '',
-            'Статус: sticker отправлен.',
-            'Пришлите ещё фото или нажмите кнопку ниже.',
-          ]
-        : deliveryMode === 'image_variant'
-          ? [
-              'Стикер из фото',
-              '',
-              'Статус: MAX принял только PNG image-вариант.',
-              'В чате это может отображаться как обычная картинка, а не как настоящий sticker.',
-              'Пришлите ещё фото или нажмите кнопку ниже.',
-            ]
-          : [
-              'Стикер из фото',
-              '',
-              'Статус: MAX не принял вложение как sticker.',
-              'Отправил подготовленное изображение как PNG-картинку.',
-              'Можно попробовать ещё одно фото.',
-            ];
-
-    return {
-      text: lines.join('\n'),
-      options: {
-        buttons: [
-          [this.callbackButton('Ещё фото', this.cb('sticker_photo_prompt'), 'positive')],
-          [this.callbackButton('Главный экран', this.cb('home'))],
-          ...this.buildFooterButtons(),
-        ],
-      },
-    };
   }
 
   private async sendBroadcastFromSession(context: PrivateContext, session: PrivateSession) {
@@ -6959,12 +6467,6 @@ export class PrivateControlService {
           title: 'Фото правил',
           description: 'Отправьте только фото или PNG/WebP/JPG файлом следующим сообщением.',
         };
-      case 'sticker_photo':
-        return {
-          title: 'Фото, файл или sticker',
-          description:
-            'Отправьте фото, PNG/WebP/JPG файлом или готовый sticker. Бот сначала попробует отправить настоящий sticker, а если MAX не примет его, отправит PNG.',
-        };
       case 'giveaway_title':
         return {
           title: 'Служебное название',
@@ -8290,81 +7792,6 @@ export class PrivateControlService {
     return null;
   }
 
-  private extractFirstStickerAttachment(update: MaxUpdate): ParsedStickerAttachment | null {
-    for (const row of this.collectMessageAttachments(update)) {
-      const type = this.readLowerString(row.type);
-      if (type !== 'sticker') {
-        continue;
-      }
-
-      const payload = this.asRecord(row.payload);
-      const code = this.readString(payload?.code);
-      if (!code) {
-        continue;
-      }
-
-      const url = this.readString(payload?.url) ?? null;
-      const urlMetadata = this.parseStickerUrlMetadata(url);
-
-      return {
-        code,
-        url,
-        smileId: this.readString(payload?.smile_id ?? payload?.smileId) ?? urlMetadata.smileId,
-        smileType:
-          this.readString(payload?.smile_type ?? payload?.smileType) ?? urlMetadata.smileType,
-        width: this.readOptionalInteger(payload?.width ?? payload?.w),
-        height: this.readOptionalInteger(payload?.height ?? payload?.h),
-        mimeType: this.readLowerString(payload?.mime_type ?? payload?.mimeType),
-        mediaType: this.readLowerString(payload?.media_type ?? payload?.mediaType),
-        payloadKeys: payload ? Object.keys(payload).sort() : [],
-      };
-    }
-
-    return null;
-  }
-
-  private parseStickerUrlMetadata(url: string | null): {
-    host: string | null;
-    path: string | null;
-    smileId: string | null;
-    smileType: string | null;
-    isGetSmile: boolean;
-  } {
-    if (!url) {
-      return {
-        host: null,
-        path: null,
-        smileId: null,
-        smileType: null,
-        isGetSmile: false,
-      };
-    }
-
-    try {
-      const parsed = new URL(url);
-      const smileId = this.readString(parsed.searchParams.get('smileId'));
-      const smileType = this.readString(parsed.searchParams.get('smileType'));
-      const path = parsed.pathname || null;
-      const isGetSmile = path ? path.toLowerCase().includes('getsmile') : false;
-
-      return {
-        host: parsed.hostname || null,
-        path,
-        smileId,
-        smileType,
-        isGetSmile,
-      };
-    } catch {
-      return {
-        host: null,
-        path: null,
-        smileId: null,
-        smileType: null,
-        isGetSmile: false,
-      };
-    }
-  }
-
   private parseAttachmentUrlMetadata(url: string | null): {
     host: string | null;
     path: string | null;
@@ -9087,7 +8514,6 @@ export class PrivateControlService {
       'broadcast_photo',
       'rules_text',
       'rules_photo',
-      'sticker_photo',
       'giveaway_title',
       'giveaway_content',
       'giveaway_description',

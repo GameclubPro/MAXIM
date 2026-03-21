@@ -236,49 +236,6 @@ function createPrivateImageFileUpdate(): MaxUpdate {
   return createPrivateFileUpdate();
 }
 
-function createPrivateNonImageFileUpdate(): MaxUpdate {
-  return createPrivateFileUpdate('notes.pdf', 'https://example.test/notes.pdf');
-}
-
-function createPrivateStickerUpdate(code = '1e1321f26'): MaxUpdate {
-  return {
-    updateId: `upd-sticker-${Date.now()}`,
-    type: 'message_created',
-    message: {
-      messageId: `msg-sticker-${Date.now()}`,
-      chatId: '152517912',
-      senderId: 'user-1',
-      senderName: 'Тестовый пользователь',
-      text: '',
-      createdAt: new Date().toISOString(),
-    },
-    raw: {
-      update_type: 'message_created',
-      message: {
-        body: {
-          attachments: [
-            {
-              type: 'sticker',
-              payload: {
-                code,
-                url: `https://i.oneme.ru/getSmile?smileId=${code}&smileType=4`,
-              },
-            },
-          ],
-        },
-        sender: {
-          user_id: 'user-1',
-          name: 'Тестовый пользователь',
-        },
-        recipient: {
-          chat_id: 152517912,
-          chat_type: 'dialog',
-        },
-      },
-    },
-  };
-}
-
 function createPrivateCallbackUpdate(payload: string): MaxUpdate {
   return {
     updateId: `upd-cb-${Date.now()}`,
