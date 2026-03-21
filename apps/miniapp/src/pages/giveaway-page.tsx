@@ -684,8 +684,6 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
           aria-modal="true"
           aria-labelledby="giveaway-overlay-title"
         >
-          <div className="giveaway-page__overlay-handle" aria-hidden />
-
           <button
             type="button"
             className="giveaway-page__overlay-close"
@@ -702,9 +700,9 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
           <GiveawayGlyphIcon tone={presentation.tone} glyph={presentation.glyph} />
 
           <div className="giveaway-page__overlay-copy">
-            <small className="giveaway-page__overlay-kicker">
-              {giveaway ? giveaway.title : 'Розыгрыш'}
-            </small>
+            {giveaway?.title ? (
+              <small className="giveaway-page__overlay-kicker">{giveaway.title}</small>
+            ) : null}
             <strong id="giveaway-overlay-title">{presentation.title}</strong>
             {presentation.description ? <p>{presentation.description}</p> : null}
           </div>
@@ -788,10 +786,10 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
 
             <button
               type="button"
-              className="button button--ghost giveaway-page__overlay-dismiss"
+              className="button giveaway-page__overlay-dismiss"
               onClick={closePage}
             >
-              Закрыть
+              Не сейчас
             </button>
           </div>
 
