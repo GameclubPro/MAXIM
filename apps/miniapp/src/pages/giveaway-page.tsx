@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ManagedGiveawayParticipantState, ManagedGiveawayPublic } from '@maxim/contracts';
-import { type CSSProperties, useEffect, useState } from 'react';
+import { type CSSProperties, useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
@@ -513,6 +513,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   });
   const [resultOverlayParticipant, setResultOverlayParticipant] =
     useState<ManagedGiveawayParticipantState | null>(null);
+  const autoEnterAttemptedGiveawayRef = useRef<string | null>(null);
 
   const enterMutation = useMutation({
     mutationFn: () => enterGiveaway(api, giveawayId),
@@ -588,6 +589,36 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
       document.documentElement.style.overflow = previousDocumentOverflow;
     };
   }, [resultOverlayParticipant]);
+
+  useEffect(() => {
+    if (!giveaway || participantQuery.error || giveaway.status !== 'ACTIVE') {
+      return;
+    }
+
+    if (participantQuery.isLoading || enterMutation.isPending) {
+      return;
+    }
+
+    const canRetryParticipation = participant?.eligibilityState === 'REJECTED';
+    const canEnterParticipation = !participant?.joined || canRetryParticipation;
+    if (!canEnterParticipation) {
+      return;
+    }
+
+    if (autoEnterAttemptedGiveawayRef.current === giveawayId) {
+      return;
+    }
+
+    autoEnterAttemptedGiveawayRef.current = giveawayId;
+    void enterMutation.mutateAsync();
+  }, [
+    enterMutation,
+    giveaway,
+    giveawayId,
+    participant,
+    participantQuery.error,
+    participantQuery.isLoading,
+  ]);
 
   if (giveawayQuery.isLoading) {
     return (

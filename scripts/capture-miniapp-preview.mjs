@@ -221,8 +221,12 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
-      await page.getByRole('button', { name: /Участвовать/u }).click();
-      await page.waitForTimeout(350);
+      try {
+        await page.locator('#giveaway-overlay-title').waitFor({ state: 'visible', timeout: 2_500 });
+      } catch {
+        await page.getByRole('button', { name: /Участвовать/u }).click();
+        await page.locator('#giveaway-overlay-title').waitFor({ state: 'visible', timeout: 3_000 });
+      }
     },
   },
   {
@@ -234,8 +238,12 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
-      await page.getByRole('button', { name: /Участвовать/u }).click();
-      await page.waitForTimeout(350);
+      try {
+        await page.locator('#giveaway-overlay-title').waitFor({ state: 'visible', timeout: 2_500 });
+      } catch {
+        await page.getByRole('button', { name: /Участвовать/u }).click();
+        await page.locator('#giveaway-overlay-title').waitFor({ state: 'visible', timeout: 3_000 });
+      }
     },
   },
   {
