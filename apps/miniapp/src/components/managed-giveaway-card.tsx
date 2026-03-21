@@ -8,7 +8,7 @@ import {
   type ManagedGiveawaySummary,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { getChannels } from '../lib/api/root-client';
 import {
   cancelManagedGiveaway,
@@ -32,8 +32,9 @@ const QUICK_DURATION_HOURS = [24, 48, 72] as const;
 const QUICK_CLAIM_HOURS = [24, 48, 72] as const;
 
 type GiveawayEditorMode = 'closed' | 'create' | 'edit';
-type GiveawayEditorStepId = 'basics' | 'conditions' | 'prizes' | 'publish';
+type GiveawayEditorStepId = 'basics' | 'conditions' | 'prizes';
 type GiveawayValidationResult = { valid: boolean; message: string };
+type SummaryMetric = { key: string; label: string; value: string; note: string };
 
 type GiveawayEditorDraft = {
   title: string;
@@ -67,12 +68,6 @@ const GIVEAWAY_EDITOR_STEPS = [
     label: 'Призы',
     title: 'Сколько мест и что получат',
     description: 'Места и призы.',
-  },
-  {
-    id: 'publish',
-    label: 'Публикация',
-    title: 'Контент и запуск',
-    description: 'Контент и запуск.',
   },
 ] as const satisfies ReadonlyArray<{
   id: GiveawayEditorStepId;
@@ -435,10 +430,6 @@ function buildPrizesSummary(draft: GiveawayEditorDraft): string {
   return `${draft.prizes.length} места`;
 }
 
-function buildPublishSummary(draft: GiveawayEditorDraft): string {
-  return draft.description.trim() ? 'Контент готов' : 'Контент из бота';
-}
-
 function buildPreviewSnippet(value: string, maxLength = 120): string {
   const compact = value.trim().replace(/\s+/gu, ' ');
   if (compact.length <= maxLength) {
@@ -760,17 +751,10 @@ export function ManagedGiveawayCard({
             isComplete: conditionsValidation.valid,
           };
         }
-        if (step.id === 'prizes') {
-          return {
-            ...step,
-            summary: draft ? buildPrizesSummary(draft) : 'Места и призы',
-            isComplete: prizesValidation.valid,
-          };
-        }
         return {
           ...step,
-          summary: draft ? buildPublishSummary(draft) : 'Контент из бота',
-          isComplete: Boolean(draft?.description.trim()) && validation.valid,
+          summary: draft ? buildPrizesSummary(draft) : 'Места и призы',
+          isComplete: prizesValidation.valid,
         };
       }),
     [
@@ -779,7 +763,6 @@ export function ManagedGiveawayCard({
       draft,
       prizesValidation.valid,
       selectedRequiredChannels,
-      validation.valid,
     ],
   );
   const activeEditorStepIndex = Math.max(
@@ -792,9 +775,7 @@ export function ManagedGiveawayCard({
       ? basicsValidation
       : editorStep === 'conditions'
         ? conditionsValidation
-        : editorStep === 'prizes'
-          ? prizesValidation
-          : validation;
+        : prizesValidation;
   const firstConfigIssue = !basicsValidation.valid
     ? { step: 'basics' as GiveawayEditorStepId, message: basicsValidation.message }
     : !conditionsValidation.valid
@@ -802,9 +783,8 @@ export function ManagedGiveawayCard({
       : !prizesValidation.valid
         ? { step: 'prizes' as GiveawayEditorStepId, message: prizesValidation.message }
         : !mediaValidation.valid
-          ? { step: 'publish' as GiveawayEditorStepId, message: mediaValidation.message }
+          ? { step: 'prizes' as GiveawayEditorStepId, message: mediaValidation.message }
           : null;
-  const configurationReady = !firstConfigIssue;
   const publicationPreview = draft?.description.trim()
     ? buildPreviewSnippet(draft.description)
     : '';
@@ -1084,7 +1064,7 @@ export function ManagedGiveawayCard({
 
     if (!draft.description.trim()) {
       const message = 'Добавьте текст розыгрыша в чат-боте перед публикацией.';
-      setEditorStep('publish');
+      setEditorStep('prizes');
       setValidationHint(message);
       pushToast({
         tone: 'danger',
@@ -1214,7 +1194,7 @@ export function ManagedGiveawayCard({
   };
 
   const goToNextStep = () => {
-    if (editorStep === 'publish') {
+    if (activeEditorStepIndex >= editorSteps.length - 1) {
       return;
     }
     if (!currentStepValidation.valid) {
@@ -1311,12 +1291,12 @@ export function ManagedGiveawayCard({
       ? buildCurrentSubtitle(currentItem)
       : totalItemsCount > 0
         ? `${totalItemsCount} сценария`
-        : '4 шага и запуск через бота.';
+        : '3 шага здесь, контент через бота.';
   const finalPrimaryLabel = firstConfigIssue
     ? 'Закончить настройку'
     : publicationTextReady
       ? 'Опубликовать в чат'
-      : 'Добавить контент в чат-боте';
+      : 'Открыть бота';
   const finalPrimaryBusyLabel = firstConfigIssue
     ? 'Готовим…'
     : publicationTextReady
@@ -1327,29 +1307,27 @@ export function ManagedGiveawayCard({
       ? 'Далее: условия'
       : editorStep === 'conditions'
         ? 'Далее: призы'
-        : editorStep === 'prizes'
-          ? 'Далее: публикация'
-          : finalPrimaryLabel;
+        : finalPrimaryLabel;
   const stickyTitle =
-    editorStep === 'publish'
+    editorStep === 'prizes'
       ? firstConfigIssue
         ? 'Нужно закончить'
         : publicationTextReady
           ? 'Можно публиковать'
-          : 'Добавьте текст'
+          : 'Следующий шаг: бот'
       : `Шаг ${activeEditorStepIndex + 1}. ${activeEditorStep.label}`;
   const stickyDescription =
-    editorStep === 'publish'
+    editorStep === 'prizes'
       ? firstConfigIssue
         ? firstConfigIssue.message
         : publicationTextReady
           ? 'Запуск одним действием.'
-          : 'Откроем чат-бот для текста.'
+          : 'Откроем чат-бот для текста и фото.'
       : currentStepValidation.valid
         ? activeEditorStep.description
         : currentStepValidation.message;
-  const showStickyCopy = editorStep === 'publish' || !currentStepValidation.valid;
-  const currentHeroMetrics = currentItem
+  const showStickyCopy = editorStep === 'prizes' || !currentStepValidation.valid;
+  const currentSummaryMetrics: SummaryMetric[] = currentItem
     ? [
         {
           key: 'timing',
@@ -1372,12 +1350,12 @@ export function ManagedGiveawayCard({
         },
       ]
     : [];
-  const emptyHeroMetrics = [
+  const emptySummaryMetrics: SummaryMetric[] = [
     {
       key: 'steps',
       label: 'Сценарий',
-      value: '4 шага',
-      note: 'Основа, условия, призы, пуск',
+      value: '3 шага',
+      note: 'Основа, условия, призы',
     },
     {
       key: 'bot',
@@ -1386,7 +1364,7 @@ export function ManagedGiveawayCard({
       note: 'Текст и фото подтягиваются сюда',
     },
   ];
-  const editorHeroMetrics = draft
+  const editorSummaryMetrics: SummaryMetric[] = draft
     ? [
         {
           key: 'finish',
@@ -1402,16 +1380,58 @@ export function ManagedGiveawayCard({
         },
       ]
     : [];
+  const renderSummaryPanel = ({
+    eyebrow,
+    title,
+    description,
+    metrics,
+    topActions,
+    actions,
+  }: {
+    eyebrow: string;
+    title: string;
+    description: string;
+    metrics: SummaryMetric[];
+    topActions?: ReactNode;
+    actions?: ReactNode;
+  }) => (
+    <div className={cn('managed-giveaway__panel', 'managed-giveaway__summary')}>
+      <div className="managed-giveaway__summary-topline">
+        <span className="managed-giveaway__eyebrow">{eyebrow}</span>
+        {topActions ? <div className="managed-giveaway__summary-topline-actions">{topActions}</div> : null}
+      </div>
+
+      <div className="managed-giveaway__summary-copy">
+        <strong className="managed-giveaway__summary-title">{title}</strong>
+        <p className="managed-giveaway__summary-description">{description}</p>
+      </div>
+
+      {metrics.length > 0 ? (
+        <div className="managed-giveaway__summary-grid">
+          {metrics.map((item) => (
+            <div key={item.key} className="managed-giveaway__summary-card">
+              <span>{item.label}</span>
+              <strong>{item.value}</strong>
+              <small>{item.note}</small>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {actions}
+    </div>
+  );
 
   return (
     <div className="managed-giveaway">
       {isEditingOpen ? (
-        <div className="managed-giveaway__hero">
-          <div className="managed-giveaway__hero-topline">
-            <span className="managed-giveaway__eyebrow">
-              {draft ? `Шаг ${activeEditorStepIndex + 1}/${editorSteps.length}` : headerEyebrow}
-            </span>
-            <div className="managed-giveaway__hero-topline-actions">
+        renderSummaryPanel({
+          eyebrow: draft ? `Шаг ${activeEditorStepIndex + 1}/${editorSteps.length}` : headerEyebrow,
+          title: headerTitle,
+          description: headerSummaryText,
+          metrics: editorSummaryMetrics,
+          topActions: (
+            <>
               {draft ? (
                 <span
                   className={cn(
@@ -1430,52 +1450,24 @@ export function ManagedGiveawayCard({
               >
                 Закрыть
               </button>
-            </div>
-          </div>
-
-          <div className="managed-giveaway__hero-copy">
-            <strong className="managed-giveaway__hero-title">{headerTitle}</strong>
-            <p className="managed-giveaway__hero-description">{headerSummaryText}</p>
-          </div>
-
-          {draft ? (
-            <div className="managed-giveaway__hero-grid">
-              {editorHeroMetrics.map((item) => (
-                <div key={item.key} className="managed-giveaway__hero-card">
-                  <span>{item.label}</span>
-                  <strong>{item.value}</strong>
-                  <small>{item.note}</small>
-                </div>
-              ))}
-            </div>
-          ) : null}
-        </div>
+            </>
+          ),
+        })
       ) : listQuery.isLoading ? (
-        <div className="managed-giveaway__hero">
-          <div className="managed-giveaway__hero-topline">
-            <span className="managed-giveaway__eyebrow">Розыгрыши</span>
-          </div>
-          <div className="managed-giveaway__hero-copy">
-            <strong className="managed-giveaway__hero-title">Подгружаем сценарии</strong>
-            <p className="managed-giveaway__hero-description">
-              Проверяем черновик и активный запуск.
-            </p>
-          </div>
-          <div className="managed-giveaway__hero-grid">
-            {emptyHeroMetrics.map((item) => (
-              <div key={item.key} className="managed-giveaway__hero-card">
-                <span>{item.label}</span>
-                <strong>{item.value}</strong>
-                <small>{item.note}</small>
-              </div>
-            ))}
-          </div>
-        </div>
+        renderSummaryPanel({
+          eyebrow: 'Розыгрыши',
+          title: 'Подгружаем сценарии',
+          description: 'Проверяем черновик и активный запуск.',
+          metrics: emptySummaryMetrics,
+        })
       ) : currentItem ? (
-        <div className="managed-giveaway__hero">
-          <div className="managed-giveaway__hero-topline">
-            <span className="managed-giveaway__eyebrow">Активный сценарий</span>
-            <div className="managed-giveaway__hero-topline-actions">
+        renderSummaryPanel({
+          eyebrow: 'Активный сценарий',
+          title: currentItem.title,
+          description: buildCurrentSubtitle(currentItem),
+          metrics: currentSummaryMetrics,
+          topActions: (
+            <>
               <span className={cn('managed-giveaway__badge', buildStatusTone(currentItem.status))}>
                 {buildStatusLabel(currentItem.status)}
               </span>
@@ -1484,134 +1476,103 @@ export function ManagedGiveawayCard({
                   {formatCount(historyItems.length)} в архиве
                 </span>
               ) : null}
-            </div>
-          </div>
-
-          <div className="managed-giveaway__hero-copy">
-            <strong className="managed-giveaway__hero-title">{currentItem.title}</strong>
-            <p className="managed-giveaway__hero-description">{buildCurrentSubtitle(currentItem)}</p>
-          </div>
-
-          <div className="managed-giveaway__hero-grid">
-            {currentHeroMetrics.map((item) => (
-              <div key={item.key} className="managed-giveaway__hero-card">
-                <span>{item.label}</span>
-                <strong>{item.value}</strong>
-                <small>{item.note}</small>
-              </div>
-            ))}
-          </div>
-
-          <div className="managed-giveaway__hero-actions managed-giveaway__hero-actions--split">
-            {currentItem.status === 'DRAFT' ? (
-              <button
-                type="button"
-                className="button button--accent"
-                disabled={isBusy}
-                onClick={startEditCurrentDraft}
-              >
-                Продолжить
-              </button>
-            ) : (
-              <button
-                type="button"
-                className="button button--accent"
-                disabled={isBusy}
-                onClick={() => {
-                  void handoffMutation.mutateAsync(currentItem.id);
-                }}
-              >
-                {handoffMutation.isPending ? 'Открываем…' : 'Открыть в боте'}
-              </button>
-            )}
-
-            {currentItem.status === 'DRAFT' ? (
-              <button
-                type="button"
-                className="button button--ghost"
-                disabled={isBusy}
-                onClick={() => {
-                  void handoffMutation.mutateAsync(currentItem.id);
-                }}
-              >
-                В бот
-              </button>
-            ) : null}
-
-            {currentItem.publicationUrl ? (
-              <button
-                type="button"
-                className="button button--ghost"
-                onClick={() => openMaxBotLink(currentItem.publicationUrl ?? '')}
-              >
-                Публикация
-              </button>
-            ) : null}
-
-            {currentItem.resultsUrl ? (
-              <button
-                type="button"
-                className="button button--ghost"
-                onClick={() => openMaxBotLink(currentItem.resultsUrl ?? '')}
-              >
-                Итоги
-              </button>
-            ) : null}
-          </div>
-        </div>
+            </>
+          ),
+          actions: (
+            <>
+              {currentItem.status === 'DRAFT' ? (
+                <div className="managed-giveaway__summary-actions managed-giveaway__summary-actions--split">
+                  <button
+                    type="button"
+                    className="button button--accent"
+                    disabled={isBusy}
+                    onClick={startEditCurrentDraft}
+                  >
+                    Продолжить
+                  </button>
+                  <button
+                    type="button"
+                    className="button button--ghost"
+                    disabled={isBusy}
+                    onClick={() => {
+                      void handoffMutation.mutateAsync(currentItem.id);
+                    }}
+                  >
+                    В бот
+                  </button>
+                </div>
+              ) : (
+                <div className="managed-giveaway__summary-actions">
+                  <button
+                    type="button"
+                    className="button button--accent"
+                    disabled={isBusy}
+                    onClick={() => {
+                      void handoffMutation.mutateAsync(currentItem.id);
+                    }}
+                  >
+                    {handoffMutation.isPending ? 'Открываем…' : 'Открыть в боте'}
+                  </button>
+                  {currentItem.publicationUrl ? (
+                    <button
+                      type="button"
+                      className="button button--ghost"
+                      onClick={() => openMaxBotLink(currentItem.publicationUrl ?? '')}
+                    >
+                      Публикация
+                    </button>
+                  ) : null}
+                  {currentItem.resultsUrl ? (
+                    <button
+                      type="button"
+                      className="button button--ghost"
+                      onClick={() => openMaxBotLink(currentItem.resultsUrl ?? '')}
+                    >
+                      Итоги
+                    </button>
+                  ) : null}
+                </div>
+              )}
+            </>
+          ),
+        })
       ) : (
-        <div className="managed-giveaway__hero">
-          <div className="managed-giveaway__hero-topline">
-            <span className="managed-giveaway__eyebrow">Розыгрыши</span>
-            <div className="managed-giveaway__hero-topline-actions">
-              {historyItems.length > 0 ? (
-                <span className="managed-giveaway__chip">
-                  {formatCount(historyItems.length)} в архиве
-                </span>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="managed-giveaway__hero-copy">
-            <strong className="managed-giveaway__hero-title">Создайте новый розыгрыш</strong>
-            <p className="managed-giveaway__hero-description">Короткий сценарий и запуск без лишних экранов.</p>
-          </div>
-
-          <div className="managed-giveaway__hero-grid">
-            {emptyHeroMetrics.map((item) => (
-              <div key={item.key} className="managed-giveaway__hero-card">
-                <span>{item.label}</span>
-                <strong>{item.value}</strong>
-                <small>{item.note}</small>
-              </div>
-            ))}
-          </div>
-
-          <div
-            className={cn(
-              'managed-giveaway__hero-actions',
-              historyItems.length > 0 && 'managed-giveaway__hero-actions--split',
-            )}
-          >
-            <button
-              type="button"
-              className="button button--accent"
-              disabled={isBusy}
-              onClick={startCreate}
+        renderSummaryPanel({
+          eyebrow: 'Розыгрыши',
+          title: 'Создайте новый розыгрыш',
+          description: 'Три шага здесь, контент и запуск через бота.',
+          metrics: emptySummaryMetrics,
+          topActions:
+            historyItems.length > 0 ? (
+              <span className="managed-giveaway__chip">{formatCount(historyItems.length)} в архиве</span>
+            ) : undefined,
+          actions: (
+            <div
+              className={cn(
+                'managed-giveaway__summary-actions',
+                historyItems.length > 0 && 'managed-giveaway__summary-actions--split',
+              )}
+            >
+              <button
+                type="button"
+                className="button button--accent"
+                disabled={isBusy}
+                onClick={startCreate}
               >
                 Создать
               </button>
-            {historyItems.length > 0 ? (
-              <button
-                type="button"
-                className="button button--ghost"
-                onClick={() => setHistoryOpen(true)}
-              >
-                История
-              </button>
-            ) : null}
-          </div>
-        </div>
+              {historyItems.length > 0 ? (
+                <button
+                  type="button"
+                  className="button button--ghost"
+                  onClick={() => setHistoryOpen(true)}
+                >
+                  История
+                </button>
+              ) : null}
+            </div>
+          ),
+        })
       )}
 
       {isEditingOpen ? (
@@ -1634,25 +1595,14 @@ export function ManagedGiveawayCard({
           </div>
         ) : (
           <div className={cn('managed-giveaway__panel', 'managed-giveaway__editor-card')}>
-            <div className="managed-giveaway__stepper">
-              {editorSteps.map((step, index) => (
-                <button
-                  key={step.id}
-                  type="button"
-                  className={cn(
-                    'managed-giveaway__step-button',
-                    editorStep === step.id && 'is-active',
-                    step.isComplete && 'is-complete',
-                  )}
-                  onClick={() => {
-                    setEditorStep(step.id);
-                    setValidationHint('');
-                  }}
-                >
-                  <span className="managed-giveaway__step-button-index">{index + 1}</span>
-                  <strong>{step.label}</strong>
-                </button>
-              ))}
+            <div className="managed-giveaway__flow-head">
+              <div className="managed-giveaway__flow-copy">
+                <span className="managed-giveaway__eyebrow">
+                  Шаг {activeEditorStepIndex + 1} / {editorSteps.length}
+                </span>
+                <strong>{activeEditorStep.title}</strong>
+                <small>{activeEditorStep.description}</small>
+              </div>
             </div>
 
             {editorStep === 'basics' ? (
@@ -2027,23 +1977,20 @@ export function ManagedGiveawayCard({
                     ))}
                   </div>
                 </div>
-              </div>
-            ) : null}
 
-            {editorStep === 'publish' ? (
-              <div className="managed-giveaway__step-stage">
                 <div className="managed-giveaway__section">
                   <div className="managed-giveaway__section-head">
                     <div className="managed-giveaway__section-copy">
-                      <strong>Публикация</strong>
+                      <strong>Контент в боте</strong>
+                      <small>Четвёртый шаг открывается отдельной кнопкой.</small>
                     </div>
                     <span
                       className={cn(
                         'managed-giveaway__badge',
-                        configurationReady && publicationTextReady ? 'is-success' : 'is-warning',
+                        publicationTextReady ? 'is-success' : 'is-warning',
                       )}
                     >
-                      {configurationReady && publicationTextReady ? 'Готово' : 'Нужно'}
+                      {publicationTextReady ? 'Готов' : 'Открыть'}
                     </span>
                   </div>
 
@@ -2057,23 +2004,21 @@ export function ManagedGiveawayCard({
                     <div className="managed-giveaway__content-preview">{publicationPreview}</div>
                   ) : (
                     <div className="managed-giveaway__content-placeholder">
-                      Текст и фото добавляются в боте.
+                      После кнопки ниже откроется бот для текста и фото.
                     </div>
                   )}
 
                   <div className="managed-giveaway__section-actions">
-                    {publicationTextReady ? (
-                      <button
-                        type="button"
-                        className="button button--ghost managed-giveaway__channel-action"
-                        disabled={isBusy}
-                        onClick={() => {
-                          void openEditorInBot();
-                        }}
-                      >
-                        Контент
-                      </button>
-                    ) : null}
+                    <button
+                      type="button"
+                      className="button button--ghost managed-giveaway__channel-action"
+                      disabled={isBusy}
+                      onClick={() => {
+                        void openEditorInBot();
+                      }}
+                    >
+                      {publicationTextReady ? 'Изменить в боте' : 'Открыть бот'}
+                    </button>
                     <button
                       type="button"
                       className="button button--ghost managed-giveaway__channel-action"
@@ -2151,7 +2096,7 @@ export function ManagedGiveawayCard({
                   type="button"
                   className="button button--accent"
                   onClick={() => {
-                    if (editorStep === 'publish') {
+                    if (activeEditorStepIndex >= editorSteps.length - 1) {
                       handleFinalPrimaryAction();
                       return;
                     }
@@ -2160,7 +2105,7 @@ export function ManagedGiveawayCard({
                   disabled={isBusy || !draft}
                 >
                   {isBusy
-                    ? editorStep === 'publish'
+                    ? activeEditorStepIndex >= editorSteps.length - 1
                       ? finalPrimaryBusyLabel
                       : 'Переходим…'
                     : nextStepLabel}
