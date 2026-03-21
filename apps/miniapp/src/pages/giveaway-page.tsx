@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ManagedGiveawayParticipantState, ManagedGiveawayPublic } from '@maxim/contracts';
-import { type CSSProperties, useEffect, useMemo, useState } from 'react';
+import { type CSSProperties, useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
@@ -626,14 +626,11 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
           giveawayStatus: giveaway.status,
         });
 
-  const channelCards = useMemo(() => buildGiveawayChannels(giveaway), [giveaway]);
-  const missingChannelCards = useMemo(
-    () => resolveMissingGiveawayChannels(giveaway, participant),
-    [giveaway, participant],
-  );
-  const overlayMissingChannelCards = useMemo(
-    () => resolveMissingGiveawayChannels(giveaway, resultOverlayParticipant),
-    [giveaway, resultOverlayParticipant],
+  const channelCards = buildGiveawayChannels(giveaway);
+  const missingChannelCards = resolveMissingGiveawayChannels(giveaway, participant);
+  const overlayMissingChannelCards = resolveMissingGiveawayChannels(
+    giveaway,
+    resultOverlayParticipant,
   );
 
   const participantPresentation = participantQuery.error
