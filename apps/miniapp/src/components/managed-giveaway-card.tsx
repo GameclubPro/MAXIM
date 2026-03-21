@@ -169,6 +169,10 @@ function formatCompactDate(value: string): string {
   });
 }
 
+function formatCount(value: number): string {
+  return new Intl.NumberFormat('ru-RU').format(value);
+}
+
 function formatDateTimeInputValue(date: Date): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -1285,11 +1289,33 @@ export function ManagedGiveawayCard({
   const shouldShowCurrentSummary =
     Boolean(currentItem) && (currentItem?.status !== 'DRAFT' || !isEditingOpen);
   const totalItemsCount = sortedItems.length;
-  const headerSummaryText = currentItem
-    ? `${buildStatusLabel(currentItem.status)} • ${totalItemsCount} всего${historyItems.length > 0 ? ` • ${historyItems.length} в архиве` : ''}`
-    : totalItemsCount > 0
-      ? `${totalItemsCount} всего${historyItems.length > 0 ? ` • ${historyItems.length} в архиве` : ''}`
-      : 'Создайте первый розыгрыш и публикуйте через бота.';
+  const headerTitle = isEditingOpen
+    ? draft
+      ? buildDraftTitleSummary(draft.title)
+      : draftDetailsQuery.isLoading
+        ? 'Открываем черновик'
+        : 'Новый розыгрыш'
+    : currentItem
+      ? currentItem.title
+      : 'Создайте новый розыгрыш';
+  const headerEyebrow = isEditingOpen
+    ? editorMode === 'create'
+      ? 'Новый черновик'
+      : 'Редактирование'
+    : currentItem
+      ? buildStatusLabel(currentItem.status)
+      : 'Нет активного сценария';
+  const headerSummaryText = isEditingOpen
+    ? draft
+      ? editorSteps
+          .map((step) => `${step.label}: ${step.isComplete ? 'OK' : 'в работе'}`)
+          .join(' • ')
+      : 'Подгружаем сценарий и шаги.'
+    : currentItem
+      ? `${buildCurrentSubtitle(currentItem)} ${historyItems.length > 0 ? `Архив: ${historyItems.length}.` : ''}`
+      : totalItemsCount > 0
+        ? `${totalItemsCount} сценариев всего${historyItems.length > 0 ? ` • ${historyItems.length} в архиве` : ''}`
+        : 'Соберите сценарий, добавьте текст в боте и публикуйте без длинной ручной рутины.';
   const editorOverviewText = draft
     ? [
         formatCompactInputDateTime(draft.endsAtLocal, 'Финиш не задан'),
@@ -1332,6 +1358,34 @@ export function ManagedGiveawayCard({
           ? 'Текст уже в боте. Можно публиковать в чат одним действием.'
           : 'Финальный шаг: добавьте текст и при желании фото в чат-боте.'
       : activeEditorStep.summary;
+  const currentStats = currentItem
+    ? [
+        {
+          key: 'entries',
+          label: 'Заявки',
+          value: formatCount(currentItem.entriesCount),
+        },
+        {
+          key: 'verified',
+          label: 'Проверено',
+          value: formatCount(currentItem.verifiedEntriesCount),
+        },
+        {
+          key: 'pending',
+          label: 'Ждут',
+          value: formatCount(currentItem.pendingEntriesCount),
+        },
+        {
+          key: 'finish',
+          label: currentItem.status === 'SCHEDULED' ? 'Старт' : 'Финиш',
+          value: formatCompactDate(
+            currentItem.status === 'SCHEDULED'
+              ? (currentItem.startsAt ?? currentItem.endsAt)
+              : currentItem.endsAt,
+          ),
+        },
+      ]
+    : [];
   const finalChecklist = draft
     ? [
         {
@@ -1373,48 +1427,51 @@ export function ManagedGiveawayCard({
     <div className="managed-giveaway">
       <div className="managed-giveaway__header">
         <div className="managed-giveaway__header-copy">
-          <strong className="managed-giveaway__title">Розыгрыши</strong>
+          <span className="managed-giveaway__eyebrow">{headerEyebrow}</span>
+          <strong className="managed-giveaway__title">{headerTitle}</strong>
           <small className="managed-giveaway__subtitle">{headerSummaryText}</small>
         </div>
-        {isEditingOpen ? (
-          <button
-            type="button"
-            className="button button--ghost"
-            disabled={isBusy}
-            onClick={clearEditor}
-          >
-            Закрыть
-          </button>
-        ) : currentItem?.status === 'DRAFT' ? (
-          <button
-            type="button"
-            className="button button--accent"
-            disabled={isBusy}
-            onClick={startEditCurrentDraft}
-          >
-            Редактировать
-          </button>
-        ) : !currentItem ? (
-          <button
-            type="button"
-            className="button button--accent"
-            disabled={isBusy}
-            onClick={startCreate}
-          >
-            Новый розыгрыш
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="button button--accent"
-            disabled={isBusy}
-            onClick={() => {
-              void handoffMutation.mutateAsync(currentItem.id);
-            }}
-          >
-            {handoffMutation.isPending ? 'Открываем…' : 'Открыть в боте'}
-          </button>
-        )}
+        <div className="managed-giveaway__header-actions">
+          {isEditingOpen ? (
+            <button
+              type="button"
+              className="button button--ghost"
+              disabled={isBusy}
+              onClick={clearEditor}
+            >
+              Закрыть
+            </button>
+          ) : currentItem?.status === 'DRAFT' ? (
+            <button
+              type="button"
+              className="button button--accent"
+              disabled={isBusy}
+              onClick={startEditCurrentDraft}
+            >
+              Продолжить
+            </button>
+          ) : !currentItem ? (
+            <button
+              type="button"
+              className="button button--accent"
+              disabled={isBusy}
+              onClick={startCreate}
+            >
+              Новый
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="button button--accent"
+              disabled={isBusy}
+              onClick={() => {
+                void handoffMutation.mutateAsync(currentItem.id);
+              }}
+            >
+              {handoffMutation.isPending ? 'Открываем…' : 'Бот'}
+            </button>
+          )}
+        </div>
       </div>
 
       {isEditingOpen ? (
@@ -1430,7 +1487,9 @@ export function ManagedGiveawayCard({
               </span>
             </div>
             <div className="managed-giveaway__editor-overview">
-              {draftDetailsQuery.isLoading ? 'Подтягиваем актуальные данные…' : 'Открываем сценарий.'}
+              {draftDetailsQuery.isLoading
+                ? 'Подтягиваем актуальные данные…'
+                : 'Открываем сценарий.'}
             </div>
           </div>
         ) : (
@@ -1441,6 +1500,7 @@ export function ManagedGiveawayCard({
                   Шаг {activeEditorStepIndex + 1} / {editorSteps.length}
                 </span>
                 <strong>{activeEditorStep.title}</strong>
+                <small>{activeEditorStep.description}</small>
               </div>
               <span
                 className={cn(
@@ -1468,7 +1528,8 @@ export function ManagedGiveawayCard({
                   }}
                 >
                   <span className="managed-giveaway__step-button-index">{`0${index + 1}`}</span>
-                  <strong>{step.label}</strong>
+                  <strong>{step.title}</strong>
+                  <small>{step.summary}</small>
                 </button>
               ))}
             </div>
@@ -1975,12 +2036,12 @@ export function ManagedGiveawayCard({
               </button>
             </div>
 
-            <div className="giveaway-page__sticky-bar">
-              <div className="giveaway-page__sticky-copy">
+            <div className="managed-giveaway__action-dock">
+              <div className="managed-giveaway__action-dock-copy">
                 <strong>{stickyTitle}</strong>
                 <span>{stickyDescription}</span>
               </div>
-              <div className="managed-giveaway__sticky-actions">
+              <div className="managed-giveaway__action-dock-actions">
                 {activeEditorStepIndex > 0 ? (
                   <button
                     type="button"
@@ -2049,18 +2110,12 @@ export function ManagedGiveawayCard({
           </div>
 
           <div className="managed-giveaway__stat-grid">
-            <div className="managed-giveaway__stat-card">
-              <span>Заявки</span>
-              <strong>{currentItem.entriesCount}</strong>
-            </div>
-            <div className="managed-giveaway__stat-card">
-              <span>Победители</span>
-              <strong>{currentItem.winnersCount}</strong>
-            </div>
-            <div className="managed-giveaway__stat-card">
-              <span>Обновлён</span>
-              <strong>{formatCompactDate(currentItem.updatedAt)}</strong>
-            </div>
+            {currentStats.map((item) => (
+              <div key={item.key} className="managed-giveaway__stat-card">
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+              </div>
+            ))}
           </div>
 
           <div className="managed-giveaway__actions">
