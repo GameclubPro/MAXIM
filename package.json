@@ -9,6 +9,9 @@
   "scripts": {
     "build": "npm run build --workspace @maxim/contracts && npm run build --workspace @maxim/api && npm run build --workspace @maxim/miniapp",
     "dev": "npm run dev --workspace @maxim/api",
+    "emulator:miniapp": "node scripts/open-miniapp-emulator.mjs",
+    "emulator:miniapp:android": "node scripts/open-miniapp-emulator.mjs --device android",
+    "emulator:miniapp:iphone": "node scripts/open-miniapp-emulator.mjs --device iphone",
     "lint": "eslint .",
     "screenshots:miniapp": "node scripts/capture-miniapp-preview.mjs",
     "typecheck": "npm run typecheck --workspace @maxim/contracts && npm run typecheck --workspace @maxim/api && npm run typecheck --workspace @maxim/miniapp",
