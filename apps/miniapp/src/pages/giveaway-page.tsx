@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ManagedGiveawayParticipantState, ManagedGiveawayPublic } from '@maxim/contracts';
-import { useEffect } from 'react';
+import type { CSSProperties } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useToast } from '../components/ui/toast';
 import {
@@ -298,6 +299,8 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const subscriptionCheckInFlightRef = useRef(false);
+  const [awaitingSubscriptionReturn, setAwaitingSubscriptionReturn] = useState(false);
 
   const closePage = () => {
     maxImpact('light');
@@ -400,6 +403,11 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
     giveaway && !participantQuery.error
       ? resolveMissingGiveawayChannels(giveaway, participant)
       : [];
+  const totalChannelSteps = giveaway ? buildGiveawayChannels(giveaway).length : 0;
+  const completedChannelSteps = Math.max(0, totalChannelSteps - missingChannelCards.length);
+  const nextMissingChannel = missingChannelCards[0] ?? null;
+  const isSubscriptionFlow =
+    participant?.eligibilityState === 'REJECTED' && missingChannelCards.length > 0;
 
   const canRetryParticipation = giveaway?.status === 'ACTIVE' && participant?.eligibilityState === 'REJECTED';
   const canEnterParticipation =
@@ -448,8 +456,23 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
         ? {
             label: 'Обновить статус',
             disabled: participantQuery.isLoading,
+          onClick: () => {
+            void participantQuery.refetch();
+          },
+        }
+      : isSubscriptionFlow && nextMissingChannel?.link
+        ? {
+            label:
+              awaitingSubscriptionReturn && participantQuery.isFetching
+                ? 'Проверяем подписку…'
+                : missingChannelCards.length > 1
+                  ? 'Открыть следующий канал'
+                  : 'Открыть канал',
+            disabled: awaitingSubscriptionReturn && participantQuery.isFetching,
             onClick: () => {
-              void participantQuery.refetch();
+              setAwaitingSubscriptionReturn(true);
+              maxSelectionChanged();
+              openMaxBotLink(nextMissingChannel.link ?? '');
             },
           }
         : participant?.canClaim
@@ -478,7 +501,9 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
               ? {
                   label: 'Открыть итоги',
                   disabled: false,
-                  onClick: () => openMaxBotLink(giveaway.resultsUrl ?? ''),
+                  onClick: () => {
+                    openMaxBotLink(giveaway.resultsUrl ?? '');
+                  },
                 }
               : null;
 
@@ -486,6 +511,54 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
     maxSelectionChanged();
     openMaxBotLink(SUPPORT_BOT_URL);
   };
+
+  useEffect(() => {
+    if (!awaitingSubscriptionReturn || typeof document === 'undefined' || typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const runAutoCheck = async () => {
+      if (document.visibilityState !== 'visible' || subscriptionCheckInFlightRef.current) {
+        return;
+      }
+
+      subscriptionCheckInFlightRef.current = true;
+      try {
+        const [participantResult] = await Promise.all([
+          participantQuery.refetch(),
+          giveawayQuery.refetch(),
+        ]);
+        const nextParticipant = participantResult.data ?? null;
+        if (nextParticipant?.eligibilityState === 'VERIFIED') {
+          maxNotify('success');
+          pushToast({
+            tone: 'success',
+            title: 'Подписки подтверждены',
+            description: 'Можно продолжать участие в розыгрыше.',
+          });
+        } else if (nextParticipant?.eligibilityState === 'REJECTED') {
+          maxNotify('warning');
+        }
+      } finally {
+        subscriptionCheckInFlightRef.current = false;
+        setAwaitingSubscriptionReturn(false);
+      }
+    };
+
+    const handleVisible = () => {
+      void runAutoCheck();
+    };
+
+    window.addEventListener('focus', handleVisible);
+    window.addEventListener('pageshow', handleVisible);
+    document.addEventListener('visibilitychange', handleVisible);
+
+    return () => {
+      window.removeEventListener('focus', handleVisible);
+      window.removeEventListener('pageshow', handleVisible);
+      document.removeEventListener('visibilitychange', handleVisible);
+    };
+  }, [awaitingSubscriptionReturn, giveawayQuery, participantQuery, pushToast]);
 
   return (
     <div className="giveaway-page giveaway-page--modal-only">
@@ -535,34 +608,66 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
           {missingChannelCards.length > 0 ? (
             <div className="giveaway-page__overlay-body">
               <div className="giveaway-page__overlay-note">
-                <strong>Обязательные каналы</strong>
-                <span>Откройте их в MAX, подпишитесь и вернитесь к кнопке участия.</span>
+                <strong>
+                  {missingChannelCards.length > 1
+                    ? `Осталось ${missingChannelCards.length} канала`
+                    : 'Остался последний канал'}
+                </strong>
+                <span>
+                  Откройте следующий канал в MAX. После возврата mini app перепроверит подписку
+                  автоматически.
+                </span>
               </div>
 
-              <div className="giveaway-page__overlay-channel-list">
-                {missingChannelCards.map((channel) =>
-                  channel.link ? (
-                    <button
-                      key={channel.id}
-                      type="button"
-                      className="giveaway-page__overlay-channel"
-                      onClick={() => {
-                        maxSelectionChanged();
-                        openMaxBotLink(channel.link ?? '');
-                      }}
-                    >
-                      <span>{channel.eyebrow}</span>
-                      <strong>{channel.title}</strong>
-                    </button>
-                  ) : (
-                    <div key={channel.id} className="giveaway-page__overlay-channel is-disabled">
-                      <span>{channel.eyebrow}</span>
-                      <strong>{channel.title}</strong>
-                      <small>У канала нет публичной ссылки для открытия из mini app.</small>
-                    </div>
-                  ),
-                )}
-              </div>
+              {totalChannelSteps > 0 ? (
+                <div className="giveaway-page__overlay-progress">
+                  <div className="giveaway-page__overlay-progress-head">
+                    <strong>
+                      Шаг {Math.min(completedChannelSteps + 1, totalChannelSteps)} из {totalChannelSteps}
+                    </strong>
+                    <span>
+                      Готово {completedChannelSteps} из {totalChannelSteps}
+                    </span>
+                  </div>
+
+                  <div
+                    className="giveaway-page__overlay-progress-rail"
+                    style={{ '--giveaway-progress-count': totalChannelSteps } as CSSProperties}
+                    aria-hidden
+                  >
+                    {Array.from({ length: totalChannelSteps }, (_, index) => (
+                      <span
+                        key={`giveaway-progress-${index + 1}`}
+                        className={cn(
+                          'giveaway-page__overlay-progress-segment',
+                          index < completedChannelSteps && 'is-complete',
+                          index === completedChannelSteps && 'is-current',
+                        )}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
+              {nextMissingChannel ? (
+                nextMissingChannel.link ? (
+                  <div className="giveaway-page__overlay-channel giveaway-page__overlay-channel--focus">
+                    <span>{nextMissingChannel.eyebrow}</span>
+                    <strong>{nextMissingChannel.title}</strong>
+                    <small>
+                      {awaitingSubscriptionReturn
+                        ? 'Вернитесь в mini app после подписки — проверка уже ждёт вас.'
+                        : 'Откройте канал в MAX, подпишитесь и вернитесь сюда.'}
+                    </small>
+                  </div>
+                ) : (
+                  <div className="giveaway-page__overlay-channel is-disabled giveaway-page__overlay-channel--focus">
+                    <span>{nextMissingChannel.eyebrow}</span>
+                    <strong>{nextMissingChannel.title}</strong>
+                    <small>У канала нет публичной ссылки для открытия из mini app.</small>
+                  </div>
+                )
+              ) : null}
             </div>
           ) : null}
 
