@@ -566,25 +566,6 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
             </div>
           ) : null}
 
-          <div className="giveaway-page__overlay-support">
-            <div className="giveaway-page__overlay-support-copy">
-              <span>Конкурсный бот</span>
-              <strong>Майор Максимов</strong>
-              <small>Открыть профиль бота в MAX</small>
-            </div>
-
-            <a
-              href={SUPPORT_BOT_URL}
-              className="giveaway-page__overlay-support-link"
-              onClick={(event) => {
-                event.preventDefault();
-                openSupportBot();
-              }}
-            >
-              Открыть бота
-            </a>
-          </div>
-
           <div className="giveaway-page__overlay-actions">
             {primaryAction ? (
               <button
@@ -608,6 +589,20 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
               Закрыть
             </button>
           </div>
+
+          <p className="giveaway-page__overlay-footnote">
+            Конкурсный бот{' '}
+            <a
+              href={SUPPORT_BOT_URL}
+              className="giveaway-page__overlay-inline-link"
+              onClick={(event) => {
+                event.preventDefault();
+                openSupportBot();
+              }}
+            >
+              Майор Максимов
+            </a>
+          </p>
         </section>
       </div>
     </div>
