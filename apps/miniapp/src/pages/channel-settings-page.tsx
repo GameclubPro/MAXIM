@@ -1417,8 +1417,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                     <div className="managed-broadcast-editor-note">
                       <strong>Контент хранится в личке бота</strong>
                       <small>
-                        Текст или фото уже сохранены. Здесь остаются календарь и CTA, а сам
-                        контент редактируется в боте.
+                        Текст или фото уже сохранены. Здесь остаются календарь и CTA, а сам контент
+                        редактируется в боте.
                       </small>
                     </div>
                   ) : null}
@@ -1617,6 +1617,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             open={expandedSections.giveaway}
             title="Розыгрыши"
             summary="Управление через бота"
+            className="settings-drilldown__panel--giveaway"
             onClose={() => toggleSection('giveaway')}
           >
             <div

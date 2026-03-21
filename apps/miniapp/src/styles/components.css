@@ -4102,6 +4102,18 @@
   gap: 10px;
 }
 
+.settings-drilldown__panel--giveaway {
+  max-width: 560px;
+  height: calc(
+    100dvh - max(12px, env(safe-area-inset-top, 0px)) - max(8px, env(safe-area-inset-bottom, 0px))
+  );
+  margin: auto 0 0;
+}
+
+.settings-drilldown__panel--giveaway .settings-section__collapse-inner {
+  padding: 12px 14px calc(22px + env(safe-area-inset-bottom, 0px));
+}
+
 @keyframes settings-drilldown-panel-enter {
   from {
     transform: translate3d(0, 20px, 0) scale(0.985);
@@ -9127,7 +9139,7 @@
   display: flex;
   align-items: end;
   justify-content: center;
-  padding: 18px 12px calc(12px + env(safe-area-inset-bottom, 0px));
+  padding: 12px 10px calc(10px + env(safe-area-inset-bottom, 0px));
 }
 
 .giveaway-page__overlay-backdrop {
@@ -9135,19 +9147,19 @@
   inset: 0;
   border: 0;
   padding: 0;
-  background: rgba(7, 18, 31, 0.36);
+  background: rgba(7, 18, 31, 0.3);
   backdrop-filter: blur(12px);
 }
 
 .giveaway-page__overlay-card {
   position: relative;
   z-index: 1;
-  width: min(100%, 430px);
+  width: min(100%, 408px);
   display: grid;
   justify-items: stretch;
-  gap: 14px;
-  padding: 12px 20px calc(18px + env(safe-area-inset-bottom, 0px));
-  border-radius: 34px 34px 24px 24px;
+  gap: 12px;
+  padding: 12px 18px calc(16px + env(safe-area-inset-bottom, 0px));
+  border-radius: 30px 30px 22px 22px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background:
     radial-gradient(circle at 12% 0%, rgba(99, 173, 255, 0.18), transparent 34%),
@@ -9172,9 +9184,9 @@
 
 .giveaway-page__overlay-card .giveaway-page__state-icon {
   justify-self: center;
-  width: 78px;
-  height: 78px;
-  border-radius: 26px;
+  width: 68px;
+  height: 68px;
+  border-radius: 22px;
   background: rgba(255, 255, 255, 0.06);
   box-shadow:
     0 16px 28px rgba(0, 0, 0, 0.22),
@@ -9198,16 +9210,16 @@
 }
 
 .giveaway-page__overlay-card .giveaway-page__state-icon svg {
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
 }
 
 .giveaway-page__overlay-close {
   position: absolute;
-  top: 16px;
-  right: 16px;
-  width: 36px;
-  height: 36px;
+  top: 14px;
+  right: 14px;
+  width: 34px;
+  height: 34px;
   border-radius: 999px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background: rgba(255, 255, 255, 0.05);
@@ -9226,8 +9238,8 @@
 
 .giveaway-page__overlay-copy strong {
   color: #f4f8ff;
-  font-size: clamp(1.24rem, 1.08rem + 0.52vw, 1.66rem);
-  line-height: 1.04;
+  font-size: clamp(1.16rem, 1.02rem + 0.44vw, 1.5rem);
+  line-height: 1.06;
   letter-spacing: -0.04em;
   text-wrap: balance;
 }
@@ -9235,14 +9247,14 @@
 .giveaway-page__overlay-copy p {
   margin: 0;
   color: rgba(224, 233, 244, 0.84);
-  font-size: 0.9rem;
-  line-height: 1.44;
+  font-size: 0.86rem;
+  line-height: 1.4;
 }
 
 .giveaway-page__overlay-body {
   width: 100%;
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .giveaway-page__overlay-note {
@@ -9252,14 +9264,14 @@
 
 .giveaway-page__overlay-note strong {
   color: #f5f8ff;
-  font-size: 0.96rem;
+  font-size: 0.92rem;
   line-height: 1.2;
 }
 
 .giveaway-page__overlay-note span {
   color: rgba(214, 225, 239, 0.82);
-  font-size: 0.86rem;
-  line-height: 1.38;
+  font-size: 0.82rem;
+  line-height: 1.34;
 }
 
 .giveaway-page__overlay-channel-list {
@@ -9271,7 +9283,7 @@
   width: 100%;
   display: grid;
   gap: 4px;
-  padding: 13px 14px;
+  padding: 12px 13px;
   text-align: left;
   border-radius: 18px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -9290,13 +9302,13 @@
 
 .giveaway-page__overlay-channel strong {
   color: #f4f8ff;
-  font-size: 0.98rem;
+  font-size: 0.94rem;
   line-height: 1.26;
 }
 
 .giveaway-page__overlay-channel small {
   color: rgba(208, 220, 236, 0.72);
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   line-height: 1.38;
 }
 
@@ -9307,7 +9319,7 @@
 
 .giveaway-page__overlay-footer {
   color: rgba(178, 194, 214, 0.72);
-  font-size: 0.8rem;
+  font-size: 0.76rem;
   line-height: 1.3;
   text-align: center;
 }
@@ -9367,7 +9379,7 @@
   }
 
   .giveaway-page__overlay-card {
-    padding: 12px 16px calc(18px + env(safe-area-inset-bottom, 0px));
+    padding: 12px 16px calc(16px + env(safe-area-inset-bottom, 0px));
   }
 }
 
@@ -11435,12 +11447,6 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.18);
 }
 
-.design-preview__device--iphone {
-  border-radius: 38px;
-  background:
-    linear-gradient(155deg, rgba(31, 35, 42, 0.96), rgba(86, 92, 102, 0.92)), rgba(31, 35, 42, 0.96);
-}
-
 .design-preview__device-chrome {
   display: flex;
   justify-content: center;
@@ -11469,12 +11475,12 @@
 }
 
 .design-preview__device-screen {
+  position: relative;
+  height: clamp(568px, calc(100dvh - 112px), 852px);
   overflow: hidden;
+  transform: translateZ(0);
   border-radius: 28px;
-  background: linear-gradient(180deg, rgba(248, 251, 255, 0.98), rgba(240, 246, 255, 0.98));
-  box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.18),
-    inset 0 1px 0 rgba(255, 255, 255, 0.66);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
 }
 
 .design-preview .compact-page-header {

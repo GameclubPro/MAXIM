@@ -1048,7 +1048,10 @@ function mergeSectionSettings(
   return nextSettings;
 }
 
-function mergeCommentsSettings(targetSettings: ChatSettings, sourceSettings: ChatSettings): ChatSettings {
+function mergeCommentsSettings(
+  targetSettings: ChatSettings,
+  sourceSettings: ChatSettings,
+): ChatSettings {
   const nextSettings = { ...targetSettings } as ChatSettings;
   const nextRecord = nextSettings as Record<keyof ChatSettings, unknown>;
   const sourceRecord = sourceSettings as Record<keyof ChatSettings, unknown>;
@@ -1458,12 +1461,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       ...(focusSection === 'rules'
         ? { rules: true }
         : focusSection === 'comments'
-        ? { comments: true }
-        : focusSection === 'giveaway'
-        ? { giveaway: true }
-        : focusSection === 'requiredSubscription'
-          ? { requiredSubscription: true }
-          : { mailing: true }),
+          ? { comments: true }
+          : focusSection === 'giveaway'
+            ? { giveaway: true }
+            : focusSection === 'requiredSubscription'
+              ? { requiredSubscription: true }
+              : { mailing: true }),
     });
   }, [focusSection]);
 
@@ -1686,7 +1689,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }, [settingsQuery.data]);
 
   useEffect(() => {
-    setResolvedRequiredSubscriptionChannels(settingsScreenQuery.data?.requiredSubscriptionChannels ?? []);
+    setResolvedRequiredSubscriptionChannels(
+      settingsScreenQuery.data?.requiredSubscriptionChannels ?? [],
+    );
   }, [settingsScreenQuery.data?.requiredSubscriptionChannels]);
 
   useEffect(() => {
@@ -1860,7 +1865,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       maxNotify('error');
     },
   });
-  const isResolvingRequiredSubscriptionChannel = resolveRequiredSubscriptionChannelMutation.isPending;
+  const isResolvingRequiredSubscriptionChannel =
+    resolveRequiredSubscriptionChannelMutation.isPending;
 
   const saveSpeechStyleMutation = useMutation({
     mutationFn: ({ style, payload }: { style: BotSpeechStyle; payload: ChatSettings }) =>
@@ -3477,7 +3483,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingScheduledSlots.length > 0 ||
     mailingText.trim().length > 0 ||
     mailingImageEnabled ||
-      mailingButtonEnabled;
+    mailingButtonEnabled;
   const mailingSendDisabled = isMailingBusy;
   const mailingDrilldownFooter = (
     <>
@@ -4800,6 +4806,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   open={expandedSections.giveaway}
                   title="Розыгрыши"
                   summary="Создание и управление в личке бота"
+                  className="settings-drilldown__panel--giveaway"
                   onClose={() => toggleSection('giveaway')}
                 >
                   <div
@@ -8117,8 +8124,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         <div className="managed-broadcast-editor-note">
                           <strong>Контент хранится в личке бота</strong>
                           <small>
-                            Текст или фото уже сохранены. Здесь остаются календарь, охват и CTA,
-                            а сам контент редактируется в боте.
+                            Текст или фото уже сохранены. Здесь остаются календарь, охват и CTA, а
+                            сам контент редактируется в боте.
                           </small>
                         </div>
                       ) : null}
@@ -8505,9 +8512,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 onToggleHint={toggleHint}
                                 label="Как работают комментарии в чатах"
                               >
-                                В MAX нет нативных комментариев под сообщениями в чатах, поэтому
-                                бот сам публикует сообщение с кнопкой комментариев. Для постов
-                                админа бот отправляет копию с той же разметкой и удаляет исходное
+                                В MAX нет нативных комментариев под сообщениями в чатах, поэтому бот
+                                сам публикует сообщение с кнопкой комментариев. Для постов админа
+                                бот отправляет копию с той же разметкой и удаляет исходное
                                 сообщение, а для рассылок кнопка ставится сразу на сообщение бота.
                               </SettingsHintAnchor>
                             </div>
@@ -8563,8 +8570,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   >
                                     Когда пишет админ, бот публикует такое же сообщение от себя с
                                     кнопкой комментариев и удаляет исходное. Это нужно, потому что
-                                    MAX не умеет вешать кнопку прямо под сообщением человека в
-                                    чате.
+                                    MAX не умеет вешать кнопку прямо под сообщением человека в чате.
                                   </SettingsHintAnchor>
                                 </div>
                               </div>
@@ -8590,9 +8596,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           <div className="settings-native-toggle">
                             <div className="settings-native-toggle__row">
                               <div className="settings-native-toggle__title-wrap">
-                                <span className="settings-native-toggle__title">
-                                  Для рассылки
-                                </span>
+                                <span className="settings-native-toggle__title">Для рассылки</span>
                                 <div className="settings-native-toggle__title-actions">
                                   <SettingsHintAnchor
                                     hintKey="commentsChatBroadcasts"
@@ -8756,9 +8760,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             onToggleHint={toggleHint}
                             label="Пояснение для списка обязательных каналов"
                           >
-                            Можно выбрать свои каналы ниже или добавить чужой канал по
-                            публичной ссылке. Чтобы MAX проверял подписку, бот должен быть
-                            администратором этого канала.
+                            Можно выбрать свои каналы ниже или добавить чужой канал по публичной
+                            ссылке. Чтобы MAX проверял подписку, бот должен быть администратором
+                            этого канала.
                           </SettingsHintAnchor>
                         </div>
 

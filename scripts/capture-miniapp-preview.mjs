@@ -17,7 +17,14 @@ const deviceProfiles = {
     viewportName: 'iPhone 15',
     outputDirName: 'iphone',
   },
+  'iphone-se': {
+    queryDevice: 'iphone',
+    viewportName: 'iPhone SE',
+    outputDirName: 'iphone-se',
+  },
 };
+
+const screenshotTarget = (process.env.MINIAPP_SCREENSHOT_TARGET ?? 'device').trim().toLowerCase();
 
 const scenarios = [
   {
@@ -338,6 +345,18 @@ async function waitForPreviewApp(page) {
   await page.waitForLoadState('networkidle');
 }
 
+function resolveScreenshotLocator(page) {
+  if (screenshotTarget === 'page') {
+    return null;
+  }
+
+  if (screenshotTarget === 'screen') {
+    return page.locator('.design-preview__device-screen');
+  }
+
+  return page.locator('.design-preview__device');
+}
+
 async function captureDeviceScenarios(browser, profile, baseUrl, outputDir) {
   const device = devices[profile.viewportName];
   if (!device) {
@@ -364,8 +383,20 @@ async function captureDeviceScenarios(browser, profile, baseUrl, outputDir) {
       await scenario.beforeShot(page);
     }
 
+    const screenshotPath = path.join(shotDir, `${scenario.name}.png`);
+    const locator = resolveScreenshotLocator(page);
+
+    if (locator) {
+      await locator.screenshot({
+        path: screenshotPath,
+        animations: 'disabled',
+        timeout: 120_000,
+      });
+      continue;
+    }
+
     await page.screenshot({
-      path: path.join(shotDir, `${scenario.name}.png`),
+      path: screenshotPath,
       animations: 'disabled',
       timeout: 120_000,
       fullPage: true,
@@ -385,7 +416,7 @@ async function main() {
       : Object.keys(deviceProfiles).filter((key) => key === requestedDevice);
 
   if (deviceKeys.length === 0) {
-    throw new Error('MINIAPP_SCREENSHOT_DEVICE must be one of: android, iphone, all');
+    throw new Error('MINIAPP_SCREENSHOT_DEVICE must be one of: android, iphone, iphone-se, all');
   }
 
   await ensureDir(outputDir);
