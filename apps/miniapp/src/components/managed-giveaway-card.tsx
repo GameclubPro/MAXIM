@@ -1476,7 +1476,8 @@ export function ManagedGiveawayCard({
       : currentStepValidation.valid
         ? activeEditorStep.description
         : currentStepValidation.message;
-  const showStickyCopy = editorStep === 'prizes' || !currentStepValidation.valid;
+  const showStickyCopy =
+    !currentStepValidation.valid || (editorStep === 'prizes' && !publicationTextReady);
   const currentSummaryMetrics: SummaryMetric[] = currentItem
     ? [
         {
