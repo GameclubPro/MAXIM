@@ -288,10 +288,12 @@ export class ManagedGiveawayService {
     const publicationButton = this.buildGiveawayEntryButton(giveaway.id);
     const imagePayload = await this.uploadGiveawayImage(giveaway);
     const publicationText = this.buildGiveawayPublicationText(giveaway);
+    const publicationTextFormat = this.resolveGiveawayPublicationTextFormat(giveaway);
     const publication = await this.maxClient.sendMessageImmediateWithResolvedLink(
       sourceChatId,
       publicationText,
       {
+        ...(publicationTextFormat ? { textFormat: publicationTextFormat } : {}),
         ...(publicationButton ? { buttons: [[publicationButton]] } : {}),
         ...(imagePayload ? { imagePayload } : {}),
       },
@@ -1314,6 +1316,18 @@ export class ManagedGiveawayService {
     }
 
     return 'Розыгрыш';
+  }
+
+  private resolveGiveawayPublicationTextFormat(
+    giveaway: Pick<PersistedGiveawayWithRelations, 'description'>,
+  ): MaxSendMessageOptions['textFormat'] | undefined {
+    return this.shouldUseMarkdownForPublication(giveaway.description) ? 'markdown' : undefined;
+  }
+
+  private shouldUseMarkdownForPublication(text: string): boolean {
+    return /(?:\*\*[^*\n]+?\*\*|__[^_\n]+?__|\*[^*\n]+?\*|_[^_\n]+?_|~~[^~\n]+?~~|\+\+[^+\n]+?\+\+|`[^`\n]+`|\[[^\]\n]+\]\((?:https?:\/\/|max:\/\/)[^)]+\))/u.test(
+      text,
+    );
   }
 
   private buildGiveawayResultsText(giveaway: PersistedGiveawayWithRelations): string {

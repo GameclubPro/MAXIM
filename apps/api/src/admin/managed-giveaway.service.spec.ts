@@ -32,6 +32,7 @@ function createConfigMock() {
 function createPrismaMock() {
   return {
     managedGiveaway: {
+      findFirst: jest.fn(),
       findUnique: jest.fn(),
       update: jest.fn(),
     },
@@ -360,6 +361,70 @@ describe('ManagedGiveawayService', () => {
         resultsUrl: 'https://max.ru/channels/source-1/messages/results-1',
       },
     });
+  });
+
+  it('publishes giveaway text with markdown format when the bot draft contains markup', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-21T12:30:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const chatContextCache = { invalidate: jest.fn() };
+    const adminService = {
+      getChannelSettings: jest.fn().mockResolvedValue({}),
+      getSettings: jest.fn().mockResolvedValue({}),
+    };
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      adminService as never,
+      createConfigMock() as never,
+    );
+
+    const draft = createGiveaway({
+      status: ManagedGiveawayStatus.DRAFT,
+      description:
+        '**Жирный заголовок**\nТекст с _курсивом_ и [ссылкой](https://max.ru/).',
+      entries: [],
+      winners: [],
+    });
+    const published = createGiveaway({
+      ...draft,
+      status: ManagedGiveawayStatus.ACTIVE,
+      publicationMessageId: 'publication-1',
+      publicationUrl: 'https://max.ru/channels/source-1/messages/publication-1',
+      publishedAt: new Date('2026-03-21T12:30:00.000Z'),
+    });
+
+    prisma.managedGiveaway.findFirst
+      .mockResolvedValueOnce(draft)
+      .mockResolvedValueOnce(null);
+    prisma.managedGiveaway.update.mockResolvedValue(published);
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'publication-1',
+      url: 'https://max.ru/channels/source-1/messages/publication-1',
+    });
+
+    await service.publishManagedGiveaway('source-1', 'giveaway-1', user as never, 'channel');
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'source-1',
+      draft.description,
+      expect.objectContaining({
+        textFormat: 'markdown',
+        buttons: [[expect.objectContaining({ text: 'Участвовать' })]],
+      }),
+    );
+    expect(prisma.managedGiveaway.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'giveaway-1' },
+        data: expect.objectContaining({
+          status: ManagedGiveawayStatus.ACTIVE,
+          publicationMessageId: 'publication-1',
+        }),
+      }),
+    );
+    expect(chatContextCache.invalidate).toHaveBeenCalledWith('source-1');
   });
 
   it('does not expose winner name in public results before claim confirmation', () => {
