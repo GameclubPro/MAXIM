@@ -614,6 +614,7 @@ model ManagedGiveawayEntry {
   joinedAt          DateTime                 @default(now()) @map("joined_at")
   eligibilityState  GiveawayEligibilityState @default(PENDING) @map("eligibility_state")
   eligibilityReason String?                  @map("eligibility_reason")
+  missingChannelIds Json                     @default("[]") @map("missing_channel_ids")
   checkedAt         DateTime?                @map("checked_at")
   drawRank          String?                  @map("draw_rank")
   createdAt         DateTime                 @default(now()) @map("created_at")

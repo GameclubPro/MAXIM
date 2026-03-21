@@ -221,6 +221,8 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
+      await page.getByRole('button', { name: /Участвовать/u }).click();
+      await page.waitForTimeout(350);
     },
   },
   {

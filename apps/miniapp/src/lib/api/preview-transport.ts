@@ -93,8 +93,10 @@ type PreviewDialogBucket = {
 };
 
 const PREVIEW_PUBLIC_GIVEAWAY_ID = 'preview-giveaway';
+const PREVIEW_GIVEAWAY_RUNTIME_STATE_KEY = 'maxim.preview.giveaway.runtime';
 
 type PreviewGiveawayVariant = 'blocked' | 'joined' | 'winner' | 'completed';
+type PreviewGiveawayParticipantVariant = PreviewGiveawayVariant | 'blocked-entered';
 
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -277,6 +279,27 @@ function readPreviewGiveawayVariant(): PreviewGiveawayVariant {
   return 'blocked';
 }
 
+function readPreviewGiveawayParticipantVariant(): PreviewGiveawayParticipantVariant {
+  const queryVariant = readPreviewGiveawayVariant();
+  if (typeof window === 'undefined' || queryVariant !== 'blocked') {
+    return queryVariant;
+  }
+
+  const override = window.sessionStorage.getItem(
+    `${PREVIEW_GIVEAWAY_RUNTIME_STATE_KEY}:${queryVariant}`,
+  );
+  return override === 'blocked-entered' ? 'blocked-entered' : queryVariant;
+}
+
+function writePreviewGiveawayParticipantVariant(variant: PreviewGiveawayParticipantVariant): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+
+  const queryVariant = readPreviewGiveawayVariant();
+  window.sessionStorage.setItem(`${PREVIEW_GIVEAWAY_RUNTIME_STATE_KEY}:${queryVariant}`, variant);
+}
+
 function buildPreviewPublicGiveaway(
   state: PreviewState,
   giveawayId: string,
@@ -348,7 +371,7 @@ function buildPreviewPublicGiveaway(
 }
 
 function buildPreviewGiveawayParticipantState(
-  variant: PreviewGiveawayVariant,
+  variant: PreviewGiveawayParticipantVariant,
 ): ManagedGiveawayParticipantState {
   const now = new Date();
 
@@ -358,6 +381,7 @@ function buildPreviewGiveawayParticipantState(
       entryId: 'preview-entry-winner',
       eligibilityState: 'VERIFIED',
       eligibilityReason: null,
+      missingChannelIds: [],
       joinedAt: addHours(now, -12).toISOString(),
       isWinner: true,
       winnerId: 'preview-winner-1',
@@ -376,6 +400,7 @@ function buildPreviewGiveawayParticipantState(
       entryId: 'preview-entry-joined',
       eligibilityState: 'VERIFIED',
       eligibilityReason: null,
+      missingChannelIds: [],
       joinedAt: addHours(now, -4).toISOString(),
       isWinner: false,
       winnerId: null,
@@ -394,7 +419,27 @@ function buildPreviewGiveawayParticipantState(
       entryId: 'preview-entry-completed',
       eligibilityState: 'VERIFIED',
       eligibilityReason: null,
+      missingChannelIds: [],
       joinedAt: addHours(now, -18).toISOString(),
+      isWinner: false,
+      winnerId: null,
+      winnerStatus: null,
+      claimDeadlineAt: null,
+      prizePosition: null,
+      prizeTitle: null,
+      canClaim: false,
+      claimBotUrl: null,
+    });
+  }
+
+  if (variant === 'blocked-entered') {
+    return managedGiveawayParticipantStateSchema.parse({
+      joined: true,
+      entryId: 'preview-entry-blocked',
+      eligibilityState: 'REJECTED',
+      eligibilityReason: 'Подписка на обязательный канал не подтверждена.',
+      missingChannelIds: ['preview-channel-2'],
+      joinedAt: addHours(now, -0.2).toISOString(),
       isWinner: false,
       winnerId: null,
       winnerStatus: null,
@@ -411,6 +456,7 @@ function buildPreviewGiveawayParticipantState(
     entryId: null,
     eligibilityState: null,
     eligibilityReason: null,
+    missingChannelIds: [],
     joinedAt: null,
     isWinner: false,
     winnerId: null,
@@ -2308,11 +2354,15 @@ export function createPreviewApiTransport(): ApiTransport {
         }
 
         if (segments[2] === 'me' && method === 'GET') {
-          return cloneJson(buildPreviewGiveawayParticipantState(variant));
+          return cloneJson(
+            buildPreviewGiveawayParticipantState(readPreviewGiveawayParticipantVariant()),
+          );
         }
 
         if (segments[2] === 'enter' && method === 'POST') {
-          return cloneJson(buildPreviewGiveawayParticipantState('joined'));
+          const nextVariant = variant === 'blocked' ? 'blocked-entered' : variant;
+          writePreviewGiveawayParticipantVariant(nextVariant);
+          return cloneJson(buildPreviewGiveawayParticipantState(nextVariant));
         }
 
         if (segments[2] === 'claim' && method === 'POST') {

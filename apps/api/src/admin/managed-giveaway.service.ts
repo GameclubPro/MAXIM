@@ -78,6 +78,11 @@ type GiveawayRerollCandidate = {
   entry: PersistedManagedGiveawayEntry;
   drawRank: string;
 };
+type GiveawayEligibilityResult = {
+  state: GiveawayEligibilityState;
+  reason: string | null;
+  missingChannelIds: string[];
+};
 
 @Injectable()
 export class ManagedGiveawayService {
@@ -602,12 +607,14 @@ export class ManagedGiveawayService {
         displayName,
         eligibilityState: eligibility.state,
         eligibilityReason: eligibility.reason,
+        missingChannelIds: eligibility.missingChannelIds,
         checkedAt: new Date(),
       },
       update: {
         displayName,
         eligibilityState: eligibility.state,
         eligibilityReason: eligibility.reason,
+        missingChannelIds: eligibility.missingChannelIds,
         checkedAt: new Date(),
       },
     });
@@ -619,6 +626,7 @@ export class ManagedGiveawayService {
       entryId: saved.id,
       eligibilityState: saved.eligibilityState,
       eligibilityReason: saved.eligibilityReason,
+      missingChannelIds: this.readMissingChannelIds(saved.missingChannelIds),
     });
 
     const latest = await this.findGiveawayById(refreshed.id);
@@ -1130,6 +1138,15 @@ export class ManagedGiveawayService {
       entryId: entry?.id ?? null,
       eligibilityState: entry ? giveawayEligibilityStateSchema.parse(entry.eligibilityState) : null,
       eligibilityReason: entry?.eligibilityReason ?? null,
+      missingChannelIds:
+        entry?.eligibilityState === GiveawayEligibilityState.REJECTED
+          ? (() => {
+              const storedMissingChannelIds = this.readMissingChannelIds(entry.missingChannelIds);
+              return storedMissingChannelIds.length > 0
+                ? storedMissingChannelIds
+                : this.buildGiveawayMandatoryChannelIds(row);
+            })()
+          : [],
       joinedAt: entry?.joinedAt.toISOString() ?? null,
       isWinner: Boolean(winner),
       winnerId: winner?.id ?? null,
@@ -1491,41 +1508,60 @@ export class ManagedGiveawayService {
     options: {
       strictChannelCheck?: boolean;
     } = {},
-  ): Promise<{ state: GiveawayEligibilityState; reason: string | null }> {
+  ): Promise<GiveawayEligibilityResult> {
     const entityType = this.fromPrismaEntityType(giveaway.entityType);
     const additionalRequiredChannels = this.readRequiredChannelIds(
       giveaway.requiredChannelIds,
     ).filter((channelId) => channelId !== giveaway.sourceChatId);
+    const missingChannelIds: string[] = [];
 
     try {
       const isMember = await this.maxClient.hasChatMember(giveaway.sourceChatId, userId);
-      if (isMember) {
-        for (const channelId of additionalRequiredChannels) {
-          const hasAdditionalSubscription = await this.maxClient.hasChatMember(channelId, userId);
-          if (!hasAdditionalSubscription) {
-            return {
-              state: GiveawayEligibilityState.REJECTED,
-              reason:
-                additionalRequiredChannels.length > 1
-                  ? 'Подписка на обязательные каналы не подтверждена.'
-                  : 'Подписка на обязательный канал не подтверждена.',
-            };
-          }
-        }
-
-        return { state: GiveawayEligibilityState.VERIFIED, reason: null };
+      if (!isMember) {
+        missingChannelIds.push(giveaway.sourceChatId);
       }
 
-      if (entityType === 'chat' || options.strictChannelCheck) {
+      for (const channelId of additionalRequiredChannels) {
+        const hasAdditionalSubscription = await this.maxClient.hasChatMember(channelId, userId);
+        if (!hasAdditionalSubscription) {
+          missingChannelIds.push(channelId);
+        }
+      }
+
+      if (missingChannelIds.length === 0) {
+        return {
+          state: GiveawayEligibilityState.VERIFIED,
+          reason: null,
+          missingChannelIds: [],
+        };
+      }
+
+      if (missingChannelIds.includes(giveaway.sourceChatId)) {
+        if (entityType === 'chat' || options.strictChannelCheck) {
+          return {
+            state: GiveawayEligibilityState.REJECTED,
+            reason: 'Участник не найден в исходном чате/канале.',
+            missingChannelIds,
+          };
+        }
+
         return {
           state: GiveawayEligibilityState.REJECTED,
-          reason: 'Участник не найден в исходном чате/канале.',
+          reason:
+            missingChannelIds.length > 1
+              ? 'Подписка на источник и обязательные каналы не подтверждена.'
+              : 'Подписка на источник не подтверждена.',
+          missingChannelIds,
         };
       }
 
       return {
         state: GiveawayEligibilityState.REJECTED,
-        reason: 'Подписка на источник не подтверждена.',
+        reason:
+          missingChannelIds.length > 1
+            ? 'Подписка на обязательные каналы не подтверждена.'
+            : 'Подписка на обязательный канал не подтверждена.',
+        missingChannelIds,
       };
     } catch (error: unknown) {
       if (entityType === 'chat' || options.strictChannelCheck) {
@@ -1546,6 +1582,7 @@ export class ManagedGiveawayService {
       return {
         state: GiveawayEligibilityState.PENDING,
         reason: 'MAX пока не подтвердил участие. Проверим ещё раз при подведении итогов.',
+        missingChannelIds: [],
       };
     }
   }
@@ -1560,6 +1597,26 @@ export class ManagedGiveawayService {
       .filter((item) => item.length > 0);
 
     return Array.from(new Set(normalized));
+  }
+
+  private readMissingChannelIds(value: Prisma.JsonValue | null | undefined): string[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return Array.from(
+      new Set(
+        value
+          .map((item) => (typeof item === 'string' ? item.trim() : ''))
+          .filter((item) => item.length > 0),
+      ),
+    );
+  }
+
+  private buildGiveawayMandatoryChannelIds(row: PersistedGiveawayWithRelations): string[] {
+    return Array.from(
+      new Set([row.sourceChatId, ...this.readRequiredChannelIds(row.requiredChannelIds)]),
+    );
   }
 
   private async activateScheduledGiveawayIfDue(
@@ -1673,6 +1730,7 @@ export class ManagedGiveawayService {
             data: {
               eligibilityState: result.state,
               eligibilityReason: result.reason,
+              missingChannelIds: result.missingChannelIds,
               checkedAt: now,
             },
           });

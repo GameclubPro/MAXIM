@@ -1013,6 +1013,7 @@ export const managedGiveawayParticipantStateSchema = z.object({
   entryId: z.string().nullable(),
   eligibilityState: giveawayEligibilityStateSchema.nullable(),
   eligibilityReason: z.string().nullable(),
+  missingChannelIds: z.array(z.string()),
   joinedAt: z.string().datetime().nullable(),
   isWinner: z.boolean(),
   winnerId: z.string().nullable(),
