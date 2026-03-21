@@ -1194,7 +1194,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
               </div>
             ) : null}
 
-            <small className="giveaway-page__overlay-footer">Конкурсный бот Майор Максимов</small>
+            <small className="giveaway-page__overlay-footer">Статус уже обновлён в MAX</small>
           </section>
         </div>
       ) : null}
