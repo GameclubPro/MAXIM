@@ -9268,6 +9268,14 @@
   text-align: center;
 }
 
+.giveaway-page__overlay-kicker {
+  color: rgba(162, 183, 206, 0.8);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
 .giveaway-page__overlay-copy strong {
   color: #f4f8ff;
   font-size: clamp(1.16rem, 1.02rem + 0.44vw, 1.5rem);
@@ -9287,6 +9295,28 @@
   width: 100%;
   display: grid;
   gap: 10px;
+}
+
+.giveaway-page__overlay-actions {
+  width: 100%;
+  display: grid;
+  gap: 10px;
+}
+
+.giveaway-page__overlay-actions .button {
+  width: 100%;
+  min-height: 52px;
+  border-radius: 18px;
+}
+
+.giveaway-page__overlay-card .button--ghost {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.05);
+  color: #f4f8ff;
+}
+
+.giveaway-page__overlay-card .button--ghost:hover {
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .giveaway-page__overlay-note {
