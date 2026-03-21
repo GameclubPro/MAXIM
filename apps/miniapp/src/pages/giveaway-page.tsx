@@ -752,6 +752,12 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
       value: formatCount(giveaway.prizes.length),
     },
   ];
+  const heroMetaLabel =
+    giveaway.status === 'COMPLETED'
+      ? 'Итоги доступны'
+      : giveaway.status === 'CANCELED'
+        ? 'Розыгрыш остановлен'
+        : formatTimeLeft(giveaway.endsAt);
 
   const stateFacts = [
     participant?.joinedAt ? `Заявка: ${formatDateTime(participant.joinedAt)}` : null,
@@ -860,7 +866,10 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                 {buildStatusLabel(giveaway.status)}
               </span>
               <span className={cn('giveaway-page__status', 'is-muted')}>
-                {formatTimeLeft(giveaway.endsAt)}
+                {heroMetaLabel}
+              </span>
+              <span className={cn('giveaway-page__status', `is-${participantBadge.tone}`)}>
+                {participantBadge.label}
               </span>
             </div>
 
