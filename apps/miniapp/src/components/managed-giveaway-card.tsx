@@ -1285,6 +1285,19 @@ export function ManagedGiveawayCard({
   const shouldShowCurrentSummary =
     Boolean(currentItem) && (currentItem?.status !== 'DRAFT' || !isEditingOpen);
   const totalItemsCount = sortedItems.length;
+  const headerSummaryText = currentItem
+    ? `${buildStatusLabel(currentItem.status)} • ${totalItemsCount} всего${historyItems.length > 0 ? ` • ${historyItems.length} в архиве` : ''}`
+    : totalItemsCount > 0
+      ? `${totalItemsCount} всего${historyItems.length > 0 ? ` • ${historyItems.length} в архиве` : ''}`
+      : 'Создайте первый розыгрыш и публикуйте через бота.';
+  const editorOverviewText = draft
+    ? [
+        formatCompactInputDateTime(draft.endsAtLocal, 'Финиш не задан'),
+        buildConditionsSummary(draft, selectedRequiredChannels),
+        buildPrizesSummary(draft),
+        publicationTextReady ? 'Контент готов' : 'Контент в боте',
+      ].join(' • ')
+    : '';
   const finalPrimaryLabel = firstConfigIssue
     ? 'Закончить настройку'
     : publicationTextReady
@@ -1361,23 +1374,7 @@ export function ManagedGiveawayCard({
       <div className="managed-giveaway__header">
         <div className="managed-giveaway__header-copy">
           <strong className="managed-giveaway__title">Розыгрыши</strong>
-          <small className="managed-giveaway__subtitle">
-            Короткий flow с публикацией через бот.
-          </small>
-          <div className="managed-giveaway__chips managed-giveaway__chips--header">
-            <span
-              className={cn(
-                'managed-giveaway__badge',
-                currentItem ? buildStatusTone(currentItem.status) : 'is-muted',
-              )}
-            >
-              {currentItem ? buildStatusLabel(currentItem.status) : 'Нет активного'}
-            </span>
-            <span className="managed-giveaway__chip">{totalItemsCount} всего</span>
-            {historyItems.length > 0 ? (
-              <span className="managed-giveaway__chip">{historyItems.length} в архиве</span>
-            ) : null}
-          </div>
+          <small className="managed-giveaway__subtitle">{headerSummaryText}</small>
         </div>
         {isEditingOpen ? (
           <button
@@ -1423,26 +1420,27 @@ export function ManagedGiveawayCard({
       {isEditingOpen ? (
         !draft ? (
           <div className={cn('managed-giveaway__panel', 'managed-giveaway__editor-card')}>
-            <div className="managed-giveaway__section-head">
-              <div className="managed-giveaway__section-copy">
-                <span className="managed-giveaway__eyebrow">Сценарий розыгрыша</span>
-                <strong>Готовим шаги</strong>
-                <small>
-                  {draftDetailsQuery.isLoading ? 'Загружаем форму…' : 'Собираем редактор…'}
-                </small>
+            <div className="managed-giveaway__editor-topbar">
+              <div className="managed-giveaway__editor-step-copy">
+                <span className="managed-giveaway__eyebrow">Розыгрыш</span>
+                <strong>Готовим форму</strong>
               </div>
-              <span className="managed-giveaway__badge is-warning">Форма</span>
+              <span className="managed-giveaway__badge is-muted">
+                {draftDetailsQuery.isLoading ? 'Загрузка' : 'Черновик'}
+              </span>
+            </div>
+            <div className="managed-giveaway__editor-overview">
+              {draftDetailsQuery.isLoading ? 'Подтягиваем актуальные данные…' : 'Открываем сценарий.'}
             </div>
           </div>
         ) : (
           <div className={cn('managed-giveaway__panel', 'managed-giveaway__editor-card')}>
-            <div className="managed-giveaway__section-head">
-              <div className="managed-giveaway__section-copy">
+            <div className="managed-giveaway__editor-topbar">
+              <div className="managed-giveaway__editor-step-copy">
                 <span className="managed-giveaway__eyebrow">
-                  Шаг {activeEditorStepIndex + 1} из {editorSteps.length}
+                  Шаг {activeEditorStepIndex + 1} / {editorSteps.length}
                 </span>
                 <strong>{activeEditorStep.title}</strong>
-                <small>{activeEditorStep.description}</small>
               </div>
               <span
                 className={cn(
@@ -1469,37 +1467,21 @@ export function ManagedGiveawayCard({
                     setValidationHint('');
                   }}
                 >
-                  <span className="managed-giveaway__step-button-index">
-                    {step.isComplete ? 'Готово' : `0${index + 1}`}
-                  </span>
+                  <span className="managed-giveaway__step-button-index">{`0${index + 1}`}</span>
                   <strong>{step.label}</strong>
-                  <small>{step.summary}</small>
                 </button>
               ))}
             </div>
 
-            <div className="managed-giveaway__stat-grid">
-              <div className="managed-giveaway__stat-card">
-                <span>Название</span>
-                <strong>{buildDraftTitleSummary(draft.title)}</strong>
-              </div>
-              <div className="managed-giveaway__stat-card">
-                <span>Финиш</span>
-                <strong>{formatCompactInputDateTime(draft.endsAtLocal, 'не задан')}</strong>
-              </div>
-              <div className="managed-giveaway__stat-card">
-                <span>Мест</span>
-                <strong>{draft.prizes.length}</strong>
-              </div>
-            </div>
+            <div className="managed-giveaway__editor-overview">{editorOverviewText}</div>
 
             {editorStep === 'basics' ? (
               <div className="managed-giveaway__step-stage">
                 <div className="managed-giveaway__section">
                   <div className="managed-giveaway__section-head">
                     <div className="managed-giveaway__section-copy">
-                      <strong>Основа розыгрыша</strong>
-                      <small>Название, окно запуска и срок подтверждения.</small>
+                      <strong>Основа</strong>
+                      <small>Название, тайминг и подтверждение.</small>
                     </div>
                   </div>
 
@@ -1653,23 +1635,12 @@ export function ManagedGiveawayCard({
                     </div>
                   </div>
 
-                  <div className="managed-giveaway__stat-grid">
-                    <div className="managed-giveaway__stat-card">
-                      <span>Старт</span>
-                      <strong>
-                        {draft.startsAtLocal.trim()
-                          ? formatCompactInputDateTime(draft.startsAtLocal)
-                          : 'Сразу'}
-                      </strong>
-                    </div>
-                    <div className="managed-giveaway__stat-card">
-                      <span>Финиш</span>
-                      <strong>{formatCompactInputDateTime(draft.endsAtLocal, 'Не задан')}</strong>
-                    </div>
-                    <div className="managed-giveaway__stat-card">
-                      <span>Подтверждение</span>
-                      <strong>{draft.claimHours}ч</strong>
-                    </div>
+                  <div className="managed-giveaway__inline-summary">
+                    {draft.startsAtLocal.trim()
+                      ? `Старт ${formatCompactInputDateTime(draft.startsAtLocal)}`
+                      : 'Старт сразу'}{' '}
+                    • Финиш {formatCompactInputDateTime(draft.endsAtLocal, 'не задан')} •
+                    Подтверждение {draft.claimHours}ч
                   </div>
                 </div>
               </div>
@@ -1680,13 +1651,12 @@ export function ManagedGiveawayCard({
                 <div className="managed-giveaway__section">
                   <div className="managed-giveaway__section-head">
                     <div className="managed-giveaway__section-copy">
-                      <strong>Условия участия</strong>
+                      <strong>Условия</strong>
                       <small>
-                        Доп. каналы: {draft.requiredChannelIds.length}/
+                        Источник обязателен. Дополнительно: {draft.requiredChannelIds.length}/
                         {MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS}
                       </small>
                     </div>
-                    <span className="managed-giveaway__chip">Источник включён</span>
                   </div>
 
                   {selectedRequiredChannels.length > 0 ? (
@@ -1794,11 +1764,8 @@ export function ManagedGiveawayCard({
                   <div className="managed-giveaway__section-head">
                     <div className="managed-giveaway__section-copy">
                       <strong>Призы</strong>
-                      <small>Сначала задайте количество мест, потом названия.</small>
+                      <small>Количество мест и короткие названия призов.</small>
                     </div>
-                    <span className="managed-giveaway__chip">
-                      до {MANAGED_GIVEAWAY_MAX_PRIZES} мест
-                    </span>
                   </div>
 
                   <div className="managed-giveaway__count-stepper">
@@ -1888,11 +1855,15 @@ export function ManagedGiveawayCard({
 
             {editorStep === 'publish' ? (
               <div className="managed-giveaway__step-stage">
-                <div className="managed-giveaway__section managed-giveaway__section--publication">
+                <div className="managed-giveaway__section">
                   <div className="managed-giveaway__section-head">
                     <div className="managed-giveaway__section-copy">
-                      <strong>Финальная проверка</strong>
-                      <small>Соберите всё в один экран и запустите без лишних действий.</small>
+                      <strong>Публикация</strong>
+                      <small>
+                        {publicationTextReady
+                          ? 'Контент в боте готов. Можно публиковать прямо отсюда.'
+                          : 'Добавьте текст в боте и вернитесь сюда.'}
+                      </small>
                     </div>
                     <span
                       className={cn(
@@ -1900,7 +1871,7 @@ export function ManagedGiveawayCard({
                         configurationReady && publicationTextReady ? 'is-success' : 'is-warning',
                       )}
                     >
-                      {configurationReady && publicationTextReady ? 'Готово' : 'В работе'}
+                      {configurationReady && publicationTextReady ? 'Готово' : 'Нужно'}
                     </span>
                   </div>
 
@@ -1922,45 +1893,15 @@ export function ManagedGiveawayCard({
                             item.isReady ? 'is-success' : 'is-warning',
                           )}
                         >
-                          {item.isReady ? 'Готово' : 'Нужно'}
+                          {item.isReady ? 'OK' : 'Нужно'}
                         </span>
                       </button>
                     ))}
                   </div>
-                </div>
 
-                <div className="managed-giveaway__section">
-                  <div className="managed-giveaway__section-head">
-                    <div className="managed-giveaway__section-copy">
-                      <strong>Контент в чат-боте</strong>
-                      <small>
-                        {publicationTextReady
-                          ? 'Текст уже добавлен. Можно быстро открыть его и поправить.'
-                          : 'Текст и фото добавляются только в чат-боте.'}
-                      </small>
-                    </div>
-                    <span
-                      className={cn(
-                        'managed-giveaway__badge',
-                        publicationTextReady ? 'is-success' : 'is-warning',
-                      )}
-                    >
-                      {publicationTextReady ? 'Контент готов' : 'Контент пуст'}
-                    </span>
-                  </div>
-
-                  <div className="managed-giveaway__chips">
-                    <span
-                      className={cn(
-                        'managed-giveaway__chip',
-                        publicationPhotoSet && 'managed-giveaway__chip--success',
-                      )}
-                    >
-                      {publicationPhotoSet ? 'Фото добавлено' : 'Фото не добавлено'}
-                    </span>
-                    {awaitingBotSync ? (
-                      <span className="managed-giveaway__chip">Ждём возврат из бота</span>
-                    ) : null}
+                  <div className="managed-giveaway__inline-summary">
+                    {publicationPhotoSet ? 'Фото добавлено' : 'Без фото'}
+                    {awaitingBotSync ? ' • ждём возврат из бота' : ''}
                   </div>
 
                   {publicationTextReady ? (
@@ -2097,15 +2038,13 @@ export function ManagedGiveawayCard({
 
       {!listQuery.isLoading && !listQuery.error && shouldShowCurrentSummary && currentItem ? (
         <div className={cn('managed-giveaway__panel', 'managed-giveaway__summary-card')}>
-          <div className="managed-giveaway__summary-topline">
-            <span className="managed-giveaway__eyebrow">Текущий</span>
-            <span className={cn('managed-giveaway__badge', buildStatusTone(currentItem.status))}>
-              {buildStatusLabel(currentItem.status)}
-            </span>
-          </div>
-
           <div className="managed-giveaway__summary-copy">
-            <h4>{currentItem.title}</h4>
+            <div className="managed-giveaway__summary-topline">
+              <h4>{currentItem.title}</h4>
+              <span className={cn('managed-giveaway__badge', buildStatusTone(currentItem.status))}>
+                {buildStatusLabel(currentItem.status)}
+              </span>
+            </div>
             <p>{buildCurrentSubtitle(currentItem)}</p>
           </div>
 
@@ -2122,15 +2061,6 @@ export function ManagedGiveawayCard({
               <span>Обновлён</span>
               <strong>{formatCompactDate(currentItem.updatedAt)}</strong>
             </div>
-          </div>
-
-          <div className="managed-giveaway__chips">
-            <span className="managed-giveaway__chip">
-              Старт: {formatDateTime(currentItem.startsAt, 'сразу')}
-            </span>
-            <span className="managed-giveaway__chip">
-              Финиш: {formatDateTime(currentItem.endsAt)}
-            </span>
           </div>
 
           <div className="managed-giveaway__actions">
