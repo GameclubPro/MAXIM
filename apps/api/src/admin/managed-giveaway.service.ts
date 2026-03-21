@@ -1046,10 +1046,26 @@ export class ManagedGiveawayService {
   private async mapPublicGiveaway(
     row: PersistedGiveawayWithRelations,
   ): Promise<ManagedGiveawayPublic> {
+    const requiredChannelIds = this.readRequiredChannelIds(row.requiredChannelIds).filter(
+      (channelId) => channelId !== row.sourceChatId,
+    );
+    const [sourceTitle, sourceLink, requiredChannels] = await Promise.all([
+      this.resolveSourceTitle(row.sourceChatId),
+      this.resolveChatLink(row.sourceChatId),
+      Promise.all(
+        requiredChannelIds.map(async (channelId) => ({
+          id: channelId,
+          title: await this.resolveSourceTitle(channelId),
+          link: await this.resolveChatLink(channelId),
+        })),
+      ),
+    ]);
+
     return {
       id: row.id,
       sourceChatId: row.sourceChatId,
-      sourceTitle: await this.resolveSourceTitle(row.sourceChatId),
+      sourceTitle,
+      sourceLink,
       entityType: this.fromPrismaEntityType(row.entityType),
       title: row.title,
       description: row.description,
@@ -1061,7 +1077,8 @@ export class ManagedGiveawayService {
       startsAt: row.startsAt?.toISOString() ?? null,
       endsAt: row.endsAt.toISOString(),
       claimHours: row.claimHours,
-      requiredChannelIds: this.readRequiredChannelIds(row.requiredChannelIds),
+      requiredChannelIds,
+      requiredChannels,
       entriesCount: row.entries.length,
       winnersCount: row.winners.filter(
         (winner) => winner.status !== ManagedGiveawayWinnerStatus.REROLLED,
@@ -1263,7 +1280,13 @@ export class ManagedGiveawayService {
   private buildGiveawayPublicationText(
     giveaway: Pick<
       PersistedGiveawayWithRelations,
-      'title' | 'description' | 'startsAt' | 'endsAt' | 'prizes' | 'sourceChatId' | 'requiredChannelIds'
+      | 'title'
+      | 'description'
+      | 'startsAt'
+      | 'endsAt'
+      | 'prizes'
+      | 'sourceChatId'
+      | 'requiredChannelIds'
     >,
     status: ManagedGiveawayStatus,
   ): string {
@@ -1470,9 +1493,9 @@ export class ManagedGiveawayService {
     } = {},
   ): Promise<{ state: GiveawayEligibilityState; reason: string | null }> {
     const entityType = this.fromPrismaEntityType(giveaway.entityType);
-    const additionalRequiredChannels = this.readRequiredChannelIds(giveaway.requiredChannelIds).filter(
-      (channelId) => channelId !== giveaway.sourceChatId,
-    );
+    const additionalRequiredChannels = this.readRequiredChannelIds(
+      giveaway.requiredChannelIds,
+    ).filter((channelId) => channelId !== giveaway.sourceChatId);
 
     try {
       const isMember = await this.maxClient.hasChatMember(giveaway.sourceChatId, userId);
@@ -1927,6 +1950,19 @@ export class ManagedGiveawayService {
     }
 
     return `Chat ${chatId}`;
+  }
+
+  private async resolveChatLink(chatId: string): Promise<string | null> {
+    try {
+      const snapshot = await this.maxClient.getChatSnapshot(chatId);
+      return snapshot.link ?? null;
+    } catch (error: unknown) {
+      this.logger.warn(
+        { chatId, err: error instanceof Error ? error.message : String(error) },
+        'Failed to resolve giveaway source link',
+      );
+      return null;
+    }
   }
 
   private resolveUserDisplayName(user: AuthUser): string {

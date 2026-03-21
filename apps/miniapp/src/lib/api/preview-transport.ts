@@ -16,6 +16,8 @@ import {
   logsDashboardResponseSchema,
   managedBroadcastDetailsSchema,
   managedGiveawayDetailsSchema,
+  managedGiveawayParticipantStateSchema,
+  managedGiveawayPublicSchema,
   managedPollSchema,
   manualModerationActionResultSchema,
   membershipActivityPageSchema,
@@ -40,6 +42,8 @@ import {
   type LogsDashboardResponse,
   type ManagedBroadcastDetails,
   type ManagedGiveawayDetails,
+  type ManagedGiveawayParticipantState,
+  type ManagedGiveawayPublic,
   type ManagedGiveawaySummary,
   type ManagedPoll,
   type ManualModerationActionRequest,
@@ -87,6 +91,10 @@ type PreviewDialogBucket = {
   introText: string;
   messages: ChannelDialogMessage[];
 };
+
+const PREVIEW_PUBLIC_GIVEAWAY_ID = 'preview-giveaway';
+
+type PreviewGiveawayVariant = 'blocked' | 'joined' | 'winner' | 'completed';
 
 function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
@@ -256,6 +264,163 @@ function buildGiveawaySummary(details: ManagedGiveawayDetails): ManagedGiveawayS
     createdAt: details.createdAt,
     updatedAt: details.updatedAt,
   };
+}
+
+function readPreviewGiveawayVariant(): PreviewGiveawayVariant {
+  const params = new URLSearchParams(window.location.search);
+  const value = params.get('giveaway_state');
+
+  if (value === 'joined' || value === 'winner' || value === 'completed') {
+    return value;
+  }
+
+  return 'blocked';
+}
+
+function buildPreviewPublicGiveaway(
+  state: PreviewState,
+  giveawayId: string,
+  variant: PreviewGiveawayVariant,
+): ManagedGiveawayPublic {
+  const now = new Date();
+  const sourceChannel = state.channels.find((item) => item.id === PREVIEW_CHANNEL_ID);
+  const extraChannel = state.channels.find((item) => item.id === 'preview-channel-2');
+
+  return managedGiveawayPublicSchema.parse({
+    id: giveawayId,
+    sourceChatId: PREVIEW_CHANNEL_ID,
+    sourceTitle: sourceChannel?.title ?? PREVIEW_CHANNEL_TITLE,
+    sourceLink: sourceChannel?.link ?? null,
+    entityType: 'channel',
+    title:
+      variant === 'completed'
+        ? 'Большой весенний розыгрыш'
+        : 'Розыгрыш подарочного бокса для подписчиков',
+    description:
+      'Подпишитесь на канал, отметьте участие и дождитесь итогов. Победителей определим автоматически, а подтверждение приза пройдёт прямо внутри MAX.',
+    status: variant === 'completed' ? 'COMPLETED' : 'ACTIVE',
+    imageEnabled: false,
+    imageBase64: '',
+    imageMimeType: '',
+    imageFileName: '',
+    startsAt: addHours(now, -20).toISOString(),
+    endsAt:
+      variant === 'completed' ? addHours(now, -2).toISOString() : addHours(now, 28).toISOString(),
+    claimHours: 48,
+    requiredChannelIds: extraChannel ? [extraChannel.id] : [],
+    requiredChannels: extraChannel
+      ? [
+          {
+            id: extraChannel.id,
+            title: extraChannel.title,
+            link: extraChannel.link ?? null,
+          },
+        ]
+      : [],
+    entriesCount: variant === 'completed' ? 912 : 684,
+    winnersCount: 2,
+    publishedAt: addHours(now, -19.5).toISOString(),
+    completedAt: variant === 'completed' ? addHours(now, -1.5).toISOString() : null,
+    publicationUrl: 'https://max.ru/giveaway/public-preview',
+    resultsUrl: variant === 'completed' ? 'https://max.ru/giveaway/public-preview/results' : null,
+    prizes: [
+      { id: 'public-prize-1', position: 1, title: 'Подарочный бокс MAX' },
+      { id: 'public-prize-2', position: 2, title: 'Премиум-подписка на 3 месяца' },
+    ],
+    winners:
+      variant === 'completed'
+        ? [
+            {
+              prizePosition: 1,
+              prizeTitle: 'Подарочный бокс MAX',
+              displayName: 'Марина Орлова',
+              status: 'CLAIMED',
+            },
+            {
+              prizePosition: 2,
+              prizeTitle: 'Премиум-подписка на 3 месяца',
+              displayName: 'Дмитрий Ковалёв',
+              status: 'DELIVERED',
+            },
+          ]
+        : [],
+  });
+}
+
+function buildPreviewGiveawayParticipantState(
+  variant: PreviewGiveawayVariant,
+): ManagedGiveawayParticipantState {
+  const now = new Date();
+
+  if (variant === 'winner') {
+    return managedGiveawayParticipantStateSchema.parse({
+      joined: true,
+      entryId: 'preview-entry-winner',
+      eligibilityState: 'VERIFIED',
+      eligibilityReason: null,
+      joinedAt: addHours(now, -12).toISOString(),
+      isWinner: true,
+      winnerId: 'preview-winner-1',
+      winnerStatus: 'SELECTED',
+      claimDeadlineAt: addHours(now, 32).toISOString(),
+      prizePosition: 1,
+      prizeTitle: 'Подарочный бокс MAX',
+      canClaim: true,
+      claimBotUrl: 'https://max.ru/maxim-bot?start=claim-preview',
+    });
+  }
+
+  if (variant === 'joined') {
+    return managedGiveawayParticipantStateSchema.parse({
+      joined: true,
+      entryId: 'preview-entry-joined',
+      eligibilityState: 'VERIFIED',
+      eligibilityReason: null,
+      joinedAt: addHours(now, -4).toISOString(),
+      isWinner: false,
+      winnerId: null,
+      winnerStatus: null,
+      claimDeadlineAt: null,
+      prizePosition: null,
+      prizeTitle: null,
+      canClaim: false,
+      claimBotUrl: null,
+    });
+  }
+
+  if (variant === 'completed') {
+    return managedGiveawayParticipantStateSchema.parse({
+      joined: true,
+      entryId: 'preview-entry-completed',
+      eligibilityState: 'VERIFIED',
+      eligibilityReason: null,
+      joinedAt: addHours(now, -18).toISOString(),
+      isWinner: false,
+      winnerId: null,
+      winnerStatus: null,
+      claimDeadlineAt: null,
+      prizePosition: null,
+      prizeTitle: null,
+      canClaim: false,
+      claimBotUrl: null,
+    });
+  }
+
+  return managedGiveawayParticipantStateSchema.parse({
+    joined: false,
+    entryId: null,
+    eligibilityState: null,
+    eligibilityReason: null,
+    joinedAt: null,
+    isWinner: false,
+    winnerId: null,
+    winnerStatus: null,
+    claimDeadlineAt: null,
+    prizePosition: null,
+    prizeTitle: null,
+    canClaim: false,
+    claimBotUrl: null,
+  });
 }
 
 function resolveChatTitle(chatId: string, state: PreviewState): string {
@@ -753,7 +918,8 @@ function createInitialState(): PreviewState {
       ],
     },
     suggest: {
-      introText: 'Идеи для постов приходят тихо: участник пишет, админы получают сообщение в очередь.',
+      introText:
+        'Идеи для постов приходят тихо: участник пишет, админы получают сообщение в очередь.',
       messages: [
         buildPreviewDialogMessage({
           id: 'chat-suggest-1',
@@ -1405,7 +1571,9 @@ async function handleChatRequest(
     const dialogType = channelDialogTypeSchema.parse(tail[1]);
 
     if (tail.length === 2 && method === 'GET') {
-      return cloneJson(buildPreviewDialogResponse(chatId, dialogType, state.chatDialogs[dialogType]));
+      return cloneJson(
+        buildPreviewDialogResponse(chatId, dialogType, state.chatDialogs[dialogType]),
+      );
     }
 
     if (tail[2] === 'messages' && method === 'POST') {
@@ -2128,6 +2296,30 @@ export function createPreviewApiTransport(): ApiTransport {
       }
 
       const segments = url.pathname.split('/').filter(Boolean);
+      if (segments[0] === 'giveaways' && segments[1]) {
+        const giveawayId = decodeURIComponent(segments[1]);
+        if (giveawayId !== PREVIEW_PUBLIC_GIVEAWAY_ID) {
+          throw new Error(`Preview public giveaway not found: ${giveawayId}`);
+        }
+
+        const variant = readPreviewGiveawayVariant();
+        if (segments.length === 2 && method === 'GET') {
+          return cloneJson(buildPreviewPublicGiveaway(state, giveawayId, variant));
+        }
+
+        if (segments[2] === 'me' && method === 'GET') {
+          return cloneJson(buildPreviewGiveawayParticipantState(variant));
+        }
+
+        if (segments[2] === 'enter' && method === 'POST') {
+          return cloneJson(buildPreviewGiveawayParticipantState('joined'));
+        }
+
+        if (segments[2] === 'claim' && method === 'POST') {
+          return null;
+        }
+      }
+
       if (segments[0] === 'chats' && segments[1]) {
         return handleChatRequest(state, segments[1], segments.slice(2), url, method, init);
       }

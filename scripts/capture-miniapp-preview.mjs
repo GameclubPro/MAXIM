@@ -213,6 +213,46 @@ const scenarios = [
     name: 'channel-stats',
     path: '/channel/preview-channel/stats',
   },
+  {
+    name: 'giveaway-blocked',
+    path: '/giveaways/preview-giveaway',
+    searchParams: {
+      giveaway_state: 'blocked',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(500);
+    },
+  },
+  {
+    name: 'giveaway-joined',
+    path: '/giveaways/preview-giveaway',
+    searchParams: {
+      giveaway_state: 'joined',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(500);
+    },
+  },
+  {
+    name: 'giveaway-winner',
+    path: '/giveaways/preview-giveaway',
+    searchParams: {
+      giveaway_state: 'winner',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(500);
+    },
+  },
+  {
+    name: 'giveaway-completed',
+    path: '/giveaways/preview-giveaway',
+    searchParams: {
+      giveaway_state: 'completed',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(500);
+    },
+  },
 ];
 const requestedScenarioNames = (process.env.MINIAPP_SCREENSHOT_SCENARIOS ?? '')
   .split(',')

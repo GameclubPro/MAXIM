@@ -964,6 +964,13 @@ export const managedGiveawayDetailsSchema = managedGiveawaySummarySchema.extend(
 });
 export type ManagedGiveawayDetails = z.infer<typeof managedGiveawayDetailsSchema>;
 
+export const managedGiveawayPublicChannelSchema = z.object({
+  id: z.string(),
+  title: z.string(),
+  link: z.string().nullable(),
+});
+export type ManagedGiveawayPublicChannel = z.infer<typeof managedGiveawayPublicChannelSchema>;
+
 export const managedGiveawayPublicWinnerSchema = z.object({
   prizePosition: z.number().int().min(1),
   prizeTitle: managedGiveawayPrizeTitleSchema,
@@ -976,6 +983,7 @@ export const managedGiveawayPublicSchema = z.object({
   id: z.string(),
   sourceChatId: z.string(),
   sourceTitle: z.string(),
+  sourceLink: z.string().nullable(),
   entityType: managedEntityTypeSchema,
   title: managedGiveawayTitleSchema,
   description: managedGiveawayDescriptionSchema,
@@ -988,6 +996,7 @@ export const managedGiveawayPublicSchema = z.object({
   endsAt: z.string().datetime(),
   claimHours: z.number().int().min(1).max(336),
   requiredChannelIds: z.array(z.string()),
+  requiredChannels: z.array(managedGiveawayPublicChannelSchema),
   entriesCount: z.number().int().min(0),
   winnersCount: z.number().int().min(0),
   publishedAt: z.string().datetime().nullable(),
