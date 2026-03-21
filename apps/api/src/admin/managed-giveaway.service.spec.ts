@@ -1,4 +1,9 @@
-import { ChatEntityType, GiveawayEligibilityState, ManagedGiveawayStatus } from '@prisma/client';
+import {
+  ChatEntityType,
+  GiveawayEligibilityState,
+  ManagedGiveawayStatus,
+  ManagedGiveawayWinnerStatus,
+} from '@prisma/client';
 import { ManagedGiveawayService } from './managed-giveaway.service';
 
 function createConfigMock() {
@@ -49,6 +54,8 @@ function createMaxClientMock() {
     hasChatMember: jest.fn(),
     getChatTitle: jest.fn(),
     getChatSnapshot: jest.fn(),
+    sendMessageImmediateWithResolvedLink: jest.fn(),
+    editMessageInlineKeyboard: jest.fn(),
   };
 }
 
@@ -102,6 +109,47 @@ function createEntry(overrides: Record<string, unknown> = {}) {
     drawRank: null,
     createdAt: new Date('2026-03-21T10:00:00.000Z'),
     updatedAt: new Date('2026-03-21T10:00:00.000Z'),
+    ...overrides,
+  };
+}
+
+function createPrize(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 'prize-1',
+    giveawayId: 'giveaway-1',
+    position: 1,
+    title: 'Главный приз',
+    createdAt: new Date('2026-03-21T09:00:00.000Z'),
+    updatedAt: new Date('2026-03-21T09:00:00.000Z'),
+    ...overrides,
+  };
+}
+
+function createWinner(overrides: Record<string, unknown> = {}) {
+  const entry = createEntry({
+    id: 'entry-winner-1',
+    userId: 'winner-1',
+    displayName: 'CEO',
+  });
+  const prize = createPrize();
+
+  return {
+    id: 'winner-1',
+    giveawayId: 'giveaway-1',
+    prizeId: prize.id,
+    entryId: entry.id,
+    rank: 1,
+    status: ManagedGiveawayWinnerStatus.SELECTED,
+    claimDeadlineAt: new Date('2026-03-23T12:00:00.000Z'),
+    claimedAt: null,
+    deliveredAt: null,
+    expiredAt: null,
+    rerolledAt: null,
+    selectedAt: new Date('2026-03-21T12:00:00.000Z'),
+    createdAt: new Date('2026-03-21T12:00:00.000Z'),
+    updatedAt: new Date('2026-03-21T12:00:00.000Z'),
+    prize,
+    entry,
     ...overrides,
   };
 }
@@ -267,5 +315,79 @@ describe('ManagedGiveawayService', () => {
     const result = await service.getGiveawayParticipantState('giveaway-1', user);
 
     expect(result.missingChannelIds).toEqual(['source-1', 'extra-1', 'extra-2']);
+  });
+
+  it('publishes giveaway results as a linked reply to the original post', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+
+    const giveaway = createGiveaway({
+      status: ManagedGiveawayStatus.COMPLETED,
+      publicationMessageId: 'publication-1',
+      publicationUrl: 'https://max.ru/channels/source-1/messages/publication-1',
+      winners: [createWinner({ status: ManagedGiveawayWinnerStatus.CLAIMED })],
+    });
+
+    maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
+      messageId: 'results-1',
+      url: 'https://max.ru/channels/source-1/messages/results-1',
+    });
+
+    await (service as any).republishGiveawayResults(giveaway);
+
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'source-1',
+      expect.stringContaining('Результаты розыгрыша'),
+      expect.objectContaining({
+        messageLink: {
+          type: 'reply',
+          mid: 'publication-1',
+        },
+        buttons: [[expect.objectContaining({ text: 'Проверить результаты' })]],
+      }),
+    );
+    expect(prisma.managedGiveaway.update).toHaveBeenCalledWith({
+      where: { id: 'giveaway-1' },
+      data: {
+        resultsMessageId: 'results-1',
+        resultsUrl: 'https://max.ru/channels/source-1/messages/results-1',
+      },
+    });
+  });
+
+  it('does not expose winner name in public results before claim confirmation', () => {
+    const service = new ManagedGiveawayService(
+      createPrismaMock() as never,
+      createMaxClientMock() as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+
+    const pendingConfirmationText = (service as any).buildGiveawayResultsText(
+      createGiveaway({
+        status: ManagedGiveawayStatus.COMPLETED,
+        publicationMessageId: 'publication-1',
+        winners: [createWinner({ status: ManagedGiveawayWinnerStatus.SELECTED })],
+      }),
+    );
+    const confirmedText = (service as any).buildGiveawayResultsText(
+      createGiveaway({
+        status: ManagedGiveawayStatus.COMPLETED,
+        publicationMessageId: 'publication-1',
+        winners: [createWinner({ status: ManagedGiveawayWinnerStatus.CLAIMED })],
+      }),
+    );
+
+    expect(pendingConfirmationText).toContain('Победитель подтверждает приз');
+    expect(pendingConfirmationText).not.toContain('CEO');
+    expect(confirmedText).toContain('1. CEO');
   });
 });

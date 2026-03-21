@@ -1263,6 +1263,10 @@ export class ManagedGiveawayService {
     return this.buildGiveawayMiniappButton(giveawayId, 'Открыть розыгрыш');
   }
 
+  private buildGiveawayResultsButton(giveawayId: string): MaxMessageButton | null {
+    return this.buildGiveawayMiniappButton(giveawayId, 'Проверить результаты');
+  }
+
   private buildGiveawayMiniappButton(giveawayId: string, text: string): MaxMessageButton | null {
     const launchUrl = this.buildGiveawayLaunchUrl(giveawayId);
     const webAppUrl = this.buildGiveawayDirectWebAppUrl(giveawayId);
@@ -1313,32 +1317,69 @@ export class ManagedGiveawayService {
   }
 
   private buildGiveawayResultsText(giveaway: PersistedGiveawayWithRelations): string {
-    const lines: string[] = ['Итоги розыгрыша', '', giveaway.title.trim()];
+    const lines: string[] = ['🎉 Результаты розыгрыша:'];
     const currentWinners = giveaway.winners
       .filter((winner) => winner.status !== ManagedGiveawayWinnerStatus.REROLLED)
       .sort((left, right) => left.prize.position - right.prize.position);
+    const hasPublicationReference = Boolean(giveaway.publicationMessageId?.trim());
+    const shouldShowPrizeTitle =
+      currentWinners.length > 1 &&
+      currentWinners.some((winner) => {
+        const title = winner.prize.title.trim();
+        return title.length > 0 && title !== `${winner.prize.position} место`;
+      });
+
+    if (!hasPublicationReference && giveaway.title.trim()) {
+      lines.push('', giveaway.title.trim());
+    }
 
     if (currentWinners.length === 0) {
       lines.push('', 'Подходящих участников не нашлось.');
       return lines.join('\n');
     }
 
-    lines.push('', 'Победители:');
+    lines.push('', currentWinners.length === 1 ? '🏆 Победитель:' : '🏆 Победители:');
     for (const winner of currentWinners) {
-      const status =
-        winner.status === ManagedGiveawayWinnerStatus.DELIVERED
-          ? 'приз выдан'
-          : winner.status === ManagedGiveawayWinnerStatus.CLAIMED
-            ? 'ожидает выдачи'
-            : winner.status === ManagedGiveawayWinnerStatus.EXPIRED
-              ? 'срок подтверждения истёк'
-              : 'ожидает подтверждения';
-      lines.push(
-        `${winner.prize.position}. ${winner.prize.title} — ${this.formatPublicWinnerName(winner)} (${status})`,
-      );
+      const publicName = this.resolvePublicWinnerDisplayName(winner);
+      if (!publicName) {
+        lines.push(
+          winner.status === ManagedGiveawayWinnerStatus.EXPIRED
+            ? `${winner.prize.position}. Подтверждение истекло, запускаем перевыбор`
+            : `${winner.prize.position}. Победитель подтверждает приз`,
+        );
+        continue;
+      }
+
+      const prizeSuffix = shouldShowPrizeTitle ? ` — ${winner.prize.title}` : '';
+      const statusSuffix =
+        winner.status === ManagedGiveawayWinnerStatus.DELIVERED ? ' (приз выдан)' : '';
+      lines.push(`${winner.prize.position}. ${publicName}${prizeSuffix}${statusSuffix}`);
     }
 
     return lines.join('\n');
+  }
+
+  private buildGiveawayResultsMessageOptions(
+    giveaway: PersistedGiveawayWithRelations,
+  ): MaxSendMessageOptions | undefined {
+    const button = this.buildGiveawayResultsButton(giveaway.id);
+    const publicationMessageId = giveaway.publicationMessageId?.trim() ?? '';
+
+    if (!button && !publicationMessageId) {
+      return undefined;
+    }
+
+    return {
+      ...(button ? { buttons: [[button]] } : {}),
+      ...(publicationMessageId
+        ? {
+            messageLink: {
+              type: 'reply' as const,
+              mid: publicationMessageId,
+            },
+          }
+        : {}),
+    };
   }
 
   private async editGiveawayPublicationIfNeeded(
@@ -1395,13 +1436,13 @@ export class ManagedGiveawayService {
   }
 
   private async republishGiveawayResults(giveaway: PersistedGiveawayWithRelations): Promise<void> {
-    const button = this.buildGiveawayOpenButton(giveaway.id);
+    const resultOptions = this.buildGiveawayResultsMessageOptions(giveaway);
     if (!giveaway.resultsMessageId?.trim()) {
       try {
         const result = await this.maxClient.sendMessageImmediateWithResolvedLink(
           giveaway.sourceChatId,
           this.buildGiveawayResultsText(giveaway),
-          button ? { buttons: [[button]] } : undefined,
+          resultOptions,
         );
         await this.prisma.managedGiveaway.update({
           where: { id: giveaway.id },
@@ -1427,7 +1468,7 @@ export class ManagedGiveawayService {
         giveaway.sourceChatId,
         giveaway.resultsMessageId,
         this.buildGiveawayResultsText(giveaway),
-        button ? { buttons: [[button]] } : undefined,
+        resultOptions,
       );
     } catch (error: unknown) {
       this.logger.warn(
