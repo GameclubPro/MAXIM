@@ -34,7 +34,7 @@ type GiveawayModalPresentation = {
   glyph: GiveawayGlyph;
   badge: string;
   title: string;
-  description: string;
+  description: string | null;
 };
 
 const SUPPORT_BOT_URL = 'https://max.ru/id613002203036_4_bot';
@@ -148,7 +148,7 @@ function buildModalPresentation(params: {
       glyph: 'clock',
       badge: 'Статус недоступен',
       title: 'Не удалось проверить участие',
-      description: 'Повторите попытку. Сам розыгрыш при этом остаётся доступным.',
+      description: 'Повторите чуть позже.',
     };
   }
 
@@ -173,8 +173,8 @@ function buildModalPresentation(params: {
           : 'Результат уже зафиксирован',
       description:
         participant.winnerStatus === 'EXPIRED'
-          ? 'Окно подтверждения уже закрылось.'
-          : 'Следите за итоговым сообщением в ленте и статусом выдачи.',
+          ? 'Срок подтверждения истёк.'
+          : 'Итоги уже в ленте.',
     };
   }
 
@@ -183,10 +183,10 @@ function buildModalPresentation(params: {
       tone: 'danger',
       glyph: 'cross',
       badge: 'Нужно условие',
-      title: 'Заявка пока не прошла',
+      title: missingChannelsCount > 1 ? 'Завершите подписку' : 'Подпишитесь и вернитесь',
       description:
         missingChannelsCount > 0
-          ? 'Откройте обязательные каналы ниже, подпишитесь и нажмите кнопку ещё раз.'
+          ? null
           : participant.eligibilityReason?.trim() || 'Попробуйте снова после выполнения условий.',
     };
   }
@@ -198,7 +198,7 @@ function buildModalPresentation(params: {
         glyph: 'check',
         badge: 'Вы участвуете',
         title: 'Заявка принята',
-        description: 'Новых действий не нужно. Итоги придут в ленту и отобразятся в MAX.',
+        description: 'Итоги придут в ленту.',
       };
     }
 
@@ -207,7 +207,7 @@ function buildModalPresentation(params: {
       glyph: 'spark',
       badge: 'Проверяем',
       title: 'Заявка уже отправлена',
-      description: 'MAX ещё синхронизирует условия участия. Обычно это занимает пару секунд.',
+      description: 'MAX ещё проверяет подписки.',
     };
   }
 
@@ -217,7 +217,7 @@ function buildModalPresentation(params: {
       glyph: 'spark',
       badge: 'Розыгрыш открыт',
       title: 'Вступить в розыгрыш?',
-      description: 'Нажмите кнопку ниже. MAX сразу проверит условия участия.',
+      description: 'MAX проверит условия автоматически.',
     };
   }
 
@@ -237,7 +237,7 @@ function buildModalPresentation(params: {
       glyph: 'lock',
       badge: 'Остановлен',
       title: 'Розыгрыш отменён',
-      description: 'Новых действий по этому розыгрышу больше нет.',
+      description: 'Действий больше нет.',
     };
   }
 
@@ -247,7 +247,7 @@ function buildModalPresentation(params: {
     badge: 'Итоги готовы',
     title: 'Приём заявок завершён',
     description: giveaway.resultsUrl
-      ? 'Итоговый пост уже опубликован в ленте.'
+      ? 'Итоги уже в ленте.'
       : 'Итоги уже зафиксированы.',
   };
 }
@@ -301,6 +301,8 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   const { pushToast } = useToast();
   const subscriptionCheckInFlightRef = useRef(false);
   const [awaitingSubscriptionReturn, setAwaitingSubscriptionReturn] = useState(false);
+  const [subscriptionRecheckPending, setSubscriptionRecheckPending] = useState(false);
+  const [subscriptionNeedsManualRetry, setSubscriptionNeedsManualRetry] = useState(false);
 
   const closePage = () => {
     maxImpact('light');
@@ -418,7 +420,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
     glyph: 'clock',
     badge: 'Открываем',
     title: 'Подготавливаем розыгрыш',
-    description: 'Пара секунд на загрузку статуса участия.',
+    description: 'Пара секунд.',
   };
 
   const errorPresentation: GiveawayModalPresentation = {
@@ -441,6 +443,79 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
             participantStatusUnavailable: Boolean(participantQuery.error),
           });
 
+  const syncParticipantState = async (nextParticipant: ManagedGiveawayParticipantState) => {
+    queryClient.setQueryData(participantQueryKey, nextParticipant);
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['public-giveaway', giveawayId] }),
+      queryClient.invalidateQueries({ queryKey: participantQueryKey }),
+    ]);
+    return nextParticipant;
+  };
+
+  const waitForSubscriptionSync = async (delayMs: number) => {
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, delayMs);
+    });
+  };
+
+  const recheckSubscriptionEligibility = async (mode: 'return' | 'manual') => {
+    if (!giveawayId || subscriptionCheckInFlightRef.current) {
+      return null;
+    }
+
+    subscriptionCheckInFlightRef.current = true;
+    setSubscriptionRecheckPending(true);
+    setSubscriptionNeedsManualRetry(false);
+
+    try {
+      const retryDelaysMs = mode === 'return' ? [0, 900, 1800] : [0];
+      let latestParticipant: ManagedGiveawayParticipantState | null = null;
+
+      for (const delayMs of retryDelaysMs) {
+        if (delayMs > 0) {
+          await waitForSubscriptionSync(delayMs);
+        }
+
+        latestParticipant = await enterGiveaway(api, giveawayId);
+        const missingChannelIds = Array.isArray(latestParticipant.missingChannelIds)
+          ? latestParticipant.missingChannelIds
+          : [];
+
+        if (
+          latestParticipant.eligibilityState === 'VERIFIED' ||
+          latestParticipant.canClaim ||
+          missingChannelIds.length === 0
+        ) {
+          break;
+        }
+      }
+
+      if (latestParticipant) {
+        await syncParticipantState(latestParticipant);
+      }
+
+      return latestParticipant;
+    } catch (error) {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось проверить подписку',
+        description: formatApiError(error),
+      });
+      return null;
+    } finally {
+      subscriptionCheckInFlightRef.current = false;
+      setSubscriptionRecheckPending(false);
+      setAwaitingSubscriptionReturn(false);
+    }
+  };
+
+  const openMissingChannel = (url: string) => {
+    setAwaitingSubscriptionReturn(true);
+    setSubscriptionNeedsManualRetry(false);
+    maxSelectionChanged();
+    openMaxBotLink(url);
+  };
+
   const primaryAction =
     giveawayQuery.error
       ? {
@@ -456,56 +531,85 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
         ? {
             label: 'Обновить статус',
             disabled: participantQuery.isLoading,
-          onClick: () => {
-            void participantQuery.refetch();
-          },
-        }
-      : isSubscriptionFlow && nextMissingChannel?.link
-        ? {
-            label:
-              awaitingSubscriptionReturn && participantQuery.isFetching
-                ? 'Проверяем подписку…'
-                : missingChannelCards.length > 1
-                  ? 'Открыть следующий канал'
-                  : 'Открыть канал',
-            disabled: awaitingSubscriptionReturn && participantQuery.isFetching,
             onClick: () => {
-              setAwaitingSubscriptionReturn(true);
-              maxSelectionChanged();
-              openMaxBotLink(nextMissingChannel.link ?? '');
+              void participantQuery.refetch();
             },
           }
-        : participant?.canClaim
+        : isSubscriptionFlow && subscriptionNeedsManualRetry
           ? {
-              label: claimMutation.isPending ? 'Подтверждаем…' : 'Подтвердить приз',
-              disabled: claimMutation.isPending,
+              label: subscriptionRecheckPending ? 'Проверяем подписку…' : 'Проверить снова',
+              disabled: subscriptionRecheckPending,
               onClick: () => {
-                void claimMutation.mutateAsync();
+                void recheckSubscriptionEligibility('manual').then((nextParticipant) => {
+                  if (!nextParticipant) {
+                    return;
+                  }
+
+                  if (nextParticipant.eligibilityState === 'VERIFIED') {
+                    maxNotify('success');
+                    pushToast({
+                      tone: 'success',
+                      title: 'Подписка подтверждена',
+                      description: 'Можно продолжать участие.',
+                    });
+                    return;
+                  }
+
+                  maxNotify('warning');
+                  pushToast({
+                    tone: 'info',
+                    title: 'Подписка ещё не обновилась',
+                    description: 'Откройте канал ещё раз, если MAX не успел синхронизировать статус.',
+                  });
+                });
               },
             }
-          : canEnterParticipation
+          : isSubscriptionFlow && nextMissingChannel?.link
             ? {
-                label: enterMutation.isPending
-                  ? canRetryParticipation
-                    ? 'Проверяем…'
-                    : 'Входим…'
-                  : canRetryParticipation
-                    ? 'Проверить снова'
-                    : 'Участвовать',
-                disabled: enterMutation.isPending || participantQuery.isLoading,
+                label:
+                  awaitingSubscriptionReturn || subscriptionRecheckPending
+                    ? 'Проверяем подписку…'
+                    : missingChannelCards.length > 1
+                      ? 'Открыть следующий канал'
+                      : 'Открыть канал',
+                disabled: awaitingSubscriptionReturn || subscriptionRecheckPending,
                 onClick: () => {
-                  void enterMutation.mutateAsync();
+                  openMissingChannel(nextMissingChannel.link ?? '');
                 },
               }
-            : giveaway.resultsUrl
-              ? {
-                  label: 'Открыть итоги',
-                  disabled: false,
-                  onClick: () => {
-                    openMaxBotLink(giveaway.resultsUrl ?? '');
-                  },
-                }
-              : null;
+            : isSubscriptionFlow
+              ? null
+              : participant?.canClaim
+                ? {
+                    label: claimMutation.isPending ? 'Подтверждаем…' : 'Подтвердить приз',
+                    disabled: claimMutation.isPending,
+                    onClick: () => {
+                      void claimMutation.mutateAsync();
+                    },
+                  }
+                : canEnterParticipation
+                  ? {
+                      label: enterMutation.isPending
+                        ? canRetryParticipation
+                          ? 'Проверяем…'
+                          : 'Входим…'
+                        : canRetryParticipation
+                          ? 'Проверить снова'
+                          : 'Участвовать',
+                      disabled: enterMutation.isPending || participantQuery.isLoading,
+                      onClick: () => {
+                        void enterMutation.mutateAsync();
+                      },
+                    }
+                  : giveaway.resultsUrl
+                    ? {
+                        label: 'Открыть итоги',
+                        disabled: false,
+                        onClick: () => {
+                          openMaxBotLink(giveaway.resultsUrl ?? '');
+                        },
+                      }
+                    : null;
 
   const openSupportBot = () => {
     maxSelectionChanged();
@@ -517,36 +621,36 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
       return undefined;
     }
 
-    const runAutoCheck = async () => {
-      if (document.visibilityState !== 'visible' || subscriptionCheckInFlightRef.current) {
+    const handleVisible = () => {
+      if (document.visibilityState !== 'visible') {
         return;
       }
 
-      subscriptionCheckInFlightRef.current = true;
-      try {
-        const [participantResult] = await Promise.all([
-          participantQuery.refetch(),
-          giveawayQuery.refetch(),
-        ]);
-        const nextParticipant = participantResult.data ?? null;
-        if (nextParticipant?.eligibilityState === 'VERIFIED') {
+      void recheckSubscriptionEligibility('return').then((nextParticipant) => {
+        if (!nextParticipant) {
+          return;
+        }
+
+        if (nextParticipant.eligibilityState === 'VERIFIED') {
           maxNotify('success');
           pushToast({
             tone: 'success',
-            title: 'Подписки подтверждены',
-            description: 'Можно продолжать участие в розыгрыше.',
+            title: 'Подписка подтверждена',
+            description: 'Можно продолжать участие.',
           });
-        } else if (nextParticipant?.eligibilityState === 'REJECTED') {
-          maxNotify('warning');
+          return;
         }
-      } finally {
-        subscriptionCheckInFlightRef.current = false;
-        setAwaitingSubscriptionReturn(false);
-      }
-    };
 
-    const handleVisible = () => {
-      void runAutoCheck();
+        if (nextParticipant.eligibilityState === 'REJECTED') {
+          setSubscriptionNeedsManualRetry(true);
+          maxNotify('warning');
+          pushToast({
+            tone: 'info',
+            title: 'MAX ещё обновляет подписку',
+            description: 'Нажмите «Проверить снова», если подписка уже оформлена.',
+          });
+        }
+      });
     };
 
     window.addEventListener('focus', handleVisible);
@@ -558,7 +662,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
       window.removeEventListener('pageshow', handleVisible);
       document.removeEventListener('visibilitychange', handleVisible);
     };
-  }, [awaitingSubscriptionReturn, giveawayQuery, participantQuery, pushToast]);
+  }, [awaitingSubscriptionReturn, giveawayId, participantQueryKey, pushToast, queryClient]);
 
   return (
     <div className="giveaway-page giveaway-page--modal-only">
@@ -602,31 +706,19 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
               {giveaway ? giveaway.title : 'Розыгрыш'}
             </small>
             <strong id="giveaway-overlay-title">{presentation.title}</strong>
-            <p>{presentation.description}</p>
+            {presentation.description ? <p>{presentation.description}</p> : null}
           </div>
 
           {missingChannelCards.length > 0 ? (
             <div className="giveaway-page__overlay-body">
-              <div className="giveaway-page__overlay-note">
-                <strong>
-                  {missingChannelCards.length > 1
-                    ? `Осталось ${missingChannelCards.length} канала`
-                    : 'Остался последний канал'}
-                </strong>
-                <span>
-                  Откройте следующий канал в MAX. После возврата mini app перепроверит подписку
-                  автоматически.
-                </span>
-              </div>
-
-              {totalChannelSteps > 0 ? (
+              {totalChannelSteps > 1 ? (
                 <div className="giveaway-page__overlay-progress">
                   <div className="giveaway-page__overlay-progress-head">
                     <strong>
                       Шаг {Math.min(completedChannelSteps + 1, totalChannelSteps)} из {totalChannelSteps}
                     </strong>
                     <span>
-                      Готово {completedChannelSteps} из {totalChannelSteps}
+                      Осталось {missingChannelCards.length}
                     </span>
                   </div>
 
@@ -651,20 +743,28 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
 
               {nextMissingChannel ? (
                 nextMissingChannel.link ? (
-                  <div className="giveaway-page__overlay-channel giveaway-page__overlay-channel--focus">
-                    <span>{nextMissingChannel.eyebrow}</span>
+                  <button
+                    type="button"
+                    className="giveaway-page__overlay-channel giveaway-page__overlay-channel--focus"
+                    onClick={() => {
+                      openMissingChannel(nextMissingChannel.link ?? '');
+                    }}
+                  >
+                    <span>Следующий канал</span>
                     <strong>{nextMissingChannel.title}</strong>
                     <small>
-                      {awaitingSubscriptionReturn
-                        ? 'Вернитесь в mini app после подписки — проверка уже ждёт вас.'
-                        : 'Откройте канал в MAX, подпишитесь и вернитесь сюда.'}
+                      {subscriptionNeedsManualRetry
+                        ? 'Если нужно, откройте канал ещё раз.'
+                        : awaitingSubscriptionReturn || subscriptionRecheckPending
+                          ? 'Возвращайтесь в mini app после подписки.'
+                          : 'Откройте в MAX и подпишитесь.'}
                     </small>
-                  </div>
+                  </button>
                 ) : (
                   <div className="giveaway-page__overlay-channel is-disabled giveaway-page__overlay-channel--focus">
-                    <span>{nextMissingChannel.eyebrow}</span>
+                    <span>Следующий канал</span>
                     <strong>{nextMissingChannel.title}</strong>
-                    <small>У канала нет публичной ссылки для открытия из mini app.</small>
+                    <small>У канала нет публичной ссылки.</small>
                   </div>
                 )
               ) : null}
@@ -696,7 +796,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
           </div>
 
           <p className="giveaway-page__overlay-footnote">
-            Конкурсный бот{' '}
+            Поддержка:{' '}
             <a
               href={SUPPORT_BOT_URL}
               className="giveaway-page__overlay-inline-link"
@@ -705,7 +805,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                 openSupportBot();
               }}
             >
-              Майор Максимов
+              Конкурсный бот Майор Максимов
             </a>
           </p>
         </section>
