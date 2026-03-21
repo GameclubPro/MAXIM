@@ -11,7 +11,13 @@ import {
 } from '../lib/api/giveaway-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
-import { closeMaxMiniApp, maxNotify, openMaxBotLink } from '../lib/max-bridge';
+import {
+  closeMaxMiniApp,
+  maxImpact,
+  maxNotify,
+  maxSelectionChanged,
+  openMaxBotLink,
+} from '../lib/max-bridge';
 
 type GiveawayTone = 'success' | 'warning' | 'muted' | 'danger';
 type GiveawayGlyph = 'spark' | 'check' | 'gift' | 'lock' | 'clock' | 'cross';
@@ -29,6 +35,8 @@ type GiveawayModalPresentation = {
   title: string;
   description: string;
 };
+
+const SUPPORT_BOT_URL = 'https://max.ru/id613002203036_4_bot';
 
 function formatApiError(error: unknown): string {
   if (!(error instanceof Error)) {
@@ -292,6 +300,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   const { pushToast } = useToast();
 
   const closePage = () => {
+    maxImpact('light');
     closeMaxMiniApp(() => {
       if (window.history.length > 1) {
         navigate(-1);
@@ -316,6 +325,10 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
       document.body.style.overflow = previousBodyOverflow;
       document.documentElement.style.overflow = previousDocumentOverflow;
     };
+  }, []);
+
+  useEffect(() => {
+    maxImpact('soft');
   }, []);
 
   const giveawayQuery = useQuery({
@@ -469,6 +482,11 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                 }
               : null;
 
+  const openSupportBot = () => {
+    maxSelectionChanged();
+    openMaxBotLink(SUPPORT_BOT_URL);
+  };
+
   return (
     <div className="giveaway-page giveaway-page--modal-only">
       <div className="giveaway-page__overlay giveaway-page__overlay--standalone" aria-hidden={false}>
@@ -528,7 +546,10 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
                       key={channel.id}
                       type="button"
                       className="giveaway-page__overlay-channel"
-                      onClick={() => openMaxBotLink(channel.link ?? '')}
+                      onClick={() => {
+                        maxSelectionChanged();
+                        openMaxBotLink(channel.link ?? '');
+                      }}
                     >
                       <span>{channel.eyebrow}</span>
                       <strong>{channel.title}</strong>
@@ -545,13 +566,35 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
             </div>
           ) : null}
 
+          <div className="giveaway-page__overlay-support">
+            <div className="giveaway-page__overlay-support-copy">
+              <span>Конкурсный бот</span>
+              <strong>Майор Максимов</strong>
+              <small>Открыть профиль бота в MAX</small>
+            </div>
+
+            <a
+              href={SUPPORT_BOT_URL}
+              className="giveaway-page__overlay-support-link"
+              onClick={(event) => {
+                event.preventDefault();
+                openSupportBot();
+              }}
+            >
+              Открыть бота
+            </a>
+          </div>
+
           <div className="giveaway-page__overlay-actions">
             {primaryAction ? (
               <button
                 type="button"
                 className="button button--accent"
                 disabled={primaryAction.disabled}
-                onClick={primaryAction.onClick}
+                onClick={() => {
+                  maxImpact('medium');
+                  primaryAction.onClick();
+                }}
               >
                 {primaryAction.label}
               </button>
