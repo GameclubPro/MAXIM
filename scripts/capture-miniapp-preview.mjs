@@ -80,9 +80,9 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(650);
-      const editButton = page
-        .locator('.managed-giveaway')
-        .getByRole('button', { name: 'Редактировать' });
+      const editButton = page.locator('.managed-giveaway').getByRole('button', {
+        name: /(?:Редактировать|Продолжить сценарий)/u,
+      });
       if ((await editButton.count()) > 0) {
         await editButton.first().click();
         await page.waitForTimeout(450);
