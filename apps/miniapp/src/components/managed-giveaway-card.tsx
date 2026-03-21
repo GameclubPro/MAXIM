@@ -481,15 +481,6 @@ function buildPrizesSummary(draft: GiveawayEditorDraft): string {
   return `${draft.prizes.length} места`;
 }
 
-function buildPreviewSnippet(value: string, maxLength = 120): string {
-  const compact = value.trim().replace(/\s+/gu, ' ');
-  if (compact.length <= maxLength) {
-    return compact;
-  }
-
-  return `${compact.slice(0, maxLength - 1).trimEnd()}…`;
-}
-
 function toUpdatePayload(draft: GiveawayEditorDraft): UpdateManagedGiveawayPayload {
   const startsAtDate = draft.startsAtLocal.trim() ? parseDateTimeInput(draft.startsAtLocal) : null;
   const endsAtDate = parseDateTimeInput(draft.endsAtLocal);
@@ -836,10 +827,6 @@ export function ManagedGiveawayCard({
         : !mediaValidation.valid
           ? { step: 'prizes' as GiveawayEditorStepId, message: mediaValidation.message }
           : null;
-  const publicationPreview = draft?.description.trim()
-    ? buildPreviewSnippet(draft.description)
-    : '';
-
   const handoffMutation = useMutation({
     mutationFn: (giveawayId: string | null) =>
       handoffManagedGiveaway(api, entityType, entityId, { giveawayId }),
@@ -1422,7 +1409,6 @@ export function ManagedGiveawayCard({
   });
   const isEditingOpen = editorMode !== 'closed';
   const publicationTextReady = Boolean(draft?.description.trim());
-  const publicationPhotoSet = Boolean(draft?.imageEnabled && draft.imageBase64.trim());
   const canSaveEditor = Boolean(draft) && validation.valid && (editorMode === 'create' || isDirty);
   const totalItemsCount = sortedItems.length;
   const isScheduledStart = Boolean(draft?.startsAtLocal.trim());
@@ -1541,46 +1527,6 @@ export function ManagedGiveawayCard({
               },
             ]
           : []),
-      ]
-    : [];
-  const reviewChecklist = draft
-    ? [
-        {
-          key: 'timing',
-          label: 'Сроки',
-          value: basicsValidation.valid ? 'Готово' : 'Нужно проверить',
-          detail: basicsValidation.valid
-            ? buildBasicsSummary(draft)
-            : basicsValidation.message,
-          tone: basicsValidation.valid ? 'is-success' : 'is-warning',
-        },
-        {
-          key: 'conditions',
-          label: 'Условия',
-          value: conditionsValidation.valid ? 'Готово' : 'Проверить',
-          detail: conditionsValidation.valid
-            ? buildConditionsSummary(draft, selectedRequiredChannels)
-            : conditionsValidation.message,
-          tone: conditionsValidation.valid ? 'is-success' : 'is-warning',
-        },
-        {
-          key: 'prizes',
-          label: 'Призы',
-          value: prizesValidation.valid ? 'Готово' : 'Проверить',
-          detail: prizesValidation.valid ? buildPrizesSummary(draft) : prizesValidation.message,
-          tone: prizesValidation.valid ? 'is-success' : 'is-warning',
-        },
-        {
-          key: 'content',
-          label: 'Контент',
-          value: publicationTextReady ? 'В боте готово' : 'Нужен текст',
-          detail: publicationTextReady
-            ? publicationPhotoSet
-              ? 'Текст и фото сохранены в чат-боте.'
-              : 'Текст публикации сохранён в чат-боте.'
-            : 'Текст и фото добавляются в чат-боте перед публикацией.',
-          tone: publicationTextReady ? 'is-success' : 'is-muted',
-        },
       ]
     : [];
   const renderFactGrid = (metrics: SummaryMetric[]) =>
@@ -2214,75 +2160,32 @@ export function ManagedGiveawayCard({
                   </div>
                 </div>
 
-                <div className="managed-giveaway__section">
-                  <div className="managed-giveaway__section-head">
-                    <div className="managed-giveaway__section-copy">
-                      <strong>Финальная проверка</strong>
-                      <small>Текст и фото живут в чат-боте, но весь сценарий перед запуском видно уже здесь.</small>
-                    </div>
-                    <span
-                      className={cn(
-                        'managed-giveaway__badge',
-                        publicationTextReady ? 'is-success' : 'is-muted',
-                      )}
-                    >
-                      {publicationTextReady ? 'Контент готов' : 'Нужен бот'}
-                    </span>
-                  </div>
-
-                  <div className="managed-giveaway__review-list">
-                    {reviewChecklist.map((item) => (
-                      <div
-                        key={item.key}
-                        className={cn('managed-giveaway__review-item', item.tone)}
-                      >
-                        <div className="managed-giveaway__review-copy">
-                          <strong>{item.label}</strong>
-                          <small>{item.detail}</small>
-                        </div>
-                        <span className="managed-giveaway__review-status">{item.value}</span>
+                {publicationTextReady || awaitingBotSync ? (
+                  <div className="managed-giveaway__info-card">
+                    <strong>
+                      {awaitingBotSync ? 'Ждём обновления из бота' : 'Контент публикации уже готов'}
+                    </strong>
+                    <small>
+                      {awaitingBotSync
+                        ? 'После возврата подтянем текст и фото автоматически.'
+                        : 'Если нужно, откройте чат-бот и поправьте текст или фото перед запуском.'}
+                    </small>
+                    {publicationTextReady ? (
+                      <div className="managed-giveaway__section-actions managed-giveaway__section-actions--align-end">
+                        <button
+                          type="button"
+                          className="button button--ghost managed-giveaway__channel-action"
+                          disabled={isBusy}
+                          onClick={() => {
+                            void openEditorInBot();
+                          }}
+                        >
+                          Изменить в боте
+                        </button>
                       </div>
-                    ))}
+                    ) : null}
                   </div>
-
-                  {publicationTextReady ? (
-                    <div className="managed-giveaway__content-preview">{publicationPreview}</div>
-                  ) : (
-                    <div className="managed-giveaway__content-placeholder">
-                      После кнопки ниже откроется чат-бот для текста и фото публикации.
-                    </div>
-                  )}
-
-                  <div className="managed-giveaway__section-actions">
-                    <button
-                      type="button"
-                      className="button button--ghost managed-giveaway__channel-action"
-                      disabled={isBusy}
-                      onClick={() => {
-                        void openEditorInBot();
-                      }}
-                    >
-                      {publicationTextReady ? 'Изменить в боте' : 'Открыть чат-бот'}
-                    </button>
-                    <button
-                      type="button"
-                      className="button button--ghost managed-giveaway__channel-action"
-                      disabled={isBusy || !editingGiveawayId}
-                      onClick={() => {
-                        void draftDetailsQuery.refetch();
-                        void refetchManagedGiveaways();
-                      }}
-                    >
-                      Обновить из бота
-                    </button>
-                  </div>
-
-                  {awaitingBotSync ? (
-                    <div className="managed-giveaway__inline-note">
-                      Ждём синхронизацию после возврата из чат-бота.
-                    </div>
-                  ) : null}
-                </div>
+                ) : null}
               </div>
             ) : null}
 

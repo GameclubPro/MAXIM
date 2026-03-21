@@ -7833,63 +7833,6 @@
   font-size: 0.86rem;
 }
 
-.managed-giveaway__review-list {
-  display: grid;
-  gap: 8px;
-}
-
-.managed-giveaway__review-item {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px;
-  border-radius: 18px;
-  border: 1px solid rgba(89, 117, 145, 0.1);
-  background: rgba(247, 249, 252, 0.96);
-}
-
-.managed-giveaway__review-item.is-success {
-  border-color: rgba(30, 122, 82, 0.14);
-  background: rgba(239, 249, 244, 0.94);
-}
-
-.managed-giveaway__review-item.is-warning {
-  border-color: rgba(184, 120, 33, 0.14);
-  background: rgba(255, 247, 235, 0.94);
-}
-
-.managed-giveaway__review-copy {
-  min-width: 0;
-  display: grid;
-  gap: 4px;
-}
-
-.managed-giveaway__review-copy strong {
-  color: var(--text-primary);
-  font-size: 0.84rem;
-}
-
-.managed-giveaway__review-copy small {
-  color: var(--text-secondary);
-  font-size: 0.74rem;
-}
-
-.managed-giveaway__review-status {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 28px;
-  padding: 0 10px;
-  border-radius: 999px;
-  border: 1px solid rgba(89, 117, 145, 0.12);
-  background: rgba(255, 255, 255, 0.9);
-  color: var(--text-primary);
-  font-size: 0.72rem;
-  font-weight: 760;
-  white-space: nowrap;
-}
-
 .managed-giveaway__primary-actions {
   display: grid;
   gap: 8px;
@@ -8209,26 +8152,6 @@
   min-height: 34px;
 }
 
-.managed-giveaway__content-preview,
-.managed-giveaway__content-placeholder {
-  padding: 12px;
-  border-radius: 14px;
-  border: 1px solid rgba(89, 117, 145, 0.1);
-  background: rgba(255, 255, 255, 0.98);
-}
-
-.managed-giveaway__content-preview {
-  color: var(--text-primary);
-  font-size: 0.8rem;
-  line-height: 1.45;
-}
-
-.managed-giveaway__content-placeholder {
-  color: var(--text-secondary);
-  font-size: 0.76rem;
-  line-height: 1.42;
-}
-
 .managed-giveaway__section-inline-note {
   color: var(--text-secondary);
   font-size: 0.7rem;
@@ -8510,10 +8433,6 @@
 
   .managed-giveaway__step-pill {
     gap: 5px;
-  }
-
-  .managed-giveaway__review-item {
-    flex-direction: column;
   }
 
   .managed-giveaway__section-head > .managed-giveaway__badge,
