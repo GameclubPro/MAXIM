@@ -7658,61 +7658,63 @@
 }
 
 .managed-giveaway__step-strip {
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding-bottom: 2px;
-  scrollbar-width: none;
-}
-
-.managed-giveaway__step-strip::-webkit-scrollbar {
-  display: none;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  align-items: start;
+  padding: 0 4px;
 }
 
 .managed-giveaway__step-pill {
-  min-width: 150px;
-  flex: 1 0 150px;
+  min-width: 0;
   display: grid;
-  gap: 4px;
-  padding: 12px;
-  border-radius: 18px;
-  border: 1px solid rgba(89, 117, 145, 0.1);
-  background: rgba(247, 249, 252, 0.96);
-}
-
-.managed-giveaway__step-pill.is-active {
-  border-color: rgba(11, 132, 255, 0.24);
-  background: rgba(231, 243, 255, 0.94);
-}
-
-.managed-giveaway__step-pill.is-complete {
-  border-color: rgba(30, 122, 82, 0.14);
-  background: rgba(239, 249, 244, 0.94);
+  justify-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
 }
 
 .managed-giveaway__step-pill > strong {
-  color: var(--text-primary);
-  font-size: 0.82rem;
-  line-height: 1.16;
+  color: #6c8297;
+  font-size: 0.78rem;
+  line-height: 1.18;
+  text-align: center;
 }
 
-.managed-giveaway__step-pill > small {
-  color: var(--text-secondary);
-  font-size: 0.72rem;
+.managed-giveaway__step-pill.is-active > strong {
+  color: var(--text-primary);
+  font-weight: 800;
+}
+
+.managed-giveaway__step-pill.is-complete > strong {
+  color: #2a7757;
 }
 
 .managed-giveaway__step-pill-index {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 24px;
-  min-height: 24px;
+  width: 28px;
+  min-height: 28px;
   border-radius: 999px;
   border: 1px solid rgba(89, 117, 145, 0.12);
-  background: rgba(255, 255, 255, 0.9);
+  background: rgba(255, 255, 255, 0.98);
   color: var(--text-secondary);
   font-size: 0.72rem;
   font-weight: 800;
+}
+
+.managed-giveaway__step-pill.is-active .managed-giveaway__step-pill-index {
+  border-color: rgba(11, 132, 255, 0.32);
+  background: rgba(11, 132, 255, 0.96);
+  color: #fff;
+}
+
+.managed-giveaway__step-pill.is-complete .managed-giveaway__step-pill-index {
+  border-color: rgba(30, 122, 82, 0.18);
+  background: rgba(239, 249, 244, 0.98);
+  color: #1d7a52;
 }
 
 .managed-giveaway__choice-grid {
@@ -8506,23 +8508,8 @@
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .managed-giveaway__step-strip {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 6px;
-    overflow: visible;
-    padding-bottom: 0;
-  }
-
   .managed-giveaway__step-pill {
-    min-width: 0;
-    flex: initial;
-    padding: 10px 8px;
-    gap: 6px;
-  }
-
-  .managed-giveaway__step-pill > small {
-    display: none;
+    gap: 5px;
   }
 
   .managed-giveaway__review-item {
@@ -8583,8 +8570,12 @@
     font-size: 0.75rem;
   }
 
-  .managed-giveaway__step-pill {
-    padding: 9px 8px;
+  .managed-giveaway__step-strip {
+    gap: 6px;
+  }
+
+  .managed-giveaway__step-pill > strong {
+    font-size: 0.74rem;
   }
   .managed-giveaway__primary-actions--split {
     grid-template-columns: minmax(0, 1fr);

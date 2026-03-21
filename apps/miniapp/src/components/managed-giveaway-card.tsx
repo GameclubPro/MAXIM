@@ -1798,9 +1798,10 @@ export function ManagedGiveawayCard({
                     step.isComplete && 'is-complete',
                   )}
                 >
-                  <span className="managed-giveaway__step-pill-index">{index + 1}</span>
+                  <span className="managed-giveaway__step-pill-index">
+                    {step.isComplete && index < activeEditorStepIndex ? '✓' : index + 1}
+                  </span>
                   <strong>{step.label}</strong>
-                  <small>{step.summary}</small>
                 </div>
               ))}
             </div>
