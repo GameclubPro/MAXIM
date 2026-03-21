@@ -8,7 +8,7 @@ import {
   type ManagedGiveawaySummary,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { type ReactNode, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { getChannels } from '../lib/api/root-client';
 import {
   cancelManagedGiveaway,
@@ -1380,177 +1380,135 @@ export function ManagedGiveawayCard({
         },
       ]
     : [];
-  const renderSummaryPanel = ({
-    eyebrow,
-    title,
-    description,
-    metrics,
-    topActions,
-    actions,
-  }: {
-    eyebrow: string;
-    title: string;
-    description: string;
-    metrics: SummaryMetric[];
-    topActions?: ReactNode;
-    actions?: ReactNode;
-  }) => (
-    <div className={cn('managed-giveaway__surface', 'managed-giveaway__snapshot')}>
-      <div className="managed-giveaway__snapshot-topline">
-        <span className="managed-giveaway__eyebrow">{eyebrow}</span>
-        {topActions ? <div className="managed-giveaway__snapshot-topline-actions">{topActions}</div> : null}
+  const renderMetaGrid = (metrics: SummaryMetric[]) =>
+    metrics.length > 0 ? (
+      <div className="managed-giveaway__meta-grid">
+        {metrics.map((item) => (
+          <div key={item.key} className="managed-giveaway__meta-card">
+            <span>{item.label}</span>
+            <strong>{item.value}</strong>
+            <small>{item.note}</small>
+          </div>
+        ))}
       </div>
-
-      <div className="managed-giveaway__snapshot-copy">
-        <strong className="managed-giveaway__snapshot-title">{title}</strong>
-        <p className="managed-giveaway__snapshot-description">{description}</p>
-      </div>
-
-      {metrics.length > 0 ? (
-        <div className="managed-giveaway__snapshot-grid">
-          {metrics.map((item) => (
-            <div key={item.key} className="managed-giveaway__snapshot-card">
-              <span>{item.label}</span>
-              <strong>{item.value}</strong>
-              <small>{item.note}</small>
-            </div>
-          ))}
-        </div>
-      ) : null}
-
-      {actions}
-    </div>
-  );
+    ) : null;
 
   return (
     <div className="managed-giveaway">
-      {isEditingOpen ? (
-        renderSummaryPanel({
-          eyebrow: draft ? `Шаг ${activeEditorStepIndex + 1}/${editorSteps.length}` : headerEyebrow,
-          title: headerTitle,
-          description: headerSummaryText,
-          metrics: editorSummaryMetrics,
-          topActions: (
-            <>
-              {draft ? (
-                <span
-                  className={cn(
-                    'managed-giveaway__badge',
-                    isDirty || editorMode === 'create' ? 'is-warning' : 'is-success',
-                  )}
+      {!isEditingOpen ? (
+        listQuery.isLoading ? (
+          <>
+            <div className="managed-giveaway__head-row">
+              <span className="managed-giveaway__eyebrow">Розыгрыши</span>
+              <span className="managed-giveaway__badge is-muted">Загрузка</span>
+            </div>
+            <div className="managed-giveaway__head-copy">
+              <strong className="managed-giveaway__head-title">Подгружаем сценарии</strong>
+              <p className="managed-giveaway__head-description">
+                Проверяем черновик и активный запуск.
+              </p>
+            </div>
+            {renderMetaGrid(emptySummaryMetrics)}
+          </>
+        ) : currentItem ? (
+          <>
+            <div className="managed-giveaway__head-row">
+              <span className="managed-giveaway__eyebrow">Активный сценарий</span>
+              <div className="managed-giveaway__head-actions">
+                <span className={cn('managed-giveaway__badge', buildStatusTone(currentItem.status))}>
+                  {buildStatusLabel(currentItem.status)}
+                </span>
+                {historyItems.length > 0 ? (
+                  <span className="managed-giveaway__chip">
+                    {formatCount(historyItems.length)} в архиве
+                  </span>
+                ) : null}
+              </div>
+            </div>
+            <div className="managed-giveaway__head-copy">
+              <strong className="managed-giveaway__head-title">{currentItem.title}</strong>
+              <p className="managed-giveaway__head-description">
+                {buildCurrentSubtitle(currentItem)}
+              </p>
+            </div>
+            {renderMetaGrid(currentSummaryMetrics)}
+            {currentItem.status === 'DRAFT' ? (
+              <div className="managed-giveaway__primary-actions managed-giveaway__primary-actions--split">
+                <button
+                  type="button"
+                  className="button button--accent"
+                  disabled={isBusy}
+                  onClick={startEditCurrentDraft}
                 >
-                  {editorStatusLabel}
-                </span>
-              ) : null}
-              <button
-                type="button"
-                className="button button--ghost"
-                disabled={isBusy}
-                onClick={clearEditor}
-              >
-                Закрыть
-              </button>
-            </>
-          ),
-        })
-      ) : listQuery.isLoading ? (
-        renderSummaryPanel({
-          eyebrow: 'Розыгрыши',
-          title: 'Подгружаем сценарии',
-          description: 'Проверяем черновик и активный запуск.',
-          metrics: emptySummaryMetrics,
-        })
-      ) : currentItem ? (
-        renderSummaryPanel({
-          eyebrow: 'Активный сценарий',
-          title: currentItem.title,
-          description: buildCurrentSubtitle(currentItem),
-          metrics: currentSummaryMetrics,
-          topActions: (
-            <>
-              <span className={cn('managed-giveaway__badge', buildStatusTone(currentItem.status))}>
-                {buildStatusLabel(currentItem.status)}
-              </span>
-              {historyItems.length > 0 ? (
-                <span className="managed-giveaway__chip">
-                  {formatCount(historyItems.length)} в архиве
-                </span>
-              ) : null}
-            </>
-          ),
-          actions: (
-            <>
-              {currentItem.status === 'DRAFT' ? (
-                <div className="managed-giveaway__snapshot-actions managed-giveaway__snapshot-actions--split">
-                  <button
-                    type="button"
-                    className="button button--accent"
-                    disabled={isBusy}
-                    onClick={startEditCurrentDraft}
-                  >
-                    Продолжить
-                  </button>
+                  Продолжить
+                </button>
+                <button
+                  type="button"
+                  className="button button--ghost"
+                  disabled={isBusy}
+                  onClick={() => {
+                    void handoffMutation.mutateAsync(currentItem.id);
+                  }}
+                >
+                  В бот
+                </button>
+              </div>
+            ) : (
+              <div className="managed-giveaway__primary-actions">
+                <button
+                  type="button"
+                  className="button button--accent"
+                  disabled={isBusy}
+                  onClick={() => {
+                    void handoffMutation.mutateAsync(currentItem.id);
+                  }}
+                >
+                  {handoffMutation.isPending ? 'Открываем…' : 'Открыть в боте'}
+                </button>
+                {currentItem.publicationUrl ? (
                   <button
                     type="button"
                     className="button button--ghost"
-                    disabled={isBusy}
-                    onClick={() => {
-                      void handoffMutation.mutateAsync(currentItem.id);
-                    }}
+                    onClick={() => openMaxBotLink(currentItem.publicationUrl ?? '')}
                   >
-                    В бот
+                    Публикация
                   </button>
-                </div>
-              ) : (
-                <div className="managed-giveaway__snapshot-actions">
+                ) : null}
+                {currentItem.resultsUrl ? (
                   <button
                     type="button"
-                    className="button button--accent"
-                    disabled={isBusy}
-                    onClick={() => {
-                      void handoffMutation.mutateAsync(currentItem.id);
-                    }}
+                    className="button button--ghost"
+                    onClick={() => openMaxBotLink(currentItem.resultsUrl ?? '')}
                   >
-                    {handoffMutation.isPending ? 'Открываем…' : 'Открыть в боте'}
+                    Итоги
                   </button>
-                  {currentItem.publicationUrl ? (
-                    <button
-                      type="button"
-                      className="button button--ghost"
-                      onClick={() => openMaxBotLink(currentItem.publicationUrl ?? '')}
-                    >
-                      Публикация
-                    </button>
-                  ) : null}
-                  {currentItem.resultsUrl ? (
-                    <button
-                      type="button"
-                      className="button button--ghost"
-                      onClick={() => openMaxBotLink(currentItem.resultsUrl ?? '')}
-                    >
-                      Итоги
-                    </button>
-                  ) : null}
+                ) : null}
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <div className="managed-giveaway__head-row">
+              <span className="managed-giveaway__eyebrow">Розыгрыши</span>
+              {historyItems.length > 0 ? (
+                <div className="managed-giveaway__head-actions">
+                  <span className="managed-giveaway__chip">
+                    {formatCount(historyItems.length)} в архиве
+                  </span>
                 </div>
-              )}
-            </>
-          ),
-        })
-      ) : (
-        renderSummaryPanel({
-          eyebrow: 'Розыгрыши',
-          title: 'Создайте новый розыгрыш',
-          description: 'Три шага здесь, контент и запуск через бота.',
-          metrics: emptySummaryMetrics,
-          topActions:
-            historyItems.length > 0 ? (
-              <span className="managed-giveaway__chip">{formatCount(historyItems.length)} в архиве</span>
-            ) : undefined,
-          actions: (
+              ) : null}
+            </div>
+            <div className="managed-giveaway__head-copy">
+              <strong className="managed-giveaway__head-title">Создайте новый розыгрыш</strong>
+              <p className="managed-giveaway__head-description">
+                Три шага здесь, контент и запуск через бота.
+              </p>
+            </div>
+            {renderMetaGrid(emptySummaryMetrics)}
             <div
               className={cn(
-                'managed-giveaway__snapshot-actions',
-                historyItems.length > 0 && 'managed-giveaway__snapshot-actions--split',
+                'managed-giveaway__primary-actions',
+                historyItems.length > 0 && 'managed-giveaway__primary-actions--split',
               )}
             >
               <button
@@ -1571,21 +1529,32 @@ export function ManagedGiveawayCard({
                 </button>
               ) : null}
             </div>
-          ),
-        })
-      )}
+          </>
+        )
+      ) : null}
 
       {isEditingOpen ? (
         !draft ? (
           <div className={cn('managed-giveaway__surface', 'managed-giveaway__editor-card')}>
-            <div className="managed-giveaway__editor-topbar">
-              <div className="managed-giveaway__editor-step-copy">
-                <span className="managed-giveaway__eyebrow">Розыгрыш</span>
-                <strong>Готовим форму</strong>
+            <div className="managed-giveaway__head-row">
+              <span className="managed-giveaway__eyebrow">{headerEyebrow}</span>
+              <div className="managed-giveaway__head-actions">
+                <span className="managed-giveaway__badge is-muted">
+                  {draftDetailsQuery.isLoading ? 'Загрузка' : 'Черновик'}
+                </span>
+                <button
+                  type="button"
+                  className="button button--ghost"
+                  disabled={isBusy}
+                  onClick={clearEditor}
+                >
+                  Закрыть
+                </button>
               </div>
-              <span className="managed-giveaway__badge is-muted">
-                {draftDetailsQuery.isLoading ? 'Загрузка' : 'Черновик'}
-              </span>
+            </div>
+            <div className="managed-giveaway__head-copy">
+              <strong className="managed-giveaway__head-title">{headerTitle}</strong>
+              <p className="managed-giveaway__head-description">{headerSummaryText}</p>
             </div>
             <div className="managed-giveaway__editor-overview">
               {draftDetailsQuery.isLoading
@@ -1595,15 +1564,34 @@ export function ManagedGiveawayCard({
           </div>
         ) : (
           <div className={cn('managed-giveaway__surface', 'managed-giveaway__editor-card')}>
-            <div className="managed-giveaway__flow-head">
-              <div className="managed-giveaway__flow-copy">
-                <span className="managed-giveaway__eyebrow">
-                  Шаг {activeEditorStepIndex + 1} / {editorSteps.length}
+            <div className="managed-giveaway__head-row">
+              <span className="managed-giveaway__eyebrow">
+                Шаг {activeEditorStepIndex + 1} / {editorSteps.length}
+              </span>
+              <div className="managed-giveaway__head-actions">
+                <span
+                  className={cn(
+                    'managed-giveaway__badge',
+                    isDirty || editorMode === 'create' ? 'is-warning' : 'is-success',
+                  )}
+                >
+                  {editorStatusLabel}
                 </span>
-                <strong>{activeEditorStep.title}</strong>
-                <small>{activeEditorStep.description}</small>
+                <button
+                  type="button"
+                  className="button button--ghost"
+                  disabled={isBusy}
+                  onClick={clearEditor}
+                >
+                  Закрыть
+                </button>
               </div>
             </div>
+            <div className="managed-giveaway__head-copy">
+              <strong className="managed-giveaway__head-title">{headerTitle}</strong>
+              <p className="managed-giveaway__head-description">{headerSummaryText}</p>
+            </div>
+            {renderMetaGrid(editorSummaryMetrics)}
 
             {editorStep === 'basics' ? (
               <div className="managed-giveaway__step-stage">
