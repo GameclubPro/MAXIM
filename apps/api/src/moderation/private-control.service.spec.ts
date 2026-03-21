@@ -944,207 +944,33 @@ describe('PrivateControlService', () => {
     expect(buttonTexts.some((text) => text.includes('Обновить'))).toBe(true);
   });
 
-  it('starts sticker flow from button and sends experimental sticker attachment for a photo', async () => {
-    const { service, maxClient } = createHarness();
-    const fetchControl = mockImageFetch();
+  it('does not expose sticker-from-photo action in the private bot navigation', async () => {
+    const { service, maxClient, chats } = createHarness();
 
-    try {
-      await service.handleUpdate(createPrivateCallbackUpdate('pc2|sticker_photo_prompt'));
+    await service.handleUpdate(createPrivateTextUpdate('меню'));
+    expect(
+      getLastButtons(maxClient)
+        .flat()
+        .map((button) => String((button as { text?: string }).text ?? '')),
+    ).not.toContain('Стикер из фото');
 
-      expect(getLastUiText(maxClient)).toContain('Введите: Фото, файл или sticker');
-
-      await service.handleUpdate(createPrivatePhotoUpdate());
-
-      expect(maxClient.uploadImage).toHaveBeenCalledTimes(1);
-      expect(maxClient.sendCustomMessageImmediate).toHaveBeenCalledWith(
-        '152517912',
-        expect.objectContaining({
-          text: '',
-          attachments: [expect.objectContaining({ type: 'sticker' })],
-        }),
-      );
-      expect(getLastSentText(maxClient)).toContain('sticker отправлен');
-    } finally {
-      fetchControl.restore();
-    }
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    expect(
+      getLastButtons(maxClient)
+        .flat()
+        .map((button) => String((button as { text?: string }).text ?? '')),
+    ).not.toContain('Стикер из фото');
   });
 
-  it('accepts an image file in sticker flow and preserves png fallback metadata', async () => {
-    const { service, maxClient } = createHarness();
-    const fetchControl = mockImageFetch(TINY_PNG, 'application/octet-stream');
+  it('does not hijack a plain photo into sticker flow when no content input is active', async () => {
+    const { service, maxClient, chats } = createHarness();
 
-    try {
-      await service.handleUpdate(createPrivateCallbackUpdate('pc2|sticker_photo_prompt'));
-      await service.handleUpdate(createPrivateImageFileUpdate());
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivatePhotoUpdate());
 
-      expect(maxClient.uploadImage).toHaveBeenCalledWith(
-        expect.any(Buffer),
-        'photo-as-file.png',
-        'image/png',
-      );
-      expect(maxClient.sendCustomMessageImmediate).toHaveBeenCalledWith(
-        '152517912',
-        expect.objectContaining({
-          text: '',
-          attachments: [expect.objectContaining({ type: 'sticker' })],
-        }),
-      );
-      expect(getLastSentText(maxClient)).toContain('sticker отправлен');
-    } finally {
-      fetchControl.restore();
-    }
-  });
-
-  it('falls back to image when MAX rejects experimental sticker attachment', async () => {
-    const { service, maxClient } = createHarness();
-    const fetchControl = mockImageFetch();
-    maxClient.sendCustomMessageImmediate
-      .mockRejectedValueOnce(new Error('sticker rejected #1'))
-      .mockRejectedValueOnce(new Error('sticker rejected #2'))
-      .mockRejectedValueOnce(new Error('sticker rejected #3'))
-      .mockResolvedValueOnce({ message_id: 'msg-image-fallback-1' });
-
-    try {
-      await service.handleUpdate(createPrivatePhotoUpdate());
-
-      expect(maxClient.sendCustomMessageImmediate).toHaveBeenCalledTimes(4);
-      expect(maxClient.sendCustomMessageImmediate).toHaveBeenLastCalledWith(
-        '152517912',
-        expect.objectContaining({
-          text: '',
-          attachments: [expect.objectContaining({ type: 'image' })],
-        }),
-      );
-      expect(getLastSentText(maxClient)).toContain('MAX не принял вложение как sticker');
-    } finally {
-      fetchControl.restore();
-    }
-  });
-
-  it('falls back to png image when MAX rejects sticker variants for an image file', async () => {
-    const { service, maxClient } = createHarness();
-    const fetchControl = mockImageFetch(TINY_PNG, 'application/octet-stream');
-    maxClient.sendCustomMessageImmediate
-      .mockRejectedValueOnce(new Error('sticker rejected #1'))
-      .mockRejectedValueOnce(new Error('sticker rejected #2'))
-      .mockRejectedValueOnce(new Error('sticker rejected #3'))
-      .mockResolvedValueOnce({ message_id: 'msg-image-fallback-file-1' });
-
-    try {
-      await service.handleUpdate(createPrivateImageFileUpdate());
-
-      expect(maxClient.sendCustomMessageImmediate).toHaveBeenCalledTimes(4);
-      expect(maxClient.sendCustomMessageImmediate).toHaveBeenLastCalledWith(
-        '152517912',
-        expect.objectContaining({
-          text: '',
-          attachments: [expect.objectContaining({ type: 'image' })],
-        }),
-      );
-      expect(getLastSentText(maxClient)).toContain('PNG-картинку');
-    } finally {
-      fetchControl.restore();
-    }
-  });
-
-  it('reports image variant when MAX accepts only image payload with media_type=sticker', async () => {
-    const { service, maxClient } = createHarness();
-    const fetchControl = mockImageFetch();
-    maxClient.sendCustomMessageImmediate
-      .mockRejectedValueOnce(new Error('sticker rejected #1'))
-      .mockRejectedValueOnce(new Error('sticker rejected #2'))
-      .mockResolvedValueOnce({ message_id: 'msg-image-variant-1' });
-
-    try {
-      await service.handleUpdate(createPrivatePhotoUpdate());
-
-      expect(maxClient.sendCustomMessageImmediate).toHaveBeenCalledTimes(3);
-      expect(maxClient.uploadImage).toHaveBeenCalledWith(
-        expect.any(Buffer),
-        'private-sticker-source-photo-1.png',
-        'image/png',
-      );
-      expect(maxClient.sendCustomMessageImmediate).toHaveBeenLastCalledWith('152517912', {
-        text: '',
-        attachments: [
-          {
-            type: 'image',
-            payload: {
-              media_type: 'sticker',
-              mime_type: 'image/png',
-              token: 'upload-token-1',
-            },
-          },
-        ],
-      });
-      expect(maxClient.sendCustomMessageImmediate).toHaveBeenNthCalledWith(2, '152517912', {
-        text: '',
-        attachments: [
-          {
-            type: 'sticker',
-            payload: {
-              mime_type: 'image/png',
-              token: 'upload-token-1',
-            },
-          },
-        ],
-      });
-      expect(getLastSentText(maxClient)).toContain('MAX принял только PNG image-вариант');
-      expect(getLastSentText(maxClient)).not.toContain('sticker отправлен');
-    } finally {
-      fetchControl.restore();
-    }
-  });
-
-  it('rejects a non-image file in sticker flow with a clear error', async () => {
-    const { service, maxClient } = createHarness();
-
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|sticker_photo_prompt'));
-    await service.handleUpdate(createPrivateNonImageFileUpdate());
-
-    expect(getLastSentText(maxClient)).toContain(
-      'Нужен PNG/WebP/JPG файлом, фото или sticker отдельным сообщением.',
-    );
-  });
-
-  it('resends incoming sticker by code during sticker flow', async () => {
-    const { service, maxClient } = createHarness();
-
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|sticker_photo_prompt'));
-    await service.handleUpdate(createPrivateStickerUpdate());
-
+    expect(maxClient.sendCustomMessageImmediate).not.toHaveBeenCalled();
     expect(maxClient.uploadImage).not.toHaveBeenCalled();
-    expect(maxClient.sendCustomMessageImmediate).toHaveBeenCalledWith('152517912', {
-      text: '',
-      attachments: [
-        {
-          type: 'sticker',
-          payload: {
-            code: '1e1321f26',
-          },
-        },
-      ],
-    });
-    expect(getLastSentText(maxClient)).toContain('sticker отправлен');
-  });
-
-  it('resends incoming sticker by code without explicit command', async () => {
-    const { service, maxClient } = createHarness();
-
-    await service.handleUpdate(createPrivateStickerUpdate('copy-test-42'));
-
-    expect(maxClient.uploadImage).not.toHaveBeenCalled();
-    expect(maxClient.sendCustomMessageImmediate).toHaveBeenCalledWith('152517912', {
-      text: '',
-      attachments: [
-        {
-          type: 'sticker',
-          payload: {
-            code: 'copy-test-42',
-          },
-        },
-      ],
-    });
+    expect(getLastUiText(maxClient)).toContain('Панель чата');
   });
 
   it('opens chat home, settings hub, and toggles a section setting via callback edit', async () => {
@@ -2023,6 +1849,71 @@ describe('PrivateControlService', () => {
         'private_bot',
       );
       expect(getLastUiText(maxClient)).toContain('Фото публикации обновлено.');
+      expect(getLastUiText(maxClient)).not.toContain('Жду: Текст и фото публикации');
+    } finally {
+      restore();
+    }
+  });
+
+  it('updates giveaway content when user sends photo and then text without another tap', async () => {
+    const { service, maxClient, chats, managedGiveawayService } = createHarness({
+      managedGiveaway: createGiveaway({
+        id: 'giveaway-draft-1',
+        status: 'DRAFT',
+        description: '',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        publicationMessageId: null,
+        publicationUrl: null,
+        publishedAt: null,
+      }),
+    });
+    const { restore } = mockImageFetch(TINY_PNG, 'image/png');
+
+    try {
+      await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
+      await service.handleUpdate(createPrivatePhotoUpdate());
+
+      expect(managedGiveawayService.updateManagedGiveaway).toHaveBeenNthCalledWith(
+        1,
+        chats[0].id,
+        'giveaway-draft-1',
+        expect.objectContaining({ userId: 'user-1' }),
+        expect.objectContaining({
+          description: '',
+          imageEnabled: true,
+          imageBase64: TINY_PNG.toString('base64'),
+          imageMimeType: 'image/png',
+          imageFileName: expect.stringContaining('private-giveaway-photo-1'),
+        }),
+        'chat',
+        'private_bot',
+      );
+      expect(maxClient.sendCustomMessageImmediate).not.toHaveBeenCalled();
+      expect(getLastUiText(maxClient)).toContain('Фото публикации обновлено. Можно сразу прислать текст.');
+      expect(getLastUiText(maxClient)).toContain('Жду: Текст и фото публикации');
+
+      await service.handleUpdate(createPrivateTextUpdate('Текст после фото'));
+
+      expect(managedGiveawayService.updateManagedGiveaway).toHaveBeenNthCalledWith(
+        2,
+        chats[0].id,
+        'giveaway-draft-1',
+        expect.objectContaining({ userId: 'user-1' }),
+        expect.objectContaining({
+          description: 'Текст после фото',
+          imageEnabled: true,
+          imageBase64: TINY_PNG.toString('base64'),
+          imageMimeType: 'image/png',
+          imageFileName: expect.stringContaining('private-giveaway-photo-1'),
+        }),
+        'chat',
+        'private_bot',
+      );
+      expect(getLastUiText(maxClient)).toContain('Текст публикации обновлён.');
       expect(getLastUiText(maxClient)).not.toContain('Жду: Текст и фото публикации');
     } finally {
       restore();

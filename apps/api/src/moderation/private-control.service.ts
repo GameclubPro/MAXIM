@@ -1256,6 +1256,8 @@ export class PrivateControlService {
     const session = await this.loadSession(context.actor.userId);
     const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
     const stickerAttachment = this.extractFirstStickerAttachment(context.update);
+    const fileAttachment = this.extractFirstFileAttachment(context.update);
+    const hasVideoAttachment = this.hasVideoAttachment(context.update);
 
     if (session.pendingInput) {
       await this.processPendingInput(context, session);
@@ -1267,7 +1269,7 @@ export class PrivateControlService {
       session.selectedChatId &&
       (context.text.trim().length > 0 ||
         imageSourceAttachment !== null ||
-        this.hasVideoAttachment(context.update))
+        hasVideoAttachment)
     ) {
       await this.captureBroadcastContent(context, session, context.text);
       const view = await this.renderBroadcastScreen(context, session, 'Контент сохранён.');
@@ -1279,6 +1281,28 @@ export class PrivateControlService {
     }
 
     if (
+      session.screen === 'giveaway' &&
+      session.selectedChatId &&
+      session.selectedEntityType &&
+      !context.text.trim().startsWith('/') &&
+      (context.text.trim().length > 0 ||
+        imageSourceAttachment !== null ||
+        hasVideoAttachment ||
+        fileAttachment !== null)
+    ) {
+      const giveaway = await this.getManagedGiveawayForSession(context.actor, session);
+      if (giveaway?.status === 'DRAFT') {
+        const notice = await this.captureGiveawayContent(context, session, context.text);
+        const view = await this.renderGiveawayScreen(context, session, notice);
+        await this.respond(context, session, view, {
+          callbackId: null,
+          notification: null,
+        });
+        return;
+      }
+    }
+
+    if (
       session.screen === 'rules' &&
       session.selectedChatId &&
       session.selectedEntityType !== 'channel' &&
@@ -1286,8 +1310,8 @@ export class PrivateControlService {
       (context.text.trim().length > 0 ||
         imageSourceAttachment !== null ||
         stickerAttachment !== null ||
-        this.hasVideoAttachment(context.update) ||
-        this.extractFirstFileAttachment(context.update) !== null)
+        hasVideoAttachment ||
+        fileAttachment !== null)
     ) {
       const view = await this.renderRulesScreen(
         context,
@@ -1298,16 +1322,6 @@ export class PrivateControlService {
         callbackId: null,
         notification: null,
       });
-      return;
-    }
-
-    if (imageSourceAttachment) {
-      await this.handleStickerImageSourceMessage(context, session, imageSourceAttachment);
-      return;
-    }
-
-    if (stickerAttachment) {
-      await this.handleStickerAttachmentMessage(context, session, stickerAttachment);
       return;
     }
 
@@ -1481,11 +1495,11 @@ export class PrivateControlService {
       }
 
       case 'sticker_photo_prompt': {
-        session.pendingInput = { kind: 'sticker_photo' };
-        const view = this.renderInputPrompt(session.pendingInput);
+        session.pendingInput = null;
+        const view = await this.renderByCurrentScreen(context, session);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: 'Жду фото',
+          notification: 'Стикер из фото убран',
         });
         return;
       }
@@ -3606,31 +3620,13 @@ export class PrivateControlService {
       }
 
       case 'sticker_photo': {
-        const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
-        if (imageSourceAttachment) {
-          await this.handleStickerImageSourceMessage(context, session, imageSourceAttachment);
-          return;
-        }
-
-        const stickerAttachment = this.extractFirstStickerAttachment(context.update);
-        if (stickerAttachment) {
-          await this.handleStickerAttachmentMessage(context, session, stickerAttachment);
-          return;
-        }
-
-        if (this.hasVideoAttachment(context.update)) {
-          throw new BadRequestException('Нужно фото или sticker, не видео.');
-        }
-
-        if (this.extractFirstFileAttachment(context.update)) {
-          throw new BadRequestException(
-            'Нужен PNG/WebP/JPG файлом, фото или sticker отдельным сообщением.',
-          );
-        }
-
-        throw new BadRequestException(
-          'Отправьте фото, PNG/WebP/JPG файлом или sticker отдельным сообщением.',
-        );
+        session.pendingInput = null;
+        const view = await this.renderByCurrentScreen(context, session);
+        await this.respond(context, session, view, {
+          callbackId: null,
+          notification: null,
+        });
+        return;
       }
 
       case 'giveaway_title': {
@@ -4117,6 +4113,8 @@ export class PrivateControlService {
       ? await this.downloadImageSourceAttachment(imageSourceAttachment, 'private-giveaway')
       : null;
     const draft = await this.getManagedGiveawayDraftForSession(context.actor, session);
+    const nextHasText = hasTextUpdate ? !clearText : draft.description.trim().length > 0;
+    const nextHasImage = downloaded ? true : draft.imageEnabled;
     const saved = await this.updateManagedGiveawayDraftForSession(
       session.selectedChatId,
       context.actor,
@@ -4137,8 +4135,7 @@ export class PrivateControlService {
     );
 
     session.managedGiveawayId = saved.id;
-    session.pendingInput =
-      hasTextUpdate && !downloaded ? { kind: 'giveaway_content' } : null;
+    session.pendingInput = nextHasText && nextHasImage ? null : { kind: 'giveaway_content' };
     session.screen = 'giveaway';
 
     if (hasTextUpdate && downloaded) {
@@ -4148,12 +4145,18 @@ export class PrivateControlService {
     }
 
     if (downloaded) {
-      return 'Фото публикации обновлено.';
+      return nextHasText
+        ? 'Фото публикации обновлено.'
+        : 'Фото публикации обновлено. Можно сразу прислать текст.';
     }
 
     return clearText
-      ? 'Текст очищен. Если нужно, сразу пришлите новое фото.'
-      : 'Текст публикации обновлён. Можно сразу прислать фото.';
+      ? nextHasImage
+        ? 'Текст очищен. Можно сразу прислать новый текст.'
+        : 'Текст очищен. Можно сразу прислать новый текст или фото.'
+      : nextHasImage
+        ? 'Текст публикации обновлён.'
+        : 'Текст публикации обновлён. Можно сразу прислать фото.';
   }
 
   private async handleStickerImageSourceMessage(
@@ -4833,7 +4836,6 @@ export class PrivateControlService {
               ),
             ],
             [this.callbackButton('Обновить', this.cb('chat_refresh'), 'positive')],
-            [this.callbackButton('Стикер из фото', this.cb('sticker_photo_prompt'), 'positive')],
             ...this.buildFooterButtons(),
           ],
         },
@@ -4869,7 +4871,6 @@ export class PrivateControlService {
       this.callbackButton('Обновить', this.cb('chat_refresh'), 'positive'),
     ]);
     rows.push(this.paginationButtons(pageInfo.page, pageInfo.pages, 'chat_page'));
-    rows.push([this.callbackButton('Стикер из фото', this.cb('sticker_photo_prompt'), 'positive')]);
     rows.push(...this.buildFooterButtons());
 
     return {
@@ -4994,7 +4995,6 @@ export class PrivateControlService {
         this.callbackButton('Розыгрыш', this.cb('open_giveaway')),
         this.callbackButton('Пост с кнопками', this.cb('publish_channel_engagement')),
       ],
-      [this.callbackButton('Стикер из фото', this.cb('sticker_photo_prompt'), 'positive')],
       [this.callbackButton('Сменить канал', this.cb('change_chat'))],
       ...this.buildFooterButtons(),
     ];
@@ -5092,7 +5092,6 @@ export class PrivateControlService {
         this.callbackButton('Поиск', this.cb('open_search')),
       ],
       [this.callbackButton('Ручной бан', this.cb('open_manual_users'))],
-      [this.callbackButton('Стикер из фото', this.cb('sticker_photo_prompt'), 'positive')],
       [this.callbackButton('Сменить чат', this.cb('change_chat'))],
     ];
 
@@ -5259,7 +5258,6 @@ export class PrivateControlService {
         this.callbackButton('Нарушения', this.cb('open_events')),
       ],
       [this.callbackButton('Статистика', this.cb('open_logs'))],
-      [this.callbackButton('Стикер из фото', this.cb('sticker_photo_prompt'), 'positive')],
       [this.callbackButton('Ручной бан', this.cb('open_manual_users'))],
       [this.callbackButton('Другой чат', this.cb('change_chat'))],
       [this.callbackButton('Новый вид', this.cb('home'))],
@@ -6791,7 +6789,6 @@ export class PrivateControlService {
       text: lines.join('\n'),
       options: {
         buttons: [
-          [this.callbackButton('Стикер из фото', this.cb('sticker_photo_prompt'), 'positive')],
           [this.callbackButton('Главный экран', this.cb('home'))],
           [this.callbackButton('Сменить чат', this.cb('change_chat'))],
           ...this.buildFooterButtons(),
