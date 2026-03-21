@@ -1929,6 +1929,106 @@ describe('PrivateControlService', () => {
     );
   });
 
+  it('shows only essential draft actions on the giveaway screen', async () => {
+    const { service, maxClient, chats } = createHarness({
+      managedGiveaway: createGiveaway({
+        id: 'giveaway-draft-1',
+        status: 'DRAFT',
+        publicationMessageId: null,
+        publicationUrl: null,
+        publishedAt: null,
+      }),
+    });
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
+
+    const buttonTexts = getLastButtons(maxClient)
+      .flat()
+      .map((button) => String((button as { text?: string }).text ?? ''));
+    expect(buttonTexts).toEqual([
+      'Редактировать текст/фото',
+      'Опубликовать',
+      'Вернуться в приложение',
+    ]);
+    expect(getLastUiText(maxClient)).toContain('Остальные настройки редактируются в приложении.');
+    expect(getLastUiText(maxClient)).not.toContain('Подтверждение:');
+
+    const returnButton = getLastButtons(maxClient)
+      .flat()
+      .find(
+        (button) => String((button as { text?: string }).text ?? '') === 'Вернуться в приложение',
+      ) as { url?: string } | undefined;
+    expect(decodeStartAppRoute(String(returnButton?.url ?? ''))).toBe(
+      `/chat/${encodeURIComponent(chats[0].id)}/settings?focus=giveaway&handoff=1`,
+    );
+  });
+
+  it('updates giveaway content when user sends text and then photo without another tap', async () => {
+    const { service, maxClient, chats, managedGiveawayService } = createHarness({
+      managedGiveaway: createGiveaway({
+        id: 'giveaway-draft-1',
+        status: 'DRAFT',
+        description: '',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        publicationMessageId: null,
+        publicationUrl: null,
+        publishedAt: null,
+      }),
+    });
+    const { restore } = mockImageFetch(TINY_PNG, 'image/png');
+
+    try {
+      await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|giveaway_input_prompt|content'));
+      await service.handleUpdate(createPrivateTextUpdate('Текст перед фото'));
+
+      expect(managedGiveawayService.updateManagedGiveaway).toHaveBeenNthCalledWith(
+        1,
+        chats[0].id,
+        'giveaway-draft-1',
+        expect.objectContaining({ userId: 'user-1' }),
+        expect.objectContaining({
+          description: 'Текст перед фото',
+          imageEnabled: false,
+          imageBase64: '',
+          imageMimeType: '',
+          imageFileName: '',
+        }),
+        'chat',
+        'private_bot',
+      );
+      expect(getLastUiText(maxClient)).toContain('Можно сразу прислать фото.');
+      expect(getLastUiText(maxClient)).toContain('Жду: Текст и фото публикации');
+
+      await service.handleUpdate(createPrivatePhotoUpdate());
+
+      expect(managedGiveawayService.updateManagedGiveaway).toHaveBeenNthCalledWith(
+        2,
+        chats[0].id,
+        'giveaway-draft-1',
+        expect.objectContaining({ userId: 'user-1' }),
+        expect.objectContaining({
+          description: 'Текст перед фото',
+          imageEnabled: true,
+          imageBase64: TINY_PNG.toString('base64'),
+          imageMimeType: 'image/png',
+          imageFileName: expect.stringContaining('private-giveaway-photo-1'),
+        }),
+        'chat',
+        'private_bot',
+      );
+      expect(getLastUiText(maxClient)).toContain('Фото публикации обновлено.');
+      expect(getLastUiText(maxClient)).not.toContain('Жду: Текст и фото публикации');
+    } finally {
+      restore();
+    }
+  });
+
   it('opens the poll screen and publishes a poll from private control', async () => {
     const { service, maxClient, adminService, chats } = createHarness({
       adminService: {

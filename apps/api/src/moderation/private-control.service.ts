@@ -91,6 +91,7 @@ type PendingInput =
   | { kind: 'rules_photo' }
   | { kind: 'sticker_photo' }
   | { kind: 'giveaway_title' }
+  | { kind: 'giveaway_content' }
   | { kind: 'giveaway_description' }
   | { kind: 'giveaway_start_at' }
   | { kind: 'giveaway_end_at' }
@@ -1400,6 +1401,7 @@ export class PrivateControlService {
     if (
       session.pendingInput &&
       session.pendingInput.kind !== 'broadcast_content' &&
+      session.pendingInput.kind !== 'giveaway_content' &&
       callback.action !== 'input_cancel'
     ) {
       const view = this.renderInputPrompt(session.pendingInput);
@@ -2362,6 +2364,8 @@ export class PrivateControlService {
         const field = callback.args[0] ?? '';
         if (field === 'title') {
           session.pendingInput = { kind: 'giveaway_title' };
+        } else if (field === 'content') {
+          session.pendingInput = { kind: 'giveaway_content' };
         } else if (field === 'description') {
           session.pendingInput = { kind: 'giveaway_description' };
         } else if (field === 'start_at') {
@@ -2511,6 +2515,7 @@ export class PrivateControlService {
           'private_bot',
         );
         session.managedGiveawayId = giveaway.id;
+        session.pendingInput = null;
         const view = await this.renderGiveawayScreen(context, session, 'Розыгрыш опубликован.');
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
@@ -3484,6 +3489,16 @@ export class PrivateControlService {
         return;
       }
 
+      case 'giveaway_content': {
+        const notice = await this.captureGiveawayContent(context, session, rawText);
+        const view = await this.renderGiveawayScreen(context, session, notice);
+        await this.respond(context, session, view, {
+          callbackId: null,
+          notification: null,
+        });
+        return;
+      }
+
       case 'broadcast_text': {
         const formattedText = this.extractIncomingFormattedText(context.update, rawText);
         session.broadcastDraft.text = formattedText;
@@ -4072,6 +4087,73 @@ export class PrivateControlService {
 
     session.pendingInput = null;
     session.screen = 'broadcast';
+  }
+
+  private async captureGiveawayContent(
+    context: PrivateContext,
+    session: PrivateSession,
+    rawText: string,
+  ): Promise<string> {
+    this.assertSelectedEntityType(session, session.selectedEntityType ?? 'chat');
+
+    const formattedText = this.extractIncomingFormattedText(context.update, rawText);
+    const normalizedText = formattedText.trim();
+    const clearText = normalizedText === '-';
+    const hasTextUpdate = clearText || normalizedText.length > 0;
+    const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
+
+    if (!hasTextUpdate && !imageSourceAttachment) {
+      if (this.hasVideoAttachment(context.update)) {
+        throw new BadRequestException(
+          'Видео для публикации розыгрыша пока не поддерживается. Отправьте текст или изображение.',
+        );
+      }
+      throw new BadRequestException(
+        'Отправьте текст, фото или PNG/WebP/JPG файлом отдельным сообщением.',
+      );
+    }
+
+    const downloaded = imageSourceAttachment
+      ? await this.downloadImageSourceAttachment(imageSourceAttachment, 'private-giveaway')
+      : null;
+    const draft = await this.getManagedGiveawayDraftForSession(context.actor, session);
+    const saved = await this.updateManagedGiveawayDraftForSession(
+      session.selectedChatId,
+      context.actor,
+      session.selectedEntityType,
+      draft.id,
+      (nextDraft) => {
+        if (hasTextUpdate) {
+          nextDraft.description = clearText ? '' : formattedText;
+        }
+
+        if (downloaded) {
+          nextDraft.imageEnabled = true;
+          nextDraft.imageBase64 = downloaded.base64;
+          nextDraft.imageMimeType = downloaded.mimeType;
+          nextDraft.imageFileName = downloaded.fileName;
+        }
+      },
+    );
+
+    session.managedGiveawayId = saved.id;
+    session.pendingInput =
+      hasTextUpdate && !downloaded ? { kind: 'giveaway_content' } : null;
+    session.screen = 'giveaway';
+
+    if (hasTextUpdate && downloaded) {
+      return clearText
+        ? 'Текст очищен, фото обновлено.'
+        : 'Текст и фото публикации обновлены.';
+    }
+
+    if (downloaded) {
+      return 'Фото публикации обновлено.';
+    }
+
+    return clearText
+      ? 'Текст очищен. Если нужно, сразу пришлите новое фото.'
+      : 'Текст публикации обновлён. Можно сразу прислать фото.';
   }
 
   private async handleStickerImageSourceMessage(
@@ -5757,6 +5839,15 @@ export class PrivateControlService {
       session.selectedChatId,
     );
     const rows: MaxMessageButton[][] = [];
+    const waitingForContent = session.pendingInput?.kind === 'giveaway_content';
+    const giveawaySettingsMiniappUrl = this.buildGiveawaySettingsMiniappUrl(
+      session.selectedChatId,
+      session.selectedEntityType,
+    );
+    const giveawaySettingsMiniappRoute = this.buildGiveawaySettingsMiniappRoute(
+      session.selectedChatId,
+      session.selectedEntityType,
+    );
     const lines: string[] = [
       this.markdownTitle('Розыгрыш'),
       '',
@@ -5771,18 +5862,35 @@ export class PrivateControlService {
       rows.push([this.callbackButton('Создать черновик', this.cb('giveaway_create'), 'positive')]);
     } else {
       const statusLabel = this.formatGiveawayStatusLabel(giveaway.status);
-      lines.push(
-        `Название: ${this.escapeMarkdown(giveaway.title)}`,
-        `Статус: ${statusLabel}`,
-        `Текст публикации: ${giveaway.description.trim() ? 'задан' : 'не задан'}`,
-        `Фото: ${giveaway.imageEnabled ? 'добавлено' : 'опционально'}`,
-        `Финиш: ${this.formatDateTimeLabel(giveaway.endsAt)}`,
-        `Старт: ${giveaway.startsAt ? this.formatDateTimeLabel(giveaway.startsAt) : 'сразу'}`,
-        `Подтверждение: ${giveaway.claimHours} ч`,
-        `Мест: ${giveaway.prizes.length}`,
-        `Участники: ${giveaway.entriesCount}`,
-        `Победители: ${giveaway.winnersCount}`,
-      );
+      lines.push(`Статус: ${statusLabel}`);
+
+      if (giveaway.status === 'DRAFT') {
+        lines.push(
+          `Контент: ${
+            waitingForContent
+              ? 'жду текст или фото'
+              : giveaway.description.trim() || giveaway.imageEnabled
+                ? 'готов'
+                : 'не заполнен'
+          }`,
+          `Фото: ${giveaway.imageEnabled ? 'добавлено' : 'не добавлено'}`,
+          `Финиш: ${this.formatDateTimeLabel(giveaway.endsAt)}`,
+          `Мест: ${giveaway.prizes.length}`,
+          'Остальные настройки редактируются в приложении.',
+        );
+      } else {
+        lines.push(
+          `Название: ${this.escapeMarkdown(giveaway.title)}`,
+          `Текст публикации: ${giveaway.description.trim() ? 'задан' : 'не задан'}`,
+          `Фото: ${giveaway.imageEnabled ? 'добавлено' : 'опционально'}`,
+          `Финиш: ${this.formatDateTimeLabel(giveaway.endsAt)}`,
+          `Старт: ${giveaway.startsAt ? this.formatDateTimeLabel(giveaway.startsAt) : 'сразу'}`,
+          `Подтверждение: ${giveaway.claimHours} ч`,
+          `Мест: ${giveaway.prizes.length}`,
+          `Участники: ${giveaway.entriesCount}`,
+          `Победители: ${giveaway.winnersCount}`,
+        );
+      }
 
       if (waitingLabel && giveaway.status === 'DRAFT') {
         lines.push(`Жду: ${waitingLabel}`);
@@ -5790,45 +5898,18 @@ export class PrivateControlService {
 
       if (giveaway.status === 'DRAFT') {
         rows.push([
-          this.callbackButton('Текст публикации', this.cb('giveaway_input_prompt', 'description')),
-          this.callbackButton('Название (внутри)', this.cb('giveaway_input_prompt', 'title')),
+          this.callbackButton(
+            'Редактировать текст/фото',
+            this.cb('giveaway_input_prompt', 'content'),
+          ),
         ]);
-
-        const photoRow: MaxMessageButton[] = [
-          this.callbackButton('Фото (опционально)', this.cb('giveaway_input_prompt', 'photo')),
-        ];
-        if (giveaway.imageEnabled) {
-          photoRow.push(this.callbackButton('Убрать фото', this.cb('giveaway_clear_photo')));
-        }
-        rows.push(photoRow);
-
-        rows.push([
-          this.callbackButton('Старт', this.cb('giveaway_input_prompt', 'start_at')),
-          giveaway.startsAt
-            ? this.callbackButton('Убрать старт', this.cb('giveaway_clear_start'))
-            : this.callbackButton('Финиш', this.cb('giveaway_input_prompt', 'end_at')),
-        ]);
-        if (giveaway.startsAt) {
-          rows.push([this.callbackButton('Финиш', this.cb('giveaway_input_prompt', 'end_at'))]);
-        }
-        rows.push([
-          this.callbackButton('Подтверждение', this.cb('giveaway_input_prompt', 'claim_hours')),
-          this.callbackButton('+ Место', this.cb('giveaway_add_prize')),
-        ]);
-        if (giveaway.prizes.length > 1) {
-          rows.push([this.callbackButton('- Место', this.cb('giveaway_remove_last_prize'))]);
-        }
-        rows.push(
-          ...giveaway.prizes.map((prize) => [
-            this.callbackButton(
-              `Место ${prize.position}`,
-              this.cb('giveaway_input_prompt', 'prize', String(prize.position)),
-            ),
-          ]),
-        );
         rows.push([this.callbackButton('Опубликовать', this.cb('giveaway_publish'), 'positive')]);
         rows.push([
-          this.callbackButton('Отменить черновик', this.cb('giveaway_cancel'), 'negative'),
+          this.buildMiniappLaunchButton(
+            'Вернуться в приложение',
+            giveawaySettingsMiniappRoute,
+            giveawaySettingsMiniappUrl,
+          ),
         ]);
       }
 
@@ -5874,11 +5955,6 @@ export class PrivateControlService {
     if (notice) {
       lines.push('', `Статус: ${this.escapeMarkdown(notice)}`);
     }
-
-    rows.push([
-      this.callbackButton('Обновить', this.cb('refresh_giveaway')),
-      this.callbackButton('Главный экран', this.cb('home')),
-    ]);
 
     return {
       text: lines.join('\n'),
@@ -6897,6 +6973,12 @@ export class PrivateControlService {
           title: 'Служебное название',
           description: 'Введите короткое название для админки.',
         };
+      case 'giveaway_content':
+        return {
+          title: 'Текст и фото публикации',
+          description:
+            'Отправьте текст, фото или подпись с фото. Можно сначала прислать текст, затем фото. `-` очищает текст.',
+        };
       case 'giveaway_description':
         return {
           title: 'Текст публикации',
@@ -7703,6 +7785,30 @@ export class PrivateControlService {
 
   private buildRulesSettingsMiniappRoute(chatId: string): string {
     return `/chat/${encodeURIComponent(chatId)}/settings?focus=rules&handoff=1`;
+  }
+
+  private buildGiveawaySettingsMiniappUrl(
+    chatId: string,
+    entityType: ManagedEntityType,
+  ): string | null {
+    if (!this.appBaseUrl) {
+      return null;
+    }
+
+    const encodedChatId = encodeURIComponent(chatId);
+    return entityType === 'channel'
+      ? `${this.appBaseUrl}/app/channel/${encodedChatId}/settings?focus=giveaway&handoff=1`
+      : `${this.appBaseUrl}/app/chat/${encodedChatId}/settings?focus=giveaway&handoff=1`;
+  }
+
+  private buildGiveawaySettingsMiniappRoute(
+    chatId: string,
+    entityType: ManagedEntityType,
+  ): string {
+    const encodedChatId = encodeURIComponent(chatId);
+    return entityType === 'channel'
+      ? `/channel/${encodedChatId}/settings?focus=giveaway&handoff=1`
+      : `/chat/${encodedChatId}/settings?focus=giveaway&handoff=1`;
   }
 
   private buildMiniappRouteLaunchUrl(route: string): string | null {
@@ -8986,6 +9092,7 @@ export class PrivateControlService {
       'rules_photo',
       'sticker_photo',
       'giveaway_title',
+      'giveaway_content',
       'giveaway_description',
       'giveaway_start_at',
       'giveaway_end_at',
