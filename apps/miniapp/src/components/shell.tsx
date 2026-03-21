@@ -253,6 +253,7 @@ export function Shell() {
     location.pathname.includes('/dialog/') &&
     (location.pathname.includes('/channel/') || location.pathname.includes('/chat/'));
   const shouldCloseDialogOnBack = isDialogRoute && location.pathname.includes('/dialog/comments');
+  const shouldCloseMiniAppOnBack = shouldCloseDialogOnBack || isGiveawayRoute;
   const isSettingsRoute = location.pathname.includes('/settings');
   const isEventsRoute = location.pathname.includes('/events');
   const isChannelStatsRoute =
@@ -324,7 +325,7 @@ export function Shell() {
 
     const cleanup = bindMaxBackButton(() => {
       maxImpact('light');
-      if (shouldCloseDialogOnBack) {
+      if (shouldCloseMiniAppOnBack) {
         closeMaxMiniApp(() => {
           navigate(homeRoute, { replace: true });
         });
@@ -343,7 +344,7 @@ export function Shell() {
       cleanup();
       setMaxBackButtonVisible(false);
     };
-  }, [homeRoute, isChatsRoute, navigate, shouldCloseDialogOnBack]);
+  }, [homeRoute, isChatsRoute, navigate, shouldCloseMiniAppOnBack]);
 
   return (
     <div

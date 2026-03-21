@@ -685,7 +685,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
               </div>
             ) : null}
 
-            <small className="giveaway-page__overlay-footer">Конкурсный бот MAXIM</small>
+            <small className="giveaway-page__overlay-footer">Конкурсный бот Майор Максимов</small>
           </section>
         </div>
       ) : null}
