@@ -294,15 +294,19 @@ function readPreviewGiveawayEnterResult(): PreviewGiveawayParticipantVariant | n
   return null;
 }
 
+function buildPreviewGiveawayRuntimeStateKey(): string {
+  const queryVariant = readPreviewGiveawayVariant();
+  const enterResult = readPreviewGiveawayEnterResult() ?? 'default';
+  return `${PREVIEW_GIVEAWAY_RUNTIME_STATE_KEY}:${queryVariant}:${enterResult}`;
+}
+
 function readPreviewGiveawayParticipantVariant(): PreviewGiveawayParticipantVariant {
   const queryVariant = readPreviewGiveawayVariant();
   if (typeof window === 'undefined' || queryVariant !== 'blocked') {
     return queryVariant;
   }
 
-  const override = window.sessionStorage.getItem(
-    `${PREVIEW_GIVEAWAY_RUNTIME_STATE_KEY}:${queryVariant}`,
-  );
+  const override = window.sessionStorage.getItem(buildPreviewGiveawayRuntimeStateKey());
   return override === 'blocked-entered' ? 'blocked-entered' : queryVariant;
 }
 
@@ -311,8 +315,7 @@ function writePreviewGiveawayParticipantVariant(variant: PreviewGiveawayParticip
     return;
   }
 
-  const queryVariant = readPreviewGiveawayVariant();
-  window.sessionStorage.setItem(`${PREVIEW_GIVEAWAY_RUNTIME_STATE_KEY}:${queryVariant}`, variant);
+  window.sessionStorage.setItem(buildPreviewGiveawayRuntimeStateKey(), variant);
 }
 
 function buildPreviewPublicGiveaway(
