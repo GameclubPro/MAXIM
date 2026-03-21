@@ -751,10 +751,6 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
       label: 'Мест',
       value: formatCount(giveaway.prizes.length),
     },
-    {
-      label: 'Окно выдачи',
-      value: `${giveaway.claimHours} ч`,
-    },
   ];
 
   const stateFacts = [
