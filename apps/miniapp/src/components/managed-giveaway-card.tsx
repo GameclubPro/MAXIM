@@ -1491,7 +1491,7 @@ export function ManagedGiveawayCard({
   return (
     <div className="managed-giveaway">
       {isEditingOpen ? (
-        <div className={cn('managed-giveaway__hero', 'managed-giveaway__hero--editor')}>
+        <div className="managed-giveaway__hero">
           <div className="managed-giveaway__hero-topline">
             <span className="managed-giveaway__eyebrow">
               {draft ? `Шаг ${activeEditorStepIndex + 1}/${editorSteps.length}` : headerEyebrow}
@@ -1546,7 +1546,7 @@ export function ManagedGiveawayCard({
           </div>
         </div>
       ) : listQuery.isLoading ? (
-        <div className={cn('managed-giveaway__hero', 'managed-giveaway__hero--loading')}>
+        <div className="managed-giveaway__hero">
           <div className="managed-giveaway__hero-topline">
             <span className="managed-giveaway__eyebrow">Розыгрыши</span>
           </div>
@@ -1567,7 +1567,7 @@ export function ManagedGiveawayCard({
           </div>
         </div>
       ) : currentItem ? (
-        <div className={cn('managed-giveaway__hero', 'managed-giveaway__hero--active')}>
+        <div className="managed-giveaway__hero">
           <div className="managed-giveaway__hero-topline">
             <span className="managed-giveaway__eyebrow">Активный сценарий</span>
             <div className="managed-giveaway__hero-topline-actions">
@@ -1665,7 +1665,7 @@ export function ManagedGiveawayCard({
           </div>
         </div>
       ) : (
-        <div className={cn('managed-giveaway__hero', 'managed-giveaway__hero--empty')}>
+        <div className="managed-giveaway__hero">
           <div className="managed-giveaway__hero-topline">
             <span className="managed-giveaway__eyebrow">Розыгрыши</span>
             <div className="managed-giveaway__hero-topline-actions">
