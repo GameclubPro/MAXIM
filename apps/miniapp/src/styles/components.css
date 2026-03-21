@@ -9212,6 +9212,9 @@
   min-height: 34px;
   width: auto;
   justify-self: center;
+  border: none;
+  background: transparent;
+  box-shadow: none;
   color: rgba(213, 225, 240, 0.74);
 }
 
