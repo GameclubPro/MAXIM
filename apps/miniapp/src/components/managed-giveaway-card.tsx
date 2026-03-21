@@ -1395,21 +1395,21 @@ export function ManagedGiveawayCard({
     topActions?: ReactNode;
     actions?: ReactNode;
   }) => (
-    <div className={cn('managed-giveaway__panel', 'managed-giveaway__summary')}>
-      <div className="managed-giveaway__summary-topline">
+    <div className={cn('managed-giveaway__surface', 'managed-giveaway__snapshot')}>
+      <div className="managed-giveaway__snapshot-topline">
         <span className="managed-giveaway__eyebrow">{eyebrow}</span>
-        {topActions ? <div className="managed-giveaway__summary-topline-actions">{topActions}</div> : null}
+        {topActions ? <div className="managed-giveaway__snapshot-topline-actions">{topActions}</div> : null}
       </div>
 
-      <div className="managed-giveaway__summary-copy">
-        <strong className="managed-giveaway__summary-title">{title}</strong>
-        <p className="managed-giveaway__summary-description">{description}</p>
+      <div className="managed-giveaway__snapshot-copy">
+        <strong className="managed-giveaway__snapshot-title">{title}</strong>
+        <p className="managed-giveaway__snapshot-description">{description}</p>
       </div>
 
       {metrics.length > 0 ? (
-        <div className="managed-giveaway__summary-grid">
+        <div className="managed-giveaway__snapshot-grid">
           {metrics.map((item) => (
-            <div key={item.key} className="managed-giveaway__summary-card">
+            <div key={item.key} className="managed-giveaway__snapshot-card">
               <span>{item.label}</span>
               <strong>{item.value}</strong>
               <small>{item.note}</small>
@@ -1481,7 +1481,7 @@ export function ManagedGiveawayCard({
           actions: (
             <>
               {currentItem.status === 'DRAFT' ? (
-                <div className="managed-giveaway__summary-actions managed-giveaway__summary-actions--split">
+                <div className="managed-giveaway__snapshot-actions managed-giveaway__snapshot-actions--split">
                   <button
                     type="button"
                     className="button button--accent"
@@ -1502,7 +1502,7 @@ export function ManagedGiveawayCard({
                   </button>
                 </div>
               ) : (
-                <div className="managed-giveaway__summary-actions">
+                <div className="managed-giveaway__snapshot-actions">
                   <button
                     type="button"
                     className="button button--accent"
@@ -1549,8 +1549,8 @@ export function ManagedGiveawayCard({
           actions: (
             <div
               className={cn(
-                'managed-giveaway__summary-actions',
-                historyItems.length > 0 && 'managed-giveaway__summary-actions--split',
+                'managed-giveaway__snapshot-actions',
+                historyItems.length > 0 && 'managed-giveaway__snapshot-actions--split',
               )}
             >
               <button
@@ -1577,7 +1577,7 @@ export function ManagedGiveawayCard({
 
       {isEditingOpen ? (
         !draft ? (
-          <div className={cn('managed-giveaway__panel', 'managed-giveaway__editor-card')}>
+          <div className={cn('managed-giveaway__surface', 'managed-giveaway__editor-card')}>
             <div className="managed-giveaway__editor-topbar">
               <div className="managed-giveaway__editor-step-copy">
                 <span className="managed-giveaway__eyebrow">Розыгрыш</span>
@@ -1594,7 +1594,7 @@ export function ManagedGiveawayCard({
             </div>
           </div>
         ) : (
-          <div className={cn('managed-giveaway__panel', 'managed-giveaway__editor-card')}>
+          <div className={cn('managed-giveaway__surface', 'managed-giveaway__editor-card')}>
             <div className="managed-giveaway__flow-head">
               <div className="managed-giveaway__flow-copy">
                 <span className="managed-giveaway__eyebrow">
