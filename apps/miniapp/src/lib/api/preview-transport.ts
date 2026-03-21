@@ -279,6 +279,21 @@ function readPreviewGiveawayVariant(): PreviewGiveawayVariant {
   return 'blocked';
 }
 
+function readPreviewGiveawayEnterResult(): PreviewGiveawayParticipantVariant | null {
+  const params = new URLSearchParams(window.location.search);
+  const value = params.get('giveaway_enter_result');
+  if (
+    value === 'blocked-entered' ||
+    value === 'joined' ||
+    value === 'winner' ||
+    value === 'completed'
+  ) {
+    return value;
+  }
+
+  return null;
+}
+
 function readPreviewGiveawayParticipantVariant(): PreviewGiveawayParticipantVariant {
   const queryVariant = readPreviewGiveawayVariant();
   if (typeof window === 'undefined' || queryVariant !== 'blocked') {
@@ -2360,7 +2375,8 @@ export function createPreviewApiTransport(): ApiTransport {
         }
 
         if (segments[2] === 'enter' && method === 'POST') {
-          const nextVariant = variant === 'blocked' ? 'blocked-entered' : variant;
+          const nextVariant =
+            readPreviewGiveawayEnterResult() ?? (variant === 'blocked' ? 'blocked-entered' : variant);
           writePreviewGiveawayParticipantVariant(nextVariant);
           return cloneJson(buildPreviewGiveawayParticipantState(nextVariant));
         }

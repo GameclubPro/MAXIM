@@ -229,10 +229,13 @@ const scenarios = [
     name: 'giveaway-joined',
     path: '/giveaways/preview-giveaway',
     searchParams: {
-      giveaway_state: 'joined',
+      giveaway_state: 'blocked',
+      giveaway_enter_result: 'joined',
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(500);
+      await page.getByRole('button', { name: /Участвовать/u }).click();
+      await page.waitForTimeout(350);
     },
   },
   {
