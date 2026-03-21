@@ -28,8 +28,6 @@ import { useToast } from './ui/toast';
 
 const MIN_CLAIM_HOURS = 1;
 const MAX_CLAIM_HOURS = 336;
-const QUICK_DURATION_HOURS = [24, 48, 72] as const;
-const QUICK_CLAIM_HOURS = [24, 48, 72] as const;
 
 type GiveawayEditorMode = 'closed' | 'create' | 'edit';
 type GiveawayEditorStepId = 'basics' | 'conditions' | 'prizes';
@@ -1627,35 +1625,6 @@ export function ManagedGiveawayCard({
                     />
                   </label>
 
-                  <div className="managed-giveaway__preset-row">
-                    <span>Быстрый финиш</span>
-                    {QUICK_DURATION_HOURS.map((hours) => (
-                      <button
-                        key={`duration-${hours}`}
-                        type="button"
-                        className="button button--ghost managed-giveaway__preset-button"
-                        disabled={isBusy}
-                        onClick={() => {
-                          setDraft((current) =>
-                            current
-                              ? {
-                                  ...current,
-                                  startsAtLocal: '',
-                                  endsAtLocal: formatDateTimeInputValue(
-                                    addHours(new Date(), hours),
-                                  ),
-                                }
-                              : current,
-                          );
-                          setValidationHint('');
-                          setEditorError('');
-                        }}
-                      >
-                        {hours}ч
-                      </button>
-                    ))}
-                  </div>
-
                   <div className="managed-giveaway__editor-grid">
                     <label className="field">
                       <span>Старт</span>
@@ -1724,32 +1693,6 @@ export function ManagedGiveawayCard({
                         disabled={isBusy}
                       />
                     </label>
-
-                    <div className="managed-giveaway__preset-row managed-giveaway__preset-row--inline">
-                      <span>Пресет</span>
-                      {QUICK_CLAIM_HOURS.map((hours) => (
-                        <button
-                          key={`claim-${hours}`}
-                          type="button"
-                          className="button button--ghost managed-giveaway__preset-button"
-                          disabled={isBusy}
-                          onClick={() => {
-                            setDraft((current) =>
-                              current
-                                ? {
-                                    ...current,
-                                    claimHours: hours,
-                                  }
-                                : current,
-                            );
-                            setValidationHint('');
-                            setEditorError('');
-                          }}
-                        >
-                          {hours}ч
-                        </button>
-                      ))}
-                    </div>
                   </div>
 
                   <div className="managed-giveaway__inline-summary">

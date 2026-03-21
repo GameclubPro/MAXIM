@@ -7858,31 +7858,6 @@
   align-items: end;
 }
 
-.managed-giveaway__preset-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.managed-giveaway__preset-row > span {
-  color: var(--text-secondary);
-  font-size: 0.73rem;
-  line-height: 1.35;
-  font-weight: 600;
-}
-
-.managed-giveaway__preset-row--inline {
-  align-items: flex-start;
-}
-
-.managed-giveaway__preset-button {
-  min-height: 30px;
-  padding-inline: 10px;
-  border-radius: 10px;
-  font-size: 0.74rem;
-}
-
 .managed-giveaway__prize-editor-list {
   display: grid;
   gap: 7px;
