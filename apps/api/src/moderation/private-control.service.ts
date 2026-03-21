@@ -972,8 +972,7 @@ export class PrivateControlService {
           ? error.message
           : 'Что-то пошло не так. Попробуйте ещё раз через несколько секунд.';
       const session = await this.loadSessionForDiagnostics(context.actor.userId);
-      const badRequestResponse =
-        error instanceof BadRequestException ? error.getResponse() : null;
+      const badRequestResponse = error instanceof BadRequestException ? error.getResponse() : null;
       const badRequestDetails = this.extractBadRequestDetails(error);
 
       this.logger.warn(
@@ -2182,7 +2181,9 @@ export class PrivateControlService {
         const view = await this.renderRulesScreen(
           context,
           session,
-          mode === 'photo' ? 'Жду новое фото одним сообщением.' : 'Жду новый текст одним сообщением.',
+          mode === 'photo'
+            ? 'Жду новое фото одним сообщением.'
+            : 'Жду новый текст одним сообщением.',
         );
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
@@ -2238,7 +2239,9 @@ export class PrivateControlService {
         );
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: nextSettings.rulesAttachViolationsEnabled ? 'Кнопка включена' : 'Кнопка выключена',
+          notification: nextSettings.rulesAttachViolationsEnabled
+            ? 'Кнопка включена'
+            : 'Кнопка выключена',
         });
         return;
       }
@@ -3653,7 +3656,11 @@ export class PrivateControlService {
         session.managedGiveawayId = saved.id;
         session.pendingInput = null;
         session.screen = 'giveaway';
-        const view = await this.renderGiveawayScreen(context, session, 'Описание обновлено.');
+        const view = await this.renderGiveawayScreen(
+          context,
+          session,
+          'Текст публикации обновлён.',
+        );
         await this.respond(context, session, view, {
           callbackId: null,
           notification: null,
@@ -4020,9 +4027,7 @@ export class PrivateControlService {
     session.pendingInput = null;
     session.screen = 'rules';
 
-    const republishHint = requiresRepublish
-      ? ' Переопубликуйте правила здесь или в mini app.'
-      : '';
+    const republishHint = requiresRepublish ? ' Переопубликуйте правила здесь или в mini app.' : '';
     if (normalizedText && imageSourceAttachment) {
       return `Текст и фото правил обновлены.${republishHint}`;
     }
@@ -5769,6 +5774,8 @@ export class PrivateControlService {
       lines.push(
         `Название: ${this.escapeMarkdown(giveaway.title)}`,
         `Статус: ${statusLabel}`,
+        `Текст публикации: ${giveaway.description.trim() ? 'задан' : 'не задан'}`,
+        `Фото: ${giveaway.imageEnabled ? 'добавлено' : 'опционально'}`,
         `Финиш: ${this.formatDateTimeLabel(giveaway.endsAt)}`,
         `Старт: ${giveaway.startsAt ? this.formatDateTimeLabel(giveaway.startsAt) : 'сразу'}`,
         `Подтверждение: ${giveaway.claimHours} ч`,
@@ -5783,12 +5790,12 @@ export class PrivateControlService {
 
       if (giveaway.status === 'DRAFT') {
         rows.push([
-          this.callbackButton('Название', this.cb('giveaway_input_prompt', 'title')),
-          this.callbackButton('Описание', this.cb('giveaway_input_prompt', 'description')),
+          this.callbackButton('Текст публикации', this.cb('giveaway_input_prompt', 'description')),
+          this.callbackButton('Название (внутри)', this.cb('giveaway_input_prompt', 'title')),
         ]);
 
         const photoRow: MaxMessageButton[] = [
-          this.callbackButton('Фото', this.cb('giveaway_input_prompt', 'photo')),
+          this.callbackButton('Фото (опционально)', this.cb('giveaway_input_prompt', 'photo')),
         ];
         if (giveaway.imageEnabled) {
           photoRow.push(this.callbackButton('Убрать фото', this.cb('giveaway_clear_photo')));
@@ -6887,13 +6894,13 @@ export class PrivateControlService {
         };
       case 'giveaway_title':
         return {
-          title: 'Название розыгрыша',
-          description: 'Введите название.',
+          title: 'Служебное название',
+          description: 'Введите короткое название для админки.',
         };
       case 'giveaway_description':
         return {
-          title: 'Описание розыгрыша',
-          description: 'Введите описание или `-` для очистки.',
+          title: 'Текст публикации',
+          description: 'Введите полный текст. Бот отправит его без дописок. `-` очищает поле.',
         };
       case 'giveaway_start_at':
         return {
@@ -6912,8 +6919,8 @@ export class PrivateControlService {
         };
       case 'giveaway_photo':
         return {
-          title: 'Фото розыгрыша',
-          description: 'Отправьте фото.',
+          title: 'Фото публикации',
+          description: 'Отправьте фото (опционально).',
         };
       case 'giveaway_prize':
         return {
@@ -7319,7 +7326,9 @@ export class PrivateControlService {
     );
   }
 
-  private extractIncomingMessageMarkup(messageNode: Record<string, unknown> | null): IncomingMessageMarkup[] {
+  private extractIncomingMessageMarkup(
+    messageNode: Record<string, unknown> | null,
+  ): IncomingMessageMarkup[] {
     const body = this.asRecord(messageNode?.body);
     const rawMarkup = Array.isArray(body?.markup)
       ? body.markup

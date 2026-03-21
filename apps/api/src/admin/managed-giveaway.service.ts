@@ -33,7 +33,6 @@ import { ChatContextCacheService } from '../chat-context/chat-context-cache.serv
 import { type AuthUser } from '../common/decorators/current-user.decorator';
 import {
   buildManagedGiveawayDrawRank,
-  formatManagedGiveawayPrizeList,
   normalizeManagedGiveawayDraft,
 } from '../common/managed-giveaway.util';
 import {
@@ -283,9 +282,12 @@ export class ManagedGiveawayService {
     const startsAt =
       giveaway.startsAt && giveaway.startsAt.getTime() > now.getTime() ? giveaway.startsAt : null;
     const nextStatus = startsAt ? ManagedGiveawayStatus.SCHEDULED : ManagedGiveawayStatus.ACTIVE;
+    if (!giveaway.description.trim()) {
+      throw new BadRequestException('Добавьте текст розыгрыша в чат-боте перед публикацией.');
+    }
     const publicationButton = this.buildGiveawayEntryButton(giveaway.id);
     const imagePayload = await this.uploadGiveawayImage(giveaway);
-    const publicationText = this.buildGiveawayPublicationText(giveaway, nextStatus);
+    const publicationText = this.buildGiveawayPublicationText(giveaway);
     const publication = await this.maxClient.sendMessageImmediateWithResolvedLink(
       sourceChatId,
       publicationText,
@@ -1295,67 +1297,19 @@ export class ManagedGiveawayService {
   }
 
   private buildGiveawayPublicationText(
-    giveaway: Pick<
-      PersistedGiveawayWithRelations,
-      | 'title'
-      | 'description'
-      | 'startsAt'
-      | 'endsAt'
-      | 'prizes'
-      | 'sourceChatId'
-      | 'requiredChannelIds'
-    >,
-    status: ManagedGiveawayStatus,
+    giveaway: Pick<PersistedGiveawayWithRelations, 'description' | 'title'>,
   ): string {
-    const requiredChannelIds = this.readRequiredChannelIds(giveaway.requiredChannelIds).filter(
-      (channelId) => channelId !== giveaway.sourceChatId,
-    );
-    const lines: string[] = ['Розыгрыш', '', giveaway.title.trim()];
-    if (giveaway.description.trim()) {
-      lines.push('', giveaway.description.trim());
+    const description = giveaway.description.trim();
+    if (description) {
+      return description;
     }
 
-    lines.push('', 'Призы:');
-    lines.push(...formatManagedGiveawayPrizeList(giveaway.prizes));
-    lines.push('');
-    if (status === ManagedGiveawayStatus.SCHEDULED && giveaway.startsAt) {
-      lines.push(`Старт: ${this.formatIsoDateTime(giveaway.startsAt)}`);
-    }
-    lines.push(`Завершение: ${this.formatIsoDateTime(giveaway.endsAt)}`);
-    lines.push(
-      requiredChannelIds.length > 0
-        ? `Условия: подписка на источник и на ${requiredChannelIds.length} доп. канал(а).`
-        : 'Условие: подписка на источник.',
-    );
-    lines.push(
-      '',
-      status === ManagedGiveawayStatus.SCHEDULED
-        ? 'Нажмите кнопку и заходите к старту.'
-        : 'Нажмите кнопку ниже, чтобы подтвердить участие.',
-    );
-
-    return lines.join('\n');
-  }
-
-  private buildGiveawayCompletedPublicationText(giveaway: PersistedGiveawayWithRelations): string {
-    const lines: string[] = ['Розыгрыш завершён', '', giveaway.title.trim()];
-    const currentWinners = giveaway.winners
-      .filter((winner) => winner.status !== ManagedGiveawayWinnerStatus.REROLLED)
-      .sort((left, right) => left.prize.position - right.prize.position);
-
-    if (currentWinners.length === 0) {
-      lines.push('', 'Подходящих участников не нашлось.');
-      return lines.join('\n');
+    const title = giveaway.title.trim();
+    if (title) {
+      return title;
     }
 
-    lines.push('', 'Победители:');
-    for (const winner of currentWinners) {
-      lines.push(
-        `${winner.prize.position}. ${winner.prize.title} — ${this.formatPublicWinnerName(winner)}`,
-      );
-    }
-
-    return lines.join('\n');
+    return 'Розыгрыш';
   }
 
   private buildGiveawayResultsText(giveaway: PersistedGiveawayWithRelations): string {
@@ -1397,12 +1351,13 @@ export class ManagedGiveawayService {
     }
 
     try {
+      const publicationText = this.buildGiveawayPublicationText(giveaway);
       if (status === ManagedGiveawayStatus.CANCELED) {
         const button = this.buildGiveawayOpenButton(giveaway.id);
         await this.maxClient.editMessageInlineKeyboard(
           giveaway.sourceChatId,
           messageId,
-          `Розыгрыш отменён\n\n${giveaway.title.trim()}`,
+          publicationText,
           button ? { buttons: [[button]] } : undefined,
         );
         return;
@@ -1413,7 +1368,7 @@ export class ManagedGiveawayService {
         await this.maxClient.editMessageInlineKeyboard(
           giveaway.sourceChatId,
           messageId,
-          this.buildGiveawayPublicationText(giveaway, ManagedGiveawayStatus.ACTIVE),
+          publicationText,
           button ? { buttons: [[button]] } : undefined,
         );
         return;
@@ -1423,7 +1378,7 @@ export class ManagedGiveawayService {
       await this.maxClient.editMessageInlineKeyboard(
         giveaway.sourceChatId,
         messageId,
-        this.buildGiveawayCompletedPublicationText(giveaway),
+        publicationText,
         button ? { buttons: [[button]] } : undefined,
       );
     } catch (error: unknown) {
@@ -2084,17 +2039,6 @@ export class ManagedGiveawayService {
 
     const extension = mimeType.split('/')[1]?.trim() || 'jpg';
     return `giveaway-image.${extension}`;
-  }
-
-  private formatIsoDateTime(value: Date): string {
-    return value.toLocaleString('ru-RU', {
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      timeZone: 'Europe/Moscow',
-    });
   }
 
   private async writeAuditLog(

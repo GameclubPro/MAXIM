@@ -7721,6 +7721,12 @@
   color: #35526c;
 }
 
+.managed-giveaway__chip--success {
+  border-color: rgba(30, 122, 82, 0.2);
+  background: rgba(30, 122, 82, 0.1);
+  color: #1c6c49;
+}
+
 .managed-giveaway__header .button {
   min-height: 42px;
   padding-inline: 14px;
@@ -7759,6 +7765,13 @@
   border-radius: 18px;
   border: 1px solid rgba(92, 120, 149, 0.13);
   background: rgba(250, 253, 255, 0.88);
+}
+
+.managed-giveaway__section--publication {
+  border-color: rgba(44, 130, 196, 0.18);
+  background:
+    radial-gradient(circle at 100% 0%, rgba(55, 167, 245, 0.12), transparent 48%),
+    rgba(248, 252, 255, 0.92);
 }
 
 .managed-giveaway .field input,

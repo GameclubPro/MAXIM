@@ -798,31 +798,32 @@ function createInitialState(): PreviewState {
   const chatGiveaways = [
     managedGiveawayDetailsSchema.parse({
       id: 'giveaway-chat-1',
-      title: 'Субботний розыгрыш',
-      status: 'ACTIVE',
+      title: 'Субботний розыгрыш двора',
+      status: 'DRAFT',
       hasImage: false,
-      entriesCount: 142,
-      verifiedEntriesCount: 129,
-      pendingEntriesCount: 13,
-      winnersCount: 2,
-      startsAt: addHours(now, -18).toISOString(),
+      entriesCount: 0,
+      verifiedEntriesCount: 0,
+      pendingEntriesCount: 0,
+      winnersCount: 0,
+      startsAt: null,
       endsAt: addHours(now, 30).toISOString(),
-      publishedAt: addHours(now, -17.5).toISOString(),
+      publishedAt: null,
       completedAt: null,
-      publicationUrl: 'https://max.ru/giveaway/chat-preview',
+      publicationUrl: null,
       resultsUrl: null,
       createdAt: addDays(now, -4).toISOString(),
-      updatedAt: addHours(now, -2).toISOString(),
+      updatedAt: addHours(now, -1).toISOString(),
       sourceChatId: PREVIEW_CHAT_ID,
       entityType: 'chat',
-      description: 'Среди активных участников разыгрываем набор садовых перчаток.',
+      description:
+        'Полностью пользовательский текст публикации из чат-бота. Без шаблонных дописок.',
       imageEnabled: false,
       imageBase64: '',
       imageMimeType: '',
       imageFileName: '',
       claimHours: 48,
       requiredChannelIds: [PREVIEW_CHANNEL_ID],
-      publicationMessageId: 'giveaway-msg-1',
+      publicationMessageId: null,
       resultsMessageId: null,
       prizes: [
         { id: 'prize-chat-1', position: 1, title: 'Набор перчаток' },
@@ -2379,7 +2380,8 @@ export function createPreviewApiTransport(): ApiTransport {
 
         if (segments[2] === 'enter' && method === 'POST') {
           const nextVariant =
-            readPreviewGiveawayEnterResult() ?? (variant === 'blocked' ? 'blocked-entered' : variant);
+            readPreviewGiveawayEnterResult() ??
+            (variant === 'blocked' ? 'blocked-entered' : variant);
           writePreviewGiveawayParticipantVariant(nextVariant);
           return cloneJson(buildPreviewGiveawayParticipantState(nextVariant));
         }

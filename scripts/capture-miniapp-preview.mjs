@@ -56,6 +56,33 @@ const scenarios = [
     path: '/chat/preview-chat/settings',
   },
   {
+    name: 'chat-settings-giveaway',
+    path: '/chat/preview-chat/settings',
+    searchParams: {
+      focus: 'giveaway',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(600);
+    },
+  },
+  {
+    name: 'chat-settings-giveaway-editor',
+    path: '/chat/preview-chat/settings',
+    searchParams: {
+      focus: 'giveaway',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(650);
+      const editButton = page
+        .locator('.managed-giveaway')
+        .getByRole('button', { name: 'Редактировать' });
+      if ((await editButton.count()) > 0) {
+        await editButton.first().click();
+        await page.waitForTimeout(450);
+      }
+    },
+  },
+  {
     name: 'chat-dialog-comments',
     path: '/chat/preview-chat/dialog/comments',
     searchParams: {
