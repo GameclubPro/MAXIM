@@ -798,6 +798,11 @@ function getLastButtons(maxClient: { sendMessage: jest.Mock; answerCallback: jes
   return (callbackButtons ?? []) as Array<Array<unknown>>;
 }
 
+function getLastSendOptions(maxClient: { sendMessage: jest.Mock }) {
+  const call = maxClient.sendMessage.mock.calls.at(-1);
+  return (call?.[2] ?? null) as Record<string, unknown> | null;
+}
+
 function extractStartPayload(url: string): string {
   const parsed = new URL(url);
   return parsed.searchParams.get('start') ?? '';
@@ -1810,8 +1815,14 @@ describe('PrivateControlService', () => {
         'chat',
         'private_bot',
       );
-      expect(getLastUiText(maxClient)).toContain('Фото можно добавить позже.');
-      expect(getLastUiText(maxClient)).not.toContain('Жду: Текст публикации');
+      expect(getLastUiText(maxClient)).toBe('Текст перед фото');
+      expect(getLastUiText(maxClient)).not.toContain('Контент публикации:');
+      expect(
+        getLastButtons(maxClient)
+          .flat()
+          .map((button) => String((button as { text?: string }).text ?? '')),
+      ).toEqual(['Изменить текст/фото', 'Опубликовать', 'Вернуться в приложение']);
+      expect(maxClient.uploadImage).not.toHaveBeenCalled();
 
       await service.handleUpdate(createPrivatePhotoUpdate());
 
@@ -1830,8 +1841,10 @@ describe('PrivateControlService', () => {
         'chat',
         'private_bot',
       );
-      expect(getLastUiText(maxClient)).toContain('Фото публикации обновлено.');
-      expect(getLastUiText(maxClient)).not.toContain('Жду: Текст публикации');
+      expect(getLastUiText(maxClient)).toBe('Текст перед фото');
+      expect(getLastUiText(maxClient)).not.toContain('Контент публикации:');
+      expect(maxClient.uploadImage).toHaveBeenCalledTimes(1);
+      expect(getLastSendOptions(maxClient)?.imagePayload).toEqual({ token: 'upload-token-1' });
     } finally {
       restore();
     }
@@ -1875,10 +1888,17 @@ describe('PrivateControlService', () => {
         'private_bot',
       );
       expect(maxClient.sendCustomMessageImmediate).not.toHaveBeenCalled();
+      expect(maxClient.uploadImage).not.toHaveBeenCalled();
+      expect(getLastUiText(maxClient)).toContain('Заполните контент розыгрыша');
       expect(getLastUiText(maxClient)).toContain(
         'Фото публикации обновлено. Теперь пришлите текст публикации.',
       );
-      expect(getLastUiText(maxClient)).toContain('Жду: Текст публикации');
+      expect(getLastUiText(maxClient)).not.toContain('Контент публикации:');
+      expect(
+        getLastButtons(maxClient)
+          .flat()
+          .map((button) => String((button as { text?: string }).text ?? '')),
+      ).toEqual(['Отмена', 'Вернуться в приложение']);
 
       await service.handleUpdate(createPrivateTextUpdate('Текст после фото'));
 
@@ -1897,8 +1917,15 @@ describe('PrivateControlService', () => {
         'chat',
         'private_bot',
       );
-      expect(getLastUiText(maxClient)).toContain('Текст публикации обновлён.');
-      expect(getLastUiText(maxClient)).not.toContain('Жду: Текст публикации');
+      expect(getLastUiText(maxClient)).toBe('Текст после фото');
+      expect(getLastUiText(maxClient)).not.toContain('Контент публикации:');
+      expect(maxClient.uploadImage).toHaveBeenCalledTimes(1);
+      expect(getLastSendOptions(maxClient)?.imagePayload).toEqual({ token: 'upload-token-1' });
+      expect(
+        getLastButtons(maxClient)
+          .flat()
+          .map((button) => String((button as { text?: string }).text ?? '')),
+      ).toEqual(['Изменить текст/фото', 'Опубликовать', 'Вернуться в приложение']);
     } finally {
       restore();
     }

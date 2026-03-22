@@ -1317,7 +1317,7 @@ export class PrivateControlService {
       const giveaway = await this.getManagedGiveawayForSession(context.actor, session);
       if (giveaway?.status === 'DRAFT') {
         const notice = await this.captureGiveawayContent(context, session, context.text);
-        const view = await this.renderGiveawayScreen(context, session, notice);
+        const view = await this.renderGiveawayContentFollowUp(context, session, notice);
         await this.respond(context, session, view, {
           callbackId: null,
           notification: null,
@@ -3541,7 +3541,7 @@ export class PrivateControlService {
 
       case 'giveaway_content': {
         const notice = await this.captureGiveawayContent(context, session, rawText);
-        const view = await this.renderGiveawayScreen(context, session, notice);
+        const view = await this.renderGiveawayContentFollowUp(context, session, notice);
         await this.respond(context, session, view, {
           callbackId: null,
           notification: null,
@@ -4528,6 +4528,7 @@ export class PrivateControlService {
   private async renderGiveawayContentPrompt(
     context: PrivateContext,
     session: PrivateSession,
+    notice: string | null = null,
   ): Promise<PrivateView> {
     if (!session.selectedChatId || !session.selectedEntityType) {
       return this.renderInputPrompt({ kind: 'giveaway_content' });
@@ -4554,6 +4555,7 @@ export class PrivateControlService {
       '',
       `${entityLabel}: ${this.escapeMarkdown(entityTitle)}`,
       ...(giveaway ? [`Название: ${this.escapeMarkdown(giveaway.title)}`] : []),
+      ...(notice ? ['', `Результат: ${this.escapeMarkdown(notice)}`] : []),
       '',
       hasSavedContent
         ? 'Пришлите новый текст публикации. Фото можно обновить сразу или отдельным сообщением.'
@@ -4579,6 +4581,57 @@ export class PrivateControlService {
       options: {
         buttons: rows,
         textFormat: 'markdown',
+      },
+    };
+  }
+
+  private async renderGiveawayContentFollowUp(
+    context: PrivateContext,
+    session: PrivateSession,
+    notice: string | null = null,
+  ): Promise<PrivateView> {
+    if (session.pendingInput?.kind === 'giveaway_content') {
+      return this.renderGiveawayContentPrompt(context, session, notice);
+    }
+
+    return this.renderGiveawayDraftPreview(context, session);
+  }
+
+  private async renderGiveawayDraftPreview(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<PrivateView> {
+    const giveaway = await this.getManagedGiveawayForSession(context.actor, session);
+    if (!giveaway || giveaway.status !== 'DRAFT') {
+      return this.renderGiveawayScreen(context, session);
+    }
+
+    if (!giveaway.description.trim()) {
+      return this.renderGiveawayContentPrompt(context, session);
+    }
+
+    const giveawaySettingsMiniappUrl = this.buildGiveawaySettingsMiniappUrl(
+      session.selectedChatId!,
+      session.selectedEntityType!,
+    );
+    const giveawaySettingsMiniappRoute = this.buildGiveawaySettingsMiniappRoute(
+      session.selectedChatId!,
+      session.selectedEntityType!,
+    );
+    const imagePayload = await this.buildGiveawayPreviewImagePayload(giveaway);
+    const previewText = this.buildGiveawayPreviewText(giveaway);
+    const previewTextFormat = this.buildGiveawayPreviewTextFormat(previewText);
+
+    return {
+      text: previewText,
+      options: {
+        buttons: this.buildGiveawayDraftActionRows(
+          giveaway,
+          giveawaySettingsMiniappRoute,
+          giveawaySettingsMiniappUrl,
+        ),
+        ...(imagePayload ? { imagePayload } : {}),
+        ...(previewTextFormat ? { textFormat: previewTextFormat } : {}),
       },
     };
   }
@@ -5475,22 +5528,13 @@ export class PrivateControlService {
       }
 
       if (giveaway.status === 'DRAFT') {
-        rows.push([
-          this.callbackButton(
-            giveaway.description.trim() || giveaway.imageEnabled
-              ? 'Изменить текст/фото'
-              : 'Заполнить текст/фото',
-            this.cb('giveaway_input_prompt', 'content'),
-          ),
-        ]);
-        rows.push([this.callbackButton('Опубликовать', this.cb('giveaway_publish'), 'positive')]);
-        rows.push([
-          this.buildMiniappLaunchButton(
-            'Вернуться в приложение',
+        rows.push(
+          ...this.buildGiveawayDraftActionRows(
+            giveaway,
             giveawaySettingsMiniappRoute,
             giveawaySettingsMiniappUrl,
           ),
-        ]);
+        );
       }
 
       if (giveaway.status === 'ACTIVE' || giveaway.status === 'SCHEDULED') {
@@ -5543,6 +5587,86 @@ export class PrivateControlService {
         textFormat: 'markdown',
       },
     };
+  }
+
+  private buildGiveawayDraftActionRows(
+    giveaway: Pick<ManagedGiveawayDetails, 'description' | 'imageEnabled'>,
+    giveawaySettingsMiniappRoute: string,
+    giveawaySettingsMiniappUrl: string | null,
+  ): MaxMessageButton[][] {
+    return [
+      [
+        this.callbackButton(
+          giveaway.description.trim() || giveaway.imageEnabled
+            ? 'Изменить текст/фото'
+            : 'Заполнить текст/фото',
+          this.cb('giveaway_input_prompt', 'content'),
+        ),
+      ],
+      [this.callbackButton('Опубликовать', this.cb('giveaway_publish'), 'positive')],
+      [
+        this.buildMiniappLaunchButton(
+          'Вернуться в приложение',
+          giveawaySettingsMiniappRoute,
+          giveawaySettingsMiniappUrl,
+        ),
+      ],
+    ];
+  }
+
+  private buildGiveawayPreviewText(
+    giveaway: Pick<ManagedGiveawayDetails, 'description' | 'title'>,
+  ): string {
+    const description = giveaway.description.trim();
+    if (description) {
+      return description;
+    }
+
+    const title = giveaway.title.trim();
+    return title || 'Розыгрыш';
+  }
+
+  private buildGiveawayPreviewTextFormat(
+    previewText: string,
+  ): MaxSendMessageOptions['textFormat'] | undefined {
+    return this.shouldUseMarkdown(previewText) ? 'markdown' : undefined;
+  }
+
+  private async buildGiveawayPreviewImagePayload(
+    giveaway: Pick<
+      ManagedGiveawayDetails,
+      'imageEnabled' | 'imageBase64' | 'imageMimeType' | 'imageFileName'
+    >,
+  ): Promise<Record<string, unknown> | undefined> {
+    if (!giveaway.imageEnabled || !giveaway.imageBase64.trim()) {
+      return undefined;
+    }
+
+    const mimeType = giveaway.imageMimeType.trim() || 'image/jpeg';
+
+    try {
+      const imageBuffer = Buffer.from(giveaway.imageBase64, 'base64');
+      if (imageBuffer.length === 0) {
+        return undefined;
+      }
+
+      return await this.maxClient.uploadImage(
+        imageBuffer,
+        this.buildDownloadedFileName(
+          'private-giveaway-preview',
+          giveaway.imageFileName,
+          null,
+          mimeType,
+        ),
+        mimeType,
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        { err: error instanceof Error ? error.message : String(error) },
+        'Failed to upload giveaway preview image',
+      );
+      return undefined;
+    }
   }
 
   private async getManagedGiveawayForSession(
