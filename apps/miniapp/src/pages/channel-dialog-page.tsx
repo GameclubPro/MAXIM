@@ -4,7 +4,17 @@ import type {
   ChannelDialogType,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
+import { createPortal } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
@@ -19,6 +29,12 @@ import {
 import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
+import {
+  PREVIEW_CHANNEL_ID,
+  PREVIEW_CHANNEL_TITLE,
+  PREVIEW_CHAT_ID,
+  PREVIEW_CHAT_TITLE,
+} from '../lib/design-preview';
 import { readChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
 import { maxImpact } from '../lib/max-bridge';
@@ -287,6 +303,20 @@ function CloseIcon() {
   );
 }
 
+function BackIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
+      <path
+        d="M11.8 4.4L6.2 10L11.8 15.6"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 function PlusIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
@@ -332,6 +362,13 @@ type DialogViewModel = {
   placeholder: string;
 };
 
+type ReactionPopoverLayout = {
+  left: number;
+  top: number;
+  width: number;
+  placement: 'above' | 'below';
+};
+
 function buildViewModel(dialogType: ChannelDialogType): DialogViewModel {
   if (dialogType === 'suggest') {
     return {
@@ -350,6 +387,26 @@ function resolveDialogEntityType(pathname: string): LastEntityType {
   return pathname.includes('/channel/') ? 'channel' : 'chat';
 }
 
+function resolveDialogTitle(
+  chatId: string,
+  entityType: LastEntityType,
+  storedTitle: string,
+): string {
+  if (storedTitle.trim()) {
+    return storedTitle.trim();
+  }
+
+  if (entityType === 'channel' && chatId === PREVIEW_CHANNEL_ID) {
+    return PREVIEW_CHANNEL_TITLE;
+  }
+
+  if (entityType === 'chat' && chatId === PREVIEW_CHAT_ID) {
+    return PREVIEW_CHAT_TITLE;
+  }
+
+  return chatId;
+}
+
 export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const { chatId = '', mode } = useParams();
   const location = useLocation();
@@ -363,13 +420,25 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const [replyToMessageId, setReplyToMessageId] = useState<string | null>(null);
   const [isReactionPickerExpanded, setIsReactionPickerExpanded] = useState(false);
   const [isBodyScrolled, setIsBodyScrolled] = useState(false);
+  const [reactionPopoverLayout, setReactionPopoverLayout] = useState<ReactionPopoverLayout | null>(
+    null,
+  );
   const composeFieldRef = useRef<HTMLTextAreaElement | null>(null);
+  const screenRef = useRef<HTMLDivElement | null>(null);
   const scrollViewportRef = useRef<HTMLElement | null>(null);
+  const reactionPopoverRef = useRef<HTMLDivElement | null>(null);
   const lastMessageIdRef = useRef<string | null>(null);
+  const pressTimerRef = useRef<number | null>(null);
+  const pressPointRef = useRef<{ x: number; y: number } | null>(null);
+  const ignoreNextBubbleClickRef = useRef(false);
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
 
   const chatTitle = useMemo(() => readChatTitle(chatId), [chatId]);
+  const chatLabel = useMemo(
+    () => resolveDialogTitle(chatId, entityType, chatTitle),
+    [chatId, chatTitle, entityType],
+  );
   const view = useMemo(() => buildViewModel(dialogType), [dialogType]);
   const dialogQueryKey = ['entity-dialog', entityType, chatId, dialogType, token] as const;
   const meQuery = useQuery({
@@ -395,12 +464,33 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   const messages = dialogQuery.data?.messages ?? [];
   const introText = dialogQuery.data?.introText?.trim() ?? '';
+  const activeMessage = useMemo(
+    () => messages.find((message) => message.id === activeMessageId) ?? null,
+    [activeMessageId, messages],
+  );
   const replyTarget = useMemo(
     () => messages.find((message) => message.id === replyToMessageId) ?? null,
     [messages, replyToMessageId],
   );
   const draftLength = draft.trim().length;
   const showComposeMeta = dialogType === 'suggest' || draftLength > 0 || Boolean(replyTarget);
+  const activeMessageIsOwn = activeMessage
+    ? meQuery.data?.userId === activeMessage.authorUserId
+    : false;
+
+  const clearMessagePress = () => {
+    if (pressTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(pressTimerRef.current);
+    }
+    pressTimerRef.current = null;
+    pressPointRef.current = null;
+  };
+
+  const dismissMessageActions = () => {
+    setActiveMessageId(null);
+    setIsReactionPickerExpanded(false);
+    setReactionPopoverLayout(null);
+  };
 
   const handleDismiss = () => {
     maxImpact('light');
@@ -417,6 +507,17 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     const nextHeight = Math.max(46, Math.min(field.scrollHeight, 132));
     field.style.height = `${nextHeight}px`;
   }, [draft, replyTarget]);
+
+  useEffect(
+    () => () => {
+      if (pressTimerRef.current !== null && typeof window !== 'undefined') {
+        window.clearTimeout(pressTimerRef.current);
+      }
+      pressTimerRef.current = null;
+      pressPointRef.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
     const viewport = scrollViewportRef.current;
@@ -448,8 +549,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     }
 
     if (activeMessageId && !messages.some((message) => message.id === activeMessageId)) {
-      setActiveMessageId(null);
-      setIsReactionPickerExpanded(false);
+      dismissMessageActions();
     }
   }, [activeMessageId, messages, replyToMessageId]);
 
@@ -465,12 +565,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       }
       if (
         target.closest('.channel-dialog-message') ||
-        target.closest('.channel-dialog-compose')
+        target.closest('.channel-dialog-compose') ||
+        target.closest('.channel-dialog-comments-header') ||
+        target.closest('.channel-dialog-popover-layer')
       ) {
         return;
       }
-      setActiveMessageId(null);
-      setIsReactionPickerExpanded(false);
+      dismissMessageActions();
     };
 
     document.addEventListener('mousedown', handlePointerDown);
@@ -481,6 +582,112 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       document.removeEventListener('touchstart', handlePointerDown);
     };
   }, [activeMessageId]);
+
+  useEffect(() => {
+    if (!activeMessageId || typeof document === 'undefined') {
+      return undefined;
+    }
+
+    const handleKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape') {
+        return;
+      }
+
+      event.preventDefault();
+      dismissMessageActions();
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [activeMessageId]);
+
+  useLayoutEffect(() => {
+    if (dialogType !== 'comments' || !activeMessageId) {
+      setReactionPopoverLayout(null);
+      return undefined;
+    }
+
+    const screen = screenRef.current;
+    const viewport = scrollViewportRef.current;
+    if (!screen || !viewport) {
+      return undefined;
+    }
+
+    let frameId = 0;
+
+    const updateLayout = () => {
+      const bubble = screen.querySelector<HTMLElement>(
+        `[data-message-bubble-id="${activeMessageId}"]`,
+      );
+      if (!bubble) {
+        setReactionPopoverLayout(null);
+        return;
+      }
+
+      const screenRect = screen.getBoundingClientRect();
+      const viewportRect = viewport.getBoundingClientRect();
+      const bubbleRect = bubble.getBoundingClientRect();
+      const composeSurface = screen.querySelector<HTMLElement>('.channel-dialog-compose__surface');
+      const composeTop = composeSurface?.getBoundingClientRect().top ?? screenRect.bottom;
+      const popoverHeight =
+        reactionPopoverRef.current?.getBoundingClientRect().height ??
+        (isReactionPickerExpanded ? 168 : 108);
+      const availableWidth = Math.max(220, Math.min(screenRect.width - 24, 304));
+      const topBoundary = viewportRect.top + 6;
+      const bottomBoundary = Math.min(viewportRect.bottom - 8, composeTop - 8);
+      const topSpace = bubbleRect.top - topBoundary;
+      const bottomSpace = bottomBoundary - bubbleRect.bottom;
+      const placeBelow = topSpace < popoverHeight + 10 && bottomSpace > topSpace;
+      const unclampedTop = placeBelow
+        ? bubbleRect.bottom - screenRect.top + 8
+        : bubbleRect.top - screenRect.top - popoverHeight - 8;
+      const minTop = Math.max(8, topBoundary - screenRect.top);
+      const maxTop = Math.max(minTop, bottomBoundary - screenRect.top - popoverHeight);
+      const nextTop = Math.max(minTop, Math.min(unclampedTop, maxTop));
+      const unclampedLeft = activeMessageIsOwn
+        ? bubbleRect.right - screenRect.left - availableWidth
+        : bubbleRect.left - screenRect.left;
+      const nextLeft = Math.max(12, Math.min(unclampedLeft, screenRect.width - availableWidth - 12));
+
+      setReactionPopoverLayout((current) => {
+        if (
+          current &&
+          current.left === nextLeft &&
+          current.top === nextTop &&
+          current.width === availableWidth &&
+          current.placement === (placeBelow ? 'below' : 'above')
+        ) {
+          return current;
+        }
+
+        return {
+          left: nextLeft,
+          top: nextTop,
+          width: availableWidth,
+          placement: placeBelow ? 'below' : 'above',
+        };
+      });
+    };
+
+    const requestLayout = () => {
+      cancelAnimationFrame(frameId);
+      frameId = requestAnimationFrame(updateLayout);
+    };
+
+    requestLayout();
+    viewport.addEventListener('scroll', requestLayout, { passive: true });
+    window.addEventListener('resize', requestLayout);
+    window.visualViewport?.addEventListener('resize', requestLayout);
+
+    return () => {
+      cancelAnimationFrame(frameId);
+      viewport.removeEventListener('scroll', requestLayout);
+      window.removeEventListener('resize', requestLayout);
+      window.visualViewport?.removeEventListener('resize', requestLayout);
+    };
+  }, [activeMessageId, activeMessageIsOwn, dialogType, isReactionPickerExpanded]);
 
   useEffect(() => {
     if (!activeMessageId) {
@@ -495,20 +702,28 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     let frameId = 0;
 
     const keepActiveMessageInView = () => {
-      const activeMessage = viewport.querySelector<HTMLElement>(`[data-message-id="${activeMessageId}"]`);
-      if (!activeMessage) {
+      const activeBubble = viewport.querySelector<HTMLElement>(
+        `[data-message-bubble-id="${activeMessageId}"]`,
+      );
+      if (!activeBubble) {
         return;
       }
 
       const viewportRect = viewport.getBoundingClientRect();
-      const activeMessageRect = activeMessage.getBoundingClientRect();
+      const activeBubbleRect = activeBubble.getBoundingClientRect();
       const composeSurface = document.querySelector<HTMLElement>('.channel-dialog-compose__surface');
+      const header = document.querySelector<HTMLElement>('.channel-dialog-comments-header');
       const composeHeight = composeSurface?.getBoundingClientRect().height ?? 0;
-      const desiredTopInset = 14;
-      const desiredBottomInset = composeHeight + 20;
+      const headerHeight = header?.getBoundingClientRect().height ?? 0;
+      const popoverHeight = reactionPopoverRef.current?.getBoundingClientRect().height ?? 0;
+      const desiredTopInset =
+        14 +
+        (reactionPopoverLayout?.placement === 'above' ? headerHeight + popoverHeight + 10 : headerHeight);
+      const desiredBottomInset =
+        composeHeight + 20 + (reactionPopoverLayout?.placement === 'below' ? popoverHeight + 10 : 0);
 
-      const topOffset = activeMessageRect.top - viewportRect.top;
-      const bottomOffset = viewportRect.bottom - activeMessageRect.bottom;
+      const topOffset = activeBubbleRect.top - viewportRect.top;
+      const bottomOffset = viewportRect.bottom - activeBubbleRect.bottom;
 
       if (topOffset < desiredTopInset) {
         viewport.scrollBy({
@@ -533,7 +748,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     return () => {
       cancelAnimationFrame(frameId);
     };
-  }, [activeMessageId, isReactionPickerExpanded]);
+  }, [activeMessageId, reactionPopoverLayout]);
 
   const sendMutation = useMutation({
     mutationFn: (text: string) =>
@@ -564,7 +779,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       });
       setDraft('');
       setReplyToMessageId(null);
-      setActiveMessageId(null);
+      dismissMessageActions();
       void queryClient.invalidateQueries({
         queryKey: dialogQueryKey,
       });
@@ -619,24 +834,94 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     },
   });
 
-  const handleSelectMessage = (messageId: string) => {
+  const openMessageActions = (
+    messageId: string,
+    options?: {
+      haptic?: 'light' | 'medium';
+      toggle?: boolean;
+    },
+  ) => {
     if (dialogType !== 'comments') {
       return;
     }
 
-    maxImpact('light');
+    maxImpact(options?.haptic ?? 'light');
     setActiveMessageId((current) => {
-      const nextMessageId = current === messageId ? null : messageId;
+      const shouldToggle = options?.toggle !== false;
+      const nextMessageId = shouldToggle && current === messageId ? null : messageId;
       setIsReactionPickerExpanded(false);
       return nextMessageId;
     });
   };
 
+  const handleBubblePointerDown =
+    (messageId: string) => (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (dialogType !== 'comments' || event.pointerType === 'mouse') {
+        return;
+      }
+
+      clearMessagePress();
+      ignoreNextBubbleClickRef.current = false;
+      pressPointRef.current = {
+        x: event.clientX,
+        y: event.clientY,
+      };
+      pressTimerRef.current = window.setTimeout(() => {
+        ignoreNextBubbleClickRef.current = true;
+        openMessageActions(messageId, {
+          haptic: 'medium',
+          toggle: false,
+        });
+      }, 340);
+    };
+
+  const handleBubblePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === 'mouse' || !pressPointRef.current) {
+      return;
+    }
+
+    const deltaX = Math.abs(event.clientX - pressPointRef.current.x);
+    const deltaY = Math.abs(event.clientY - pressPointRef.current.y);
+    if (deltaX > 8 || deltaY > 8) {
+      clearMessagePress();
+    }
+  };
+
+  const handleBubblePointerEnd = () => {
+    clearMessagePress();
+  };
+
+  const handleBubbleClick = (messageId: string) => (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (ignoreNextBubbleClickRef.current) {
+      ignoreNextBubbleClickRef.current = false;
+      return;
+    }
+
+    if (dialogType !== 'comments') {
+      return;
+    }
+
+    const target = event.currentTarget.ownerDocument.defaultView;
+    if (target?.matchMedia('(pointer: coarse)').matches) {
+      return;
+    }
+
+    openMessageActions(messageId);
+  };
+
+  const handleBubbleKeyDown = (messageId: string) => (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'Enter' && event.key !== ' ') {
+      return;
+    }
+
+    event.preventDefault();
+    openMessageActions(messageId);
+  };
+
   const handleReply = (message: ChannelDialogMessage) => {
     maxImpact('soft');
     setReplyToMessageId(message.id);
-    setActiveMessageId(null);
-    setIsReactionPickerExpanded(false);
+    dismissMessageActions();
     requestAnimationFrame(() => composeFieldRef.current?.focus());
   };
 
@@ -654,8 +939,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     maxImpact('soft');
     reactionMutation.mutate({ messageId, emoji });
     if (options?.closePicker) {
-      setActiveMessageId(null);
-      setIsReactionPickerExpanded(false);
+      dismissMessageActions();
     }
   };
 
@@ -708,37 +992,52 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   return (
     <div
+      ref={screenRef}
       className={cn('channel-dialog-screen', `channel-dialog-screen--${dialogType}`, 'page-enter')}
     >
       <div className="channel-dialog-screen__backdrop" aria-hidden />
 
-      <div
-        className={cn('channel-dialog-shell', dialogType === 'comments' && 'channel-dialog-shell--flat')}
-      >
-        {dialogType === 'suggest' ? (
-          <header
-            className={cn('channel-dialog-topbar', isBodyScrolled && 'is-compact')}
-          >
+      <div className="channel-dialog-shell">
+        {dialogType === 'comments' ? (
+          <header className={cn('channel-dialog-comments-header', isBodyScrolled && 'is-compact')}>
+            <div className="channel-dialog-comments-header__bar">
+              <button
+                type="button"
+                className="channel-dialog-nav"
+                onClick={handleDismiss}
+                aria-label="Назад"
+              >
+                <BackIcon />
+              </button>
+
+              <div className="channel-dialog-comments-header__title">
+                <span>{chatLabel}</span>
+                <h1>{view.title}</h1>
+              </div>
+
+              <span className="channel-dialog-comments-header__spacer" aria-hidden />
+            </div>
+
+            {introText ? (
+              <div className="channel-dialog-thread-context">
+                <p>{introText}</p>
+              </div>
+            ) : null}
+          </header>
+        ) : dialogType === 'suggest' ? (
+          <header className={cn('channel-dialog-topbar', isBodyScrolled && 'is-compact')}>
             <button
               type="button"
               className="channel-dialog-nav"
               onClick={handleDismiss}
               aria-label="Назад"
             >
-              <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
-                <path
-                  d="M11.8 4.4L6.2 10L11.8 15.6"
-                  stroke="currentColor"
-                  strokeWidth="1.9"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                />
-              </svg>
+              <BackIcon />
             </button>
 
             <div className="channel-dialog-topbar__title">
               <h1>{view.title}</h1>
-              <span>{chatTitle || chatId}</span>
+              <span>{chatLabel}</span>
             </div>
 
             <button type="button" className="channel-dialog-close" onClick={handleDismiss}>
@@ -787,11 +1086,11 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
           {!dialogQuery.isLoading && !dialogQuery.error ? (
             <div className="channel-dialog-message-list">
-              {introText ? (
+              {introText && dialogType !== 'comments' ? (
                 <div
                   className={cn(
                     'channel-dialog-intro',
-                    dialogType === 'comments' && isBodyScrolled && 'is-collapsed',
+                    isBodyScrolled && 'is-collapsed',
                   )}
                 >
                   <p>{introText}</p>
@@ -828,104 +1127,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                       <div
                         className={cn(
                           'channel-dialog-message__content',
-                          isActiveMessage && 'has-reaction-popover',
-                          isActiveMessage && isReactionPickerExpanded && 'has-expanded-reaction-popover',
+                          isActiveMessage && 'is-context-open',
                         )}
                         data-message-id={message.id}
                       >
-                        {dialogType === 'comments' && isActiveMessage ? (
-                          <div
-                            className="channel-dialog-reaction-popover"
-                            onClick={(event) => event.stopPropagation()}
-                          >
-                            <div className="channel-dialog-reaction-popover__surface">
-                              <div className="channel-dialog-reaction-popover__row">
-                                {COMMENT_REACTION_PRIMARY_OPTIONS.map((emoji) => {
-                                  const reactedByMe = message.reactionGroups.some(
-                                    (group) => group.emoji === emoji && group.reactedByMe,
-                                  );
-
-                                  return (
-                                    <button
-                                      key={emoji}
-                                      type="button"
-                                      className={cn(
-                                        'channel-dialog-reaction-popover__emoji',
-                                        reactedByMe && 'is-active',
-                                      )}
-                                      onClick={() =>
-                                        handleReactionToggle(message.id, emoji, {
-                                          closePicker: true,
-                                        })
-                                      }
-                                      disabled={isReactionPending}
-                                      aria-label={`Поставить реакцию ${emoji}`}
-                                    >
-                                      {emoji}
-                                    </button>
-                                  );
-                                })}
-
-                                <button
-                                  type="button"
-                                  className={cn(
-                                    'channel-dialog-reaction-popover__toggle',
-                                    isReactionPickerExpanded && 'is-active',
-                                  )}
-                                  onClick={() =>
-                                    setIsReactionPickerExpanded((current) => !current)
-                                  }
-                                  aria-label="Показать больше реакций"
-                                >
-                                  <PlusIcon />
-                                </button>
-                              </div>
-
-                              {isReactionPickerExpanded ? (
-                                <div className="channel-dialog-reaction-popover__grid">
-                                  {COMMENT_REACTION_EXPANDED_OPTIONS.map((emoji) => {
-                                    const reactedByMe = message.reactionGroups.some(
-                                      (group) => group.emoji === emoji && group.reactedByMe,
-                                    );
-
-                                    return (
-                                      <button
-                                        key={emoji}
-                                        type="button"
-                                        className={cn(
-                                          'channel-dialog-reaction-popover__emoji',
-                                          'is-secondary',
-                                          reactedByMe && 'is-active',
-                                        )}
-                                        onClick={() =>
-                                          handleReactionToggle(message.id, emoji, {
-                                            closePicker: true,
-                                          })
-                                        }
-                                        disabled={isReactionPending}
-                                        aria-label={`Поставить реакцию ${emoji}`}
-                                      >
-                                        {emoji}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              ) : null}
-
-                              <div className="channel-dialog-reaction-popover__actions">
-                                <button
-                                  type="button"
-                                  className="channel-dialog-reaction-popover__action"
-                                  onClick={() => handleReply(message)}
-                                >
-                                  <ReplyArrowIcon />
-                                  Ответить
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        ) : null}
-
                         <div
                           className={cn(
                             'channel-dialog-message__bubble',
@@ -933,24 +1138,26 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                             isActiveMessage && 'is-active',
                             groupedWithPrevious && 'is-grouped',
                           )}
-                          onClick={
-                            dialogType === 'comments'
-                              ? () => handleSelectMessage(message.id)
-                              : undefined
-                          }
+                          data-message-bubble-id={message.id}
+                          onClick={dialogType === 'comments' ? handleBubbleClick(message.id) : undefined}
                           onKeyDown={
-                            dialogType === 'comments'
-                              ? (event) => {
-                                  if (event.key === 'Enter' || event.key === ' ') {
-                                    event.preventDefault();
-                                    handleSelectMessage(message.id);
-                                  }
-                                }
-                              : undefined
+                            dialogType === 'comments' ? handleBubbleKeyDown(message.id) : undefined
+                          }
+                          onPointerDown={
+                            dialogType === 'comments' ? handleBubblePointerDown(message.id) : undefined
+                          }
+                          onPointerMove={dialogType === 'comments' ? handleBubblePointerMove : undefined}
+                          onPointerUp={dialogType === 'comments' ? handleBubblePointerEnd : undefined}
+                          onPointerCancel={
+                            dialogType === 'comments' ? handleBubblePointerEnd : undefined
+                          }
+                          onPointerLeave={
+                            dialogType === 'comments' ? handleBubblePointerEnd : undefined
                           }
                           role={dialogType === 'comments' ? 'button' : undefined}
                           tabIndex={dialogType === 'comments' ? 0 : undefined}
                           aria-pressed={dialogType === 'comments' ? isActiveMessage : undefined}
+                          aria-haspopup={dialogType === 'comments' ? 'dialog' : undefined}
                         >
                           {!groupedWithPrevious ? (
                             <div className="channel-dialog-message__meta">
@@ -1081,6 +1288,119 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
           </div>
         </section>
       </div>
+
+      {dialogType === 'comments' && activeMessage
+        ? createPortal(
+            <div className="channel-dialog-popover-layer" onClick={dismissMessageActions}>
+              <div
+                ref={reactionPopoverRef}
+                className={cn(
+                  'channel-dialog-reaction-popover',
+                  'is-floating',
+                  reactionPopoverLayout?.placement === 'below' && 'is-below',
+                  !reactionPopoverLayout && 'is-measuring',
+                )}
+                role="dialog"
+                aria-label="Действия с комментарием"
+                style={
+                  reactionPopoverLayout
+                    ? {
+                        left: `${reactionPopoverLayout.left}px`,
+                        top: `${reactionPopoverLayout.top}px`,
+                        width: `${reactionPopoverLayout.width}px`,
+                      }
+                    : undefined
+                }
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="channel-dialog-reaction-popover__surface">
+                  <div className="channel-dialog-reaction-popover__row">
+                    {COMMENT_REACTION_PRIMARY_OPTIONS.map((emoji) => {
+                      const reactedByMe = activeMessage.reactionGroups.some(
+                        (group) => group.emoji === emoji && group.reactedByMe,
+                      );
+
+                      return (
+                        <button
+                          key={emoji}
+                          type="button"
+                          className={cn(
+                            'channel-dialog-reaction-popover__emoji',
+                            reactedByMe && 'is-active',
+                          )}
+                          onClick={() =>
+                            handleReactionToggle(activeMessage.id, emoji, {
+                              closePicker: true,
+                            })
+                          }
+                          disabled={reactionMutation.isPending}
+                          aria-label={`Поставить реакцию ${emoji}`}
+                        >
+                          {emoji}
+                        </button>
+                      );
+                    })}
+
+                    <button
+                      type="button"
+                      className={cn(
+                        'channel-dialog-reaction-popover__toggle',
+                        isReactionPickerExpanded && 'is-active',
+                      )}
+                      onClick={() => setIsReactionPickerExpanded((current) => !current)}
+                      aria-label="Показать больше реакций"
+                    >
+                      <PlusIcon />
+                    </button>
+                  </div>
+
+                  {isReactionPickerExpanded ? (
+                    <div className="channel-dialog-reaction-popover__grid">
+                      {COMMENT_REACTION_EXPANDED_OPTIONS.map((emoji) => {
+                        const reactedByMe = activeMessage.reactionGroups.some(
+                          (group) => group.emoji === emoji && group.reactedByMe,
+                        );
+
+                        return (
+                          <button
+                            key={emoji}
+                            type="button"
+                            className={cn(
+                              'channel-dialog-reaction-popover__emoji',
+                              'is-secondary',
+                              reactedByMe && 'is-active',
+                            )}
+                            onClick={() =>
+                              handleReactionToggle(activeMessage.id, emoji, {
+                                closePicker: true,
+                              })
+                            }
+                            disabled={reactionMutation.isPending}
+                            aria-label={`Поставить реакцию ${emoji}`}
+                          >
+                            {emoji}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ) : null}
+
+                  <div className="channel-dialog-reaction-popover__actions">
+                    <button
+                      type="button"
+                      className="channel-dialog-reaction-popover__action"
+                      onClick={() => handleReply(activeMessage)}
+                    >
+                      <ReplyArrowIcon />
+                      Ответить
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>,
+            screenRef.current ?? document.body,
+          )
+        : null}
     </div>
   );
 }
