@@ -25,6 +25,7 @@ import {
 import type { ApiTransport } from '../lib/api/transport';
 import type { BroadcastHandoffPayload } from '../lib/api/shared-types';
 import {
+  countBroadcastScheduleDays,
   resolveBroadcastScheduleTimezone,
   sortAndUniqueBroadcastSlots,
 } from '../lib/broadcast-schedule';
@@ -50,9 +51,11 @@ type ChannelSettingsHintKey =
   | 'postSuggestionsEnabled'
   | 'engagementMessageText'
   | 'publishEngagement'
+  | 'broadcastStudio'
   | 'broadcastText'
   | 'broadcastImage'
-  | 'broadcastButton';
+  | 'broadcastButton'
+  | 'broadcastSend';
 
 const MIN_BROADCAST_CYCLE_HOURS = 1;
 const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
@@ -158,6 +161,87 @@ function normalizeApiError(error: unknown): string {
   }
 
   return text;
+}
+
+function formatChannelCountLabel(
+  count: number,
+  singular: string,
+  few: string,
+  plural: string,
+): string {
+  const safeCount = Math.max(0, Math.trunc(count));
+  const remainder100 = safeCount % 100;
+  const remainder10 = safeCount % 10;
+
+  if (remainder100 >= 11 && remainder100 <= 19) {
+    return `${safeCount} ${plural}`;
+  }
+
+  if (remainder10 === 1) {
+    return `${safeCount} ${singular}`;
+  }
+
+  if (remainder10 >= 2 && remainder10 <= 4) {
+    return `${safeCount} ${few}`;
+  }
+
+  return `${safeCount} ${plural}`;
+}
+
+function formatCompactChannelBroadcastDateTime(value: string | null): string {
+  if (!value) {
+    return '';
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return '';
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(parsed);
+}
+
+function formatChannelBroadcastCountdownValue(remainingMs: number): string {
+  const totalMinutes = Math.max(0, Math.floor(remainingMs / 60_000));
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+
+  if (days > 0) {
+    return `${days}д ${String(hours).padStart(2, '0')}ч`;
+  }
+
+  if (hours > 0) {
+    return `${String(hours).padStart(2, '0')}ч ${String(minutes).padStart(2, '0')}м`;
+  }
+
+  if (minutes > 0) {
+    return `${minutes}м`;
+  }
+
+  return '<1м';
+}
+
+function resolveChannelBroadcastCountdown(nextSendAt: string | null, nowMs: number) {
+  if (!nextSendAt) {
+    return null;
+  }
+
+  const targetMs = new Date(nextSendAt).getTime();
+  if (!Number.isFinite(targetMs) || targetMs <= nowMs) {
+    return null;
+  }
+
+  return {
+    label: 'До слота',
+    value: formatChannelBroadcastCountdownValue(targetMs - nowMs),
+    caption: formatCompactChannelBroadcastDateTime(nextSendAt),
+  };
 }
 
 function ChannelSettingsInfoButton({
@@ -387,6 +471,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [broadcastPlannerResetKey, setBroadcastPlannerResetKey] = useState(0);
   const [broadcastPlannerState, setBroadcastPlannerState] =
     useState<BroadcastSchedulePlannerSelectionState>(EMPTY_BROADCAST_PLANNER_STATE);
+  const [broadcastNowMs, setBroadcastNowMs] = useState(() => Date.now());
   const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
 
   const settingsScreenQuery = useQuery({
@@ -773,6 +858,35 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     },
   });
 
+  const liveBroadcastSlot =
+    sortAndUniqueBroadcastSlots(
+      managedBroadcasts.flatMap((broadcast) => broadcast.scheduledSlots),
+    ).find((slot) => new Date(slot).getTime() > broadcastNowMs) ?? null;
+  const draftBroadcastSlot =
+    sortAndUniqueBroadcastSlots(broadcastScheduledSlots).find(
+      (slot) => new Date(slot).getTime() > broadcastNowMs,
+    ) ?? null;
+  const previewBroadcastSlot = draftBroadcastSlot ?? liveBroadcastSlot;
+  const previewBroadcastCountdown = resolveChannelBroadcastCountdown(
+    previewBroadcastSlot,
+    broadcastNowMs,
+  );
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !expandedSections.broadcast || !previewBroadcastSlot) {
+      return undefined;
+    }
+
+    setBroadcastNowMs(Date.now());
+    const timerId = window.setInterval(() => {
+      setBroadcastNowMs(Date.now());
+    }, 30_000);
+
+    return () => {
+      window.clearInterval(timerId);
+    };
+  }, [expandedSections.broadcast, previewBroadcastSlot]);
+
   useHintPopoverAutoPosition(openHintKey !== null);
 
   if (!chatId) {
@@ -863,9 +977,16 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         ? 'Кнопки будут только в этом посте.'
         : 'Кнопка будет только в этом посте.';
   const broadcastHasButton = broadcastButtonEnabled && Boolean(broadcastButtonText.trim());
+  const broadcastDayCount = countBroadcastScheduleDays(broadcastScheduledSlots);
+  const broadcastSlotsLabel = formatChannelCountLabel(
+    broadcastScheduledSlots.length,
+    'слот',
+    'слота',
+    'слотов',
+  );
   const broadcastSlotsSummary =
     broadcastScheduledSlots.length > 0
-      ? `${broadcastScheduledSlots.length} слот${broadcastScheduledSlots.length === 1 ? '' : broadcastScheduledSlots.length < 5 ? 'а' : 'ов'}`
+      ? broadcastSlotsLabel
       : 'без слотов';
   const normalizedBroadcastButtonUrl = broadcastButtonUrl.trim();
   const normalizedBroadcastButtonText = broadcastButtonText.trim();
@@ -889,6 +1010,22 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     broadcastText.trim().length > 0 ||
     broadcastImageEnabled ||
     broadcastButtonEnabled;
+  const broadcastStudioBadge = broadcastBotHasContent ? 'Контент готов' : 'Новый сценарий';
+  const broadcastStudioEyebrow =
+    broadcastScheduledSlots.length > 0 ? 'График уже собран' : 'Сначала настройте график';
+  const broadcastStudioTitle = broadcastBotHasContent
+    ? 'Управляйте графиком и CTA'
+    : 'Соберите график и передайте рассылку в бота';
+  const broadcastStudioDescription = broadcastBotHasContent
+    ? 'Текст или фото уже сохранены в личке бота. Здесь остаются только календарь и CTA.'
+    : 'В приложении соберите расписание и кнопку действия, а финальное подтверждение останется в боте.';
+  const broadcastStudioFacts = [
+    'Только этот канал',
+    broadcastScheduledSlots.length > 0 ? `${broadcastDayCount} дн.` : 'График не собран',
+    broadcastScheduledSlots.length > 0 ? broadcastSlotsLabel : null,
+    broadcastHasButton ? 'CTA' : null,
+    broadcastBotHasContent ? 'Контент в боте' : null,
+  ].filter((item): item is string => Boolean(item));
   const broadcastHeaderSummary = [
     broadcastBotHasContent ? 'контент в боте' : 'без контента',
     broadcastHasButton ? 'CTA' : null,
@@ -912,13 +1049,25 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const postSuggestionsCardStatus = draft.postSuggestionsEnabled ? 'Авто' : 'Ручн';
   const broadcastCardStatus =
     broadcastScheduledSlots.length > 0 ? 'Календ' : broadcastHasButton ? 'CTA' : 'Бот';
+  const broadcastFooterLabel = broadcastBotHasContent
+    ? 'Контент уже в боте'
+    : 'Финальный шаг в боте';
+  const broadcastFooterHint = broadcastBotHasContent
+    ? 'Контент уже сохранён в личке бота. Кнопка ниже снова откроет бота для замены или подтверждения.'
+    : 'В боте останется только подтверждение отправки.';
   const broadcastDrilldownFooter = (
     <>
-      <p className="settings-drilldown__footer-note">
-        {broadcastBotHasContent
-          ? 'Контент уже сохранён в личке бота. Кнопка ниже снова откроет бота для замены или подтверждения.'
-          : 'В боте останется только подтверждение отправки.'}
-      </p>
+      <div className="managed-broadcast-editor-note__topline">
+        <span className="settings-drilldown__footer-note">{broadcastFooterLabel}</span>
+        <ChannelSettingsHintAnchor
+          hintKey="broadcastSend"
+          openHintKey={openHintKey}
+          onToggleHint={toggleHint}
+          label="Что произойдёт после передачи рассылки"
+        >
+          {broadcastFooterHint}
+        </ChannelSettingsHintAnchor>
+      </div>
       <div className="settings-drilldown__footer-actions is-single-action">
         <button
           type="button"
@@ -1342,15 +1491,41 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             {expandedSections.broadcast ? (
               <div className="settings-section__collapse-inner">
                 <div className="channel-broadcast-studio">
-                  {broadcastBotHasContent ? (
-                    <div className="managed-broadcast-editor-note">
-                      <strong>Контент хранится в личке бота</strong>
-                      <small>
-                        Текст или фото уже сохранены. Здесь остаются календарь и CTA, а сам контент
-                        редактируется в боте.
-                      </small>
+                  <div className="managed-broadcast-editor-note managed-broadcast-editor-note--studio">
+                    <div className="managed-broadcast-editor-note__topline">
+                      <span className="managed-broadcast-editor-note__badge">
+                        {broadcastStudioBadge}
+                      </span>
+                      {previewBroadcastCountdown ? (
+                        <div className="managed-broadcast-editor-note__timer">
+                          <span>{previewBroadcastCountdown.label}</span>
+                          <strong>{previewBroadcastCountdown.value}</strong>
+                          <small>{previewBroadcastCountdown.caption}</small>
+                        </div>
+                      ) : null}
                     </div>
-                  ) : null}
+                    <div className="mailing-option-card__head">
+                      <div className="mailing-option-card__title-wrap">
+                        <span className="managed-broadcast-editor-note__eyebrow">
+                          {broadcastStudioEyebrow}
+                        </span>
+                        <strong>{broadcastStudioTitle}</strong>
+                      </div>
+                      <ChannelSettingsHintAnchor
+                        hintKey="broadcastStudio"
+                        openHintKey={openHintKey}
+                        onToggleHint={toggleHint}
+                        label="Что настраивается в студии рассылки"
+                      >
+                        {broadcastStudioDescription}
+                      </ChannelSettingsHintAnchor>
+                    </div>
+                    <div className="managed-broadcast-editor-note__facts">
+                      {broadcastStudioFacts.map((fact) => (
+                        <span key={fact}>{fact}</span>
+                      ))}
+                    </div>
+                  </div>
 
                   {showBroadcastInlineReset ? (
                     <div className="mailing-inline-tools">
@@ -1392,8 +1567,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                     >
                       <div className="mailing-option-card__head">
                         <div className="mailing-option-card__title-wrap">
-                          <div className="channel-settings-field-label">
-                            <span className="mailing-option-card__title">Кнопка</span>
+                          <div className="mailing-card-title-row">
+                            <span className="mailing-option-card__title">Кнопка действия</span>
                             <ChannelSettingsHintAnchor
                               hintKey="broadcastButton"
                               openHintKey={openHintKey}

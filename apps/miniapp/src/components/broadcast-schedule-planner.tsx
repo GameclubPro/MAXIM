@@ -1,6 +1,7 @@
 import { useEffect, useEffectEvent, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../lib/cn';
+import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import {
   BROADCAST_SCHEDULE_MAX_DAYS,
   BROADCAST_SCHEDULE_STEP_MINUTES,
@@ -202,6 +203,7 @@ export function BroadcastSchedulePlanner({
   onSelectionStateChange,
 }: BroadcastSchedulePlannerProps) {
   const [anchorNow] = useState(() => new Date());
+  const [isGuideHintOpen, setIsGuideHintOpen] = useState(false);
   const normalizedValue = sortAndUniqueBroadcastSlots(value);
   const scheduledDayKeys = sortDayKeys(
     normalizedValue.map((slot) => getBroadcastScheduleDayKey(slot)),
@@ -244,6 +246,8 @@ export function BroadcastSchedulePlanner({
       onSelectionStateChange?.(nextState);
     },
   );
+
+  useHintPopoverAutoPosition(isGuideHintOpen);
 
   useEffect(() => {
     if (pickedDayKeys.length > 0) {
@@ -554,13 +558,62 @@ export function BroadcastSchedulePlanner({
       <section className={cn('broadcast-planner', disabled && 'is-disabled')}>
         <div className="broadcast-planner__topline">
           <div className="broadcast-planner__topline-copy">
-            <strong>
-              {isReviewStep ? 'Шаг 4. Проверьте расписание' : 'Шаг 1. Выберите дни публикации'}
-            </strong>
+            <div className="broadcast-planner__topline-head">
+              <strong>{isReviewStep ? 'Шаг 4. Финальная проверка' : 'Шаг 1. Дни публикации'}</strong>
+              <span className="mailing-card-title-row">
+                <span className="broadcast-planner__calendar-badge">
+                  {isReviewStep
+                    ? `${futureSlotCount} к отправке`
+                    : pickedDayKeys.length > 0
+                      ? pickedDayLabel
+                      : normalizedValue.length > 0
+                        ? `${selectedDayCount} дн.`
+                        : 'Календарь'}
+                </span>
+                <span className="channel-settings-hint-anchor">
+                  <button
+                    type="button"
+                    className={cn('settings-info-button', isGuideHintOpen && 'is-open')}
+                    aria-label={
+                      isReviewStep
+                        ? 'Подсказка для финальной проверки расписания'
+                        : 'Подсказка для выбора дней публикации'
+                    }
+                    aria-controls="broadcast-planner-guide-hint"
+                    aria-expanded={isGuideHintOpen}
+                    onClick={(event) => {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setIsGuideHintOpen((current) => !current);
+                    }}
+                  >
+                    <span aria-hidden>i</span>
+                  </button>
+                  {isGuideHintOpen ? (
+                    <p
+                      id="broadcast-planner-guide-hint"
+                      className="channel-settings-hint-popover"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                      }}
+                    >
+                      {isReviewStep
+                        ? 'Проверьте итоговый план и только после этого передавайте рассылку в бота.'
+                        : 'Сначала отметьте даты. Шаги с количеством и временем открываются отдельно, чтобы экран оставался компактным.'}
+                    </p>
+                  ) : null}
+                </span>
+              </span>
+            </div>
             <small>
               {isReviewStep
-                ? 'Проверьте итог. В боте останется только подтверждение.'
-                : 'Сначала отметьте даты. Следующие шаги с количеством и временем откроются отдельно.'}
+                ? 'Итог перед подтверждением в боте.'
+                : pickedDayKeys.length > 0
+                  ? `${pickedDayLabel} отмечены. Переходите к времени.`
+                  : normalizedValue.length > 0
+                    ? 'График уже собран. Можно скорректировать отдельные дни.'
+                    : 'Отметьте даты в календаре.'}
             </small>
           </div>
         </div>

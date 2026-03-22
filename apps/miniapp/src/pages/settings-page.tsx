@@ -251,12 +251,14 @@ type HintKey =
   | 'requiredSubscriptionWarnMessage'
   | 'deleteBotMessages'
   | 'removeBotsFromGroup'
+  | 'mailingStudio'
   | 'mailingText'
   | 'mailingTargets'
   | 'mailingImage'
   | 'mailingButton'
   | 'mailingSchedule'
-  | 'mailingCycle';
+  | 'mailingCycle'
+  | 'mailingSend';
 type BotMessageEditorKey =
   | 'link'
   | 'greeting'
@@ -3478,11 +3480,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : mailingBotHasContent
       ? 'Контент готов'
       : 'Новый сценарий';
+  const mailingStudioEyebrow = editingManagedBroadcast
+    ? 'Текущий сценарий'
+    : mailingScheduledSlots.length > 0
+      ? 'График уже собран'
+      : 'Сначала настройте график';
   const mailingStudioTitle = editingManagedBroadcast
-    ? 'Меняете график и CTA без правки контента'
+    ? 'Обновляете график и CTA'
     : mailingBotHasContent
-      ? 'График, охват и CTA настраиваются здесь'
-      : 'Сначала соберите график, потом откроем бота';
+      ? 'Управляйте графиком и охватом'
+      : 'Соберите график и откройте бота';
   const mailingStudioDescription = editingManagedBroadcast
     ? editingManagedBroadcast.sentCount > 0
       ? `Уже отправлено ${editingManagedBroadcast.sentCount} из ${editingManagedBroadcast.cycleCount}.`
@@ -3527,15 +3534,29 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingImageEnabled ||
     mailingButtonEnabled;
   const mailingSendDisabled = isMailingBusy;
+  const mailingFooterLabel = editingManagedBroadcast
+    ? 'Изменения применятся сразу'
+    : mailingBotHasContent
+      ? 'Контент уже в боте'
+      : 'Финальный шаг в боте';
+  const mailingFooterHint = editingManagedBroadcast
+    ? 'Сохраним обновлённый календарь и CTA прямо здесь.'
+    : mailingBotHasContent
+      ? 'Контент уже сохранён в личке бота. Кнопка ниже снова откроет бота для замены или подтверждения.'
+      : 'В боте останется только подтверждение отправки.';
   const mailingDrilldownFooter = (
     <>
-      <p className="settings-drilldown__footer-note">
-        {editingManagedBroadcast
-          ? 'Сохраним обновлённый календарь и CTA прямо здесь.'
-          : mailingBotHasContent
-            ? 'Контент уже сохранён в личке бота. Кнопка ниже снова откроет бота для замены или подтверждения.'
-            : 'В боте останется только подтверждение отправки.'}
-      </p>
+      <div className="managed-broadcast-editor-note__topline">
+        <span className="settings-drilldown__footer-note">{mailingFooterLabel}</span>
+        <SettingsHintAnchor
+          hintKey="mailingSend"
+          openHintKey={openHintKey}
+          onToggleHint={toggleHint}
+          label="Что произойдёт после передачи рассылки"
+        >
+          {mailingFooterHint}
+        </SettingsHintAnchor>
+      </div>
       <div className="settings-drilldown__footer-actions is-single-action">
         <button
           type="button"
@@ -8179,8 +8200,22 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </div>
                           ) : null}
                         </div>
-                        <strong>{mailingStudioTitle}</strong>
-                        <small>{mailingStudioDescription}</small>
+                        <div className="mailing-option-card__head">
+                          <div className="mailing-option-card__title-wrap">
+                            <span className="managed-broadcast-editor-note__eyebrow">
+                              {mailingStudioEyebrow}
+                            </span>
+                            <strong>{mailingStudioTitle}</strong>
+                          </div>
+                          <SettingsHintAnchor
+                            hintKey="mailingStudio"
+                            openHintKey={openHintKey}
+                            onToggleHint={toggleHint}
+                            label="Что настраивается в студии рассылки"
+                          >
+                            {mailingStudioDescription}
+                          </SettingsHintAnchor>
+                        </div>
                         <div className="managed-broadcast-editor-note__facts">
                           {mailingStudioFacts.map((fact) => (
                             <span key={fact}>{fact}</span>
