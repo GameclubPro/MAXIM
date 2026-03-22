@@ -5131,51 +5131,54 @@ export class PrivateControlService {
 
     const draft = session.broadcastDraft;
     const isChannel = session.selectedEntityType === 'channel';
+    const entityType = session.selectedEntityType ?? 'chat';
+    const entityLabel = entityType === 'channel' ? 'Канал' : 'Чат';
+    const entityTitle = await this.resolveManagedEntityTitle(
+      context.actor,
+      entityType,
+      session.selectedChatId,
+    );
     const channelSettings = isChannel
       ? await this.adminService.getChannelSettings(session.selectedChatId, context.actor)
       : null;
-    const applyToAllEnabled = !isChannel && draft.applyToAllChats;
-    const isCalendarMode = draft.scheduleMode === 'calendar';
-    const timingSummary = isCalendarMode
-      ? this.formatBroadcastCalendarSummary(draft.scheduledSlots)
-      : draft.sendAt
-        ? this.formatIsoDate(draft.sendAt)
-        : 'сразу';
-    const cycleSummary = draft.cycleEnabled
-      ? `каждые ${draft.cycleEveryHours} ч., ${draft.cycleCount} раз`
-      : 'нет';
     const waitingForContent = session.pendingInput?.kind === 'broadcast_content';
     const plannerUrl = this.buildBroadcastSettingsMiniappUrl(
       session.selectedChatId,
-      session.selectedEntityType ?? 'chat',
+      entityType,
     );
     const plannerRoute = this.buildBroadcastSettingsMiniappRoute(
       session.selectedChatId,
-      session.selectedEntityType ?? 'chat',
+      entityType,
     );
     const plannerLaunchUrl = this.buildMiniappRouteLaunchUrl(plannerRoute);
+    const hasText = draft.text.trim().length > 0;
+    const hasContent = hasText || draft.imageEnabled;
 
     const lines: string[] = [
       this.markdownTitle(isChannel ? 'Рассылка в канал' : 'Рассылка'),
       '',
-      `Контент: ${
-        waitingForContent
-          ? 'жду сообщение'
-          : draft.text.trim() || draft.imageEnabled
-            ? 'готов'
-            : 'пусто'
-      }`,
-      `Кнопка: ${draft.buttonEnabled ? 'да' : 'нет'}`,
-      `Фото: ${draft.imageEnabled ? 'да' : 'нет'}`,
-      ...(!isChannel ? [`Во все: ${applyToAllEnabled ? 'да' : 'нет'}`] : []),
-      isCalendarMode ? `Календарь: ${timingSummary}` : `Таймер: ${timingSummary}`,
-      ...(isCalendarMode ? [] : [`Цикл: ${cycleSummary}`]),
-      ...(channelSettings
-        ? [`Комменты: ${this.describeBooleanCompact(channelSettings.commentsEnabled)}`]
+      `${entityLabel}: ${this.escapeMarkdown(entityTitle)}`,
+      ...(notice ? ['', `Результат: ${this.escapeMarkdown(notice)}`] : []),
+      ...(waitingForContent ? ['', 'Жду текст или фото публикации.'] : []),
+      '',
+      'Контент публикации:',
+      hasText ? draft.text : draft.imageEnabled ? '_Без текста, только фото._' : 'не задан',
+      ...(draft.imageEnabled ? ['', 'Медиа: фото будет отправлено вместе с публикацией.'] : []),
+      ...(draft.buttonEnabled
+        ? [
+            '',
+            `Кнопка: ${this.escapeMarkdown(draft.buttonText.trim() || 'Открыть')}`,
+            `Ссылка: ${this.escapeMarkdown(draft.buttonUrl.trim() || 'не задана')}`,
+          ]
         : []),
-      ...(isCalendarMode ? ['Расписание меняется в mini app.'] : []),
-      ...(notice ? ['', `Статус: ${this.escapeMarkdown(notice)}`] : []),
-      ...(waitingForContent ? ['', 'Жду текст или фото.'] : []),
+      ...(!hasContent && !waitingForContent
+        ? ['', 'Отправьте одно сообщение с текстом, фото или оба сразу.']
+        : []),
+      ...(channelSettings
+        ? ['', `Комменты: ${this.describeBooleanCompact(channelSettings.commentsEnabled)}`]
+        : []),
+      '',
+      'Остальные настройки и расписание меняются в mini app.',
     ];
 
     const rows: MaxMessageButton[][] = [
@@ -5208,6 +5211,7 @@ export class PrivateControlService {
       text: lines.join('\n'),
       options: {
         buttons: rows,
+        textFormat: 'markdown',
       },
     };
   }
@@ -5377,39 +5381,32 @@ export class PrivateControlService {
       lines.push('', 'Черновик не создан.');
       rows.push([this.callbackButton('Создать черновик', this.cb('giveaway_create'), 'positive')]);
     } else {
-      const statusLabel = this.formatGiveawayStatusLabel(giveaway.status);
-      lines.push(`Статус: ${statusLabel}`);
+      lines.push(
+        ...(waitingForContent ? ['Жду: Текст и фото публикации'] : []),
+        '',
+        `Название: ${this.escapeMarkdown(giveaway.title)}`,
+        '',
+        'Контент публикации:',
+        giveaway.description.trim() || 'не задан',
+        ...(giveaway.imageEnabled
+          ? ['', 'Медиа: фото будет отправлено вместе с публикацией.']
+          : []),
+        '',
+        `Мест: ${giveaway.prizes.length}`,
+        ...(giveaway.endsAt ? [`Финиш: ${this.formatDateTimeLabel(giveaway.endsAt)}`] : []),
+        ...(giveaway.status === 'ACTIVE' ||
+        giveaway.status === 'SCHEDULED' ||
+        giveaway.status === 'COMPLETED'
+          ? [
+              `Участники: ${giveaway.entriesCount}`,
+              `Победители: ${giveaway.winnersCount}`,
+            ]
+          : []),
+        'Остальные настройки редактируются в приложении.',
+      );
 
-      if (giveaway.status === 'DRAFT') {
-        lines.push(
-          `Контент: ${
-            waitingForContent
-              ? 'жду текст или фото'
-              : giveaway.description.trim() || giveaway.imageEnabled
-                ? 'готов'
-                : 'не заполнен'
-          }`,
-          `Фото: ${giveaway.imageEnabled ? 'добавлено' : 'не добавлено'}`,
-          `Финиш: ${this.formatDateTimeLabel(giveaway.endsAt)}`,
-          `Мест: ${giveaway.prizes.length}`,
-          'Остальные настройки редактируются в приложении.',
-        );
-      } else {
-        lines.push(
-          `Название: ${this.escapeMarkdown(giveaway.title)}`,
-          `Текст публикации: ${giveaway.description.trim() ? 'задан' : 'не задан'}`,
-          `Фото: ${giveaway.imageEnabled ? 'добавлено' : 'опционально'}`,
-          `Финиш: ${this.formatDateTimeLabel(giveaway.endsAt)}`,
-          `Старт: ${giveaway.startsAt ? this.formatDateTimeLabel(giveaway.startsAt) : 'сразу'}`,
-          `Подтверждение: ${giveaway.claimHours} ч`,
-          `Мест: ${giveaway.prizes.length}`,
-          `Участники: ${giveaway.entriesCount}`,
-          `Победители: ${giveaway.winnersCount}`,
-        );
-      }
-
-      if (waitingLabel && giveaway.status === 'DRAFT') {
-        lines.push(`Жду: ${waitingLabel}`);
+      if (waitingLabel && giveaway.status === 'DRAFT' && !waitingForContent) {
+        lines.push('', `Жду: ${waitingLabel}`);
       }
 
       if (giveaway.status === 'DRAFT') {
@@ -5469,13 +5466,14 @@ export class PrivateControlService {
     }
 
     if (notice) {
-      lines.push('', `Статус: ${this.escapeMarkdown(notice)}`);
+      lines.push('', `Результат: ${this.escapeMarkdown(notice)}`);
     }
 
     return {
       text: lines.join('\n'),
       options: {
         buttons: rows,
+        textFormat: 'markdown',
       },
     };
   }

@@ -1368,7 +1368,7 @@ describe('PrivateControlService', () => {
     await service.handleBotStarted(createBotStartedPrivateUpdate());
 
     expect(getLastSentText(maxClient)).toContain('Рассылка');
-    expect(getLastSentText(maxClient)).toContain('Контент: жду сообщение');
+    expect(getLastSentText(maxClient)).toContain('Жду текст или фото публикации.');
 
     await service.handleUpdate(createPrivateTextUpdate('Контент из лички бота'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
@@ -1703,7 +1703,8 @@ describe('PrivateControlService', () => {
       'chat',
       'private_bot',
     );
-    expect(getLastEditedText(maxClient)).toContain('Статус: Черновик');
+    expect(getLastEditedText(maxClient)).toContain('Название: Новый розыгрыш');
+    expect(getLastEditedText(maxClient)).toContain('Контент публикации:');
   });
 
   it('updates giveaway title from private bot input prompt', async () => {
@@ -1756,6 +1757,7 @@ describe('PrivateControlService', () => {
       'Опубликовать',
       'Вернуться в приложение',
     ]);
+    expect(getLastUiText(maxClient)).toContain('Контент публикации:');
     expect(getLastUiText(maxClient)).toContain('Остальные настройки редактируются в приложении.');
     expect(getLastUiText(maxClient)).not.toContain('Подтверждение:');
 
