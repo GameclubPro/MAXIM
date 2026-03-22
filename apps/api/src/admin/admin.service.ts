@@ -733,17 +733,11 @@ export class AdminService {
 
     const bucketStarts = this.buildChannelStatsBucketStarts(from, now, bucket);
     const topReactions = this.buildTopReactions(periodPosts);
-    const activityFeed = await this.getMembershipActivityFeedPage(
-      chatId,
-      from,
-      now,
-      {
-        range: parsed.data.range,
-        filter: 'all',
-        limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
-      },
-      'channel',
-    );
+    const activityFeed = await this.getMembershipActivityFeedPage(chatId, from, now, {
+      range: parsed.data.range,
+      filter: 'all',
+      limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
+    }, 'channel');
     const response: ChannelStatsResponse = {
       channel: {
         id: chatId,
@@ -1618,16 +1612,12 @@ export class AdminService {
       take: CHANNEL_DIALOG_MESSAGES_LIMIT,
     });
 
-    const adminUserIds = await this.loadDialogAdminUserIds(chatId);
-    const messages = this.applyDialogAuthorRoles(
-      await this.enrichDialogMessagesWithAuthorAvatars(
-        chatId,
-        rows
-          .slice()
-          .reverse()
-          .map((row) => this.mapChannelDialogAuditLog(row, dialogType)),
-      ),
-      adminUserIds,
+    const messages = await this.enrichDialogMessagesWithAuthorAvatars(
+      chatId,
+      rows
+        .slice()
+        .reverse()
+        .map((row) => this.mapChannelDialogAuditLog(row, dialogType)),
     );
 
     return channelDialogResponseSchema.parse({
@@ -1676,8 +1666,6 @@ export class AdminService {
 
     let delivered = true;
     let deliveredToUserId: string | null = null;
-    const adminUserIds = await this.loadDialogAdminUserIds(chatId);
-    const authorRole = this.isDialogAdminAuthor(adminUserIds, user.userId) ? 'admin' : 'member';
     if (dialogType === 'suggest') {
       const delivery = await this.deliverSuggestionToAdminPrivate(chatId, user, text);
       delivered = delivery.delivered;
@@ -1709,10 +1697,8 @@ export class AdminService {
       text,
       authorUserId: user.userId,
       authorDisplayName: authorDisplayName ?? null,
-      authorRole,
       avatarUrl: authorAvatarUrl ?? null,
       createdAt: created.createdAt.toISOString(),
-      reactions: [],
       ...(dialogType === 'suggest'
         ? {
             delivered,
@@ -1767,16 +1753,12 @@ export class AdminService {
       take: CHANNEL_DIALOG_MESSAGES_LIMIT,
     });
 
-    const adminUserIds = await this.loadDialogAdminUserIds(chatId);
-    const messages = this.applyDialogAuthorRoles(
-      await this.enrichDialogMessagesWithAuthorAvatars(
-        chatId,
-        rows
-          .slice()
-          .reverse()
-          .map((row) => this.mapChannelDialogAuditLog(row, dialogType)),
-      ),
-      adminUserIds,
+    const messages = await this.enrichDialogMessagesWithAuthorAvatars(
+      chatId,
+      rows
+        .slice()
+        .reverse()
+        .map((row) => this.mapChannelDialogAuditLog(row, dialogType)),
     );
 
     return channelDialogResponseSchema.parse({
@@ -1808,8 +1790,6 @@ export class AdminService {
     const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
     const authorAvatarUrl = this.readTrimmedString(user.avatarUrl);
     const chatSettings = await this.getPublicChatCommentSettings(chatId);
-    const adminUserIds = await this.loadDialogAdminUserIds(chatId);
-    const authorRole = this.isDialogAdminAuthor(adminUserIds, user.userId) ? 'admin' : 'member';
 
     if (!chatSettings.commentsEnabled) {
       throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
@@ -1839,10 +1819,8 @@ export class AdminService {
       text,
       authorUserId: user.userId,
       authorDisplayName: authorDisplayName ?? null,
-      authorRole,
       avatarUrl: authorAvatarUrl ?? null,
       createdAt: created.createdAt.toISOString(),
-      reactions: [],
     };
 
     if (threadId) {
@@ -5543,17 +5521,11 @@ export class AdminService {
     const membershipSource = membershipRows[0] ?? { joined_users: 0, left_users: 0 };
     const joinedUsers = this.toSafeInteger(membershipSource.joined_users);
     const leftUsers = this.toSafeInteger(membershipSource.left_users);
-    const activityFeed = await this.getMembershipActivityFeedPage(
-      chatId,
-      from,
-      now,
-      {
-        range: parsed.data.range,
-        filter: 'all',
-        limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
-      },
-      'chat',
-    );
+    const activityFeed = await this.getMembershipActivityFeedPage(chatId, from, now, {
+      range: parsed.data.range,
+      filter: 'all',
+      limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
+    }, 'chat');
     const response: LogsDashboardResponse = {
       chat: {
         id: chatId,
@@ -7062,10 +7034,8 @@ export class AdminService {
       text,
       authorUserId: row.actorUserId,
       authorDisplayName,
-      authorRole: 'member',
       avatarUrl: avatarUrl ?? null,
       createdAt: row.createdAt.toISOString(),
-      reactions: [],
       ...(type === 'suggest' ? { delivered, deliveredToUserId: deliveredToUserId ?? null } : {}),
     };
   }
@@ -7112,73 +7082,6 @@ export class AdminService {
         'Failed to enrich dialog messages with author avatars',
       );
       return messages;
-    }
-  }
-
-  private applyDialogAuthorRoles(
-    messages: ChannelDialogMessage[],
-    adminUserIds: ReadonlySet<string>,
-  ): ChannelDialogMessage[] {
-    if (messages.length === 0) {
-      return messages;
-    }
-
-    return messages.map((message) => ({
-      ...message,
-      authorRole: this.isDialogAdminAuthor(adminUserIds, message.authorUserId) ? 'admin' : 'member',
-    }));
-  }
-
-  private isDialogAdminAuthor(adminUserIds: ReadonlySet<string>, userId: string): boolean {
-    const normalizedUserId = userId.trim();
-    return normalizedUserId.length > 0 && adminUserIds.has(normalizedUserId);
-  }
-
-  private async loadDialogAdminUserIds(chatId: string): Promise<Set<string>> {
-    try {
-      const chat = await this.prisma.chat.findUnique({
-        where: { id: chatId },
-        select: {
-          admins: {
-            select: {
-              userId: true,
-            },
-          },
-        },
-      });
-      const localIds = new Set(
-        (chat?.admins ?? [])
-          .map((item) => item.userId.trim())
-          .filter((item): item is string => item.length > 0),
-      );
-      if (localIds.size > 0) {
-        return localIds;
-      }
-    } catch (error) {
-      this.logger.warn(
-        {
-          chatId,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to load local admin ids for dialog highlighting',
-      );
-    }
-
-    try {
-      return new Set(
-        (await this.maxClient.getChatAdminIds(chatId))
-          .map((item) => item.trim())
-          .filter((item): item is string => item.length > 0),
-      );
-    } catch (error) {
-      this.logger.warn(
-        {
-          chatId,
-          error: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to load remote admin ids for dialog highlighting',
-      );
-      return new Set();
     }
   }
 

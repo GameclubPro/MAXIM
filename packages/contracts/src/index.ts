@@ -1739,26 +1739,14 @@ export type CreateChannelDialogMessageRequest = z.infer<
   typeof createChannelDialogMessageRequestSchema
 >;
 
-export const channelDialogReactionSchema = z.object({
-  emoji: z.string().min(1),
-  count: z.number().int().min(1),
-  active: z.boolean().optional(),
-});
-export type ChannelDialogReaction = z.infer<typeof channelDialogReactionSchema>;
-
-export const channelDialogAuthorRoleSchema = z.enum(['member', 'admin']).default('member');
-export type ChannelDialogAuthorRole = z.infer<typeof channelDialogAuthorRoleSchema>;
-
 export const channelDialogMessageSchema = z.object({
   id: z.string(),
   type: channelDialogTypeSchema,
   text: z.string(),
   authorUserId: z.string(),
   authorDisplayName: z.string().nullable(),
-  authorRole: channelDialogAuthorRoleSchema,
   avatarUrl: z.string().trim().url().nullable().default(null),
   createdAt: z.string().datetime(),
-  reactions: z.array(channelDialogReactionSchema).default([]),
   delivered: z.boolean().optional(),
   deliveredToUserId: z.string().nullable().optional(),
 });
