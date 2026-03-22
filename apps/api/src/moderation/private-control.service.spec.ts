@@ -930,7 +930,7 @@ describe('PrivateControlService', () => {
     expect(getLastUiText(maxClient)).toContain('Панель чата');
   });
 
-  it('opens chat home, settings hub, and toggles a section setting via callback edit', async () => {
+  it('redirects settings callbacks to mini app instead of editing inline', async () => {
     const { service, maxClient, adminService, chats } = createHarness({
       settings: {
         ...defaultSettings,
@@ -940,16 +940,16 @@ describe('PrivateControlService', () => {
 
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_settings_hub'));
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_section|greeting'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|toggle|greeting|greetingEnabled'));
 
-    expect(getLastEditedText(maxClient)).toContain('Приветствие');
-    expect(adminService.updateSettings).toHaveBeenCalledWith(
-      chats[0].id,
-      expect.objectContaining({ userId: 'user-1' }),
-      expect.objectContaining({ greetingEnabled: true }),
-      'private_bot',
-    );
+    expect(getLastEditedText(maxClient)).toContain('Настройки перенесены в mini app');
+    expect(getLastEditedText(maxClient)).toContain('inline-кнопками');
+    expect(
+      getLastEditedButtons(maxClient)
+        .flat()
+        .map((button) => String((button as { text?: string }).text ?? '')),
+    ).toContain('Открыть управление');
+    expect(adminService.updateSettings).not.toHaveBeenCalled();
   });
 
   it('treats /legacy and /modern as aliases for the current interface', async () => {
@@ -978,8 +978,8 @@ describe('PrivateControlService', () => {
     );
   });
 
-  it('updates bounded number settings through callback presets and stepper buttons', async () => {
-    const { service, adminService, chats } = createHarness({
+  it('redirects stale numeric settings callbacks to mini app', async () => {
+    const { service, maxClient, adminService, chats } = createHarness({
       settings: {
         ...defaultSettings,
         duplicateWarnMaxCount: 2,
@@ -996,34 +996,19 @@ describe('PrivateControlService', () => {
       createPrivateCallbackUpdate('pc2|step_number|duplicates|banDurationHours|1'),
     );
 
-    expect(adminService.updateSettings).toHaveBeenNthCalledWith(
-      1,
-      chats[0].id,
-      expect.objectContaining({ userId: 'user-1' }),
-      expect.objectContaining({ duplicateWarnMaxCount: 5 }),
-      'private_bot',
-    );
-    expect(adminService.updateSettings).toHaveBeenNthCalledWith(
-      2,
-      chats[0].id,
-      expect.objectContaining({ userId: 'user-1' }),
-      expect.objectContaining({ banDurationHours: 7 }),
-      'private_bot',
-    );
+    expect(getLastEditedText(maxClient)).toContain('Настройки перенесены в mini app');
+    expect(adminService.updateSettings).not.toHaveBeenCalled();
   });
 
-  it('supports search results with return through history stack', async () => {
+  it('redirects search callbacks to mini app', async () => {
     const { service, maxClient, chats } = createHarness();
 
     await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_settings_hub'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_search'));
-    await service.handleUpdate(createPrivateTextUpdate('привет'));
 
-    expect(getLastSentText(maxClient)).toContain('Результаты поиска');
-
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|back'));
-    expect(getLastEditedText(maxClient)).toContain('Разделы настроек');
+    expect(getLastEditedText(maxClient)).toContain('Настройки перенесены в mini app');
+    expect(getLastEditedText(maxClient)).toContain('rich-сценарии');
   });
 
   it('opens the rules screen from chat home', async () => {
