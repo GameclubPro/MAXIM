@@ -561,20 +561,41 @@ function buildPreviewAvatarDataUrl(label: string, startColor: string, endColor: 
   return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
 }
 
+function buildPreviewProfileUrl(handle: string): string {
+  return `https://max.ru/${encodeURIComponent(handle)}`;
+}
+
 function createActivityItems(
   prefix: string,
   names: string[],
   now: Date,
   offsetsHours: number[],
 ): MembershipActivityItem[] {
+  const avatarPalette = [
+    ['#4d94ff', '#2b64dd'],
+    ['#3cc58b', '#0f9f70'],
+    ['#f1a44b', '#ea7b4b'],
+    ['#7f7dff', '#5350da'],
+  ] as const;
+
   return offsetsHours
-    .map((offsetHours, index) => ({
-      id: `${prefix}-${index + 1}`,
-      type: (index % 3 === 1 ? 'left' : 'joined') as MembershipActivityItem['type'],
-      userId: `${prefix}-user-${index + 1}`,
-      userDisplayName: names[index % names.length] ?? `Участник ${index + 1}`,
-      createdAt: addHours(now, -offsetHours).toISOString(),
-    }))
+    .map((offsetHours, index) => {
+      const displayName = names[index % names.length] ?? `Участник ${index + 1}`;
+      const [startColor, endColor] = avatarPalette[index % avatarPalette.length] ?? [
+        '#4d94ff',
+        '#2b64dd',
+      ];
+
+      return {
+        id: `${prefix}-${index + 1}`,
+        type: (index % 3 === 1 ? 'left' : 'joined') as MembershipActivityItem['type'],
+        userId: `${prefix}-user-${index + 1}`,
+        userDisplayName: displayName,
+        avatarUrl: buildPreviewAvatarDataUrl(displayName, startColor, endColor),
+        profileUrl: buildPreviewProfileUrl(`${prefix}-profile-${index + 1}`),
+        createdAt: addHours(now, -offsetHours).toISOString(),
+      };
+    })
     .sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt));
 }
 
@@ -586,6 +607,8 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       ruleCode: 'COMMERCIAL_AD',
       userId: 'preview-spammer-1',
       userDisplayName: 'Сергей Маркет',
+      avatarUrl: buildPreviewAvatarDataUrl('Сергей Маркет', '#4d94ff', '#2b64dd'),
+      profileUrl: buildPreviewProfileUrl('sergey-market'),
       createdAt: addHours(now, -1.5).toISOString(),
       maskedExcerpt: 'Переходите по ссылке и получайте скидку ***',
       metadata: { banDurationHours: 24, unbanScheduledAt: addHours(now, 22.5).toISOString() },
@@ -596,6 +619,8 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       ruleCode: 'LINK_BLOCKED',
       userId: 'preview-spammer-2',
       userDisplayName: 'Мария Ссылкина',
+      avatarUrl: buildPreviewAvatarDataUrl('Мария Ссылкина', '#3cc58b', '#0f9f70'),
+      profileUrl: buildPreviewProfileUrl('maria-links'),
       createdAt: addHours(now, -3.2).toISOString(),
       maskedExcerpt: 'Подписывайтесь на мой канал ***',
       metadata: null,
@@ -606,6 +631,8 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       ruleCode: 'PROFANITY',
       userId: 'preview-user-3',
       userDisplayName: 'Антон',
+      avatarUrl: buildPreviewAvatarDataUrl('Антон', '#7f7dff', '#5350da'),
+      profileUrl: buildPreviewProfileUrl('anton-preview'),
       createdAt: addHours(now, -6.8).toISOString(),
       maskedExcerpt: 'Это было очень ***',
       metadata: null,
@@ -616,6 +643,8 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       ruleCode: 'GLOBAL_CROSS_CHAT_SPAM',
       userId: 'preview-user-4',
       userDisplayName: 'Инфо Буст',
+      avatarUrl: buildPreviewAvatarDataUrl('Инфо Буст', '#f1a44b', '#ea7b4b'),
+      profileUrl: buildPreviewProfileUrl('info-boost'),
       createdAt: addHours(now, -14.1).toISOString(),
       maskedExcerpt: 'Повторный оффер с внешней ссылкой ***',
       metadata: null,
@@ -626,6 +655,8 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       ruleCode: 'MESSAGE_TOO_LONG',
       userId: 'preview-user-5',
       userDisplayName: 'Юлия',
+      avatarUrl: buildPreviewAvatarDataUrl('Юлия', '#ff82a8', '#eb577f'),
+      profileUrl: buildPreviewProfileUrl('yulia-preview'),
       createdAt: addHours(now, -27).toISOString(),
       maskedExcerpt: 'Очень длинное сообщение ***',
       metadata: null,
@@ -636,6 +667,8 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       ruleCode: 'DUPLICATE_BAN',
       userId: 'preview-user-6',
       userDisplayName: 'Олег Повтор',
+      avatarUrl: buildPreviewAvatarDataUrl('Олег Повтор', '#7db8ff', '#4d89ff'),
+      profileUrl: buildPreviewProfileUrl('oleg-repeat'),
       createdAt: addHours(now, -42).toISOString(),
       maskedExcerpt: 'Одинаковый текст ***',
       metadata: { banDurationHours: 12, unbanScheduledAt: addHours(now, -30).toISOString() },
@@ -646,6 +679,8 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       ruleCode: 'NIGHT_MODE_DELETE',
       userId: 'preview-user-7',
       userDisplayName: 'Ночной гость',
+      avatarUrl: buildPreviewAvatarDataUrl('Ночной гость', '#485a7b', '#22344f'),
+      profileUrl: buildPreviewProfileUrl('night-guest'),
       createdAt: addHours(now, -73).toISOString(),
       maskedExcerpt: 'Сообщение ночью ***',
       metadata: null,
@@ -656,6 +691,8 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       ruleCode: 'THEMATIC_FILTER',
       userId: 'preview-user-8',
       userDisplayName: 'Павел',
+      avatarUrl: buildPreviewAvatarDataUrl('Павел', '#5ab7b5', '#1b7f8a'),
+      profileUrl: buildPreviewProfileUrl('pavel-preview'),
       createdAt: addHours(now, -110).toISOString(),
       maskedExcerpt: 'Не по теме ***',
       metadata: null,
@@ -666,6 +703,8 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       ruleCode: 'MANUAL_UNBAN',
       userId: 'preview-user-9',
       userDisplayName: 'Ольга',
+      avatarUrl: buildPreviewAvatarDataUrl('Ольга', '#f1a44b', '#ea7b4b'),
+      profileUrl: buildPreviewProfileUrl('olga-preview'),
       createdAt: addHours(now, -180).toISOString(),
       maskedExcerpt: null,
       metadata: null,
@@ -676,6 +715,8 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       ruleCode: 'MANUAL_KICK',
       userId: 'preview-user-10',
       userDisplayName: 'Андрей',
+      avatarUrl: buildPreviewAvatarDataUrl('Андрей', '#4d94ff', '#2b64dd'),
+      profileUrl: buildPreviewProfileUrl('andrey-preview'),
       createdAt: addHours(now, -220).toISOString(),
       maskedExcerpt: null,
       metadata: null,
@@ -1521,7 +1562,7 @@ function createModerationResult(
 
 function createManualViolation(
   userId: string,
-  displayName: string,
+  user: { displayName: string; avatarUrl: string | null; profileUrl: string | null },
   payload: ManualModerationActionRequest,
 ): LogsDashboardResponse['violations'][number] {
   const now = new Date();
@@ -1532,7 +1573,9 @@ function createManualViolation(
       action: 'NONE',
       ruleCode: 'MANUAL_UNBAN',
       userId,
-      userDisplayName: displayName,
+      userDisplayName: user.displayName,
+      avatarUrl: user.avatarUrl,
+      profileUrl: user.profileUrl,
       createdAt: now.toISOString(),
       maskedExcerpt: null,
       metadata: null,
@@ -1545,7 +1588,9 @@ function createManualViolation(
       action: 'KICK',
       ruleCode: 'MANUAL_KICK',
       userId,
-      userDisplayName: displayName,
+      userDisplayName: user.displayName,
+      avatarUrl: user.avatarUrl,
+      profileUrl: user.profileUrl,
       createdAt: now.toISOString(),
       maskedExcerpt: null,
       metadata: null,
@@ -1557,7 +1602,9 @@ function createManualViolation(
     action: 'BAN',
     ruleCode: 'MANUAL_BAN',
     userId,
-    userDisplayName: displayName,
+    userDisplayName: user.displayName,
+    avatarUrl: user.avatarUrl,
+    profileUrl: user.profileUrl,
     createdAt: now.toISOString(),
     maskedExcerpt: null,
     metadata: {
@@ -1567,12 +1614,19 @@ function createManualViolation(
   };
 }
 
-function resolveDisplayName(state: PreviewState, userId: string): string {
-  const fromActivity =
-    state.chatActivity.find((item) => item.userId === userId)?.userDisplayName ??
-    state.chatViolations.find((item) => item.userId === userId)?.userDisplayName;
+function resolvePreviewUser(
+  state: PreviewState,
+  userId: string,
+): { displayName: string; avatarUrl: string | null; profileUrl: string | null } {
+  const fromActivity = state.chatActivity.find((item) => item.userId === userId) ?? null;
+  const fromViolation = state.chatViolations.find((item) => item.userId === userId) ?? null;
+  const snapshot = fromActivity ?? fromViolation;
 
-  return fromActivity?.trim() || 'Участник';
+  return {
+    displayName: snapshot?.userDisplayName?.trim() || 'Участник',
+    avatarUrl: snapshot?.avatarUrl ?? null,
+    profileUrl: snapshot?.profileUrl ?? null,
+  };
 }
 
 async function handleChatRequest(
@@ -2016,11 +2070,8 @@ async function handleChatRequest(
   if (tail[0] === 'members' && tail[1] && tail[2] === 'moderation-action' && method === 'POST') {
     const userId = decodeURIComponent(tail[1]);
     const payload = parseJsonBody(init) as ManualModerationActionRequest;
-    const displayName = resolveDisplayName(state, userId);
-    state.chatViolations = [
-      createManualViolation(userId, displayName, payload),
-      ...state.chatViolations,
-    ];
+    const user = resolvePreviewUser(state, userId);
+    state.chatViolations = [createManualViolation(userId, user, payload), ...state.chatViolations];
     return createModerationResult(userId, payload);
   }
 

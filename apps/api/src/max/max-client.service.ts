@@ -51,6 +51,7 @@ export type MaxWebhookSubscription = {
 export type MaxChatMemberProfile = {
   userId: string;
   displayName: string | null;
+  username: string | null;
   avatarUrl: string | null;
 };
 
@@ -342,7 +343,11 @@ export class MaxClientService implements OnModuleDestroy {
     text: string,
     options?: MaxSendMessageOptions,
   ): Promise<MaxPublishedMessage> {
-    const { messageId, url: directUrl } = await this.sendMessageImmediateWithId(chatId, text, options);
+    const { messageId, url: directUrl } = await this.sendMessageImmediateWithId(
+      chatId,
+      text,
+      options,
+    );
     if (directUrl) {
       return { messageId, url: directUrl };
     }
@@ -997,9 +1002,7 @@ export class MaxClientService implements OnModuleDestroy {
   ): Promise<Map<string, MaxChatMemberProfile>> {
     const normalizedUserIds = Array.from(
       new Set(
-        userIds
-          .map((value) => value.trim())
-          .filter((value): value is string => value.length > 0),
+        userIds.map((value) => value.trim()).filter((value): value is string => value.length > 0),
       ),
     );
     if (normalizedUserIds.length === 0) {
@@ -1208,6 +1211,7 @@ export class MaxClientService implements OnModuleDestroy {
           nestedUser?.displayName ??
           nestedUser?.name,
       ),
+      username: this.readTrimmedString(row.username ?? nestedUser?.username),
       avatarUrl: this.readTrimmedString(
         row.full_avatar_url ??
           row.fullAvatarUrl ??

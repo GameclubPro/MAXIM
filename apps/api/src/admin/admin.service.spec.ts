@@ -276,12 +276,18 @@ function wireManagedBroadcastDeliveryStore(prisma: ReturnType<typeof createPrism
       if (where.remoteMessageId === null && delivery.remoteMessageId !== null) {
         return false;
       }
-      if (typeof where.remoteMessageId === 'string' && delivery.remoteMessageId !== where.remoteMessageId) {
+      if (
+        typeof where.remoteMessageId === 'string' &&
+        delivery.remoteMessageId !== where.remoteMessageId
+      ) {
         return false;
       }
       if (where.remoteMessageId && typeof where.remoteMessageId === 'object') {
         const remoteMessageIdFilter = where.remoteMessageId as { not?: string | null };
-        if ('not' in remoteMessageIdFilter && delivery.remoteMessageId === remoteMessageIdFilter.not) {
+        if (
+          'not' in remoteMessageIdFilter &&
+          delivery.remoteMessageId === remoteMessageIdFilter.not
+        ) {
           return false;
         }
       }
@@ -1366,6 +1372,37 @@ describe('AdminService.getLogsDashboard', () => {
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatMemberProfiles: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'user-1',
+            {
+              userId: 'user-1',
+              displayName: 'Алексей',
+              username: 'aleksey',
+              avatarUrl: 'https://cdn.max.ru/u/1/avatar-full.jpg',
+            },
+          ],
+          [
+            'user-2',
+            {
+              userId: 'user-2',
+              displayName: 'Мария',
+              username: 'maria',
+              avatarUrl: 'https://cdn.max.ru/u/2/avatar-full.jpg',
+            },
+          ],
+          [
+            'user-3',
+            {
+              userId: 'user-3',
+              displayName: 'Ирина',
+              username: 'irina',
+              avatarUrl: 'https://cdn.max.ru/u/3/avatar-full.jpg',
+            },
+          ],
+        ]),
+      ),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -1402,7 +1439,11 @@ describe('AdminService.getLogsDashboard', () => {
     });
     expect(result.violations).toHaveLength(3);
     expect(result.violations[0]?.userDisplayName).toBe('Алексей');
+    expect(result.violations[0]?.avatarUrl).toBe('https://cdn.max.ru/u/1/avatar-full.jpg');
+    expect(result.violations[0]?.profileUrl).toBe('https://max.ru/aleksey');
     expect(result.violations[1]?.userDisplayName).toBe('Мария');
+    expect(result.violations[1]?.avatarUrl).toBe('https://cdn.max.ru/u/2/avatar-full.jpg');
+    expect(result.violations[1]?.profileUrl).toBe('https://max.ru/maria');
     expect(result.violations[2]?.ruleCode).toBe('MANUAL_UNBAN');
     expect(result.activityFeed).toEqual({
       items: [
@@ -1411,6 +1452,8 @@ describe('AdminService.getLogsDashboard', () => {
           type: 'joined',
           userId: 'user-3',
           userDisplayName: 'Ирина',
+          avatarUrl: 'https://cdn.max.ru/u/3/avatar-full.jpg',
+          profileUrl: 'https://max.ru/irina',
           createdAt: '2026-03-02T10:00:00.000Z',
         },
         {
@@ -1418,6 +1461,8 @@ describe('AdminService.getLogsDashboard', () => {
           type: 'left',
           userId: 'user-2',
           userDisplayName: 'Мария',
+          avatarUrl: 'https://cdn.max.ru/u/2/avatar-full.jpg',
+          profileUrl: 'https://max.ru/maria',
           createdAt: '2026-03-02T09:30:00.000Z',
         },
       ],
@@ -1527,6 +1572,28 @@ describe('AdminService.getChatActivityFeed', () => {
 
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatMemberProfiles: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'user-4',
+            {
+              userId: 'user-4',
+              displayName: 'Мария',
+              username: 'maria',
+              avatarUrl: 'https://cdn.max.ru/u/4/avatar-full.jpg',
+            },
+          ],
+          [
+            'user-5',
+            {
+              userId: 'user-5',
+              displayName: 'Игорь',
+              username: null,
+              avatarUrl: 'https://cdn.max.ru/u/5/avatar-full.jpg',
+            },
+          ],
+        ]),
+      ),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -1556,6 +1623,8 @@ describe('AdminService.getChatActivityFeed', () => {
         type: 'left',
         userId: 'user-5',
         userDisplayName: 'Игорь',
+        avatarUrl: 'https://cdn.max.ru/u/5/avatar-full.jpg',
+        profileUrl: null,
         createdAt: '2026-03-02T11:00:00.000Z',
       },
     ]);
@@ -1580,6 +1649,8 @@ describe('AdminService.getChatActivityFeed', () => {
           type: 'left',
           userId: 'user-4',
           userDisplayName: 'Мария',
+          avatarUrl: 'https://cdn.max.ru/u/4/avatar-full.jpg',
+          profileUrl: 'https://max.ru/maria',
           createdAt: '2026-03-02T10:00:00.000Z',
         },
       ],
@@ -2450,6 +2521,28 @@ describe('AdminService.getChannelStats', () => {
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       getChatSnapshot: jest.fn(),
+      getChatMemberProfiles: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'user-10',
+            {
+              userId: 'user-10',
+              displayName: 'Андрей',
+              username: 'andrey',
+              avatarUrl: 'https://cdn.max.ru/u/10/avatar-full.jpg',
+            },
+          ],
+          [
+            'user-11',
+            {
+              userId: 'user-11',
+              displayName: 'Елена',
+              username: null,
+              avatarUrl: 'https://cdn.max.ru/u/11/avatar-full.jpg',
+            },
+          ],
+        ]),
+      ),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -2532,6 +2625,8 @@ describe('AdminService.getChannelStats', () => {
           type: 'joined',
           userId: 'user-10',
           userDisplayName: 'Андрей',
+          avatarUrl: 'https://cdn.max.ru/u/10/avatar-full.jpg',
+          profileUrl: 'https://max.ru/andrey',
           createdAt: '2026-03-07T11:40:00.000Z',
         },
         {
@@ -2539,6 +2634,8 @@ describe('AdminService.getChannelStats', () => {
           type: 'left',
           userId: 'user-11',
           userDisplayName: 'Елена',
+          avatarUrl: 'https://cdn.max.ru/u/11/avatar-full.jpg',
+          profileUrl: null,
           createdAt: '2026-03-07T10:15:00.000Z',
         },
       ],
@@ -2713,6 +2810,19 @@ describe('AdminService.getChannelStats', () => {
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       getChatSnapshot: jest.fn().mockRejectedValue(new Error('MAX unavailable')),
+      getChatMemberProfiles: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'user-42',
+            {
+              userId: 'user-42',
+              displayName: 'Павел',
+              username: 'pavel',
+              avatarUrl: 'https://cdn.max.ru/u/42/avatar-full.jpg',
+            },
+          ],
+        ]),
+      ),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -2766,6 +2876,8 @@ describe('AdminService.getChannelStats', () => {
       type: 'joined',
       userId: 'user-42',
       userDisplayName: 'Павел',
+      avatarUrl: 'https://cdn.max.ru/u/42/avatar-full.jpg',
+      profileUrl: 'https://max.ru/pavel',
       createdAt: '2026-03-07T09:30:00.000Z',
     });
   });
@@ -3245,7 +3357,11 @@ describe('AdminService.sendBroadcast', () => {
     );
 
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith('chat-1', 'Напоминание', undefined);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      'chat-1',
+      'Напоминание',
+      undefined,
+    );
     expect(prisma.managedBroadcast.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -3368,7 +3484,10 @@ describe('AdminService.sendBroadcast', () => {
         if (chatId === 'chat-2' && shouldFailSecondChat) {
           throw new Error('MAX send failed');
         }
-        return { messageId: `mid-${chatId}-${shouldFailSecondChat ? 'first' : 'retry'}`, url: null };
+        return {
+          messageId: `mid-${chatId}-${shouldFailSecondChat ? 'first' : 'retry'}`,
+          url: null,
+        };
       }),
     };
     const chatContextCache = {

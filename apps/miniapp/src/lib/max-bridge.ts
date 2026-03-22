@@ -18,14 +18,7 @@ function parseMaxUrl(url: string): URL | null {
 }
 
 function isMaxDeepLink(url: URL): boolean {
-  return (
-    url.protocol === 'https:' &&
-    (url.hostname === 'max.ru' || url.hostname === 'www.max.ru')
-  );
-}
-
-function isMaxMiniAppLink(url: URL): boolean {
-  return isMaxDeepLink(url) && url.searchParams.has('startapp');
+  return url.protocol === 'https:' && (url.hostname === 'max.ru' || url.hostname === 'www.max.ru');
 }
 
 export function readyMaxMiniApp(): void {
@@ -50,7 +43,7 @@ export function openMaxBotLink(url: string): void {
 
   const bridge = resolveBridge();
   const parsed = parseMaxUrl(normalizedUrl);
-  if (parsed && isMaxMiniAppLink(parsed)) {
+  if (parsed && isMaxDeepLink(parsed)) {
     if (typeof bridge?.openMaxLink === 'function') {
       bridge.openMaxLink(normalizedUrl);
       return;

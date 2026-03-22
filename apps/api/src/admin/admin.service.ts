@@ -110,9 +110,7 @@ import {
   normalizeManagedPollDraft,
   validateManagedPollForPublish,
 } from '../common/managed-poll.util';
-import {
-  renderSupportedMarkdownAsHtml,
-} from '../common/max-markdown.util';
+import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
@@ -141,6 +139,12 @@ type AdminAccessResolution =
     };
 
 export type AdminActionSource = 'miniapp' | 'private_bot';
+
+type ResolvedUserProfile = {
+  displayName: string | null;
+  avatarUrl: string | null;
+  profileUrl: string | null;
+};
 
 type PreparedManagedBroadcastRequest = {
   payload: SendBroadcastRequest;
@@ -1107,14 +1111,10 @@ export class AdminService {
 
     let published: { messageId: string; url: string | null };
     try {
-      published = await this.publishRulesMessageWithRetry(
-        chatId,
-        messageText,
-        {
-          textFormat: 'markdown',
-          ...(imagePayload ? { imagePayload } : {}),
-        },
-      );
+      published = await this.publishRulesMessageWithRetry(chatId, messageText, {
+        textFormat: 'markdown',
+        ...(imagePayload ? { imagePayload } : {}),
+      });
     } catch (error: unknown) {
       const maxApiMessage = this.extractMaxApiErrorMessage(error);
       throw new BadRequestException(maxApiMessage || 'Не удалось опубликовать правила.');
@@ -1710,12 +1710,7 @@ export class AdminService {
     });
   }
 
-  async getChatDialog(
-    chatId: string,
-    user: AuthUser,
-    dialogTypeRaw: string,
-    token: string | null,
-  ) {
+  async getChatDialog(chatId: string, user: AuthUser, dialogTypeRaw: string, token: string | null) {
     const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
     if (dialogType !== 'comments') {
       throw new BadRequestException('Для чатов доступен только сценарий комментариев.');
@@ -2085,7 +2080,9 @@ export class AdminService {
     );
   }
 
-  private async resolveRequiredSubscriptionChannelById(chatId: string): Promise<ManagedEntityHeader> {
+  private async resolveRequiredSubscriptionChannelById(
+    chatId: string,
+  ): Promise<ManagedEntityHeader> {
     const normalizedChatId = chatId.trim();
     if (!normalizedChatId) {
       throw new BadRequestException('Укажите корректный ID канала.');
@@ -2176,7 +2173,9 @@ export class AdminService {
     }
   }
 
-  private normalizeRequiredSubscriptionChannelLink(value: string | null | undefined): string | null {
+  private normalizeRequiredSubscriptionChannelLink(
+    value: string | null | undefined,
+  ): string | null {
     if (typeof value !== 'string') {
       return null;
     }
@@ -2739,7 +2738,9 @@ export class AdminService {
       ]);
     } catch (error: unknown) {
       if (this.isManagedBroadcastSlotConflictError(error)) {
-        throw new BadRequestException('Некоторые слоты уже заняты другой рассылкой. Обновите календарь.');
+        throw new BadRequestException(
+          'Некоторые слоты уже заняты другой рассылкой. Обновите календарь.',
+        );
       }
       throw error;
     }
@@ -3319,7 +3320,9 @@ export class AdminService {
     } catch (error: unknown) {
       await this.safeDeleteManagedBroadcast(created.id);
       if (this.isManagedBroadcastSlotConflictError(error)) {
-        throw new BadRequestException('Некоторые слоты уже заняты другой рассылкой. Обновите календарь.');
+        throw new BadRequestException(
+          'Некоторые слоты уже заняты другой рассылкой. Обновите календарь.',
+        );
       }
       throw error;
     }
@@ -4522,7 +4525,11 @@ export class AdminService {
         return published.messageId;
       } catch (error: unknown) {
         lastError = error;
-        if (!options?.imagePayload || !this.isAttachmentNotReadyError(error) || attempt >= attempts) {
+        if (
+          !options?.imagePayload ||
+          !this.isAttachmentNotReadyError(error) ||
+          attempt >= attempts
+        ) {
           throw error;
         }
         const delayMs = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS[attempt - 1] ?? 1_500;
@@ -5494,7 +5501,7 @@ export class AdminService {
         take: LOGS_DASHBOARD_VIOLATIONS_LIMIT,
       }),
     ]);
-    const userDisplayNames = await this.resolveUserDisplayNames(
+    const userProfiles = await this.resolveUserProfiles(
       chatId,
       violationRows.map((row) => row.userId),
     );
@@ -5531,19 +5538,25 @@ export class AdminService {
         affectedUsers: affectedUsers.length,
         total: warnCount + deleteMessageCount + kickCount + banCount + unbanCount,
       },
-      violations: violationRows.map((row) => ({
-        id: row.id,
-        action: row.action,
-        ruleCode: row.ruleCode,
-        userId: row.userId,
-        userDisplayName: userDisplayNames.get(row.userId) ?? null,
-        createdAt: row.createdAt.toISOString(),
-        maskedExcerpt: row.maskedExcerpt,
-        metadata:
-          row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
-            ? (row.metadata as Record<string, unknown>)
-            : null,
-      })),
+      violations: violationRows.map((row) => {
+        const userProfile = userProfiles.get(row.userId);
+
+        return {
+          id: row.id,
+          action: row.action,
+          ruleCode: row.ruleCode,
+          userId: row.userId,
+          userDisplayName: userProfile?.displayName ?? null,
+          avatarUrl: userProfile?.avatarUrl ?? null,
+          profileUrl: userProfile?.profileUrl ?? null,
+          createdAt: row.createdAt.toISOString(),
+          maskedExcerpt: row.maskedExcerpt,
+          metadata:
+            row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
+              ? (row.metadata as Record<string, unknown>)
+              : null,
+        };
+      }),
       activityFeed,
     };
 
@@ -6167,11 +6180,12 @@ export class AdminService {
     `;
 
     const pageRows = rows.slice(0, limit);
-    const missingUserIds = pageRows
-      .filter((row) => !row.sender_name)
-      .map((row) => (typeof row.user_id === 'string' ? row.user_id.trim() : ''))
-      .filter(Boolean);
-    const fallbackNames = await this.resolveUserDisplayNames(chatId, missingUserIds);
+    const userProfiles = await this.resolveUserProfiles(
+      chatId,
+      pageRows
+        .map((row) => (typeof row.user_id === 'string' ? row.user_id.trim() : ''))
+        .filter(Boolean),
+    );
     const items = pageRows
       .map((row) => {
         const createdAt = this.toIsoString(row.created_at);
@@ -6185,13 +6199,16 @@ export class AdminService {
             : `unknown:${row.id}`;
         const eventType = row.event_type === 'user_removed' ? 'left' : 'joined';
         const directName = typeof row.sender_name === 'string' ? row.sender_name.trim() : '';
-        const userDisplayName = directName || fallbackNames.get(normalizedUserId) || 'Участник';
+        const userProfile = userProfiles.get(normalizedUserId);
+        const userDisplayName = directName || userProfile?.displayName || 'Участник';
 
         return {
           id: row.id,
           type: eventType,
           userId: normalizedUserId,
           userDisplayName,
+          avatarUrl: userProfile?.avatarUrl ?? null,
+          profileUrl: userProfile?.profileUrl ?? null,
           createdAt,
         };
       })
@@ -6203,6 +6220,8 @@ export class AdminService {
           type: 'joined' | 'left';
           userId: string;
           userDisplayName: string;
+          avatarUrl: string | null;
+          profileUrl: string | null;
           createdAt: string;
         } => item !== null,
       );
@@ -6506,7 +6525,7 @@ export class AdminService {
     `;
 
     const byUserId = new Map<string, string>();
-    for (const row of rows) {
+    for (const row of Array.isArray(rows) ? rows : []) {
       const userId = typeof row.user_id === 'string' ? row.user_id.trim() : '';
       const senderName = typeof row.sender_name === 'string' ? row.sender_name.trim() : '';
       if (!userId || !senderName || byUserId.has(userId)) {
@@ -6516,6 +6535,61 @@ export class AdminService {
     }
 
     return byUserId;
+  }
+
+  private async resolveUserProfiles(
+    chatId: string,
+    userIds: readonly string[],
+  ): Promise<Map<string, ResolvedUserProfile>> {
+    const normalizedUserIds = [...new Set(userIds.map((item) => item.trim()).filter(Boolean))];
+    if (normalizedUserIds.length === 0) {
+      return new Map();
+    }
+
+    const displayNames = await this.resolveUserDisplayNames(chatId, normalizedUserIds);
+    let chatMemberProfiles = new Map<
+      string,
+      { displayName: string | null; username: string | null; avatarUrl: string | null }
+    >();
+
+    const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
+    if (loadProfiles) {
+      try {
+        chatMemberProfiles = await loadProfiles(chatId, normalizedUserIds);
+      } catch (error) {
+        this.logger.warn(
+          {
+            chatId,
+            userIds: normalizedUserIds,
+            error: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to resolve chat member profiles',
+        );
+      }
+    }
+
+    const profiles = new Map<string, ResolvedUserProfile>();
+    for (const userId of normalizedUserIds) {
+      const profile = chatMemberProfiles.get(userId);
+      const username = this.readTrimmedString(profile?.username);
+      profiles.set(userId, {
+        displayName:
+          displayNames.get(userId) ?? this.readTrimmedString(profile?.displayName) ?? null,
+        avatarUrl: this.readTrimmedString(profile?.avatarUrl) ?? null,
+        profileUrl: this.buildUserProfileUrl(username),
+      });
+    }
+
+    return profiles;
+  }
+
+  private buildUserProfileUrl(username: string | null): string | null {
+    const normalizedUsername = username?.replace(/^@+/u, '').trim() ?? '';
+    if (!normalizedUsername) {
+      return null;
+    }
+
+    return `https://max.ru/${encodeURIComponent(normalizedUsername)}`;
   }
 
   private activeDomainWhere(chatId: string) {
@@ -6766,7 +6840,9 @@ export class AdminService {
     }
 
     const parsed = chatSettingsSchema.safeParse(settings);
-    const normalized = parsed.success ? this.normalizeChatSettings(parsed.data) : DEFAULT_CHAT_SETTINGS;
+    const normalized = parsed.success
+      ? this.normalizeChatSettings(parsed.data)
+      : DEFAULT_CHAT_SETTINGS;
     return {
       commentsEnabled: normalized.commentsEnabled,
       commentsAdminsEnabled: normalized.commentsAdminsEnabled,
@@ -6776,10 +6852,7 @@ export class AdminService {
   }
 
   private shouldIncludeChatCommentsButton(
-    settings: Pick<
-      ChatSettings,
-      'commentsEnabled' | 'commentsChatBroadcastsEnabled'
-    >,
+    settings: Pick<ChatSettings, 'commentsEnabled' | 'commentsChatBroadcastsEnabled'>,
   ): boolean {
     return settings.commentsEnabled && settings.commentsChatBroadcastsEnabled;
   }
@@ -7160,7 +7233,9 @@ export class AdminService {
         continue;
       }
 
-      const messageId = this.resolveChatCommentsTargetMessageId(this.readObjectPayload(row.payload));
+      const messageId = this.resolveChatCommentsTargetMessageId(
+        this.readObjectPayload(row.payload),
+      );
       if (!messageId) {
         continue;
       }
@@ -7417,7 +7492,9 @@ export class AdminService {
     type: ChannelDialogType,
     threadId: string,
   ): string | null {
-    return this.buildMiniappStartUrl(this.buildEntityDialogStartParam(entityType, chatId, type, threadId));
+    return this.buildMiniappStartUrl(
+      this.buildEntityDialogStartParam(entityType, chatId, type, threadId),
+    );
   }
 
   private buildEntityDialogDirectWebAppUrl(

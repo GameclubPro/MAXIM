@@ -6,7 +6,7 @@ import type {
   MembershipActivityPage,
 } from '@maxim/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { type KeyboardEvent, type MouseEvent, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
 import { BackChevronIcon } from '../components/ui/entity-header-icons';
@@ -23,6 +23,7 @@ import { getChats } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
+import { openMaxBotLink } from '../lib/max-bridge';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 
@@ -169,6 +170,38 @@ function resolveOffenderName(violation: ViolationItem): string {
 function resolveOffenderInitial(name: string): string {
   const matched = name.match(/[A-Za-zА-Яа-яЁё0-9]/);
   return matched ? matched[0]!.toUpperCase() : '•';
+}
+
+function resolveOffenderAvatarUrl(violation: ViolationItem): string | null {
+  const normalized = violation.avatarUrl?.trim() ?? '';
+  return normalized || null;
+}
+
+function resolveOffenderProfileUrl(violation: ViolationItem): string | null {
+  const normalized = violation.profileUrl?.trim() ?? '';
+  return normalized || null;
+}
+
+function handleProfileLinkClick(event: MouseEvent<HTMLAnchorElement>, profileUrl: string): void {
+  event.preventDefault();
+  event.stopPropagation();
+  openMaxBotLink(profileUrl);
+}
+
+function handleExpandableCardKeyDown(
+  event: KeyboardEvent<HTMLDivElement>,
+  onToggle: () => void,
+): void {
+  if (event.key !== 'Enter' && event.key !== ' ') {
+    return;
+  }
+
+  if ((event.target as HTMLElement | null)?.closest('a')) {
+    return;
+  }
+
+  event.preventDefault();
+  onToggle();
 }
 
 function isManualUnban(violation: ViolationItem): boolean {
@@ -948,6 +981,13 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               {filteredViolations.map((violation, index) => {
                 const displayAction = resolveDisplayAction(violation);
                 const isExpanded = expandedViolationId === violation.id;
+                const displayName = resolveOffenderName(violation);
+                const avatarUrl = resolveOffenderAvatarUrl(violation);
+                const profileUrl = resolveOffenderProfileUrl(violation);
+                const toggleExpanded = () =>
+                  setExpandedViolationId((current) =>
+                    current === violation.id ? null : violation.id,
+                  );
 
                 return (
                   <article
@@ -957,24 +997,45 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                     } stagger-in`}
                     style={{ animationDelay: `${Math.min(index, 8) * 35}ms` }}
                   >
-                    <button
-                      type="button"
+                    <div
                       className="event-feed-item__trigger"
-                      onClick={() =>
-                        setExpandedViolationId((current) =>
-                          current === violation.id ? null : violation.id,
-                        )
-                      }
+                      role="button"
+                      tabIndex={0}
+                      onClick={(event) => {
+                        if ((event.target as HTMLElement | null)?.closest('a')) {
+                          return;
+                        }
+                        toggleExpanded();
+                      }}
+                      onKeyDown={(event) => handleExpandableCardKeyDown(event, toggleExpanded)}
                       aria-expanded={isExpanded}
                     >
-                      <span className="event-feed-item__avatar">
-                        {resolveOffenderInitial(resolveOffenderName(violation))}
+                      <span
+                        className={`event-feed-item__avatar ${
+                          avatarUrl ? 'event-feed-item__avatar--image' : ''
+                        }`}
+                      >
+                        {avatarUrl ? (
+                          <img src={avatarUrl} alt="" loading="lazy" />
+                        ) : (
+                          resolveOffenderInitial(displayName)
+                        )}
                       </span>
 
                       <div className="event-feed-item__body">
                         <div className="event-feed-item__headline">
                           <div className="event-feed-item__identity">
-                            <strong>{resolveOffenderName(violation)}</strong>
+                            {profileUrl ? (
+                              <a
+                                href={profileUrl}
+                                className="event-feed-item__name-link"
+                                onClick={(event) => handleProfileLinkClick(event, profileUrl)}
+                              >
+                                {displayName}
+                              </a>
+                            ) : (
+                              <strong>{displayName}</strong>
+                            )}
                             <div className="event-feed-item__stamp">
                               <span
                                 className={`event-feed-item__action event-feed-item__action--${actionToneMap[displayAction]}`}
@@ -996,7 +1057,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                           {resolveViolationBlurb(violation)}
                         </p>
                       </div>
-                    </button>
+                    </div>
 
                     {isExpanded ? (
                       <div className="event-feed-item__details">

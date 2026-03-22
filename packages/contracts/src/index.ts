@@ -1154,6 +1154,8 @@ export const membershipActivityItemSchema = z.object({
   type: z.enum(['joined', 'left']),
   userId: z.string(),
   userDisplayName: z.string().min(1),
+  avatarUrl: z.string().trim().url().nullable().default(null),
+  profileUrl: z.string().trim().url().nullable().default(null),
   createdAt: z.string().datetime(),
 });
 export type MembershipActivityItem = z.infer<typeof membershipActivityItemSchema>;
@@ -1271,6 +1273,8 @@ export const logsDashboardViolationSchema = z.object({
   ruleCode: z.string(),
   userId: z.string(),
   userDisplayName: z.string().nullable(),
+  avatarUrl: z.string().trim().url().nullable().default(null),
+  profileUrl: z.string().trim().url().nullable().default(null),
   createdAt: z.string().datetime(),
   maskedExcerpt: z.string().nullable(),
   metadata: z.record(z.unknown()).nullable().optional(),

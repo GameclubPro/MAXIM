@@ -1,5 +1,6 @@
 import type { MembershipActivityFilter, MembershipActivityItem } from '@maxim/contracts';
-import { useMemo } from 'react';
+import { type MouseEvent, useMemo } from 'react';
+import { openMaxBotLink } from '../../lib/max-bridge';
 import { SegmentedControl } from '../ui/segmented-control';
 
 type MembershipActivityFeedProps = {
@@ -83,6 +84,16 @@ function resolveDescription(
 function resolveDisplayName(name: string): string {
   const trimmed = name.trim();
   return trimmed || 'Участник';
+}
+
+function resolveAvatarUrl(value: string | null | undefined): string | null {
+  const normalized = value?.trim() ?? '';
+  return normalized || null;
+}
+
+function handleProfileLinkClick(event: MouseEvent<HTMLAnchorElement>, profileUrl: string): void {
+  event.preventDefault();
+  openMaxBotLink(profileUrl);
 }
 
 export function MembershipActivityFeed({
@@ -219,6 +230,8 @@ export function MembershipActivityFeed({
               <div className="membership-feed__group-list">
                 {group.items.map((item, index) => {
                   const displayName = resolveDisplayName(item.userDisplayName);
+                  const avatarUrl = resolveAvatarUrl(item.avatarUrl);
+                  const profileUrl = item.profileUrl?.trim() ?? '';
 
                   return (
                     <article
@@ -237,12 +250,30 @@ export function MembershipActivityFeed({
                       </div>
 
                       <div className="membership-feed__card">
-                        <span className="membership-feed__avatar">
-                          {resolveInitial(displayName)}
+                        <span
+                          className={`membership-feed__avatar ${
+                            avatarUrl ? 'membership-feed__avatar--image' : ''
+                          }`}
+                        >
+                          {avatarUrl ? (
+                            <img src={avatarUrl} alt="" loading="lazy" />
+                          ) : (
+                            resolveInitial(displayName)
+                          )}
                         </span>
                         <div className="membership-feed__content">
                           <div className="membership-feed__row">
-                            <strong>{displayName}</strong>
+                            {profileUrl ? (
+                              <a
+                                href={profileUrl}
+                                className="membership-feed__name-link"
+                                onClick={(event) => handleProfileLinkClick(event, profileUrl)}
+                              >
+                                {displayName}
+                              </a>
+                            ) : (
+                              <strong>{displayName}</strong>
+                            )}
                             <span
                               className={`membership-feed__pill membership-feed__pill--${item.type}`}
                             >

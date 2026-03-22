@@ -287,7 +287,15 @@ describe('MaxClientService inline keyboard guardrails', () => {
             {
               type: 'inline_keyboard',
               payload: {
-                buttons: [[{ type: 'link', text: '💬 Комментарии', url: 'https://maxim.play-team.ru/app/' }]],
+                buttons: [
+                  [
+                    {
+                      type: 'link',
+                      text: '💬 Комментарии',
+                      url: 'https://maxim.play-team.ru/app/',
+                    },
+                  ],
+                ],
               },
             },
           ],
@@ -892,7 +900,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('returns chat member profiles with avatar urls', async () => {
+  it('returns chat member profiles with avatar urls and usernames', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(
         of({
@@ -902,6 +910,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
               {
                 user_id: 'user-1',
                 first_name: 'Алексей',
+                username: 'aleksey',
                 avatar_url: 'https://cdn.max.ru/u/1/avatar-small.jpg',
                 full_avatar_url: 'https://cdn.max.ru/u/1/avatar-full.jpg',
               },
@@ -909,6 +918,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
                 user: {
                   user_id: 'user-2',
                   first_name: 'Марина',
+                  username: 'marina',
                   avatar_url: 'https://cdn.max.ru/u/2/avatar-small.jpg',
                 },
               },
@@ -930,11 +940,13 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(result.get('user-1')).toEqual({
       userId: 'user-1',
       displayName: 'Алексей',
+      username: 'aleksey',
       avatarUrl: 'https://cdn.max.ru/u/1/avatar-full.jpg',
     });
     expect(result.get('user-2')).toEqual({
       userId: 'user-2',
       displayName: 'Марина',
+      username: 'marina',
       avatarUrl: 'https://cdn.max.ru/u/2/avatar-small.jpg',
     });
 
