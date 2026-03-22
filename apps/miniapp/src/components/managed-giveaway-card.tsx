@@ -1672,46 +1672,47 @@ export function ManagedGiveawayCard({
           </>
         ) : (
           <>
-            <div className="managed-giveaway__hero-card managed-giveaway__hero-card--dashboard">
-              <div className="managed-giveaway__hero-head">
+            <div className="managed-giveaway__dashboard-launchpad">
+              <div className="managed-giveaway__dashboard-launchpad-head">
                 <div className="managed-giveaway__hero-copy">
                   <span className="managed-giveaway__eyebrow">Розыгрыши</span>
                   <h2>Соберите сценарий за три шага</h2>
                   <p>Тайминг и условия настраиваются здесь, текст и фото завершаются в чат-боте.</p>
                 </div>
-                <div className="managed-giveaway__hero-badges">
-                  {historyItems.length > 0 ? (
+                {historyItems.length > 0 ? (
+                  <div className="managed-giveaway__hero-badges">
                     <span className="managed-giveaway__chip">
                       {formatCount(historyItems.length)} в архиве
                     </span>
-                  ) : null}
-                </div>
+                  </div>
+                ) : null}
               </div>
-              {renderFactGrid(emptySummaryMetrics)}
-            </div>
-            <div
-              className={cn(
-                'managed-giveaway__primary-actions',
-                historyItems.length > 0 && 'managed-giveaway__primary-actions--split',
-              )}
-            >
-              <button
-                type="button"
-                className="button button--accent"
-                disabled={isBusy}
-                onClick={startCreate}
+              <div
+                className={cn(
+                  'managed-giveaway__primary-actions',
+                  'managed-giveaway__primary-actions--launchpad',
+                  historyItems.length > 0 && 'managed-giveaway__primary-actions--split',
+                )}
               >
-                Новый сценарий
-              </button>
-              {historyItems.length > 0 ? (
                 <button
                   type="button"
-                  className="button button--ghost"
-                  onClick={() => setHistoryOpen(true)}
+                  className="button button--accent"
+                  disabled={isBusy}
+                  onClick={startCreate}
                 >
-                  История
+                  Новый сценарий
                 </button>
-              ) : null}
+                {historyItems.length > 0 ? (
+                  <button
+                    type="button"
+                    className="button button--ghost"
+                    onClick={() => setHistoryOpen(true)}
+                  >
+                    История
+                  </button>
+                ) : null}
+              </div>
+              {renderFactGrid(emptySummaryMetrics)}
             </div>
           </>
         )
