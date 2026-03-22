@@ -165,6 +165,18 @@ const scenarios = [
     },
   },
   {
+    name: 'chat-dialog-comments-short-thread',
+    path: '/chat/preview-chat/dialog/comments',
+    searchParams: {
+      token: 'preview-comments-token-0001',
+      thread: 'short',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(500);
+      await assertCommentsComposerPinned(page);
+    },
+  },
+  {
     name: 'chat-settings-comments',
     path: '/chat/preview-chat/settings',
     searchParams: {
@@ -379,6 +391,36 @@ if (requestedScenarioNames.length > 0 && activeScenarios.length === 0) {
   throw new Error(
     `No screenshot scenarios matched MINIAPP_SCREENSHOT_SCENARIOS=${requestedScenarioNames.join(',')}`,
   );
+}
+
+async function assertCommentsComposerPinned(page) {
+  const layout = await page.evaluate(() => {
+    const shell = document.querySelector('.channel-dialog-shell');
+    const compose = document.querySelector('.channel-dialog-compose');
+
+    if (!(shell instanceof HTMLElement) || !(compose instanceof HTMLElement)) {
+      return null;
+    }
+
+    const shellRect = shell.getBoundingClientRect();
+    const composeRect = compose.getBoundingClientRect();
+
+    return {
+      shellBottom: shellRect.bottom,
+      composeBottom: composeRect.bottom,
+      delta: Math.abs(shellRect.bottom - composeRect.bottom),
+    };
+  });
+
+  if (!layout) {
+    throw new Error('Comments dialog layout nodes were not found for anchor check.');
+  }
+
+  if (layout.delta > 2) {
+    throw new Error(
+      `Comments composer is not pinned to the viewport bottom (delta=${layout.delta.toFixed(2)}).`,
+    );
+  }
 }
 
 function buildPreviewUrl(baseUrl, routePath, queryDevice, scenarioSearchParams = {}) {

@@ -599,11 +599,23 @@ function buildPreviewDialogResponse(
   dialogType: ChannelDialogType,
   bucket: PreviewDialogBucket,
 ): ChannelDialogResponse {
+  const previewThreadVariant =
+    typeof window !== 'undefined'
+      ? new URLSearchParams(window.location.search).get('thread')?.trim().toLowerCase()
+      : null;
+  const normalizedBucket =
+    dialogType === 'comments' && previewThreadVariant === 'short'
+      ? {
+          ...bucket,
+          messages: bucket.messages.slice(-2),
+        }
+      : bucket;
+
   return channelDialogResponseSchema.parse({
     chatId,
     type: dialogType,
-    introText: bucket.introText,
-    messages: bucket.messages,
+    introText: normalizedBucket.introText,
+    messages: normalizedBucket.messages,
   });
 }
 
