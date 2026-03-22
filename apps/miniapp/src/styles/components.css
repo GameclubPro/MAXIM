@@ -10593,6 +10593,12 @@
   overflow: hidden;
 }
 
+.event-feed-item__avatar-link,
+.membership-feed__avatar-link {
+  display: inline-flex;
+  text-decoration: none;
+}
+
 .event-feed-item__avatar img,
 .membership-feed__avatar img {
   width: 100%;

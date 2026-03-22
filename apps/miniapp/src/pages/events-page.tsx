@@ -1011,11 +1011,26 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                       onKeyDown={(event) => handleExpandableCardKeyDown(event, toggleExpanded)}
                       aria-expanded={isExpanded}
                     >
-                      <PersonAvatar
-                        avatarUrl={avatarUrl}
-                        fallback={resolveOffenderInitial(displayName)}
-                        className="event-feed-item__avatar"
-                      />
+                      {profileUrl ? (
+                        <a
+                          href={profileUrl}
+                          className="event-feed-item__avatar-link"
+                          aria-label={`Открыть профиль ${displayName} в MAX`}
+                          onClick={(event) => handleProfileLinkClick(event, profileUrl)}
+                        >
+                          <PersonAvatar
+                            avatarUrl={avatarUrl}
+                            fallback={resolveOffenderInitial(displayName)}
+                            className="event-feed-item__avatar"
+                          />
+                        </a>
+                      ) : (
+                        <PersonAvatar
+                          avatarUrl={avatarUrl}
+                          fallback={resolveOffenderInitial(displayName)}
+                          className="event-feed-item__avatar"
+                        />
+                      )}
 
                       <div className="event-feed-item__body">
                         <div className="event-feed-item__headline">

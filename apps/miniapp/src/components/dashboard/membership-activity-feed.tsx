@@ -252,11 +252,26 @@ export function MembershipActivityFeed({
                       </div>
 
                       <div className="membership-feed__card">
-                        <PersonAvatar
-                          avatarUrl={avatarUrl}
-                          fallback={resolveInitial(displayName)}
-                          className="membership-feed__avatar"
-                        />
+                        {profileUrl ? (
+                          <a
+                            href={profileUrl}
+                            className="membership-feed__avatar-link"
+                            aria-label={`Открыть профиль ${displayName} в MAX`}
+                            onClick={(event) => handleProfileLinkClick(event, profileUrl)}
+                          >
+                            <PersonAvatar
+                              avatarUrl={avatarUrl}
+                              fallback={resolveInitial(displayName)}
+                              className="membership-feed__avatar"
+                            />
+                          </a>
+                        ) : (
+                          <PersonAvatar
+                            avatarUrl={avatarUrl}
+                            fallback={resolveInitial(displayName)}
+                            className="membership-feed__avatar"
+                          />
+                        )}
                         <div className="membership-feed__content">
                           <div className="membership-feed__row">
                             {profileUrl ? (
