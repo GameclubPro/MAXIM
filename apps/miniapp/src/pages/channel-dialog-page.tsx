@@ -113,6 +113,15 @@ function SendArrowIcon() {
   );
 }
 
+function CloseIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
+      <path d="M5.4 5.4L14.6 14.6" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="M14.6 5.4L5.4 14.6" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 type DialogViewModel = {
   title: string;
   placeholder: string;
@@ -128,12 +137,31 @@ function buildViewModel(dialogType: ChannelDialogType): DialogViewModel {
 
   return {
     title: 'Комментарии',
-    placeholder: 'Комментарий',
+    placeholder: 'Ответить в тред',
   };
 }
 
 function resolveDialogEntityType(pathname: string): LastEntityType {
   return pathname.includes('/channel/') ? 'channel' : 'chat';
+}
+
+function pluralizeRu(value: number, one: string, few: string, many: string): string {
+  const normalized = Math.abs(value) % 100;
+  const remainder = normalized % 10;
+
+  if (normalized > 10 && normalized < 20) {
+    return many;
+  }
+
+  if (remainder === 1) {
+    return one;
+  }
+
+  if (remainder >= 2 && remainder <= 4) {
+    return few;
+  }
+
+  return many;
 }
 
 function formatDialogDayKey(value: string): string {
@@ -265,11 +293,37 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const messages = dialogQuery.data?.messages ?? [];
   const introText = dialogQuery.data?.introText?.trim() ?? '';
   const draftLength = draft.trim().length;
-  const showComposeMeta = dialogType === 'suggest';
+  const showComposeMeta = dialogType === 'comments' || dialogType === 'suggest' || draftLength > 0;
   const timelineEntries = useMemo(
     () => buildDialogTimeline(messages, meQuery.data?.userId),
     [messages, meQuery.data?.userId],
   );
+  const participantCount = useMemo(
+    () => new Set(messages.map((message) => message.authorUserId)).size,
+    [messages],
+  );
+  const adminParticipantCount = useMemo(
+    () =>
+      new Set(
+        messages
+          .filter((message) => message.authorRole === 'admin')
+          .map((message) => message.authorUserId),
+      ).size,
+    [messages],
+  );
+  const threadNote = useMemo(() => {
+    if (introText) {
+      return introText;
+    }
+
+    if (dialogType === 'suggest') {
+      return 'Идея уйдёт только админам и не попадёт в общий поток сообщений.';
+    }
+
+    return entityType === 'channel'
+      ? 'Отдельный поток к посту. Ответы остаются в треде и не шумят в ленте.'
+      : 'Тихий тред к сообщению админа: коротко и по делу.';
+  }, [dialogType, entityType, introText]);
 
   const handleDismiss = () => {
     maxImpact('light');
@@ -441,10 +495,45 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
               </button>
 
               <div className="channel-dialog-comments-head__title">
+                <span>Тихий тред</span>
                 <h1>{view.title}</h1>
+                <small>{chatTitle || chatId}</small>
               </div>
 
-              <span className="channel-dialog-comments-head__spacer" aria-hidden />
+              <button
+                type="button"
+                className="channel-dialog-comments-head__dismiss"
+                onClick={handleDismiss}
+                aria-label="Закрыть"
+              >
+                <CloseIcon />
+              </button>
+            </div>
+
+            <div className="channel-dialog-comments-head__metrics">
+              <div className="channel-dialog-comments-head__metric">
+                <strong>{messages.length}</strong>
+                <span>
+                  {pluralizeRu(messages.length, 'комментарий', 'комментария', 'комментариев')}
+                </span>
+              </div>
+              <div className="channel-dialog-comments-head__metric is-soft">
+                <strong>{participantCount}</strong>
+                <span>{pluralizeRu(participantCount, 'участник', 'участника', 'участников')}</span>
+              </div>
+            </div>
+
+            <div className="channel-dialog-comments-head__note">
+              <p>{threadNote}</p>
+              <div className="channel-dialog-comments-head__tags">
+                <span>Один поток без шума</span>
+                {adminParticipantCount > 0 ? (
+                  <span>
+                    {adminParticipantCount}{' '}
+                    {pluralizeRu(adminParticipantCount, 'админ', 'админа', 'админов')} в треде
+                  </span>
+                ) : null}
+              </div>
             </div>
           </header>
         ) : null}
@@ -502,7 +591,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   }
 
                   const { message, isOwnMessage, isAdminMessage } = entry;
-                  const reactions = message.reactions ?? [];
 
                   return (
                     <article
@@ -548,9 +636,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                           ) : null}
                         </div>
 
-                        {reactions.length > 0 ? (
+                        {message.reactions.length > 0 ? (
                           <div className="channel-dialog-message__reactions">
-                            {reactions.map((reaction) => (
+                            {message.reactions.map((reaction) => (
                               <span
                                 key={`${message.id}-${reaction.emoji}`}
                                 className={cn(
@@ -569,7 +657,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   );
                 })
               ) : (
-                <div className="channel-dialog-empty">Пока пусто</div>
+                <div className="channel-dialog-empty">
+                  {dialogType === 'comments' ? 'Пока пусто. Напишите первый ответ.' : 'Пока пусто'}
+                </div>
               )}
             </div>
           ) : null}
@@ -578,8 +668,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         <section className="channel-dialog-compose">
           <div className="channel-dialog-compose__surface">
             {showComposeMeta ? (
-              <div className="channel-dialog-compose__meta">
-                <span>Только для админов</span>
+              <div
+                className={cn(
+                  'channel-dialog-compose__meta',
+                  dialogType === 'comments' && 'channel-dialog-compose__meta--comments',
+                )}
+              >
+                <span>{dialogType === 'suggest' ? 'Только для админов' : 'Ответ в тред'}</span>
                 <span>{draftLength}/2000</span>
               </div>
             ) : null}
