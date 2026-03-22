@@ -260,6 +260,54 @@ describe('ManagedGiveawayService', () => {
     expect(result.missingChannelIds).toEqual([]);
   });
 
+  it('refreshes publication button with the current participants count after enter', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-21T10:12:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+
+    const initial = createGiveaway({
+      description: 'Текст публикации',
+      publicationMessageId: 'publication-1',
+      entries: [],
+    });
+    const savedEntry = createEntry({
+      eligibilityState: GiveawayEligibilityState.VERIFIED,
+      eligibilityReason: null,
+      missingChannelIds: [],
+    });
+    const latest = createGiveaway({
+      description: 'Текст публикации',
+      publicationMessageId: 'publication-1',
+      entries: [savedEntry],
+    });
+
+    prisma.managedGiveaway.findUnique
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(latest);
+    prisma.managedGiveawayEntry.upsert.mockResolvedValue(savedEntry);
+    maxClient.hasChatMember.mockResolvedValueOnce(true).mockResolvedValueOnce(true);
+
+    await service.enterGiveaway('giveaway-1', user);
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'source-1',
+      'publication-1',
+      'Текст публикации',
+      expect.objectContaining({
+        buttons: [[expect.objectContaining({ text: 'Участвовать · 1' })]],
+      }),
+    );
+  });
+
   it('does not auto-recheck rejected entries when reading participant state', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-21T10:15:00.000Z'));
 
@@ -412,7 +460,7 @@ describe('ManagedGiveawayService', () => {
       draft.description,
       expect.objectContaining({
         textFormat: 'markdown',
-        buttons: [[expect.objectContaining({ text: 'Участвовать' })]],
+        buttons: [[expect.objectContaining({ text: 'Участвовать · 0' })]],
       }),
     );
     expect(prisma.managedGiveaway.update).toHaveBeenCalledWith(

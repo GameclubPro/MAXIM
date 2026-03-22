@@ -37,6 +37,12 @@ type GiveawayModalPresentation = {
   description: string | null;
 };
 
+type GiveawayCountdownPresentation = {
+  label: string;
+  value: string;
+  targetAt: string;
+};
+
 const SUPPORT_BOT_URL = 'https://max.ru/id613002203036_4_bot';
 
 function formatApiError(error: unknown): string {
@@ -74,6 +80,83 @@ function formatDateTime(value: string | null, fallback = 'не задано'): s
     hour: '2-digit',
     minute: '2-digit',
   });
+}
+
+function formatCountdownTarget(value: string | null): string {
+  if (!value) {
+    return 'без срока';
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return parsed.toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+function formatCountdownValue(remainingMs: number): string {
+  const totalSeconds = Math.max(0, Math.floor(remainingMs / 1_000));
+  const days = Math.floor(totalSeconds / 86_400);
+  const hours = Math.floor((totalSeconds % 86_400) / 3_600);
+  const minutes = Math.floor((totalSeconds % 3_600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (days > 0) {
+    return `${days}д ${String(hours).padStart(2, '0')}ч`;
+  }
+
+  return [hours, minutes, seconds].map((value) => String(value).padStart(2, '0')).join(':');
+}
+
+function resolveCountdownPresentation(
+  giveaway: ManagedGiveawayPublic | null,
+  participant: ManagedGiveawayParticipantState | null,
+  nowMs: number,
+): GiveawayCountdownPresentation | null {
+  if (participant?.canClaim && participant.claimDeadlineAt) {
+    const deadlineMs = new Date(participant.claimDeadlineAt).getTime();
+    if (Number.isFinite(deadlineMs) && deadlineMs > nowMs) {
+      return {
+        label: 'На ответ',
+        value: formatCountdownValue(deadlineMs - nowMs),
+        targetAt: participant.claimDeadlineAt,
+      };
+    }
+  }
+
+  if (!giveaway) {
+    return null;
+  }
+
+  if (giveaway.status === 'SCHEDULED' && giveaway.startsAt) {
+    const startsAtMs = new Date(giveaway.startsAt).getTime();
+    if (Number.isFinite(startsAtMs) && startsAtMs > nowMs) {
+      return {
+        label: 'До старта',
+        value: formatCountdownValue(startsAtMs - nowMs),
+        targetAt: giveaway.startsAt,
+      };
+    }
+  }
+
+  if (giveaway.status === 'ACTIVE' && giveaway.endsAt) {
+    const endsAtMs = new Date(giveaway.endsAt).getTime();
+    if (Number.isFinite(endsAtMs) && endsAtMs > nowMs) {
+      return {
+        label: 'До итогов',
+        value: formatCountdownValue(endsAtMs - nowMs),
+        targetAt: giveaway.endsAt,
+      };
+    }
+  }
+
+  return null;
 }
 
 function buildWinnerStatusLabel(status: string | null | undefined): string | null {
@@ -198,7 +281,7 @@ function buildModalPresentation(params: {
         glyph: 'check',
         badge: 'Вы участвуете',
         title: 'Заявка принята',
-        description: 'Итоги придут в ленту.',
+        description: null,
       };
     }
 
@@ -303,6 +386,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   const [awaitingSubscriptionReturn, setAwaitingSubscriptionReturn] = useState(false);
   const [subscriptionRecheckPending, setSubscriptionRecheckPending] = useState(false);
   const [subscriptionNeedsManualRetry, setSubscriptionNeedsManualRetry] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   const closePage = () => {
     maxImpact('light');
@@ -411,7 +495,8 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   const isSubscriptionFlow =
     participant?.eligibilityState === 'REJECTED' && missingChannelCards.length > 0;
 
-  const canRetryParticipation = giveaway?.status === 'ACTIVE' && participant?.eligibilityState === 'REJECTED';
+  const canRetryParticipation =
+    giveaway?.status === 'ACTIVE' && participant?.eligibilityState === 'REJECTED';
   const canEnterParticipation =
     giveaway?.status === 'ACTIVE' && (!participant?.joined || canRetryParticipation);
 
@@ -442,6 +527,7 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
             missingChannelsCount: missingChannelCards.length,
             participantStatusUnavailable: Boolean(participantQuery.error),
           });
+  const countdown = resolveCountdownPresentation(giveaway, participant, nowMs);
 
   const syncParticipantState = async (nextParticipant: ManagedGiveawayParticipantState) => {
     queryClient.setQueryData(participantQueryKey, nextParticipant);
@@ -617,7 +703,11 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   };
 
   useEffect(() => {
-    if (!awaitingSubscriptionReturn || typeof document === 'undefined' || typeof window === 'undefined') {
+    if (
+      !awaitingSubscriptionReturn ||
+      typeof document === 'undefined' ||
+      typeof window === 'undefined'
+    ) {
       return undefined;
     }
 
@@ -663,6 +753,21 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
       document.removeEventListener('visibilitychange', handleVisible);
     };
   }, [awaitingSubscriptionReturn, giveawayId, participantQueryKey, pushToast, queryClient]);
+
+  useEffect(() => {
+    if (!countdown || typeof window === 'undefined') {
+      return undefined;
+    }
+
+    setNowMs(Date.now());
+    const timerId = window.setInterval(() => {
+      setNowMs(Date.now());
+    }, 1_000);
+
+    return () => {
+      window.clearInterval(timerId);
+    };
+  }, [countdown?.targetAt]);
 
   return (
     <div className="giveaway-page giveaway-page--modal-only">
@@ -784,13 +889,16 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
               </button>
             ) : null}
 
-            <button
-              type="button"
-              className="button giveaway-page__overlay-dismiss"
-              onClick={closePage}
-            >
-              Не сейчас
-            </button>
+            {countdown ? (
+              <div
+                className="giveaway-page__overlay-timer"
+                aria-label={`${countdown.label}: ${countdown.value}. ${formatCountdownTarget(countdown.targetAt)}.`}
+              >
+                <span>{countdown.label}</span>
+                <strong>{countdown.value}</strong>
+                <small>{formatCountdownTarget(countdown.targetAt)}</small>
+              </div>
+            ) : null}
           </div>
 
           <p className="giveaway-page__overlay-footnote">

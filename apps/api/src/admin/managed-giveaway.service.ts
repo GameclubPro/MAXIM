@@ -285,7 +285,7 @@ export class ManagedGiveawayService {
     if (!giveaway.description.trim()) {
       throw new BadRequestException('Добавьте текст розыгрыша в чат-боте перед публикацией.');
     }
-    const publicationButton = this.buildGiveawayEntryButton(giveaway.id);
+    const publicationButton = this.buildGiveawayEntryButton(giveaway);
     const imagePayload = await this.uploadGiveawayImage(giveaway);
     const publicationText = this.buildGiveawayPublicationText(giveaway);
     const publicationTextFormat = this.resolveGiveawayPublicationTextFormat(giveaway);
@@ -634,6 +634,7 @@ export class ManagedGiveawayService {
     });
 
     const latest = await this.findGiveawayById(refreshed.id);
+    await this.editGiveawayPublicationIfNeeded(latest, ManagedGiveawayStatus.ACTIVE);
     return managedGiveawayParticipantStateSchema.parse(
       this.mapParticipantState(latest, user.userId),
     );
@@ -1257,8 +1258,13 @@ export class ManagedGiveawayService {
     }
   }
 
-  private buildGiveawayEntryButton(giveawayId: string): MaxMessageButton | null {
-    return this.buildGiveawayMiniappButton(giveawayId, 'Участвовать');
+  private buildGiveawayEntryButton(
+    giveaway: Pick<PersistedGiveawayWithRelations, 'id' | 'entries'>,
+  ): MaxMessageButton | null {
+    return this.buildGiveawayMiniappButton(
+      giveaway.id,
+      `Участвовать · ${this.formatGiveawayEntriesCount(giveaway.entries.length)}`,
+    );
   }
 
   private buildGiveawayOpenButton(giveawayId: string): MaxMessageButton | null {
@@ -1300,6 +1306,22 @@ export class ManagedGiveawayService {
     }
 
     return null;
+  }
+
+  private formatGiveawayEntriesCount(value: number): string {
+    if (value >= 1_000_000) {
+      const normalized =
+        value >= 10_000_000 ? (value / 1_000_000).toFixed(0) : (value / 1_000_000).toFixed(1);
+      return `${normalized.replace(/\.0$/u, '')}M`;
+    }
+
+    if (value >= 1_000) {
+      const normalized =
+        value >= 10_000 ? (value / 1_000).toFixed(0) : (value / 1_000).toFixed(1);
+      return `${normalized.replace(/\.0$/u, '')}K`;
+    }
+
+    return String(Math.max(0, value));
   }
 
   private buildGiveawayPublicationText(
@@ -1419,7 +1441,7 @@ export class ManagedGiveawayService {
       }
 
       if (status === ManagedGiveawayStatus.ACTIVE) {
-        const button = this.buildGiveawayEntryButton(giveaway.id);
+        const button = this.buildGiveawayEntryButton(giveaway);
         await this.maxClient.editMessageInlineKeyboard(
           giveaway.sourceChatId,
           messageId,
