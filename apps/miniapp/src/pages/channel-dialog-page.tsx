@@ -10,6 +10,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -37,7 +38,7 @@ import {
 } from '../lib/design-preview';
 import { readChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
-import { maxImpact } from '../lib/max-bridge';
+import { maxImpact, maxSelectionChanged } from '../lib/max-bridge';
 
 const COMMENT_REACTION_OPTIONS = [
   '👍',
@@ -60,6 +61,9 @@ const COMMENT_REACTION_OPTIONS = [
 
 const COMMENT_REACTION_PRIMARY_OPTIONS = COMMENT_REACTION_OPTIONS.slice(0, 6);
 const COMMENT_REACTION_EXPANDED_OPTIONS = COMMENT_REACTION_OPTIONS.slice(6);
+const SWIPE_REPLY_ACTIVATION_DISTANCE = 14;
+const SWIPE_REPLY_TRIGGER_DISTANCE = 54;
+const SWIPE_REPLY_MAX_OFFSET = 78;
 
 function normalizeApiError(error: unknown): string {
   if (!(error instanceof Error)) {
@@ -141,6 +145,17 @@ function resolveMessageWidthTone(message: ChannelDialogMessage): 'is-wide' | 'is
   }
 
   return 'is-medium';
+}
+
+function buildSwipeReplyStyle(preview: SwipeReplyPreview | null, messageId: string): CSSProperties | undefined {
+  if (!preview || preview.messageId !== messageId) {
+    return undefined;
+  }
+
+  return {
+    '--channel-dialog-swipe-offset': `${preview.offset}px`,
+    '--channel-dialog-swipe-progress': `${preview.progress}`,
+  } as CSSProperties;
 }
 
 function isGroupedWithPrevious(messages: ChannelDialogMessage[], index: number): boolean {
@@ -386,6 +401,22 @@ type ReactionPopoverLayout = {
   placement: 'above' | 'below';
 };
 
+type SwipeReplyPreview = {
+  messageId: string;
+  offset: number;
+  progress: number;
+  armed: boolean;
+};
+
+type SwipeReplyGesture = {
+  messageId: string;
+  startX: number;
+  startY: number;
+  isOwn: boolean;
+  engaged: boolean;
+  armed: boolean;
+};
+
 function buildViewModel(dialogType: ChannelDialogType): DialogViewModel {
   if (dialogType === 'suggest') {
     return {
@@ -437,6 +468,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const [replyToMessageId, setReplyToMessageId] = useState<string | null>(null);
   const [isReactionPickerExpanded, setIsReactionPickerExpanded] = useState(false);
   const [isBodyScrolled, setIsBodyScrolled] = useState(false);
+  const [swipeReplyPreview, setSwipeReplyPreview] = useState<SwipeReplyPreview | null>(null);
   const [reactionPopoverLayout, setReactionPopoverLayout] = useState<ReactionPopoverLayout | null>(
     null,
   );
@@ -447,6 +479,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const lastMessageIdRef = useRef<string | null>(null);
   const pressTimerRef = useRef<number | null>(null);
   const pressPointRef = useRef<{ x: number; y: number } | null>(null);
+  const swipeReplyGestureRef = useRef<SwipeReplyGesture | null>(null);
+  const messageNodeRefs = useRef(new Map<string, HTMLElement>());
+  const messageLayoutContextRef = useRef<string | null>(null);
+  const messageRectsRef = useRef(new Map<string, DOMRect>());
   const ignoreNextBubbleClickRef = useRef(false);
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
@@ -503,10 +539,16 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     pressPointRef.current = null;
   };
 
+  const clearSwipeReplyGesture = () => {
+    swipeReplyGestureRef.current = null;
+    setSwipeReplyPreview(null);
+  };
+
   const dismissMessageActions = () => {
     setActiveMessageId(null);
     setIsReactionPickerExpanded(false);
     setReactionPopoverLayout(null);
+    clearSwipeReplyGesture();
   };
 
   const handleDismiss = () => {
@@ -532,9 +574,72 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       }
       pressTimerRef.current = null;
       pressPointRef.current = null;
+      swipeReplyGestureRef.current = null;
     },
     [],
   );
+
+  useLayoutEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+
+    const currentLayoutContext = `${location.pathname}${location.search}`;
+    const nextRects = new Map<string, DOMRect>();
+    for (const [messageId, node] of messageNodeRefs.current.entries()) {
+      if (node.isConnected) {
+        nextRects.set(messageId, node.getBoundingClientRect());
+      }
+    }
+
+    const shouldAnimateLayout =
+      messageLayoutContextRef.current === currentLayoutContext &&
+      !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+    if (shouldAnimateLayout) {
+      for (const [messageId, nextRect] of nextRects.entries()) {
+        const node = messageNodeRefs.current.get(messageId);
+        if (!node) {
+          continue;
+        }
+
+        const previousRect = messageRectsRef.current.get(messageId);
+        if (!previousRect) {
+          node.animate(
+            [
+              { opacity: 0, transform: 'translateY(14px) scale(0.985)' },
+              { opacity: 1, transform: 'translateY(0px) scale(1)' },
+            ],
+            {
+              duration: 280,
+              easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+            },
+          );
+          continue;
+        }
+
+        const deltaX = previousRect.left - nextRect.left;
+        const deltaY = previousRect.top - nextRect.top;
+        if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) {
+          continue;
+        }
+
+        node.animate(
+          [
+            { transform: `translate(${deltaX}px, ${deltaY}px)` },
+            { transform: 'translate(0px, 0px)' },
+          ],
+          {
+            duration: 260,
+            easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
+          },
+        );
+      }
+    }
+
+    messageLayoutContextRef.current = currentLayoutContext;
+    messageRectsRef.current = nextRects;
+  }, [location.pathname, location.search, messages]);
 
   useEffect(() => {
     const viewport = scrollViewportRef.current;
@@ -566,9 +671,16 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     }
 
     if (activeMessageId && !messages.some((message) => message.id === activeMessageId)) {
-      dismissMessageActions();
+      setActiveMessageId(null);
+      setIsReactionPickerExpanded(false);
+      setReactionPopoverLayout(null);
     }
-  }, [activeMessageId, messages, replyToMessageId]);
+
+    if (swipeReplyPreview && !messages.some((message) => message.id === swipeReplyPreview.messageId)) {
+      swipeReplyGestureRef.current = null;
+      setSwipeReplyPreview(null);
+    }
+  }, [activeMessageId, messages, replyToMessageId, swipeReplyPreview]);
 
   useEffect(() => {
     if (!activeMessageId || typeof document === 'undefined') {
@@ -863,49 +975,146 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     }
 
     maxImpact(options?.haptic ?? 'light');
+    clearSwipeReplyGesture();
+    setIsReactionPickerExpanded(false);
     setActiveMessageId((current) => {
       const shouldToggle = options?.toggle !== false;
-      const nextMessageId = shouldToggle && current === messageId ? null : messageId;
-      setIsReactionPickerExpanded(false);
-      return nextMessageId;
+      return shouldToggle && current === messageId ? null : messageId;
     });
   };
 
   const handleBubblePointerDown =
-    (messageId: string) => (event: ReactPointerEvent<HTMLDivElement>) => {
+    (message: ChannelDialogMessage, isOwnMessage: boolean) =>
+    (event: ReactPointerEvent<HTMLDivElement>) => {
       if (dialogType !== 'comments' || event.pointerType === 'mouse') {
         return;
       }
 
       clearMessagePress();
+      clearSwipeReplyGesture();
       ignoreNextBubbleClickRef.current = false;
       pressPointRef.current = {
         x: event.clientX,
         y: event.clientY,
       };
+      swipeReplyGestureRef.current = {
+        messageId: message.id,
+        startX: event.clientX,
+        startY: event.clientY,
+        isOwn: isOwnMessage,
+        engaged: false,
+        armed: false,
+      };
+      event.currentTarget.setPointerCapture?.(event.pointerId);
       pressTimerRef.current = window.setTimeout(() => {
+        if (swipeReplyGestureRef.current?.engaged) {
+          return;
+        }
         ignoreNextBubbleClickRef.current = true;
-        openMessageActions(messageId, {
+        openMessageActions(message.id, {
           haptic: 'medium',
           toggle: false,
         });
       }, 340);
     };
 
-  const handleBubblePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.pointerType === 'mouse' || !pressPointRef.current) {
+  const handleBubblePointerMove =
+    (message: ChannelDialogMessage, isOwnMessage: boolean) =>
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (event.pointerType === 'mouse') {
+        return;
+      }
+
+      const swipeGesture = swipeReplyGestureRef.current;
+      if (!swipeGesture || swipeGesture.messageId !== message.id) {
+        return;
+      }
+
+      const deltaX = event.clientX - swipeGesture.startX;
+      const deltaY = event.clientY - swipeGesture.startY;
+      const directionalDelta = deltaX * (isOwnMessage ? -1 : 1);
+
+      if (!swipeGesture.engaged) {
+        if (Math.abs(deltaY) > 10 && Math.abs(deltaY) > Math.abs(deltaX)) {
+          clearMessagePress();
+          clearSwipeReplyGesture();
+          return;
+        }
+
+        if (
+          directionalDelta > SWIPE_REPLY_ACTIVATION_DISTANCE &&
+          Math.abs(deltaY) < SWIPE_REPLY_ACTIVATION_DISTANCE + 6
+        ) {
+          swipeGesture.engaged = true;
+          clearMessagePress();
+          ignoreNextBubbleClickRef.current = true;
+        }
+      }
+
+      if (!swipeGesture.engaged) {
+        if (!pressPointRef.current) {
+          return;
+        }
+
+        const pressDeltaX = Math.abs(event.clientX - pressPointRef.current.x);
+        const pressDeltaY = Math.abs(event.clientY - pressPointRef.current.y);
+        if (pressDeltaX > 8 || pressDeltaY > 8) {
+          clearMessagePress();
+        }
+        return;
+      }
+
+      event.preventDefault();
+      const swipeDistance = Math.max(
+        0,
+        Math.min(directionalDelta - SWIPE_REPLY_ACTIVATION_DISTANCE, SWIPE_REPLY_MAX_OFFSET),
+      );
+      const isArmed = swipeDistance >= SWIPE_REPLY_TRIGGER_DISTANCE;
+      if (swipeGesture.armed !== isArmed) {
+        maxSelectionChanged();
+      }
+      swipeGesture.armed = isArmed;
+      setSwipeReplyPreview({
+        messageId: message.id,
+        offset: swipeDistance * (isOwnMessage ? -1 : 1),
+        progress: swipeDistance / SWIPE_REPLY_MAX_OFFSET,
+        armed: isArmed,
+      });
+    };
+
+  const handleBubblePointerUp =
+    (message: ChannelDialogMessage) => (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (event.pointerType === 'mouse') {
+        return;
+      }
+
+      if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      clearMessagePress();
+      const shouldReply =
+        swipeReplyGestureRef.current?.messageId === message.id &&
+        swipeReplyGestureRef.current.engaged &&
+        swipeReplyGestureRef.current.armed;
+      clearSwipeReplyGesture();
+      if (!shouldReply) {
+        return;
+      }
+
+      ignoreNextBubbleClickRef.current = true;
+      handleReply(message);
+    };
+
+  const handleBubblePointerCancel = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === 'mouse') {
       return;
     }
 
-    const deltaX = Math.abs(event.clientX - pressPointRef.current.x);
-    const deltaY = Math.abs(event.clientY - pressPointRef.current.y);
-    if (deltaX > 8 || deltaY > 8) {
-      clearMessagePress();
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
     }
-  };
-
-  const handleBubblePointerEnd = () => {
     clearMessagePress();
+    clearSwipeReplyGesture();
   };
 
   const handleBubbleClick = (messageId: string) => (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -1124,6 +1333,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   return (
                     <article
                       key={message.id}
+                      ref={(node) => {
+                        if (node) {
+                          messageNodeRefs.current.set(message.id, node);
+                          return;
+                        }
+                        messageNodeRefs.current.delete(message.id);
+                      }}
                       className={cn(
                         'channel-dialog-message',
                         isOwnMessage && 'is-own',
@@ -1143,97 +1359,127 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         className={cn(
                           'channel-dialog-message__content',
                           dialogType === 'comments' && messageWidthTone,
+                          dialogType === 'comments' &&
+                            swipeReplyPreview?.messageId === message.id &&
+                            'is-swipe-active',
+                          dialogType === 'comments' &&
+                            swipeReplyPreview?.messageId === message.id &&
+                            swipeReplyPreview.armed &&
+                            'is-swipe-armed',
                           isActiveMessage && 'is-context-open',
                         )}
                         data-message-id={message.id}
+                        style={buildSwipeReplyStyle(swipeReplyPreview, message.id)}
                       >
+                        {dialogType === 'comments' ? (
+                          <div className="channel-dialog-message__swipe-indicator" aria-hidden>
+                            <span className="channel-dialog-message__swipe-indicator-icon">
+                              <ReplyArrowIcon />
+                            </span>
+                          </div>
+                        ) : null}
+
                         <div
                           className={cn(
-                            'channel-dialog-message__bubble',
-                            dialogType === 'comments' && 'is-selectable',
-                            isActiveMessage && 'is-active',
-                            groupedWithPrevious && 'is-grouped',
+                            'channel-dialog-message__stack',
+                            dialogType === 'comments' &&
+                              swipeReplyPreview?.messageId === message.id &&
+                              'is-swipe-active',
                           )}
-                          data-message-bubble-id={message.id}
-                          onClick={dialogType === 'comments' ? handleBubbleClick(message.id) : undefined}
-                          onKeyDown={
-                            dialogType === 'comments' ? handleBubbleKeyDown(message.id) : undefined
-                          }
-                          onPointerDown={
-                            dialogType === 'comments' ? handleBubblePointerDown(message.id) : undefined
-                          }
-                          onPointerMove={dialogType === 'comments' ? handleBubblePointerMove : undefined}
-                          onPointerUp={dialogType === 'comments' ? handleBubblePointerEnd : undefined}
-                          onPointerCancel={
-                            dialogType === 'comments' ? handleBubblePointerEnd : undefined
-                          }
-                          onPointerLeave={
-                            dialogType === 'comments' ? handleBubblePointerEnd : undefined
-                          }
-                          onContextMenu={
-                            dialogType === 'comments' ? handleBubbleContextMenu(message.id) : undefined
-                          }
-                          role={dialogType === 'comments' ? 'button' : undefined}
-                          tabIndex={dialogType === 'comments' ? 0 : undefined}
-                          aria-pressed={dialogType === 'comments' ? isActiveMessage : undefined}
-                          aria-haspopup={dialogType === 'comments' ? 'dialog' : undefined}
                         >
-                          {!groupedWithPrevious ? (
-                            <div className="channel-dialog-message__meta">
-                              <strong>{getAuthorLabel(message)}</strong>
-                              <time dateTime={message.createdAt}>
-                                {formatMessageTime(message.createdAt)}
-                              </time>
-                            </div>
-                          ) : null}
+                          <div
+                            className={cn(
+                              'channel-dialog-message__bubble',
+                              dialogType === 'comments' && 'is-selectable',
+                              isActiveMessage && 'is-active',
+                              groupedWithPrevious && 'is-grouped',
+                            )}
+                            data-message-bubble-id={message.id}
+                            onClick={dialogType === 'comments' ? handleBubbleClick(message.id) : undefined}
+                            onKeyDown={
+                              dialogType === 'comments' ? handleBubbleKeyDown(message.id) : undefined
+                            }
+                            onPointerDown={
+                              dialogType === 'comments'
+                                ? handleBubblePointerDown(message, isOwnMessage)
+                                : undefined
+                            }
+                            onPointerMove={
+                              dialogType === 'comments'
+                                ? handleBubblePointerMove(message, isOwnMessage)
+                                : undefined
+                            }
+                            onPointerUp={
+                              dialogType === 'comments' ? handleBubblePointerUp(message) : undefined
+                            }
+                            onPointerCancel={
+                              dialogType === 'comments' ? handleBubblePointerCancel : undefined
+                            }
+                            onContextMenu={
+                              dialogType === 'comments' ? handleBubbleContextMenu(message.id) : undefined
+                            }
+                            role={dialogType === 'comments' ? 'button' : undefined}
+                            tabIndex={dialogType === 'comments' ? 0 : undefined}
+                            aria-pressed={dialogType === 'comments' ? isActiveMessage : undefined}
+                            aria-haspopup={dialogType === 'comments' ? 'dialog' : undefined}
+                          >
+                            {!groupedWithPrevious ? (
+                              <div className="channel-dialog-message__meta">
+                                <strong>{getAuthorLabel(message)}</strong>
+                                <time dateTime={message.createdAt}>
+                                  {formatMessageTime(message.createdAt)}
+                                </time>
+                              </div>
+                            ) : null}
 
-                          {message.replyTo ? (
-                            <div className="channel-dialog-message__reply">
-                              <span>{message.replyTo.authorDisplayName || 'Комментарий'}</span>
-                              <p>{summarizeReplyText(message.replyTo.text)}</p>
-                            </div>
-                          ) : null}
+                            {message.replyTo ? (
+                              <div className="channel-dialog-message__reply">
+                                <span>{message.replyTo.authorDisplayName || 'Комментарий'}</span>
+                                <p>{summarizeReplyText(message.replyTo.text)}</p>
+                              </div>
+                            ) : null}
 
-                          <p>{message.text}</p>
+                            <p>{message.text}</p>
 
-                          {dialogType === 'suggest' ? (
-                            <div className="channel-dialog-message__footer">
-                              <span
-                                className={cn(
-                                  'channel-dialog-delivery',
-                                  message.delivered ? 'is-delivered' : 'is-pending',
-                                )}
-                              >
-                                {message.delivered ? 'доставлено' : 'в очереди'}
-                              </span>
+                            {dialogType === 'suggest' ? (
+                              <div className="channel-dialog-message__footer">
+                                <span
+                                  className={cn(
+                                    'channel-dialog-delivery',
+                                    message.delivered ? 'is-delivered' : 'is-pending',
+                                  )}
+                                >
+                                  {message.delivered ? 'доставлено' : 'в очереди'}
+                                </span>
+                              </div>
+                            ) : null}
+                          </div>
+
+                          {dialogType === 'comments' && message.reactionGroups.length > 0 ? (
+                            <div className="channel-dialog-message__footer channel-dialog-message__footer--comments">
+                              <div className="channel-dialog-message__reactions">
+                                {message.reactionGroups.map((group) => (
+                                  <button
+                                    key={group.emoji}
+                                    type="button"
+                                    className={cn(
+                                      'channel-dialog-reaction-pill',
+                                      group.reactedByMe && 'is-active',
+                                    )}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      handleReactionToggle(message.id, group.emoji);
+                                    }}
+                                    disabled={isReactionPending}
+                                  >
+                                    <b>{group.emoji}</b>
+                                    <span>{group.count}</span>
+                                  </button>
+                                ))}
+                              </div>
                             </div>
                           ) : null}
                         </div>
-
-                        {dialogType === 'comments' && message.reactionGroups.length > 0 ? (
-                          <div className="channel-dialog-message__footer channel-dialog-message__footer--comments">
-                            <div className="channel-dialog-message__reactions">
-                              {message.reactionGroups.map((group) => (
-                                <button
-                                  key={group.emoji}
-                                  type="button"
-                                  className={cn(
-                                    'channel-dialog-reaction-pill',
-                                    group.reactedByMe && 'is-active',
-                                  )}
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    handleReactionToggle(message.id, group.emoji);
-                                  }}
-                                  disabled={isReactionPending}
-                                >
-                                  <b>{group.emoji}</b>
-                                  <span>{group.count}</span>
-                                </button>
-                              ))}
-                            </div>
-                          </div>
-                        ) : null}
                       </div>
                     </article>
                   );
@@ -1333,44 +1579,60 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                 onClick={(event) => event.stopPropagation()}
               >
                 <div className="channel-dialog-reaction-popover__surface">
-                  <div className="channel-dialog-reaction-popover__row">
-                    {COMMENT_REACTION_PRIMARY_OPTIONS.map((emoji) => {
-                      const reactedByMe = activeMessage.reactionGroups.some(
-                        (group) => group.emoji === emoji && group.reactedByMe,
-                      );
+                  <div className="channel-dialog-reaction-popover__rail">
+                    <div className="channel-dialog-reaction-popover__emoji-rail">
+                      {COMMENT_REACTION_PRIMARY_OPTIONS.map((emoji) => {
+                        const reactedByMe = activeMessage.reactionGroups.some(
+                          (group) => group.emoji === emoji && group.reactedByMe,
+                        );
 
-                      return (
-                        <button
-                          key={emoji}
-                          type="button"
-                          className={cn(
-                            'channel-dialog-reaction-popover__emoji',
-                            reactedByMe && 'is-active',
-                          )}
-                          onClick={() =>
-                            handleReactionToggle(activeMessage.id, emoji, {
-                              closePicker: true,
-                            })
-                          }
-                          disabled={reactionMutation.isPending}
-                          aria-label={`Поставить реакцию ${emoji}`}
-                        >
-                          {emoji}
-                        </button>
-                      );
-                    })}
+                        return (
+                          <button
+                            key={emoji}
+                            type="button"
+                            className={cn(
+                              'channel-dialog-reaction-popover__emoji',
+                              reactedByMe && 'is-active',
+                            )}
+                            onClick={() =>
+                              handleReactionToggle(activeMessage.id, emoji, {
+                                closePicker: true,
+                              })
+                            }
+                            disabled={reactionMutation.isPending}
+                            aria-label={`Поставить реакцию ${emoji}`}
+                          >
+                            {emoji}
+                          </button>
+                        );
+                      })}
+                    </div>
 
-                    <button
-                      type="button"
-                      className={cn(
-                        'channel-dialog-reaction-popover__toggle',
-                        isReactionPickerExpanded && 'is-active',
-                      )}
-                      onClick={() => setIsReactionPickerExpanded((current) => !current)}
-                      aria-label="Показать больше реакций"
-                    >
-                      <PlusIcon />
-                    </button>
+                    <div className="channel-dialog-reaction-popover__rail-actions">
+                      <button
+                        type="button"
+                        className={cn(
+                          'channel-dialog-reaction-popover__action',
+                          'channel-dialog-reaction-popover__action--reply',
+                        )}
+                        onClick={() => handleReply(activeMessage)}
+                      >
+                        <ReplyArrowIcon />
+                        Ответить
+                      </button>
+
+                      <button
+                        type="button"
+                        className={cn(
+                          'channel-dialog-reaction-popover__toggle',
+                          isReactionPickerExpanded && 'is-active',
+                        )}
+                        onClick={() => setIsReactionPickerExpanded((current) => !current)}
+                        aria-label="Показать больше реакций"
+                      >
+                        <PlusIcon />
+                      </button>
+                    </div>
                   </div>
 
                   {isReactionPickerExpanded ? (
@@ -1404,16 +1666,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                     </div>
                   ) : null}
 
-                  <div className="channel-dialog-reaction-popover__actions">
-                    <button
-                      type="button"
-                      className="channel-dialog-reaction-popover__action"
-                      onClick={() => handleReply(activeMessage)}
-                    >
-                      <ReplyArrowIcon />
-                      Ответить
-                    </button>
-                  </div>
                 </div>
               </div>
             </div>,

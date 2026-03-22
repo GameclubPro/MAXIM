@@ -2863,6 +2863,60 @@
   z-index: 2;
 }
 
+.channel-dialog-message__stack {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  gap: 3px;
+  width: fit-content;
+  max-width: 100%;
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.channel-dialog-message__stack.is-swipe-active {
+  transform: translateX(var(--channel-dialog-swipe-offset, 0px));
+}
+
+.channel-dialog-message__swipe-indicator {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 8px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.18s ease;
+}
+
+.channel-dialog-message.is-own .channel-dialog-message__swipe-indicator {
+  right: 0;
+  left: auto;
+}
+
+.channel-dialog-message__content.is-swipe-active .channel-dialog-message__swipe-indicator {
+  opacity: calc(0.18 + (var(--channel-dialog-swipe-progress, 0) * 0.82));
+}
+
+.channel-dialog-message__swipe-indicator-icon {
+  width: 32px;
+  min-width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--dialog-accent) 16%, white);
+  background: color-mix(in srgb, var(--dialog-accent) 14%, white);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.channel-dialog-message__swipe-indicator-icon svg {
+  width: 15px;
+  height: 15px;
+}
+
 .channel-dialog-popover-layer {
   position: absolute;
   inset: 0;
@@ -2882,9 +2936,9 @@
 
 .channel-dialog-reaction-popover__surface {
   display: grid;
-  gap: 6px;
-  padding: 7px;
-  border-radius: 22px;
+  gap: 8px;
+  padding: 8px;
+  border-radius: 24px;
   border: 1px solid rgba(255, 255, 255, 0.94);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(247, 251, 255, 0.94)),
@@ -2897,10 +2951,27 @@
   -webkit-backdrop-filter: blur(22px) saturate(160%);
 }
 
-.channel-dialog-reaction-popover__row {
-  display: grid;
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 5px;
+.channel-dialog-reaction-popover__rail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.channel-dialog-reaction-popover__emoji-rail {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow-x: auto;
+}
+
+.channel-dialog-reaction-popover__rail-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
 }
 
 .channel-dialog-reaction-popover__grid {
@@ -2911,11 +2982,11 @@
 
 .channel-dialog-reaction-popover__emoji,
 .channel-dialog-reaction-popover__toggle {
-  width: 100%;
-  min-width: 0;
-  height: 36px;
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
   padding: 0;
-  border-radius: 13px;
+  border-radius: 14px;
   border: 1px solid rgba(62, 96, 127, 0.12);
   background: rgba(255, 255, 255, 0.94);
   box-shadow:
@@ -2934,6 +3005,7 @@
 
 .channel-dialog-reaction-popover__emoji {
   font-size: 1rem;
+  flex: 0 0 auto;
 }
 
 .channel-dialog-reaction-popover__emoji.is-secondary {
@@ -2965,17 +3037,11 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.78);
 }
 
-.channel-dialog-reaction-popover__actions {
-  display: flex;
-  justify-content: flex-start;
-  padding-top: 1px;
-}
-
 .channel-dialog-reaction-popover__action {
   width: auto;
-  min-height: 32px;
-  padding: 0 12px;
-  border-radius: 999px;
+  min-height: 38px;
+  padding: 0 14px;
+  border-radius: 15px;
   border: 1px solid rgba(62, 96, 127, 0.12);
   background: rgba(244, 248, 253, 0.94);
   color: rgba(28, 47, 61, 0.78);
@@ -2983,7 +3049,7 @@
   align-items: center;
   justify-content: center;
   gap: 6px;
-  font-size: 0.72rem;
+  font-size: 0.74rem;
   font-weight: 800;
   letter-spacing: 0.01em;
   cursor: pointer;
@@ -3560,11 +3626,19 @@
     border-radius: 19px;
   }
 
+  .channel-dialog-reaction-popover__rail {
+    gap: 6px;
+  }
+
+  .channel-dialog-reaction-popover__emoji-rail {
+    gap: 5px;
+  }
+
   .channel-dialog-reaction-popover__emoji,
   .channel-dialog-reaction-popover__toggle {
-    width: 100%;
-    min-width: 0;
-    height: 35px;
+    width: 36px;
+    min-width: 36px;
+    height: 36px;
     border-radius: 12px;
   }
 
@@ -3573,8 +3647,8 @@
   }
 
   .channel-dialog-reaction-popover__action {
-    min-height: 30px;
-    padding: 0 11px;
+    min-height: 36px;
+    padding: 0 12px;
   }
 
   .channel-dialog-compose__surface {
@@ -3605,6 +3679,12 @@
 
   .channel-dialog-message__bubble p {
     line-height: 1.42;
+  }
+
+  .channel-dialog-message__swipe-indicator-icon {
+    width: 30px;
+    min-width: 30px;
+    height: 30px;
   }
 
   .channel-dialog-submit {
