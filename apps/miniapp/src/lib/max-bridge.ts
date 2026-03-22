@@ -9,14 +9,13 @@ function resolveBridge() {
   return window.MAX?.WebApp ?? window.WebApp;
 }
 
-function isMaxMiniAppLink(url: string): boolean {
+function isMaxDeepLink(url: string): boolean {
   try {
     const parsed = new URL(url, window.location.href);
-    if (parsed.hostname !== 'max.ru' && parsed.hostname !== 'www.max.ru') {
-      return false;
-    }
-
-    return parsed.searchParams.has('startapp');
+    return (
+      parsed.protocol === 'https:' &&
+      (parsed.hostname === 'max.ru' || parsed.hostname === 'www.max.ru')
+    );
   } catch {
     return false;
   }
@@ -37,18 +36,28 @@ export function closeMaxMiniApp(fallback?: () => void): void {
 }
 
 export function openMaxBotLink(url: string): void {
+  const normalizedUrl = url.trim();
+  if (!normalizedUrl) {
+    return;
+  }
+
   const bridge = resolveBridge();
-  if (isMaxMiniAppLink(url) && typeof bridge?.openMaxLink === 'function') {
-    bridge.openMaxLink(url);
+  if (isMaxDeepLink(normalizedUrl)) {
+    if (typeof bridge?.openMaxLink === 'function') {
+      bridge.openMaxLink(normalizedUrl);
+      return;
+    }
+
+    window.location.assign(normalizedUrl);
     return;
   }
 
   if (typeof bridge?.openLink === 'function') {
-    bridge.openLink(url);
+    bridge.openLink(normalizedUrl);
     return;
   }
 
-  window.location.assign(url);
+  window.location.assign(normalizedUrl);
 }
 
 export function canShareMaxContent(): boolean {
