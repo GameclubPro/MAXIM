@@ -3706,8 +3706,11 @@
   position: fixed;
   inset: 0;
   z-index: 90;
-  padding: max(8px, env(safe-area-inset-top, 0px)) 8px max(8px, env(safe-area-inset-bottom, 0px))
-    8px;
+  padding:
+    max(14px, calc(env(safe-area-inset-top, 0px) + 12px))
+    10px
+    max(12px, calc(env(safe-area-inset-bottom, 0px) + 6px))
+    10px;
   display: flex;
   align-items: stretch;
   justify-content: center;
@@ -3865,15 +3868,40 @@
 }
 
 .settings-drilldown__panel--giveaway {
-  max-width: 560px;
+  max-width: 580px;
   height: calc(
-    100dvh - max(12px, env(safe-area-inset-top, 0px)) - max(8px, env(safe-area-inset-bottom, 0px))
+    100dvh - max(28px, calc(env(safe-area-inset-top, 0px) + 16px)) -
+      max(16px, calc(env(safe-area-inset-bottom, 0px) + 6px))
   );
-  margin: auto 0 0;
+  margin: auto;
+  border-radius: 32px;
+}
+
+.settings-drilldown__panel--giveaway .settings-drilldown__header {
+  padding: max(28px, calc(env(safe-area-inset-top, 0px) + 24px)) 16px 15px;
+}
+
+.settings-drilldown__panel--giveaway .settings-drilldown__title {
+  font-size: 1.16rem;
+}
+
+.settings-drilldown__panel--giveaway .settings-drilldown__summary {
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.settings-drilldown__panel--giveaway .settings-drilldown__close {
+  width: 48px;
+  height: 48px;
+  border-radius: 16px;
+}
+
+.settings-drilldown__panel--giveaway .settings-drilldown__body {
+  background: rgba(249, 251, 254, 0.92);
 }
 
 .settings-drilldown__panel--giveaway .settings-section__collapse-inner {
-  padding: 12px 14px calc(22px + env(safe-area-inset-bottom, 0px));
+  padding: 16px 16px calc(24px + env(safe-area-inset-bottom, 0px));
 }
 
 @keyframes settings-drilldown-panel-enter {
@@ -7339,99 +7367,187 @@
 }
 
 .managed-giveaway {
-  gap: 10px;
+  --managed-giveaway-line: rgba(74, 108, 141, 0.12);
+  gap: 12px;
   align-items: start;
   align-content: start;
 }
 
+.managed-giveaway--dashboard {
+  min-height: 100%;
+}
+
 .managed-giveaway__hero-card {
   display: grid;
+  position: relative;
+  isolation: isolate;
+  z-index: 0;
+  gap: 14px;
+  padding: 18px;
+  overflow: hidden;
+  border-radius: 30px;
+  border: 1px solid var(--managed-giveaway-line);
+  background:
+    radial-gradient(120% 110% at 0% 0%, rgba(11, 132, 255, 0.12), transparent 54%),
+    radial-gradient(90% 90% at 100% 0%, rgba(75, 189, 156, 0.12), transparent 45%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.995), rgba(245, 250, 255, 0.97));
+  box-shadow:
+    0 18px 38px rgba(20, 45, 71, 0.09),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.managed-giveaway__hero-card--dashboard,
+.managed-giveaway__hero-card--editor {
+  gap: 16px;
+}
+
+.managed-giveaway__hero-card--editor-compact {
   gap: 12px;
   padding: 16px;
-  border-radius: 26px;
-  border: 1px solid rgba(87, 117, 145, 0.12);
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(244, 249, 255, 0.95));
 }
 
 .managed-giveaway__hero-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
+  gap: 14px;
 }
 
 .managed-giveaway__hero-copy {
   min-width: 0;
   display: grid;
+  gap: 6px;
 }
 
 .managed-giveaway__hero-copy h2 {
   margin: 0;
   color: #10283f;
-  font-size: clamp(1.18rem, 5vw, 1.52rem);
-  line-height: 1.02;
+  font-size: clamp(1.24rem, 5vw, 1.68rem);
+  line-height: 0.98;
+  letter-spacing: -0.04em;
 }
 
 .managed-giveaway__hero-copy p {
   margin: 0;
-  color: #5b748a;
-  font-size: 0.79rem;
+  color: #57718a;
+  font-size: 0.83rem;
+  line-height: 1.36;
+  max-width: 30ch;
+}
+
+.managed-giveaway__hero-card--editor-compact .managed-giveaway__hero-copy {
+  gap: 5px;
+}
+
+.managed-giveaway__hero-card--editor-compact .managed-giveaway__hero-copy p {
+  font-size: 0.8rem;
+  line-height: 1.32;
 }
 
 .managed-giveaway__hero-badges {
   display: flex;
   flex-wrap: wrap;
+  gap: 8px;
   justify-content: flex-end;
 }
 
 .managed-giveaway__hero-facts {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  gap: 10px;
+}
+
+.managed-giveaway__hero-facts--two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .managed-giveaway__hero-fact {
   display: grid;
-  gap: 3px;
+  gap: 4px;
   min-width: 0;
+  min-height: 88px;
+  padding: 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(85, 117, 147, 0.1);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(247, 251, 255, 0.88)),
+    rgba(255, 255, 255, 0.84);
+}
+
+.managed-giveaway__hero-card--editor-compact .managed-giveaway__hero-fact {
+  min-height: 80px;
   padding: 12px;
-  border-radius: 18px;
-  border: 1px solid rgba(89, 117, 145, 0.1);
-  background: rgba(255, 255, 255, 0.78);
 }
 
 .managed-giveaway__hero-fact span {
-  color: #6e879c;
-  font-size: 0.64rem;
+  color: #69839a;
+  font-size: 0.62rem;
   font-weight: 800;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.11em;
   text-transform: uppercase;
 }
 
 .managed-giveaway__hero-fact strong {
   color: #10283f;
-  font-size: 0.92rem;
-  line-height: 1.08;
+  font-size: 1.02rem;
+  line-height: 1.06;
+  letter-spacing: -0.025em;
 }
 
 .managed-giveaway__hero-fact small {
   color: #658096;
-  font-size: 0.72rem;
+  font-size: 0.74rem;
+  line-height: 1.34;
+}
+
+.managed-giveaway__dashboard-note {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: 24px;
+  border: 1px solid rgba(84, 117, 148, 0.12);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 250, 255, 0.95));
+}
+
+.managed-giveaway__dashboard-note-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.managed-giveaway__dashboard-note-copy strong {
+  color: #12293d;
+  font-size: 0.96rem;
+  line-height: 1.18;
+}
+
+.managed-giveaway__dashboard-note-copy small {
+  color: #5d758a;
+  font-size: 0.79rem;
+  line-height: 1.42;
+}
+
+.managed-giveaway__dashboard-note-points {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .managed-giveaway__step-strip {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  gap: 12px;
   align-items: start;
-  padding: 0 4px;
+  padding: 4px 6px 0;
 }
 
 .managed-giveaway__step-pill {
   min-width: 0;
   display: grid;
+  position: relative;
+  z-index: 1;
   justify-items: center;
-  gap: 6px;
+  gap: 7px;
   padding: 0;
   border: 0;
   background: none;
@@ -7439,9 +7555,11 @@
 
 .managed-giveaway__step-pill > strong {
   color: #6c8297;
-  font-size: 0.78rem;
+  font-size: 0.8rem;
+  font-weight: 760;
   line-height: 1.18;
   text-align: center;
+  letter-spacing: -0.01em;
 }
 
 .managed-giveaway__step-pill.is-active > strong {
@@ -7457,20 +7575,24 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  min-height: 28px;
+  width: 34px;
+  min-height: 34px;
   border-radius: 999px;
   border: 1px solid rgba(89, 117, 145, 0.12);
   background: rgba(255, 255, 255, 0.98);
   color: var(--text-secondary);
-  font-size: 0.72rem;
+  font-size: 0.74rem;
   font-weight: 800;
+  box-shadow:
+    0 8px 16px rgba(28, 55, 83, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.82);
 }
 
 .managed-giveaway__step-pill.is-active .managed-giveaway__step-pill-index {
   border-color: rgba(11, 132, 255, 0.32);
-  background: rgba(11, 132, 255, 0.96);
+  background: linear-gradient(145deg, #1593ff, #0a74e8);
   color: #fff;
+  box-shadow: 0 12px 24px rgba(11, 132, 255, 0.24);
 }
 
 .managed-giveaway__step-pill.is-complete .managed-giveaway__step-pill-index {
@@ -7482,17 +7604,17 @@
 .managed-giveaway__choice-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 10px;
 }
 
 .managed-giveaway__choice-card {
   border: 1px solid rgba(89, 117, 145, 0.1);
-  border-radius: 18px;
+  border-radius: 20px;
   background: rgba(247, 249, 252, 0.96);
-  padding: 12px;
+  padding: 14px;
   text-align: left;
   color: inherit;
-  min-height: 84px;
+  min-height: 92px;
 }
 
 .managed-giveaway__choice-card.is-active {
@@ -7502,18 +7624,19 @@
 
 .managed-giveaway__choice-copy {
   display: grid;
+  gap: 6px;
 }
 
 .managed-giveaway__choice-copy strong {
   color: var(--text-primary);
-  font-size: 0.84rem;
-  line-height: 1.16;
+  font-size: 0.9rem;
+  line-height: 1.14;
 }
 
 .managed-giveaway__choice-copy small {
   color: var(--text-secondary);
-  font-size: 0.73rem;
-  line-height: 1.35;
+  font-size: 0.76rem;
+  line-height: 1.38;
 }
 
 .managed-giveaway__split-fields {
@@ -7526,17 +7649,18 @@
 .managed-giveaway__quick-actions {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
 }
 
 .managed-giveaway__chip-button {
-  min-height: 36px;
+  min-height: 38px;
   border-radius: 999px;
   border: 1px solid rgba(89, 117, 145, 0.12);
   background: rgba(247, 249, 252, 0.96);
   color: var(--text-primary);
-  padding: 0 14px;
-  font-size: 0.76rem;
+  padding: 0 16px;
+  font-size: 0.77rem;
+  font-weight: 760;
 }
 
 .managed-giveaway__chip-button.is-active {
@@ -7548,36 +7672,40 @@
 .managed-giveaway__info-card,
 .managed-giveaway__inline-note {
   display: grid;
-  gap: 4px;
-  padding: 12px;
-  border-radius: 16px;
+  gap: 5px;
+  padding: 14px;
+  border-radius: 18px;
   border: 1px solid rgba(89, 117, 145, 0.1);
-  background: rgba(248, 250, 253, 0.96);
+  background:
+    linear-gradient(180deg, rgba(251, 253, 255, 0.98), rgba(246, 249, 253, 0.95)),
+    rgba(248, 250, 253, 0.96);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84);
 }
 
 .managed-giveaway__info-card strong,
 .managed-giveaway__inline-note {
   color: var(--text-primary);
-  font-size: 0.78rem;
+  font-size: 0.8rem;
+  line-height: 1.34;
 }
 
 .managed-giveaway__info-card small {
   color: var(--text-secondary);
-  font-size: 0.74rem;
-  line-height: 1.38;
+  font-size: 0.76rem;
+  line-height: 1.42;
 }
 
 .managed-giveaway__summary-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
+  gap: 10px;
 }
 
 .managed-giveaway__summary-card {
   display: grid;
-  gap: 4px;
-  padding: 12px;
-  border-radius: 18px;
+  gap: 5px;
+  padding: 14px;
+  border-radius: 20px;
   border: 1px solid rgba(89, 117, 145, 0.1);
   background: rgba(247, 249, 252, 0.96);
 }
@@ -7592,12 +7720,17 @@
 
 .managed-giveaway__summary-card strong {
   color: var(--text-primary);
-  font-size: 0.86rem;
+  font-size: 0.9rem;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
 }
 
 .managed-giveaway__primary-actions {
   display: grid;
-  gap: 8px;
+  gap: 10px;
+  position: relative;
+  z-index: 1;
+  margin-top: 4px;
 }
 
 .managed-giveaway__primary-actions--split {
@@ -7606,8 +7739,19 @@
 
 .managed-giveaway__primary-actions .button {
   width: 100%;
-  min-height: 44px;
-  border-radius: 15px;
+  min-height: 52px;
+  border-radius: 18px;
+  font-size: 0.9rem;
+  letter-spacing: -0.015em;
+}
+
+.managed-giveaway__primary-actions .button--accent {
+  box-shadow: 0 16px 28px rgba(11, 132, 255, 0.22);
+}
+
+.managed-giveaway__primary-actions .button--ghost {
+  border-color: rgba(77, 109, 138, 0.16);
+  background: rgba(255, 255, 255, 0.82);
 }
 
 .managed-giveaway__section-head,
@@ -7615,9 +7759,9 @@
 .giveaway-page__panel-head,
 .giveaway-page__section-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 8px;
+  gap: 10px;
 }
 
 .managed-giveaway__section-copy,
@@ -7625,22 +7769,23 @@
 .giveaway-page__hero-copy,
 .giveaway-page__winner-copy {
   display: grid;
-  gap: 2px;
+  gap: 4px;
   min-width: 0;
 }
 
 .managed-giveaway__section-copy strong {
   color: var(--text-primary);
-  font-size: 0.84rem;
-  line-height: 1.18;
+  font-size: 0.94rem;
+  line-height: 1.16;
+  letter-spacing: -0.02em;
 }
 
 .managed-giveaway__section-copy small,
 .giveaway-page__section-head small,
 .managed-giveaway__history-copy small {
   color: var(--text-secondary);
-  font-size: 0.74rem;
-  line-height: 1.3;
+  font-size: 0.77rem;
+  line-height: 1.4;
 }
 
 .managed-giveaway__prize-position,
@@ -7705,29 +7850,35 @@
 .managed-giveaway__surface,
 .managed-giveaway__history-toggle {
   display: grid;
-  gap: 8px;
-  padding: 12px;
-  border-radius: 24px;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 28px;
   border: 1px solid rgba(79, 108, 137, 0.12);
   background:
-    linear-gradient(160deg, rgba(255, 255, 255, 0.98), rgba(249, 251, 255, 0.96)),
+    linear-gradient(160deg, rgba(255, 255, 255, 0.985), rgba(249, 251, 255, 0.965)),
     rgba(255, 255, 255, 0.98);
   box-shadow:
-    0 14px 28px rgba(17, 42, 66, 0.06),
+    0 18px 36px rgba(17, 42, 66, 0.08),
     inset 0 1px 0 rgba(255, 255, 255, 0.68);
 }
 
 .managed-giveaway__editor-card {
-  gap: 12px;
+  gap: 14px;
   border-color: rgba(44, 122, 197, 0.14);
   background:
-    linear-gradient(160deg, rgba(255, 255, 255, 0.98), rgba(247, 250, 255, 0.96)),
+    linear-gradient(160deg, rgba(255, 255, 255, 0.985), rgba(247, 250, 255, 0.965)),
     rgba(255, 255, 255, 0.98);
+}
+
+.managed-giveaway--step-conditions .managed-giveaway__editor-card,
+.managed-giveaway--step-prizes .managed-giveaway__editor-card {
+  gap: 12px;
+  padding: 12px;
 }
 
 .managed-giveaway__step-stage {
   display: grid;
-  gap: 10px;
+  gap: 12px;
 }
 
 .managed-giveaway__editor-overview,
@@ -7746,36 +7897,74 @@
 .managed-giveaway__section,
 .managed-giveaway__history {
   display: grid;
-  gap: 9px;
-  padding: 12px;
-  border-radius: 18px;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 22px;
   border: 1px solid rgba(92, 120, 149, 0.1);
   background:
-    linear-gradient(160deg, rgba(250, 252, 255, 0.94), rgba(246, 249, 253, 0.9)),
+    linear-gradient(160deg, rgba(252, 253, 255, 0.98), rgba(246, 249, 253, 0.94)),
     rgba(250, 251, 253, 0.88);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    0 12px 24px rgba(30, 56, 83, 0.04);
+}
+
+.managed-giveaway--step-conditions .managed-giveaway__step-stage {
+  gap: 14px;
+}
+
+.managed-giveaway--step-conditions .managed-giveaway__hero-card--editor-compact,
+.managed-giveaway--step-prizes .managed-giveaway__hero-card--editor-compact {
+  gap: 10px;
+  padding: 14px;
+}
+
+.managed-giveaway--step-conditions .managed-giveaway__hero-card--editor-compact .managed-giveaway__hero-fact,
+.managed-giveaway--step-prizes .managed-giveaway__hero-card--editor-compact .managed-giveaway__hero-fact {
+  min-height: 74px;
+  padding: 10px;
+}
+
+.managed-giveaway--step-conditions .managed-giveaway__step-strip,
+.managed-giveaway--step-prizes .managed-giveaway__step-strip {
+  gap: 8px;
+  padding-top: 0;
+}
+
+.managed-giveaway--step-conditions .managed-giveaway__step-pill,
+.managed-giveaway--step-prizes .managed-giveaway__step-pill {
+  gap: 4px;
+}
+
+.managed-giveaway__section--conditions {
+  gap: 14px;
 }
 
 .managed-giveaway .field input,
 .managed-giveaway .field textarea,
 .managed-giveaway .field select {
-  min-height: 42px;
-  border-radius: 12px;
+  min-height: 50px;
+  border-radius: 16px;
   border-color: rgba(86, 116, 145, 0.14);
   background: rgba(255, 255, 255, 0.98);
+  padding-inline: 14px;
 }
 
 .managed-giveaway .field textarea {
-  min-height: 88px;
+  min-height: 100px;
+  padding-block: 12px;
 }
 
 .managed-giveaway .field > span {
   font-size: 0.74rem;
   line-height: 1.25;
+  font-weight: 750;
+  color: #5e788f;
 }
 
 .managed-giveaway__editor-grid {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   grid-template-columns: minmax(0, 1fr);
 }
 
@@ -7785,20 +7974,20 @@
 
 .managed-giveaway__prize-editor-list {
   display: grid;
-  gap: 7px;
+  gap: 9px;
 }
 
 .managed-giveaway__count-stepper {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 8px;
+  gap: 10px;
   align-items: stretch;
 }
 
 .managed-giveaway__count-stepper-button {
-  width: 42px;
-  min-height: 42px;
-  border-radius: 14px;
+  width: 48px;
+  min-height: 48px;
+  border-radius: 16px;
   border: 1px solid rgba(89, 117, 145, 0.12);
   background: rgba(247, 249, 252, 0.96);
   color: var(--text-primary);
@@ -7817,7 +8006,7 @@
   gap: 2px;
   align-content: center;
   padding: 0 14px;
-  border-radius: 14px;
+  border-radius: 16px;
   border: 1px solid rgba(89, 117, 145, 0.1);
   background: rgba(247, 249, 252, 0.96);
 }
@@ -7839,7 +8028,7 @@
 .managed-giveaway__prize-editor-row {
   display: grid;
   grid-template-columns: auto 1fr auto;
-  gap: 8px;
+  gap: 10px;
   align-items: center;
   min-width: 0;
 }
@@ -7849,14 +8038,14 @@
 }
 
 .managed-giveaway__selected-channel {
-  min-height: 40px;
+  min-height: 46px;
   display: inline-flex;
   align-items: center;
   min-width: 0;
-  border-radius: 12px;
+  border-radius: 16px;
   border: 1px solid rgba(89, 117, 145, 0.12);
   background: rgba(247, 249, 252, 0.96);
-  padding: 0 10px;
+  padding: 0 12px;
   color: var(--text-primary);
   font-size: 0.8rem;
   line-height: 1.3;
@@ -7865,17 +8054,104 @@
   white-space: nowrap;
 }
 
+.managed-giveaway__channel-list {
+  display: grid;
+  gap: 10px;
+}
+
+.managed-giveaway__channel-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.managed-giveaway__channel-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  min-height: 32px;
+  border-radius: 999px;
+  border: 1px solid rgba(69, 137, 109, 0.16);
+  background: rgba(237, 248, 243, 0.98);
+  color: #2f7d5e;
+  font-size: 0.72rem;
+  font-weight: 800;
+}
+
+.managed-giveaway__channel-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: 18px;
+  border: 1px solid rgba(89, 117, 145, 0.1);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(245, 249, 253, 0.95)),
+    rgba(247, 249, 252, 0.96);
+}
+
+.managed-giveaway__channel-copy strong {
+  min-width: 0;
+  color: var(--text-primary);
+  font-size: 0.84rem;
+  line-height: 1.26;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.managed-giveaway__channel-copy small {
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  line-height: 1.35;
+}
+
+.managed-giveaway__prize-remove,
+.managed-giveaway__channel-remove {
+  border: 1px solid rgba(89, 117, 145, 0.12);
+  background: rgba(247, 249, 252, 0.96);
+  color: var(--text-secondary);
+  border-radius: 14px;
+  min-width: 44px;
+  min-height: 44px;
+  font-size: 1rem;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.managed-giveaway__prize-remove:disabled,
+.managed-giveaway__channel-remove:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.managed-giveaway__prize-remove:hover,
+.managed-giveaway__channel-remove:hover {
+  color: #914553;
+  border-color: rgba(196, 100, 120, 0.2);
+  background: rgba(250, 241, 244, 0.98);
+}
+
 .managed-giveaway__prize-remove {
   border: 1px solid rgba(89, 117, 145, 0.12);
   background: rgba(247, 249, 252, 0.96);
   color: var(--text-secondary);
-  border-radius: 12px;
-  min-width: 40px;
-  min-height: 40px;
+  border-radius: 14px;
+  min-width: 44px;
+  min-height: 44px;
   font-size: 1rem;
   line-height: 1;
   cursor: pointer;
-  transition: background-color 0.2s ease;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
 }
 
 .managed-giveaway__prize-remove:disabled {
@@ -7884,15 +8160,16 @@
 }
 
 .managed-giveaway__prize-remove:hover {
-  color: var(--text-primary);
-  background: rgba(241, 245, 249, 0.98);
+  color: #914553;
+  border-color: rgba(196, 100, 120, 0.2);
+  background: rgba(250, 241, 244, 0.98);
 }
 
 .managed-giveaway__eyebrow {
-  color: rgba(58, 91, 122, 0.86);
-  font-size: 0.73rem;
-  font-weight: 700;
-  letter-spacing: 0.07em;
+  color: rgba(74, 106, 136, 0.9);
+  font-size: 0.72rem;
+  font-weight: 820;
+  letter-spacing: 0.12em;
   text-transform: uppercase;
 }
 
@@ -7915,9 +8192,17 @@
 }
 
 .managed-giveaway__section-inline-note {
-  color: var(--text-secondary);
-  font-size: 0.7rem;
-  line-height: 1.34;
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(77, 129, 178, 0.14);
+  background: rgba(241, 248, 255, 0.96);
+  color: #426986;
+  font-size: 0.73rem;
+  font-weight: 780;
+  line-height: 1;
   align-self: center;
 }
 
@@ -7927,19 +8212,56 @@
 }
 
 .managed-giveaway__channel-action {
-  min-height: 36px;
-  padding-inline: 12px;
-  border-radius: 12px;
-  font-size: 0.75rem;
+  min-height: 42px;
+  padding-inline: 16px;
+  border-radius: 14px;
+  font-size: 0.78rem;
+  font-weight: 760;
+}
+
+.managed-giveaway__channel-tools {
+  display: grid;
+  gap: 12px;
+}
+
+.managed-giveaway__channel-tool-card {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(89, 117, 145, 0.1);
+  background:
+    linear-gradient(180deg, rgba(251, 253, 255, 0.98), rgba(246, 249, 253, 0.95)),
+    rgba(248, 250, 253, 0.96);
+}
+
+.managed-giveaway__channel-tool-copy {
+  display: grid;
+  gap: 4px;
+}
+
+.managed-giveaway__channel-tool-copy strong {
+  color: var(--text-primary);
+  font-size: 0.88rem;
+  line-height: 1.18;
+  letter-spacing: -0.02em;
+}
+
+.managed-giveaway__channel-tool-copy small {
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+  line-height: 1.42;
 }
 
 .managed-giveaway__channel-picker {
   display: grid;
-  gap: 6px;
-  border-radius: 14px;
+  gap: 8px;
+  border-radius: 18px;
   border: 1px solid rgba(89, 117, 145, 0.1);
-  background: rgba(247, 249, 252, 0.96);
-  padding: 10px;
+  background:
+    linear-gradient(180deg, rgba(249, 252, 255, 0.98), rgba(245, 248, 252, 0.96)),
+    rgba(247, 249, 252, 0.96);
+  padding: 12px;
 }
 
 .managed-giveaway__channel-picker > span {
@@ -7950,11 +8272,11 @@
 
 .managed-giveaway__channel-picker-item {
   border: 1px solid rgba(89, 117, 145, 0.1);
-  border-radius: 12px;
+  border-radius: 16px;
   background: rgba(255, 255, 255, 0.98);
   color: var(--text-primary);
-  min-height: 38px;
-  padding: 0 12px;
+  min-height: 46px;
+  padding: 0 14px;
   text-align: left;
   cursor: pointer;
   transition:
@@ -7982,50 +8304,75 @@
 .managed-giveaway__editor-meta-actions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  gap: 10px;
+  padding-top: 2px;
 }
 
 .managed-giveaway__editor-meta-actions .button {
-  min-height: 40px;
-  border-radius: 14px;
-  font-size: 0.76rem;
+  min-height: 44px;
+  border-radius: 16px;
+  font-size: 0.78rem;
+}
+
+.managed-giveaway__meta-button {
+  color: #577084;
+  border-color: rgba(89, 117, 145, 0.12);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.managed-giveaway__meta-button--danger {
+  color: #775462;
+  border-color: rgba(177, 93, 113, 0.14);
+}
+
+.managed-giveaway__meta-button--quiet {
+  color: #4a677d;
 }
 
 .managed-giveaway__action-dock {
   position: sticky;
-  bottom: calc(env(safe-area-inset-bottom, 0px) + 10px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
   display: grid;
-  gap: 10px;
-  padding: 12px;
-  border-radius: 20px;
-  border: 1px solid rgba(44, 122, 197, 0.14);
+  gap: 12px;
+  padding: 14px;
+  border-radius: 24px;
+  border: 1px solid rgba(44, 122, 197, 0.16);
   background:
-    linear-gradient(160deg, rgba(241, 247, 255, 0.96), rgba(250, 252, 255, 0.94)),
+    linear-gradient(160deg, rgba(244, 249, 255, 0.98), rgba(251, 253, 255, 0.96)),
     rgba(255, 255, 255, 0.98);
-  box-shadow: 0 18px 34px rgba(10, 33, 53, 0.12);
+  box-shadow:
+    0 24px 44px rgba(10, 33, 53, 0.14),
+    inset 0 1px 0 rgba(255, 255, 255, 0.84);
   z-index: 4;
 }
 
 .managed-giveaway__action-dock--compact {
+  gap: 10px;
+  padding-block: 12px;
+}
+
+.managed-giveaway--step-conditions .managed-giveaway__action-dock--compact,
+.managed-giveaway--step-prizes .managed-giveaway__action-dock--compact {
   gap: 8px;
-  padding-block: 10px;
+  padding: 10px 12px;
 }
 
 .managed-giveaway__action-dock-copy {
   display: grid;
-  gap: 2px;
+  gap: 4px;
 }
 
 .managed-giveaway__action-dock-copy strong {
   color: var(--text-primary);
-  font-size: 0.84rem;
+  font-size: 0.92rem;
   line-height: 1.2;
+  letter-spacing: -0.02em;
 }
 
 .managed-giveaway__action-dock-copy span {
   color: var(--text-secondary);
-  font-size: 0.74rem;
-  line-height: 1.32;
+  font-size: 0.76rem;
+  line-height: 1.4;
 }
 
 .managed-giveaway__action-dock-actions {
@@ -8035,17 +8382,30 @@
   gap: 8px;
 }
 
+.managed-giveaway--step-conditions .managed-giveaway__action-dock-actions,
+.managed-giveaway--step-prizes .managed-giveaway__action-dock-actions {
+  display: grid;
+  grid-template-columns: minmax(108px, 0.42fr) minmax(0, 1fr);
+  justify-content: stretch;
+  width: 100%;
+}
+
 .managed-giveaway__action-dock-actions .button {
-  min-height: 46px;
+  min-height: 50px;
   min-width: 0;
-  border-radius: 16px;
+  border-radius: 18px;
+}
+
+.managed-giveaway__action-dock-actions .button--ghost {
+  background: rgba(255, 255, 255, 0.9);
+  border-color: rgba(81, 112, 141, 0.14);
 }
 
 .managed-giveaway__empty {
   display: grid;
   gap: 6px;
-  padding: 14px;
-  border-radius: 16px;
+  padding: 16px;
+  border-radius: 18px;
   border: 1px dashed rgba(89, 117, 145, 0.16);
   background: rgba(249, 251, 253, 0.92);
 }
@@ -8063,7 +8423,7 @@
 }
 
 .managed-giveaway__history {
-  gap: 6px;
+  gap: 8px;
 }
 
 .managed-giveaway__history-toggle {
@@ -8079,7 +8439,7 @@
 
 .managed-giveaway__history-copy strong {
   color: var(--text-primary);
-  font-size: 0.86rem;
+  font-size: 0.92rem;
   line-height: 1.2;
 }
 
@@ -8101,8 +8461,8 @@
   justify-content: space-between;
   gap: 10px;
   min-width: 0;
-  padding: 10px 12px;
-  border-radius: 14px;
+  padding: 12px 14px;
+  border-radius: 18px;
   border: 1px solid rgba(89, 117, 145, 0.1);
   background: rgba(247, 249, 252, 0.96);
   text-align: left;
@@ -8138,9 +8498,9 @@
   border: 1px solid rgba(89, 117, 145, 0.1);
   background: rgba(247, 249, 252, 0.96);
   color: var(--text-secondary);
-  border-radius: 14px;
-  min-width: 40px;
-  min-height: 40px;
+  border-radius: 16px;
+  min-width: 44px;
+  min-height: 44px;
   font-size: 1rem;
   line-height: 1;
   cursor: pointer;
@@ -8174,18 +8534,14 @@
   }
 
   .managed-giveaway__hero-card {
-    padding: 14px;
-    gap: 10px;
+    padding: 16px;
+    gap: 12px;
   }
 
   .managed-giveaway__hero-fact,
   .managed-giveaway__summary-card {
-    padding: 10px;
-    border-radius: 16px;
-  }
-
-  .managed-giveaway__hero-fact small {
-    display: none;
+    padding: 12px;
+    border-radius: 18px;
   }
 
   .managed-giveaway__choice-grid,
@@ -8207,6 +8563,10 @@
 
   .managed-giveaway__action-dock-actions {
     width: 100%;
+  }
+
+  .managed-giveaway__action-dock-copy {
+    gap: 5px;
   }
 
   .managed-giveaway__section-actions--align-end {
@@ -8244,11 +8604,11 @@
 
 @media (max-width: 390px) {
   .managed-giveaway__hero-copy h2 {
-    font-size: 1rem;
+    font-size: 1.08rem;
   }
 
   .managed-giveaway__hero-copy p {
-    font-size: 0.75rem;
+    font-size: 0.77rem;
   }
 
   .managed-giveaway__step-strip {
@@ -8258,6 +8618,20 @@
   .managed-giveaway__step-pill > strong {
     font-size: 0.74rem;
   }
+
+  .managed-giveaway__hero-card--editor-compact .managed-giveaway__hero-copy h2 {
+    font-size: 1.02rem;
+  }
+
+  .managed-giveaway__hero-card--editor-compact .managed-giveaway__hero-copy p {
+    font-size: 0.75rem;
+  }
+
+  .managed-giveaway--step-conditions .managed-giveaway__action-dock-actions,
+  .managed-giveaway--step-prizes .managed-giveaway__action-dock-actions {
+    grid-template-columns: minmax(102px, 0.4fr) minmax(0, 1fr);
+  }
+
   .managed-giveaway__primary-actions--split {
     grid-template-columns: minmax(0, 1fr);
   }

@@ -1432,12 +1432,12 @@ export function ManagedGiveawayCard({
     ? 'Закончить настройку'
     : publicationTextReady
       ? 'Опубликовать в чат'
-      : 'Открыть чат-бот';
+      : 'Завершить в боте';
   const finalPrimaryBusyLabel = firstConfigIssue
     ? 'Готовим…'
     : publicationTextReady
       ? 'Публикуем…'
-      : 'Открываем…';
+      : 'Открываем бота…';
   const nextStepLabel =
     editorStep === 'basics'
       ? 'Далее: условия'
@@ -1460,10 +1460,42 @@ export function ManagedGiveawayCard({
           ? 'Черновик сохраним автоматически перед публикацией.'
           : 'Откроем чат-бот и вернёмся сюда с текстом и фото.'
       : currentStepValidation.valid
-        ? activeEditorStep.description
+        ? editorStep === 'basics'
+          ? 'Дальше соберём условия участия и список каналов для проверки.'
+          : 'Останется добавить места, призы и финально проверить публикацию.'
         : currentStepValidation.message;
   const showStickyCopy =
     !currentStepValidation.valid || (editorStep === 'prizes' && !publicationTextReady);
+  const dashboardNote =
+    currentItem?.status === 'DRAFT'
+      ? {
+          title: 'Что осталось',
+          description:
+            'Проверьте сроки и механику здесь, а текст с фото спокойно доведите в чат-боте.',
+          points: ['Сроки', 'Условия', 'Контент в боте'],
+        }
+      : currentItem
+        ? {
+            title:
+              currentItem.status === 'SCHEDULED'
+                ? 'Сценарий уже собран'
+                : 'Управление остаётся под рукой',
+            description:
+              currentItem.status === 'SCHEDULED'
+                ? 'До старта можно быстро вернуться в бота, проверить публикацию и не потерять сценарий.'
+                : 'Публикация и итоги открываются через бота, а статус и быстрый вход остаются здесь.',
+            points: [
+              currentItem.publicationUrl ? 'Публикация' : 'Статус',
+              currentItem.resultsUrl ? 'Итоги' : 'Бот',
+              historyItems.length > 0 ? 'Архив' : 'Под рукой',
+            ],
+          }
+        : {
+            title: 'Как это работает',
+            description:
+              'Сначала собираете сценарий здесь, потом перед запуском добавляете текст и фото в личке бота.',
+            points: ['Основа', 'Условия', 'Призы'],
+          };
   const currentSummaryMetrics: SummaryMetric[] = currentItem
     ? [
         {
@@ -1517,21 +1549,16 @@ export function ManagedGiveawayCard({
           value: String(draft.prizes.length),
           note: buildPrizesSummary(draft),
         },
-        ...(editorStep === 'conditions'
-          ? [
-              {
-                key: 'conditions',
-                label: 'Подписки',
-                value: draft.requiredChannelIds.length > 0 ? `+${draft.requiredChannelIds.length}` : 'Источник',
-                note: buildConditionsSummary(draft, selectedRequiredChannels),
-              },
-            ]
-          : []),
       ]
     : [];
   const renderFactGrid = (metrics: SummaryMetric[]) =>
     metrics.length > 0 ? (
-      <div className="managed-giveaway__hero-facts">
+      <div
+        className={cn(
+          'managed-giveaway__hero-facts',
+          metrics.length === 2 && 'managed-giveaway__hero-facts--two',
+        )}
+      >
         {metrics.map((item) => (
           <div key={item.key} className="managed-giveaway__hero-fact">
             <span>{item.label}</span>
@@ -1543,7 +1570,13 @@ export function ManagedGiveawayCard({
     ) : null;
 
   return (
-    <div className="managed-giveaway">
+    <div
+      className={cn(
+        'managed-giveaway',
+        isEditingOpen ? 'managed-giveaway--editing' : 'managed-giveaway--dashboard',
+        isEditingOpen && `managed-giveaway--step-${editorStep}`,
+      )}
+    >
       {!isEditingOpen ? (
         listQuery.isLoading ? (
           <div className="managed-giveaway__hero-card managed-giveaway__hero-card--dashboard">
@@ -1591,7 +1624,7 @@ export function ManagedGiveawayCard({
                   disabled={isBusy}
                   onClick={startEditCurrentDraft}
                 >
-                  Продолжить
+                  Продолжить сценарий
                 </button>
                 <button
                   type="button"
@@ -1601,7 +1634,7 @@ export function ManagedGiveawayCard({
                     void handoffMutation.mutateAsync(currentItem.id);
                   }}
                 >
-                  Контент в боте
+                  Завершить в боте
                 </button>
               </div>
             ) : (
@@ -1668,7 +1701,7 @@ export function ManagedGiveawayCard({
                 disabled={isBusy}
                 onClick={startCreate}
               >
-                Создать
+                Новый сценарий
               </button>
               {historyItems.length > 0 ? (
                 <button
@@ -1684,10 +1717,32 @@ export function ManagedGiveawayCard({
         )
       ) : null}
 
+      {!isEditingOpen ? (
+        <div className="managed-giveaway__dashboard-note">
+          <div className="managed-giveaway__dashboard-note-copy">
+            <strong>{dashboardNote.title}</strong>
+            <small>{dashboardNote.description}</small>
+          </div>
+          <div className="managed-giveaway__dashboard-note-points" aria-hidden>
+            {dashboardNote.points.map((point) => (
+              <span key={point} className="managed-giveaway__chip">
+                {point}
+              </span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       {isEditingOpen ? (
         !draft ? (
           <div className={cn('managed-giveaway__surface', 'managed-giveaway__editor-card')}>
-            <div className="managed-giveaway__hero-card managed-giveaway__hero-card--editor">
+            <div
+              className={cn(
+                'managed-giveaway__hero-card',
+                'managed-giveaway__hero-card--editor',
+                editorStep !== 'basics' && 'managed-giveaway__hero-card--editor-compact',
+              )}
+            >
               <div className="managed-giveaway__hero-head">
                 <div className="managed-giveaway__hero-copy">
                   <span className="managed-giveaway__eyebrow">Черновик</span>
@@ -1963,7 +2018,7 @@ export function ManagedGiveawayCard({
 
             {editorStep === 'conditions' ? (
               <div className="managed-giveaway__step-stage">
-                <div className="managed-giveaway__section">
+                <div className="managed-giveaway__section managed-giveaway__section--conditions">
                   <div className="managed-giveaway__section-head">
                     <div className="managed-giveaway__section-copy">
                       <strong>Кто участвует</strong>
@@ -1980,17 +2035,20 @@ export function ManagedGiveawayCard({
                   </div>
 
                   {selectedRequiredChannels.length > 0 ? (
-                    <div className="managed-giveaway__prize-editor-list">
+                    <div className="managed-giveaway__channel-list">
                       {selectedRequiredChannels.map((item, index) => (
                         <div
                           key={`required-channel-${item.id}`}
-                          className="managed-giveaway__prize-editor-row"
+                          className="managed-giveaway__channel-row"
                         >
-                          <span className="managed-giveaway__prize-position">{index + 1}</span>
-                          <span className="managed-giveaway__selected-channel">{item.title}</span>
+                          <span className="managed-giveaway__channel-index">{index + 1}</span>
+                          <div className="managed-giveaway__channel-copy">
+                            <strong>{item.title}</strong>
+                            <small>Дополнительная подписка для участия</small>
+                          </div>
                           <button
                             type="button"
-                            className="managed-giveaway__prize-remove"
+                            className="managed-giveaway__channel-remove"
                             onClick={() => removeRequiredChannelById(item.id)}
                             disabled={isBusy}
                             aria-label={`Удалить доп. канал ${index + 1}`}
@@ -2006,44 +2064,58 @@ export function ManagedGiveawayCard({
                     </div>
                   )}
 
-                  <div className="managed-giveaway__section-actions">
-                    <button
-                      type="button"
-                      className="button button--ghost managed-giveaway__channel-action"
-                      disabled={isBusy || channelsQuery.isLoading}
-                      onClick={() => setChannelPickerOpen((current) => !current)}
-                    >
-                      {channelPickerOpen ? 'Скрыть свои каналы' : 'Выбрать свой канал'}
-                    </button>
-                    <span className="managed-giveaway__section-inline-note">
-                      Доступно: {availableOwnedChannels.length}
-                    </span>
-                  </div>
+                  <div className="managed-giveaway__channel-tools">
+                    <div className="managed-giveaway__channel-tool-card">
+                      <div className="managed-giveaway__channel-tool-copy">
+                        <strong>Свой канал</strong>
+                        <small>Выберите из списка, если бот уже подключён и у вас есть доступ.</small>
+                      </div>
+                      <div className="managed-giveaway__section-actions">
+                        <button
+                          type="button"
+                          className="button button--ghost managed-giveaway__channel-action"
+                          disabled={isBusy || channelsQuery.isLoading}
+                          onClick={() => setChannelPickerOpen((current) => !current)}
+                        >
+                          {channelPickerOpen ? 'Свернуть список' : 'Добавить свой канал'}
+                        </button>
+                        <span className="managed-giveaway__section-inline-note">
+                          Свои каналы: {availableOwnedChannels.length}
+                        </span>
+                      </div>
+                    </div>
 
-                  <div className="managed-giveaway__editor-grid managed-giveaway__editor-grid--align-end">
-                    <label className="field">
-                      <span>Чужой канал по публичной ссылке</span>
-                      <input
-                        type="text"
-                        value={channelLinkValue}
-                        onChange={(event) => {
-                          setChannelLinkValue(event.target.value);
-                          setValidationHint('');
-                          setEditorError('');
-                        }}
-                        placeholder="https://max.ru/..."
-                        disabled={isBusy}
-                      />
-                    </label>
-                    <div className="managed-giveaway__section-actions managed-giveaway__section-actions--align-end">
-                      <button
-                        type="button"
-                        className="button button--ghost managed-giveaway__channel-action"
-                        disabled={isBusy}
-                        onClick={addRequiredChannelByLink}
-                      >
-                        Добавить по ссылке
-                      </button>
+                    <div className="managed-giveaway__channel-tool-card managed-giveaway__channel-tool-card--link">
+                      <div className="managed-giveaway__channel-tool-copy">
+                        <strong>Чужой канал</strong>
+                        <small>Вставьте публичную ссылку, чтобы проверить канал и добавить его в механику.</small>
+                      </div>
+                      <div className="managed-giveaway__editor-grid managed-giveaway__editor-grid--align-end">
+                        <label className="field">
+                          <span>Публичная ссылка</span>
+                          <input
+                            type="text"
+                            value={channelLinkValue}
+                            onChange={(event) => {
+                              setChannelLinkValue(event.target.value);
+                              setValidationHint('');
+                              setEditorError('');
+                            }}
+                            placeholder="https://max.ru/..."
+                            disabled={isBusy}
+                          />
+                        </label>
+                        <div className="managed-giveaway__section-actions managed-giveaway__section-actions--align-end">
+                          <button
+                            type="button"
+                            className="button button--ghost managed-giveaway__channel-action"
+                            disabled={isBusy}
+                            onClick={addRequiredChannelByLink}
+                          >
+                            Проверить и добавить
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   </div>
 
@@ -2180,7 +2252,7 @@ export function ManagedGiveawayCard({
                             void openEditorInBot();
                           }}
                         >
-                          Изменить в боте
+                          Открыть контент в боте
                         </button>
                       </div>
                     ) : null}
@@ -2199,7 +2271,10 @@ export function ManagedGiveawayCard({
             <div className="managed-giveaway__editor-meta-actions">
               <button
                 type="button"
-                className="button button--ghost"
+                className={cn(
+                  'button button--ghost managed-giveaway__meta-button',
+                  'managed-giveaway__meta-button--danger',
+                )}
                 onClick={cancelEditorDraft}
                 disabled={isBusy}
               >
@@ -2211,7 +2286,10 @@ export function ManagedGiveawayCard({
               </button>
               <button
                 type="button"
-                className="button button--ghost"
+                className={cn(
+                  'button button--ghost managed-giveaway__meta-button',
+                  'managed-giveaway__meta-button--quiet',
+                )}
                 onClick={() => {
                   void saveEditor();
                 }}
