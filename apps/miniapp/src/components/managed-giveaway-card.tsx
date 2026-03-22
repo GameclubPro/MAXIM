@@ -1519,6 +1519,9 @@ export function ManagedGiveawayCard({
         },
       ]
     : [];
+  const currentSecondaryActionCount = currentItem
+    ? Number(Boolean(currentItem.publicationUrl)) + Number(Boolean(currentItem.resultsUrl))
+    : 0;
   const emptySummaryMetrics: SummaryMetric[] = [
     {
       key: 'steps',
@@ -1593,30 +1596,30 @@ export function ManagedGiveawayCard({
             {renderFactGrid(emptySummaryMetrics)}
           </div>
         ) : currentItem ? (
-          <>
-            <div className="managed-giveaway__hero-card managed-giveaway__hero-card--dashboard">
-              <div className="managed-giveaway__hero-head">
-                <div className="managed-giveaway__hero-copy">
-                  <span className="managed-giveaway__eyebrow">Активный сценарий</span>
-                  <h2>{currentItem.title}</h2>
-                  <p>{buildCurrentSubtitle(currentItem)}</p>
-                </div>
-                <div className="managed-giveaway__hero-badges">
-                  <span
-                    className={cn('managed-giveaway__badge', buildStatusTone(currentItem.status))}
-                  >
-                    {buildStatusLabel(currentItem.status)}
-                  </span>
-                  {historyItems.length > 0 ? (
-                    <span className="managed-giveaway__chip">
-                      {formatCount(historyItems.length)} в архиве
+          currentItem.status === 'DRAFT' ? (
+            <>
+              <div className="managed-giveaway__hero-card managed-giveaway__hero-card--dashboard">
+                <div className="managed-giveaway__hero-head">
+                  <div className="managed-giveaway__hero-copy">
+                    <span className="managed-giveaway__eyebrow">Активный сценарий</span>
+                    <h2>{currentItem.title}</h2>
+                    <p>{buildCurrentSubtitle(currentItem)}</p>
+                  </div>
+                  <div className="managed-giveaway__hero-badges">
+                    <span
+                      className={cn('managed-giveaway__badge', buildStatusTone(currentItem.status))}
+                    >
+                      {buildStatusLabel(currentItem.status)}
                     </span>
-                  ) : null}
+                    {historyItems.length > 0 ? (
+                      <span className="managed-giveaway__chip">
+                        {formatCount(historyItems.length)} в архиве
+                      </span>
+                    ) : null}
+                  </div>
                 </div>
+                {renderFactGrid(currentSummaryMetrics)}
               </div>
-              {renderFactGrid(currentSummaryMetrics)}
-            </div>
-            {currentItem.status === 'DRAFT' ? (
               <div className="managed-giveaway__primary-actions managed-giveaway__primary-actions--split">
                 <button
                   type="button"
@@ -1637,8 +1640,30 @@ export function ManagedGiveawayCard({
                   Завершить в боте
                 </button>
               </div>
-            ) : (
-              <div className="managed-giveaway__primary-actions">
+            </>
+          ) : (
+            <div className="managed-giveaway__dashboard-launchpad managed-giveaway__dashboard-launchpad--active">
+              <div className="managed-giveaway__dashboard-launchpad-head">
+                <div className="managed-giveaway__hero-copy">
+                  <span className="managed-giveaway__eyebrow">Активный сценарий</span>
+                  <h2>{currentItem.title}</h2>
+                  <p>{buildCurrentSubtitle(currentItem)}</p>
+                </div>
+                <div className="managed-giveaway__hero-badges">
+                  <span
+                    className={cn('managed-giveaway__badge', buildStatusTone(currentItem.status))}
+                  >
+                    {buildStatusLabel(currentItem.status)}
+                  </span>
+                  {historyItems.length > 0 ? (
+                    <span className="managed-giveaway__chip">
+                      {formatCount(historyItems.length)} в архиве
+                    </span>
+                  ) : null}
+                </div>
+              </div>
+              {renderFactGrid(currentSummaryMetrics)}
+              <div className="managed-giveaway__dashboard-launchpad-actions">
                 <button
                   type="button"
                   className="button button--accent"
@@ -1649,27 +1674,50 @@ export function ManagedGiveawayCard({
                 >
                   {handoffMutation.isPending ? 'Открываем…' : 'Открыть в боте'}
                 </button>
-                {currentItem.publicationUrl ? (
-                  <button
-                    type="button"
-                    className="button button--ghost"
-                    onClick={() => openMaxBotLink(currentItem.publicationUrl ?? '')}
-                  >
-                    Публикация
-                  </button>
-                ) : null}
-                {currentItem.resultsUrl ? (
-                  <button
-                    type="button"
-                    className="button button--ghost"
-                    onClick={() => openMaxBotLink(currentItem.resultsUrl ?? '')}
-                  >
-                    Итоги
-                  </button>
-                ) : null}
               </div>
-            )}
-          </>
+              {currentItem.publicationUrl || currentItem.resultsUrl ? (
+                <div
+                  className={cn(
+                    'managed-giveaway__dashboard-secondary-actions',
+                    currentSecondaryActionCount === 1 &&
+                      'managed-giveaway__dashboard-secondary-actions--single',
+                  )}
+                >
+                  {currentItem.publicationUrl ? (
+                    <button
+                      type="button"
+                      className="button button--ghost"
+                      onClick={() => openMaxBotLink(currentItem.publicationUrl ?? '')}
+                    >
+                      Публикация
+                    </button>
+                  ) : null}
+                  {currentItem.resultsUrl ? (
+                    <button
+                      type="button"
+                      className="button button--ghost"
+                      onClick={() => openMaxBotLink(currentItem.resultsUrl ?? '')}
+                    >
+                      Итоги
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+              <div className="managed-giveaway__dashboard-note managed-giveaway__dashboard-note--inline">
+                <div className="managed-giveaway__dashboard-note-copy">
+                  <strong>{dashboardNote.title}</strong>
+                  <small>{dashboardNote.description}</small>
+                </div>
+                <div className="managed-giveaway__dashboard-note-points" aria-hidden>
+                  {dashboardNote.points.map((point) => (
+                    <span key={point} className="managed-giveaway__chip">
+                      {point}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )
         ) : (
           <>
             <div className="managed-giveaway__dashboard-launchpad">
@@ -1718,7 +1766,7 @@ export function ManagedGiveawayCard({
         )
       ) : null}
 
-      {!isEditingOpen ? (
+      {!isEditingOpen && (!currentItem || currentItem.status === 'DRAFT') ? (
         <div className="managed-giveaway__dashboard-note">
           <div className="managed-giveaway__dashboard-note-copy">
             <strong>{dashboardNote.title}</strong>

@@ -7524,11 +7524,48 @@
     inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
+.managed-giveaway__dashboard-launchpad--active {
+  gap: 12px;
+}
+
 .managed-giveaway__dashboard-launchpad-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 14px;
+}
+
+.managed-giveaway__dashboard-launchpad-actions {
+  display: grid;
+  gap: 10px;
+}
+
+.managed-giveaway__dashboard-launchpad-actions .button,
+.managed-giveaway__dashboard-secondary-actions .button {
+  width: 100%;
+  min-height: 52px;
+  border-radius: 18px;
+  font-size: 0.9rem;
+  letter-spacing: -0.015em;
+}
+
+.managed-giveaway__dashboard-launchpad-actions .button--accent {
+  box-shadow: 0 16px 28px rgba(11, 132, 255, 0.22);
+}
+
+.managed-giveaway__dashboard-secondary-actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.managed-giveaway__dashboard-secondary-actions--single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.managed-giveaway__dashboard-secondary-actions .button--ghost {
+  border-color: rgba(77, 109, 138, 0.16);
+  background: rgba(255, 255, 255, 0.86);
 }
 
 .managed-giveaway__dashboard-note-copy {
@@ -7552,6 +7589,16 @@
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.managed-giveaway__dashboard-note--inline {
+  gap: 10px;
+  padding: 14px;
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(246, 250, 255, 0.84)),
+    rgba(255, 255, 255, 0.78);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
 }
 
 .managed-giveaway__step-strip {
@@ -8557,7 +8604,8 @@
   }
 
   .managed-giveaway__hero-facts,
-  .managed-giveaway__summary-grid {
+  .managed-giveaway__summary-grid,
+  .managed-giveaway__dashboard-secondary-actions {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -8575,6 +8623,11 @@
   .managed-giveaway__summary-card {
     padding: 12px;
     border-radius: 18px;
+  }
+
+  .managed-giveaway__dashboard-note--inline {
+    padding: 13px;
+    border-radius: 20px;
   }
 
   .managed-giveaway__choice-grid,
@@ -8666,6 +8719,10 @@
   }
 
   .managed-giveaway__primary-actions--split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .managed-giveaway__dashboard-secondary-actions {
     grid-template-columns: minmax(0, 1fr);
   }
 }
