@@ -2600,6 +2600,38 @@
   border-radius: 16px;
 }
 
+.channel-dialog-screen--comments .channel-dialog-thread-context--floating {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 3;
+  padding: 4px 0 12px;
+  border: 0;
+  border-radius: 0;
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--dialog-bg-start) 96%, white),
+    rgba(237, 245, 255, 0.78) 72%,
+    rgba(237, 245, 255, 0)
+  );
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  pointer-events: none;
+}
+
+.channel-dialog-screen--comments .channel-dialog-thread-context--floating p {
+  max-width: calc(100% - 24px);
+  margin: 0 auto;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.92);
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: 0 6px 18px rgba(31, 62, 90, 0.04);
+  -webkit-line-clamp: 1;
+}
+
 .channel-dialog-comments-header.is-compact {
   gap: 6px;
 }
@@ -2684,11 +2716,19 @@
   padding: 0 1px 2px;
 }
 
+.channel-dialog-screen--comments .channel-dialog-body.has-floating-thread-context {
+  padding-top: 42px;
+}
+
 .channel-dialog-skeletons,
 .channel-dialog-message-list {
   display: grid;
   gap: 10px;
   align-content: start;
+}
+
+.channel-dialog-screen--comments .channel-dialog-message-list {
+  min-height: 100%;
 }
 
 .channel-dialog-intro {
@@ -3427,6 +3467,10 @@
 
   .channel-dialog-thread-context p {
     font-size: 0.76rem;
+  }
+
+  .channel-dialog-screen--comments .channel-dialog-body.has-floating-thread-context {
+    padding-top: 40px;
   }
 
   .channel-dialog-reaction-popover {

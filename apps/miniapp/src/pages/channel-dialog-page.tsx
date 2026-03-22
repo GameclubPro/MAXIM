@@ -1012,6 +1012,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       <div className="channel-dialog-screen__backdrop" aria-hidden />
 
       <div className="channel-dialog-shell">
+        {dialogType === 'comments' && introText ? (
+          <div className="channel-dialog-thread-context channel-dialog-thread-context--floating">
+            <p>{introText}</p>
+          </div>
+        ) : null}
+
         {dialogType === 'suggest' ? (
           <header className={cn('channel-dialog-topbar', isBodyScrolled && 'is-compact')}>
             <button
@@ -1036,7 +1042,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
         <section
           ref={scrollViewportRef}
-          className="channel-dialog-body"
+          className={cn(
+            'channel-dialog-body',
+            dialogType === 'comments' && introText && 'has-floating-thread-context',
+          )}
           onScroll={(event) => setIsBodyScrolled(event.currentTarget.scrollTop > 18)}
         >
           {dialogQuery.isLoading ? (
@@ -1074,21 +1083,15 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
           {!dialogQuery.isLoading && !dialogQuery.error ? (
             <div className="channel-dialog-message-list">
-              {introText ? (
-                dialogType === 'comments' ? (
-                  <div className="channel-dialog-thread-context channel-dialog-thread-context--inline">
-                    <p>{introText}</p>
-                  </div>
-                ) : (
-                  <div
-                    className={cn(
-                      'channel-dialog-intro',
-                      isBodyScrolled && 'is-collapsed',
-                    )}
-                  >
-                    <p>{introText}</p>
-                  </div>
-                )
+              {introText && dialogType !== 'comments' ? (
+                <div
+                  className={cn(
+                    'channel-dialog-intro',
+                    isBodyScrolled && 'is-collapsed',
+                  )}
+                >
+                  <p>{introText}</p>
+                </div>
               ) : null}
 
               {messages.length ? (
