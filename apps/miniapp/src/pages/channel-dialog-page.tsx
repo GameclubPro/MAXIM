@@ -1,4 +1,4 @@
-import type { ChannelDialogType } from '@maxim/contracts';
+import type { ChannelDialogMessage, ChannelDialogType } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -113,6 +113,15 @@ function SendArrowIcon() {
   );
 }
 
+function CloseIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
+      <path d="M5.4 5.4L14.6 14.6" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="M14.6 5.4L5.4 14.6" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 type DialogViewModel = {
   title: string;
   placeholder: string;
@@ -128,12 +137,117 @@ function buildViewModel(dialogType: ChannelDialogType): DialogViewModel {
 
   return {
     title: 'Комментарии',
-    placeholder: 'Комментарий',
+    placeholder: 'Ответить в тред',
   };
 }
 
 function resolveDialogEntityType(pathname: string): LastEntityType {
   return pathname.includes('/channel/') ? 'channel' : 'chat';
+}
+
+function pluralizeRu(value: number, one: string, few: string, many: string): string {
+  const normalized = Math.abs(value) % 100;
+  const remainder = normalized % 10;
+
+  if (normalized > 10 && normalized < 20) {
+    return many;
+  }
+
+  if (remainder === 1) {
+    return one;
+  }
+
+  if (remainder >= 2 && remainder <= 4) {
+    return few;
+  }
+
+  return many;
+}
+
+function formatDialogDayKey(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+}
+
+function formatDialogDayLabel(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  const today = new Date();
+  const currentDay = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const targetDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const diffDays = Math.round((currentDay.getTime() - targetDay.getTime()) / 86_400_000);
+
+  if (diffDays === 0) {
+    return 'Сегодня';
+  }
+
+  if (diffDays === 1) {
+    return 'Вчера';
+  }
+
+  return date.toLocaleDateString('ru-RU', {
+    day: 'numeric',
+    month: 'long',
+  });
+}
+
+type DialogTimelineEntry =
+  | {
+      kind: 'day';
+      key: string;
+      label: string;
+    }
+  | {
+      kind: 'message';
+      key: string;
+      message: ChannelDialogMessage;
+      isOwnMessage: boolean;
+      isAdminMessage: boolean;
+    };
+
+function buildDialogTimeline(
+  messages: ChannelDialogMessage[],
+  currentUserId: string | null | undefined,
+): DialogTimelineEntry[] {
+  const entries: DialogTimelineEntry[] = [];
+  let previousDayKey: string | null = null;
+
+  for (const message of messages) {
+    const dayKey = formatDialogDayKey(message.createdAt);
+    if (dayKey !== previousDayKey) {
+      entries.push({
+        kind: 'day',
+        key: `day-${dayKey}`,
+        label: formatDialogDayLabel(message.createdAt),
+      });
+      previousDayKey = dayKey;
+    }
+
+    entries.push({
+      kind: 'message',
+      key: message.id,
+      message,
+      isOwnMessage: currentUserId === message.authorUserId,
+      isAdminMessage: message.authorRole === 'admin',
+    });
+  }
+
+  return entries;
+}
+
+function resolveDialogAuthorName(message: ChannelDialogMessage, isOwnMessage: boolean): string {
+  if (isOwnMessage) {
+    return 'Вы';
+  }
+
+  return message.authorDisplayName || `Участник ${message.authorUserId}`;
 }
 
 export function ChannelDialogPage({ api }: { api: ApiTransport }) {
@@ -144,7 +258,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const token = searchParams.get('token')?.trim() ?? '';
   const dialogType = resolveDialogType(mode);
   const entityType = resolveDialogEntityType(location.pathname);
-  const showTopbar = dialogType !== 'comments';
+  const showClassicTopbar = dialogType !== 'comments';
+  const showCommentsHeader = dialogType === 'comments';
   const [draft, setDraft] = useState('');
   const composeFieldRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollViewportRef = useRef<HTMLElement | null>(null);
@@ -178,7 +293,37 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const messages = dialogQuery.data?.messages ?? [];
   const introText = dialogQuery.data?.introText?.trim() ?? '';
   const draftLength = draft.trim().length;
-  const showComposeMeta = dialogType === 'suggest' || draftLength > 0;
+  const showComposeMeta = dialogType === 'comments' || dialogType === 'suggest' || draftLength > 0;
+  const timelineEntries = useMemo(
+    () => buildDialogTimeline(messages, meQuery.data?.userId),
+    [messages, meQuery.data?.userId],
+  );
+  const participantCount = useMemo(
+    () => new Set(messages.map((message) => message.authorUserId)).size,
+    [messages],
+  );
+  const adminParticipantCount = useMemo(
+    () =>
+      new Set(
+        messages
+          .filter((message) => message.authorRole === 'admin')
+          .map((message) => message.authorUserId),
+      ).size,
+    [messages],
+  );
+  const threadNote = useMemo(() => {
+    if (introText) {
+      return introText;
+    }
+
+    if (dialogType === 'suggest') {
+      return 'Идея уйдёт только админам и не попадёт в общий поток сообщений.';
+    }
+
+    return entityType === 'channel'
+      ? 'Отдельный поток к посту. Ответы остаются в треде и не шумят в ленте.'
+      : 'Тихий тред к сообщению админа: коротко и по делу.';
+  }, [dialogType, entityType, introText]);
 
   const handleDismiss = () => {
     maxImpact('light');
@@ -274,10 +419,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             title={entityType === 'channel' ? 'Канал не найден' : 'Чат не найден'}
             description="Откройте диалог заново из сообщения."
             action={
-              <Link
-                to={buildManagedEntitiesRoute(entityType)}
-                className="button button--accent"
-              >
+              <Link to={buildManagedEntitiesRoute(entityType)} className="button button--accent">
                 К списку
               </Link>
             }
@@ -296,10 +438,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             title="Кнопка устарела"
             description="Откройте сообщение и нажмите кнопку ещё раз."
             action={
-              <Link
-                to={buildManagedEntitiesRoute(entityType)}
-                className="button button--accent"
-              >
+              <Link to={buildManagedEntitiesRoute(entityType)} className="button button--accent">
                 К списку
               </Link>
             }
@@ -315,8 +454,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     >
       <div className="channel-dialog-screen__backdrop" aria-hidden />
 
-      <div className={cn('channel-dialog-shell', !showTopbar && 'channel-dialog-shell--flat')}>
-        {showTopbar ? (
+      <div
+        className={cn(
+          'channel-dialog-shell',
+          !showClassicTopbar && !showCommentsHeader && 'channel-dialog-shell--flat',
+        )}
+      >
+        {showClassicTopbar ? (
           <header className="channel-dialog-topbar">
             <button
               type="button"
@@ -335,6 +479,62 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             <button type="button" className="channel-dialog-close" onClick={handleDismiss}>
               Закрыть
             </button>
+          </header>
+        ) : null}
+
+        {showCommentsHeader ? (
+          <header className="channel-dialog-comments-head">
+            <div className="channel-dialog-comments-head__bar">
+              <button
+                type="button"
+                className="channel-dialog-nav"
+                onClick={handleDismiss}
+                aria-label="Назад"
+              >
+                <BackChevronIcon />
+              </button>
+
+              <div className="channel-dialog-comments-head__title">
+                <span>Тихий тред</span>
+                <h1>{view.title}</h1>
+                <small>{chatTitle || chatId}</small>
+              </div>
+
+              <button
+                type="button"
+                className="channel-dialog-comments-head__dismiss"
+                onClick={handleDismiss}
+                aria-label="Закрыть"
+              >
+                <CloseIcon />
+              </button>
+            </div>
+
+            <div className="channel-dialog-comments-head__metrics">
+              <div className="channel-dialog-comments-head__metric">
+                <strong>{messages.length}</strong>
+                <span>
+                  {pluralizeRu(messages.length, 'комментарий', 'комментария', 'комментариев')}
+                </span>
+              </div>
+              <div className="channel-dialog-comments-head__metric is-soft">
+                <strong>{participantCount}</strong>
+                <span>{pluralizeRu(participantCount, 'участник', 'участника', 'участников')}</span>
+              </div>
+            </div>
+
+            <div className="channel-dialog-comments-head__note">
+              <p>{threadNote}</p>
+              <div className="channel-dialog-comments-head__tags">
+                <span>Один поток без шума</span>
+                {adminParticipantCount > 0 ? (
+                  <span>
+                    {adminParticipantCount}{' '}
+                    {pluralizeRu(adminParticipantCount, 'админ', 'админа', 'админов')} в треде
+                  </span>
+                ) : null}
+              </div>
+            </div>
           </header>
         ) : null}
 
@@ -374,44 +574,82 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
           {!dialogQuery.isLoading && !dialogQuery.error ? (
             <div className="channel-dialog-message-list">
-              {introText ? (
+              {dialogType === 'suggest' && introText ? (
                 <div className="channel-dialog-intro">
                   <p>{introText}</p>
                 </div>
               ) : null}
 
-              {messages.length ? (
-                messages.map((message) => {
-                  const isOwnMessage = meQuery.data?.userId === message.authorUserId;
+              {timelineEntries.length ? (
+                timelineEntries.map((entry) => {
+                  if (entry.kind === 'day') {
+                    return (
+                      <div key={entry.key} className="channel-dialog-day-divider">
+                        <span>{entry.label}</span>
+                      </div>
+                    );
+                  }
+
+                  const { message, isOwnMessage, isAdminMessage } = entry;
+
                   return (
                     <article
-                      key={message.id}
-                      className={cn('channel-dialog-message', isOwnMessage && 'is-own')}
+                      key={entry.key}
+                      className={cn(
+                        'channel-dialog-message',
+                        isOwnMessage && 'is-own',
+                        isAdminMessage && 'is-admin',
+                      )}
                     >
                       <DialogAvatar
                         avatarUrl={message.avatarUrl}
                         label={message.authorDisplayName || message.authorUserId}
                       />
-                      <div className="channel-dialog-message__bubble">
-                        <div className="channel-dialog-message__meta">
-                          <strong>
-                            {message.authorDisplayName || `Участник ${message.authorUserId}`}
-                          </strong>
-                          <time dateTime={message.createdAt}>
-                            {formatMessageTime(message.createdAt)}
-                          </time>
+
+                      <div className="channel-dialog-message__stack">
+                        <div className="channel-dialog-message__bubble">
+                          <div className="channel-dialog-message__meta">
+                            <div className="channel-dialog-message__author">
+                              <strong>{resolveDialogAuthorName(message, isOwnMessage)}</strong>
+                              {isAdminMessage ? (
+                                <span className="channel-dialog-message__role">админ</span>
+                              ) : null}
+                            </div>
+                            <time dateTime={message.createdAt}>
+                              {formatMessageTime(message.createdAt)}
+                            </time>
+                          </div>
+
+                          <p>{message.text}</p>
+
+                          {dialogType === 'suggest' ? (
+                            <div className="channel-dialog-message__footer">
+                              <span
+                                className={cn(
+                                  'channel-dialog-delivery',
+                                  message.delivered ? 'is-delivered' : 'is-pending',
+                                )}
+                              >
+                                {message.delivered ? 'доставлено' : 'в очереди'}
+                              </span>
+                            </div>
+                          ) : null}
                         </div>
-                        <p>{message.text}</p>
-                        {dialogType === 'suggest' ? (
-                          <div className="channel-dialog-message__footer">
-                            <span
-                              className={cn(
-                                'channel-dialog-delivery',
-                                message.delivered ? 'is-delivered' : 'is-pending',
-                              )}
-                            >
-                              {message.delivered ? 'доставлено' : 'в очереди'}
-                            </span>
+
+                        {message.reactions.length > 0 ? (
+                          <div className="channel-dialog-message__reactions">
+                            {message.reactions.map((reaction) => (
+                              <span
+                                key={`${message.id}-${reaction.emoji}`}
+                                className={cn(
+                                  'channel-dialog-message__reaction',
+                                  reaction.active && 'is-active',
+                                )}
+                              >
+                                <b>{reaction.emoji}</b>
+                                <small>{reaction.count}</small>
+                              </span>
+                            ))}
                           </div>
                         ) : null}
                       </div>
@@ -419,7 +657,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   );
                 })
               ) : (
-                <div className="channel-dialog-empty">Пока пусто</div>
+                <div className="channel-dialog-empty">
+                  {dialogType === 'comments' ? 'Пока пусто. Напишите первый ответ.' : 'Пока пусто'}
+                </div>
               )}
             </div>
           ) : null}
@@ -431,10 +671,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
               <div
                 className={cn(
                   'channel-dialog-compose__meta',
-                  dialogType !== 'suggest' && 'channel-dialog-compose__meta--solo',
+                  dialogType === 'comments' && 'channel-dialog-compose__meta--comments',
                 )}
               >
-                {dialogType === 'suggest' ? <span>Только для админов</span> : null}
+                <span>{dialogType === 'suggest' ? 'Только для админов' : 'Ответ в тред'}</span>
                 <span>{draftLength}/2000</span>
               </div>
             ) : null}

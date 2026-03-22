@@ -501,8 +501,10 @@ function buildPreviewDialogMessage(payload: {
   text: string;
   authorUserId: string;
   authorDisplayName: string | null;
+  authorRole?: 'member' | 'admin';
   avatarUrl?: string | null;
   createdAt: string;
+  reactions?: Array<{ emoji: string; count: number; active?: boolean }>;
   delivered?: boolean;
   deliveredToUserId?: string | null;
 }): ChannelDialogMessage {
@@ -512,8 +514,10 @@ function buildPreviewDialogMessage(payload: {
     text: payload.text,
     authorUserId: payload.authorUserId,
     authorDisplayName: payload.authorDisplayName,
+    authorRole: payload.authorRole ?? 'member',
     avatarUrl: payload.avatarUrl ?? null,
     createdAt: payload.createdAt,
+    reactions: payload.reactions ?? [],
     ...(payload.delivered !== undefined ? { delivered: payload.delivered } : {}),
     ...(payload.deliveredToUserId !== undefined
       ? { deliveredToUserId: payload.deliveredToUserId }
@@ -994,11 +998,16 @@ function createInitialState(): PreviewState {
         buildPreviewDialogMessage({
           id: 'chat-comments-1',
           type: 'comments',
-          text: 'Сделал компактную парковку для самокатов у 3-го подъезда. Проверьте, не мешает ли проходу.',
+          text: 'Сделал компактную парковку для самокатов у 3-го подъезда. Проверьте, не мешает ли проходу и удобно ли вечером.',
           authorUserId: 'preview-admin-2',
           authorDisplayName: 'Александр',
+          authorRole: 'admin',
           avatarUrl: buildPreviewAvatarDataUrl('Александр', '#4d94ff', '#2b64dd'),
           createdAt: addHours(now, -5.2).toISOString(),
+          reactions: [
+            { emoji: '👍', count: 6 },
+            { emoji: '🔥', count: 2 },
+          ],
         }),
         buildPreviewDialogMessage({
           id: 'chat-comments-2',
@@ -1008,6 +1017,10 @@ function createInitialState(): PreviewState {
           authorDisplayName: 'Марина Орлова',
           avatarUrl: buildPreviewAvatarDataUrl('Марина Орлова', '#3cc58b', '#0f9f70'),
           createdAt: addHours(now, -4.8).toISOString(),
+          reactions: [
+            { emoji: '💡', count: 3 },
+            { emoji: '👏', count: 1 },
+          ],
         }),
         buildPreviewDialogMessage({
           id: 'chat-comments-3',
@@ -1017,6 +1030,7 @@ function createInitialState(): PreviewState {
           authorDisplayName: 'Наталья',
           avatarUrl: buildPreviewAvatarDataUrl('Наталья', '#6aa8ff', '#3b7ef0'),
           createdAt: addHours(now, -4.5).toISOString(),
+          reactions: [{ emoji: '❤️', count: 4, active: true }],
         }),
         buildPreviewDialogMessage({
           id: 'chat-comments-4',
@@ -1024,17 +1038,24 @@ function createInitialState(): PreviewState {
           text: 'Добавлю светоотражающую ленту и перенесу стойку на полметра ближе к клумбе.',
           authorUserId: 'preview-admin-2',
           authorDisplayName: 'Александр',
+          authorRole: 'admin',
           avatarUrl: buildPreviewAvatarDataUrl('Александр', '#4d94ff', '#2b64dd'),
           createdAt: addHours(now, -4.1).toISOString(),
+          reactions: [{ emoji: '👌', count: 2 }],
         }),
         buildPreviewDialogMessage({
           id: 'chat-comments-5',
           type: 'comments',
-          text: 'Отлично. Тогда оставим тестом на неделю и посмотрим, как поведёт себя поток вечером.',
+          text: 'Отлично. Тогда оставим тестом на неделю и посмотрим, как поведёт себя поток вечером. Если всё ок, закреплю схему в сообщении.',
           authorUserId: 'preview-admin',
           authorDisplayName: 'Алексей',
+          authorRole: 'admin',
           avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
           createdAt: addHours(now, -3.9).toISOString(),
+          reactions: [
+            { emoji: '🚀', count: 2, active: true },
+            { emoji: '✅', count: 5 },
+          ],
         }),
       ],
     },
@@ -1069,6 +1090,7 @@ function createInitialState(): PreviewState {
           authorDisplayName: 'Татьяна',
           avatarUrl: buildPreviewAvatarDataUrl('Татьяна', '#f1a44b', '#ea7b4b'),
           createdAt: addHours(now, -10.5).toISOString(),
+          reactions: [{ emoji: '🙏', count: 8 }],
         }),
         buildPreviewDialogMessage({
           id: 'channel-comments-2',
@@ -1076,8 +1098,13 @@ function createInitialState(): PreviewState {
           text: 'Если добавите следующий апдейт про развоз воды, закрепите его в начале треда.',
           authorUserId: 'preview-admin',
           authorDisplayName: 'Алексей',
+          authorRole: 'admin',
           avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
           createdAt: addHours(now, -9.8).toISOString(),
+          reactions: [
+            { emoji: '👍', count: 3, active: true },
+            { emoji: '💧', count: 2 },
+          ],
         }),
       ],
     },
