@@ -1012,33 +1012,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       <div className="channel-dialog-screen__backdrop" aria-hidden />
 
       <div className="channel-dialog-shell">
-        {dialogType === 'comments' ? (
-          <header className={cn('channel-dialog-comments-header', isBodyScrolled && 'is-compact')}>
-            <div className="channel-dialog-comments-header__bar">
-              <button
-                type="button"
-                className="channel-dialog-nav"
-                onClick={handleDismiss}
-                aria-label="Назад"
-              >
-                <BackIcon />
-              </button>
-
-              <div className="channel-dialog-comments-header__title">
-                <span>{chatLabel}</span>
-                <h1>{view.title}</h1>
-              </div>
-
-              <span className="channel-dialog-comments-header__spacer" aria-hidden />
-            </div>
-
-            {introText ? (
-              <div className="channel-dialog-thread-context">
-                <p>{introText}</p>
-              </div>
-            ) : null}
-          </header>
-        ) : dialogType === 'suggest' ? (
+        {dialogType === 'suggest' ? (
           <header className={cn('channel-dialog-topbar', isBodyScrolled && 'is-compact')}>
             <button
               type="button"
@@ -1100,15 +1074,21 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
           {!dialogQuery.isLoading && !dialogQuery.error ? (
             <div className="channel-dialog-message-list">
-              {introText && dialogType !== 'comments' ? (
-                <div
-                  className={cn(
-                    'channel-dialog-intro',
-                    isBodyScrolled && 'is-collapsed',
-                  )}
-                >
-                  <p>{introText}</p>
-                </div>
+              {introText ? (
+                dialogType === 'comments' ? (
+                  <div className="channel-dialog-thread-context channel-dialog-thread-context--inline">
+                    <p>{introText}</p>
+                  </div>
+                ) : (
+                  <div
+                    className={cn(
+                      'channel-dialog-intro',
+                      isBodyScrolled && 'is-collapsed',
+                    )}
+                  >
+                    <p>{introText}</p>
+                  </div>
+                )
               ) : null}
 
               {messages.length ? (

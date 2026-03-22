@@ -2477,8 +2477,13 @@
 }
 
 .channel-dialog-screen--comments {
-  padding-top: max(8px, env(safe-area-inset-top, 0px));
-  padding-bottom: max(4px, calc(var(--safe-bottom) + 2px));
+  padding-top: max(4px, env(safe-area-inset-top, 0px));
+  padding-bottom: max(0px, var(--safe-bottom));
+}
+
+.channel-dialog-screen--comments .channel-dialog-shell {
+  gap: 6px;
+  grid-template-rows: minmax(0, 1fr) auto;
 }
 
 .channel-dialog-screen__backdrop {
@@ -2590,6 +2595,11 @@
   overflow: hidden;
 }
 
+.channel-dialog-thread-context--inline {
+  padding: 9px 12px;
+  border-radius: 16px;
+}
+
 .channel-dialog-comments-header.is-compact {
   gap: 6px;
 }
@@ -2671,7 +2681,7 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-body {
-  padding-top: 0;
+  padding: 0 1px 2px;
 }
 
 .channel-dialog-skeletons,
@@ -3191,7 +3201,7 @@
 }
 
 .channel-dialog-screen--comments .channel-dialog-compose {
-  padding-top: 1px;
+  padding-top: 0;
   background: none;
 }
 
@@ -3408,18 +3418,6 @@
 
   .channel-dialog-screen--comments .channel-dialog-compose {
     padding-top: 0;
-  }
-
-  .channel-dialog-comments-header__bar {
-    gap: 8px;
-  }
-
-  .channel-dialog-comments-header__title span {
-    font-size: 0.66rem;
-  }
-
-  .channel-dialog-comments-header__title h1 {
-    font-size: 0.96rem;
   }
 
   .channel-dialog-thread-context {
