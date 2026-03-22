@@ -1756,6 +1756,38 @@ describe('PrivateControlService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
   });
 
+  it('ignores an empty bot_started right after proactive profile mention delivery', async () => {
+    const { service, maxClient, chats } = createHarness();
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: chats[0].id,
+      chatTitle: chats[0].title,
+    };
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate('broadcast_handoff'));
+    maxClient.sendMessage.mockClear();
+
+    await service.handoffProfileMentionFromMiniapp(
+      chats[0].id,
+      actor,
+      'user-88',
+      {
+        displayName: 'Анна',
+      },
+      'chat',
+    );
+
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    maxClient.sendMessage.mockClear();
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate(''));
+
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(maxClient.answerCallback).not.toHaveBeenCalled();
+  });
+
   it('proactively delivers giveaway handoff into a known private chat and skips duplicate bot_started reply', async () => {
     const { service, maxClient, chats } = createHarness();
     const actor = {

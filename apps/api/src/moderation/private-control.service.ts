@@ -1073,6 +1073,11 @@ export class PrivateControlService {
 
     const session = await this.loadSession(context.actor.userId);
     this.rememberPrivateChatId(session, context.chatId);
+    if (!startPayload && this.wasProfileMentionHandoffAlreadyDelivered(session, context.chatId)) {
+      this.clearDeliveredProfileMentionHandoff(session);
+      await this.saveSession(context.actor.userId, session);
+      return;
+    }
     const handoffPayload = this.parseGiveawayHandoffStartPayload(startPayload);
     if (handoffPayload) {
       session.selectedChatId = handoffPayload.chatId;
