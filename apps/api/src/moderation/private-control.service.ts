@@ -1050,7 +1050,7 @@ export class PrivateControlService {
       session.section = null;
       session.channelSection = null;
       session.searchQuery = null;
-      session.pendingInput = null;
+      session.pendingInput = { kind: 'giveaway_content' };
       session.pendingMassAction = null;
       session.lastScreenStack = [];
     }
@@ -1060,7 +1060,10 @@ export class PrivateControlService {
         : session.screen === 'chat_select'
           ? this.resolvePrimaryScreen(session)
           : session.screen;
-    if (session.pendingInput?.kind !== 'broadcast_content') {
+    if (
+      session.pendingInput?.kind !== 'broadcast_content' &&
+      session.pendingInput?.kind !== 'giveaway_content'
+    ) {
       session.pendingInput = null;
     }
     session.pendingMassAction = null;
@@ -1253,7 +1256,7 @@ export class PrivateControlService {
     session.channelSection = null;
     session.searchQuery = null;
     session.pendingMassAction = null;
-    session.pendingInput = null;
+    session.pendingInput = { kind: 'giveaway_content' };
     session.lastScreenStack = [];
 
     await this.saveSession(user.userId, session);
@@ -4158,28 +4161,26 @@ export class PrivateControlService {
     );
 
     session.managedGiveawayId = saved.id;
-    session.pendingInput = nextHasText && nextHasImage ? null : { kind: 'giveaway_content' };
+    session.pendingInput = nextHasText ? null : { kind: 'giveaway_content' };
     session.screen = 'giveaway';
 
     if (hasTextUpdate && downloaded) {
       return clearText
-        ? 'Текст очищен, фото обновлено.'
+        ? 'Текст очищен, фото обновлено. Пришлите новый текст публикации.'
         : 'Текст и фото публикации обновлены.';
     }
 
     if (downloaded) {
       return nextHasText
         ? 'Фото публикации обновлено.'
-        : 'Фото публикации обновлено. Можно сразу прислать текст.';
+        : 'Фото публикации обновлено. Теперь пришлите текст публикации.';
     }
 
     return clearText
-      ? nextHasImage
-        ? 'Текст очищен. Можно сразу прислать новый текст.'
-        : 'Текст очищен. Можно сразу прислать новый текст или фото.'
+      ? 'Текст очищен. Пришлите новый текст публикации.'
       : nextHasImage
         ? 'Текст публикации обновлён.'
-        : 'Текст публикации обновлён. Можно сразу прислать фото.';
+        : 'Текст публикации обновлён. Фото можно добавить позже.';
   }
 
   private async sendBroadcastFromSession(context: PrivateContext, session: PrivateSession) {
@@ -4506,6 +4507,9 @@ export class PrivateControlService {
       return this.renderPollScreen(context, session);
     }
     if (session.screen === 'giveaway') {
+      if (session.pendingInput?.kind === 'giveaway_content') {
+        return this.renderGiveawayContentPrompt(context, session);
+      }
       return this.renderGiveawayScreen(context, session);
     }
     if (
@@ -4519,6 +4523,64 @@ export class PrivateControlService {
     }
 
     return this.renderPrimaryScreen(context, session);
+  }
+
+  private async renderGiveawayContentPrompt(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<PrivateView> {
+    if (!session.selectedChatId || !session.selectedEntityType) {
+      return this.renderInputPrompt({ kind: 'giveaway_content' });
+    }
+
+    const entityLabel = session.selectedEntityType === 'channel' ? 'Канал' : 'Чат';
+    const entityTitle = await this.resolveManagedEntityTitle(
+      context.actor,
+      session.selectedEntityType,
+      session.selectedChatId,
+    );
+    const giveaway = await this.getManagedGiveawayForSession(context.actor, session);
+    const giveawaySettingsMiniappUrl = this.buildGiveawaySettingsMiniappUrl(
+      session.selectedChatId,
+      session.selectedEntityType,
+    );
+    const giveawaySettingsMiniappRoute = this.buildGiveawaySettingsMiniappRoute(
+      session.selectedChatId,
+      session.selectedEntityType,
+    );
+    const hasSavedContent = Boolean(giveaway?.description.trim() || giveaway?.imageEnabled);
+    const lines = [
+      this.markdownTitle('Заполните контент розыгрыша'),
+      '',
+      `${entityLabel}: ${this.escapeMarkdown(entityTitle)}`,
+      ...(giveaway ? [`Название: ${this.escapeMarkdown(giveaway.title)}`] : []),
+      '',
+      hasSavedContent
+        ? 'Пришлите новый текст публикации. Фото можно обновить сразу или отдельным сообщением.'
+        : 'Пришлите текст публикации. Фото можно добавить сразу подписью к фото или отдельным сообщением.',
+      'Сообщение `-` очищает текущий текст.',
+    ];
+    const rows: MaxMessageButton[][] = [
+      [this.callbackButton('Отмена', this.cb('input_cancel'))],
+    ];
+
+    if (giveaway) {
+      rows.push([
+        this.buildMiniappLaunchButton(
+          'Вернуться в приложение',
+          giveawaySettingsMiniappRoute,
+          giveawaySettingsMiniappUrl,
+        ),
+      ]);
+    }
+
+    return {
+      text: lines.join('\n'),
+      options: {
+        buttons: rows,
+        textFormat: 'markdown',
+      },
+    };
   }
 
   private async renderChannelHomeScreen(
@@ -5373,16 +5435,19 @@ export class PrivateControlService {
       '',
       `${entityLabel}: ${this.escapeMarkdown(entityTitle)}`,
     ];
-    const waitingLabel = session.pendingInput
-      ? this.describeInputPrompt(session.pendingInput).title
-      : null;
+    const waitingLabel =
+      session.pendingInput?.kind === 'giveaway_content'
+        ? 'Текст публикации'
+        : session.pendingInput
+          ? this.describeInputPrompt(session.pendingInput).title
+          : null;
 
     if (!giveaway) {
       lines.push('', 'Черновик не создан.');
       rows.push([this.callbackButton('Создать черновик', this.cb('giveaway_create'), 'positive')]);
     } else {
       lines.push(
-        ...(waitingForContent ? ['Жду: Текст и фото публикации'] : []),
+        ...(waitingForContent ? ['Жду: Текст публикации'] : []),
         '',
         `Название: ${this.escapeMarkdown(giveaway.title)}`,
         '',
@@ -5412,7 +5477,9 @@ export class PrivateControlService {
       if (giveaway.status === 'DRAFT') {
         rows.push([
           this.callbackButton(
-            'Редактировать текст/фото',
+            giveaway.description.trim() || giveaway.imageEnabled
+              ? 'Изменить текст/фото'
+              : 'Заполнить текст/фото',
             this.cb('giveaway_input_prompt', 'content'),
           ),
         ]);
@@ -6482,9 +6549,9 @@ export class PrivateControlService {
         };
       case 'giveaway_content':
         return {
-          title: 'Текст и фото публикации',
+          title: 'Контент розыгрыша',
           description:
-            'Отправьте текст, фото или подпись с фото. Можно сначала прислать текст, затем фото. `-` очищает текст.',
+            'Пришлите текст публикации. Фото можно добавить сразу подписью к фото или отдельным сообщением. `-` очищает текст.',
         };
       case 'giveaway_description':
         return {
@@ -6910,7 +6977,7 @@ export class PrivateControlService {
 
     try {
       const context = this.createSyntheticPrivateContext(user, session.lastPrivateChatId);
-      const view = await this.renderGiveawayScreen(context, session);
+      const view = await this.renderByCurrentScreen(context, session);
       await this.respond(context, session, view, {
         callbackId: null,
         notification: null,

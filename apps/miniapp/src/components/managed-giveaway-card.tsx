@@ -319,7 +319,7 @@ function createDefaultEditorDraft(): GiveawayEditorDraft {
     endsAtLocal: formatDateTimeInputValue(defaultEnd),
     claimHours: 24,
     requiredChannelIds: [],
-    prizes: ['1 место'],
+    prizes: [''],
     imageEnabled: false,
     imageBase64: '',
     imageMimeType: '',
@@ -1378,7 +1378,7 @@ export function ManagedGiveawayCard({
 
       const extraPrizes = Array.from(
         { length: normalizedCount - current.prizes.length },
-        (_, index) => `${current.prizes.length + index + 1} место`,
+        () => '',
       );
       return {
         ...current,
@@ -1474,12 +1474,12 @@ export function ManagedGiveawayCard({
     ? 'Проверить'
     : publicationTextReady
       ? 'Опубликовать'
-      : 'В личку бота';
+      : 'Настроить текст/фото';
   const finalPrimaryBusyLabel = firstConfigIssue
     ? 'Готовим…'
     : publicationTextReady
       ? 'Публикуем…'
-      : 'Открываем…';
+      : 'Открываем чат…';
   const nextStepLabel =
     editorStep === 'basics'
       ? 'К условиям'
@@ -1494,7 +1494,7 @@ export function ManagedGiveawayCard({
           ? 'Возвращаемся из бота'
           : publicationTextReady
             ? 'Готово к запуску'
-            : 'Последний шаг: текст в боте'
+            : 'Последний шаг: текст и фото'
       : `Шаг ${activeEditorStepIndex + 1}. ${activeEditorStep.title}`;
   const stickyDescription =
     editorStep === 'prizes'
@@ -1504,7 +1504,7 @@ export function ManagedGiveawayCard({
           ? 'Как только вы вернётесь, текст и фото подтянутся сюда автоматически.'
           : publicationTextReady
             ? 'Черновик сохраним автоматически перед публикацией.'
-            : 'Откроем чат-бот и вернёмся сюда с текстом и фото.'
+            : 'Откроем чат и попросим прислать текст публикации. Фото можно добавить сразу или позже.'
       : currentStepValidation.valid
         ? editorStep === 'basics'
           ? 'Дальше соберём условия участия и список каналов для проверки.'
@@ -1611,7 +1611,7 @@ export function ManagedGiveawayCard({
               label="Как устроен запуск розыгрыша"
             >
               Здесь настраиваются тайминг, условия и призы. Текст и фото публикации добавляются в
-              личке бота на финальном шаге.
+              чате MAX на финальном шаге.
             </GiveawayHintAnchor>
           </div>
         </div>
@@ -1677,7 +1677,7 @@ export function ManagedGiveawayCard({
                 }}
                 disabled={isBusy}
               >
-                Контент
+                Текст/фото
               </button>
             ) : null}
             {canSaveEditor ? (
@@ -2186,7 +2186,7 @@ export function ManagedGiveawayCard({
                       <input
                         type="text"
                         value={prizeTitle}
-                        placeholder={`Место #${index + 1}`}
+                        placeholder="Приз"
                         maxLength={MANAGED_GIVEAWAY_PRIZE_TITLE_MAX_LENGTH}
                         onChange={(event) =>
                           updateDraft((current) => {

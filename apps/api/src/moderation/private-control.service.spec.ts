@@ -1623,12 +1623,13 @@ describe('PrivateControlService', () => {
       expect.objectContaining({ userId: 'user-1' }),
       'chat',
     );
+    expect(getLastSentText(maxClient)).toContain('Заполните контент розыгрыша');
     expect(getLastSentText(maxClient)).toContain('Чат: Тестовый чат 1');
     expect(getLastSentText(maxClient)).toContain('Название: Весенний розыгрыш');
-    expect(getLastSentText(maxClient)).toContain('Финиш:');
     const buttonTexts = getLastButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
+    expect(buttonTexts).toEqual(['Отмена', 'Вернуться в приложение']);
     expect(buttonTexts).not.toContain('Открыть приложение');
     expect(buttonTexts).not.toContain('Поддержка');
   });
@@ -1658,7 +1659,7 @@ describe('PrivateControlService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       '152517912',
-      expect.stringContaining('Чат: Тестовый чат 1'),
+      expect.stringContaining('Заполните контент розыгрыша'),
       expect.anything(),
       expect.objectContaining({ immediate: true }),
     );
@@ -1753,7 +1754,7 @@ describe('PrivateControlService', () => {
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
     expect(buttonTexts).toEqual([
-      'Редактировать текст/фото',
+      'Изменить текст/фото',
       'Опубликовать',
       'Вернуться в приложение',
     ]);
@@ -1809,8 +1810,8 @@ describe('PrivateControlService', () => {
         'chat',
         'private_bot',
       );
-      expect(getLastUiText(maxClient)).toContain('Можно сразу прислать фото.');
-      expect(getLastUiText(maxClient)).toContain('Жду: Текст и фото публикации');
+      expect(getLastUiText(maxClient)).toContain('Фото можно добавить позже.');
+      expect(getLastUiText(maxClient)).not.toContain('Жду: Текст публикации');
 
       await service.handleUpdate(createPrivatePhotoUpdate());
 
@@ -1830,7 +1831,7 @@ describe('PrivateControlService', () => {
         'private_bot',
       );
       expect(getLastUiText(maxClient)).toContain('Фото публикации обновлено.');
-      expect(getLastUiText(maxClient)).not.toContain('Жду: Текст и фото публикации');
+      expect(getLastUiText(maxClient)).not.toContain('Жду: Текст публикации');
     } finally {
       restore();
     }
@@ -1874,8 +1875,10 @@ describe('PrivateControlService', () => {
         'private_bot',
       );
       expect(maxClient.sendCustomMessageImmediate).not.toHaveBeenCalled();
-      expect(getLastUiText(maxClient)).toContain('Фото публикации обновлено. Можно сразу прислать текст.');
-      expect(getLastUiText(maxClient)).toContain('Жду: Текст и фото публикации');
+      expect(getLastUiText(maxClient)).toContain(
+        'Фото публикации обновлено. Теперь пришлите текст публикации.',
+      );
+      expect(getLastUiText(maxClient)).toContain('Жду: Текст публикации');
 
       await service.handleUpdate(createPrivateTextUpdate('Текст после фото'));
 
@@ -1895,7 +1898,7 @@ describe('PrivateControlService', () => {
         'private_bot',
       );
       expect(getLastUiText(maxClient)).toContain('Текст публикации обновлён.');
-      expect(getLastUiText(maxClient)).not.toContain('Жду: Текст и фото публикации');
+      expect(getLastUiText(maxClient)).not.toContain('Жду: Текст публикации');
     } finally {
       restore();
     }
