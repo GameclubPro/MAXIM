@@ -565,6 +565,10 @@ function buildPreviewProfileUrl(handle: string): string {
   return `https://max.ru/${encodeURIComponent(handle)}`;
 }
 
+function buildPreviewProfileHandoffUrl(seed: string): string {
+  return `https://max.ru/id613002203036_4_bot?start=${encodeURIComponent(`preview-profile-${seed}`)}`;
+}
+
 function createActivityItems(
   prefix: string,
   names: string[],
@@ -593,6 +597,7 @@ function createActivityItems(
         userDisplayName: displayName,
         avatarUrl: buildPreviewAvatarDataUrl(displayName, startColor, endColor),
         profileUrl: buildPreviewProfileUrl(`${prefix}-profile-${index + 1}`),
+        profileHandoffUrl: buildPreviewProfileHandoffUrl(`${prefix}-${index + 1}`),
         createdAt: addHours(now, -offsetHours).toISOString(),
       };
     })
@@ -609,6 +614,7 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       userDisplayName: 'Сергей Маркет',
       avatarUrl: buildPreviewAvatarDataUrl('Сергей Маркет', '#4d94ff', '#2b64dd'),
       profileUrl: buildPreviewProfileUrl('sergey-market'),
+      profileHandoffUrl: buildPreviewProfileHandoffUrl('sergey-market'),
       createdAt: addHours(now, -1.5).toISOString(),
       maskedExcerpt: 'Переходите по ссылке и получайте скидку ***',
       metadata: { banDurationHours: 24, unbanScheduledAt: addHours(now, 22.5).toISOString() },
@@ -621,6 +627,7 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       userDisplayName: 'Мария Ссылкина',
       avatarUrl: buildPreviewAvatarDataUrl('Мария Ссылкина', '#3cc58b', '#0f9f70'),
       profileUrl: buildPreviewProfileUrl('maria-links'),
+      profileHandoffUrl: buildPreviewProfileHandoffUrl('maria-links'),
       createdAt: addHours(now, -3.2).toISOString(),
       maskedExcerpt: 'Подписывайтесь на мой канал ***',
       metadata: null,
@@ -633,6 +640,7 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       userDisplayName: 'Антон',
       avatarUrl: buildPreviewAvatarDataUrl('Антон', '#7f7dff', '#5350da'),
       profileUrl: buildPreviewProfileUrl('anton-preview'),
+      profileHandoffUrl: buildPreviewProfileHandoffUrl('anton-preview'),
       createdAt: addHours(now, -6.8).toISOString(),
       maskedExcerpt: 'Это было очень ***',
       metadata: null,
@@ -645,6 +653,7 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       userDisplayName: 'Инфо Буст',
       avatarUrl: buildPreviewAvatarDataUrl('Инфо Буст', '#f1a44b', '#ea7b4b'),
       profileUrl: buildPreviewProfileUrl('info-boost'),
+      profileHandoffUrl: buildPreviewProfileHandoffUrl('info-boost'),
       createdAt: addHours(now, -14.1).toISOString(),
       maskedExcerpt: 'Повторный оффер с внешней ссылкой ***',
       metadata: null,
@@ -657,6 +666,7 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       userDisplayName: 'Юлия',
       avatarUrl: buildPreviewAvatarDataUrl('Юлия', '#ff82a8', '#eb577f'),
       profileUrl: buildPreviewProfileUrl('yulia-preview'),
+      profileHandoffUrl: buildPreviewProfileHandoffUrl('yulia-preview'),
       createdAt: addHours(now, -27).toISOString(),
       maskedExcerpt: 'Очень длинное сообщение ***',
       metadata: null,
@@ -669,6 +679,7 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       userDisplayName: 'Олег Повтор',
       avatarUrl: buildPreviewAvatarDataUrl('Олег Повтор', '#7db8ff', '#4d89ff'),
       profileUrl: buildPreviewProfileUrl('oleg-repeat'),
+      profileHandoffUrl: buildPreviewProfileHandoffUrl('oleg-repeat'),
       createdAt: addHours(now, -42).toISOString(),
       maskedExcerpt: 'Одинаковый текст ***',
       metadata: { banDurationHours: 12, unbanScheduledAt: addHours(now, -30).toISOString() },
@@ -681,6 +692,7 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       userDisplayName: 'Ночной гость',
       avatarUrl: buildPreviewAvatarDataUrl('Ночной гость', '#485a7b', '#22344f'),
       profileUrl: buildPreviewProfileUrl('night-guest'),
+      profileHandoffUrl: buildPreviewProfileHandoffUrl('night-guest'),
       createdAt: addHours(now, -73).toISOString(),
       maskedExcerpt: 'Сообщение ночью ***',
       metadata: null,
@@ -693,6 +705,7 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       userDisplayName: 'Павел',
       avatarUrl: buildPreviewAvatarDataUrl('Павел', '#5ab7b5', '#1b7f8a'),
       profileUrl: buildPreviewProfileUrl('pavel-preview'),
+      profileHandoffUrl: buildPreviewProfileHandoffUrl('pavel-preview'),
       createdAt: addHours(now, -110).toISOString(),
       maskedExcerpt: 'Не по теме ***',
       metadata: null,
@@ -705,6 +718,7 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       userDisplayName: 'Ольга',
       avatarUrl: buildPreviewAvatarDataUrl('Ольга', '#f1a44b', '#ea7b4b'),
       profileUrl: buildPreviewProfileUrl('olga-preview'),
+      profileHandoffUrl: buildPreviewProfileHandoffUrl('olga-preview'),
       createdAt: addHours(now, -180).toISOString(),
       maskedExcerpt: null,
       metadata: null,
@@ -717,6 +731,7 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
       userDisplayName: 'Андрей',
       avatarUrl: buildPreviewAvatarDataUrl('Андрей', '#4d94ff', '#2b64dd'),
       profileUrl: buildPreviewProfileUrl('andrey-preview'),
+      profileHandoffUrl: buildPreviewProfileHandoffUrl('andrey-preview'),
       createdAt: addHours(now, -220).toISOString(),
       maskedExcerpt: null,
       metadata: null,
@@ -1562,7 +1577,12 @@ function createModerationResult(
 
 function createManualViolation(
   userId: string,
-  user: { displayName: string; avatarUrl: string | null; profileUrl: string | null },
+  user: {
+    displayName: string;
+    avatarUrl: string | null;
+    profileUrl: string | null;
+    profileHandoffUrl: string | null;
+  },
   payload: ManualModerationActionRequest,
 ): LogsDashboardResponse['violations'][number] {
   const now = new Date();
@@ -1576,6 +1596,7 @@ function createManualViolation(
       userDisplayName: user.displayName,
       avatarUrl: user.avatarUrl,
       profileUrl: user.profileUrl,
+      profileHandoffUrl: user.profileHandoffUrl,
       createdAt: now.toISOString(),
       maskedExcerpt: null,
       metadata: null,
@@ -1591,6 +1612,7 @@ function createManualViolation(
       userDisplayName: user.displayName,
       avatarUrl: user.avatarUrl,
       profileUrl: user.profileUrl,
+      profileHandoffUrl: user.profileHandoffUrl,
       createdAt: now.toISOString(),
       maskedExcerpt: null,
       metadata: null,
@@ -1605,6 +1627,7 @@ function createManualViolation(
     userDisplayName: user.displayName,
     avatarUrl: user.avatarUrl,
     profileUrl: user.profileUrl,
+    profileHandoffUrl: user.profileHandoffUrl,
     createdAt: now.toISOString(),
     maskedExcerpt: null,
     metadata: {
@@ -1617,7 +1640,12 @@ function createManualViolation(
 function resolvePreviewUser(
   state: PreviewState,
   userId: string,
-): { displayName: string; avatarUrl: string | null; profileUrl: string | null } {
+): {
+  displayName: string;
+  avatarUrl: string | null;
+  profileUrl: string | null;
+  profileHandoffUrl: string | null;
+} {
   const fromActivity = state.chatActivity.find((item) => item.userId === userId) ?? null;
   const fromViolation = state.chatViolations.find((item) => item.userId === userId) ?? null;
   const snapshot = fromActivity ?? fromViolation;
@@ -1626,6 +1654,7 @@ function resolvePreviewUser(
     displayName: snapshot?.userDisplayName?.trim() || 'Участник',
     avatarUrl: snapshot?.avatarUrl ?? null,
     profileUrl: snapshot?.profileUrl ?? null,
+    profileHandoffUrl: snapshot?.profileHandoffUrl ?? null,
   };
 }
 
@@ -2463,6 +2492,9 @@ export function createPreviewApiTransport(): ApiTransport {
       }
 
       throw new Error(`Preview transport does not implement ${method} ${url.pathname}`);
+    },
+    requestKeepalive(path: string, init: RequestInit = {}) {
+      void this.request(path, init);
     },
   };
 }

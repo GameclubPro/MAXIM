@@ -144,6 +144,7 @@ type ResolvedUserProfile = {
   displayName: string | null;
   avatarUrl: string | null;
   profileUrl: string | null;
+  profileHandoffUrl: string | null;
 };
 
 type PreparedManagedBroadcastRequest = {
@@ -357,10 +358,20 @@ const CHANNEL_STATS_REFRESH_STALE_MS = 2 * 60 * 60 * 1000;
 const CHANNEL_COMMENT_DUPLICATE_WINDOW_MS = 10 * 60 * 1000;
 const CHANNEL_COMMENT_MAX_CONSECUTIVE = 2;
 const CHANNEL_COMMENT_LINK_PATTERN = /((https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,})(\/\S*)?/giu;
+const PROFILE_MENTION_START_PREFIX = 'pmh-';
 type ChannelDialogTokenPayload = {
   v: 1;
   d: string;
   s: string;
+};
+
+type ProfileMentionStartPayload = {
+  v: 1;
+  k: 'profile-mention';
+  c: string;
+  e: ManagedEntityType;
+  u: string;
+  n: string;
 };
 
 @Injectable()
@@ -726,7 +737,7 @@ export class AdminService {
       range: parsed.data.range,
       filter: 'all',
       limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
-    });
+    }, 'channel');
     const response: ChannelStatsResponse = {
       channel: {
         id: chatId,
@@ -814,7 +825,7 @@ export class AdminService {
 
     const now = new Date();
     const from = this.resolveChannelStatsFrom(parsed.data.range, now);
-    return this.getMembershipActivityFeedPage(chatId, from, now, parsed.data);
+    return this.getMembershipActivityFeedPage(chatId, from, now, parsed.data, 'channel');
   }
 
   async getSettings(chatId: string, user: AuthUser): Promise<ChatSettings> {
@@ -5503,6 +5514,7 @@ export class AdminService {
     ]);
     const userProfiles = await this.resolveUserProfiles(
       chatId,
+      'chat',
       violationRows.map((row) => row.userId),
     );
 
@@ -5513,7 +5525,7 @@ export class AdminService {
       range: parsed.data.range,
       filter: 'all',
       limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
-    });
+    }, 'chat');
     const response: LogsDashboardResponse = {
       chat: {
         id: chatId,
@@ -5549,6 +5561,7 @@ export class AdminService {
           userDisplayName: userProfile?.displayName ?? null,
           avatarUrl: userProfile?.avatarUrl ?? null,
           profileUrl: userProfile?.profileUrl ?? null,
+          profileHandoffUrl: userProfile?.profileHandoffUrl ?? null,
           createdAt: row.createdAt.toISOString(),
           maskedExcerpt: row.maskedExcerpt,
           metadata:
@@ -5578,7 +5591,7 @@ export class AdminService {
 
     const now = new Date();
     const from = this.resolveLogsDashboardFrom(parsed.data.range, now);
-    return this.getMembershipActivityFeedPage(chatId, from, now, parsed.data);
+    return this.getMembershipActivityFeedPage(chatId, from, now, parsed.data, 'chat');
   }
 
   async applyManualModerationAction(
@@ -6136,6 +6149,7 @@ export class AdminService {
     from: Date,
     to: Date,
     query: MembershipActivityQuery,
+    entityType: ManagedEntityType = 'chat',
   ): Promise<MembershipActivityPage> {
     const limit = Math.max(1, Math.min(100, query.limit));
     const cursor = this.decodeMembershipActivityCursor(query.cursor);
@@ -6182,6 +6196,7 @@ export class AdminService {
     const pageRows = rows.slice(0, limit);
     const userProfiles = await this.resolveUserProfiles(
       chatId,
+      entityType,
       pageRows
         .map((row) => (typeof row.user_id === 'string' ? row.user_id.trim() : ''))
         .filter(Boolean),
@@ -6209,6 +6224,7 @@ export class AdminService {
           userDisplayName,
           avatarUrl: userProfile?.avatarUrl ?? null,
           profileUrl: userProfile?.profileUrl ?? null,
+          profileHandoffUrl: userProfile?.profileHandoffUrl ?? null,
           createdAt,
         };
       })
@@ -6222,6 +6238,7 @@ export class AdminService {
           userDisplayName: string;
           avatarUrl: string | null;
           profileUrl: string | null;
+          profileHandoffUrl: string | null;
           createdAt: string;
         } => item !== null,
       );
@@ -6539,6 +6556,7 @@ export class AdminService {
 
   private async resolveUserProfiles(
     chatId: string,
+    entityType: ManagedEntityType,
     userIds: readonly string[],
   ): Promise<Map<string, ResolvedUserProfile>> {
     const normalizedUserIds = [...new Set(userIds.map((item) => item.trim()).filter(Boolean))];
@@ -6577,6 +6595,12 @@ export class AdminService {
           displayNames.get(userId) ?? this.readTrimmedString(profile?.displayName) ?? null,
         avatarUrl: this.readTrimmedString(profile?.avatarUrl) ?? null,
         profileUrl: this.buildUserProfileUrl(username),
+        profileHandoffUrl: this.buildProfileMentionHandoffUrl(
+          chatId,
+          entityType,
+          userId,
+          displayNames.get(userId) ?? this.readTrimmedString(profile?.displayName) ?? null,
+        ),
       });
     }
 
@@ -6590,6 +6614,27 @@ export class AdminService {
     }
 
     return `https://max.ru/${encodeURIComponent(normalizedUsername)}`;
+  }
+
+  private buildProfileMentionHandoffUrl(
+    chatId: string,
+    entityType: ManagedEntityType,
+    userId: string,
+    displayName: string | null,
+  ): string | null {
+    const normalizedChatId = chatId.trim();
+    const normalizedUserId = userId.trim();
+    if (!normalizedChatId || !normalizedUserId) {
+      return null;
+    }
+
+    const startPayload = this.buildProfileMentionStartPayload({
+      chatId: normalizedChatId,
+      entityType,
+      userId: normalizedUserId,
+      displayName: displayName?.trim() || 'Пользователь',
+    });
+    return this.buildBotStartUrl(startPayload);
   }
 
   private activeDomainWhere(chatId: string) {
@@ -7545,6 +7590,35 @@ export class AdminService {
     }
 
     return `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(startParam)}`;
+  }
+
+  private buildBotStartUrl(startPayload: string): string | null {
+    if (!this.ownBotUserId) {
+      return null;
+    }
+
+    return `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?start=${encodeURIComponent(startPayload)}`;
+  }
+
+  private buildProfileMentionStartPayload(params: {
+    chatId: string;
+    entityType: ManagedEntityType;
+    userId: string;
+    displayName: string;
+  }): string {
+    const payload = Buffer.from(
+      JSON.stringify({
+        v: 1,
+        k: 'profile-mention',
+        c: params.chatId,
+        e: params.entityType,
+        u: params.userId,
+        n: params.displayName.trim() || 'Пользователь',
+      } satisfies ProfileMentionStartPayload),
+      'utf8',
+    ).toString('base64url');
+
+    return `${PROFILE_MENTION_START_PREFIX}${payload}`;
   }
 
   private buildChannelDialogToken(

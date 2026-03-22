@@ -1441,9 +1441,15 @@ describe('AdminService.getLogsDashboard', () => {
     expect(result.violations[0]?.userDisplayName).toBe('Алексей');
     expect(result.violations[0]?.avatarUrl).toBe('https://cdn.max.ru/u/1/avatar-full.jpg');
     expect(result.violations[0]?.profileUrl).toBe('https://max.ru/aleksey');
+    expect(result.violations[0]?.profileHandoffUrl).toEqual(
+      expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
+    );
     expect(result.violations[1]?.userDisplayName).toBe('Мария');
     expect(result.violations[1]?.avatarUrl).toBe('https://cdn.max.ru/u/2/avatar-full.jpg');
     expect(result.violations[1]?.profileUrl).toBe('https://max.ru/maria');
+    expect(result.violations[1]?.profileHandoffUrl).toEqual(
+      expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
+    );
     expect(result.violations[2]?.ruleCode).toBe('MANUAL_UNBAN');
     expect(result.activityFeed).toEqual({
       items: [
@@ -1454,6 +1460,7 @@ describe('AdminService.getLogsDashboard', () => {
           userDisplayName: 'Ирина',
           avatarUrl: 'https://cdn.max.ru/u/3/avatar-full.jpg',
           profileUrl: 'https://max.ru/irina',
+          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
           createdAt: '2026-03-02T10:00:00.000Z',
         },
         {
@@ -1463,6 +1470,7 @@ describe('AdminService.getLogsDashboard', () => {
           userDisplayName: 'Мария',
           avatarUrl: 'https://cdn.max.ru/u/2/avatar-full.jpg',
           profileUrl: 'https://max.ru/maria',
+          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
           createdAt: '2026-03-02T09:30:00.000Z',
         },
       ],
@@ -1625,6 +1633,7 @@ describe('AdminService.getChatActivityFeed', () => {
         userDisplayName: 'Игорь',
         avatarUrl: 'https://cdn.max.ru/u/5/avatar-full.jpg',
         profileUrl: null,
+        profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
         createdAt: '2026-03-02T11:00:00.000Z',
       },
     ]);
@@ -1651,6 +1660,7 @@ describe('AdminService.getChatActivityFeed', () => {
           userDisplayName: 'Мария',
           avatarUrl: 'https://cdn.max.ru/u/4/avatar-full.jpg',
           profileUrl: 'https://max.ru/maria',
+          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
           createdAt: '2026-03-02T10:00:00.000Z',
         },
       ],
@@ -2627,6 +2637,7 @@ describe('AdminService.getChannelStats', () => {
           userDisplayName: 'Андрей',
           avatarUrl: 'https://cdn.max.ru/u/10/avatar-full.jpg',
           profileUrl: 'https://max.ru/andrey',
+          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
           createdAt: '2026-03-07T11:40:00.000Z',
         },
         {
@@ -2636,6 +2647,7 @@ describe('AdminService.getChannelStats', () => {
           userDisplayName: 'Елена',
           avatarUrl: 'https://cdn.max.ru/u/11/avatar-full.jpg',
           profileUrl: null,
+          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
           createdAt: '2026-03-07T10:15:00.000Z',
         },
       ],
@@ -2878,6 +2890,7 @@ describe('AdminService.getChannelStats', () => {
       userDisplayName: 'Павел',
       avatarUrl: 'https://cdn.max.ru/u/42/avatar-full.jpg',
       profileUrl: 'https://max.ru/pavel',
+      profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
       createdAt: '2026-03-07T09:30:00.000Z',
     });
   });

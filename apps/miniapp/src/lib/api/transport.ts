@@ -4,19 +4,26 @@ const API_BASE = '/api/v1';
 
 export type ApiTransport = {
   request: (path: string, init?: RequestInit) => Promise<unknown>;
+  requestKeepalive: (path: string, init?: RequestInit) => void;
 };
 
 export function createApiTransport(initData: string): ApiTransport {
+  const buildHeaders = (init: RequestInit = {}) => {
+    const headers = new Headers(init.headers);
+    headers.set('Authorization', `InitData ${initData}`);
+
+    const hasBody = init.body !== undefined && init.body !== null;
+    const isFormDataBody = typeof FormData !== 'undefined' && init.body instanceof FormData;
+    if (hasBody && !isFormDataBody && !headers.has('Content-Type')) {
+      headers.set('Content-Type', 'application/json');
+    }
+
+    return headers;
+  };
+
   return {
     async request(path: string, init: RequestInit = {}) {
-      const headers = new Headers(init.headers);
-      headers.set('Authorization', `InitData ${initData}`);
-
-      const hasBody = init.body !== undefined && init.body !== null;
-      const isFormDataBody = typeof FormData !== 'undefined' && init.body instanceof FormData;
-      if (hasBody && !isFormDataBody && !headers.has('Content-Type')) {
-        headers.set('Content-Type', 'application/json');
-      }
+      const headers = buildHeaders(init);
 
       const response = await fetch(`${API_BASE}${path}`, {
         ...init,
@@ -44,6 +51,14 @@ export function createApiTransport(initData: string): ApiTransport {
       } catch {
         return payload;
       }
+    },
+    requestKeepalive(path: string, init: RequestInit = {}) {
+      const headers = buildHeaders(init);
+      void fetch(`${API_BASE}${path}`, {
+        ...init,
+        headers,
+        keepalive: true,
+      }).catch(() => undefined);
     },
   };
 }

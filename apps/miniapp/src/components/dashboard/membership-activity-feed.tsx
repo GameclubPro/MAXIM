@@ -238,6 +238,7 @@ export function MembershipActivityFeed({
                 {group.items.map((item, index) => {
                   const displayName = resolveDisplayName(item.userDisplayName);
                   const avatarUrl = resolveAvatarUrl(item.avatarUrl);
+                  const profileHandoffUrl = item.profileHandoffUrl?.trim() ?? '';
                   const profileUrl = item.profileUrl?.trim() ?? '';
                   const canOpenProfile =
                     item.userId.trim().length > 0 && typeof onProfileActivate === 'function';
@@ -261,7 +262,7 @@ export function MembershipActivityFeed({
                       <div className="membership-feed__card">
                         {canOpenProfile ? (
                           <a
-                            href={profileUrl || '#'}
+                            href={profileHandoffUrl || profileUrl || '#'}
                             className="membership-feed__avatar-link"
                             aria-label={`Открыть профиль ${displayName} в MAX`}
                             onClick={(event) =>
@@ -285,7 +286,7 @@ export function MembershipActivityFeed({
                           <div className="membership-feed__row">
                             {canOpenProfile ? (
                               <a
-                                href={profileUrl || '#'}
+                                href={profileHandoffUrl || profileUrl || '#'}
                                 className="membership-feed__name-link"
                                 onClick={(event) =>
                                   handleProfileLinkClick(event, item, onProfileActivate)

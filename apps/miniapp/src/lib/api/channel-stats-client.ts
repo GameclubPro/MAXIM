@@ -64,3 +64,19 @@ export async function handoffChannelMemberProfile(
   );
   return broadcastHandoffResponseSchema.parse(response);
 }
+
+export function handoffChannelMemberProfileKeepalive(
+  api: ApiTransport,
+  chatId: string,
+  userId: string,
+  payload: ProfileMentionHandoffRequest,
+): void {
+  const requestBody = profileMentionHandoffRequestSchema.parse(payload);
+  api.requestKeepalive(
+    `/channels/${chatId}/members/${encodeURIComponent(userId)}/profile/handoff`,
+    {
+      method: 'POST',
+      body: JSON.stringify(requestBody),
+    },
+  );
+}

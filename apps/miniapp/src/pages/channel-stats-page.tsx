@@ -1,5 +1,4 @@
 import type {
-  BroadcastHandoffResponse,
   ChannelStatsBucket,
   ChannelStatsRange,
   ChannelStatsResponse,
@@ -20,6 +19,7 @@ import {
   getChannelActivityFeed,
   getChannelStats,
   handoffChannelMemberProfile,
+  handoffChannelMemberProfileKeepalive,
 } from '../lib/api/channel-stats-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
@@ -1012,16 +1012,14 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   const profileHandoffMutation = useMutation({
     mutationFn: ({ userId, displayName }: { userId: string; displayName: string }) =>
       handoffChannelMemberProfile(api, chatId, userId, { displayName }),
-    onSuccess: (result: BroadcastHandoffResponse) => {
-      if (openMaxBotLinkAndClose(result.botUrl)) {
-        return;
+    onSuccess: (result) => {
+      if (!openMaxBotLinkAndClose(result.botUrl)) {
+        pushToast({
+          tone: 'danger',
+          title: 'Не удалось открыть бота',
+          description: 'Ссылка на handoff вернулась пустой.',
+        });
       }
-
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось открыть бота',
-        description: 'Ссылка на handoff вернулась пустой.',
-      });
     },
     onError: (error: unknown) => {
       const description = error instanceof Error ? error.message : 'Попробуйте ещё раз.';
@@ -1128,15 +1126,30 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
       : stats.channel.isPublic === false
         ? 'Канал приватный'
         : 'Нет данных';
-  const activateProfile = (userId: string, displayName: string) => {
+  const activateProfile = (
+    userId: string,
+    displayName: string,
+    handoffUrl: string | null | undefined,
+  ) => {
     const normalizedUserId = userId.trim();
     if (!normalizedUserId || !chatId) {
       return;
     }
 
+    const normalizedDisplayName = displayName.trim() || 'Пользователь';
+    const normalizedHandoffUrl = handoffUrl?.trim() ?? '';
+    if (normalizedHandoffUrl) {
+      handoffChannelMemberProfileKeepalive(api, chatId, normalizedUserId, {
+        displayName: normalizedDisplayName,
+      });
+      if (openMaxBotLinkAndClose(normalizedHandoffUrl)) {
+        return;
+      }
+    }
+
     profileHandoffMutation.mutate({
       userId: normalizedUserId,
-      displayName: displayName.trim() || 'Пользователь',
+      displayName: normalizedDisplayName,
     });
   };
 
@@ -1299,7 +1312,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
           onLoadMore={() => void activityFeed.loadMore()}
           onRetry={() => void activityFeed.retry()}
           onProfileActivate={(item: MembershipActivityItem) =>
-            activateProfile(item.userId, item.userDisplayName)
+            activateProfile(item.userId, item.userDisplayName, item.profileHandoffUrl)
           }
         />
 

@@ -1156,6 +1156,7 @@ export const membershipActivityItemSchema = z.object({
   userDisplayName: z.string().min(1),
   avatarUrl: z.string().trim().url().nullable().default(null),
   profileUrl: z.string().trim().url().nullable().default(null),
+  profileHandoffUrl: z.string().trim().url().nullable().default(null),
   createdAt: z.string().datetime(),
 });
 export type MembershipActivityItem = z.infer<typeof membershipActivityItemSchema>;
@@ -1275,6 +1276,7 @@ export const logsDashboardViolationSchema = z.object({
   userDisplayName: z.string().nullable(),
   avatarUrl: z.string().trim().url().nullable().default(null),
   profileUrl: z.string().trim().url().nullable().default(null),
+  profileHandoffUrl: z.string().trim().url().nullable().default(null),
   createdAt: z.string().datetime(),
   maskedExcerpt: z.string().nullable(),
   metadata: z.record(z.unknown()).nullable().optional(),
