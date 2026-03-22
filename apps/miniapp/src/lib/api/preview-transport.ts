@@ -552,18 +552,16 @@ function togglePreviewDialogReaction(
     }
 
     const existingGroups = message.reactionGroups ?? [];
-    const currentGroup = existingGroups.find((group) => group.emoji === emoji) ?? null;
-    const currentCount = currentGroup?.count ?? 0;
-    const currentReactedByMe = currentGroup?.reactedByMe ?? false;
+    const reactedEmoji = existingGroups.find((group) => group.reactedByMe)?.emoji ?? null;
     const nextGroups = existingGroups
       .map((group) => {
-        if (group.emoji !== emoji) {
-          return group;
-        }
-
-        if (currentReactedByMe) {
+        if (group.reactedByMe) {
           const nextCount = group.count - 1;
           return nextCount > 0 ? { ...group, count: nextCount, reactedByMe: false } : null;
+        }
+
+        if (reactedEmoji === emoji || group.emoji !== emoji) {
+          return group;
         }
 
         return {
@@ -574,7 +572,7 @@ function togglePreviewDialogReaction(
       })
       .filter((group): group is NonNullable<typeof group> => group !== null);
 
-    if (!currentGroup && currentCount === 0) {
+    if (reactedEmoji !== emoji && !nextGroups.some((group) => group.emoji === emoji)) {
       nextGroups.push({
         emoji,
         count: 1,

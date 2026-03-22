@@ -181,13 +181,9 @@ function toggleDialogReactionLocally(
         return message;
       }
 
-      const existingGroup = message.reactionGroups.find((group) => group.emoji === emoji) ?? null;
+      const reactedEmoji = message.reactionGroups.find((group) => group.reactedByMe)?.emoji ?? null;
       const nextGroups = message.reactionGroups
         .map((group) => {
-          if (group.emoji !== emoji) {
-            return group;
-          }
-
           if (group.reactedByMe) {
             const nextCount = group.count - 1;
             return nextCount > 0
@@ -199,6 +195,10 @@ function toggleDialogReactionLocally(
               : null;
           }
 
+          if (reactedEmoji === emoji || group.emoji !== emoji) {
+            return group;
+          }
+
           return {
             ...group,
             count: group.count + 1,
@@ -207,7 +207,7 @@ function toggleDialogReactionLocally(
         })
         .filter((group): group is NonNullable<typeof group> => group !== null);
 
-      if (!existingGroup) {
+      if (reactedEmoji !== emoji && !nextGroups.some((group) => group.emoji === emoji)) {
         nextGroups.push({
           emoji,
           count: 1,

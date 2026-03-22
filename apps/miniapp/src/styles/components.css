@@ -2597,6 +2597,10 @@
   scrollbar-gutter: stable;
 }
 
+.channel-dialog-screen--comments .channel-dialog-body {
+  padding-top: 8px;
+}
+
 .channel-dialog-skeletons,
 .channel-dialog-message-list {
   display: grid;
@@ -2731,7 +2735,7 @@
 
 .channel-dialog-reaction-popover__surface {
   display: grid;
-  gap: 8px;
+  gap: 7px;
   padding: 8px;
   border-radius: 22px;
   border: 1px solid rgba(255, 255, 255, 0.94);
@@ -2747,8 +2751,8 @@
 }
 
 .channel-dialog-reaction-popover__row {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -2760,8 +2764,8 @@
 
 .channel-dialog-reaction-popover__emoji,
 .channel-dialog-reaction-popover__toggle {
-  width: 40px;
-  min-width: 40px;
+  width: 100%;
+  min-width: 0;
   height: 40px;
   padding: 0;
   border-radius: 14px;
@@ -2820,7 +2824,8 @@
 }
 
 .channel-dialog-reaction-popover__action {
-  min-height: 34px;
+  width: 100%;
+  min-height: 36px;
   padding: 0 14px;
   border-radius: 999px;
   border: 1px solid rgba(62, 96, 127, 0.12);
@@ -3323,8 +3328,8 @@
 
   .channel-dialog-reaction-popover__emoji,
   .channel-dialog-reaction-popover__toggle {
-    width: 38px;
-    min-width: 38px;
+    width: 100%;
+    min-width: 0;
     height: 38px;
     border-radius: 13px;
   }

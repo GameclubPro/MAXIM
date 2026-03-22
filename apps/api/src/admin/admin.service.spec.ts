@@ -5463,6 +5463,108 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
   });
 
+  it('keeps only one active reaction per user when switching channel comment reactions', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+      }),
+    );
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'comment-2',
+      actorUserId: 'user-9',
+      payload: {
+        type: 'comments',
+        threadId: 'channel-thread-reactions',
+        text: 'Комментарий со сменой реакции',
+        authorDisplayName: 'Марина',
+        reactions: [
+          { emoji: '👍', userIds: ['user-2', 'user-1'] },
+          { emoji: '🔥', userIds: ['user-3'] },
+        ],
+      },
+      createdAt: new Date('2026-03-20T09:00:00.000Z'),
+    });
+    prisma.auditLog.update.mockResolvedValue({
+      id: 'comment-2',
+      actorUserId: 'user-9',
+      payload: {
+        type: 'comments',
+        threadId: 'channel-thread-reactions',
+        text: 'Комментарий со сменой реакции',
+        authorDisplayName: 'Марина',
+        reactions: [
+          { emoji: '👍', userIds: ['user-2'] },
+          { emoji: '🔥', userIds: ['user-3'] },
+          { emoji: '❤️', userIds: ['user-1'] },
+        ],
+      },
+      createdAt: new Date('2026-03-20T09:00:00.000Z'),
+    });
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const commentsToken = (
+      service as unknown as { buildEntityDialogToken: Function }
+    ).buildEntityDialogToken(
+      'channel',
+      'channel-1',
+      'comments',
+      'channel-thread-reactions',
+    ) as string;
+
+    const result = await service.toggleChannelDialogReaction(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      'comment-2',
+      {
+        token: commentsToken,
+        emoji: '❤️',
+      },
+    );
+
+    expect(prisma.auditLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: 'comment-2',
+        },
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            reactions: expect.arrayContaining([
+              { emoji: '👍', userIds: ['user-2'] },
+              { emoji: '🔥', userIds: ['user-3'] },
+              { emoji: '❤️', userIds: ['user-1'] },
+            ]),
+          }),
+        }),
+      }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.message.reactionGroups).toEqual(
+      expect.arrayContaining([
+        { emoji: '👍', count: 1, reactedByMe: false },
+        { emoji: '🔥', count: 1, reactedByMe: false },
+        { emoji: '❤️', count: 1, reactedByMe: true },
+      ]),
+    );
+  });
+
   it('updates the published channel comments button counter after a new comment', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({

@@ -7411,30 +7411,27 @@ export class AdminService {
       emoji: entry.emoji,
       userIds: [...entry.userIds],
     }));
-    const existingIndex = entries.findIndex((entry) => entry.emoji === emoji);
+    const reactedEmoji = entries.find((entry) => entry.userIds.includes(userId))?.emoji ?? null;
+    const clearedEntries = entries
+      .map((entry) => ({
+        emoji: entry.emoji,
+        userIds: entry.userIds.filter((entryUserId) => entryUserId !== userId),
+      }))
+      .filter((entry) => entry.userIds.length > 0);
 
-    if (existingIndex >= 0) {
-      const nextUserIds = entries[existingIndex].userIds.filter((entryUserId) => entryUserId !== userId);
-      if (nextUserIds.length === entries[existingIndex].userIds.length) {
-        nextUserIds.push(userId);
-      }
-
-      if (nextUserIds.length === 0) {
-        entries.splice(existingIndex, 1);
+    if (reactedEmoji !== emoji) {
+      const targetEntry = clearedEntries.find((entry) => entry.emoji === emoji);
+      if (targetEntry) {
+        targetEntry.userIds = Array.from(new Set([...targetEntry.userIds, userId]));
       } else {
-        entries[existingIndex] = {
+        clearedEntries.push({
           emoji,
-          userIds: Array.from(new Set(nextUserIds)),
-        };
+          userIds: [userId],
+        });
       }
-    } else {
-      entries.push({
-        emoji,
-        userIds: [userId],
-      });
     }
 
-    return entries.sort(
+    return clearedEntries.sort(
       (left, right) => right.userIds.length - left.userIds.length || left.emoji.localeCompare(right.emoji),
     );
   }
