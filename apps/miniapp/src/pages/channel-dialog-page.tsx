@@ -26,19 +26,24 @@ import { maxImpact } from '../lib/max-bridge';
 const COMMENT_REACTION_OPTIONS = [
   '👍',
   '❤️',
-  '🔥',
-  '👏',
   '😂',
-  '😍',
-  '🤝',
-  '🎯',
-  '🚀',
-  '💯',
-  '👀',
   '😮',
   '😢',
   '😡',
+  '🔥',
+  '👏',
+  '😍',
+  '🎉',
+  '💯',
+  '👀',
+  '🤝',
+  '🤔',
+  '👌',
+  '✅',
 ] as const;
+
+const COMMENT_REACTION_PRIMARY_OPTIONS = COMMENT_REACTION_OPTIONS.slice(0, 6);
+const COMMENT_REACTION_EXPANDED_OPTIONS = COMMENT_REACTION_OPTIONS.slice(6);
 
 function normalizeApiError(error: unknown): string {
   if (!(error instanceof Error)) {
@@ -103,29 +108,6 @@ function summarizeReplyText(value: string, maxLength = 96): string {
   }
 
   return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
-}
-
-function formatCommentsCount(value: number): string {
-  if (value <= 0) {
-    return 'Пусто';
-  }
-
-  const lastTwoDigits = value % 100;
-  const lastDigit = value % 10;
-
-  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) {
-    return `${value} комментариев`;
-  }
-
-  if (lastDigit === 1) {
-    return `${value} комментарий`;
-  }
-
-  if (lastDigit >= 2 && lastDigit <= 4) {
-    return `${value} комментария`;
-  }
-
-  return `${value} комментариев`;
 }
 
 function isGroupedWithPrevious(messages: ChannelDialogMessage[], index: number): boolean {
@@ -305,6 +287,46 @@ function CloseIcon() {
   );
 }
 
+function PlusIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
+      <path
+        d="M10 4.5V15.5"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+      />
+      <path
+        d="M4.5 10H15.5"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function ReplyArrowIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
+      <path
+        d="M7.6 6.1L4.3 9.4L7.6 12.7"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M5 9.4H11.2C13.6 9.4 15.5 11.3 15.5 13.7V14.3"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 type DialogViewModel = {
   title: string;
   placeholder: string;
@@ -339,6 +361,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const [draft, setDraft] = useState('');
   const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
   const [replyToMessageId, setReplyToMessageId] = useState<string | null>(null);
+  const [isReactionPickerExpanded, setIsReactionPickerExpanded] = useState(false);
   const [isBodyScrolled, setIsBodyScrolled] = useState(false);
   const composeFieldRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollViewportRef = useRef<HTMLElement | null>(null);
@@ -375,10 +398,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const replyTarget = useMemo(
     () => messages.find((message) => message.id === replyToMessageId) ?? null,
     [messages, replyToMessageId],
-  );
-  const activeMessage = useMemo(
-    () => messages.find((message) => message.id === activeMessageId) ?? null,
-    [activeMessageId, messages],
   );
   const draftLength = draft.trim().length;
   const showComposeMeta = dialogType === 'suggest' || draftLength > 0 || Boolean(replyTarget);
@@ -430,6 +449,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
     if (activeMessageId && !messages.some((message) => message.id === activeMessageId)) {
       setActiveMessageId(null);
+      setIsReactionPickerExpanded(false);
     }
   }, [activeMessageId, messages, replyToMessageId]);
 
@@ -445,12 +465,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       }
       if (
         target.closest('.channel-dialog-message') ||
-        target.closest('.channel-dialog-compose') ||
-        target.closest('.channel-dialog-topbar')
+        target.closest('.channel-dialog-compose')
       ) {
         return;
       }
       setActiveMessageId(null);
+      setIsReactionPickerExpanded(false);
     };
 
     document.addEventListener('mousedown', handlePointerDown);
@@ -461,6 +481,59 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       document.removeEventListener('touchstart', handlePointerDown);
     };
   }, [activeMessageId]);
+
+  useEffect(() => {
+    if (!activeMessageId) {
+      return undefined;
+    }
+
+    const viewport = scrollViewportRef.current;
+    if (!viewport) {
+      return undefined;
+    }
+
+    let frameId = 0;
+
+    const keepActiveMessageInView = () => {
+      const activeMessage = viewport.querySelector<HTMLElement>(`[data-message-id="${activeMessageId}"]`);
+      if (!activeMessage) {
+        return;
+      }
+
+      const viewportRect = viewport.getBoundingClientRect();
+      const activeMessageRect = activeMessage.getBoundingClientRect();
+      const composeSurface = document.querySelector<HTMLElement>('.channel-dialog-compose__surface');
+      const composeHeight = composeSurface?.getBoundingClientRect().height ?? 0;
+      const desiredTopInset = 14;
+      const desiredBottomInset = composeHeight + 20;
+
+      const topOffset = activeMessageRect.top - viewportRect.top;
+      const bottomOffset = viewportRect.bottom - activeMessageRect.bottom;
+
+      if (topOffset < desiredTopInset) {
+        viewport.scrollBy({
+          top: topOffset - desiredTopInset,
+          behavior: 'smooth',
+        });
+        return;
+      }
+
+      if (bottomOffset < desiredBottomInset) {
+        viewport.scrollBy({
+          top: desiredBottomInset - bottomOffset,
+          behavior: 'smooth',
+        });
+      }
+    };
+
+    frameId = requestAnimationFrame(() => {
+      keepActiveMessageInView();
+    });
+
+    return () => {
+      cancelAnimationFrame(frameId);
+    };
+  }, [activeMessageId, isReactionPickerExpanded]);
 
   const sendMutation = useMutation({
     mutationFn: (text: string) =>
@@ -552,23 +625,38 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     }
 
     maxImpact('light');
-    setActiveMessageId((current) => (current === messageId ? null : messageId));
+    setActiveMessageId((current) => {
+      const nextMessageId = current === messageId ? null : messageId;
+      setIsReactionPickerExpanded(false);
+      return nextMessageId;
+    });
   };
 
   const handleReply = (message: ChannelDialogMessage) => {
     maxImpact('soft');
     setReplyToMessageId(message.id);
     setActiveMessageId(null);
+    setIsReactionPickerExpanded(false);
     requestAnimationFrame(() => composeFieldRef.current?.focus());
   };
 
-  const handleReactionToggle = (messageId: string, emoji: string) => {
+  const handleReactionToggle = (
+    messageId: string,
+    emoji: string,
+    options?: {
+      closePicker?: boolean;
+    },
+  ) => {
     if (reactionMutation.isPending) {
       return;
     }
 
     maxImpact('soft');
     reactionMutation.mutate({ messageId, emoji });
+    if (options?.closePicker) {
+      setActiveMessageId(null);
+      setIsReactionPickerExpanded(false);
+    }
   };
 
   const onSubmit = () => {
@@ -624,52 +712,40 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     >
       <div className="channel-dialog-screen__backdrop" aria-hidden />
 
-      <div className="channel-dialog-shell">
-        <header
-          className={cn(
-            'channel-dialog-topbar',
-            dialogType === 'comments' && 'channel-dialog-topbar--comments',
-            isBodyScrolled && 'is-compact',
-          )}
-        >
-          {dialogType === 'comments' ? (
-            <div className="channel-dialog-contextbar">
-              <div className="channel-dialog-contextbar__copy">
-                <span className="channel-dialog-contextbar__eyebrow">{chatTitle || chatId}</span>
-                <h1>{view.title}</h1>
-              </div>
-              <span className="channel-dialog-topbar__badge">{formatCommentsCount(messages.length)}</span>
+      <div
+        className={cn('channel-dialog-shell', dialogType === 'comments' && 'channel-dialog-shell--flat')}
+      >
+        {dialogType === 'suggest' ? (
+          <header
+            className={cn('channel-dialog-topbar', isBodyScrolled && 'is-compact')}
+          >
+            <button
+              type="button"
+              className="channel-dialog-nav"
+              onClick={handleDismiss}
+              aria-label="Назад"
+            >
+              <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
+                <path
+                  d="M11.8 4.4L6.2 10L11.8 15.6"
+                  stroke="currentColor"
+                  strokeWidth="1.9"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+
+            <div className="channel-dialog-topbar__title">
+              <h1>{view.title}</h1>
+              <span>{chatTitle || chatId}</span>
             </div>
-          ) : (
-            <>
-              <button
-                type="button"
-                className="channel-dialog-nav"
-                onClick={handleDismiss}
-                aria-label="Назад"
-              >
-                <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
-                  <path
-                    d="M11.8 4.4L6.2 10L11.8 15.6"
-                    stroke="currentColor"
-                    strokeWidth="1.9"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  />
-                </svg>
-              </button>
 
-              <div className="channel-dialog-topbar__title">
-                <h1>{view.title}</h1>
-                <span>{chatTitle || chatId}</span>
-              </div>
-
-              <button type="button" className="channel-dialog-close" onClick={handleDismiss}>
-                Закрыть
-              </button>
-            </>
-          )}
-        </header>
+            <button type="button" className="channel-dialog-close" onClick={handleDismiss}>
+              Закрыть
+            </button>
+          </header>
+        ) : null}
 
         <section
           ref={scrollViewportRef}
@@ -749,7 +825,107 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                         />
                       )}
 
-                      <div className="channel-dialog-message__content">
+                      <div
+                        className={cn(
+                          'channel-dialog-message__content',
+                          isActiveMessage && 'has-reaction-popover',
+                          isActiveMessage && isReactionPickerExpanded && 'has-expanded-reaction-popover',
+                        )}
+                        data-message-id={message.id}
+                      >
+                        {dialogType === 'comments' && isActiveMessage ? (
+                          <div
+                            className="channel-dialog-reaction-popover"
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <div className="channel-dialog-reaction-popover__surface">
+                              <div className="channel-dialog-reaction-popover__row">
+                                {COMMENT_REACTION_PRIMARY_OPTIONS.map((emoji) => {
+                                  const reactedByMe = message.reactionGroups.some(
+                                    (group) => group.emoji === emoji && group.reactedByMe,
+                                  );
+
+                                  return (
+                                    <button
+                                      key={emoji}
+                                      type="button"
+                                      className={cn(
+                                        'channel-dialog-reaction-popover__emoji',
+                                        reactedByMe && 'is-active',
+                                      )}
+                                      onClick={() =>
+                                        handleReactionToggle(message.id, emoji, {
+                                          closePicker: true,
+                                        })
+                                      }
+                                      disabled={isReactionPending}
+                                      aria-label={`Поставить реакцию ${emoji}`}
+                                    >
+                                      {emoji}
+                                    </button>
+                                  );
+                                })}
+
+                                <button
+                                  type="button"
+                                  className={cn(
+                                    'channel-dialog-reaction-popover__toggle',
+                                    isReactionPickerExpanded && 'is-active',
+                                  )}
+                                  onClick={() =>
+                                    setIsReactionPickerExpanded((current) => !current)
+                                  }
+                                  aria-label="Показать больше реакций"
+                                >
+                                  <PlusIcon />
+                                </button>
+                              </div>
+
+                              {isReactionPickerExpanded ? (
+                                <div className="channel-dialog-reaction-popover__grid">
+                                  {COMMENT_REACTION_EXPANDED_OPTIONS.map((emoji) => {
+                                    const reactedByMe = message.reactionGroups.some(
+                                      (group) => group.emoji === emoji && group.reactedByMe,
+                                    );
+
+                                    return (
+                                      <button
+                                        key={emoji}
+                                        type="button"
+                                        className={cn(
+                                          'channel-dialog-reaction-popover__emoji',
+                                          'is-secondary',
+                                          reactedByMe && 'is-active',
+                                        )}
+                                        onClick={() =>
+                                          handleReactionToggle(message.id, emoji, {
+                                            closePicker: true,
+                                          })
+                                        }
+                                        disabled={isReactionPending}
+                                        aria-label={`Поставить реакцию ${emoji}`}
+                                      >
+                                        {emoji}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              ) : null}
+
+                              <div className="channel-dialog-reaction-popover__actions">
+                                <button
+                                  type="button"
+                                  className="channel-dialog-reaction-popover__action"
+                                  onClick={() => handleReply(message)}
+                                >
+                                  <ReplyArrowIcon />
+                                  Ответить
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
+
                         <div
                           className={cn(
                             'channel-dialog-message__bubble',
@@ -844,53 +1020,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         </section>
 
         <section className="channel-dialog-compose">
-          {dialogType === 'comments' && activeMessage ? (
-            <div className="channel-dialog-reaction-dock">
-              <div className="channel-dialog-reaction-dock__surface">
-                <div className="channel-dialog-reaction-dock__meta">
-                  <div className="channel-dialog-reaction-dock__copy">
-                    <strong>{getAuthorLabel(activeMessage)}</strong>
-                    <span>{summarizeReplyText(activeMessage.text, 84)}</span>
-                  </div>
-                  <button
-                    type="button"
-                    className="channel-dialog-reaction-dock__reply"
-                    onClick={() => handleReply(activeMessage)}
-                  >
-                    Ответить
-                  </button>
-                </div>
-
-                <div className="channel-dialog-reaction-dock__list" aria-label="Быстрые реакции">
-                  {COMMENT_REACTION_OPTIONS.map((emoji) => {
-                    const reactedByMe = activeMessage.reactionGroups.some(
-                      (group) => group.emoji === emoji && group.reactedByMe,
-                    );
-                    const isReactionPending =
-                      reactionMutation.isPending &&
-                      reactionMutation.variables?.messageId === activeMessage.id;
-
-                    return (
-                      <button
-                        key={emoji}
-                        type="button"
-                        className={cn(
-                          'channel-dialog-reaction-dock__emoji',
-                          reactedByMe && 'is-active',
-                        )}
-                        onClick={() => handleReactionToggle(activeMessage.id, emoji)}
-                        disabled={isReactionPending}
-                        aria-label={`Поставить реакцию ${emoji}`}
-                      >
-                        {emoji}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          ) : null}
-
           <div className="channel-dialog-compose__surface">
             {replyTarget ? (
               <div className="channel-dialog-compose__reply">
