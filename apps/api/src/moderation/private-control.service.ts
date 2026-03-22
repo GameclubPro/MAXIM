@@ -164,6 +164,8 @@ type PrivateSession = {
   lastPrivateChatId: string | null;
   lastGiveawayHandoffDeliveredChatId: string | null;
   lastGiveawayHandoffDeliveredAt: number | null;
+  lastProfileMentionHandoffDeliveredChatId: string | null;
+  lastProfileMentionHandoffDeliveredAt: number | null;
   selectedChatId: string | null;
   selectedEntityType: ManagedEntityType | null;
   managedGiveawayId: string | null;
@@ -293,6 +295,7 @@ type DownloadedImageAsset = {
 const SESSION_TTL_SEC = 45 * 60;
 const SESSION_KEY_PREFIX = 'private-ui:v2';
 const GIVEAWAY_HANDOFF_DEDUP_WINDOW_MS = 20_000;
+const PROFILE_MENTION_HANDOFF_DEDUP_WINDOW_MS = 20_000;
 const BROADCAST_HANDOFF_START_PAYLOAD = 'broadcast_handoff';
 const RULES_HANDOFF_START_PAYLOAD = 'rules_handoff';
 const GIVEAWAY_HANDOFF_START_PAYLOAD = 'giveaway_handoff';
@@ -1050,13 +1053,20 @@ export class PrivateControlService {
 
     const profileMentionPayload = this.parseProfileMentionStartPayload(startPayload);
     if (profileMentionPayload) {
-      const mentionText = `[${this.escapeMarkdown(profileMentionPayload.displayName)}](max://user/${encodeURIComponent(profileMentionPayload.userId)})`;
-      await this.sendImmediate(
+      const session = await this.loadSession(context.actor.userId);
+      this.rememberPrivateChatId(session, context.chatId);
+
+      if (this.wasProfileMentionHandoffAlreadyDelivered(session, context.chatId)) {
+        this.clearDeliveredProfileMentionHandoff(session);
+        await this.saveSession(context.actor.userId, session);
+        return;
+      }
+
+      await this.saveSession(context.actor.userId, session);
+      await this.sendProfileMentionToPrivateChat(
         context.chatId,
-        [this.markdownTitle('Профиль пользователя'), '', mentionText].join('\n'),
-        {
-          textFormat: 'markdown',
-        },
+        profileMentionPayload.displayName,
+        profileMentionPayload.userId,
       );
       return;
     }
@@ -1354,6 +1364,12 @@ export class PrivateControlService {
     if (!botUrl) {
       throw new BadRequestException('Ссылка на личный чат бота не настроена.');
     }
+
+    const session = await this.loadSession(user.userId);
+    await this.deliverProfileMentionHandoffToKnownPrivateChat(user, session, {
+      displayName: resolvedDisplayName,
+      userId: normalizedTargetUserId,
+    });
 
     return broadcastHandoffResponseSchema.parse({ botUrl });
   }
@@ -7147,6 +7163,32 @@ export class PrivateControlService {
     session.lastGiveawayHandoffDeliveredAt = null;
   }
 
+  private wasProfileMentionHandoffAlreadyDelivered(
+    session: PrivateSession,
+    chatId: string,
+  ): boolean {
+    if (
+      !session.lastProfileMentionHandoffDeliveredChatId ||
+      session.lastProfileMentionHandoffDeliveredChatId !== chatId
+    ) {
+      return false;
+    }
+
+    if (typeof session.lastProfileMentionHandoffDeliveredAt !== 'number') {
+      return false;
+    }
+
+    return (
+      Date.now() - session.lastProfileMentionHandoffDeliveredAt <
+      PROFILE_MENTION_HANDOFF_DEDUP_WINDOW_MS
+    );
+  }
+
+  private clearDeliveredProfileMentionHandoff(session: PrivateSession): void {
+    session.lastProfileMentionHandoffDeliveredChatId = null;
+    session.lastProfileMentionHandoffDeliveredAt = null;
+  }
+
   private createSyntheticPrivateContext(user: AuthUser, privateChatId: string): PrivateContext {
     return {
       update: {
@@ -7200,6 +7242,54 @@ export class PrivateControlService {
           err: error instanceof Error ? error.message : String(error),
         },
         'Failed to proactively deliver giveaway handoff to private chat',
+      );
+    }
+  }
+
+  private async sendProfileMentionToPrivateChat(
+    privateChatId: string,
+    displayName: string,
+    userId: string,
+  ): Promise<void> {
+    const mentionText = `[${this.escapeMarkdown(displayName)}](max://user/${encodeURIComponent(userId)})`;
+    await this.sendImmediate(
+      privateChatId,
+      [this.markdownTitle('Профиль пользователя'), '', mentionText].join('\n'),
+      {
+        textFormat: 'markdown',
+      },
+    );
+  }
+
+  private async deliverProfileMentionHandoffToKnownPrivateChat(
+    user: AuthUser,
+    session: PrivateSession,
+    payload: { displayName: string; userId: string },
+  ): Promise<void> {
+    if (!session.lastPrivateChatId) {
+      this.clearDeliveredProfileMentionHandoff(session);
+      return;
+    }
+
+    try {
+      await this.sendProfileMentionToPrivateChat(
+        session.lastPrivateChatId,
+        payload.displayName,
+        payload.userId,
+      );
+      session.lastProfileMentionHandoffDeliveredChatId = session.lastPrivateChatId;
+      session.lastProfileMentionHandoffDeliveredAt = Date.now();
+      await this.saveSession(user.userId, session);
+    } catch (error: unknown) {
+      this.clearDeliveredProfileMentionHandoff(session);
+      this.logger.warn(
+        {
+          userId: user.userId,
+          chatId: session.lastPrivateChatId,
+          targetUserId: payload.userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to proactively deliver profile mention handoff to private chat',
       );
     }
   }
@@ -8897,6 +8987,8 @@ export class PrivateControlService {
       lastPrivateChatId: null,
       lastGiveawayHandoffDeliveredChatId: null,
       lastGiveawayHandoffDeliveredAt: null,
+      lastProfileMentionHandoffDeliveredChatId: null,
+      lastProfileMentionHandoffDeliveredAt: null,
       selectedChatId: null,
       selectedEntityType: null,
       managedGiveawayId: null,
@@ -8956,6 +9048,16 @@ export class PrivateControlService {
         typeof row.lastGiveawayHandoffDeliveredAt === 'number' &&
         Number.isFinite(row.lastGiveawayHandoffDeliveredAt)
           ? row.lastGiveawayHandoffDeliveredAt
+          : null,
+      lastProfileMentionHandoffDeliveredChatId:
+        typeof row.lastProfileMentionHandoffDeliveredChatId === 'string' &&
+        row.lastProfileMentionHandoffDeliveredChatId.trim().length > 0
+          ? row.lastProfileMentionHandoffDeliveredChatId.trim()
+          : null,
+      lastProfileMentionHandoffDeliveredAt:
+        typeof row.lastProfileMentionHandoffDeliveredAt === 'number' &&
+        Number.isFinite(row.lastProfileMentionHandoffDeliveredAt)
+          ? row.lastProfileMentionHandoffDeliveredAt
           : null,
       selectedChatId,
       selectedEntityType: parsedSelectedEntityType ?? (selectedChatId ? 'chat' : null),

@@ -1722,6 +1722,40 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).toContain('max://user/user-99');
   });
 
+  it('proactively delivers profile mention handoff into a known private chat and skips duplicate bot_started reply', async () => {
+    const { service, maxClient, chats } = createHarness();
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: chats[0].id,
+      chatTitle: chats[0].title,
+    };
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate('broadcast_handoff'));
+    maxClient.sendMessage.mockClear();
+
+    const result = await service.handoffProfileMentionFromMiniapp(
+      chats[0].id,
+      actor,
+      'user-77',
+      {
+        displayName: 'Мария',
+      },
+      'chat',
+    );
+
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(getLastSentText(maxClient)).toContain('Мария');
+    expect(getLastSentText(maxClient)).toContain('max://user/user-77');
+
+    await service.handleBotStarted(
+      createBotStartedPrivateUpdate(extractStartPayload(result.botUrl)),
+    );
+
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
   it('proactively delivers giveaway handoff into a known private chat and skips duplicate bot_started reply', async () => {
     const { service, maxClient, chats } = createHarness();
     const actor = {
