@@ -30,7 +30,6 @@ import {
   BroadcastSchedulePlanner,
   type BroadcastSchedulePlannerSelectionState,
 } from '../components/broadcast-schedule-planner';
-import { MaxMarkdownEditor } from '../components/max-markdown-editor';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
@@ -44,10 +43,8 @@ import {
   addDomain,
   applySettingsSectionToAll,
   cancelManagedBroadcast,
-  getDomainAllowlistDetails,
   getBroadcastHandoffState,
   getManagedBroadcast,
-  getRules,
   getSettingsScreen,
   handoffBroadcast,
   handoffRules,
@@ -109,15 +106,11 @@ const BOT_MESSAGES_DELETE_DELAY_MIN = 1;
 const BOT_MESSAGES_DELETE_DELAY_MAX = 60;
 const DOMAIN_REMOVAL_MIN_FUTURE_MS = 30_000;
 const MAX_BROADCAST_TEXT_LENGTH = 1_000;
-const MAX_BROADCAST_SCHEDULE_DAYS = 14;
 const MIN_BROADCAST_CYCLE_HOURS = 1;
 const MAX_BROADCAST_CYCLE_HOURS = 14 * 24;
-const MAX_BROADCAST_CYCLE_COUNT = 100;
 const THEMATIC_FILTERS_OWNER_USER_ID = '98315271';
-const MAX_RULES_IMAGE_SIZE_BYTES = 1_000_000;
 const MAX_CHAT_RULES_TEXT_LENGTH = 2_000;
 const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
-const BROADCAST_DAY_MS = 24 * 60 * 60 * 1_000;
 
 type MaxMessageLengthSliderProps = {
   value: ChatSettings['maxMessageLength'];
@@ -582,9 +575,6 @@ const WARN_MESSAGE_TEMPLATE_HINTS: Record<WarnMessageEditorKey, string> = {
   textFiltersWarn: 'Плейсхолдеры: {user}, {warning}, {reason}. Поддерживается Markdown MAX.',
 };
 
-const AUTO_RULES_FALLBACK_TEXT =
-  'Пожалуйста, уважайте участников чата и соблюдайте порядок в обсуждении.';
-
 function serializeRulesDraftPayload(
   value:
     | Pick<ChatRules, 'text' | 'imageBase64' | 'imageMimeType' | 'imageFileName'>
@@ -596,66 +586,6 @@ function serializeRulesDraftPayload(
     imageMimeType: value.imageMimeType,
     imageFileName: value.imageFileName,
   });
-}
-
-function buildAutoRulesText(settings: ChatSettings): string {
-  const lines: string[] = [];
-
-  if (settings.linkPolicy !== 'ALERT_ONLY') {
-    lines.push('В этом чате ссылки запрещены.');
-  }
-
-  if (settings.russianProfanityFilterEnabled) {
-    lines.push('Пожалуйста, без мата и оскорблений.');
-  }
-
-  if (settings.commercialAdsFilterEnabled) {
-    lines.push('Реклама и коммерческие объявления запрещены.');
-  }
-
-  const codeword = settings.thematicCodeword.trim();
-  if (settings.thematicCodewordEnabled && codeword) {
-    lines.push(`Объявления начинайте с кодового слова «${codeword}».`);
-  }
-
-  if (settings.requiredSubscriptionEnabled && settings.requiredSubscriptionChannelIds.length > 0) {
-    lines.push('Для сообщений нужна подписка на обязательные каналы чата.');
-  }
-
-  if (settings.antiDuplicateEnabled) {
-    const duplicateWarnHours = Math.max(1, Math.round(settings.duplicateWarnWindowSec / 3_600));
-    const duplicateIntervalLabel =
-      duplicateWarnHours >= 24 ? 'в сутки' : `в ${duplicateWarnHours} ч.`;
-    lines.push(`Не отправляйте повторные сообщения чаще 1 раза ${duplicateIntervalLabel}.`);
-  }
-
-  if (settings.maxMessageLengthEnabled) {
-    lines.push(`Сообщения должны быть не длиннее ${settings.maxMessageLength} символов.`);
-  }
-
-  if (settings.photoMessageCooldownEnabled) {
-    lines.push(
-      `Фото отправляйте одним сообщением. Если фото несколько — выберите все сразу и отправьте один раз (не чаще 1 раза в ${settings.photoMessageCooldownHours} ч.).`,
-    );
-  }
-
-  if (!settings.videoMessagesEnabled) {
-    lines.push('Видео в этом чате отключены.');
-  }
-
-  if (!settings.fileMessagesEnabled) {
-    lines.push('Файлы в этом чате отключены.');
-  }
-
-  if (!settings.voiceMessagesEnabled) {
-    lines.push('Голосовые сообщения в этом чате отключены.');
-  }
-
-  if (lines.length === 0) {
-    return AUTO_RULES_FALLBACK_TEXT;
-  }
-
-  return ['Пожалуйста, соблюдайте правила чата:', ...lines.map((line) => `• ${line}`)].join('\n');
 }
 
 function getSpeechTemplateFallback(
@@ -803,83 +733,6 @@ function isValidHttpUrl(value: string): boolean {
   } catch {
     return false;
   }
-}
-
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = typeof reader.result === 'string' ? reader.result : '';
-      const payload = result.includes(',') ? result.split(',')[1] : '';
-      if (!payload) {
-        reject(new Error('Не удалось прочитать файл.'));
-        return;
-      }
-      resolve(payload);
-    };
-    reader.onerror = () => reject(new Error('Не удалось прочитать файл.'));
-    reader.readAsDataURL(file);
-  });
-}
-
-function buildBroadcastScheduleIso(days: number, time: string): string | null {
-  if (!Number.isInteger(days) || days < 0 || days > MAX_BROADCAST_SCHEDULE_DAYS) {
-    return null;
-  }
-
-  const [hoursRaw, minutesRaw] = time.split(':');
-  const hours = Number.parseInt(hoursRaw ?? '', 10);
-  const minutes = Number.parseInt(minutesRaw ?? '', 10);
-  if (
-    Number.isNaN(hours) ||
-    Number.isNaN(minutes) ||
-    hours < 0 ||
-    hours > 23 ||
-    minutes < 0 ||
-    minutes > 59
-  ) {
-    return null;
-  }
-
-  const scheduledAt = new Date();
-  scheduledAt.setDate(scheduledAt.getDate() + days);
-  scheduledAt.setHours(hours, minutes, 0, 0);
-  return scheduledAt.toISOString();
-}
-
-function decomposeBroadcastScheduleIso(value: string | null): { days: number; time: string } {
-  const fallback = new Date(Date.now() + BROADCAST_HOUR_MS);
-  if (!value) {
-    return {
-      days: 0,
-      time: toLocalTimeInputValue(fallback),
-    };
-  }
-
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return {
-      days: 0,
-      time: toLocalTimeInputValue(fallback),
-    };
-  }
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const targetDay = new Date(parsed);
-  targetDay.setHours(0, 0, 0, 0);
-  const days = Math.max(
-    0,
-    Math.min(
-      MAX_BROADCAST_SCHEDULE_DAYS,
-      Math.round((targetDay.getTime() - today.getTime()) / BROADCAST_DAY_MS),
-    ),
-  );
-
-  return {
-    days,
-    time: toLocalTimeInputValue(parsed),
-  };
 }
 
 function clampBroadcastCycleHours(value: number): number {
@@ -1370,11 +1223,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const { pushToast } = useToast();
   const [draft, setDraft] = useState<ChatSettings | null>(null);
   const [rulesDraft, setRulesDraft] = useState<ChatRules | null>(null);
-  const [rulesAutoFillEnabled, setRulesAutoFillEnabled] = useState(false);
+  const [, setRulesAutoFillEnabled] = useState(false);
   const [rulesAutoFillSeedText, setRulesAutoFillSeedText] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
-  const [rulesTextError, setRulesTextError] = useState('');
-  const [rulesImageError, setRulesImageError] = useState('');
+  const [, setRulesTextError] = useState('');
+  const [, setRulesImageError] = useState('');
   const [domainInput, setDomainInput] = useState('');
   const [domainInputError, setDomainInputError] = useState('');
   const [scheduleDomain, setScheduleDomain] = useState<string | null>(null);
@@ -1392,20 +1245,20 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [mailingImageFileName, setMailingImageFileName] = useState('');
   const [mailingScheduledSlots, setMailingScheduledSlots] = useState<string[]>([]);
   const [mailingBotHasContent, setMailingBotHasContent] = useState(false);
-  const [mailingScheduleEnabled, setMailingScheduleEnabled] = useState(false);
-  const [mailingScheduleDays, setMailingScheduleDays] = useState(0);
-  const [mailingScheduleTime, setMailingScheduleTime] = useState(() =>
+  const [, setMailingScheduleEnabled] = useState(false);
+  const [, setMailingScheduleDays] = useState(0);
+  const [, setMailingScheduleTime] = useState(() =>
     toLocalTimeInputValue(new Date(Date.now() + BROADCAST_HOUR_MS)),
   );
-  const [mailingCycleEnabled, setMailingCycleEnabled] = useState(false);
-  const [mailingCycleEveryHours, setMailingCycleEveryHours] = useState(MIN_BROADCAST_CYCLE_HOURS);
-  const [mailingCycleCount, setMailingCycleCount] = useState(2);
-  const [mailingTextError, setMailingTextError] = useState('');
+  const [, setMailingCycleEnabled] = useState(false);
+  const [, setMailingCycleEveryHours] = useState(MIN_BROADCAST_CYCLE_HOURS);
+  const [, setMailingCycleCount] = useState(2);
+  const [, setMailingTextError] = useState('');
   const [mailingButtonUrlError, setMailingButtonUrlError] = useState('');
   const [mailingButtonTextError, setMailingButtonTextError] = useState('');
-  const [mailingImageError, setMailingImageError] = useState('');
+  const [, setMailingImageError] = useState('');
   const [mailingScheduleError, setMailingScheduleError] = useState('');
-  const [mailingCycleError, setMailingCycleError] = useState('');
+  const [, setMailingCycleError] = useState('');
   const [requiredSubscriptionExternalChannelValue, setRequiredSubscriptionExternalChannelValue] =
     useState('');
   const [requiredSubscriptionExternalChannelError, setRequiredSubscriptionExternalChannelError] =
@@ -1732,11 +1585,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
   }, [broadcastHandoffStateQuery.data, pushToast]);
 
-  const autoRulesText = useMemo(() => {
-    const sourceSettings = draft ?? settingsQuery.data;
-    return sourceSettings ? buildAutoRulesText(sourceSettings) : '';
-  }, [draft, settingsQuery.data]);
-
   useEffect(() => {
     if (!rulesQuery.data) {
       return;
@@ -1869,7 +1717,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     resolveRequiredSubscriptionChannelMutation.isPending;
 
   const saveSpeechStyleMutation = useMutation({
-    mutationFn: ({ style, payload }: { style: BotSpeechStyle; payload: ChatSettings }) =>
+    mutationFn: ({ payload }: { style: BotSpeechStyle; payload: ChatSettings }) =>
       updateSettings(api, chatId ?? '', payload),
     onSuccess: (saved, variables) => {
       syncSavedBotSpeechStyle(saved);
@@ -2459,79 +2307,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  function setRulesFieldValue<K extends keyof UpdateChatRulesPayload>(
-    key: K,
-    value: UpdateChatRulesPayload[K],
-  ) {
-    if (key === 'text') {
-      const nextText = String(value);
-      if (rulesAutoFillSeedText !== null && rulesAutoFillSeedText !== nextText) {
-        setRulesAutoFillSeedText(null);
-        setRulesAutoFillEnabled(false);
-      }
-    }
-
-    setRulesDraft((current) => {
-      if (!current) {
-        return current;
-      }
-
-      return chatRulesSchema.parse({
-        ...current,
-        [key]: value,
-      });
-    });
-
-    if (key === 'text' && rulesTextError) {
-      setRulesTextError('');
-    }
-    if (
-      (key === 'imageBase64' || key === 'imageMimeType' || key === 'imageFileName') &&
-      rulesImageError
-    ) {
-      setRulesImageError('');
-    }
-  }
-
-  function handleRulesAutoTextToggle(enabled: boolean) {
-    setRulesAutoFillEnabled(enabled);
-
-    if (!enabled || !autoRulesText) {
-      return;
-    }
-
-    setRulesAutoFillSeedText(autoRulesText);
-
-    setRulesDraft((current) => {
-      if (!current) {
-        return current;
-      }
-
-      return chatRulesSchema.parse({
-        ...current,
-        autoTextEnabled: false,
-        text: autoRulesText,
-      });
-    });
-    setRulesTextError('');
-  }
-
-  function clearRulesImage() {
-    setRulesDraft((current) => {
-      if (!current) {
-        return current;
-      }
-
-      return chatRulesSchema.parse({
-        ...current,
-        imageBase64: '',
-        imageMimeType: '',
-        imageFileName: '',
-      });
-    });
-    setRulesImageError('');
-  }
-
   function validateDraft(value: ChatSettings): ChatSettings | null {
     const parsed = chatSettingsSchema.safeParse(value);
 
@@ -2869,31 +2644,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       domain,
       removeAfterAt: null,
     });
-  }
-
-  async function handleRulesImageChange(file: File | null) {
-    if (!file) {
-      return;
-    }
-
-    if (file.size > MAX_RULES_IMAGE_SIZE_BYTES) {
-      setRulesImageError('Фото правил слишком большое. Максимум 1 MB.');
-      return;
-    }
-
-    if (!file.type.toLowerCase().startsWith('image/')) {
-      setRulesImageError('Поддерживаются только изображения.');
-      return;
-    }
-
-    try {
-      const imageBase64 = await fileToBase64(file);
-      setRulesFieldValue('imageBase64', imageBase64);
-      setRulesFieldValue('imageMimeType', file.type);
-      setRulesFieldValue('imageFileName', file.name);
-    } catch (error) {
-      setRulesImageError(error instanceof Error ? error.message : 'Не удалось прочитать фото.');
-    }
   }
 
   async function handlePublishRules() {

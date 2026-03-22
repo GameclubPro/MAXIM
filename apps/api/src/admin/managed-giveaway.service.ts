@@ -553,7 +553,7 @@ export class ManagedGiveawayService {
     });
   }
 
-  async getPublicGiveaway(giveawayId: string, user: AuthUser): Promise<ManagedGiveawayPublic> {
+  async getPublicGiveaway(giveawayId: string, _user: AuthUser): Promise<ManagedGiveawayPublic> {
     const giveaway = await this.findGiveawayById(giveawayId);
     if (giveaway.status === ManagedGiveawayStatus.SCHEDULED) {
       await this.activateScheduledGiveawayIfDue(giveaway);

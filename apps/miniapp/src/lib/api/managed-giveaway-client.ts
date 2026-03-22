@@ -1,13 +1,11 @@
 import {
   broadcastHandoffResponseSchema,
-  managedBroadcastSummarySchema,
   managedGiveawayDetailsSchema,
   managedGiveawayHandoffRequestSchema,
   managedGiveawaySummarySchema,
   markManagedGiveawayWinnerDeliveredRequestSchema,
   rerollManagedGiveawayWinnerRequestSchema,
   updateManagedGiveawayRequestSchema,
-  type ManagedBroadcastSummary,
   type ManagedGiveawayDetails,
   type ManagedGiveawaySummary,
 } from '@maxim/contracts';

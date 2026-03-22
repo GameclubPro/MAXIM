@@ -31,7 +31,6 @@ import {
   type ChannelOverview,
   type ApplySectionToAllResponse,
   type ManagedBroadcastDetails,
-  type MembershipActivityFilter,
   type MembershipActivityPage,
   type MembershipActivityQuery,
   managedBroadcastDetailsSchema,
@@ -189,12 +188,8 @@ const RULES_IMAGE_MAX_BYTES = 1_000_000;
 const BROADCAST_IMAGE_MAX_BYTES = 3_000_000;
 const BROADCAST_MIN_DELAY_MS = 30_000;
 const BROADCAST_MAX_DELAY_MS = 31 * 24 * 60 * 60 * 1000;
-const BROADCAST_CYCLE_MAX_COUNT = 100;
 const BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS = [1_500, 3_000, 6_000];
 const BROADCAST_CALENDAR_SLOT_MINUTES = 30;
-const STICKER_LAB_CANVAS_SIZE = 512;
-const STICKER_LAB_TARGET_BYTES = 1_000_000;
-const STICKER_LAB_QUALITY_LEVELS = [92, 84, 76, 68] as const;
 const MANAGED_BROADCAST_DUE_BATCH_SIZE = 10;
 const MANAGED_BROADCAST_LOCK_STALE_MS = 60_000;
 const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 30;

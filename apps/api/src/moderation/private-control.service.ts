@@ -1652,7 +1652,7 @@ export class PrivateControlService {
           session.selectedChatId!,
           context.actor,
         );
-        const nextValue = !Boolean(current[key] as boolean);
+        const nextValue = !(current[key] as boolean);
         await this.updateSingleChannelSetting(
           session.selectedChatId!,
           context.actor,
@@ -1766,7 +1766,7 @@ export class PrivateControlService {
         }
 
         const current = await this.adminService.getSettings(session.selectedChatId!, context.actor);
-        const nextValue = !Boolean(current[key] as boolean);
+        const nextValue = !(current[key] as boolean);
         await this.updateSingleSetting(session.selectedChatId!, context.actor, key, nextValue);
 
         const view = await this.renderSectionCardScreen(context, session, section);
@@ -4808,7 +4808,7 @@ export class PrivateControlService {
       if (field.type === 'boolean') {
         rows.push([
           this.callbackButton(
-            `${Boolean(settings[field.key]) ? '✅' : '⬜'} ${field.label}`,
+            `${settings[field.key] ? '✅' : '⬜'} ${field.label}`,
             this.cb('toggle', section, String(field.key)),
           ),
         ]);
@@ -6014,7 +6014,7 @@ export class PrivateControlService {
       if (field.type === 'boolean') {
         rows.push([
           this.callbackButton(
-            `${Boolean(currentValue) ? '✅' : '⬜'} ${field.label}`,
+            `${currentValue ? '✅' : '⬜'} ${field.label}`,
             this.cb('toggle', section, String(field.key)),
           ),
         ]);
@@ -6125,7 +6125,7 @@ export class PrivateControlService {
       if (field.type === 'boolean') {
         rows.push([
           this.callbackButton(
-            `${Boolean(settings[field.key]) ? '✅' : '⬜'} ${field.label}`,
+            `${settings[field.key] ? '✅' : '⬜'} ${field.label}`,
             this.cb('toggle_channel', section, String(field.key)),
           ),
         ]);
@@ -8691,7 +8691,7 @@ export class PrivateControlService {
     return null;
   }
 
-  private parseUiMode(value: unknown): PrivateUiMode {
+  private parseUiMode(_value: unknown): PrivateUiMode {
     return 'modern';
   }
 

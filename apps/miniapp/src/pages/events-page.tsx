@@ -220,18 +220,6 @@ function formatSignedCount(value: number): string {
   return String(value);
 }
 
-function resolveRangeDescription(range: LogsDashboardRange): string {
-  if (range === '24h') {
-    return 'за 24 часа';
-  }
-
-  if (range === '7d') {
-    return 'за 7 дней';
-  }
-
-  return 'за 30 дней';
-}
-
 function clampBanDurationHours(value: number): number {
   const normalized = Number.isFinite(value) ? Math.trunc(value) : BAN_DURATION_MIN_HOURS;
   return Math.max(BAN_DURATION_MIN_HOURS, Math.min(BAN_DURATION_MAX_HOURS, normalized));
@@ -686,7 +674,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     return null;
   }
 
-  const rangeDescription = resolveRangeDescription(range);
   const activityBalanceTone =
     dashboard.membership.netUsers > 0
       ? 'success'

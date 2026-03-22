@@ -7,7 +7,6 @@ import {
   type BroadcastSchedulePlannerSelectionState,
 } from '../components/broadcast-schedule-planner';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
-import { MaxMarkdownEditor } from '../components/max-markdown-editor';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { GlassCard } from '../components/ui/glass-card';
@@ -56,13 +55,8 @@ type ChannelSettingsHintKey =
   | 'broadcastImage'
   | 'broadcastButton';
 
-const MAX_BROADCAST_TEXT_LENGTH = 1_000;
-const MAX_BROADCAST_SCHEDULE_DAYS = 14;
 const MIN_BROADCAST_CYCLE_HOURS = 1;
-const MAX_BROADCAST_CYCLE_HOURS = 14 * 24;
-const MAX_BROADCAST_CYCLE_COUNT = 100;
 const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
-const BROADCAST_DAY_MS = 24 * 60 * 60 * 1_000;
 const INITIAL_EXPANDED_CHANNEL_SECTIONS: Record<ChannelSettingsSectionKey, boolean> = {
   comments: false,
   postSuggestions: false,
@@ -79,64 +73,10 @@ const EMPTY_BROADCAST_PLANNER_STATE: BroadcastSchedulePlannerSelectionState = {
   isConfirmed: false,
 };
 
-function buildBroadcastScheduleIso(days: number, time: string): string | null {
-  if (!Number.isInteger(days) || days < 0 || days > MAX_BROADCAST_SCHEDULE_DAYS) {
-    return null;
-  }
-
-  const [hoursRaw, minutesRaw] = time.split(':');
-  const hours = Number.parseInt(hoursRaw ?? '', 10);
-  const minutes = Number.parseInt(minutesRaw ?? '', 10);
-  if (
-    Number.isNaN(hours) ||
-    Number.isNaN(minutes) ||
-    hours < 0 ||
-    hours > 23 ||
-    minutes < 0 ||
-    minutes > 59
-  ) {
-    return null;
-  }
-
-  const scheduledAt = new Date();
-  scheduledAt.setDate(scheduledAt.getDate() + days);
-  scheduledAt.setHours(hours, minutes, 0, 0);
-  return scheduledAt.toISOString();
-}
-
-function clampBroadcastCycleHours(value: number): number {
-  if (!Number.isFinite(value)) {
-    return MIN_BROADCAST_CYCLE_HOURS;
-  }
-
-  return Math.max(
-    MIN_BROADCAST_CYCLE_HOURS,
-    Math.min(MAX_BROADCAST_CYCLE_HOURS, Math.round(value)),
-  );
-}
-
 function toLocalTimeInputValue(value: Date): string {
   const hours = String(value.getHours()).padStart(2, '0');
   const minutes = String(value.getMinutes()).padStart(2, '0');
   return `${hours}:${minutes}`;
-}
-
-function formatBroadcastDateTime(value: string | null): string {
-  if (!value) {
-    return '';
-  }
-
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return '';
-  }
-
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(parsed);
 }
 
 function buildAutoPostButtonsMode(
@@ -176,18 +116,6 @@ function resolveManualPublishButtons(settings: ChannelSettings) {
           ? settings.commentsEnabled
           : false,
     includeSuggestButton: true,
-  };
-}
-
-function resolveBroadcastSystemButtons(settings: ChannelSettings) {
-  return {
-    includeCommentsButton:
-      settings.autoPostButtonsMode === 'COMMENTS' || settings.autoPostButtonsMode === 'BOTH'
-        ? true
-        : settings.autoPostButtonsMode === 'OFF'
-          ? settings.commentsEnabled
-          : false,
-    includeSuggestButton: settings.postSuggestionsEnabled,
   };
 }
 
@@ -434,30 +362,29 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [openHintKey, setOpenHintKey] = useState<ChannelSettingsHintKey | null>(null);
   const { pushToast } = useToast();
   const [broadcastText, setBroadcastText] = useState('');
-  const [broadcastTextError, setBroadcastTextError] = useState('');
+  const [, setBroadcastTextError] = useState('');
   const [broadcastButtonEnabled, setBroadcastButtonEnabled] = useState(false);
   const [broadcastButtonUrl, setBroadcastButtonUrl] = useState('');
   const [broadcastButtonText, setBroadcastButtonText] = useState('Открыть');
   const [broadcastButtonUrlError, setBroadcastButtonUrlError] = useState('');
   const [broadcastButtonTextError, setBroadcastButtonTextError] = useState('');
   const [broadcastImageEnabled, setBroadcastImageEnabled] = useState(false);
-  const [broadcastImageBase64, setBroadcastImageBase64] = useState('');
-  const [broadcastImageMimeType, setBroadcastImageMimeType] = useState('');
-  const [broadcastImageFileName, setBroadcastImageFileName] = useState('');
+  const [, setBroadcastImageBase64] = useState('');
+  const [, setBroadcastImageMimeType] = useState('');
+  const [, setBroadcastImageFileName] = useState('');
   const [broadcastScheduledSlots, setBroadcastScheduledSlots] = useState<string[]>([]);
   const [broadcastBotHasContent, setBroadcastBotHasContent] = useState(false);
-  const [broadcastImageError, setBroadcastImageError] = useState('');
-  const [broadcastScheduleEnabled, setBroadcastScheduleEnabled] = useState(false);
-  const [broadcastScheduleDays, setBroadcastScheduleDays] = useState(0);
-  const [broadcastScheduleTime, setBroadcastScheduleTime] = useState(
+  const [, setBroadcastImageError] = useState('');
+  const [, setBroadcastScheduleEnabled] = useState(false);
+  const [, setBroadcastScheduleDays] = useState(0);
+  const [, setBroadcastScheduleTime] = useState(
     toLocalTimeInputValue(new Date(Date.now() + BROADCAST_HOUR_MS)),
   );
   const [broadcastScheduleError, setBroadcastScheduleError] = useState('');
-  const [broadcastCycleEnabled, setBroadcastCycleEnabled] = useState(false);
-  const [broadcastCycleEveryHours, setBroadcastCycleEveryHours] =
-    useState(MIN_BROADCAST_CYCLE_HOURS);
-  const [broadcastCycleCount, setBroadcastCycleCount] = useState(2);
-  const [broadcastCycleError, setBroadcastCycleError] = useState('');
+  const [, setBroadcastCycleEnabled] = useState(false);
+  const [, setBroadcastCycleEveryHours] = useState(MIN_BROADCAST_CYCLE_HOURS);
+  const [, setBroadcastCycleCount] = useState(2);
+  const [, setBroadcastCycleError] = useState('');
   const [broadcastPlannerResetKey, setBroadcastPlannerResetKey] = useState(0);
   const [broadcastPlannerState, setBroadcastPlannerState] =
     useState<BroadcastSchedulePlannerSelectionState>(EMPTY_BROADCAST_PLANNER_STATE);
