@@ -21,8 +21,10 @@ function isMaxDeepLink(url: URL): boolean {
   return url.protocol === 'https:' && (url.hostname === 'max.ru' || url.hostname === 'www.max.ru');
 }
 
-function isMaxUserLink(url: URL): boolean {
-  return url.protocol === 'max:' && url.hostname === 'user';
+function scheduleMiniAppClose(): void {
+  window.setTimeout(() => {
+    resolveBridge()?.close?.();
+  }, 40);
 }
 
 export function readyMaxMiniApp(): void {
@@ -59,17 +61,34 @@ export function openMaxBotLink(url: string): void {
     return;
   }
 
-  if (parsed && isMaxUserLink(parsed)) {
-    window.location.assign(normalizedUrl);
-    return;
-  }
-
   if (typeof bridge?.openLink === 'function') {
     bridge.openLink(normalizedUrl);
     return;
   }
 
   window.location.assign(normalizedUrl);
+}
+
+export function openMaxProfileLink(url: string): boolean {
+  const normalizedUrl = url.trim();
+  if (!normalizedUrl) {
+    return false;
+  }
+
+  const bridge = resolveBridge();
+  const parsed = parseMaxUrl(normalizedUrl);
+  if (!parsed || !isMaxDeepLink(parsed)) {
+    return false;
+  }
+
+  if (typeof bridge?.openMaxLink === 'function') {
+    bridge.openMaxLink(normalizedUrl);
+    scheduleMiniAppClose();
+    return true;
+  }
+
+  window.location.assign(normalizedUrl);
+  return true;
 }
 
 export function canShareMaxContent(): boolean {

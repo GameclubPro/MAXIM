@@ -9,6 +9,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { type KeyboardEvent, type MouseEvent, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
+import { PersonAvatar } from '../components/ui/person-avatar';
 import { BackChevronIcon } from '../components/ui/entity-header-icons';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
@@ -23,6 +24,7 @@ import { getChats } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
+import { openMaxProfileLink } from '../lib/max-bridge';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 
@@ -182,10 +184,9 @@ function resolveOffenderProfileUrl(violation: ViolationItem): string | null {
 }
 
 function handleProfileLinkClick(event: MouseEvent<HTMLAnchorElement>, profileUrl: string): void {
+  event.preventDefault();
   event.stopPropagation();
-  if (!profileUrl.trim()) {
-    event.preventDefault();
-  }
+  openMaxProfileLink(profileUrl);
 }
 
 function handleExpandableCardKeyDown(
@@ -1010,17 +1011,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                       onKeyDown={(event) => handleExpandableCardKeyDown(event, toggleExpanded)}
                       aria-expanded={isExpanded}
                     >
-                      <span
-                        className={`event-feed-item__avatar ${
-                          avatarUrl ? 'event-feed-item__avatar--image' : ''
-                        }`}
-                      >
-                        {avatarUrl ? (
-                          <img src={avatarUrl} alt="" loading="lazy" />
-                        ) : (
-                          resolveOffenderInitial(displayName)
-                        )}
-                      </span>
+                      <PersonAvatar
+                        avatarUrl={avatarUrl}
+                        fallback={resolveOffenderInitial(displayName)}
+                        className="event-feed-item__avatar"
+                      />
 
                       <div className="event-feed-item__body">
                         <div className="event-feed-item__headline">

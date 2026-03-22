@@ -6576,17 +6576,17 @@ export class AdminService {
         displayName:
           displayNames.get(userId) ?? this.readTrimmedString(profile?.displayName) ?? null,
         avatarUrl: this.readTrimmedString(profile?.avatarUrl) ?? null,
-        profileUrl: this.buildUserProfileUrl(userId, username),
+        profileUrl: this.buildUserProfileUrl(username),
       });
     }
 
     return profiles;
   }
 
-  private buildUserProfileUrl(userId: string, username: string | null): string | null {
+  private buildUserProfileUrl(username: string | null): string | null {
     const normalizedUsername = username?.replace(/^@+/u, '').trim() ?? '';
     if (!normalizedUsername) {
-      return `max://user/${encodeURIComponent(userId)}`;
+      return null;
     }
 
     return `https://max.ru/${encodeURIComponent(normalizedUsername)}`;

@@ -1,5 +1,7 @@
 import type { MembershipActivityFilter, MembershipActivityItem } from '@maxim/contracts';
 import { type MouseEvent, useMemo } from 'react';
+import { openMaxProfileLink } from '../../lib/max-bridge';
+import { PersonAvatar } from '../ui/person-avatar';
 import { SegmentedControl } from '../ui/segmented-control';
 
 type MembershipActivityFeedProps = {
@@ -91,10 +93,9 @@ function resolveAvatarUrl(value: string | null | undefined): string | null {
 }
 
 function handleProfileLinkClick(event: MouseEvent<HTMLAnchorElement>, profileUrl: string): void {
-  if (!profileUrl.trim()) {
-    event.preventDefault();
-  }
+  event.preventDefault();
   event.stopPropagation();
+  openMaxProfileLink(profileUrl);
 }
 
 export function MembershipActivityFeed({
@@ -251,17 +252,11 @@ export function MembershipActivityFeed({
                       </div>
 
                       <div className="membership-feed__card">
-                        <span
-                          className={`membership-feed__avatar ${
-                            avatarUrl ? 'membership-feed__avatar--image' : ''
-                          }`}
-                        >
-                          {avatarUrl ? (
-                            <img src={avatarUrl} alt="" loading="lazy" />
-                          ) : (
-                            resolveInitial(displayName)
-                          )}
-                        </span>
+                        <PersonAvatar
+                          avatarUrl={avatarUrl}
+                          fallback={resolveInitial(displayName)}
+                          className="membership-feed__avatar"
+                        />
                         <div className="membership-feed__content">
                           <div className="membership-feed__row">
                             {profileUrl ? (
