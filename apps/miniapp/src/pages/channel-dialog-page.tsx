@@ -8,7 +8,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { StatusState } from '../components/ui/status-state';
 import { useToast } from '../components/ui/toast';
-import { BackChevronIcon } from '../components/ui/entity-header-icons';
 import {
   createChatDialogMessage,
   createChannelDialogMessage,
@@ -24,7 +23,22 @@ import { readChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
 import { maxImpact } from '../lib/max-bridge';
 
-const COMMENT_REACTION_OPTIONS = ['👍', '❤️', '🔥', '👀'] as const;
+const COMMENT_REACTION_OPTIONS = [
+  '👍',
+  '❤️',
+  '🔥',
+  '👏',
+  '😂',
+  '😍',
+  '🤝',
+  '🎯',
+  '🚀',
+  '💯',
+  '👀',
+  '😮',
+  '😢',
+  '😡',
+] as const;
 
 function normalizeApiError(error: unknown): string {
   if (!(error instanceof Error)) {
@@ -89,6 +103,29 @@ function summarizeReplyText(value: string, maxLength = 96): string {
   }
 
   return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function formatCommentsCount(value: number): string {
+  if (value <= 0) {
+    return 'Пусто';
+  }
+
+  const lastTwoDigits = value % 100;
+  const lastDigit = value % 10;
+
+  if (lastTwoDigits >= 11 && lastTwoDigits <= 14) {
+    return `${value} комментариев`;
+  }
+
+  if (lastDigit === 1) {
+    return `${value} комментарий`;
+  }
+
+  if (lastDigit >= 2 && lastDigit <= 4) {
+    return `${value} комментария`;
+  }
+
+  return `${value} комментариев`;
 }
 
 function isGroupedWithPrevious(messages: ChannelDialogMessage[], index: number): boolean {
@@ -338,6 +375,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const replyTarget = useMemo(
     () => messages.find((message) => message.id === replyToMessageId) ?? null,
     [messages, replyToMessageId],
+  );
+  const activeMessage = useMemo(
+    () => messages.find((message) => message.id === activeMessageId) ?? null,
+    [activeMessageId, messages],
   );
   const draftLength = draft.trim().length;
   const showComposeMeta = dialogType === 'suggest' || draftLength > 0 || Boolean(replyTarget);
@@ -591,28 +632,42 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             isBodyScrolled && 'is-compact',
           )}
         >
-          <button
-            type="button"
-            className="channel-dialog-nav"
-            onClick={handleDismiss}
-            aria-label="Назад"
-          >
-            <BackChevronIcon />
-          </button>
-
-          <div className="channel-dialog-topbar__title">
-            <h1>{view.title}</h1>
-            <span>{chatTitle || chatId}</span>
-          </div>
-
           {dialogType === 'comments' ? (
-            <span className="channel-dialog-topbar__badge">
-              {messages.length > 0 ? `${messages.length} комм.` : 'Пусто'}
-            </span>
+            <div className="channel-dialog-contextbar">
+              <div className="channel-dialog-contextbar__copy">
+                <span className="channel-dialog-contextbar__eyebrow">{chatTitle || chatId}</span>
+                <h1>{view.title}</h1>
+              </div>
+              <span className="channel-dialog-topbar__badge">{formatCommentsCount(messages.length)}</span>
+            </div>
           ) : (
-            <button type="button" className="channel-dialog-close" onClick={handleDismiss}>
-              Закрыть
-            </button>
+            <>
+              <button
+                type="button"
+                className="channel-dialog-nav"
+                onClick={handleDismiss}
+                aria-label="Назад"
+              >
+                <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
+                  <path
+                    d="M11.8 4.4L6.2 10L11.8 15.6"
+                    stroke="currentColor"
+                    strokeWidth="1.9"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+
+              <div className="channel-dialog-topbar__title">
+                <h1>{view.title}</h1>
+                <span>{chatTitle || chatId}</span>
+              </div>
+
+              <button type="button" className="channel-dialog-close" onClick={handleDismiss}>
+                Закрыть
+              </button>
+            </>
           )}
         </header>
 
@@ -753,71 +808,28 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                           ) : null}
                         </div>
 
-                        {dialogType === 'comments' &&
-                        (message.reactionGroups.length > 0 || isActiveMessage) ? (
+                        {dialogType === 'comments' && message.reactionGroups.length > 0 ? (
                           <div className="channel-dialog-message__footer channel-dialog-message__footer--comments">
-                            {message.reactionGroups.length > 0 ? (
-                              <div className="channel-dialog-message__reactions">
-                                {message.reactionGroups.map((group) => (
-                                  <button
-                                    key={group.emoji}
-                                    type="button"
-                                    className={cn(
-                                      'channel-dialog-reaction-pill',
-                                      group.reactedByMe && 'is-active',
-                                    )}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      handleReactionToggle(message.id, group.emoji);
-                                    }}
-                                    disabled={isReactionPending}
-                                  >
-                                    <b>{group.emoji}</b>
-                                    <span>{group.count}</span>
-                                  </button>
-                                ))}
-                              </div>
-                            ) : null}
-
-                            {isActiveMessage ? (
-                              <div className="channel-dialog-message__actions">
-                                {COMMENT_REACTION_OPTIONS.map((emoji) => {
-                                  const reactedByMe = message.reactionGroups.some(
-                                    (group) => group.emoji === emoji && group.reactedByMe,
-                                  );
-
-                                  return (
-                                    <button
-                                      key={emoji}
-                                      type="button"
-                                      className={cn(
-                                        'channel-dialog-message__quick-reaction',
-                                        reactedByMe && 'is-active',
-                                      )}
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        handleReactionToggle(message.id, emoji);
-                                      }}
-                                      disabled={isReactionPending}
-                                      aria-label={`Поставить реакцию ${emoji}`}
-                                    >
-                                      {emoji}
-                                    </button>
-                                  );
-                                })}
-
+                            <div className="channel-dialog-message__reactions">
+                              {message.reactionGroups.map((group) => (
                                 <button
+                                  key={group.emoji}
                                   type="button"
-                                  className="channel-dialog-message__reply-button"
+                                  className={cn(
+                                    'channel-dialog-reaction-pill',
+                                    group.reactedByMe && 'is-active',
+                                  )}
                                   onClick={(event) => {
                                     event.stopPropagation();
-                                    handleReply(message);
+                                    handleReactionToggle(message.id, group.emoji);
                                   }}
+                                  disabled={isReactionPending}
                                 >
-                                  Ответить
+                                  <b>{group.emoji}</b>
+                                  <span>{group.count}</span>
                                 </button>
-                              </div>
-                            ) : null}
+                              ))}
+                            </div>
                           </div>
                         ) : null}
                       </div>
@@ -832,6 +844,53 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         </section>
 
         <section className="channel-dialog-compose">
+          {dialogType === 'comments' && activeMessage ? (
+            <div className="channel-dialog-reaction-dock">
+              <div className="channel-dialog-reaction-dock__surface">
+                <div className="channel-dialog-reaction-dock__meta">
+                  <div className="channel-dialog-reaction-dock__copy">
+                    <strong>{getAuthorLabel(activeMessage)}</strong>
+                    <span>{summarizeReplyText(activeMessage.text, 84)}</span>
+                  </div>
+                  <button
+                    type="button"
+                    className="channel-dialog-reaction-dock__reply"
+                    onClick={() => handleReply(activeMessage)}
+                  >
+                    Ответить
+                  </button>
+                </div>
+
+                <div className="channel-dialog-reaction-dock__list" aria-label="Быстрые реакции">
+                  {COMMENT_REACTION_OPTIONS.map((emoji) => {
+                    const reactedByMe = activeMessage.reactionGroups.some(
+                      (group) => group.emoji === emoji && group.reactedByMe,
+                    );
+                    const isReactionPending =
+                      reactionMutation.isPending &&
+                      reactionMutation.variables?.messageId === activeMessage.id;
+
+                    return (
+                      <button
+                        key={emoji}
+                        type="button"
+                        className={cn(
+                          'channel-dialog-reaction-dock__emoji',
+                          reactedByMe && 'is-active',
+                        )}
+                        onClick={() => handleReactionToggle(activeMessage.id, emoji)}
+                        disabled={isReactionPending}
+                        aria-label={`Поставить реакцию ${emoji}`}
+                      >
+                        {emoji}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          ) : null}
+
           <div className="channel-dialog-compose__surface">
             {replyTarget ? (
               <div className="channel-dialog-compose__reply">
