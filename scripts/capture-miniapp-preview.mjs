@@ -104,7 +104,7 @@ const scenarios = [
         await editButton.first().click();
         await page.waitForTimeout(350);
       }
-      await page.getByRole('button', { name: /Далее: условия/u }).click();
+      await page.getByRole('button', { name: /(?:Далее: условия|К условиям)/u }).click();
       await page.waitForTimeout(450);
     },
   },
@@ -123,9 +123,9 @@ const scenarios = [
         await editButton.first().click();
         await page.waitForTimeout(350);
       }
-      await page.getByRole('button', { name: /Далее: условия/u }).click();
+      await page.getByRole('button', { name: /(?:Далее: условия|К условиям)/u }).click();
       await page.waitForTimeout(200);
-      await page.getByRole('button', { name: /Далее: призы/u }).click();
+      await page.getByRole('button', { name: /(?:Далее: призы|К призам)/u }).click();
       await page.waitForTimeout(450);
     },
   },

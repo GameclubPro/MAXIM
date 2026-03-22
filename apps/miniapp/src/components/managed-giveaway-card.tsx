@@ -22,6 +22,7 @@ import {
 import type { ApiTransport } from '../lib/api/transport';
 import type { UpdateManagedGiveawayPayload } from '../lib/api/shared-types';
 import { cn } from '../lib/cn';
+import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { openMaxBotLink } from '../lib/max-bridge';
 import { useToast } from './ui/toast';
 
@@ -36,6 +37,17 @@ const FINISH_PRESETS = [
 
 type GiveawayEditorMode = 'closed' | 'create' | 'edit';
 type GiveawayEditorStepId = 'basics' | 'conditions' | 'prizes';
+type GiveawayHintKey =
+  | 'dashboard'
+  | 'title'
+  | 'timing'
+  | 'start'
+  | 'finish'
+  | 'claim'
+  | 'conditions'
+  | 'conditionsOwned'
+  | 'conditionsLink'
+  | 'prizes';
 type GiveawayValidationResult = { valid: boolean; message: string };
 type SummaryMetric = { key: string; label: string; value: string; note: string };
 
@@ -78,6 +90,53 @@ const GIVEAWAY_EDITOR_STEPS = [
   title: string;
   description: string;
 }>;
+
+function GiveawayHintAnchor({
+  hintKey,
+  openHintKey,
+  onToggleHint,
+  label,
+  children,
+}: {
+  hintKey: GiveawayHintKey;
+  openHintKey: GiveawayHintKey | null;
+  onToggleHint: (key: GiveawayHintKey) => void;
+  label: string;
+  children: string;
+}) {
+  const isOpen = openHintKey === hintKey;
+
+  return (
+    <span className="channel-settings-hint-anchor managed-giveaway__hint-anchor">
+      <button
+        type="button"
+        className={cn('settings-info-button', 'managed-giveaway__info-button', isOpen && 'is-open')}
+        aria-label={label}
+        aria-controls={`giveaway-hint-${hintKey}`}
+        aria-expanded={isOpen}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onToggleHint(hintKey);
+        }}
+      >
+        <span aria-hidden>i</span>
+      </button>
+      {isOpen ? (
+        <p
+          id={`giveaway-hint-${hintKey}`}
+          className="channel-settings-hint-popover managed-giveaway__hint-popover"
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+        >
+          {children}
+        </p>
+      ) : null}
+    </span>
+  );
+}
 
 function formatApiError(error: unknown, fallback: string): string {
   if (!(error instanceof Error)) {
@@ -571,6 +630,7 @@ export function ManagedGiveawayCard({
   const [editorError, setEditorError] = useState('');
   const [validationHint, setValidationHint] = useState('');
   const [editorStep, setEditorStep] = useState<GiveawayEditorStepId>('basics');
+  const [openHintKey, setOpenHintKey] = useState<GiveawayHintKey | null>(null);
   const [channelPickerOpen, setChannelPickerOpen] = useState(false);
   const [channelLinkValue, setChannelLinkValue] = useState('');
   const [awaitingBotSync, setAwaitingBotSync] = useState(false);
@@ -662,6 +722,49 @@ export function ManagedGiveawayCard({
       }
     }
   }, [editingGiveawayId, editorMode, sortedItems]);
+
+  useEffect(() => {
+    setOpenHintKey(null);
+  }, [editorMode, editorStep]);
+
+  useEffect(() => {
+    if (!openHintKey || typeof document === 'undefined') {
+      return undefined;
+    }
+
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      if (target.closest('.managed-giveaway__hint-anchor')) {
+        return;
+      }
+      setOpenHintKey(null);
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setOpenHintKey(null);
+      }
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown, { passive: true });
+    window.addEventListener('keydown', handleKeyDown);
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [openHintKey]);
+
+  useHintPopoverAutoPosition(openHintKey !== null);
+
+  const toggleHint = (hintKey: GiveawayHintKey) => {
+    setOpenHintKey((current) => (current === hintKey ? null : hintKey));
+  };
 
   const draftKey = useMemo(() => (draft ? JSON.stringify(draft) : ''), [draft]);
   const savedKey = useMemo(
@@ -1360,20 +1463,20 @@ export function ManagedGiveawayCard({
   const canSaveEditor = Boolean(draft) && validation.valid && (editorMode === 'create' || isDirty);
   const isScheduledStart = Boolean(draft?.startsAtLocal.trim());
   const finalPrimaryLabel = firstConfigIssue
-    ? 'Закончить настройку'
+    ? 'Проверить'
     : publicationTextReady
-      ? 'Опубликовать в чат'
-      : 'Завершить в боте';
+      ? 'Опубликовать'
+      : 'В личку бота';
   const finalPrimaryBusyLabel = firstConfigIssue
     ? 'Готовим…'
     : publicationTextReady
       ? 'Публикуем…'
-      : 'Открываем бота…';
+      : 'Открываем…';
   const nextStepLabel =
     editorStep === 'basics'
-      ? 'Далее: условия'
+      ? 'К условиям'
       : editorStep === 'conditions'
-        ? 'Далее: призы'
+        ? 'К призам'
         : finalPrimaryLabel;
   const stickyTitle =
     editorStep === 'prizes'
@@ -1514,7 +1617,7 @@ export function ManagedGiveawayCard({
             <div className="managed-giveaway__hero-copy">
               <span className="managed-giveaway__eyebrow">Розыгрыши</span>
               <h2>Подгружаем сценарии</h2>
-              <p>Проверяем черновик, активный запуск и историю.</p>
+              <p>Проверяем активный сценарий.</p>
             </div>
             <div className="managed-giveaway__hero-badges">
               <span className="managed-giveaway__badge is-muted">Загрузка</span>
@@ -1572,16 +1675,27 @@ export function ManagedGiveawayCard({
     }
 
     return (
-      <div className="managed-giveaway__surface managed-giveaway__surface--dashboard">
-        <div className="managed-giveaway__hero-head">
-          <div className="managed-giveaway__hero-copy">
-            <span className="managed-giveaway__eyebrow">Розыгрыши</span>
-            <h2>Соберите сценарий за три шага</h2>
-            <p>Тайминг, условия и призы настраиваются здесь. Текст и фото завершаются в боте.</p>
+        <div className="managed-giveaway__surface managed-giveaway__surface--dashboard">
+          <div className="managed-giveaway__hero-head">
+            <div className="managed-giveaway__hero-copy">
+              <span className="managed-giveaway__eyebrow">Розыгрыши</span>
+              <h2>Соберите сценарий</h2>
+              <p>3 шага и финальный запуск через бота.</p>
+            </div>
+            <div className="managed-giveaway__hero-badges">
+              <GiveawayHintAnchor
+                hintKey="dashboard"
+                openHintKey={openHintKey}
+                onToggleHint={toggleHint}
+                label="Как устроен запуск розыгрыша"
+              >
+                Здесь настраиваются тайминг, условия и призы. Текст и фото публикации добавляются
+                в личке бота на финальном шаге.
+              </GiveawayHintAnchor>
+            </div>
           </div>
-        </div>
 
-        {renderMetaStrip(emptySummaryMetrics)}
+          {renderMetaStrip(emptySummaryMetrics)}
 
         <div className="managed-giveaway__primary-actions">
           <button
@@ -1618,8 +1732,6 @@ export function ManagedGiveawayCard({
       );
     }
 
-    const draftTitle = buildDraftTitleSummary(draft.title);
-
     return (
       <div className="managed-giveaway__surface managed-giveaway__surface--editor">
         <div className="managed-giveaway__hero-head">
@@ -1628,7 +1740,6 @@ export function ManagedGiveawayCard({
               Шаг {activeEditorStepIndex + 1} из {editorSteps.length}
             </span>
             <h2>{activeEditorStep.title}</h2>
-            <p>{draftTitle}</p>
           </div>
           <div className="managed-giveaway__hero-badges">
             <span
@@ -1708,11 +1819,21 @@ export function ManagedGiveawayCard({
               <div className="managed-giveaway__section-head">
                 <div className="managed-giveaway__section-copy">
                   <strong>Как называется розыгрыш</strong>
-                  <small>Короткое название для списка, карточки и публикации.</small>
                 </div>
-                <span className="managed-giveaway__chip">
-                  {draft.title.length}/{MANAGED_GIVEAWAY_TITLE_MAX_LENGTH}
-                </span>
+                <div className="managed-giveaway__section-actions">
+                  <span className="managed-giveaway__chip">
+                    {draft.title.length}/{MANAGED_GIVEAWAY_TITLE_MAX_LENGTH}
+                  </span>
+                  <GiveawayHintAnchor
+                    hintKey="title"
+                    openHintKey={openHintKey}
+                    onToggleHint={toggleHint}
+                    label="Подсказка по названию розыгрыша"
+                  >
+                    Короткое название показывается в списке, карточке и публикации. Лучше держать
+                    его коротким и сразу понятным.
+                  </GiveawayHintAnchor>
+                </div>
               </div>
 
               <label className="field">
@@ -1737,14 +1858,39 @@ export function ManagedGiveawayCard({
               <div className="managed-giveaway__section-head">
                 <div className="managed-giveaway__section-copy">
                   <strong>Когда проходит</strong>
-                  <small>Здесь задаётся старт, финиш и время на подтверждение приза.</small>
+                </div>
+                <div className="managed-giveaway__section-actions">
+                  <GiveawayHintAnchor
+                    hintKey="timing"
+                    openHintKey={openHintKey}
+                    onToggleHint={toggleHint}
+                    label="Подсказка по таймингу розыгрыша"
+                  >
+                    Здесь задаются старт, финиш и срок на подтверждение приза. Быстрые чипы
+                    ускоряют типовые сценарии, а ниже можно вручную уточнить дату и время.
+                  </GiveawayHintAnchor>
                 </div>
               </div>
 
               <div className="managed-giveaway__subsection">
-                <div className="managed-giveaway__subsection-copy">
-                  <strong>Старт</strong>
-                  <small>Можно запускать сразу или запланировать конкретную дату и время.</small>
+                <div className="managed-giveaway__subsection-head">
+                  <div className="managed-giveaway__subsection-copy">
+                    <strong>Старт</strong>
+                  </div>
+                  <div className="managed-giveaway__section-actions">
+                    <span className="managed-giveaway__chip">
+                      {isScheduledStart ? 'По времени' : 'Сразу'}
+                    </span>
+                    <GiveawayHintAnchor
+                      hintKey="start"
+                      openHintKey={openHintKey}
+                      onToggleHint={toggleHint}
+                      label="Подсказка по старту розыгрыша"
+                    >
+                      Можно запустить розыгрыш сразу после финального шага или отложить его на
+                      конкретную дату и время.
+                    </GiveawayHintAnchor>
+                  </div>
                 </div>
 
                 <div
@@ -1763,8 +1909,7 @@ export function ManagedGiveawayCard({
                     onClick={() => toggleStartMode('instant')}
                   >
                     <span className="managed-giveaway__choice-copy">
-                      <strong>Старт сразу</strong>
-                      <small>Публикация стартует после финального действия.</small>
+                      <strong>Сразу</strong>
                     </span>
                   </button>
                   <button
@@ -1776,7 +1921,6 @@ export function ManagedGiveawayCard({
                   >
                     <span className="managed-giveaway__choice-copy">
                       <strong>По времени</strong>
-                      <small>Отложенный старт с точной датой и временем.</small>
                     </span>
                   </button>
                 </div>
@@ -1802,19 +1946,28 @@ export function ManagedGiveawayCard({
                       />
                     </label>
                   </div>
-                ) : (
-                  <div className="managed-giveaway__inline-note">
-                    Публикация стартует сразу после финальной команды на последнем шаге.
-                  </div>
-                )}
+                ) : null}
               </div>
 
               <div className="managed-giveaway__subsection">
-                <div className="managed-giveaway__subsection-copy">
-                  <strong>Финиш</strong>
-                  <small>
-                    Сначала выберите типичный срок, потом при желании уточните дату и время.
-                  </small>
+                <div className="managed-giveaway__subsection-head">
+                  <div className="managed-giveaway__subsection-copy">
+                    <strong>Финиш</strong>
+                  </div>
+                  <div className="managed-giveaway__section-actions">
+                    <span className="managed-giveaway__chip">
+                      {formatCompactInputDateTime(draft.endsAtLocal, 'Не задан')}
+                    </span>
+                    <GiveawayHintAnchor
+                      hintKey="finish"
+                      openHintKey={openHintKey}
+                      onToggleHint={toggleHint}
+                      label="Подсказка по завершению розыгрыша"
+                    >
+                      Быстрые чипы ставят типовой срок. Если нужно, ниже можно вручную задать точную
+                      дату и время завершения.
+                    </GiveawayHintAnchor>
+                  </div>
                 </div>
 
                 <div className="managed-giveaway__quick-actions">
@@ -1854,9 +2007,22 @@ export function ManagedGiveawayCard({
               </div>
 
               <div className="managed-giveaway__subsection">
-                <div className="managed-giveaway__subsection-copy">
-                  <strong>Подтверждение приза</strong>
-                  <small>Победителю нужен понятный срок, чтобы забрать приз без спешки.</small>
+                <div className="managed-giveaway__subsection-head">
+                  <div className="managed-giveaway__subsection-copy">
+                    <strong>Подтверждение приза</strong>
+                  </div>
+                  <div className="managed-giveaway__section-actions">
+                    <span className="managed-giveaway__chip">{draft.claimHours}ч</span>
+                    <GiveawayHintAnchor
+                      hintKey="claim"
+                      openHintKey={openHintKey}
+                      onToggleHint={toggleHint}
+                      label="Подсказка по сроку подтверждения приза"
+                    >
+                      Победителю нужен понятный срок на ответ. Обычно хватает 24-72 часов, но можно
+                      поставить и более длинное окно.
+                    </GiveawayHintAnchor>
+                  </div>
                 </div>
 
                 <div className="managed-giveaway__quick-actions">
@@ -1905,13 +2071,21 @@ export function ManagedGiveawayCard({
               <div className="managed-giveaway__section-head">
                 <div className="managed-giveaway__section-copy">
                   <strong>Кто участвует</strong>
-                  <small>
-                    Источник обязателен, а дополнительные каналы добавляйте только по делу.
-                  </small>
                 </div>
-                <span className="managed-giveaway__badge is-muted">
-                  {draft.requiredChannelIds.length}/{MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS}
-                </span>
+                <div className="managed-giveaway__section-actions">
+                  <span className="managed-giveaway__badge is-muted">
+                    {draft.requiredChannelIds.length}/{MANAGED_GIVEAWAY_MAX_REQUIRED_CHANNELS}
+                  </span>
+                  <GiveawayHintAnchor
+                    hintKey="conditions"
+                    openHintKey={openHintKey}
+                    onToggleHint={toggleHint}
+                    label="Подсказка по условиям участия"
+                  >
+                    Подписка на источник обязательна всегда. Дополнительные каналы добавляйте только
+                    когда они реально участвуют в механике розыгрыша.
+                  </GiveawayHintAnchor>
+                </div>
               </div>
 
               {selectedRequiredChannels.length > 0 ? (
@@ -1924,7 +2098,6 @@ export function ManagedGiveawayCard({
                       <span className="managed-giveaway__channel-index">{index + 1}</span>
                       <div className="managed-giveaway__channel-copy">
                         <strong>{item.title}</strong>
-                        <small>Дополнительная подписка для участия</small>
                       </div>
                       <button
                         type="button"
@@ -1940,7 +2113,7 @@ export function ManagedGiveawayCard({
                 </div>
               ) : (
                 <div className="managed-giveaway__empty managed-giveaway__empty--soft">
-                  <strong>Пока достаточно подписки на источник.</strong>
+                  <strong>Пока только источник</strong>
                 </div>
               )}
 
@@ -1948,9 +2121,17 @@ export function ManagedGiveawayCard({
                 <div className="managed-giveaway__section-head">
                   <div className="managed-giveaway__subsection-copy">
                     <strong>Свой канал</strong>
-                    <small>Выберите из списка, если бот уже подключён и у вас есть доступ.</small>
                   </div>
                   <div className="managed-giveaway__section-actions">
+                    <GiveawayHintAnchor
+                      hintKey="conditionsOwned"
+                      openHintKey={openHintKey}
+                      onToggleHint={toggleHint}
+                      label="Подсказка по выбору своего канала"
+                    >
+                      Здесь показываются ваши каналы, где бот уже подключён и у вас есть доступ на
+                      управление.
+                    </GiveawayHintAnchor>
                     <button
                       type="button"
                       className="button button--ghost managed-giveaway__channel-action"
@@ -1988,9 +2169,21 @@ export function ManagedGiveawayCard({
               </div>
 
               <div className="managed-giveaway__subsection">
-                <div className="managed-giveaway__subsection-copy">
-                  <strong>Чужой канал</strong>
-                  <small>Вставьте публичную ссылку, чтобы быстро проверить и добавить канал.</small>
+                <div className="managed-giveaway__subsection-head">
+                  <div className="managed-giveaway__subsection-copy">
+                    <strong>Чужой канал</strong>
+                  </div>
+                  <div className="managed-giveaway__section-actions">
+                    <GiveawayHintAnchor
+                      hintKey="conditionsLink"
+                      openHintKey={openHintKey}
+                      onToggleHint={toggleHint}
+                      label="Подсказка по добавлению канала по ссылке"
+                    >
+                      Вставьте публичную ссылку MAX. Мы проверим её и добавим канал без ручного
+                      поиска по списку.
+                    </GiveawayHintAnchor>
+                  </div>
                 </div>
                 <div className="managed-giveaway__editor-grid managed-giveaway__editor-grid--align-end">
                   <label className="field">
@@ -2035,7 +2228,18 @@ export function ManagedGiveawayCard({
               <div className="managed-giveaway__section-head">
                 <div className="managed-giveaway__section-copy">
                   <strong>Что получают победители</strong>
-                  <small>Одно место, один приз, одна строка. Так экран остаётся компактным.</small>
+                </div>
+                <div className="managed-giveaway__section-actions">
+                  <span className="managed-giveaway__chip">{draft.prizes.length} места</span>
+                  <GiveawayHintAnchor
+                    hintKey="prizes"
+                    openHintKey={openHintKey}
+                    onToggleHint={toggleHint}
+                    label="Подсказка по настройке призов"
+                  >
+                    Один приз на одну строку. Так карточка, результаты и публикация остаются
+                    компактными и читаемыми.
+                  </GiveawayHintAnchor>
                 </div>
               </div>
 
@@ -2050,7 +2254,7 @@ export function ManagedGiveawayCard({
                   −
                 </button>
                 <div className="managed-giveaway__count-stepper-value">
-                  <span>Количество мест</span>
+                  <span>Места</span>
                   <strong>{draft.prizes.length}</strong>
                 </div>
                 <button
