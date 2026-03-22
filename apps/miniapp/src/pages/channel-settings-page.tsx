@@ -25,7 +25,6 @@ import {
 import type { ApiTransport } from '../lib/api/transport';
 import type { BroadcastHandoffPayload } from '../lib/api/shared-types';
 import {
-  countBroadcastScheduleDays,
   resolveBroadcastScheduleTimezone,
   sortAndUniqueBroadcastSlots,
 } from '../lib/broadcast-schedule';
@@ -864,7 +863,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         ? 'Кнопки будут только в этом посте.'
         : 'Кнопка будет только в этом посте.';
   const broadcastHasButton = broadcastButtonEnabled && Boolean(broadcastButtonText.trim());
-  const broadcastSchedulePreview = `${countBroadcastScheduleDays(broadcastScheduledSlots)} дн. · ${broadcastScheduledSlots.length} слота`;
+  const broadcastSlotsSummary =
+    broadcastScheduledSlots.length > 0
+      ? `${broadcastScheduledSlots.length} слот${broadcastScheduledSlots.length === 1 ? '' : broadcastScheduledSlots.length < 5 ? 'а' : 'ов'}`
+      : 'без слотов';
   const normalizedBroadcastButtonUrl = broadcastButtonUrl.trim();
   const normalizedBroadcastButtonText = broadcastButtonText.trim();
   const broadcastButtonDraftValid =
@@ -888,9 +890,9 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     broadcastImageEnabled ||
     broadcastButtonEnabled;
   const broadcastHeaderSummary = [
-    broadcastBotHasContent ? 'контент хранится в боте' : 'контент в боте',
+    broadcastBotHasContent ? 'контент в боте' : 'без контента',
     broadcastHasButton ? 'CTA' : null,
-    broadcastScheduledSlots.length > 0 ? `календарь ${broadcastSchedulePreview}` : null,
+    broadcastSlotsSummary,
   ]
     .filter(Boolean)
     .join(' · ');

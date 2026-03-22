@@ -78,6 +78,13 @@ import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 
 type FieldErrors = Partial<Record<keyof ChatSettings, string>>;
+type ManagedBroadcastListItem = ChatSettingsScreenResponse['managedBroadcasts'][number];
+type BroadcastCountdownPresentation = {
+  label: string;
+  value: string;
+  caption: string;
+};
+type ManagedBroadcastCardTone = 'active' | 'warning' | 'danger' | 'muted';
 
 const AUTO_SAVE_DELAY_MS = 650;
 const BAN_DURATION_MIN_HOURS = 1;
@@ -836,6 +843,201 @@ function formatRemovalDateTime(value: string | null): string {
   }).format(parsed);
 }
 
+function formatCompactBroadcastDateTime(value: string | null): string {
+  if (!value) {
+    return '';
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return '';
+  }
+
+  return new Intl.DateTimeFormat('ru-RU', {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(parsed);
+}
+
+function formatRussianCountLabel(
+  count: number,
+  singular: string,
+  few: string,
+  plural: string,
+): string {
+  const safeCount = Math.max(0, Math.trunc(count));
+  const remainder100 = safeCount % 100;
+  const remainder10 = safeCount % 10;
+
+  if (remainder100 >= 11 && remainder100 <= 19) {
+    return `${safeCount} ${plural}`;
+  }
+
+  if (remainder10 === 1) {
+    return `${safeCount} ${singular}`;
+  }
+
+  if (remainder10 >= 2 && remainder10 <= 4) {
+    return `${safeCount} ${few}`;
+  }
+
+  return `${safeCount} ${plural}`;
+}
+
+function formatBroadcastCountdownValue(remainingMs: number): string {
+  const totalMinutes = Math.max(0, Math.floor(remainingMs / 60_000));
+  const days = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+
+  if (days > 0) {
+    return `${days}д ${String(hours).padStart(2, '0')}ч`;
+  }
+
+  if (hours > 0) {
+    return `${String(hours).padStart(2, '0')}ч ${String(minutes).padStart(2, '0')}м`;
+  }
+
+  if (minutes > 0) {
+    return `${minutes}м`;
+  }
+
+  return '<1м';
+}
+
+function resolveBroadcastCountdown(
+  nextSendAt: string | null,
+  nowMs: number,
+): BroadcastCountdownPresentation | null {
+  if (!nextSendAt) {
+    return null;
+  }
+
+  const targetMs = new Date(nextSendAt).getTime();
+  if (!Number.isFinite(targetMs) || targetMs <= nowMs) {
+    return null;
+  }
+
+  return {
+    label: 'До отправки',
+    value: formatBroadcastCountdownValue(targetMs - nowMs),
+    caption: formatCompactBroadcastDateTime(nextSendAt),
+  };
+}
+
+function resolveManagedBroadcastCardTone(
+  broadcast: ManagedBroadcastListItem,
+): ManagedBroadcastCardTone {
+  if (broadcast.status === 'FAILED') {
+    return 'danger';
+  }
+  if (broadcast.status === 'PARTIAL') {
+    return 'warning';
+  }
+  if (broadcast.status === 'COMPLETED' || broadcast.status === 'CANCELED') {
+    return 'muted';
+  }
+  return 'active';
+}
+
+function resolveManagedBroadcastCardBadge(broadcast: ManagedBroadcastListItem): string {
+  if (broadcast.status === 'PARTIAL') {
+    return 'Нужно действие';
+  }
+  if (broadcast.status === 'FAILED') {
+    return 'Пауза';
+  }
+  if (broadcast.status === 'COMPLETED') {
+    return 'Завершена';
+  }
+  if (broadcast.status === 'CANCELED') {
+    return 'Остановлена';
+  }
+  return 'В работе';
+}
+
+function resolveManagedBroadcastCardTitle(broadcast: ManagedBroadcastListItem): string {
+  if (broadcast.status === 'PARTIAL') {
+    return 'Есть ошибки доставки';
+  }
+  if (broadcast.status === 'FAILED') {
+    return 'Нужно повторить отправку';
+  }
+  if (broadcast.status === 'COMPLETED') {
+    return 'Рассылка завершена';
+  }
+  if (broadcast.status === 'CANCELED') {
+    return 'Рассылка остановлена';
+  }
+  return broadcast.nextSendAt ? 'Следующая отправка' : 'Активная рассылка';
+}
+
+function resolveManagedBroadcastMetric(
+  broadcast: ManagedBroadcastListItem,
+  nowMs: number,
+): BroadcastCountdownPresentation & { tone: ManagedBroadcastCardTone } {
+  const countdown = resolveBroadcastCountdown(broadcast.nextSendAt, nowMs);
+  if (countdown && (broadcast.status === 'ACTIVE' || broadcast.status === 'PARTIAL')) {
+    return {
+      ...countdown,
+      tone: broadcast.status === 'PARTIAL' ? 'warning' : 'active',
+    };
+  }
+
+  if (broadcast.failedChats > 0) {
+    return {
+      label: 'Ошибки',
+      value: String(broadcast.failedChats),
+      caption: formatRussianCountLabel(broadcast.failedChats, 'чат', 'чата', 'чатов'),
+      tone: broadcast.status === 'FAILED' ? 'danger' : 'warning',
+    };
+  }
+
+  if (broadcast.pendingChats > 0) {
+    return {
+      label: 'В очереди',
+      value: String(broadcast.pendingChats),
+      caption: formatRussianCountLabel(broadcast.pendingChats, 'чат', 'чата', 'чатов'),
+      tone: 'active',
+    };
+  }
+
+  return {
+    label: 'Доставлено',
+    value: `${broadcast.deliveredChats}/${broadcast.targetChats}`,
+    caption: broadcast.applyToAllChats ? 'все чаты' : 'текущий чат',
+    tone: broadcast.status === 'COMPLETED' ? 'muted' : 'active',
+  };
+}
+
+function buildManagedBroadcastFactChips(broadcast: ManagedBroadcastListItem): string[] {
+  const facts: string[] = [
+    broadcast.applyToAllChats ? 'Все чаты' : 'Этот чат',
+    formatRussianCountLabel(broadcast.targetChats, 'чат', 'чата', 'чатов'),
+    broadcast.scheduleMode === 'calendar'
+      ? formatRussianCountLabel(broadcast.scheduledSlots.length, 'слот', 'слота', 'слотов')
+      : broadcast.cycleEnabled
+        ? `Цикл ${broadcast.sentCount}/${broadcast.cycleCount}`
+        : 'Одна отправка',
+  ];
+
+  if (broadcast.hasImage) {
+    facts.push('С фото');
+  }
+
+  if (broadcast.buttonEnabled) {
+    facts.push('CTA');
+  }
+
+  if (broadcast.pendingChats > 0) {
+    facts.push(`В очереди ${broadcast.pendingChats}`);
+  }
+
+  return facts;
+}
+
 function formatNightForceCloseDuration(days: number, hours: number): string {
   const parts: string[] = [];
   if (days > 0) {
@@ -1281,6 +1483,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [editingManagedBroadcast, setEditingManagedBroadcast] =
     useState<ManagedBroadcastDetails | null>(null);
   const [expandedManagedBroadcastId, setExpandedManagedBroadcastId] = useState<string | null>(null);
+  const [mailingNowMs, setMailingNowMs] = useState(() => Date.now());
   const [duplicateWindowInputValues, setDuplicateWindowInputValues] = useState<
     Partial<Record<DuplicateWindowKey, string>>
   >({});
@@ -3178,9 +3381,59 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const chatsCount = chatsQuery.data?.length ?? 0;
   const canApplyToAllChats = chatsCount > 1;
   const managedBroadcasts = managedBroadcastsQuery.data ?? [];
+  const orderedManagedBroadcasts = useMemo(() => {
+    const priority = (item: ManagedBroadcastListItem): number => {
+      if (item.status === 'FAILED') {
+        return 0;
+      }
+      if (item.status === 'PARTIAL') {
+        return 1;
+      }
+      if (item.status === 'ACTIVE') {
+        return 2;
+      }
+      if (item.status === 'COMPLETED') {
+        return 3;
+      }
+      return 4;
+    };
+
+    const parseTimestamp = (value: string | null): number => {
+      if (!value) {
+        return Number.MAX_SAFE_INTEGER;
+      }
+
+      const parsed = new Date(value).getTime();
+      return Number.isFinite(parsed) ? parsed : Number.MAX_SAFE_INTEGER;
+    };
+
+    return [...managedBroadcasts].sort((left, right) => {
+      const priorityDiff = priority(left) - priority(right);
+      if (priorityDiff !== 0) {
+        return priorityDiff;
+      }
+
+      const nextSendDiff = parseTimestamp(left.nextSendAt) - parseTimestamp(right.nextSendAt);
+      if (nextSendDiff !== 0) {
+        return nextSendDiff;
+      }
+
+      return parseTimestamp(right.updatedAt) - parseTimestamp(left.updatedAt);
+    });
+  }, [managedBroadcasts]);
   const mailingOccupiedSlots = managedBroadcasts
     .filter((broadcast) => broadcast.id !== editingManagedBroadcast?.id)
     .flatMap((broadcast) => broadcast.scheduledSlots);
+  const activeManagedBroadcast = orderedManagedBroadcasts.find((broadcast) => {
+    if (broadcast.status !== 'ACTIVE' && broadcast.status !== 'PARTIAL') {
+      return false;
+    }
+
+    return resolveBroadcastCountdown(broadcast.nextSendAt, mailingNowMs) !== null;
+  });
+  const activeManagedBroadcastCountdown = activeManagedBroadcast
+    ? resolveBroadcastCountdown(activeManagedBroadcast.nextSendAt, mailingNowMs)
+    : null;
   const isUpdatingManagedBroadcast = updateManagedBroadcastMutation.isPending;
   const isMailingBusy =
     handoffBroadcastMutation.isPending ||
@@ -3200,7 +3453,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingApplyToAllChats && canApplyToAllChats
       ? `Во все чаты (${chatsCount})`
       : 'Только текущий чат';
+  const mailingHeaderTargetLabel =
+    mailingApplyToAllChats && canApplyToAllChats ? 'Все чаты' : 'Текущий чат';
   const mailingDayCount = countBroadcastScheduleDays(mailingScheduledSlots);
+  const mailingSlotsLabel = formatRussianCountLabel(
+    mailingScheduledSlots.length,
+    'слот',
+    'слота',
+    'слотов',
+  );
   const mailingContentLabel = editingManagedBroadcast
     ? mailingImageEnabled && mailingImageBase64
       ? 'контент сохранён'
@@ -3210,7 +3471,38 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : mailingBotHasContent
       ? 'контент хранится в боте'
       : 'контент в боте';
-  const mailingHeaderSummary = `${mailingTargetLabel} · ${mailingContentLabel} · ${mailingDayCount} дн. · ${mailingScheduledSlots.length} слота`;
+  const mailingHeaderContentLabel = mailingBotHasContent ? 'контент в боте' : 'без контента';
+  const mailingHeaderSummary = `${mailingHeaderTargetLabel} · ${mailingHeaderContentLabel} · ${mailingSlotsLabel}`;
+  const mailingStudioBadge = editingManagedBroadcast
+    ? 'Редактирование'
+    : mailingBotHasContent
+      ? 'Контент готов'
+      : 'Новый сценарий';
+  const mailingStudioTitle = editingManagedBroadcast
+    ? 'Меняете график и CTA без правки контента'
+    : mailingBotHasContent
+      ? 'График, охват и CTA настраиваются здесь'
+      : 'Сначала соберите график, потом откроем бота';
+  const mailingStudioDescription = editingManagedBroadcast
+    ? editingManagedBroadcast.sentCount > 0
+      ? `Уже отправлено ${editingManagedBroadcast.sentCount} из ${editingManagedBroadcast.cycleCount}.`
+      : 'Контент уже сохранён. Здесь меняются только календарь, охват и CTA.'
+    : mailingBotHasContent
+      ? 'Текст или фото уже лежат в личке бота. Здесь остаются только параметры публикации.'
+      : 'Контент откроется в боте после подтверждения. В приложении соберите расписание и действия.'
+  const mailingStudioFacts = [
+    mailingTargetLabel,
+    mailingScheduledSlots.length > 0 ? `${mailingDayCount} дн.` : 'График не собран',
+    mailingScheduledSlots.length > 0 ? mailingSlotsLabel : null,
+    mailingButtonEnabled ? 'CTA' : null,
+    editingManagedBroadcast
+      ? editingManagedBroadcast.imageEnabled
+        ? 'С фото'
+        : null
+      : mailingBotHasContent
+        ? 'Контент в боте'
+        : null,
+  ].filter((item): item is string => Boolean(item));
   const normalizedMailingButtonUrl = mailingButtonUrl.trim();
   const normalizedMailingButtonText = mailingButtonText.trim();
   const mailingButtonDraftValid =
@@ -3264,6 +3556,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       </div>
     </>
   );
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !expandedSections.mailing || !activeManagedBroadcastCountdown) {
+      return undefined;
+    }
+
+    setMailingNowMs(Date.now());
+    const timerId = window.setInterval(() => {
+      setMailingNowMs(Date.now());
+    }, 30_000);
+
+    return () => {
+      window.clearInterval(timerId);
+    };
+  }, [activeManagedBroadcastCountdown, expandedSections.mailing]);
 
   useHintPopoverAutoPosition(openHintKey !== null);
 
@@ -7859,26 +8166,27 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 >
                   {expandedSections.mailing ? (
                     <div className="settings-section__collapse-inner settings-mailing">
-                      {editingManagedBroadcast ? (
-                        <div className="managed-broadcast-editor-note">
-                          <strong>Редактирование текущей рассылки</strong>
-                          <small>
-                            {editingManagedBroadcast.sentCount > 0
-                              ? `Уже отправлено: ${editingManagedBroadcast.sentCount} из ${editingManagedBroadcast.cycleCount}.`
-                              : 'Контент уже сохранён. Здесь вы меняете календарь, охват и CTA.'}
-                          </small>
+                      <div className="managed-broadcast-editor-note managed-broadcast-editor-note--studio">
+                        <div className="managed-broadcast-editor-note__topline">
+                          <span className="managed-broadcast-editor-note__badge">
+                            {mailingStudioBadge}
+                          </span>
+                          {activeManagedBroadcastCountdown ? (
+                            <div className="managed-broadcast-editor-note__timer">
+                              <span>{activeManagedBroadcastCountdown.label}</span>
+                              <strong>{activeManagedBroadcastCountdown.value}</strong>
+                              <small>{activeManagedBroadcastCountdown.caption}</small>
+                            </div>
+                          ) : null}
                         </div>
-                      ) : null}
-
-                      {!editingManagedBroadcast && mailingBotHasContent ? (
-                        <div className="managed-broadcast-editor-note">
-                          <strong>Контент хранится в личке бота</strong>
-                          <small>
-                            Текст или фото уже сохранены. Здесь остаются календарь, охват и CTA, а
-                            сам контент редактируется в боте.
-                          </small>
+                        <strong>{mailingStudioTitle}</strong>
+                        <small>{mailingStudioDescription}</small>
+                        <div className="managed-broadcast-editor-note__facts">
+                          {mailingStudioFacts.map((fact) => (
+                            <span key={fact}>{fact}</span>
+                          ))}
                         </div>
-                      ) : null}
+                      </div>
 
                       {showMailingInlineReset ? (
                         <div className="mailing-inline-tools">
@@ -8072,25 +8380,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           <small className="managed-broadcasts-list__meta">
                             {managedBroadcastsQuery.isLoading
                               ? 'Загрузка...'
-                              : managedBroadcasts.length > 0
-                                ? `${managedBroadcasts.length} в работе`
+                              : orderedManagedBroadcasts.length > 0
+                                ? `${orderedManagedBroadcasts.length} в работе`
                                 : 'Нет активных рассылок'}
                           </small>
                         </div>
 
-                        {managedBroadcasts.map((broadcast) => {
+                        {orderedManagedBroadcasts.length === 0 && !managedBroadcastsQuery.isLoading ? (
+                          <div className="managed-broadcasts-list__empty">
+                            Ближайшие активные сценарии и повторы появятся здесь.
+                          </div>
+                        ) : null}
+
+                        {orderedManagedBroadcasts.map((broadcast) => {
                           const isOpen = expandedManagedBroadcastId === broadcast.id;
-                          const progressLabel =
-                            broadcast.scheduleMode === 'calendar'
-                              ? `${broadcast.scheduledSlots.length} слота`
-                              : `${broadcast.sentCount}/${broadcast.cycleCount}`;
-                          const nextLabel = broadcast.nextSendAt
-                            ? formatRemovalDateTime(broadcast.nextSendAt)
-                            : 'ожидает правки';
-                          const deliveryLabel =
-                            broadcast.failedChats > 0
-                              ? `${broadcast.deliveredChats}/${broadcast.targetChats} доставлено · ошибок ${broadcast.failedChats}`
-                              : `${broadcast.deliveredChats}/${broadcast.targetChats} доставлено`;
+                          const cardTone = resolveManagedBroadcastCardTone(broadcast);
+                          const cardMetric = resolveManagedBroadcastMetric(broadcast, mailingNowMs);
+                          const cardFacts = buildManagedBroadcastFactChips(broadcast);
 
                           return (
                             <div
@@ -8098,8 +8404,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               className={cn(
                                 'managed-broadcast-card',
                                 isOpen && 'is-open',
-                                (broadcast.status === 'FAILED' || broadcast.status === 'PARTIAL') &&
-                                  'is-failed',
+                                `is-${cardTone}`,
                               )}
                             >
                               <button
@@ -8114,24 +8419,37 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 }
                               >
                                 <span className="managed-broadcast-card__main">
-                                  <strong>
-                                    {broadcast.status === 'PARTIAL'
-                                      ? `Частично доставлено · повторить ${broadcast.failedChats}`
-                                      : broadcast.status === 'FAILED'
-                                        ? `Не доставлено · ошибок ${broadcast.failedChats}`
-                                        : `Следующая: ${nextLabel}`}
-                                  </strong>
+                                  <span
+                                    className={cn(
+                                      'managed-broadcast-card__badge',
+                                      `is-${cardTone}`,
+                                    )}
+                                  >
+                                    {resolveManagedBroadcastCardBadge(broadcast)}
+                                  </span>
+                                  <strong>{resolveManagedBroadcastCardTitle(broadcast)}</strong>
                                   <small>{broadcast.textPreview}</small>
                                 </span>
                                 <span className="managed-broadcast-card__aside">
-                                  <small>
-                                    {broadcast.scheduleMode === 'calendar'
-                                      ? `Календарь ${progressLabel}`
-                                      : `Цикл ${progressLabel}`}
-                                  </small>
+                                  <span
+                                    className={cn(
+                                      'managed-broadcast-card__metric',
+                                      `is-${cardMetric.tone}`,
+                                    )}
+                                  >
+                                    <small>{cardMetric.label}</small>
+                                    <strong>{cardMetric.value}</strong>
+                                    <span>{cardMetric.caption}</span>
+                                  </span>
                                   <SectionChevron isOpen={isOpen} />
                                 </span>
                               </button>
+
+                              <div className="managed-broadcast-card__facts">
+                                {cardFacts.map((fact) => (
+                                  <span key={`${broadcast.id}-${fact}`}>{fact}</span>
+                                ))}
+                              </div>
 
                               <div
                                 id={`managed-broadcast-${broadcast.id}`}
@@ -8139,31 +8457,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               >
                                 {isOpen ? (
                                   <>
-                                    <div className="managed-broadcast-card__facts">
-                                      <span>
-                                        {broadcast.applyToAllChats
-                                          ? 'Во все чаты'
-                                          : 'Только этот чат'}
-                                      </span>
-                                      <span>{`Чатов: ${broadcast.targetChats}`}</span>
-                                      <span>{broadcast.hasImage ? 'С фото' : 'Без фото'}</span>
-                                      <span>
-                                        {broadcast.buttonEnabled ? 'С кнопкой' : 'Без кнопки'}
-                                      </span>
-                                      <span>
-                                        {broadcast.scheduleMode === 'calendar'
-                                          ? `${broadcast.scheduledSlots.length} слотов`
-                                          : broadcast.cycleEnabled
-                                            ? `Каждые ${broadcast.cycleEveryHours}ч`
-                                            : 'Одна отправка'}
-                                      </span>
-                                      <span>{deliveryLabel}</span>
-                                      {broadcast.pendingChats > 0 ? (
-                                        <span>{`Ожидают: ${broadcast.pendingChats}`}</span>
-                                      ) : null}
-                                    </div>
                                     {broadcast.lastError ? (
-                                      <small className="field__hint">{broadcast.lastError}</small>
+                                      <small className="managed-broadcast-card__error">
+                                        {broadcast.lastError}
+                                      </small>
                                     ) : null}
                                     <div className="managed-broadcast-card__actions">
                                       {broadcast.canRetry ? (
@@ -8180,7 +8477,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       ) : null}
                                       <button
                                         type="button"
-                                        className="button button--ghost"
+                                        className={cn(
+                                          'button',
+                                          broadcast.canRetry ? 'button--ghost' : 'button--accent',
+                                        )}
                                         onClick={() => handleEditManagedBroadcast(broadcast.id)}
                                         disabled={
                                           isMailingBusy ||
@@ -8191,7 +8491,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         {loadManagedBroadcastMutation.isPending &&
                                         expandedManagedBroadcastId === broadcast.id
                                           ? 'Открываем...'
-                                          : 'Редактировать'}
+                                          : 'Изменить'}
                                       </button>
                                       <button
                                         type="button"
