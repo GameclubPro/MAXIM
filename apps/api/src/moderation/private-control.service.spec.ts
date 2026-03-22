@@ -1648,6 +1648,43 @@ describe('PrivateControlService', () => {
     expect(buttonTexts).not.toContain('Поддержка');
   });
 
+  it('proactively delivers giveaway handoff into a known private chat and skips duplicate bot_started reply', async () => {
+    const { service, maxClient, chats } = createHarness();
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: chats[0].id,
+      chatTitle: chats[0].title,
+    };
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate('broadcast_handoff'));
+    maxClient.sendMessage.mockClear();
+
+    const result = await service.handoffGiveawayFromMiniapp(
+      chats[0].id,
+      actor,
+      {
+        giveawayId: 'giveaway-1',
+      },
+      'chat',
+    );
+
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      '152517912',
+      expect.stringContaining('Чат: Тестовый чат 1'),
+      expect.anything(),
+      expect.objectContaining({ immediate: true }),
+    );
+
+    await service.handleBotStarted(
+      createBotStartedPrivateUpdate(extractStartPayload(result.botUrl)),
+    );
+
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
   it('starts a new giveaway draft in private bot when there is no current giveaway', async () => {
     const { service, maxClient, chats, managedGiveawayService } = createHarness({
       managedGiveaway: null,

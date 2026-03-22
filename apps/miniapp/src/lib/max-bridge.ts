@@ -9,16 +9,23 @@ function resolveBridge() {
   return window.MAX?.WebApp ?? window.WebApp;
 }
 
-function isMaxDeepLink(url: string): boolean {
+function parseMaxUrl(url: string): URL | null {
   try {
-    const parsed = new URL(url, window.location.href);
-    return (
-      parsed.protocol === 'https:' &&
-      (parsed.hostname === 'max.ru' || parsed.hostname === 'www.max.ru')
-    );
+    return new URL(url, window.location.href);
   } catch {
-    return false;
+    return null;
   }
+}
+
+function isMaxDeepLink(url: URL): boolean {
+  return (
+    url.protocol === 'https:' &&
+    (url.hostname === 'max.ru' || url.hostname === 'www.max.ru')
+  );
+}
+
+function isMaxMiniAppLink(url: URL): boolean {
+  return isMaxDeepLink(url) && url.searchParams.has('startapp');
 }
 
 export function readyMaxMiniApp(): void {
@@ -42,12 +49,15 @@ export function openMaxBotLink(url: string): void {
   }
 
   const bridge = resolveBridge();
-  if (isMaxDeepLink(normalizedUrl)) {
+  const parsed = parseMaxUrl(normalizedUrl);
+  if (parsed && isMaxMiniAppLink(parsed)) {
     if (typeof bridge?.openMaxLink === 'function') {
       bridge.openMaxLink(normalizedUrl);
       return;
     }
+  }
 
+  if (parsed && isMaxDeepLink(parsed)) {
     window.location.assign(normalizedUrl);
     return;
   }

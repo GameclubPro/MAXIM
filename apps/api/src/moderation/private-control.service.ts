@@ -160,6 +160,9 @@ type PrivateBroadcastView = 'basic' | 'advanced';
 
 type PrivateSession = {
   version: 3;
+  lastPrivateChatId: string | null;
+  lastGiveawayHandoffDeliveredChatId: string | null;
+  lastGiveawayHandoffDeliveredAt: number | null;
   selectedChatId: string | null;
   selectedEntityType: ManagedEntityType | null;
   managedGiveawayId: string | null;
@@ -279,6 +282,7 @@ type DownloadedImageAsset = {
 
 const SESSION_TTL_SEC = 45 * 60;
 const SESSION_KEY_PREFIX = 'private-ui:v2';
+const GIVEAWAY_HANDOFF_DEDUP_WINDOW_MS = 20_000;
 const BROADCAST_HANDOFF_START_PAYLOAD = 'broadcast_handoff';
 const RULES_HANDOFF_START_PAYLOAD = 'rules_handoff';
 const GIVEAWAY_HANDOFF_START_PAYLOAD = 'giveaway_handoff';
@@ -1002,6 +1006,7 @@ export class PrivateControlService {
     }
 
     const session = await this.loadSession(context.actor.userId);
+    this.rememberPrivateChatId(session, context.chatId);
     const handoffPayload = this.parseGiveawayHandoffStartPayload(startPayload);
     if (handoffPayload) {
       session.selectedChatId = handoffPayload.chatId;
@@ -1027,6 +1032,12 @@ export class PrivateControlService {
       session.pendingInput = null;
     }
     session.pendingMassAction = null;
+
+    if (handoffPayload && this.wasGiveawayHandoffAlreadyDelivered(session, context.chatId)) {
+      this.clearDeliveredGiveawayHandoff(session);
+      await this.saveSession(context.actor.userId, session);
+      return;
+    }
 
     const view = await this.renderByCurrentScreen(context, session);
 
@@ -1214,6 +1225,7 @@ export class PrivateControlService {
     session.lastScreenStack = [];
 
     await this.saveSession(user.userId, session);
+    await this.deliverGiveawayHandoffToKnownPrivateChat(user, session);
 
     const botUrl = this.buildBotStartUrl(
       this.buildGiveawayHandoffStartPayload({
@@ -1231,6 +1243,7 @@ export class PrivateControlService {
 
   private async processTextMessage(context: PrivateContext): Promise<void> {
     const session = await this.loadSession(context.actor.userId);
+    this.rememberPrivateChatId(session, context.chatId);
     const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
     const fileAttachment = this.extractFirstFileAttachment(context.update);
     const hasVideoAttachment = this.hasVideoAttachment(context.update);
@@ -1325,6 +1338,7 @@ export class PrivateControlService {
   private async processCallback(context: PrivateContext): Promise<void> {
     const callback = this.parseCallbackAction(context.callbackPayload);
     const session = await this.loadSession(context.actor.userId);
+    this.rememberPrivateChatId(session, context.chatId);
 
     if (!callback) {
       const view = session.selectedChatId
@@ -6842,6 +6856,87 @@ export class PrivateControlService {
     await this.maxClient.sendMessage(chatId, text, options, { immediate: true });
   }
 
+  private rememberPrivateChatId(session: PrivateSession, chatId: string): void {
+    session.lastPrivateChatId = this.isPrivateDirectChat(chatId) ? chatId : session.lastPrivateChatId;
+  }
+
+  private wasGiveawayHandoffAlreadyDelivered(session: PrivateSession, chatId: string): boolean {
+    if (
+      !session.lastGiveawayHandoffDeliveredChatId ||
+      session.lastGiveawayHandoffDeliveredChatId !== chatId
+    ) {
+      return false;
+    }
+
+    if (typeof session.lastGiveawayHandoffDeliveredAt !== 'number') {
+      return false;
+    }
+
+    return Date.now() - session.lastGiveawayHandoffDeliveredAt < GIVEAWAY_HANDOFF_DEDUP_WINDOW_MS;
+  }
+
+  private clearDeliveredGiveawayHandoff(session: PrivateSession): void {
+    session.lastGiveawayHandoffDeliveredChatId = null;
+    session.lastGiveawayHandoffDeliveredAt = null;
+  }
+
+  private createSyntheticPrivateContext(user: AuthUser, privateChatId: string): PrivateContext {
+    return {
+      update: {
+        updateId: 'miniapp-handoff',
+        type: 'message_created',
+        message: {
+          messageId: 'miniapp-handoff',
+          chatId: privateChatId,
+          senderId: user.userId,
+          senderName: user.displayName ?? user.username ?? user.userId,
+          text: '',
+          createdAt: new Date().toISOString(),
+        },
+      } as MaxUpdate,
+      chatId: privateChatId,
+      actor: {
+        ...user,
+        chatId: privateChatId,
+      },
+      text: '',
+      callbackId: null,
+      callbackPayload: null,
+    };
+  }
+
+  private async deliverGiveawayHandoffToKnownPrivateChat(
+    user: AuthUser,
+    session: PrivateSession,
+  ): Promise<void> {
+    if (!session.lastPrivateChatId) {
+      this.clearDeliveredGiveawayHandoff(session);
+      return;
+    }
+
+    try {
+      const context = this.createSyntheticPrivateContext(user, session.lastPrivateChatId);
+      const view = await this.renderGiveawayScreen(context, session);
+      await this.respond(context, session, view, {
+        callbackId: null,
+        notification: null,
+      });
+      session.lastGiveawayHandoffDeliveredChatId = session.lastPrivateChatId;
+      session.lastGiveawayHandoffDeliveredAt = Date.now();
+      await this.saveSession(user.userId, session);
+    } catch (error: unknown) {
+      this.clearDeliveredGiveawayHandoff(session);
+      this.logger.warn(
+        {
+          userId: user.userId,
+          chatId: session.lastPrivateChatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to proactively deliver giveaway handoff to private chat',
+      );
+    }
+  }
+
   private compactButtonLayout(
     options: MaxSendMessageOptions | undefined,
   ): MaxSendMessageOptions | undefined {
@@ -8329,6 +8424,9 @@ export class PrivateControlService {
   private createDefaultSession(): PrivateSession {
     return {
       version: 3,
+      lastPrivateChatId: null,
+      lastGiveawayHandoffDeliveredChatId: null,
+      lastGiveawayHandoffDeliveredAt: null,
       selectedChatId: null,
       selectedEntityType: null,
       managedGiveawayId: null,
@@ -8375,6 +8473,20 @@ export class PrivateControlService {
 
     return {
       version: 3,
+      lastPrivateChatId:
+        typeof row.lastPrivateChatId === 'string' && row.lastPrivateChatId.trim().length > 0
+          ? row.lastPrivateChatId.trim()
+          : null,
+      lastGiveawayHandoffDeliveredChatId:
+        typeof row.lastGiveawayHandoffDeliveredChatId === 'string' &&
+        row.lastGiveawayHandoffDeliveredChatId.trim().length > 0
+          ? row.lastGiveawayHandoffDeliveredChatId.trim()
+          : null,
+      lastGiveawayHandoffDeliveredAt:
+        typeof row.lastGiveawayHandoffDeliveredAt === 'number' &&
+        Number.isFinite(row.lastGiveawayHandoffDeliveredAt)
+          ? row.lastGiveawayHandoffDeliveredAt
+          : null,
       selectedChatId,
       selectedEntityType: parsedSelectedEntityType ?? (selectedChatId ? 'chat' : null),
       managedGiveawayId:
