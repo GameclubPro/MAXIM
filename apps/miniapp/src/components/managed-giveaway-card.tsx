@@ -1450,50 +1450,6 @@ export function ManagedGiveawayCard({
         : currentStepValidation.message;
   const showStickyCopy =
     !currentStepValidation.valid || (editorStep === 'prizes' && !publicationTextReady);
-  const editorOverviewTitle =
-    editorStep === 'prizes'
-      ? publicationTextReady
-        ? 'Финальная проверка'
-        : 'Остался контент'
-      : activeEditorStep.title;
-  const editorOverviewDescription =
-    editorStep === 'basics'
-      ? 'Сначала собираем тайминг, потом быстро переходим к условиям и призам.'
-      : editorStep === 'conditions'
-        ? 'Источник обязателен, а дополнительные каналы добавляйте только если они действительно усиливают механику.'
-        : publicationTextReady
-          ? 'Призы уже собраны. Если всё сходится, можно публиковать.'
-          : 'Призы готовы. Текст и фото завершаются в боте перед запуском.';
-  const dashboardNote =
-    currentItem?.status === 'DRAFT'
-      ? {
-          title: 'Что осталось',
-          description:
-            'Проверьте сроки и механику здесь, а текст с фото спокойно доведите в чат-боте.',
-          points: ['Сроки', 'Условия', 'Контент в боте'],
-        }
-      : currentItem
-        ? {
-            title:
-              currentItem.status === 'SCHEDULED'
-                ? 'Сценарий уже собран'
-                : 'Управление остаётся под рукой',
-            description:
-              currentItem.status === 'SCHEDULED'
-                ? 'До старта можно быстро вернуться в бота, проверить публикацию и не потерять сценарий.'
-                : 'Публикация и итоги открываются через бота, а статус и быстрый вход остаются здесь.',
-            points: [
-              currentItem.publicationUrl ? 'Публикация' : 'Статус',
-              currentItem.resultsUrl ? 'Итоги' : 'Бот',
-              historyItems.length > 0 ? 'Архив' : 'Под рукой',
-            ],
-          }
-        : {
-            title: 'Как это работает',
-            description:
-              'Сначала собираете сценарий здесь, потом перед запуском добавляете текст и фото в личке бота.',
-            points: ['Основа', 'Условия', 'Призы'],
-          };
   const currentSummaryMetrics: SummaryMetric[] = currentItem
     ? [
         {
@@ -1567,19 +1523,18 @@ export function ManagedGiveawayCard({
         },
       ]
     : [];
-  const renderFactGrid = (metrics: SummaryMetric[]) =>
+  const renderMetaStrip = (metrics: SummaryMetric[]) =>
     metrics.length > 0 ? (
       <div
         className={cn(
-          'managed-giveaway__hero-facts',
-          metrics.length === 2 && 'managed-giveaway__hero-facts--two',
+          'managed-giveaway__meta-strip',
+          metrics.length === 2 && 'managed-giveaway__meta-strip--two',
         )}
       >
         {metrics.map((item) => (
-          <div key={item.key} className="managed-giveaway__hero-fact">
+          <div key={item.key} className="managed-giveaway__meta-pill" title={item.note}>
             <span>{item.label}</span>
             <strong>{item.value}</strong>
-            <small>{item.note}</small>
           </div>
         ))}
       </div>
@@ -1617,7 +1572,7 @@ export function ManagedGiveawayCard({
               <span className="managed-giveaway__badge is-muted">Загрузка</span>
             </div>
           </div>
-          {renderFactGrid(emptySummaryMetrics)}
+          {renderMetaStrip(emptySummaryMetrics)}
         </div>
       );
     }
@@ -1647,21 +1602,7 @@ export function ManagedGiveawayCard({
             </div>
           </div>
 
-          {renderFactGrid(currentSummaryMetrics)}
-
-          <div className="managed-giveaway__inline-summary">
-            <div className="managed-giveaway__inline-summary-copy">
-              <strong>{dashboardNote.title}</strong>
-              <span>{dashboardNote.description}</span>
-            </div>
-            <div className="managed-giveaway__inline-summary-points" aria-hidden>
-              {dashboardNote.points.map((point) => (
-                <span key={point} className="managed-giveaway__chip">
-                  {point}
-                </span>
-              ))}
-            </div>
-          </div>
+          {renderMetaStrip(currentSummaryMetrics)}
 
           <div
             className={cn(
@@ -1753,21 +1694,7 @@ export function ManagedGiveawayCard({
           ) : null}
         </div>
 
-        {renderFactGrid(emptySummaryMetrics)}
-
-        <div className="managed-giveaway__inline-summary">
-          <div className="managed-giveaway__inline-summary-copy">
-            <strong>{dashboardNote.title}</strong>
-            <span>{dashboardNote.description}</span>
-          </div>
-          <div className="managed-giveaway__inline-summary-points" aria-hidden>
-            {dashboardNote.points.map((point) => (
-              <span key={point} className="managed-giveaway__chip">
-                {point}
-              </span>
-            ))}
-          </div>
-        </div>
+        {renderMetaStrip(emptySummaryMetrics)}
 
         <div
           className={cn(
@@ -1813,16 +1740,7 @@ export function ManagedGiveawayCard({
               </span>
             </div>
           </div>
-          <div className="managed-giveaway__inline-summary">
-            <div className="managed-giveaway__inline-summary-copy">
-              <strong>
-                {draftDetailsQuery.isLoading
-                  ? 'Подтягиваем актуальные данные…'
-                  : 'Черновик готов к редактированию.'}
-              </strong>
-              <span>После загрузки откроем шаг с основой, сроками и условиями.</span>
-            </div>
-          </div>
+          {renderMetaStrip(emptySummaryMetrics)}
         </div>
       );
     }
@@ -1851,14 +1769,6 @@ export function ManagedGiveawayCard({
           </div>
         </div>
 
-        <div className="managed-giveaway__editor-overview">
-          <small className="managed-giveaway__editor-kicker">{draftTitle}</small>
-          <strong>{editorOverviewTitle}</strong>
-          <span>{editorOverviewDescription}</span>
-        </div>
-
-        {renderFactGrid(draftSummaryMetrics)}
-
         <div className="managed-giveaway__step-strip" aria-label="Прогресс по шагам">
           {editorSteps.map((step, index) => (
             <button
@@ -1880,6 +1790,8 @@ export function ManagedGiveawayCard({
             </button>
           ))}
         </div>
+
+        {renderMetaStrip(draftSummaryMetrics)}
 
         {editorStep === 'basics' ? (
           <div className="managed-giveaway__step-stage">
