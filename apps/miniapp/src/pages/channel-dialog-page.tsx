@@ -126,6 +126,23 @@ function summarizeReplyText(value: string, maxLength = 96): string {
   return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
+function resolveMessageWidthTone(message: ChannelDialogMessage): 'is-wide' | 'is-medium' | 'is-compact' {
+  if (message.replyTo) {
+    return 'is-wide';
+  }
+
+  const normalizedText = message.text.replace(/\s+/gu, ' ').trim();
+  if (normalizedText.length >= 108) {
+    return 'is-wide';
+  }
+
+  if (normalizedText.length <= 56) {
+    return 'is-compact';
+  }
+
+  return 'is-medium';
+}
+
 function isGroupedWithPrevious(messages: ChannelDialogMessage[], index: number): boolean {
   const current = messages[index];
   const previous = messages[index - 1];
@@ -1099,6 +1116,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   const isOwnMessage = meQuery.data?.userId === message.authorUserId;
                   const groupedWithPrevious = isGroupedWithPrevious(messages, index);
                   const isActiveMessage = activeMessageId === message.id;
+                  const messageWidthTone = resolveMessageWidthTone(message);
                   const isReactionPending =
                     reactionMutation.isPending &&
                     reactionMutation.variables?.messageId === message.id;
@@ -1124,6 +1142,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                       <div
                         className={cn(
                           'channel-dialog-message__content',
+                          dialogType === 'comments' && messageWidthTone,
                           isActiveMessage && 'is-context-open',
                         )}
                         data-message-id={message.id}
