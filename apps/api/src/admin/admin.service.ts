@@ -24,6 +24,8 @@ import {
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
   type ChannelDialogMessage,
+  type ChannelDialogReactionGroup,
+  type ChannelDialogReplyPreview,
   type ChannelDialogType,
   type ChannelStatsBucket,
   type ChannelStatsRange,
@@ -66,6 +68,8 @@ import {
   normalizeAllowlistLink,
   sendBroadcastRequestSchema,
   scheduleDomainRemovalRequestSchema,
+  toggleChannelDialogReactionRequestSchema,
+  toggleChannelDialogReactionResponseSchema,
   type BroadcastScheduleMode,
 } from '@maxim/contracts';
 import {
@@ -1617,7 +1621,7 @@ export class AdminService {
       rows
         .slice()
         .reverse()
-        .map((row) => this.mapChannelDialogAuditLog(row, dialogType)),
+        .map((row) => this.mapChannelDialogAuditLog(row, dialogType, user.userId)),
     );
 
     return channelDialogResponseSchema.parse({
@@ -1644,6 +1648,13 @@ export class AdminService {
     const text = parsed.data.text.trim();
     const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
     const authorAvatarUrl = this.readTrimmedString(user.avatarUrl);
+    const replyTo = await this.resolveDialogReplyPreview({
+      chatId,
+      entityType: 'channel',
+      dialogType,
+      threadId,
+      replyToMessageId: parsed.data.replyToMessageId ?? null,
+    });
     const channelSettings = await this.getPublicChannelSettings(chatId);
 
     if (dialogType === 'comments' && !channelSettings.commentsEnabled) {
@@ -1684,6 +1695,15 @@ export class AdminService {
           text,
           authorDisplayName: authorDisplayName ?? null,
           authorAvatarUrl: authorAvatarUrl ?? null,
+          ...(replyTo
+            ? {
+                replyTo: {
+                  messageId: replyTo.messageId,
+                  authorDisplayName: replyTo.authorDisplayName,
+                  text: replyTo.text,
+                },
+              }
+            : {}),
           delivered,
           deliveredToUserId,
           source: 'miniapp_dialog',
@@ -1699,6 +1719,9 @@ export class AdminService {
       authorDisplayName: authorDisplayName ?? null,
       avatarUrl: authorAvatarUrl ?? null,
       createdAt: created.createdAt.toISOString(),
+      replyToMessageId: replyTo?.messageId ?? null,
+      replyTo: replyTo ?? null,
+      reactionGroups: [],
       ...(dialogType === 'suggest'
         ? {
             delivered,
@@ -1758,7 +1781,7 @@ export class AdminService {
       rows
         .slice()
         .reverse()
-        .map((row) => this.mapChannelDialogAuditLog(row, dialogType)),
+        .map((row) => this.mapChannelDialogAuditLog(row, dialogType, user.userId)),
     );
 
     return channelDialogResponseSchema.parse({
@@ -1789,6 +1812,13 @@ export class AdminService {
     const text = parsed.data.text.trim();
     const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
     const authorAvatarUrl = this.readTrimmedString(user.avatarUrl);
+    const replyTo = await this.resolveDialogReplyPreview({
+      chatId,
+      entityType: 'chat',
+      dialogType,
+      threadId,
+      replyToMessageId: parsed.data.replyToMessageId ?? null,
+    });
     const chatSettings = await this.getPublicChatCommentSettings(chatId);
 
     if (!chatSettings.commentsEnabled) {
@@ -1806,6 +1836,15 @@ export class AdminService {
           text,
           authorDisplayName: authorDisplayName ?? null,
           authorAvatarUrl: authorAvatarUrl ?? null,
+          ...(replyTo
+            ? {
+                replyTo: {
+                  messageId: replyTo.messageId,
+                  authorDisplayName: replyTo.authorDisplayName,
+                  text: replyTo.text,
+                },
+              }
+            : {}),
           delivered: true,
           deliveredToUserId: null,
           source: 'miniapp_dialog',
@@ -1821,6 +1860,9 @@ export class AdminService {
       authorDisplayName: authorDisplayName ?? null,
       avatarUrl: authorAvatarUrl ?? null,
       createdAt: created.createdAt.toISOString(),
+      replyToMessageId: replyTo?.messageId ?? null,
+      replyTo: replyTo ?? null,
+      reactionGroups: [],
     };
 
     if (threadId) {
@@ -1834,6 +1876,64 @@ export class AdminService {
     return createChannelDialogMessageResponseSchema.parse({
       ok: true,
       message,
+    });
+  }
+
+  async toggleChannelDialogReaction(
+    chatId: string,
+    user: AuthUser,
+    dialogTypeRaw: string,
+    messageId: string,
+    body: unknown,
+  ) {
+    const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
+    const parsed = toggleChannelDialogReactionRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const channelSettings = await this.getPublicChannelSettings(chatId);
+    if (!channelSettings.commentsEnabled) {
+      throw new BadRequestException('Комментарии для этого канала сейчас закрыты.');
+    }
+
+    return this.toggleEntityDialogReaction({
+      chatId,
+      entityType: 'channel',
+      userId: user.userId,
+      dialogType,
+      messageId,
+      token: parsed.data.token,
+      emoji: parsed.data.emoji,
+    });
+  }
+
+  async toggleChatDialogReaction(
+    chatId: string,
+    user: AuthUser,
+    dialogTypeRaw: string,
+    messageId: string,
+    body: unknown,
+  ) {
+    const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
+    const parsed = toggleChannelDialogReactionRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const chatSettings = await this.getPublicChatCommentSettings(chatId);
+    if (!chatSettings.commentsEnabled) {
+      throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
+    }
+
+    return this.toggleEntityDialogReaction({
+      chatId,
+      entityType: 'chat',
+      userId: user.userId,
+      dialogType,
+      messageId,
+      token: parsed.data.token,
+      emoji: parsed.data.emoji,
     });
   }
 
@@ -7017,6 +7117,7 @@ export class AdminService {
   private mapChannelDialogAuditLog(
     row: { id: string; actorUserId: string; payload: Prisma.JsonValue; createdAt: Date },
     fallbackType: ChannelDialogType,
+    currentUserId?: string | null,
   ): ChannelDialogMessage {
     const payload = this.readObjectPayload(row.payload);
     const rawType = this.readLowerString(payload.type);
@@ -7025,6 +7126,7 @@ export class AdminService {
     const authorDisplayName = this.readTrimmedString(payload.authorDisplayName);
     const avatarUrl = this.readTrimmedString(payload.authorAvatarUrl);
     const text = this.readTrimmedString(payload.text) ?? '';
+    const replyTo = this.readDialogReplyPreview(payload.replyTo);
     const delivered = payload.delivered === true;
     const deliveredToUserId = this.readTrimmedString(payload.deliveredToUserId);
 
@@ -7036,8 +7138,132 @@ export class AdminService {
       authorDisplayName,
       avatarUrl: avatarUrl ?? null,
       createdAt: row.createdAt.toISOString(),
+      replyToMessageId: replyTo?.messageId ?? null,
+      replyTo: replyTo ?? null,
+      reactionGroups: this.readDialogReactionGroups(payload.reactions, currentUserId),
       ...(type === 'suggest' ? { delivered, deliveredToUserId: deliveredToUserId ?? null } : {}),
     };
+  }
+
+  private async resolveDialogReplyPreview(params: {
+    chatId: string;
+    entityType: ManagedEntityType;
+    dialogType: ChannelDialogType;
+    threadId: string | null;
+    replyToMessageId: string | null | undefined;
+  }): Promise<ChannelDialogReplyPreview | null> {
+    const replyToMessageId = this.readTrimmedString(params.replyToMessageId);
+    if (!replyToMessageId) {
+      return null;
+    }
+
+    if (params.dialogType !== 'comments') {
+      throw new BadRequestException('Ответ доступен только в комментариях.');
+    }
+
+    const row = await this.prisma.auditLog.findFirst({
+      where: {
+        id: replyToMessageId,
+        chatId: params.chatId,
+        action: this.resolveDialogAction(params.dialogType),
+        ...(params.threadId
+          ? {
+              payload: {
+                path: ['threadId'],
+                equals: params.threadId,
+              },
+            }
+          : {}),
+      },
+      select: {
+        id: true,
+        payload: true,
+      },
+    });
+
+    if (!row) {
+      throw new BadRequestException('Сообщение для ответа не найдено.');
+    }
+
+    const payload = this.readObjectPayload(row.payload);
+    return {
+      messageId: row.id,
+      authorDisplayName: this.readTrimmedString(payload.authorDisplayName),
+      text: this.readTrimmedString(payload.text) ?? '',
+    };
+  }
+
+  private async toggleEntityDialogReaction(params: {
+    chatId: string;
+    entityType: ManagedEntityType;
+    userId: string;
+    dialogType: ChannelDialogType;
+    messageId: string;
+    token: string;
+    emoji: string;
+  }) {
+    if (params.dialogType !== 'comments') {
+      throw new BadRequestException('Реакции доступны только в комментариях.');
+    }
+
+    const threadId =
+      params.entityType === 'channel'
+        ? this.resolveChannelDialogThreadId(params.chatId, params.dialogType, params.token)
+        : this.resolveChatDialogThreadId(params.chatId, params.dialogType, params.token);
+    const messageId = this.readTrimmedString(params.messageId);
+    if (!messageId) {
+      throw new BadRequestException('Комментарий не найден.');
+    }
+
+    const row = await this.prisma.auditLog.findFirst({
+      where: {
+        id: messageId,
+        chatId: params.chatId,
+        action: this.resolveDialogAction(params.dialogType),
+        ...(threadId
+          ? {
+              payload: {
+                path: ['threadId'],
+                equals: threadId,
+              },
+            }
+          : {}),
+      },
+      select: {
+        id: true,
+        actorUserId: true,
+        payload: true,
+        createdAt: true,
+      },
+    });
+
+    if (!row) {
+      throw new BadRequestException('Комментарий не найден.');
+    }
+
+    const payload = this.readObjectPayload(row.payload);
+    const updated = await this.prisma.auditLog.update({
+      where: {
+        id: row.id,
+      },
+      data: {
+        payload: {
+          ...payload,
+          reactions: this.toggleDialogReactionEntries(payload.reactions, params.emoji, params.userId),
+        } as Prisma.InputJsonValue,
+      },
+      select: {
+        id: true,
+        actorUserId: true,
+        payload: true,
+        createdAt: true,
+      },
+    });
+
+    return toggleChannelDialogReactionResponseSchema.parse({
+      ok: true,
+      message: this.mapChannelDialogAuditLog(updated, params.dialogType, params.userId),
+    });
   }
 
   private async enrichDialogMessagesWithAuthorAvatars(
@@ -7090,8 +7316,127 @@ export class AdminService {
     return CHANNEL_COMMENT_LINK_PATTERN.test(value);
   }
 
+  private resolveDialogAction(dialogType: ChannelDialogType): string {
+    return dialogType === 'comments' ? CHANNEL_DIALOG_ACTION_COMMENT : CHANNEL_DIALOG_ACTION_SUGGEST;
+  }
+
   private normalizeChannelCommentText(value: string): string {
     return value.trim().toLowerCase().replace(/\s+/gu, ' ');
+  }
+
+  private readDialogReplyPreview(value: unknown): ChannelDialogReplyPreview | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return null;
+    }
+
+    const row = value as Record<string, unknown>;
+    const messageId = this.readTrimmedString(row.messageId);
+    const text = this.readTrimmedString(row.text);
+    if (!messageId || !text) {
+      return null;
+    }
+
+    return {
+      messageId,
+      authorDisplayName: this.readTrimmedString(row.authorDisplayName),
+      text,
+    };
+  }
+
+  private readDialogReactionGroups(
+    value: unknown,
+    currentUserId?: string | null,
+  ): ChannelDialogReactionGroup[] {
+    const normalizedCurrentUserId = this.readTrimmedString(currentUserId);
+    return this.readDialogReactionEntries(value).map((entry) => ({
+      emoji: entry.emoji,
+      count: entry.userIds.length,
+      reactedByMe: normalizedCurrentUserId ? entry.userIds.includes(normalizedCurrentUserId) : false,
+    }));
+  }
+
+  private readDialogReactionEntries(value: unknown): Array<{ emoji: string; userIds: string[] }> {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    const grouped = new Map<string, Set<string>>();
+    for (const item of value) {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) {
+        continue;
+      }
+
+      const row = item as Record<string, unknown>;
+      const emoji = this.readTrimmedString(row.emoji);
+      if (!emoji) {
+        continue;
+      }
+
+      const userIds = Array.isArray(row.userIds)
+        ? row.userIds
+            .map((userId) => this.readTrimmedString(userId))
+            .filter((userId): userId is string => Boolean(userId))
+        : [];
+      if (userIds.length === 0) {
+        continue;
+      }
+
+      const bucket = grouped.get(emoji) ?? new Set<string>();
+      for (const userId of userIds) {
+        bucket.add(userId);
+      }
+      grouped.set(emoji, bucket);
+    }
+
+    return Array.from(grouped.entries())
+      .map(([emoji, userIds]) => ({
+        emoji,
+        userIds: Array.from(userIds),
+      }))
+      .sort((left, right) => right.userIds.length - left.userIds.length || left.emoji.localeCompare(right.emoji));
+  }
+
+  private toggleDialogReactionEntries(
+    currentValue: unknown,
+    emojiRaw: string,
+    userIdRaw: string,
+  ): Array<{ emoji: string; userIds: string[] }> {
+    const emoji = this.readTrimmedString(emojiRaw);
+    const userId = this.readTrimmedString(userIdRaw);
+    if (!emoji || !userId) {
+      throw new BadRequestException('Реакцию не удалось обработать.');
+    }
+
+    const entries = this.readDialogReactionEntries(currentValue).map((entry) => ({
+      emoji: entry.emoji,
+      userIds: [...entry.userIds],
+    }));
+    const existingIndex = entries.findIndex((entry) => entry.emoji === emoji);
+
+    if (existingIndex >= 0) {
+      const nextUserIds = entries[existingIndex].userIds.filter((entryUserId) => entryUserId !== userId);
+      if (nextUserIds.length === entries[existingIndex].userIds.length) {
+        nextUserIds.push(userId);
+      }
+
+      if (nextUserIds.length === 0) {
+        entries.splice(existingIndex, 1);
+      } else {
+        entries[existingIndex] = {
+          emoji,
+          userIds: Array.from(new Set(nextUserIds)),
+        };
+      }
+    } else {
+      entries.push({
+        emoji,
+        userIds: [userId],
+      });
+    }
+
+    return entries.sort(
+      (left, right) => right.userIds.length - left.userIds.length || left.emoji.localeCompare(right.emoji),
+    );
   }
 
   private readObjectPayload(value: Prisma.JsonValue): Record<string, unknown> {

@@ -49,6 +49,12 @@ export type BroadcastHandoffPayload = {
 export type CreateChannelDialogMessagePayload = {
   token: string;
   text: string;
+  replyToMessageId?: string | null;
+};
+
+export type ToggleChannelDialogReactionPayload = {
+  token: string;
+  emoji: string;
 };
 
 export type UpdateChatRulesPayload = Pick<

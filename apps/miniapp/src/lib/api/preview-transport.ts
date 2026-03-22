@@ -25,6 +25,8 @@ import {
   publishChatRulesResultSchema,
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
+  toggleChannelDialogReactionRequestSchema,
+  toggleChannelDialogReactionResponseSchema,
   type BroadcastHandoffResponse,
   type BroadcastHandoffState,
   type ChannelDialogMessage,
@@ -503,6 +505,9 @@ function buildPreviewDialogMessage(payload: {
   authorDisplayName: string | null;
   avatarUrl?: string | null;
   createdAt: string;
+  replyToMessageId?: string | null;
+  replyTo?: ChannelDialogMessage['replyTo'];
+  reactionGroups?: ChannelDialogMessage['reactionGroups'];
   delivered?: boolean;
   deliveredToUserId?: string | null;
 }): ChannelDialogMessage {
@@ -514,11 +519,81 @@ function buildPreviewDialogMessage(payload: {
     authorDisplayName: payload.authorDisplayName,
     avatarUrl: payload.avatarUrl ?? null,
     createdAt: payload.createdAt,
+    ...(payload.replyToMessageId !== undefined ? { replyToMessageId: payload.replyToMessageId } : {}),
+    ...(payload.replyTo !== undefined ? { replyTo: payload.replyTo } : {}),
+    ...(payload.reactionGroups !== undefined ? { reactionGroups: payload.reactionGroups } : {}),
     ...(payload.delivered !== undefined ? { delivered: payload.delivered } : {}),
     ...(payload.deliveredToUserId !== undefined
       ? { deliveredToUserId: payload.deliveredToUserId }
       : {}),
   });
+}
+
+function findPreviewDialogMessage(
+  bucket: PreviewDialogBucket,
+  messageId: string | null | undefined,
+): ChannelDialogMessage | null {
+  const normalizedMessageId = messageId?.trim() ?? '';
+  if (!normalizedMessageId) {
+    return null;
+  }
+
+  return bucket.messages.find((message) => message.id === normalizedMessageId) ?? null;
+}
+
+function togglePreviewDialogReaction(
+  bucket: PreviewDialogBucket,
+  messageId: string,
+  emoji: string,
+): ChannelDialogMessage {
+  const nextMessages = bucket.messages.map((message) => {
+    if (message.id !== messageId) {
+      return message;
+    }
+
+    const existingGroups = message.reactionGroups ?? [];
+    const currentGroup = existingGroups.find((group) => group.emoji === emoji) ?? null;
+    const currentCount = currentGroup?.count ?? 0;
+    const currentReactedByMe = currentGroup?.reactedByMe ?? false;
+    const nextGroups = existingGroups
+      .map((group) => {
+        if (group.emoji !== emoji) {
+          return group;
+        }
+
+        if (currentReactedByMe) {
+          const nextCount = group.count - 1;
+          return nextCount > 0 ? { ...group, count: nextCount, reactedByMe: false } : null;
+        }
+
+        return {
+          ...group,
+          count: group.count + 1,
+          reactedByMe: true,
+        };
+      })
+      .filter((group): group is NonNullable<typeof group> => group !== null);
+
+    if (!currentGroup && currentCount === 0) {
+      nextGroups.push({
+        emoji,
+        count: 1,
+        reactedByMe: true,
+      });
+    }
+
+    const normalizedGroups = nextGroups.sort(
+      (left, right) => right.count - left.count || left.emoji.localeCompare(right.emoji),
+    );
+
+    return channelDialogMessageSchema.parse({
+      ...message,
+      reactionGroups: normalizedGroups,
+    });
+  });
+
+  bucket.messages = nextMessages;
+  return bucket.messages.find((message) => message.id === messageId) ?? bucket.messages.at(-1)!;
 }
 
 function buildPreviewDialogResponse(
@@ -1008,6 +1083,10 @@ function createInitialState(): PreviewState {
           authorDisplayName: 'Марина Орлова',
           avatarUrl: buildPreviewAvatarDataUrl('Марина Орлова', '#3cc58b', '#0f9f70'),
           createdAt: addHours(now, -4.8).toISOString(),
+          reactionGroups: [
+            { emoji: '👍', count: 3, reactedByMe: false },
+            { emoji: '🔥', count: 1, reactedByMe: false },
+          ],
         }),
         buildPreviewDialogMessage({
           id: 'chat-comments-3',
@@ -1017,6 +1096,7 @@ function createInitialState(): PreviewState {
           authorDisplayName: 'Наталья',
           avatarUrl: buildPreviewAvatarDataUrl('Наталья', '#6aa8ff', '#3b7ef0'),
           createdAt: addHours(now, -4.5).toISOString(),
+          reactionGroups: [{ emoji: '👀', count: 2, reactedByMe: true }],
         }),
         buildPreviewDialogMessage({
           id: 'chat-comments-4',
@@ -1026,6 +1106,12 @@ function createInitialState(): PreviewState {
           authorDisplayName: 'Александр',
           avatarUrl: buildPreviewAvatarDataUrl('Александр', '#4d94ff', '#2b64dd'),
           createdAt: addHours(now, -4.1).toISOString(),
+          replyToMessageId: 'chat-comments-2',
+          replyTo: {
+            messageId: 'chat-comments-2',
+            authorDisplayName: 'Марина Орлова',
+            text: 'Смотрится аккуратно. Если добавить отражатель со стороны дорожки, вечером будет безопаснее.',
+          },
         }),
         buildPreviewDialogMessage({
           id: 'chat-comments-5',
@@ -1035,6 +1121,7 @@ function createInitialState(): PreviewState {
           authorDisplayName: 'Алексей',
           avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
           createdAt: addHours(now, -3.9).toISOString(),
+          reactionGroups: [{ emoji: '❤️', count: 4, reactedByMe: false }],
         }),
       ],
     },
@@ -1078,6 +1165,7 @@ function createInitialState(): PreviewState {
           authorDisplayName: 'Алексей',
           avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
           createdAt: addHours(now, -9.8).toISOString(),
+          reactionGroups: [{ emoji: '👍', count: 6, reactedByMe: true }],
         }),
       ],
     },
@@ -1726,6 +1814,7 @@ async function handleChatRequest(
 
     if (tail[2] === 'messages' && method === 'POST') {
       const payload = createChannelDialogMessageRequestSchema.parse(parseJsonBody(init));
+      const replyTarget = findPreviewDialogMessage(state.chatDialogs[dialogType], payload.replyToMessageId);
       const message = buildPreviewDialogMessage({
         id: `chat-${dialogType}-${Date.now()}`,
         type: dialogType,
@@ -1734,6 +1823,15 @@ async function handleChatRequest(
         authorDisplayName: state.me.displayName ?? state.me.username ?? null,
         avatarUrl: state.me.avatarUrl ?? null,
         createdAt: new Date().toISOString(),
+        replyToMessageId: replyTarget?.id ?? null,
+        replyTo: replyTarget
+          ? {
+              messageId: replyTarget.id,
+              authorDisplayName: replyTarget.authorDisplayName,
+              text: replyTarget.text,
+            }
+          : null,
+        reactionGroups: [],
         ...(dialogType === 'suggest'
           ? {
               delivered: true,
@@ -1743,6 +1841,19 @@ async function handleChatRequest(
       });
       state.chatDialogs[dialogType].messages.push(message);
       return createChannelDialogMessageResponseSchema.parse({
+        ok: true,
+        message,
+      });
+    }
+
+    if (tail[2] === 'messages' && tail[3] && tail[4] === 'reactions' && method === 'POST') {
+      const payload = toggleChannelDialogReactionRequestSchema.parse(parseJsonBody(init));
+      const message = togglePreviewDialogReaction(
+        state.chatDialogs[dialogType],
+        tail[3],
+        payload.emoji,
+      );
+      return toggleChannelDialogReactionResponseSchema.parse({
         ok: true,
         message,
       });
@@ -2146,6 +2257,10 @@ async function handleChannelRequest(
 
     if (tail[2] === 'messages' && method === 'POST') {
       const payload = createChannelDialogMessageRequestSchema.parse(parseJsonBody(init));
+      const replyTarget = findPreviewDialogMessage(
+        state.channelDialogs[dialogType],
+        payload.replyToMessageId,
+      );
       const message = buildPreviewDialogMessage({
         id: `channel-${dialogType}-${Date.now()}`,
         type: dialogType,
@@ -2154,6 +2269,15 @@ async function handleChannelRequest(
         authorDisplayName: state.me.displayName ?? state.me.username ?? null,
         avatarUrl: state.me.avatarUrl ?? null,
         createdAt: new Date().toISOString(),
+        replyToMessageId: replyTarget?.id ?? null,
+        replyTo: replyTarget
+          ? {
+              messageId: replyTarget.id,
+              authorDisplayName: replyTarget.authorDisplayName,
+              text: replyTarget.text,
+            }
+          : null,
+        reactionGroups: [],
         ...(dialogType === 'suggest'
           ? {
               delivered: true,
@@ -2163,6 +2287,19 @@ async function handleChannelRequest(
       });
       state.channelDialogs[dialogType].messages.push(message);
       return createChannelDialogMessageResponseSchema.parse({
+        ok: true,
+        message,
+      });
+    }
+
+    if (tail[2] === 'messages' && tail[3] && tail[4] === 'reactions' && method === 'POST') {
+      const payload = toggleChannelDialogReactionRequestSchema.parse(parseJsonBody(init));
+      const message = togglePreviewDialogReaction(
+        state.channelDialogs[dialogType],
+        tail[3],
+        payload.emoji,
+      );
+      return toggleChannelDialogReactionResponseSchema.parse({
         ok: true,
         message,
       });

@@ -1734,10 +1734,25 @@ export type PublishChannelEngagementResult = z.infer<typeof publishChannelEngage
 export const createChannelDialogMessageRequestSchema = z.object({
   token: z.string().trim().min(16).max(256),
   text: z.string().trim().min(1).max(2_000),
+  replyToMessageId: z.string().trim().min(1).max(191).nullable().optional(),
 });
 export type CreateChannelDialogMessageRequest = z.infer<
   typeof createChannelDialogMessageRequestSchema
 >;
+
+export const channelDialogReactionGroupSchema = z.object({
+  emoji: z.string().trim().min(1).max(16),
+  count: z.number().int().min(1),
+  reactedByMe: z.boolean().default(false),
+});
+export type ChannelDialogReactionGroup = z.infer<typeof channelDialogReactionGroupSchema>;
+
+export const channelDialogReplyPreviewSchema = z.object({
+  messageId: z.string(),
+  authorDisplayName: z.string().nullable(),
+  text: z.string(),
+});
+export type ChannelDialogReplyPreview = z.infer<typeof channelDialogReplyPreviewSchema>;
 
 export const channelDialogMessageSchema = z.object({
   id: z.string(),
@@ -1747,6 +1762,9 @@ export const channelDialogMessageSchema = z.object({
   authorDisplayName: z.string().nullable(),
   avatarUrl: z.string().trim().url().nullable().default(null),
   createdAt: z.string().datetime(),
+  replyToMessageId: z.string().nullable().optional(),
+  replyTo: channelDialogReplyPreviewSchema.nullable().optional(),
+  reactionGroups: z.array(channelDialogReactionGroupSchema).default([]),
   delivered: z.boolean().optional(),
   deliveredToUserId: z.string().nullable().optional(),
 });
@@ -1766,6 +1784,22 @@ export const createChannelDialogMessageResponseSchema = z.object({
 });
 export type CreateChannelDialogMessageResponse = z.infer<
   typeof createChannelDialogMessageResponseSchema
+>;
+
+export const toggleChannelDialogReactionRequestSchema = z.object({
+  token: z.string().trim().min(16).max(256),
+  emoji: z.string().trim().min(1).max(16),
+});
+export type ToggleChannelDialogReactionRequest = z.infer<
+  typeof toggleChannelDialogReactionRequestSchema
+>;
+
+export const toggleChannelDialogReactionResponseSchema = z.object({
+  ok: z.boolean(),
+  message: channelDialogMessageSchema,
+});
+export type ToggleChannelDialogReactionResponse = z.infer<
+  typeof toggleChannelDialogReactionResponseSchema
 >;
 
 export const maxMessagePayloadSchema = z.object({

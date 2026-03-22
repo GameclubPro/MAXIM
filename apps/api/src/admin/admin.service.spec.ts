@@ -106,8 +106,10 @@ function createPrismaMock() {
     },
     auditLog: {
       findMany: jest.fn().mockResolvedValue([]),
+      findFirst: jest.fn().mockResolvedValue(null),
       count: jest.fn().mockResolvedValue(0),
       create: jest.fn().mockResolvedValue(undefined),
+      update: jest.fn().mockResolvedValue(undefined),
     },
     managedBroadcast: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -5295,6 +5297,170 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         }),
       }),
     );
+  });
+
+  it('stores a reply preview snapshot when posting a channel comment reply', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+      }),
+    );
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'comment-root-1',
+      payload: {
+        text: 'Исходный комментарий для ответа',
+        authorDisplayName: 'Марина',
+      },
+    });
+    prisma.auditLog.create.mockResolvedValue({
+      id: 'comment-reply-1',
+      actorUserId: 'user-2',
+      payload: {},
+      createdAt: new Date('2026-03-20T10:15:00.000Z'),
+    });
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const commentsToken = (
+      service as unknown as { buildEntityDialogToken: Function }
+    ).buildEntityDialogToken('channel', 'channel-1', 'comments', 'channel-thread-reply') as string;
+
+    const result = await service.createChannelDialogMessage(
+      'channel-1',
+      {
+        userId: 'user-2',
+        username: 'user2',
+        displayName: 'Ольга',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        text: 'Отвечаю на исходный комментарий',
+        replyToMessageId: 'comment-root-1',
+      },
+    );
+
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            replyTo: {
+              messageId: 'comment-root-1',
+              authorDisplayName: 'Марина',
+              text: 'Исходный комментарий для ответа',
+            },
+          }),
+        }),
+      }),
+    );
+    expect(result.message.replyTo).toEqual({
+      messageId: 'comment-root-1',
+      authorDisplayName: 'Марина',
+      text: 'Исходный комментарий для ответа',
+    });
+    expect(result.message.replyToMessageId).toBe('comment-root-1');
+  });
+
+  it('toggles channel comment reactions and returns reactedByMe for the current user', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+      }),
+    );
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'comment-1',
+      actorUserId: 'user-9',
+      payload: {
+        type: 'comments',
+        threadId: 'channel-thread-reactions',
+        text: 'Комментарий с реакциями',
+        authorDisplayName: 'Марина',
+        reactions: [{ emoji: '👍', userIds: ['user-2'] }],
+      },
+      createdAt: new Date('2026-03-20T09:00:00.000Z'),
+    });
+    prisma.auditLog.update.mockResolvedValue({
+      id: 'comment-1',
+      actorUserId: 'user-9',
+      payload: {
+        type: 'comments',
+        threadId: 'channel-thread-reactions',
+        text: 'Комментарий с реакциями',
+        authorDisplayName: 'Марина',
+        reactions: [{ emoji: '👍', userIds: ['user-2', 'user-1'] }],
+      },
+      createdAt: new Date('2026-03-20T09:00:00.000Z'),
+    });
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const commentsToken = (
+      service as unknown as { buildEntityDialogToken: Function }
+    ).buildEntityDialogToken(
+      'channel',
+      'channel-1',
+      'comments',
+      'channel-thread-reactions',
+    ) as string;
+
+    const result = await service.toggleChannelDialogReaction(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      'comment-1',
+      {
+        token: commentsToken,
+        emoji: '👍',
+      },
+    );
+
+    expect(prisma.auditLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: 'comment-1',
+        },
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            reactions: [{ emoji: '👍', userIds: ['user-2', 'user-1'] }],
+          }),
+        }),
+      }),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      message: {
+        id: 'comment-1',
+        reactionGroups: [{ emoji: '👍', count: 2, reactedByMe: true }],
+      },
+    });
   });
 
   it('updates the published channel comments button counter after a new comment', async () => {

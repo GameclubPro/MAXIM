@@ -1,4 +1,8 @@
-import type { ChannelDialogType } from '@maxim/contracts';
+import type {
+  ChannelDialogMessage,
+  ChannelDialogResponse,
+  ChannelDialogType,
+} from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -10,13 +14,17 @@ import {
   createChannelDialogMessage,
   getChatDialog,
   getChannelDialog,
+  toggleChannelDialogReaction,
+  toggleChatDialogReaction,
 } from '../lib/api/channel-dialog-client';
 import { getMe } from '../lib/api/root-client';
-import { maxImpact } from '../lib/max-bridge';
 import type { ApiTransport } from '../lib/api/transport';
 import { cn } from '../lib/cn';
 import { readChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
+import { maxImpact } from '../lib/max-bridge';
+
+const COMMENT_REACTION_OPTIONS = ['👍', '❤️', '🔥', '👀'] as const;
 
 function normalizeApiError(error: unknown): string {
   if (!(error instanceof Error)) {
@@ -70,6 +78,134 @@ function buildAuthorBadge(value: string | null | undefined): string {
   return normalized.slice(0, 2).toUpperCase();
 }
 
+function getAuthorLabel(message: ChannelDialogMessage): string {
+  return message.authorDisplayName || `Участник ${message.authorUserId}`;
+}
+
+function summarizeReplyText(value: string, maxLength = 96): string {
+  const normalized = value.replace(/\s+/gu, ' ').trim();
+  if (normalized.length <= maxLength) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
+}
+
+function isGroupedWithPrevious(messages: ChannelDialogMessage[], index: number): boolean {
+  const current = messages[index];
+  const previous = messages[index - 1];
+  if (!current || !previous) {
+    return false;
+  }
+
+  if (current.authorUserId !== previous.authorUserId) {
+    return false;
+  }
+
+  const currentTime = new Date(current.createdAt).getTime();
+  const previousTime = new Date(previous.createdAt).getTime();
+  if (!Number.isFinite(currentTime) || !Number.isFinite(previousTime)) {
+    return true;
+  }
+
+  return currentTime - previousTime < 12 * 60 * 1_000;
+}
+
+function mergeDialogMessage(
+  current: ChannelDialogMessage,
+  next: ChannelDialogMessage,
+): ChannelDialogMessage {
+  return {
+    ...current,
+    ...next,
+    avatarUrl: next.avatarUrl ?? current.avatarUrl ?? null,
+  };
+}
+
+function updateDialogMessage(
+  dialog: ChannelDialogResponse | undefined,
+  message: ChannelDialogMessage,
+): ChannelDialogResponse | undefined {
+  if (!dialog) {
+    return dialog;
+  }
+
+  const existingIndex = dialog.messages.findIndex((item) => item.id === message.id);
+  if (existingIndex < 0) {
+    return {
+      ...dialog,
+      messages: [...dialog.messages, message],
+    };
+  }
+
+  return {
+    ...dialog,
+    messages: dialog.messages.map((item) =>
+      item.id === message.id ? mergeDialogMessage(item, message) : item,
+    ),
+  };
+}
+
+function toggleDialogReactionLocally(
+  dialog: ChannelDialogResponse | undefined,
+  messageId: string,
+  emoji: string,
+): ChannelDialogResponse | undefined {
+  if (!dialog) {
+    return dialog;
+  }
+
+  return {
+    ...dialog,
+    messages: dialog.messages.map((message) => {
+      if (message.id !== messageId) {
+        return message;
+      }
+
+      const existingGroup = message.reactionGroups.find((group) => group.emoji === emoji) ?? null;
+      const nextGroups = message.reactionGroups
+        .map((group) => {
+          if (group.emoji !== emoji) {
+            return group;
+          }
+
+          if (group.reactedByMe) {
+            const nextCount = group.count - 1;
+            return nextCount > 0
+              ? {
+                  ...group,
+                  count: nextCount,
+                  reactedByMe: false,
+                }
+              : null;
+          }
+
+          return {
+            ...group,
+            count: group.count + 1,
+            reactedByMe: true,
+          };
+        })
+        .filter((group): group is NonNullable<typeof group> => group !== null);
+
+      if (!existingGroup) {
+        nextGroups.push({
+          emoji,
+          count: 1,
+          reactedByMe: true,
+        });
+      }
+
+      return {
+        ...message,
+        reactionGroups: nextGroups.sort(
+          (left, right) => right.count - left.count || left.emoji.localeCompare(right.emoji),
+        ),
+      };
+    }),
+  };
+}
+
 function DialogAvatar({
   avatarUrl,
   label,
@@ -113,6 +249,25 @@ function SendArrowIcon() {
   );
 }
 
+function CloseIcon() {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
+      <path
+        d="M5.5 5.5L14.5 14.5"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+      <path
+        d="M14.5 5.5L5.5 14.5"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
 type DialogViewModel = {
   title: string;
   placeholder: string;
@@ -144,8 +299,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const token = searchParams.get('token')?.trim() ?? '';
   const dialogType = resolveDialogType(mode);
   const entityType = resolveDialogEntityType(location.pathname);
-  const showTopbar = dialogType !== 'comments';
   const [draft, setDraft] = useState('');
+  const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
+  const [replyToMessageId, setReplyToMessageId] = useState<string | null>(null);
+  const [isBodyScrolled, setIsBodyScrolled] = useState(false);
   const composeFieldRef = useRef<HTMLTextAreaElement | null>(null);
   const scrollViewportRef = useRef<HTMLElement | null>(null);
   const lastMessageIdRef = useRef<string | null>(null);
@@ -154,6 +311,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   const chatTitle = useMemo(() => readChatTitle(chatId), [chatId]);
   const view = useMemo(() => buildViewModel(dialogType), [dialogType]);
+  const dialogQueryKey = ['entity-dialog', entityType, chatId, dialogType, token] as const;
   const meQuery = useQuery({
     queryKey: ['me'],
     queryFn: () => getMe(api),
@@ -166,7 +324,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   }, [chatId, entityType]);
 
   const dialogQuery = useQuery({
-    queryKey: ['entity-dialog', entityType, chatId, dialogType, token],
+    queryKey: dialogQueryKey,
     queryFn: () =>
       entityType === 'channel'
         ? getChannelDialog(api, chatId, dialogType, token)
@@ -177,8 +335,12 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   const messages = dialogQuery.data?.messages ?? [];
   const introText = dialogQuery.data?.introText?.trim() ?? '';
+  const replyTarget = useMemo(
+    () => messages.find((message) => message.id === replyToMessageId) ?? null,
+    [messages, replyToMessageId],
+  );
   const draftLength = draft.trim().length;
-  const showComposeMeta = dialogType === 'suggest' || draftLength > 0;
+  const showComposeMeta = dialogType === 'suggest' || draftLength > 0 || Boolean(replyTarget);
 
   const handleDismiss = () => {
     maxImpact('light');
@@ -194,7 +356,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     field.style.height = '0px';
     const nextHeight = Math.max(46, Math.min(field.scrollHeight, 132));
     field.style.height = `${nextHeight}px`;
-  }, [draft]);
+  }, [draft, replyTarget]);
 
   useEffect(() => {
     const viewport = scrollViewportRef.current;
@@ -220,18 +382,62 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     lastMessageIdRef.current = lastMessageId;
   }, [messages]);
 
+  useEffect(() => {
+    if (replyToMessageId && !messages.some((message) => message.id === replyToMessageId)) {
+      setReplyToMessageId(null);
+    }
+
+    if (activeMessageId && !messages.some((message) => message.id === activeMessageId)) {
+      setActiveMessageId(null);
+    }
+  }, [activeMessageId, messages, replyToMessageId]);
+
+  useEffect(() => {
+    if (!activeMessageId || typeof document === 'undefined') {
+      return undefined;
+    }
+
+    const handlePointerDown = (event: MouseEvent | TouchEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) {
+        return;
+      }
+      if (
+        target.closest('.channel-dialog-message') ||
+        target.closest('.channel-dialog-compose') ||
+        target.closest('.channel-dialog-topbar')
+      ) {
+        return;
+      }
+      setActiveMessageId(null);
+    };
+
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('touchstart', handlePointerDown, { passive: true });
+
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('touchstart', handlePointerDown);
+    };
+  }, [activeMessageId]);
+
   const sendMutation = useMutation({
     mutationFn: (text: string) =>
       entityType === 'channel'
         ? createChannelDialogMessage(api, chatId, dialogType, {
             token,
             text,
+            replyToMessageId,
           })
         : createChatDialogMessage(api, chatId, dialogType, {
             token,
             text,
+            replyToMessageId,
           }),
     onSuccess: (result) => {
+      queryClient.setQueryData<ChannelDialogResponse | undefined>(dialogQueryKey, (current) =>
+        updateDialogMessage(current, result.message),
+      );
       pushToast({
         tone: result.message.delivered === false ? 'info' : 'success',
         title: 'Готово',
@@ -243,8 +449,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             : 'Комментарий отправлен.',
       });
       setDraft('');
+      setReplyToMessageId(null);
+      setActiveMessageId(null);
       void queryClient.invalidateQueries({
-        queryKey: ['entity-dialog', entityType, chatId, dialogType, token],
+        queryKey: dialogQueryKey,
       });
     },
     onError: (error) => {
@@ -255,6 +463,72 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       });
     },
   });
+
+  const reactionMutation = useMutation({
+    mutationFn: ({ messageId, emoji }: { messageId: string; emoji: string }) =>
+      entityType === 'channel'
+        ? toggleChannelDialogReaction(api, chatId, dialogType, messageId, {
+            token,
+            emoji,
+          })
+        : toggleChatDialogReaction(api, chatId, dialogType, messageId, {
+            token,
+            emoji,
+          }),
+    onMutate: async ({ messageId, emoji }) => {
+      await queryClient.cancelQueries({ queryKey: dialogQueryKey });
+      const previousDialog = queryClient.getQueryData<ChannelDialogResponse | undefined>(dialogQueryKey);
+      queryClient.setQueryData<ChannelDialogResponse | undefined>(dialogQueryKey, (current) =>
+        toggleDialogReactionLocally(current, messageId, emoji),
+      );
+      return { previousDialog };
+    },
+    onSuccess: (result) => {
+      queryClient.setQueryData<ChannelDialogResponse | undefined>(dialogQueryKey, (current) =>
+        updateDialogMessage(current, result.message),
+      );
+    },
+    onError: (error, _variables, context) => {
+      if (context?.previousDialog) {
+        queryClient.setQueryData(dialogQueryKey, context.previousDialog);
+      }
+      pushToast({
+        tone: 'danger',
+        title: 'Ошибка',
+        description: normalizeApiError(error),
+      });
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({
+        queryKey: dialogQueryKey,
+      });
+    },
+  });
+
+  const handleSelectMessage = (messageId: string) => {
+    if (dialogType !== 'comments') {
+      return;
+    }
+
+    maxImpact('light');
+    setActiveMessageId((current) => (current === messageId ? null : messageId));
+  };
+
+  const handleReply = (message: ChannelDialogMessage) => {
+    maxImpact('soft');
+    setReplyToMessageId(message.id);
+    setActiveMessageId(null);
+    requestAnimationFrame(() => composeFieldRef.current?.focus());
+  };
+
+  const handleReactionToggle = (messageId: string, emoji: string) => {
+    if (reactionMutation.isPending) {
+      return;
+    }
+
+    maxImpact('soft');
+    reactionMutation.mutate({ messageId, emoji });
+  };
 
   const onSubmit = () => {
     const text = draft.trim();
@@ -274,10 +548,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             title={entityType === 'channel' ? 'Канал не найден' : 'Чат не найден'}
             description="Откройте диалог заново из сообщения."
             action={
-              <Link
-                to={buildManagedEntitiesRoute(entityType)}
-                className="button button--accent"
-              >
+              <Link to={buildManagedEntitiesRoute(entityType)} className="button button--accent">
                 К списку
               </Link>
             }
@@ -296,10 +567,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             title="Кнопка устарела"
             description="Откройте сообщение и нажмите кнопку ещё раз."
             action={
-              <Link
-                to={buildManagedEntitiesRoute(entityType)}
-                className="button button--accent"
-              >
+              <Link to={buildManagedEntitiesRoute(entityType)} className="button button--accent">
                 К списку
               </Link>
             }
@@ -315,30 +583,44 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     >
       <div className="channel-dialog-screen__backdrop" aria-hidden />
 
-      <div className={cn('channel-dialog-shell', !showTopbar && 'channel-dialog-shell--flat')}>
-        {showTopbar ? (
-          <header className="channel-dialog-topbar">
-            <button
-              type="button"
-              className="channel-dialog-nav"
-              onClick={handleDismiss}
-              aria-label="Назад"
-            >
-              <BackChevronIcon />
-            </button>
+      <div className="channel-dialog-shell">
+        <header
+          className={cn(
+            'channel-dialog-topbar',
+            dialogType === 'comments' && 'channel-dialog-topbar--comments',
+            isBodyScrolled && 'is-compact',
+          )}
+        >
+          <button
+            type="button"
+            className="channel-dialog-nav"
+            onClick={handleDismiss}
+            aria-label="Назад"
+          >
+            <BackChevronIcon />
+          </button>
 
-            <div className="channel-dialog-topbar__title">
-              <h1>{view.title}</h1>
-              <span>{chatTitle || chatId}</span>
-            </div>
+          <div className="channel-dialog-topbar__title">
+            <h1>{view.title}</h1>
+            <span>{chatTitle || chatId}</span>
+          </div>
 
+          {dialogType === 'comments' ? (
+            <span className="channel-dialog-topbar__badge">
+              {messages.length > 0 ? `${messages.length} комм.` : 'Пусто'}
+            </span>
+          ) : (
             <button type="button" className="channel-dialog-close" onClick={handleDismiss}>
               Закрыть
             </button>
-          </header>
-        ) : null}
+          )}
+        </header>
 
-        <section ref={scrollViewportRef} className="channel-dialog-body">
+        <section
+          ref={scrollViewportRef}
+          className="channel-dialog-body"
+          onScroll={(event) => setIsBodyScrolled(event.currentTarget.scrollTop > 18)}
+        >
           {dialogQuery.isLoading ? (
             <div className="channel-dialog-skeletons" aria-label="Загрузка">
               {Array.from({ length: 3 }, (_, index) => (
@@ -375,43 +657,167 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
           {!dialogQuery.isLoading && !dialogQuery.error ? (
             <div className="channel-dialog-message-list">
               {introText ? (
-                <div className="channel-dialog-intro">
+                <div
+                  className={cn(
+                    'channel-dialog-intro',
+                    dialogType === 'comments' && isBodyScrolled && 'is-collapsed',
+                  )}
+                >
                   <p>{introText}</p>
                 </div>
               ) : null}
 
               {messages.length ? (
-                messages.map((message) => {
+                messages.map((message, index) => {
                   const isOwnMessage = meQuery.data?.userId === message.authorUserId;
+                  const groupedWithPrevious = isGroupedWithPrevious(messages, index);
+                  const isActiveMessage = activeMessageId === message.id;
+                  const isReactionPending =
+                    reactionMutation.isPending &&
+                    reactionMutation.variables?.messageId === message.id;
+
                   return (
                     <article
                       key={message.id}
-                      className={cn('channel-dialog-message', isOwnMessage && 'is-own')}
+                      className={cn(
+                        'channel-dialog-message',
+                        isOwnMessage && 'is-own',
+                        groupedWithPrevious && 'is-grouped',
+                      )}
                     >
-                      <DialogAvatar
-                        avatarUrl={message.avatarUrl}
-                        label={message.authorDisplayName || message.authorUserId}
-                      />
-                      <div className="channel-dialog-message__bubble">
-                        <div className="channel-dialog-message__meta">
-                          <strong>
-                            {message.authorDisplayName || `Участник ${message.authorUserId}`}
-                          </strong>
-                          <time dateTime={message.createdAt}>
-                            {formatMessageTime(message.createdAt)}
-                          </time>
+                      {groupedWithPrevious ? (
+                        <span className="channel-dialog-message__avatar-spacer" aria-hidden />
+                      ) : (
+                        <DialogAvatar
+                          avatarUrl={message.avatarUrl}
+                          label={message.authorDisplayName || message.authorUserId}
+                        />
+                      )}
+
+                      <div className="channel-dialog-message__content">
+                        <div
+                          className={cn(
+                            'channel-dialog-message__bubble',
+                            dialogType === 'comments' && 'is-selectable',
+                            isActiveMessage && 'is-active',
+                            groupedWithPrevious && 'is-grouped',
+                          )}
+                          onClick={
+                            dialogType === 'comments'
+                              ? () => handleSelectMessage(message.id)
+                              : undefined
+                          }
+                          onKeyDown={
+                            dialogType === 'comments'
+                              ? (event) => {
+                                  if (event.key === 'Enter' || event.key === ' ') {
+                                    event.preventDefault();
+                                    handleSelectMessage(message.id);
+                                  }
+                                }
+                              : undefined
+                          }
+                          role={dialogType === 'comments' ? 'button' : undefined}
+                          tabIndex={dialogType === 'comments' ? 0 : undefined}
+                          aria-pressed={dialogType === 'comments' ? isActiveMessage : undefined}
+                        >
+                          {!groupedWithPrevious ? (
+                            <div className="channel-dialog-message__meta">
+                              <strong>{getAuthorLabel(message)}</strong>
+                              <time dateTime={message.createdAt}>
+                                {formatMessageTime(message.createdAt)}
+                              </time>
+                            </div>
+                          ) : null}
+
+                          {message.replyTo ? (
+                            <div className="channel-dialog-message__reply">
+                              <span>{message.replyTo.authorDisplayName || 'Комментарий'}</span>
+                              <p>{summarizeReplyText(message.replyTo.text)}</p>
+                            </div>
+                          ) : null}
+
+                          <p>{message.text}</p>
+
+                          {dialogType === 'suggest' ? (
+                            <div className="channel-dialog-message__footer">
+                              <span
+                                className={cn(
+                                  'channel-dialog-delivery',
+                                  message.delivered ? 'is-delivered' : 'is-pending',
+                                )}
+                              >
+                                {message.delivered ? 'доставлено' : 'в очереди'}
+                              </span>
+                            </div>
+                          ) : null}
                         </div>
-                        <p>{message.text}</p>
-                        {dialogType === 'suggest' ? (
-                          <div className="channel-dialog-message__footer">
-                            <span
-                              className={cn(
-                                'channel-dialog-delivery',
-                                message.delivered ? 'is-delivered' : 'is-pending',
-                              )}
-                            >
-                              {message.delivered ? 'доставлено' : 'в очереди'}
-                            </span>
+
+                        {dialogType === 'comments' &&
+                        (message.reactionGroups.length > 0 || isActiveMessage) ? (
+                          <div className="channel-dialog-message__footer channel-dialog-message__footer--comments">
+                            {message.reactionGroups.length > 0 ? (
+                              <div className="channel-dialog-message__reactions">
+                                {message.reactionGroups.map((group) => (
+                                  <button
+                                    key={group.emoji}
+                                    type="button"
+                                    className={cn(
+                                      'channel-dialog-reaction-pill',
+                                      group.reactedByMe && 'is-active',
+                                    )}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      handleReactionToggle(message.id, group.emoji);
+                                    }}
+                                    disabled={isReactionPending}
+                                  >
+                                    <b>{group.emoji}</b>
+                                    <span>{group.count}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            ) : null}
+
+                            {isActiveMessage ? (
+                              <div className="channel-dialog-message__actions">
+                                {COMMENT_REACTION_OPTIONS.map((emoji) => {
+                                  const reactedByMe = message.reactionGroups.some(
+                                    (group) => group.emoji === emoji && group.reactedByMe,
+                                  );
+
+                                  return (
+                                    <button
+                                      key={emoji}
+                                      type="button"
+                                      className={cn(
+                                        'channel-dialog-message__quick-reaction',
+                                        reactedByMe && 'is-active',
+                                      )}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        handleReactionToggle(message.id, emoji);
+                                      }}
+                                      disabled={isReactionPending}
+                                      aria-label={`Поставить реакцию ${emoji}`}
+                                    >
+                                      {emoji}
+                                    </button>
+                                  );
+                                })}
+
+                                <button
+                                  type="button"
+                                  className="channel-dialog-message__reply-button"
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    handleReply(message);
+                                  }}
+                                >
+                                  Ответить
+                                </button>
+                              </div>
+                            ) : null}
                           </div>
                         ) : null}
                       </div>
@@ -427,6 +833,23 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
         <section className="channel-dialog-compose">
           <div className="channel-dialog-compose__surface">
+            {replyTarget ? (
+              <div className="channel-dialog-compose__reply">
+                <div className="channel-dialog-compose__reply-copy">
+                  <span>Ответ {replyTarget.authorDisplayName || 'участнику'}</span>
+                  <p>{summarizeReplyText(replyTarget.text, 84)}</p>
+                </div>
+                <button
+                  type="button"
+                  className="channel-dialog-compose__reply-dismiss"
+                  onClick={() => setReplyToMessageId(null)}
+                  aria-label="Отменить ответ"
+                >
+                  <CloseIcon />
+                </button>
+              </div>
+            ) : null}
+
             {showComposeMeta ? (
               <div
                 className={cn(
@@ -446,7 +869,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   rows={1}
                   value={draft}
                   onChange={(event) => setDraft(event.target.value)}
-                  placeholder={view.placeholder}
+                  placeholder={replyTarget ? 'Ответить на комментарий' : view.placeholder}
                   maxLength={2_000}
                 />
               </label>

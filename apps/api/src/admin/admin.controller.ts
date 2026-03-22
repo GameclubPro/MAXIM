@@ -263,6 +263,17 @@ export class AdminController {
     return this.adminService.createChannelDialogMessage(chatId, user, dialogType, body);
   }
 
+  @Post('channels/:chatId/dialog/:dialogType/messages/:messageId/reactions')
+  toggleChannelDialogReaction(
+    @Param('chatId') chatId: string,
+    @Param('dialogType') dialogType: string,
+    @Param('messageId') messageId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.toggleChannelDialogReaction(chatId, user, dialogType, messageId, body);
+  }
+
   @Get('chats/:chatId/dialog/:dialogType')
   getChatDialog(
     @Param('chatId') chatId: string,
@@ -281,6 +292,17 @@ export class AdminController {
     @Body() body: unknown,
   ) {
     return this.adminService.createChatDialogMessage(chatId, user, dialogType, body);
+  }
+
+  @Post('chats/:chatId/dialog/:dialogType/messages/:messageId/reactions')
+  toggleChatDialogReaction(
+    @Param('chatId') chatId: string,
+    @Param('dialogType') dialogType: string,
+    @Param('messageId') messageId: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.toggleChatDialogReaction(chatId, user, dialogType, messageId, body);
   }
 
   @Post('chats/:chatId/settings/apply-to-all')
