@@ -21,6 +21,10 @@ function isMaxDeepLink(url: URL): boolean {
   return url.protocol === 'https:' && (url.hostname === 'max.ru' || url.hostname === 'www.max.ru');
 }
 
+function isMaxUserLink(url: URL): boolean {
+  return url.protocol === 'max:' && url.hostname === 'user';
+}
+
 export function readyMaxMiniApp(): void {
   resolveBridge()?.ready?.();
 }
@@ -51,6 +55,11 @@ export function openMaxBotLink(url: string): void {
   }
 
   if (parsed && isMaxDeepLink(parsed)) {
+    window.location.assign(normalizedUrl);
+    return;
+  }
+
+  if (parsed && isMaxUserLink(parsed)) {
     window.location.assign(normalizedUrl);
     return;
   }

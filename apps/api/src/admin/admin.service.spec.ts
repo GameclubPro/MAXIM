@@ -1624,7 +1624,7 @@ describe('AdminService.getChatActivityFeed', () => {
         userId: 'user-5',
         userDisplayName: 'Игорь',
         avatarUrl: 'https://cdn.max.ru/u/5/avatar-full.jpg',
-        profileUrl: null,
+        profileUrl: 'max://user/user-5',
         createdAt: '2026-03-02T11:00:00.000Z',
       },
     ]);
@@ -2635,7 +2635,7 @@ describe('AdminService.getChannelStats', () => {
           userId: 'user-11',
           userDisplayName: 'Елена',
           avatarUrl: 'https://cdn.max.ru/u/11/avatar-full.jpg',
-          profileUrl: null,
+          profileUrl: 'max://user/user-11',
           createdAt: '2026-03-07T10:15:00.000Z',
         },
       ],
