@@ -374,27 +374,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const senderIsOwnBotInMessage =
       updateType === 'message_created' && senderId ? this.isOwnBotSender(senderId) : false;
     if (senderIsOwnBotInMessage) {
-      const skipOwnBotAutoDelete = this.isNightModeNoticeMessage({
+      await this.handleOwnBotMessageAutoDelete({
+        chatId,
+        userId: senderId,
+        messageId,
         text,
         settings,
       });
-      if (settings.deleteBotMessagesEnabled && !skipOwnBotAutoDelete) {
-        await this.handleBotMessageAutoDelete({
-          chatId,
-          userId: senderId,
-          messageId,
-          text,
-          delayMinutes: settings.deleteBotMessagesDelayMinutes,
-        });
-      } else if (skipOwnBotAutoDelete) {
-        this.logger.debug(
-          {
-            chatId,
-            messageId,
-          },
-          'Skipped auto-delete for scheduled night mode notice',
-        );
-      }
       return;
     }
 
@@ -458,28 +444,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           messageId,
           text,
         });
-      } else if (settings.deleteBotMessagesEnabled && senderIsOwnBot) {
-        const skipOwnBotAutoDelete = this.isNightModeNoticeMessage({
+      } else if (senderIsOwnBot) {
+        await this.handleOwnBotMessageAutoDelete({
+          chatId,
+          userId: senderId,
+          messageId,
           text,
           settings,
         });
-        if (skipOwnBotAutoDelete) {
-          this.logger.debug(
-            {
-              chatId,
-              messageId,
-            },
-            'Skipped auto-delete for scheduled night mode notice',
-          );
-        } else {
-          await this.handleBotMessageAutoDelete({
-            chatId,
-            userId: senderId,
-            messageId,
-            text,
-            delayMinutes: settings.deleteBotMessagesDelayMinutes,
-          });
-        }
       }
       return;
     }
@@ -3500,6 +3472,94 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async handleOwnBotMessageAutoDelete(params: {
+    chatId: string;
+    userId: string;
+    messageId: string;
+    text: string;
+    settings: ChatSettings;
+  }) {
+    const { chatId, userId, messageId, text, settings } = params;
+
+    if (!settings.deleteBotMessagesEnabled) {
+      return;
+    }
+
+    const skipReason = await this.resolveOwnBotAutoDeleteSkipReason({
+      chatId,
+      messageId,
+      text,
+      settings,
+    });
+    if (skipReason) {
+      this.logger.debug(
+        {
+          chatId,
+          messageId,
+          skipReason,
+        },
+        'Skipped auto-delete for own bot message',
+      );
+      return;
+    }
+
+    await this.handleBotMessageAutoDelete({
+      chatId,
+      userId,
+      messageId,
+      text,
+      delayMinutes: settings.deleteBotMessagesDelayMinutes,
+    });
+  }
+
+  private async resolveOwnBotAutoDeleteSkipReason(params: {
+    chatId: string;
+    messageId: string;
+    text: string;
+    settings: ChatSettings;
+  }): Promise<'night_mode_notice' | 'greeting_message' | 'managed_broadcast' | null> {
+    if (
+      this.isNightModeNoticeMessage({
+        text: params.text,
+        settings: params.settings,
+      })
+    ) {
+      return 'night_mode_notice';
+    }
+
+    const greetingEvent = await this.prisma.moderationEvent?.findFirst?.({
+      where: {
+        chatId: params.chatId,
+        ruleCode: 'GREETING_MESSAGE',
+        metadata: {
+          path: ['sentMessageId'],
+          equals: params.messageId,
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+    if (greetingEvent) {
+      return 'greeting_message';
+    }
+
+    const managedBroadcastDelivery = await this.prisma.managedBroadcastDelivery?.findFirst?.({
+      where: {
+        targetChatId: params.chatId,
+        remoteMessageId: params.messageId,
+      },
+      select: {
+        id: true,
+      },
+    });
+    if (managedBroadcastDelivery) {
+      return 'managed_broadcast';
+    }
+
+    return null;
+  }
+
   private async handleServiceBotEvent(params: {
     chatId: string;
     messageId: string;
@@ -3609,13 +3669,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         botSpeechStyle,
       );
       try {
-        await this.sendBotMessageWithOptionalAutoDelete({
-          chatId,
-          text: greetingMessage,
-          messageOptions: greetingMessageOptions ?? undefined,
-          deleteBotMessagesEnabled,
-          deleteBotMessagesDelayMinutes,
-        });
+        const sentMessageId = deleteBotMessagesEnabled
+          ? await this.sendPersistentBotMessage({
+              chatId,
+              text: greetingMessage,
+              messageOptions: greetingMessageOptions ?? undefined,
+            })
+          : null;
+
+        if (!deleteBotMessagesEnabled) {
+          await this.sendBotMessageWithOptionalAutoDelete({
+            chatId,
+            text: greetingMessage,
+            messageOptions: greetingMessageOptions ?? undefined,
+            deleteBotMessagesEnabled,
+            deleteBotMessagesDelayMinutes,
+          });
+        }
 
         await this.prisma.moderationEvent.create({
           data: {
@@ -3630,6 +3700,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             operator: Operator.BOT,
             metadata: {
               reason: 'Greeting message sent for joined member',
+              ...(sentMessageId ? { sentMessageId } : {}),
             },
           },
         });
@@ -7828,6 +7899,32 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         immediate,
       }),
     );
+  }
+
+  private async sendPersistentBotMessage(params: {
+    chatId: string;
+    text: string;
+    messageOptions?: MaxSendMessageOptions;
+  }): Promise<string | null> {
+    const options = {
+      ...(params.messageOptions ?? {}),
+      textFormat: 'markdown' as const,
+    };
+
+    if (typeof this.maxClient.sendMessageImmediateWithId === 'function') {
+      const sent = await this.maxClient.sendMessageImmediateWithId(
+        params.chatId,
+        params.text,
+        options,
+      );
+
+      return typeof sent.messageId === 'string' && sent.messageId.trim().length > 0
+        ? sent.messageId.trim()
+        : null;
+    }
+
+    await this.maxClient.sendMessage(params.chatId, params.text, options, { immediate: true });
+    return null;
   }
 
   private async sendScheduledBotMessage(params: {

@@ -278,12 +278,15 @@ function createBotAuthoredUpdate(): MaxUpdate {
   };
 }
 
-function createOwnBotUpdateWithoutBotFlags(text = 'service notice'): MaxUpdate {
+function createOwnBotUpdateWithoutBotFlags(
+  text = 'service notice',
+  messageId = 'msg-own-bot-no-flags-1',
+): MaxUpdate {
   return {
     updateId: 'upd-own-bot-no-flags-1',
     type: 'message_created',
     message: {
-      messageId: 'msg-own-bot-no-flags-1',
+      messageId,
       chatId: 'chat-1',
       senderId: '613002203036',
       text,
@@ -1278,6 +1281,155 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
   });
 
+  it('does not auto-delete tracked greeting message from own bot', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 2,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'greeting-event-1' }),
+        create: jest.fn(),
+      },
+      managedBroadcastDelivery: {
+        findFirst: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalSpammer: {
+        upsert: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn().mockReturnValue('id613002203036_4_bot'),
+      } as never,
+    );
+
+    await service.handleUpdate(createOwnBotUpdateWithoutBotFlags('welcome', 'msg-greeting-own-1'));
+
+    expect(prisma.moderationEvent.findFirst).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        ruleCode: 'GREETING_MESSAGE',
+        metadata: {
+          path: ['sentMessageId'],
+          equals: 'msg-greeting-own-1',
+        },
+      },
+      select: {
+        id: true,
+      },
+    });
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(prisma.managedBroadcastDelivery.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-delete managed broadcast message from own bot', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 2,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      managedBroadcastDelivery: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'delivery-1' }),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalSpammer: {
+        upsert: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn().mockReturnValue('id613002203036_4_bot'),
+      } as never,
+    );
+
+    await service.handleUpdate(createOwnBotUpdateWithoutBotFlags('broadcast', 'mid-broadcast-1'));
+
+    expect(prisma.managedBroadcastDelivery.findFirst).toHaveBeenCalledWith({
+      where: {
+        targetChatId: 'chat-1',
+        remoteMessageId: 'mid-broadcast-1',
+      },
+      select: {
+        id: true,
+      },
+    });
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+  });
+
   it('does not auto-delete scheduled night mode notice from own bot', async () => {
     const prisma = {
       chat: {
@@ -2230,6 +2382,85 @@ describe('ModerationService', () => {
         messageId: 'msg-service-user-join-1',
         ruleCode: 'GREETING_MESSAGE',
         action: SanctionAction.NONE,
+      }),
+    });
+  });
+
+  it('stores greeting sent message id when auto-delete for own bot messages is enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            greetingEnabled: true,
+            greetingBotMessageEnabled: true,
+            greetingBotMessageText: 'Добро пожаловать, {user}! {greeting}.',
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 2,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+        messageId: 'msg-greeting-sent-1',
+        url: null,
+      }),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createServiceUserJoinedUpdate());
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      'chat-1',
+      `Добро пожаловать, ${boldUser('Новый участник')}! добро пожаловать в чат.`,
+      expect.objectContaining({
+        textFormat: 'markdown',
+      }),
+    );
+    expect(maxClient.sendMessage).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'user-black-2',
+        messageId: 'msg-service-user-join-1',
+        ruleCode: 'GREETING_MESSAGE',
+        action: SanctionAction.NONE,
+        metadata: expect.objectContaining({
+          reason: 'Greeting message sent for joined member',
+          sentMessageId: 'msg-greeting-sent-1',
+        }),
       }),
     });
   });
