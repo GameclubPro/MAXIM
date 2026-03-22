@@ -5,6 +5,7 @@ import {
   broadcastHandoffResponseSchema,
   broadcastHandoffStateSchema,
   managedGiveawayHandoffRequestSchema,
+  profileMentionHandoffRequestSchema,
   type BroadcastTextFormat,
   type BroadcastHandoffState,
   type BroadcastHandoffResponse,
@@ -231,6 +232,15 @@ type GiveawayHandoffStartPayload = {
   g: string | null;
 };
 
+type ProfileMentionStartPayload = {
+  v: 1;
+  k: 'profile-mention';
+  c: string;
+  e: ManagedEntityType;
+  u: string;
+  n: string;
+};
+
 type ParsedImageAttachment = {
   url: string;
   token: string | null;
@@ -287,6 +297,7 @@ const BROADCAST_HANDOFF_START_PAYLOAD = 'broadcast_handoff';
 const RULES_HANDOFF_START_PAYLOAD = 'rules_handoff';
 const GIVEAWAY_HANDOFF_START_PAYLOAD = 'giveaway_handoff';
 const GIVEAWAY_HANDOFF_START_PREFIX = 'ggh-';
+const PROFILE_MENTION_START_PREFIX = 'pmh-';
 const PAGE_SIZE_CHATS = 8;
 const PAGE_SIZE_DOMAINS = 8;
 const PAGE_SIZE_EVENTS = 10;
@@ -1037,6 +1048,19 @@ export class PrivateControlService {
       return;
     }
 
+    const profileMentionPayload = this.parseProfileMentionStartPayload(startPayload);
+    if (profileMentionPayload) {
+      const mentionText = `[${this.escapeMarkdown(profileMentionPayload.displayName)}](max://user/${encodeURIComponent(profileMentionPayload.userId)})`;
+      await this.sendImmediate(
+        context.chatId,
+        [this.markdownTitle('Профиль пользователя'), '', mentionText].join('\n'),
+        {
+          textFormat: 'markdown',
+        },
+      );
+      return;
+    }
+
     const session = await this.loadSession(context.actor.userId);
     this.rememberPrivateChatId(session, context.chatId);
     const handoffPayload = this.parseGiveawayHandoffStartPayload(startPayload);
@@ -1267,6 +1291,64 @@ export class PrivateControlService {
         chatId: sourceChatId,
         entityType,
         giveawayId: parsed.data.giveawayId,
+      }),
+    );
+    if (!botUrl) {
+      throw new BadRequestException('Ссылка на личный чат бота не настроена.');
+    }
+
+    return broadcastHandoffResponseSchema.parse({ botUrl });
+  }
+
+  async handoffProfileMentionFromMiniapp(
+    sourceChatId: string,
+    user: AuthUser,
+    targetUserId: string,
+    body: unknown,
+    entityType: ManagedEntityType,
+  ): Promise<BroadcastHandoffResponse> {
+    const parsed = profileMentionHandoffRequestSchema.safeParse(body);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const normalizedTargetUserId = targetUserId.trim();
+    if (!normalizedTargetUserId) {
+      throw new BadRequestException('Не указан пользователь для открытия профиля.');
+    }
+
+    if (entityType === 'channel') {
+      await this.adminService.getChannelHeader(sourceChatId, user);
+    } else {
+      await this.adminService.getChatHeader(sourceChatId, user);
+    }
+
+    let resolvedDisplayName = parsed.data.displayName;
+    try {
+      const profiles = await this.maxClient.getChatMemberProfiles(sourceChatId, [normalizedTargetUserId]);
+      const profile = profiles.get(normalizedTargetUserId);
+      const displayName = this.readString(profile?.displayName);
+      if (displayName) {
+        resolvedDisplayName = displayName;
+      }
+    } catch (error) {
+      this.logger.warn(
+        {
+          chatId: sourceChatId,
+          entityType,
+          targetUserId: normalizedTargetUserId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve profile handoff display name from MAX',
+      );
+    }
+
+    const botUrl = this.buildBotStartUrl(
+      this.buildProfileMentionStartPayload({
+        chatId: sourceChatId,
+        entityType,
+        userId: normalizedTargetUserId,
+        displayName: resolvedDisplayName,
       }),
     );
     if (!botUrl) {
@@ -7785,6 +7867,27 @@ export class PrivateControlService {
     return `${GIVEAWAY_HANDOFF_START_PREFIX}${payload}`;
   }
 
+  private buildProfileMentionStartPayload(params: {
+    chatId: string;
+    entityType: ManagedEntityType;
+    userId: string;
+    displayName: string;
+  }): string {
+    const payload = Buffer.from(
+      JSON.stringify({
+        v: 1,
+        k: 'profile-mention',
+        c: params.chatId,
+        e: params.entityType,
+        u: params.userId,
+        n: params.displayName.trim() || 'Пользователь',
+      } satisfies ProfileMentionStartPayload),
+      'utf8',
+    ).toString('base64url');
+
+    return `${PROFILE_MENTION_START_PREFIX}${payload}`;
+  }
+
   private parseGiveawayHandoffStartPayload(
     startPayload: string | null,
   ): { chatId: string; entityType: ManagedEntityType; giveawayId: string | null } | null {
@@ -7818,6 +7921,42 @@ export class PrivateControlService {
         chatId,
         entityType,
         giveawayId,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private parseProfileMentionStartPayload(
+    startPayload: string | null,
+  ): { chatId: string; entityType: ManagedEntityType; userId: string; displayName: string } | null {
+    if (!startPayload || !startPayload.startsWith(PROFILE_MENTION_START_PREFIX)) {
+      return null;
+    }
+
+    const encodedPayload = startPayload.slice(PROFILE_MENTION_START_PREFIX.length);
+    if (!encodedPayload) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(
+        Buffer.from(encodedPayload, 'base64url').toString('utf8'),
+      ) as Partial<ProfileMentionStartPayload>;
+      const chatId = typeof parsed.c === 'string' ? parsed.c.trim() : '';
+      const entityType = parsed.e === 'channel' ? 'channel' : parsed.e === 'chat' ? 'chat' : null;
+      const userId = typeof parsed.u === 'string' ? parsed.u.trim() : '';
+      const displayName = typeof parsed.n === 'string' ? parsed.n.trim() : '';
+
+      if (parsed.v !== 1 || parsed.k !== 'profile-mention' || !chatId || !entityType || !userId) {
+        return null;
+      }
+
+      return {
+        chatId,
+        entityType,
+        userId,
+        displayName: displayName || 'Пользователь',
       };
     } catch {
       return null;

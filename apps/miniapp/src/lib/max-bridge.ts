@@ -69,6 +69,17 @@ export function openMaxBotLink(url: string): void {
   window.location.assign(normalizedUrl);
 }
 
+export function openMaxBotLinkAndClose(url: string): boolean {
+  const normalizedUrl = url.trim();
+  if (!normalizedUrl) {
+    return false;
+  }
+
+  openMaxBotLink(normalizedUrl);
+  scheduleMiniAppClose();
+  return true;
+}
+
 export function openMaxProfileLink(url: string): boolean {
   const normalizedUrl = url.trim();
   if (!normalizedUrl) {

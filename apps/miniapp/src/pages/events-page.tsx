@@ -1,8 +1,10 @@
 import type {
+  BroadcastHandoffResponse,
   LogsDashboardRange,
   LogsDashboardResponse,
   ManualModerationAction,
   ManualModerationActionRequest,
+  MembershipActivityItem,
   MembershipActivityPage,
 } from '@maxim/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -15,16 +17,18 @@ import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
+import { useToast } from '../components/ui/toast';
 import {
   applyManualModerationAction,
   getChatActivityFeed,
   getLogsDashboard,
+  handoffChatMemberProfile,
 } from '../lib/api/events-client';
 import { getChats } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
-import { openMaxProfileLink } from '../lib/max-bridge';
+import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 
@@ -178,15 +182,13 @@ function resolveOffenderAvatarUrl(violation: ViolationItem): string | null {
   return normalized || null;
 }
 
-function resolveOffenderProfileUrl(violation: ViolationItem): string | null {
-  const normalized = violation.profileUrl?.trim() ?? '';
-  return normalized || null;
-}
-
-function handleProfileLinkClick(event: MouseEvent<HTMLAnchorElement>, profileUrl: string): void {
+function handleProfileLinkClick(
+  event: MouseEvent<HTMLAnchorElement>,
+  onActivate: () => void,
+): void {
   event.preventDefault();
   event.stopPropagation();
-  openMaxProfileLink(profileUrl);
+  onActivate();
 }
 
 function handleExpandableCardKeyDown(
@@ -534,6 +536,7 @@ function getInitialSection(search: string): EventsSection {
 export function EventsPage({ api }: { api: ApiTransport }) {
   const { chatId } = useParams();
   const location = useLocation();
+  const { pushToast } = useToast();
   const [range, setRange] = useState<LogsDashboardRange>('7d');
   const [section, setSection] = useState<EventsSection>(() => getInitialSection(location.search));
   const [eventsFilter, setEventsFilter] = useState<EventsFilter>('ALL');
@@ -604,6 +607,29 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     range,
     initialPage: dashboard?.activityFeed ?? EMPTY_ACTIVITY_PAGE,
     loadPage: (query) => getChatActivityFeed(api, chatId ?? '', query),
+  });
+  const profileHandoffMutation = useMutation({
+    mutationFn: ({ userId, displayName }: { userId: string; displayName: string }) =>
+      handoffChatMemberProfile(api, chatId ?? '', userId, { displayName }),
+    onSuccess: (result: BroadcastHandoffResponse) => {
+      if (openMaxBotLinkAndClose(result.botUrl)) {
+        return;
+      }
+
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось открыть бота',
+        description: 'Ссылка на handoff вернулась пустой.',
+      });
+    },
+    onError: (error: unknown) => {
+      const description = error instanceof Error ? error.message : 'Попробуйте ещё раз.';
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось открыть профиль',
+        description,
+      });
+    },
   });
   const filterOptions = useMemo<
     Array<{ value: EventsFilter; label: string; count: number }>
@@ -751,6 +777,18 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const dashboardTitle = section === 'activity' ? 'Входы и выходы' : 'Модерация';
   const dashboardSubtitle =
     section === 'activity' ? 'Баланс и движение участников' : 'Люди и меры за выбранный период';
+  const activateProfile = (userId: string, displayName: string) => {
+    const normalizedUserId = userId.trim();
+    if (!normalizedUserId || !chatId) {
+      return;
+    }
+
+    profileHandoffMutation.mutate({
+      userId: normalizedUserId,
+      displayName: displayName.trim() || 'Пользователь',
+    });
+  };
+
   return (
     <div className="events-screen page-enter">
       <section className={`events-stage events-stage--${section}`}>
@@ -933,6 +971,9 @@ export function EventsPage({ api }: { api: ApiTransport }) {
           error={activityFeed.error}
           onLoadMore={() => void activityFeed.loadMore()}
           onRetry={() => void activityFeed.retry()}
+          onProfileActivate={(item: MembershipActivityItem) =>
+            activateProfile(item.userId, item.userDisplayName)
+          }
         />
       ) : null}
 
@@ -984,7 +1025,8 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                 const isExpanded = expandedViolationId === violation.id;
                 const displayName = resolveOffenderName(violation);
                 const avatarUrl = resolveOffenderAvatarUrl(violation);
-                const profileUrl = resolveOffenderProfileUrl(violation);
+                const profileUrl = violation.profileUrl?.trim() ?? '';
+                const canOpenProfile = violation.userId.trim().length > 0;
                 const toggleExpanded = () =>
                   setExpandedViolationId((current) =>
                     current === violation.id ? null : violation.id,
@@ -1011,12 +1053,16 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                       onKeyDown={(event) => handleExpandableCardKeyDown(event, toggleExpanded)}
                       aria-expanded={isExpanded}
                     >
-                      {profileUrl ? (
+                      {canOpenProfile ? (
                         <a
-                          href={profileUrl}
+                          href={profileUrl || '#'}
                           className="event-feed-item__avatar-link"
                           aria-label={`Открыть профиль ${displayName} в MAX`}
-                          onClick={(event) => handleProfileLinkClick(event, profileUrl)}
+                          onClick={(event) =>
+                            handleProfileLinkClick(event, () =>
+                              activateProfile(violation.userId, displayName),
+                            )
+                          }
                         >
                           <PersonAvatar
                             avatarUrl={avatarUrl}
@@ -1035,11 +1081,15 @@ export function EventsPage({ api }: { api: ApiTransport }) {
                       <div className="event-feed-item__body">
                         <div className="event-feed-item__headline">
                           <div className="event-feed-item__identity">
-                            {profileUrl ? (
+                            {canOpenProfile ? (
                               <a
-                                href={profileUrl}
+                                href={profileUrl || '#'}
                                 className="event-feed-item__name-link"
-                                onClick={(event) => handleProfileLinkClick(event, profileUrl)}
+                                onClick={(event) =>
+                                  handleProfileLinkClick(event, () =>
+                                    activateProfile(violation.userId, displayName),
+                                  )
+                                }
                               >
                                 {displayName}
                               </a>

@@ -1,12 +1,16 @@
 import {
+  broadcastHandoffResponseSchema,
   channelStatsRangeSchema,
   channelStatsResponseSchema,
   membershipActivityPageSchema,
   membershipActivityQuerySchema,
+  profileMentionHandoffRequestSchema,
+  type BroadcastHandoffResponse,
   type ChannelStatsRange,
   type ChannelStatsResponse,
   type MembershipActivityPage,
   type MembershipActivityQuery,
+  type ProfileMentionHandoffRequest,
 } from '@maxim/contracts';
 import type { ApiTransport } from './transport';
 
@@ -42,4 +46,21 @@ export async function getChannelActivityFeed(
     `/channels/${chatId}/activity-feed?${params.toString()}`,
   );
   return membershipActivityPageSchema.parse(response);
+}
+
+export async function handoffChannelMemberProfile(
+  api: ApiTransport,
+  chatId: string,
+  userId: string,
+  payload: ProfileMentionHandoffRequest,
+): Promise<BroadcastHandoffResponse> {
+  const requestBody = profileMentionHandoffRequestSchema.parse(payload);
+  const response = await api.request(
+    `/channels/${chatId}/members/${encodeURIComponent(userId)}/profile/handoff`,
+    {
+      method: 'POST',
+      body: JSON.stringify(requestBody),
+    },
+  );
+  return broadcastHandoffResponseSchema.parse(response);
 }

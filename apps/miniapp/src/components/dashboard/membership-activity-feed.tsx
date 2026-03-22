@@ -1,6 +1,5 @@
 import type { MembershipActivityFilter, MembershipActivityItem } from '@maxim/contracts';
 import { type MouseEvent, useMemo } from 'react';
-import { openMaxProfileLink } from '../../lib/max-bridge';
 import { PersonAvatar } from '../ui/person-avatar';
 import { SegmentedControl } from '../ui/segmented-control';
 
@@ -19,6 +18,7 @@ type MembershipActivityFeedProps = {
   error: string | null;
   onLoadMore: () => void;
   onRetry: () => void;
+  onProfileActivate?: ((item: MembershipActivityItem) => void) | null;
 };
 
 const filterOptions: Array<{ value: MembershipActivityFilter; label: string }> = [
@@ -92,10 +92,14 @@ function resolveAvatarUrl(value: string | null | undefined): string | null {
   return normalized || null;
 }
 
-function handleProfileLinkClick(event: MouseEvent<HTMLAnchorElement>, profileUrl: string): void {
+function handleProfileLinkClick(
+  event: MouseEvent<HTMLAnchorElement>,
+  item: MembershipActivityItem,
+  onProfileActivate?: ((item: MembershipActivityItem) => void) | null,
+): void {
   event.preventDefault();
   event.stopPropagation();
-  openMaxProfileLink(profileUrl);
+  onProfileActivate?.(item);
 }
 
 export function MembershipActivityFeed({
@@ -113,6 +117,7 @@ export function MembershipActivityFeed({
   error,
   onLoadMore,
   onRetry,
+  onProfileActivate = null,
 }: MembershipActivityFeedProps) {
   const groups = useMemo(() => {
     const result: Array<{
@@ -234,6 +239,8 @@ export function MembershipActivityFeed({
                   const displayName = resolveDisplayName(item.userDisplayName);
                   const avatarUrl = resolveAvatarUrl(item.avatarUrl);
                   const profileUrl = item.profileUrl?.trim() ?? '';
+                  const canOpenProfile =
+                    item.userId.trim().length > 0 && typeof onProfileActivate === 'function';
 
                   return (
                     <article
@@ -252,12 +259,14 @@ export function MembershipActivityFeed({
                       </div>
 
                       <div className="membership-feed__card">
-                        {profileUrl ? (
+                        {canOpenProfile ? (
                           <a
-                            href={profileUrl}
+                            href={profileUrl || '#'}
                             className="membership-feed__avatar-link"
                             aria-label={`Открыть профиль ${displayName} в MAX`}
-                            onClick={(event) => handleProfileLinkClick(event, profileUrl)}
+                            onClick={(event) =>
+                              handleProfileLinkClick(event, item, onProfileActivate)
+                            }
                           >
                             <PersonAvatar
                               avatarUrl={avatarUrl}
@@ -274,11 +283,13 @@ export function MembershipActivityFeed({
                         )}
                         <div className="membership-feed__content">
                           <div className="membership-feed__row">
-                            {profileUrl ? (
+                            {canOpenProfile ? (
                               <a
-                                href={profileUrl}
+                                href={profileUrl || '#'}
                                 className="membership-feed__name-link"
-                                onClick={(event) => handleProfileLinkClick(event, profileUrl)}
+                                onClick={(event) =>
+                                  handleProfileLinkClick(event, item, onProfileActivate)
+                                }
                               >
                                 {displayName}
                               </a>

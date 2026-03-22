@@ -1562,6 +1562,11 @@ export const broadcastHandoffResponseSchema = z.object({
 });
 export type BroadcastHandoffResponse = z.infer<typeof broadcastHandoffResponseSchema>;
 
+export const profileMentionHandoffRequestSchema = z.object({
+  displayName: z.string().trim().min(1).max(128),
+});
+export type ProfileMentionHandoffRequest = z.infer<typeof profileMentionHandoffRequestSchema>;
+
 export const broadcastHandoffStateSchema = z.object({
   applyToAllChats: z.boolean(),
   buttonEnabled: z.boolean(),

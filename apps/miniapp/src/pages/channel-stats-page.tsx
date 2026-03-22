@@ -1,10 +1,12 @@
 import type {
+  BroadcastHandoffResponse,
   ChannelStatsBucket,
   ChannelStatsRange,
   ChannelStatsResponse,
+  MembershipActivityItem,
   MembershipActivityPage,
 } from '@maxim/contracts';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
@@ -13,10 +15,16 @@ import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
-import { getChannelActivityFeed, getChannelStats } from '../lib/api/channel-stats-client';
+import { useToast } from '../components/ui/toast';
+import {
+  getChannelActivityFeed,
+  getChannelStats,
+  handoffChannelMemberProfile,
+} from '../lib/api/channel-stats-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
+import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 
@@ -951,6 +959,7 @@ function ViewsChart({ stats }: { stats: ChannelStatsResponse }) {
 export function ChannelStatsPage({ api }: { api: ApiTransport }) {
   const { chatId = '' } = useParams();
   const location = useLocation();
+  const { pushToast } = useToast();
   const routeState = getRouteState(location.state);
   const [range, setRange] = useState<ChannelStatsRange>('7d');
   const [chartTab, setChartTab] = useState<ChartTab>('audience');
@@ -999,6 +1008,29 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
     range,
     initialPage: statsQuery.data?.activityFeed ?? EMPTY_ACTIVITY_PAGE,
     loadPage: (query) => getChannelActivityFeed(api, chatId, query),
+  });
+  const profileHandoffMutation = useMutation({
+    mutationFn: ({ userId, displayName }: { userId: string; displayName: string }) =>
+      handoffChannelMemberProfile(api, chatId, userId, { displayName }),
+    onSuccess: (result: BroadcastHandoffResponse) => {
+      if (openMaxBotLinkAndClose(result.botUrl)) {
+        return;
+      }
+
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось открыть бота',
+        description: 'Ссылка на handoff вернулась пустой.',
+      });
+    },
+    onError: (error: unknown) => {
+      const description = error instanceof Error ? error.message : 'Попробуйте ещё раз.';
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось открыть профиль',
+        description,
+      });
+    },
   });
 
   if (!chatId) {
@@ -1096,6 +1128,17 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
       : stats.channel.isPublic === false
         ? 'Канал приватный'
         : 'Нет данных';
+  const activateProfile = (userId: string, displayName: string) => {
+    const normalizedUserId = userId.trim();
+    if (!normalizedUserId || !chatId) {
+      return;
+    }
+
+    profileHandoffMutation.mutate({
+      userId: normalizedUserId,
+      displayName: displayName.trim() || 'Пользователь',
+    });
+  };
 
   return (
     <div className="channel-insights page-enter">
@@ -1255,6 +1298,9 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
           error={activityFeed.error}
           onLoadMore={() => void activityFeed.loadMore()}
           onRetry={() => void activityFeed.retry()}
+          onProfileActivate={(item: MembershipActivityItem) =>
+            activateProfile(item.userId, item.userDisplayName)
+          }
         />
 
         <div className="channel-insights__secondary-layout">

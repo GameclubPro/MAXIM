@@ -1782,6 +1782,12 @@ async function handleChatRequest(
     return createBroadcastHandoffResponse();
   }
 
+  if (tail[0] === 'members' && tail[1] && tail[2] === 'profile' && tail[3] === 'handoff') {
+    if (method === 'POST') {
+      return createBroadcastHandoffResponse();
+    }
+  }
+
   if (tail[0] === 'poll' && tail.length === 1) {
     if (method === 'GET') {
       return cloneJson(state.chatPoll);
@@ -2194,6 +2200,12 @@ async function handleChannelRequest(
       return buildBroadcastHandoffState(state.channelBroadcasts[0] ?? state.chatBroadcasts[0]);
     }
 
+    if (method === 'POST') {
+      return createBroadcastHandoffResponse();
+    }
+  }
+
+  if (tail[0] === 'members' && tail[1] && tail[2] === 'profile' && tail[3] === 'handoff') {
     if (method === 'POST') {
       return createBroadcastHandoffResponse();
     }

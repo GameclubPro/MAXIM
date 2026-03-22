@@ -458,6 +458,7 @@ function createHarness(
     sendCustomMessageImmediate: jest.fn().mockResolvedValue({ message_id: 'msg-custom-1' }),
     uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-1' }),
     answerCallback: jest.fn().mockResolvedValue(undefined),
+    getChatMemberProfiles: jest.fn().mockResolvedValue(new Map()),
   };
 
   let currentRules = overrides.rules ?? createRules();
@@ -473,6 +474,10 @@ function createHarness(
       return [...chats, ...channels];
     }),
     listChats: jest.fn().mockResolvedValue(chats),
+    getChatHeader: jest.fn().mockResolvedValue({ id: chats[0].id, title: chats[0].title }),
+    getChannelHeader: jest
+      .fn()
+      .mockResolvedValue({ id: channels[0].id, title: channels[0].title }),
     getSettings: jest.fn().mockResolvedValue(overrides.settings ?? defaultSettings),
     updateSettings: jest.fn().mockResolvedValue(overrides.settings ?? defaultSettings),
     applySettingsToAllChats: jest.fn().mockResolvedValue({
@@ -1637,6 +1642,84 @@ describe('PrivateControlService', () => {
     expect(buttonTexts).toEqual(['Отмена', 'Вернуться в приложение']);
     expect(buttonTexts).not.toContain('Открыть приложение');
     expect(buttonTexts).not.toContain('Поддержка');
+  });
+
+  it('hands off chat member profile from miniapp and sends a markdown mention in private chat', async () => {
+    const { service, maxClient, adminService, chats } = createHarness();
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: chats[0].id,
+      chatTitle: chats[0].title,
+    };
+    maxClient.getChatMemberProfiles.mockResolvedValue(
+      new Map([['user-42', { displayName: 'Юлия Максимова' }]]),
+    );
+
+    const result = await service.handoffProfileMentionFromMiniapp(
+      chats[0].id,
+      actor,
+      'user-42',
+      {
+        displayName: 'Юлия',
+      },
+      'chat',
+    );
+
+    expect(adminService.getChatHeader).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+    );
+    expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith(chats[0].id, ['user-42']);
+    expect(result.botUrl).toContain('https://max.ru/777000_bot?start=');
+
+    await service.handleBotStarted(
+      createBotStartedPrivateUpdate(extractStartPayload(result.botUrl)),
+    );
+
+    expect(getLastSentText(maxClient)).toContain('Профиль пользователя');
+    expect(getLastSentText(maxClient)).toContain('Юлия Максимова');
+    expect(getLastSentText(maxClient)).toContain('max://user/user-42');
+    expect(getLastSendOptions(maxClient)).toEqual(
+      expect.objectContaining({
+        textFormat: 'markdown',
+      }),
+    );
+  });
+
+  it('falls back to the provided profile name when MAX member profile lookup is empty', async () => {
+    const { service, maxClient, adminService, channels } = createHarness();
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: channels[0].id,
+      chatTitle: channels[0].title,
+    };
+
+    const result = await service.handoffProfileMentionFromMiniapp(
+      channels[0].id,
+      actor,
+      'user-99',
+      {
+        displayName: 'Без username',
+      },
+      'channel',
+    );
+
+    expect(adminService.getChannelHeader).toHaveBeenCalledWith(
+      channels[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+    );
+    expect(result.botUrl).toContain('https://max.ru/777000_bot?start=');
+
+    await service.handleBotStarted(
+      createBotStartedPrivateUpdate(extractStartPayload(result.botUrl)),
+    );
+
+    expect(getLastSentText(maxClient)).toContain('Без username');
+    expect(getLastSentText(maxClient)).toContain('max://user/user-99');
   });
 
   it('proactively delivers giveaway handoff into a known private chat and skips duplicate bot_started reply', async () => {

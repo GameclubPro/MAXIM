@@ -5,12 +5,16 @@ import {
   manualModerationActionResultSchema,
   membershipActivityPageSchema,
   membershipActivityQuerySchema,
+  profileMentionHandoffRequestSchema,
+  broadcastHandoffResponseSchema,
   type LogsDashboardRange,
   type LogsDashboardResponse,
   type ManualModerationActionRequest,
   type ManualModerationActionResult,
   type MembershipActivityPage,
   type MembershipActivityQuery,
+  type BroadcastHandoffResponse,
+  type ProfileMentionHandoffRequest,
 } from '@maxim/contracts';
 import type { ApiTransport } from './transport';
 
@@ -63,4 +67,21 @@ export async function applyManualModerationAction(
     },
   );
   return manualModerationActionResultSchema.parse(response);
+}
+
+export async function handoffChatMemberProfile(
+  api: ApiTransport,
+  chatId: string,
+  userId: string,
+  payload: ProfileMentionHandoffRequest,
+): Promise<BroadcastHandoffResponse> {
+  const requestBody = profileMentionHandoffRequestSchema.parse(payload);
+  const response = await api.request(
+    `/chats/${chatId}/members/${encodeURIComponent(userId)}/profile/handoff`,
+    {
+      method: 'POST',
+      body: JSON.stringify(requestBody),
+    },
+  );
+  return broadcastHandoffResponseSchema.parse(response);
 }
