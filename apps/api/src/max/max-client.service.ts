@@ -305,7 +305,7 @@ export class MaxClientService implements OnModuleDestroy {
     );
   }
 
-  async sendMessageImmediateWithResolvedLink(
+  async sendMessageImmediateWithId(
     chatId: string,
     text: string,
     options?: MaxSendMessageOptions,
@@ -331,7 +331,18 @@ export class MaxClientService implements OnModuleDestroy {
       throw new Error('MAX send response is missing message id');
     }
 
-    const directUrl = this.parseChatLink(sendResponse);
+    return {
+      messageId,
+      url: this.parseChatLink(sendResponse),
+    };
+  }
+
+  async sendMessageImmediateWithResolvedLink(
+    chatId: string,
+    text: string,
+    options?: MaxSendMessageOptions,
+  ): Promise<MaxPublishedMessage> {
+    const { messageId, url: directUrl } = await this.sendMessageImmediateWithId(chatId, text, options);
     if (directUrl) {
       return { messageId, url: directUrl };
     }

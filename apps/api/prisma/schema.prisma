@@ -537,6 +537,7 @@ model ManagedBroadcastDelivery {
   targetChatId    String                        @map("target_chat_id")
   status          ManagedBroadcastDeliveryStatus @default(PENDING)
   attemptCount    Int                           @default(0) @map("attempt_count")
+  remoteMessageId String?                       @map("remote_message_id")
   lastError       String?                       @map("last_error")
   sentAt          DateTime?                     @map("sent_at")
   lockedAt        DateTime?                     @map("locked_at")
