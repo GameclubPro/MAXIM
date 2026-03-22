@@ -109,6 +109,31 @@ const scenarios = [
     },
   },
   {
+    name: 'chat-settings-giveaway-channels-modal',
+    path: '/chat/preview-chat/settings',
+    searchParams: {
+      focus: 'giveaway',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(650);
+      const editButton = page.locator('.managed-giveaway').getByRole('button', {
+        name: /(?:Редактировать|Продолжить сценарий|Продолжить)/u,
+      });
+      if ((await editButton.count()) > 0) {
+        await editButton.first().click();
+        await page.waitForTimeout(350);
+      }
+      await page.getByRole('button', { name: /(?:Далее: условия|К условиям)/u }).click();
+      await page.waitForTimeout(250);
+      await page
+        .getByRole('button', {
+          name: /(?:Открыть список|Добавить свой канал|Выбрано)/u,
+        })
+        .click();
+      await page.waitForTimeout(450);
+    },
+  },
+  {
     name: 'chat-settings-giveaway-publish-step',
     path: '/chat/preview-chat/settings',
     searchParams: {

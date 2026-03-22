@@ -9,6 +9,7 @@ import {
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { getChannels } from '../lib/api/root-client';
 import {
   cancelManagedGiveaway,
@@ -49,7 +50,6 @@ type GiveawayHintKey =
   | 'conditionsLink'
   | 'prizes';
 type GiveawayValidationResult = { valid: boolean; message: string };
-type SummaryMetric = { key: string; label: string; value: string; note: string };
 
 type GiveawayEditorDraft = {
   title: string;
@@ -70,25 +70,21 @@ const GIVEAWAY_EDITOR_STEPS = [
     id: 'basics',
     label: 'Основа',
     title: 'Название и сроки',
-    description: 'Название и тайминг.',
   },
   {
     id: 'conditions',
     label: 'Условия',
     title: 'Кто участвует',
-    description: 'Источник и каналы.',
   },
   {
     id: 'prizes',
     label: 'Призы',
     title: 'Сколько мест и что получат',
-    description: 'Места и призы.',
   },
 ] as const satisfies ReadonlyArray<{
   id: GiveawayEditorStepId;
   label: string;
   title: string;
-  description: string;
 }>;
 
 function GiveawayHintAnchor({
@@ -207,23 +203,6 @@ function formatDateTime(value: string | null, fallback = 'не задано'): s
     hour: '2-digit',
     minute: '2-digit',
   });
-}
-
-function formatCompactDate(value: string): string {
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return value;
-  }
-
-  return parsed.toLocaleDateString('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    year: '2-digit',
-  });
-}
-
-function formatCount(value: number): string {
-  return new Intl.NumberFormat('ru-RU').format(value);
 }
 
 function formatDateTimeInputValue(date: Date): string {
@@ -502,39 +481,6 @@ function validateDraft(draft: GiveawayEditorDraft): GiveawayValidationResult {
   return validateMediaDraft(draft);
 }
 
-function buildDraftTitleSummary(title: string): string {
-  const trimmed = title.trim();
-  return trimmed || 'Без названия';
-}
-
-function buildBasicsSummary(draft: GiveawayEditorDraft): string {
-  return `${buildDraftTitleSummary(draft.title)} • ${formatCompactInputDateTime(draft.endsAtLocal, 'без финиша')}`;
-}
-
-function buildConditionsSummary(
-  draft: GiveawayEditorDraft,
-  selectedRequiredChannels: Array<{ id: string; title: string }>,
-): string {
-  if (draft.requiredChannelIds.length === 0) {
-    return 'Только источник';
-  }
-
-  if (draft.requiredChannelIds.length === 1) {
-    const onlyChannel = selectedRequiredChannels[0]?.title?.trim() || '1 доп. канал';
-    return `Источник + ${onlyChannel}`;
-  }
-
-  return `Источник + ${draft.requiredChannelIds.length} канала`;
-}
-
-function buildPrizesSummary(draft: GiveawayEditorDraft): string {
-  if (draft.prizes.length === 1) {
-    return draft.prizes[0]?.trim() || '1 место';
-  }
-
-  return `${draft.prizes.length} места`;
-}
-
 function toUpdatePayload(draft: GiveawayEditorDraft): UpdateManagedGiveawayPayload {
   const startsAtDate = draft.startsAtLocal.trim() ? parseDateTimeInput(draft.startsAtLocal) : null;
   const endsAtDate = parseDateTimeInput(draft.endsAtLocal);
@@ -631,7 +577,8 @@ export function ManagedGiveawayCard({
   const [validationHint, setValidationHint] = useState('');
   const [editorStep, setEditorStep] = useState<GiveawayEditorStepId>('basics');
   const [openHintKey, setOpenHintKey] = useState<GiveawayHintKey | null>(null);
-  const [channelPickerOpen, setChannelPickerOpen] = useState(false);
+  const [channelModalOpen, setChannelModalOpen] = useState(false);
+  const [channelModalSelection, setChannelModalSelection] = useState<string[]>([]);
   const [channelLinkValue, setChannelLinkValue] = useState('');
   const [awaitingBotSync, setAwaitingBotSync] = useState(false);
 
@@ -728,6 +675,17 @@ export function ManagedGiveawayCard({
   }, [editorMode, editorStep]);
 
   useEffect(() => {
+    if (editorMode !== 'edit' && editorMode !== 'create') {
+      setChannelModalOpen(false);
+      return;
+    }
+
+    if (editorStep !== 'conditions') {
+      setChannelModalOpen(false);
+    }
+  }, [editorMode, editorStep]);
+
+  useEffect(() => {
     if (!openHintKey || typeof document === 'undefined') {
       return undefined;
     }
@@ -761,6 +719,23 @@ export function ManagedGiveawayCard({
   }, [openHintKey]);
 
   useHintPopoverAutoPosition(openHintKey !== null);
+
+  useEffect(() => {
+    if (!channelModalOpen || typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setChannelModalOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [channelModalOpen]);
 
   const toggleHint = (hintKey: GiveawayHintKey) => {
     setOpenHintKey((current) => (current === hintKey ? null : hintKey));
@@ -837,13 +812,19 @@ export function ManagedGiveawayCard({
     });
   }, [channelById, draft]);
 
-  const availableOwnedChannels = useMemo(() => {
+  const ownedSelectableChannels = useMemo(
+    () => ownedChannels.filter((channel) => channel.id !== entityId),
+    [entityId, ownedChannels],
+  );
+
+  const selectedOwnedChannelIds = useMemo(() => {
     if (!draft) {
       return [];
     }
+
     const selected = new Set(draft.requiredChannelIds);
-    return ownedChannels.filter((channel) => channel.id !== entityId && !selected.has(channel.id));
-  }, [draft, entityId, ownedChannels]);
+    return ownedSelectableChannels.filter((channel) => selected.has(channel.id)).map((channel) => channel.id);
+  }, [draft, ownedSelectableChannels]);
 
   const editorSteps = useMemo(
     () =>
@@ -851,32 +832,21 @@ export function ManagedGiveawayCard({
         if (step.id === 'basics') {
           return {
             ...step,
-            summary: draft ? buildBasicsSummary(draft) : 'Название и сроки',
             isComplete: basicsValidation.valid,
           };
         }
         if (step.id === 'conditions') {
           return {
             ...step,
-            summary: draft
-              ? buildConditionsSummary(draft, selectedRequiredChannels)
-              : 'Источник и каналы',
             isComplete: conditionsValidation.valid,
           };
         }
         return {
           ...step,
-          summary: draft ? buildPrizesSummary(draft) : 'Места и призы',
           isComplete: prizesValidation.valid,
         };
       }),
-    [
-      basicsValidation.valid,
-      conditionsValidation.valid,
-      draft,
-      prizesValidation.valid,
-      selectedRequiredChannels,
-    ],
+    [basicsValidation.valid, conditionsValidation.valid, prizesValidation.valid],
   );
   const activeEditorStepIndex = Math.max(
     0,
@@ -948,7 +918,8 @@ export function ManagedGiveawayCard({
     setEditorError('');
     setValidationHint('');
     setEditorStep('basics');
-    setChannelPickerOpen(false);
+    setChannelModalOpen(false);
+    setChannelModalSelection([]);
     setChannelLinkValue('');
     setAwaitingBotSync(false);
   };
@@ -961,7 +932,8 @@ export function ManagedGiveawayCard({
     setSavedSnapshot(nextDraft);
     setEditorError('');
     setValidationHint('');
-    setChannelPickerOpen(false);
+    setChannelModalOpen(false);
+    setChannelModalSelection([]);
     setChannelLinkValue('');
   };
 
@@ -974,7 +946,8 @@ export function ManagedGiveawayCard({
     setEditorError('');
     setValidationHint('');
     setEditorStep('basics');
-    setChannelPickerOpen(false);
+    setChannelModalOpen(false);
+    setChannelModalSelection([]);
     setChannelLinkValue('');
     setAwaitingBotSync(false);
   };
@@ -988,7 +961,8 @@ export function ManagedGiveawayCard({
     setEditorError('');
     setValidationHint('');
     setEditorStep('basics');
-    setChannelPickerOpen(false);
+    setChannelModalOpen(false);
+    setChannelModalSelection([]);
     setChannelLinkValue('');
     setAwaitingBotSync(false);
   };
@@ -1098,6 +1072,40 @@ export function ManagedGiveawayCard({
       ...current,
       claimHours: hours,
     }));
+  };
+
+  const openOwnedChannelsModal = () => {
+    setChannelModalSelection(selectedOwnedChannelIds);
+    setChannelModalOpen(true);
+    setValidationHint('');
+    setEditorError('');
+  };
+
+  const applyOwnedChannelsSelection = () => {
+    const nextSelection = new Set(channelModalSelection);
+    const ownedChannelIds = new Set(ownedSelectableChannels.map((channel) => channel.id));
+
+    setDraft((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const externalRequiredChannelIds = current.requiredChannelIds.filter(
+        (channelId) => !ownedChannelIds.has(channelId),
+      );
+      const nextOwnedChannelIds = ownedSelectableChannels
+        .map((channel) => channel.id)
+        .filter((channelId) => nextSelection.has(channelId));
+
+      return {
+        ...current,
+        requiredChannelIds: [...externalRequiredChannelIds, ...nextOwnedChannelIds],
+      };
+    });
+
+    setChannelModalOpen(false);
+    setValidationHint('');
+    setEditorError('');
   };
 
   const addRequiredChannelById = (channelId: string) => {
@@ -1504,92 +1512,8 @@ export function ManagedGiveawayCard({
         : currentStepValidation.message;
   const showStickyCopy =
     !currentStepValidation.valid || (editorStep === 'prizes' && !publicationTextReady);
-  const currentSummaryMetrics: SummaryMetric[] = currentItem
-    ? [
-        {
-          key: 'timing',
-          label: currentItem.status === 'SCHEDULED' ? 'Старт' : 'Финиш',
-          value: formatCompactDate(
-            currentItem.status === 'SCHEDULED'
-              ? (currentItem.startsAt ?? currentItem.endsAt)
-              : currentItem.endsAt,
-          ),
-          note: currentItem.status === 'SCHEDULED' ? 'По времени' : 'Автозавершение',
-        },
-        {
-          key: 'entries',
-          label: 'Заявки',
-          value: formatCount(currentItem.entriesCount),
-          note:
-            currentItem.pendingEntriesCount > 0
-              ? `${formatCount(currentItem.pendingEntriesCount)} ждут`
-              : 'Без очереди',
-        },
-      ]
-    : [];
-  const emptySummaryMetrics: SummaryMetric[] = [
-    {
-      key: 'steps',
-      label: 'Сценарий',
-      value: '3 шага',
-      note: 'Основа, условия, призы',
-    },
-    {
-      key: 'bot',
-      label: 'Контент',
-      value: 'Через бота',
-      note: 'Текст и фото добавляются в личке',
-    },
-    {
-      key: 'launch',
-      label: 'Итоги',
-      value: 'Авто',
-      note: 'Статусы и завершение обновляются автоматически',
-    },
-  ];
-  const draftSummaryMetrics: SummaryMetric[] = draft
-    ? [
-        {
-          key: 'finish',
-          label: 'Финиш',
-          value: formatCompactInputDateTime(draft.endsAtLocal, 'Не задан'),
-          note: draft.startsAtLocal.trim()
-            ? `Старт ${formatCompactInputDateTime(draft.startsAtLocal, 'по времени')}`
-            : 'Старт сразу',
-        },
-        {
-          key: 'channels',
-          label: 'Каналы',
-          value:
-            draft.requiredChannelIds.length === 0
-              ? 'Источник'
-              : `+${draft.requiredChannelIds.length}`,
-          note: buildConditionsSummary(draft, selectedRequiredChannels),
-        },
-        {
-          key: 'prizes',
-          label: 'Места',
-          value: String(draft.prizes.length),
-          note: buildPrizesSummary(draft),
-        },
-      ]
-    : [];
-  const renderMetaStrip = (metrics: SummaryMetric[]) =>
-    metrics.length > 0 ? (
-      <div
-        className={cn(
-          'managed-giveaway__meta-strip',
-          metrics.length === 2 && 'managed-giveaway__meta-strip--two',
-        )}
-      >
-        {metrics.map((item) => (
-          <div key={item.key} className="managed-giveaway__meta-pill" title={item.note}>
-            <span>{item.label}</span>
-            <strong>{item.value}</strong>
-          </div>
-        ))}
-      </div>
-    ) : null;
+  const canOpenOwnedChannelsModal =
+    !channelsQuery.isLoading && !channelsQuery.error && ownedSelectableChannels.length > 0;
   const handleStepPillClick = (stepId: GiveawayEditorStepId, stepIndex: number) => {
     if (stepIndex === activeEditorStepIndex) {
       return;
@@ -1623,7 +1547,6 @@ export function ManagedGiveawayCard({
               <span className="managed-giveaway__badge is-muted">Загрузка</span>
             </div>
           </div>
-          {renderMetaStrip(emptySummaryMetrics)}
         </div>
       );
     }
@@ -1647,8 +1570,6 @@ export function ManagedGiveawayCard({
               </span>
             </div>
           </div>
-
-          {renderMetaStrip(currentSummaryMetrics)}
 
           <div className="managed-giveaway__primary-actions">
             <button
@@ -1675,27 +1596,25 @@ export function ManagedGiveawayCard({
     }
 
     return (
-        <div className="managed-giveaway__surface managed-giveaway__surface--dashboard">
-          <div className="managed-giveaway__hero-head">
-            <div className="managed-giveaway__hero-copy">
-              <span className="managed-giveaway__eyebrow">Розыгрыши</span>
-              <h2>Соберите сценарий</h2>
-              <p>3 шага и финальный запуск через бота.</p>
-            </div>
-            <div className="managed-giveaway__hero-badges">
-              <GiveawayHintAnchor
-                hintKey="dashboard"
-                openHintKey={openHintKey}
-                onToggleHint={toggleHint}
-                label="Как устроен запуск розыгрыша"
-              >
-                Здесь настраиваются тайминг, условия и призы. Текст и фото публикации добавляются
-                в личке бота на финальном шаге.
-              </GiveawayHintAnchor>
-            </div>
+      <div className="managed-giveaway__surface managed-giveaway__surface--dashboard">
+        <div className="managed-giveaway__hero-head">
+          <div className="managed-giveaway__hero-copy">
+            <span className="managed-giveaway__eyebrow">Розыгрыши</span>
+            <h2>Соберите сценарий</h2>
+            <p>3 шага и финальный запуск через бота.</p>
           </div>
-
-          {renderMetaStrip(emptySummaryMetrics)}
+          <div className="managed-giveaway__hero-badges">
+            <GiveawayHintAnchor
+              hintKey="dashboard"
+              openHintKey={openHintKey}
+              onToggleHint={toggleHint}
+              label="Как устроен запуск розыгрыша"
+            >
+              Здесь настраиваются тайминг, условия и призы. Текст и фото публикации добавляются в
+              личке бота на финальном шаге.
+            </GiveawayHintAnchor>
+          </div>
+        </div>
 
         <div className="managed-giveaway__primary-actions">
           <button
@@ -1727,7 +1646,6 @@ export function ManagedGiveawayCard({
               </span>
             </div>
           </div>
-          {renderMetaStrip(emptySummaryMetrics)}
         </div>
       );
     }
@@ -1811,12 +1729,10 @@ export function ManagedGiveawayCard({
           ))}
         </div>
 
-        {renderMetaStrip(draftSummaryMetrics)}
-
         {editorStep === 'basics' ? (
           <div className="managed-giveaway__step-stage">
             <div className="managed-giveaway__section">
-              <div className="managed-giveaway__section-head">
+              <div className="managed-giveaway__title-row">
                 <div className="managed-giveaway__section-copy">
                   <strong>Как называется розыгрыш</strong>
                 </div>
@@ -1855,7 +1771,7 @@ export function ManagedGiveawayCard({
             </div>
 
             <div className="managed-giveaway__section">
-              <div className="managed-giveaway__section-head">
+              <div className="managed-giveaway__title-row">
                 <div className="managed-giveaway__section-copy">
                   <strong>Когда проходит</strong>
                 </div>
@@ -1873,7 +1789,7 @@ export function ManagedGiveawayCard({
               </div>
 
               <div className="managed-giveaway__subsection">
-                <div className="managed-giveaway__subsection-head">
+                <div className="managed-giveaway__subsection-row">
                   <div className="managed-giveaway__subsection-copy">
                     <strong>Старт</strong>
                   </div>
@@ -1950,7 +1866,7 @@ export function ManagedGiveawayCard({
               </div>
 
               <div className="managed-giveaway__subsection">
-                <div className="managed-giveaway__subsection-head">
+                <div className="managed-giveaway__subsection-row">
                   <div className="managed-giveaway__subsection-copy">
                     <strong>Финиш</strong>
                   </div>
@@ -2007,7 +1923,7 @@ export function ManagedGiveawayCard({
               </div>
 
               <div className="managed-giveaway__subsection">
-                <div className="managed-giveaway__subsection-head">
+                <div className="managed-giveaway__subsection-row">
                   <div className="managed-giveaway__subsection-copy">
                     <strong>Подтверждение приза</strong>
                   </div>
@@ -2068,7 +1984,7 @@ export function ManagedGiveawayCard({
         {editorStep === 'conditions' ? (
           <div className="managed-giveaway__step-stage">
             <div className="managed-giveaway__section managed-giveaway__section--conditions">
-              <div className="managed-giveaway__section-head">
+              <div className="managed-giveaway__title-row">
                 <div className="managed-giveaway__section-copy">
                   <strong>Кто участвует</strong>
                 </div>
@@ -2114,11 +2030,27 @@ export function ManagedGiveawayCard({
               ) : (
                 <div className="managed-giveaway__empty managed-giveaway__empty--soft">
                   <strong>Пока только источник</strong>
+                  {channelsQuery.isLoading ? <span>Загружаем ваши каналы…</span> : null}
+                  {!channelsQuery.isLoading && canOpenOwnedChannelsModal ? (
+                    <button
+                      type="button"
+                      className="button button--ghost managed-giveaway__empty-action"
+                      onClick={openOwnedChannelsModal}
+                      disabled={isBusy}
+                    >
+                      Добавить свой канал
+                    </button>
+                  ) : null}
+                  {!channelsQuery.isLoading &&
+                  !channelsQuery.error &&
+                  ownedSelectableChannels.length === 0 ? (
+                    <span>Нет доступных каналов, где бот уже администратор.</span>
+                  ) : null}
                 </div>
               )}
 
               <div className="managed-giveaway__subsection">
-                <div className="managed-giveaway__section-head">
+                <div className="managed-giveaway__subsection-row">
                   <div className="managed-giveaway__subsection-copy">
                     <strong>Свой канал</strong>
                   </div>
@@ -2135,41 +2067,19 @@ export function ManagedGiveawayCard({
                     <button
                       type="button"
                       className="button button--ghost managed-giveaway__channel-action"
-                      disabled={isBusy || channelsQuery.isLoading}
-                      onClick={() => setChannelPickerOpen((current) => !current)}
+                      disabled={isBusy || !canOpenOwnedChannelsModal}
+                      onClick={openOwnedChannelsModal}
                     >
-                      {channelPickerOpen
-                        ? 'Свернуть'
-                        : `Свой канал${availableOwnedChannels.length > 0 ? ` · ${availableOwnedChannels.length}` : ''}`}
+                      {selectedOwnedChannelIds.length > 0
+                        ? `Выбрано · ${selectedOwnedChannelIds.length}`
+                        : 'Открыть список'}
                     </button>
                   </div>
                 </div>
-
-                {channelPickerOpen ? (
-                  <div className="managed-giveaway__channel-picker">
-                    {channelsQuery.isLoading ? <span>Загружаем ваши каналы...</span> : null}
-                    {!channelsQuery.isLoading && availableOwnedChannels.length === 0 ? (
-                      <span>Нет доступных каналов для добавления.</span>
-                    ) : null}
-                    {!channelsQuery.isLoading
-                      ? availableOwnedChannels.map((channel) => (
-                          <button
-                            key={`channel-pick-${channel.id}`}
-                            type="button"
-                            className="managed-giveaway__channel-picker-item"
-                            disabled={isBusy}
-                            onClick={() => addRequiredChannelById(channel.id)}
-                          >
-                            {channel.title}
-                          </button>
-                        ))
-                      : null}
-                  </div>
-                ) : null}
               </div>
 
               <div className="managed-giveaway__subsection">
-                <div className="managed-giveaway__subsection-head">
+                <div className="managed-giveaway__subsection-row">
                   <div className="managed-giveaway__subsection-copy">
                     <strong>Чужой канал</strong>
                   </div>
@@ -2225,7 +2135,7 @@ export function ManagedGiveawayCard({
         {editorStep === 'prizes' ? (
           <div className="managed-giveaway__step-stage">
             <div className="managed-giveaway__section">
-              <div className="managed-giveaway__section-head">
+              <div className="managed-giveaway__title-row">
                 <div className="managed-giveaway__section-copy">
                   <strong>Что получают победители</strong>
                 </div>
@@ -2366,6 +2276,125 @@ export function ManagedGiveawayCard({
     );
   };
 
+  const renderOwnedChannelsModal = () => {
+    if (
+      typeof document === 'undefined' ||
+      !channelModalOpen ||
+      editorStep !== 'conditions' ||
+      !draft
+    ) {
+      return null;
+    }
+
+    return createPortal(
+      <div className="managed-giveaway-modal" aria-hidden={!channelModalOpen}>
+        <button
+          type="button"
+          className="managed-giveaway-modal__backdrop"
+          aria-label="Закрыть выбор каналов"
+          onClick={() => setChannelModalOpen(false)}
+        />
+
+        <section
+          className="managed-giveaway-modal__panel"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="managed-giveaway-modal-title"
+        >
+          <div className="managed-giveaway-modal__grabber" aria-hidden />
+
+          <div className="managed-giveaway-modal__sheet">
+            <div className="managed-giveaway-modal__head">
+              <div>
+                <strong id="managed-giveaway-modal-title">Добавьте свои каналы</strong>
+                <small>Отметьте каналы, которые станут дополнительным условием участия.</small>
+              </div>
+              <span className="managed-giveaway__badge is-muted">
+                {channelModalSelection.length}/{ownedSelectableChannels.length}
+              </span>
+            </div>
+
+            {channelsQuery.isLoading ? (
+              <div className="managed-giveaway__empty managed-giveaway__empty--soft">
+                <strong>Загружаем каналы</strong>
+              </div>
+            ) : null}
+
+            {!channelsQuery.isLoading && channelsQuery.error ? (
+              <div className="managed-giveaway__error-inline">
+                {formatApiError(channelsQuery.error, 'Не удалось загрузить список каналов.')}
+              </div>
+            ) : null}
+
+            {!channelsQuery.isLoading &&
+            !channelsQuery.error &&
+            ownedSelectableChannels.length === 0 ? (
+              <div className="managed-giveaway__empty managed-giveaway__empty--soft">
+                <strong>Нет доступных каналов</strong>
+                <span>Бот должен быть администратором канала, чтобы включить его в проверку.</span>
+              </div>
+            ) : null}
+
+            {!channelsQuery.isLoading && !channelsQuery.error && ownedSelectableChannels.length > 0 ? (
+              <div className="managed-giveaway-modal__list" aria-label="Список своих каналов">
+                {ownedSelectableChannels.map((channel) => {
+                  const checked = channelModalSelection.includes(channel.id);
+
+                  return (
+                    <label
+                      key={`owned-channel-option-${channel.id}`}
+                      className={cn('managed-giveaway-modal__option', checked && 'is-selected')}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          setChannelModalSelection((current) =>
+                            current.includes(channel.id)
+                              ? current.filter((item) => item !== channel.id)
+                              : [...current, channel.id],
+                          );
+                        }}
+                        disabled={isBusy}
+                      />
+                      <span className="managed-giveaway-modal__checkbox" aria-hidden>
+                        {checked ? '✓' : ''}
+                      </span>
+                      <span className="managed-giveaway-modal__option-copy">
+                        <strong>{channel.title}</strong>
+                        {channel.link ? <small>{channel.link}</small> : null}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            ) : null}
+
+            <div className="managed-giveaway-modal__actions">
+              <button
+                type="button"
+                className="button button--ghost"
+                onClick={() => setChannelModalOpen(false)}
+                disabled={isBusy}
+              >
+                Отмена
+              </button>
+              <button
+                type="button"
+                className="button button--accent"
+                onClick={applyOwnedChannelsSelection}
+                disabled={isBusy}
+              >
+                Сохранить выбор
+              </button>
+            </div>
+          </div>
+        </section>
+      </div>,
+      document.body,
+    );
+  };
+
   return (
     <div
       className={cn(
@@ -2392,6 +2421,8 @@ export function ManagedGiveawayCard({
           </button>
         </div>
       ) : null}
+
+      {renderOwnedChannelsModal()}
     </div>
   );
 }

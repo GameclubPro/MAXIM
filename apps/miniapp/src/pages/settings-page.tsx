@@ -8495,7 +8495,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       </div>
 
                       <div className="managed-giveaway__section">
-                        <div className="managed-giveaway__section-head">
+                        <div className="managed-giveaway__title-row">
                           <div className="managed-giveaway__section-copy">
                             <strong>Каналы для проверки</strong>
                             <small>

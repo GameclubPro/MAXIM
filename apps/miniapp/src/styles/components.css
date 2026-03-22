@@ -7449,44 +7449,6 @@
   border-color: rgba(177, 93, 113, 0.14);
 }
 
-.managed-giveaway__meta-strip {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 7px;
-}
-
-.managed-giveaway__meta-strip--two {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.managed-giveaway__meta-pill {
-  display: grid;
-  gap: 2px;
-  min-width: 0;
-  min-height: 0;
-  padding: 9px 10px;
-  border-radius: 16px;
-  border: 1px solid rgba(85, 117, 147, 0.1);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(248, 251, 255, 0.9)),
-    rgba(255, 255, 255, 0.86);
-}
-
-.managed-giveaway__meta-pill span {
-  color: #69839a;
-  font-size: 0.58rem;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.managed-giveaway__meta-pill strong {
-  color: #10283f;
-  font-size: 0.88rem;
-  line-height: 1.08;
-  letter-spacing: -0.025em;
-}
-
 .managed-giveaway__step-strip {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -7620,6 +7582,13 @@
   gap: 8px;
 }
 
+.managed-giveaway__quick-actions .managed-giveaway__chip-button {
+  min-width: 72px;
+  max-width: 72px;
+  justify-content: center;
+  padding-inline: 10px;
+}
+
 .managed-giveaway__chip-button {
   min-height: 34px;
   border-radius: 999px;
@@ -7635,21 +7604,6 @@
   border-color: rgba(11, 132, 255, 0.24);
   background: rgba(231, 243, 255, 0.94);
   color: #0b66b6;
-}
-
-.managed-giveaway__inline-note {
-  display: grid;
-  gap: 5px;
-  padding: 14px;
-  border-radius: 18px;
-  border: 1px solid rgba(89, 117, 145, 0.1);
-  background:
-    linear-gradient(180deg, rgba(251, 253, 255, 0.98), rgba(246, 249, 253, 0.95)),
-    rgba(248, 250, 253, 0.96);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84);
-  color: var(--text-primary);
-  font-size: 0.8rem;
-  line-height: 1.34;
 }
 
 .managed-giveaway__primary-actions {
@@ -7670,8 +7624,8 @@
   box-shadow: 0 16px 28px rgba(11, 132, 255, 0.22);
 }
 
-.managed-giveaway__section-head,
-.managed-giveaway__subsection-head,
+.managed-giveaway__title-row,
+.managed-giveaway__subsection-row,
 .managed-giveaway__section-actions,
 .giveaway-page__panel-head,
 .giveaway-page__section-head {
@@ -7880,7 +7834,9 @@
 .managed-giveaway__count-stepper-value {
   display: grid;
   gap: 2px;
-  align-content: center;
+  place-content: center;
+  justify-items: center;
+  text-align: center;
   padding: 0 12px;
   border-radius: 14px;
   border: 1px solid rgba(89, 117, 145, 0.1);
@@ -7897,7 +7853,7 @@
 
 .managed-giveaway__count-stepper-value strong {
   color: var(--text-primary);
-  font-size: 0.98rem;
+  font-size: 1.18rem;
   line-height: 1;
 }
 
@@ -8233,10 +8189,192 @@
   line-height: 1.3;
 }
 
+.managed-giveaway__empty span {
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+.managed-giveaway__empty-action {
+  min-height: 40px;
+  width: 100%;
+  border-radius: 14px;
+}
+
 .managed-giveaway__empty--soft {
   border-style: solid;
   border-color: rgba(89, 117, 145, 0.1);
   background: rgba(247, 249, 252, 0.96);
+}
+
+.managed-giveaway-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 140;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  padding: 12px 8px calc(12px + env(safe-area-inset-bottom, 0px));
+}
+
+.managed-giveaway-modal__backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  background: rgba(8, 18, 30, 0.28);
+}
+
+.managed-giveaway-modal__panel {
+  position: relative;
+  z-index: 1;
+  width: min(100%, 720px);
+  max-width: 100%;
+}
+
+.managed-giveaway-modal__grabber {
+  width: 42px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(62, 96, 127, 0.22);
+  margin: 0 auto 10px;
+}
+
+.managed-giveaway-modal__sheet {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  max-height: min(78dvh, 760px);
+  overflow-y: auto;
+  border-radius: 28px;
+  border: 1px solid rgba(88, 118, 146, 0.16);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(242, 248, 255, 0.96)),
+    rgba(255, 255, 255, 0.98);
+  box-shadow:
+    0 24px 48px rgba(16, 38, 58, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.managed-giveaway-modal__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.managed-giveaway-modal__head > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.managed-giveaway-modal__head strong {
+  color: var(--text-primary);
+  font-size: 1rem;
+  line-height: 1.2;
+}
+
+.managed-giveaway-modal__head small {
+  color: var(--text-secondary);
+  font-size: 0.76rem;
+  line-height: 1.42;
+}
+
+.managed-giveaway-modal__list {
+  display: grid;
+  gap: 10px;
+}
+
+.managed-giveaway-modal__option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+  align-items: center;
+  padding: 14px;
+  border-radius: 20px;
+  border: 1px solid rgba(89, 117, 145, 0.12);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(245, 249, 253, 0.95)),
+    rgba(247, 249, 252, 0.96);
+  cursor: pointer;
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease,
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.managed-giveaway-modal__option input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.managed-giveaway-modal__option.is-selected {
+  border-color: rgba(11, 132, 255, 0.24);
+  background: rgba(232, 243, 255, 0.96);
+  box-shadow: 0 12px 22px rgba(22, 69, 109, 0.08);
+}
+
+.managed-giveaway-modal__checkbox {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(89, 117, 145, 0.16);
+  background: rgba(255, 255, 255, 0.96);
+  color: transparent;
+  font-size: 0.8rem;
+  font-weight: 800;
+  transition:
+    background-color 0.2s ease,
+    border-color 0.2s ease,
+    color 0.2s ease;
+}
+
+.managed-giveaway-modal__option.is-selected .managed-giveaway-modal__checkbox {
+  border-color: rgba(11, 132, 255, 0.28);
+  background: linear-gradient(145deg, #1593ff, #0a74e8);
+  color: #fff;
+}
+
+.managed-giveaway-modal__option-copy {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.managed-giveaway-modal__option-copy strong {
+  color: var(--text-primary);
+  font-size: 0.88rem;
+  line-height: 1.22;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.managed-giveaway-modal__option-copy small {
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.managed-giveaway-modal__actions {
+  display: grid;
+  grid-template-columns: minmax(108px, 0.42fr) minmax(0, 1fr);
+  gap: 10px;
+}
+
+.managed-giveaway-modal__actions .button {
+  min-height: 48px;
+  border-radius: 16px;
 }
 
 @media (max-width: 640px) {
@@ -8249,8 +8387,8 @@
     justify-content: flex-start;
   }
 
-  .managed-giveaway__section-head,
-  .managed-giveaway__subsection-head {
+  .managed-giveaway__title-row,
+  .managed-giveaway__subsection-row {
     align-items: center;
   }
 
@@ -8259,38 +8397,9 @@
     justify-content: flex-end;
   }
 
-  .managed-giveaway__meta-strip {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .managed-giveaway__surface--editor .managed-giveaway__meta-strip {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px;
-  }
-
   .managed-giveaway__surface {
     padding: 12px;
     gap: 10px;
-  }
-
-  .managed-giveaway__meta-pill {
-    padding: 10px;
-    border-radius: 16px;
-  }
-
-  .managed-giveaway__surface--editor .managed-giveaway__meta-pill {
-    gap: 2px;
-    padding: 9px;
-    border-radius: 16px;
-  }
-
-  .managed-giveaway__surface--editor .managed-giveaway__meta-pill span {
-    font-size: 0.56rem;
-    letter-spacing: 0.08em;
-  }
-
-  .managed-giveaway__surface--editor .managed-giveaway__meta-pill strong {
-    font-size: 0.88rem;
   }
 
   .managed-giveaway__choice-grid,
@@ -8318,6 +8427,20 @@
 
   .managed-giveaway__section-actions--align-end {
     justify-content: stretch;
+  }
+
+  .managed-giveaway-modal__sheet {
+    padding: 14px;
+    border-radius: 24px;
+  }
+
+  .managed-giveaway-modal__actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .managed-giveaway-modal__option {
+    padding: 12px;
+    border-radius: 18px;
   }
 }
 
