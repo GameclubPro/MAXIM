@@ -5,6 +5,7 @@ import type {
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  Fragment,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -14,6 +15,7 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
+  type UIEvent as ReactUIEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
@@ -61,6 +63,9 @@ const COMMENT_REACTION_OPTIONS = [
 
 const COMMENT_REACTION_PRIMARY_OPTIONS = COMMENT_REACTION_OPTIONS.slice(0, 6);
 const COMMENT_REACTION_EXPANDED_OPTIONS = COMMENT_REACTION_OPTIONS.slice(6);
+const COMMENTS_NEAR_BOTTOM_THRESHOLD = 72;
+const COMMENTS_STICK_TO_BOTTOM_THRESHOLD = 160;
+const SOURCE_HIGHLIGHT_DURATION_MS = 1_500;
 const SWIPE_REPLY_ACTIVATION_DISTANCE = 14;
 const SWIPE_REPLY_TRIGGER_DISTANCE = 54;
 const SWIPE_REPLY_MAX_OFFSET = 78;
@@ -156,6 +161,31 @@ function buildSwipeReplyStyle(preview: SwipeReplyPreview | null, messageId: stri
     '--channel-dialog-swipe-offset': `${preview.offset}px`,
     '--channel-dialog-swipe-progress': `${preview.progress}`,
   } as CSSProperties;
+}
+
+function getViewportDistanceToBottom(viewport: HTMLElement): number {
+  return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
+}
+
+function resolveNextUnreadMessageId(
+  messages: ChannelDialogMessage[],
+  previousLastMessageId: string | null,
+  currentLastMessageId: string | null,
+): string | null {
+  if (!messages.length) {
+    return null;
+  }
+
+  if (!previousLastMessageId) {
+    return currentLastMessageId ?? messages[messages.length - 1]?.id ?? null;
+  }
+
+  const previousMessageIndex = messages.findIndex((message) => message.id === previousLastMessageId);
+  if (previousMessageIndex < 0) {
+    return currentLastMessageId ?? messages[messages.length - 1]?.id ?? null;
+  }
+
+  return messages[previousMessageIndex + 1]?.id ?? currentLastMessageId ?? null;
 }
 
 function isGroupedWithPrevious(messages: ChannelDialogMessage[], index: number): boolean {
@@ -468,6 +498,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const [replyToMessageId, setReplyToMessageId] = useState<string | null>(null);
   const [isReactionPickerExpanded, setIsReactionPickerExpanded] = useState(false);
   const [isBodyScrolled, setIsBodyScrolled] = useState(false);
+  const [isNearBottom, setIsNearBottom] = useState(true);
+  const [firstUnreadMessageId, setFirstUnreadMessageId] = useState<string | null>(null);
+  const [highlightedMessageId, setHighlightedMessageId] = useState<string | null>(null);
   const [swipeReplyPreview, setSwipeReplyPreview] = useState<SwipeReplyPreview | null>(null);
   const [reactionPopoverLayout, setReactionPopoverLayout] = useState<ReactionPopoverLayout | null>(
     null,
@@ -477,6 +510,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const scrollViewportRef = useRef<HTMLElement | null>(null);
   const reactionPopoverRef = useRef<HTMLDivElement | null>(null);
   const lastMessageIdRef = useRef<string | null>(null);
+  const highlightTimerRef = useRef<number | null>(null);
   const pressTimerRef = useRef<number | null>(null);
   const pressPointRef = useRef<{ x: number; y: number } | null>(null);
   const swipeReplyGestureRef = useRef<SwipeReplyGesture | null>(null);
@@ -517,6 +551,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   const messages = dialogQuery.data?.messages ?? [];
   const introText = dialogQuery.data?.introText?.trim() ?? '';
+  const messageIdSet = useMemo(() => new Set(messages.map((message) => message.id)), [messages]);
   const activeMessage = useMemo(
     () => messages.find((message) => message.id === activeMessageId) ?? null,
     [activeMessageId, messages],
@@ -530,6 +565,15 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const activeMessageIsOwn = activeMessage
     ? meQuery.data?.userId === activeMessage.authorUserId
     : false;
+  const unreadStartIndex = useMemo(
+    () =>
+      firstUnreadMessageId
+        ? messages.findIndex((message) => message.id === firstUnreadMessageId)
+        : -1,
+    [firstUnreadMessageId, messages],
+  );
+  const unreadCount = unreadStartIndex >= 0 ? messages.length - unreadStartIndex : 0;
+  const showJumpToLatest = dialogType === 'comments' && unreadCount > 0 && !isNearBottom;
 
   const clearMessagePress = () => {
     if (pressTimerRef.current !== null && typeof window !== 'undefined') {
@@ -542,6 +586,31 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const clearSwipeReplyGesture = () => {
     swipeReplyGestureRef.current = null;
     setSwipeReplyPreview(null);
+  };
+
+  const clearSourceHighlight = () => {
+    if (highlightTimerRef.current !== null && typeof window !== 'undefined') {
+      window.clearTimeout(highlightTimerRef.current);
+    }
+    highlightTimerRef.current = null;
+    setHighlightedMessageId(null);
+  };
+
+  const flashSourceHighlight = (messageId: string) => {
+    if (typeof window === 'undefined') {
+      setHighlightedMessageId(messageId);
+      return;
+    }
+
+    if (highlightTimerRef.current !== null) {
+      window.clearTimeout(highlightTimerRef.current);
+    }
+
+    setHighlightedMessageId(messageId);
+    highlightTimerRef.current = window.setTimeout(() => {
+      highlightTimerRef.current = null;
+      setHighlightedMessageId((current) => (current === messageId ? null : current));
+    }, SOURCE_HIGHLIGHT_DURATION_MS);
   };
 
   const dismissMessageActions = () => {
@@ -569,6 +638,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   useEffect(
     () => () => {
+      if (highlightTimerRef.current !== null && typeof window !== 'undefined') {
+        window.clearTimeout(highlightTimerRef.current);
+      }
+      highlightTimerRef.current = null;
       if (pressTimerRef.current !== null && typeof window !== 'undefined') {
         window.clearTimeout(pressTimerRef.current);
       }
@@ -646,24 +719,40 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     const lastMessageId = messages[messages.length - 1]?.id ?? null;
     if (!viewport || !lastMessageId) {
       lastMessageIdRef.current = lastMessageId;
+      setIsNearBottom(true);
       return;
     }
 
     const previousMessageId = lastMessageIdRef.current;
-    const distanceToBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
-    const shouldStickToBottom = previousMessageId === null || distanceToBottom < 160;
+    const distanceToBottom = getViewportDistanceToBottom(viewport);
+    const nearBottom = distanceToBottom < COMMENTS_NEAR_BOTTOM_THRESHOLD;
+    const shouldStickToBottom =
+      previousMessageId === null || distanceToBottom < COMMENTS_STICK_TO_BOTTOM_THRESHOLD;
+    setIsNearBottom(nearBottom);
 
-    if (previousMessageId !== lastMessageId && shouldStickToBottom) {
-      requestAnimationFrame(() => {
-        viewport.scrollTo({
-          top: viewport.scrollHeight,
-          behavior: previousMessageId ? 'smooth' : 'auto',
+    if (previousMessageId !== lastMessageId) {
+      if (shouldStickToBottom) {
+        setFirstUnreadMessageId(null);
+        requestAnimationFrame(() => {
+          viewport.scrollTo({
+            top: viewport.scrollHeight,
+            behavior: previousMessageId ? 'smooth' : 'auto',
+          });
         });
-      });
+      } else if (dialogType === 'comments') {
+        const nextUnreadMessageId = resolveNextUnreadMessageId(
+          messages,
+          previousMessageId,
+          lastMessageId,
+        );
+        if (nextUnreadMessageId) {
+          setFirstUnreadMessageId((current) => current ?? nextUnreadMessageId);
+        }
+      }
     }
 
     lastMessageIdRef.current = lastMessageId;
-  }, [messages]);
+  }, [dialogType, messages]);
 
   useEffect(() => {
     if (replyToMessageId && !messages.some((message) => message.id === replyToMessageId)) {
@@ -680,7 +769,23 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       swipeReplyGestureRef.current = null;
       setSwipeReplyPreview(null);
     }
-  }, [activeMessageId, messages, replyToMessageId, swipeReplyPreview]);
+
+    if (firstUnreadMessageId && !messageIdSet.has(firstUnreadMessageId)) {
+      setFirstUnreadMessageId(null);
+    }
+
+    if (highlightedMessageId && !messageIdSet.has(highlightedMessageId)) {
+      clearSourceHighlight();
+    }
+  }, [
+    activeMessageId,
+    firstUnreadMessageId,
+    highlightedMessageId,
+    messageIdSet,
+    messages,
+    replyToMessageId,
+    swipeReplyPreview,
+  ]);
 
   useEffect(() => {
     if (!activeMessageId || typeof document === 'undefined') {
@@ -909,6 +1014,20 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       setDraft('');
       setReplyToMessageId(null);
       dismissMessageActions();
+      if (dialogType === 'comments') {
+        requestAnimationFrame(() => {
+          const viewport = scrollViewportRef.current;
+          if (!viewport) {
+            return;
+          }
+          setFirstUnreadMessageId(null);
+          setIsNearBottom(true);
+          viewport.scrollTo({
+            top: viewport.scrollHeight,
+            behavior: 'smooth',
+          });
+        });
+      }
       void queryClient.invalidateQueries({
         queryKey: dialogQueryKey,
       });
@@ -1183,6 +1302,94 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     }
   };
 
+  const scrollToMessage = (
+    messageId: string,
+    options?: {
+      behavior?: ScrollBehavior;
+      highlight?: boolean;
+    },
+  ): boolean => {
+    const viewport = scrollViewportRef.current;
+    const targetMessage = messageNodeRefs.current.get(messageId);
+    if (!viewport || !targetMessage) {
+      return false;
+    }
+
+    const viewportRect = viewport.getBoundingClientRect();
+    const targetRect = targetMessage.getBoundingClientRect();
+    const composeSurface = screenRef.current?.querySelector<HTMLElement>('.channel-dialog-compose__surface');
+    const composeHeight = composeSurface?.getBoundingClientRect().height ?? 0;
+    const topInset = introText ? 72 : 18;
+    const bottomInset = composeHeight + 22;
+    const availableHeight = Math.max(140, viewport.clientHeight - topInset - bottomInset);
+    const desiredTop =
+      viewport.scrollTop +
+      (targetRect.top - viewportRect.top) -
+      topInset -
+      Math.max(0, (availableHeight - targetRect.height) / 2);
+    const nextTop = Math.max(0, Math.min(desiredTop, viewport.scrollHeight - viewport.clientHeight));
+
+    viewport.scrollTo({
+      top: nextTop,
+      behavior: options?.behavior ?? 'smooth',
+    });
+
+    if (options?.highlight !== false) {
+      flashSourceHighlight(messageId);
+    }
+
+    return true;
+  };
+
+  const handleBodyScroll = (event: ReactUIEvent<HTMLElement>) => {
+    const viewport = event.currentTarget;
+    setIsBodyScrolled(viewport.scrollTop > 18);
+
+    if (dialogType !== 'comments') {
+      return;
+    }
+
+    const nearBottom = getViewportDistanceToBottom(viewport) < COMMENTS_NEAR_BOTTOM_THRESHOLD;
+    setIsNearBottom(nearBottom);
+    if (nearBottom && firstUnreadMessageId) {
+      setFirstUnreadMessageId(null);
+    }
+  };
+
+  const handleJumpToLatest = () => {
+    const viewport = scrollViewportRef.current;
+    if (!viewport) {
+      return;
+    }
+
+    maxImpact('light');
+    dismissMessageActions();
+    setFirstUnreadMessageId(null);
+    setIsNearBottom(true);
+    viewport.scrollTo({
+      top: viewport.scrollHeight,
+      behavior: 'smooth',
+    });
+  };
+
+  const handleJumpToSource =
+    (messageId: string) => (event: ReactMouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      maxImpact('light');
+      dismissMessageActions();
+      scrollToMessage(messageId);
+    };
+
+  const handleComposeReplySourceJump = () => {
+    if (!replyTarget) {
+      return;
+    }
+
+    maxImpact('light');
+    scrollToMessage(replyTarget.id);
+  };
+
   const onSubmit = () => {
     const text = draft.trim();
     if (!text || sendMutation.isPending || !chatId || !token) {
@@ -1272,7 +1479,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
             'channel-dialog-body',
             dialogType === 'comments' && introText && 'has-floating-thread-context',
           )}
-          onScroll={(event) => setIsBodyScrolled(event.currentTarget.scrollTop > 18)}
+          onScroll={handleBodyScroll}
         >
           {dialogQuery.isLoading ? (
             <div className="channel-dialog-skeletons" aria-label="Загрузка">
@@ -1326,162 +1533,189 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   const groupedWithPrevious = isGroupedWithPrevious(messages, index);
                   const isActiveMessage = activeMessageId === message.id;
                   const messageWidthTone = resolveMessageWidthTone(message);
+                  const replySourceMessageId =
+                    message.replyTo?.messageId ?? message.replyToMessageId ?? null;
+                  const canJumpToReplySource = Boolean(
+                    replySourceMessageId && messageIdSet.has(replySourceMessageId),
+                  );
                   const isReactionPending =
                     reactionMutation.isPending &&
                     reactionMutation.variables?.messageId === message.id;
 
                   return (
-                    <article
-                      key={message.id}
-                      ref={(node) => {
-                        if (node) {
-                          messageNodeRefs.current.set(message.id, node);
-                          return;
-                        }
-                        messageNodeRefs.current.delete(message.id);
-                      }}
-                      className={cn(
-                        'channel-dialog-message',
-                        isOwnMessage && 'is-own',
-                        groupedWithPrevious && 'is-grouped',
-                      )}
-                    >
-                      {groupedWithPrevious ? (
-                        <span className="channel-dialog-message__avatar-spacer" aria-hidden />
-                      ) : (
-                        <DialogAvatar
-                          avatarUrl={message.avatarUrl}
-                          label={message.authorDisplayName || message.authorUserId}
-                        />
-                      )}
+                    <Fragment key={message.id}>
+                      {dialogType === 'comments' && unreadStartIndex === index ? (
+                        <div className="channel-dialog-new-comments" aria-label="Новые комментарии">
+                          <span>Новые комментарии</span>
+                        </div>
+                      ) : null}
 
-                      <div
+                      <article
+                        ref={(node) => {
+                          if (node) {
+                            messageNodeRefs.current.set(message.id, node);
+                            return;
+                          }
+                          messageNodeRefs.current.delete(message.id);
+                        }}
                         className={cn(
-                          'channel-dialog-message__content',
-                          dialogType === 'comments' && messageWidthTone,
-                          dialogType === 'comments' &&
-                            swipeReplyPreview?.messageId === message.id &&
-                            'is-swipe-active',
-                          dialogType === 'comments' &&
-                            swipeReplyPreview?.messageId === message.id &&
-                            swipeReplyPreview.armed &&
-                            'is-swipe-armed',
-                          isActiveMessage && 'is-context-open',
+                          'channel-dialog-message',
+                          isOwnMessage && 'is-own',
+                          groupedWithPrevious && 'is-grouped',
+                          highlightedMessageId === message.id && 'is-source-highlighted',
                         )}
-                        data-message-id={message.id}
-                        style={buildSwipeReplyStyle(swipeReplyPreview, message.id)}
                       >
-                        {dialogType === 'comments' ? (
-                          <div className="channel-dialog-message__swipe-indicator" aria-hidden>
-                            <span className="channel-dialog-message__swipe-indicator-icon">
-                              <ReplyArrowIcon />
-                            </span>
-                          </div>
-                        ) : null}
+                        {groupedWithPrevious ? (
+                          <span className="channel-dialog-message__avatar-spacer" aria-hidden />
+                        ) : (
+                          <DialogAvatar
+                            avatarUrl={message.avatarUrl}
+                            label={message.authorDisplayName || message.authorUserId}
+                          />
+                        )}
 
                         <div
                           className={cn(
-                            'channel-dialog-message__stack',
+                            'channel-dialog-message__content',
+                            dialogType === 'comments' && messageWidthTone,
                             dialogType === 'comments' &&
                               swipeReplyPreview?.messageId === message.id &&
                               'is-swipe-active',
+                            dialogType === 'comments' &&
+                              swipeReplyPreview?.messageId === message.id &&
+                              swipeReplyPreview.armed &&
+                              'is-swipe-armed',
+                            isActiveMessage && 'is-context-open',
                           )}
+                          data-message-id={message.id}
+                          style={buildSwipeReplyStyle(swipeReplyPreview, message.id)}
                         >
+                          {dialogType === 'comments' ? (
+                            <div className="channel-dialog-message__swipe-indicator" aria-hidden>
+                              <span className="channel-dialog-message__swipe-indicator-icon">
+                                <ReplyArrowIcon />
+                              </span>
+                            </div>
+                          ) : null}
+
                           <div
                             className={cn(
-                              'channel-dialog-message__bubble',
-                              dialogType === 'comments' && 'is-selectable',
-                              isActiveMessage && 'is-active',
-                              groupedWithPrevious && 'is-grouped',
+                              'channel-dialog-message__stack',
+                              dialogType === 'comments' &&
+                                swipeReplyPreview?.messageId === message.id &&
+                                'is-swipe-active',
                             )}
-                            data-message-bubble-id={message.id}
-                            onClick={dialogType === 'comments' ? handleBubbleClick(message.id) : undefined}
-                            onKeyDown={
-                              dialogType === 'comments' ? handleBubbleKeyDown(message.id) : undefined
-                            }
-                            onPointerDown={
-                              dialogType === 'comments'
-                                ? handleBubblePointerDown(message, isOwnMessage)
-                                : undefined
-                            }
-                            onPointerMove={
-                              dialogType === 'comments'
-                                ? handleBubblePointerMove(message, isOwnMessage)
-                                : undefined
-                            }
-                            onPointerUp={
-                              dialogType === 'comments' ? handleBubblePointerUp(message) : undefined
-                            }
-                            onPointerCancel={
-                              dialogType === 'comments' ? handleBubblePointerCancel : undefined
-                            }
-                            onContextMenu={
-                              dialogType === 'comments' ? handleBubbleContextMenu(message.id) : undefined
-                            }
-                            role={dialogType === 'comments' ? 'button' : undefined}
-                            tabIndex={dialogType === 'comments' ? 0 : undefined}
-                            aria-pressed={dialogType === 'comments' ? isActiveMessage : undefined}
-                            aria-haspopup={dialogType === 'comments' ? 'dialog' : undefined}
                           >
-                            {!groupedWithPrevious ? (
-                              <div className="channel-dialog-message__meta">
-                                <strong>{getAuthorLabel(message)}</strong>
-                                <time dateTime={message.createdAt}>
-                                  {formatMessageTime(message.createdAt)}
-                                </time>
-                              </div>
-                            ) : null}
+                            <div
+                              className={cn(
+                                'channel-dialog-message__bubble',
+                                dialogType === 'comments' && 'is-selectable',
+                                isActiveMessage && 'is-active',
+                                groupedWithPrevious && 'is-grouped',
+                              )}
+                              data-message-bubble-id={message.id}
+                              onClick={dialogType === 'comments' ? handleBubbleClick(message.id) : undefined}
+                              onKeyDown={
+                                dialogType === 'comments' ? handleBubbleKeyDown(message.id) : undefined
+                              }
+                              onPointerDown={
+                                dialogType === 'comments'
+                                  ? handleBubblePointerDown(message, isOwnMessage)
+                                  : undefined
+                              }
+                              onPointerMove={
+                                dialogType === 'comments'
+                                  ? handleBubblePointerMove(message, isOwnMessage)
+                                  : undefined
+                              }
+                              onPointerUp={
+                                dialogType === 'comments' ? handleBubblePointerUp(message) : undefined
+                              }
+                              onPointerCancel={
+                                dialogType === 'comments' ? handleBubblePointerCancel : undefined
+                              }
+                              onContextMenu={
+                                dialogType === 'comments' ? handleBubbleContextMenu(message.id) : undefined
+                              }
+                              role={dialogType === 'comments' ? 'button' : undefined}
+                              tabIndex={dialogType === 'comments' ? 0 : undefined}
+                              aria-pressed={dialogType === 'comments' ? isActiveMessage : undefined}
+                              aria-haspopup={dialogType === 'comments' ? 'dialog' : undefined}
+                            >
+                              {!groupedWithPrevious ? (
+                                <div className="channel-dialog-message__meta">
+                                  <strong>{getAuthorLabel(message)}</strong>
+                                  <time dateTime={message.createdAt}>
+                                    {formatMessageTime(message.createdAt)}
+                                  </time>
+                                </div>
+                              ) : null}
 
-                            {message.replyTo ? (
-                              <div className="channel-dialog-message__reply">
-                                <span>{message.replyTo.authorDisplayName || 'Комментарий'}</span>
-                                <p>{summarizeReplyText(message.replyTo.text)}</p>
-                              </div>
-                            ) : null}
+                              {message.replyTo ? (
+                                canJumpToReplySource && replySourceMessageId ? (
+                                  <button
+                                    type="button"
+                                    className={cn('channel-dialog-message__reply', 'is-link')}
+                                    onPointerDown={(event) => event.stopPropagation()}
+                                    onKeyDown={(event) => event.stopPropagation()}
+                                    onClick={handleJumpToSource(replySourceMessageId)}
+                                    aria-label="Перейти к исходному комментарию"
+                                  >
+                                    <span>{message.replyTo.authorDisplayName || 'Комментарий'}</span>
+                                    <p>{summarizeReplyText(message.replyTo.text)}</p>
+                                  </button>
+                                ) : (
+                                  <div className="channel-dialog-message__reply">
+                                    <span>{message.replyTo.authorDisplayName || 'Комментарий'}</span>
+                                    <p>{summarizeReplyText(message.replyTo.text)}</p>
+                                  </div>
+                                )
+                              ) : null}
 
-                            <p>{message.text}</p>
+                              <p>{message.text}</p>
 
-                            {dialogType === 'suggest' ? (
-                              <div className="channel-dialog-message__footer">
-                                <span
-                                  className={cn(
-                                    'channel-dialog-delivery',
-                                    message.delivered ? 'is-delivered' : 'is-pending',
-                                  )}
-                                >
-                                  {message.delivered ? 'доставлено' : 'в очереди'}
-                                </span>
+                              {dialogType === 'suggest' ? (
+                                <div className="channel-dialog-message__footer">
+                                  <span
+                                    className={cn(
+                                      'channel-dialog-delivery',
+                                      message.delivered ? 'is-delivered' : 'is-pending',
+                                    )}
+                                  >
+                                    {message.delivered ? 'доставлено' : 'в очереди'}
+                                  </span>
+                                </div>
+                              ) : null}
+                            </div>
+
+                            {dialogType === 'comments' && message.reactionGroups.length > 0 ? (
+                              <div className="channel-dialog-message__footer channel-dialog-message__footer--comments">
+                                <div className="channel-dialog-message__reactions">
+                                  {message.reactionGroups.map((group) => (
+                                    <button
+                                      key={group.emoji}
+                                      type="button"
+                                      className={cn(
+                                        'channel-dialog-reaction-pill',
+                                        group.reactedByMe && 'is-active',
+                                      )}
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        handleReactionToggle(message.id, group.emoji);
+                                      }}
+                                      disabled={isReactionPending}
+                                    >
+                                      <b>{group.emoji}</b>
+                                      <span>{group.count}</span>
+                                    </button>
+                                  ))}
+                                </div>
                               </div>
                             ) : null}
                           </div>
-
-                          {dialogType === 'comments' && message.reactionGroups.length > 0 ? (
-                            <div className="channel-dialog-message__footer channel-dialog-message__footer--comments">
-                              <div className="channel-dialog-message__reactions">
-                                {message.reactionGroups.map((group) => (
-                                  <button
-                                    key={group.emoji}
-                                    type="button"
-                                    className={cn(
-                                      'channel-dialog-reaction-pill',
-                                      group.reactedByMe && 'is-active',
-                                    )}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      handleReactionToggle(message.id, group.emoji);
-                                    }}
-                                    disabled={isReactionPending}
-                                  >
-                                    <b>{group.emoji}</b>
-                                    <span>{group.count}</span>
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          ) : null}
                         </div>
-                      </div>
-                    </article>
+                      </article>
+                    </Fragment>
                   );
                 })
               ) : (
@@ -1492,13 +1726,32 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         </section>
 
         <section className="channel-dialog-compose">
+          {showJumpToLatest ? (
+            <button
+              type="button"
+              className="channel-dialog-jump-latest"
+              onClick={handleJumpToLatest}
+              aria-label={`Перейти к ${unreadCount} новым комментариям`}
+            >
+              <span className="channel-dialog-jump-latest__icon" aria-hidden>
+                <SendArrowIcon />
+              </span>
+              <span>К новым</span>
+              <b>{unreadCount}</b>
+            </button>
+          ) : null}
+
           <div className="channel-dialog-compose__surface">
             {replyTarget ? (
               <div className="channel-dialog-compose__reply">
-                <div className="channel-dialog-compose__reply-copy">
+                <button
+                  type="button"
+                  className={cn('channel-dialog-compose__reply-copy', 'is-link')}
+                  onClick={handleComposeReplySourceJump}
+                >
                   <span>Ответ {replyTarget.authorDisplayName || 'участнику'}</span>
                   <p>{summarizeReplyText(replyTarget.text, 84)}</p>
-                </div>
+                </button>
                 <button
                   type="button"
                   className="channel-dialog-compose__reply-dismiss"
