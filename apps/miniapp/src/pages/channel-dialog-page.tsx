@@ -918,6 +918,20 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     openMessageActions(messageId);
   };
 
+  const handleBubbleContextMenu =
+    (messageId: string) => (event: ReactMouseEvent<HTMLDivElement>) => {
+      if (dialogType !== 'comments') {
+        return;
+      }
+
+      event.preventDefault();
+      ignoreNextBubbleClickRef.current = true;
+      openMessageActions(messageId, {
+        haptic: 'medium',
+        toggle: false,
+      });
+    };
+
   const handleReply = (message: ChannelDialogMessage) => {
     maxImpact('soft');
     setReplyToMessageId(message.id);
@@ -1153,6 +1167,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                           }
                           onPointerLeave={
                             dialogType === 'comments' ? handleBubblePointerEnd : undefined
+                          }
+                          onContextMenu={
+                            dialogType === 'comments' ? handleBubbleContextMenu(message.id) : undefined
                           }
                           role={dialogType === 'comments' ? 'button' : undefined}
                           tabIndex={dialogType === 'comments' ? 0 : undefined}
