@@ -1,6 +1,5 @@
 import type { MembershipActivityFilter, MembershipActivityItem } from '@maxim/contracts';
 import { type MouseEvent, useMemo } from 'react';
-import { openMaxBotLink } from '../../lib/max-bridge';
 import { SegmentedControl } from '../ui/segmented-control';
 
 type MembershipActivityFeedProps = {
@@ -92,8 +91,10 @@ function resolveAvatarUrl(value: string | null | undefined): string | null {
 }
 
 function handleProfileLinkClick(event: MouseEvent<HTMLAnchorElement>, profileUrl: string): void {
-  event.preventDefault();
-  openMaxBotLink(profileUrl);
+  if (!profileUrl.trim()) {
+    event.preventDefault();
+  }
+  event.stopPropagation();
 }
 
 export function MembershipActivityFeed({

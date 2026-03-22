@@ -23,7 +23,6 @@ import { getChats } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
-import { openMaxBotLink } from '../lib/max-bridge';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
 
@@ -183,9 +182,10 @@ function resolveOffenderProfileUrl(violation: ViolationItem): string | null {
 }
 
 function handleProfileLinkClick(event: MouseEvent<HTMLAnchorElement>, profileUrl: string): void {
-  event.preventDefault();
   event.stopPropagation();
-  openMaxBotLink(profileUrl);
+  if (!profileUrl.trim()) {
+    event.preventDefault();
+  }
 }
 
 function handleExpandableCardKeyDown(
