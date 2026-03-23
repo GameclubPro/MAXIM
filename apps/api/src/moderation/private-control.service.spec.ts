@@ -1425,6 +1425,128 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).not.toContain('[Вррвврврврврвв](');
   });
 
+  it('keeps bold italic underline hyperlink formatting for broadcast drafts from private bot', async () => {
+    const { service, maxClient, chats, adminService } = createHarness();
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
+    await service.handleUpdate(
+      createPrivateFormattedTextUpdate('MAX Docs', [
+        {
+          type: 'strong',
+          from: 0,
+          length: 8,
+        },
+        {
+          type: 'emphasized',
+          from: 0,
+          length: 8,
+        },
+        {
+          type: 'underline',
+          from: 0,
+          length: 8,
+        },
+        {
+          type: 'link',
+          from: 0,
+          length: 8,
+          url: 'https://dev.max.ru/docs-api',
+        },
+      ]),
+    );
+
+    expect(getLastSendOptions(maxClient)).toEqual(
+      expect.objectContaining({
+        textFormat: 'html',
+      }),
+    );
+    expect(getLastSentText(maxClient)).toContain(
+      '<u><strong><em><u>MAX Docs</u></em></strong></u>',
+    );
+    expect(getLastSentText(maxClient)).not.toContain('[**_++MAX Docs++_**](');
+
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+
+    expect(adminService.sendBroadcast).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        text: '[**_++MAX Docs++_**](https://dev.max.ru/docs-api)',
+        textFormat: 'markdown',
+        applyToAllChats: false,
+      }),
+      'private_bot',
+    );
+  });
+
+  it('keeps bold italic underline hyperlink formatting for giveaway drafts from private bot', async () => {
+    const { service, maxClient, chats, managedGiveawayService } = createHarness({
+      managedGiveaway: createGiveaway({
+        id: 'giveaway-draft-1',
+        status: 'DRAFT',
+        description: '',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        publicationMessageId: null,
+        publicationUrl: null,
+        publishedAt: null,
+      }),
+    });
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|giveaway_input_prompt|content'));
+    await service.handleUpdate(
+      createPrivateFormattedTextUpdate('MAX Docs', [
+        {
+          type: 'strong',
+          from: 0,
+          length: 8,
+        },
+        {
+          type: 'emphasized',
+          from: 0,
+          length: 8,
+        },
+        {
+          type: 'underline',
+          from: 0,
+          length: 8,
+        },
+        {
+          type: 'link',
+          from: 0,
+          length: 8,
+          url: 'https://dev.max.ru/docs-api',
+        },
+      ]),
+    );
+
+    expect(managedGiveawayService.updateManagedGiveaway).toHaveBeenCalledWith(
+      chats[0].id,
+      'giveaway-draft-1',
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        description: '[**_++MAX Docs++_**](https://dev.max.ru/docs-api)',
+      }),
+      'chat',
+      'private_bot',
+    );
+    expect(getLastSendOptions(maxClient)).toEqual(
+      expect.objectContaining({
+        textFormat: 'html',
+      }),
+    );
+    expect(getLastSentText(maxClient)).toContain(
+      '<u><strong><em><u>MAX Docs</u></em></strong></u>',
+    );
+    expect(getLastSentText(maxClient)).not.toContain('[**_++MAX Docs++_**](');
+  });
+
   it('hands off chat broadcast from miniapp into private bot content flow', async () => {
     const { service, adminService, maxClient, chats } = createHarness();
     const actor = {

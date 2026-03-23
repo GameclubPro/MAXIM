@@ -38,6 +38,19 @@ describe('renderSupportedMarkdownAsHtml', () => {
     ).toBe('<p><strong><u>MAX Docs</u></strong></p>');
   });
 
+  it('renders nested bold italic underline links for publication and preview modes', () => {
+    expect(
+      renderSupportedMarkdownAsHtml('[**_++MAX Docs++_**](https://dev.max.ru/docs-api)'),
+    ).toBe(
+      '<p><a href="https://dev.max.ru/docs-api"><strong><em><u>MAX Docs</u></em></strong></a></p>',
+    );
+    expect(
+      renderSupportedMarkdownAsHtml('[**_++MAX Docs++_**](https://dev.max.ru/docs-api)', {
+        linkMode: 'underline',
+      }),
+    ).toBe('<p><u><strong><em><u>MAX Docs</u></em></strong></u></p>');
+  });
+
   it('strips supported markdown to plain text', () => {
     expect(
       stripSupportedMarkdownToPlainText(
