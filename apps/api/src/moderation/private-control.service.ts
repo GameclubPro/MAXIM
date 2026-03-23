@@ -5760,7 +5760,11 @@ export class PrivateControlService {
     }
 
     if (payload.contentText) {
-      blocks.push(renderSupportedMarkdownAsHtml(payload.contentText));
+      blocks.push(
+        renderSupportedMarkdownAsHtml(payload.contentText, {
+          linkMode: 'underline',
+        }),
+      );
     }
 
     if (payload.promptText) {
@@ -7504,8 +7508,14 @@ export class PrivateControlService {
     }
 
     const chars = Array.from(text);
-    const openTags = new Map<number, Array<{ open: string; close: string; end: number }>>();
-    const closeTags = new Map<number, Array<{ close: string; start: number; end: number }>>();
+    const openTags = new Map<
+      number,
+      Array<{ open: string; close: string; end: number; priority: number }>
+    >();
+    const closeTags = new Map<
+      number,
+      Array<{ close: string; start: number; end: number; priority: number }>
+    >();
 
     for (const item of markup) {
       const start = item.from;
@@ -7527,6 +7537,7 @@ export class PrivateControlService {
         open: delimiters.open,
         close: delimiters.close,
         end,
+        priority: delimiters.priority,
       });
       openTags.set(start, openBucket);
 
@@ -7535,6 +7546,7 @@ export class PrivateControlService {
         close: delimiters.close,
         start,
         end,
+        priority: delimiters.priority,
       });
       closeTags.set(end, closeBucket);
     }
@@ -7549,7 +7561,10 @@ export class PrivateControlService {
       if (closing) {
         closing
           .slice()
-          .sort((left, right) => right.start - left.start || left.end - right.end)
+          .sort(
+            (left, right) =>
+              right.start - left.start || left.end - right.end || right.priority - left.priority,
+          )
           .forEach((tag) => {
             markdown += tag.close;
           });
@@ -7559,7 +7574,9 @@ export class PrivateControlService {
       if (opening) {
         opening
           .slice()
-          .sort((left, right) => right.end - left.end)
+          .sort(
+            (left, right) => right.end - left.end || left.priority - right.priority,
+          )
           .forEach((tag) => {
             markdown += tag.open;
           });
@@ -7572,7 +7589,10 @@ export class PrivateControlService {
     if (trailing) {
       trailing
         .slice()
-        .sort((left, right) => right.start - left.start || left.end - right.end)
+        .sort(
+          (left, right) =>
+            right.start - left.start || left.end - right.end || right.priority - left.priority,
+        )
         .forEach((tag) => {
           markdown += tag.close;
         });
@@ -7584,24 +7604,27 @@ export class PrivateControlService {
   private resolveIncomingMarkupMarkdownDelimiters(
     markup: IncomingMessageMarkup,
     visibleText: string,
-  ): { open: string; close: string } | null {
+  ): { open: string; close: string; priority: number } | null {
     switch (markup.type) {
       case 'strong':
       case 'heading':
-        return { open: '**', close: '**' };
+        return { open: '**', close: '**', priority: 20 };
       case 'emphasized':
-        return { open: '_', close: '_' };
+        return { open: '_', close: '_', priority: 30 };
       case 'underline':
-        return { open: '++', close: '++' };
+        return { open: '++', close: '++', priority: 40 };
       case 'strikethrough':
-        return { open: '~~', close: '~~' };
+        return { open: '~~', close: '~~', priority: 50 };
       case 'monospaced':
-        return visibleText.includes('\n') ? null : { open: '`', close: '`' };
+        return visibleText.includes('\n')
+          ? null
+          : { open: '`', close: '`', priority: 60 };
       case 'link':
         return markup.url
           ? {
               open: '[',
               close: `](${markup.url})`,
+              priority: 10,
             }
           : null;
       case 'user_mention': {
@@ -7614,6 +7637,7 @@ export class PrivateControlService {
           ? {
               open: '[',
               close: `](${mentionTarget})`,
+              priority: 10,
             }
           : null;
       }

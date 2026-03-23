@@ -1394,6 +1394,37 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).not.toContain('**Розыгрыш**');
   });
 
+  it('renders bold hyperlink preview without raw markdown syntax in private bot', async () => {
+    const { service, maxClient, chats } = createHarness();
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
+    await service.handleUpdate(
+      createPrivateFormattedTextUpdate('Вррвврврврврвв', [
+        {
+          type: 'strong',
+          from: 0,
+          length: 14,
+        },
+        {
+          type: 'link',
+          from: 0,
+          length: 14,
+          url: 'https://business.max.ru/self/?#/chat-bots',
+        },
+      ]),
+    );
+
+    expect(getLastSendOptions(maxClient)).toEqual(
+      expect.objectContaining({
+        textFormat: 'html',
+      }),
+    );
+    expect(getLastSentText(maxClient)).toContain('<u><strong>Вррвврврврврвв</strong></u>');
+    expect(getLastSentText(maxClient)).not.toContain('[Вррвврврврврвв](');
+  });
+
   it('hands off chat broadcast from miniapp into private bot content flow', async () => {
     const { service, adminService, maxClient, chats } = createHarness();
     const actor = {

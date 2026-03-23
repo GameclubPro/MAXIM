@@ -30,6 +30,14 @@ describe('renderSupportedMarkdownAsHtml', () => {
     );
   });
 
+  it('renders links as underlined preview labels when requested', () => {
+    expect(
+      renderSupportedMarkdownAsHtml('**[MAX Docs](https://dev.max.ru/)**', {
+        linkMode: 'underline',
+      }),
+    ).toBe('<p><strong><u>MAX Docs</u></strong></p>');
+  });
+
   it('strips supported markdown to plain text', () => {
     expect(
       stripSupportedMarkdownToPlainText(

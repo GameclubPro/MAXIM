@@ -4,6 +4,10 @@ type InlineToken =
   | { type: 'code'; content: string }
   | { type: 'link'; href: string; children: InlineToken[] };
 
+type RenderMarkdownOptions = {
+  linkMode?: 'anchor' | 'underline';
+};
+
 const SAFE_LINK_PATTERN = /^(https?:\/\/|max:\/\/)/iu;
 const SUPPORTED_MARKDOWN_PATTERN =
   /(?:^#{1,6}\s+\S.*$|\*\*[^*\n]+?\*\*|__[^_\n]+?__|\*[^*\n]+?\*|_[^_\n]+?_|~~[^~\n]+?~~|\+\+[^+\n]+?\+\+|`[^`\n]+`|\[[^\]\n]+\]\((?:https?:\/\/|max:\/\/)[^)]+\))/mu;
@@ -12,7 +16,10 @@ export function containsSupportedMarkdownSyntax(source: string): boolean {
   return SUPPORTED_MARKDOWN_PATTERN.test(source.replace(/\r/g, '').trim());
 }
 
-export function renderSupportedMarkdownAsHtml(source: string): string {
+export function renderSupportedMarkdownAsHtml(
+  source: string,
+  options: RenderMarkdownOptions = {},
+): string {
   const normalized = source.replace(/\r/g, '').trim();
   if (!normalized) {
     return '';
@@ -26,7 +33,9 @@ export function renderSupportedMarkdownAsHtml(source: string): string {
       return;
     }
 
-    const renderedLines = paragraphLines.map((line) => renderInlineTokens(parseInlineTokens(line)));
+    const renderedLines = paragraphLines.map((line) =>
+      renderInlineTokens(parseInlineTokens(line), options),
+    );
     blocks.push(`<p>${renderedLines.join('<br>')}</p>`);
     paragraphLines = [];
   };
@@ -42,7 +51,7 @@ export function renderSupportedMarkdownAsHtml(source: string): string {
     const headingMatch = /^(#{1,6})[ \t]+(.+)$/u.exec(trimmedLine);
     if (headingMatch) {
       flushParagraph();
-      const content = renderInlineTokens(parseInlineTokens(headingMatch[2] ?? ''));
+      const content = renderInlineTokens(parseInlineTokens(headingMatch[2] ?? ''), options);
       blocks.push(`<p><strong>${content}</strong></p>`);
       continue;
     }
@@ -208,7 +217,7 @@ function matchToken(value: string): {
   return null;
 }
 
-function renderInlineTokens(tokens: InlineToken[]): string {
+function renderInlineTokens(tokens: InlineToken[], options: RenderMarkdownOptions): string {
   return tokens
     .map((token) => {
       switch (token.type) {
@@ -217,21 +226,36 @@ function renderInlineTokens(tokens: InlineToken[]): string {
         case 'code':
           return `<code>${escapeHtml(token.content)}</code>`;
         case 'bold':
-          return `<strong>${renderInlineTokens(token.children)}</strong>`;
+          return `<strong>${renderInlineTokens(token.children, options)}</strong>`;
         case 'italic':
-          return `<em>${renderInlineTokens(token.children)}</em>`;
+          return `<em>${renderInlineTokens(token.children, options)}</em>`;
         case 'underline':
-          return `<u>${renderInlineTokens(token.children)}</u>`;
+          return `<u>${renderInlineTokens(token.children, options)}</u>`;
         case 'strike':
-          return `<s>${renderInlineTokens(token.children)}</s>`;
+          return `<s>${renderInlineTokens(token.children, options)}</s>`;
         case 'link':
-          return `<a href="${escapeAttribute(token.href)}">${renderLinkLabelHtml(token)}</a>`;
+          return renderLinkHtml(token, options);
       }
     })
     .join('');
 }
 
-function renderLinkLabelHtml(token: Extract<InlineToken, { type: 'link' }>): string {
+function renderLinkHtml(
+  token: Extract<InlineToken, { type: 'link' }>,
+  options: RenderMarkdownOptions,
+): string {
+  const labelHtml = renderLinkLabelHtml(token, options);
+  if (options.linkMode === 'underline') {
+    return `<u>${labelHtml}</u>`;
+  }
+
+  return `<a href="${escapeAttribute(token.href)}">${labelHtml}</a>`;
+}
+
+function renderLinkLabelHtml(
+  token: Extract<InlineToken, { type: 'link' }>,
+  options: RenderMarkdownOptions,
+): string {
   const plainLabel = renderInlineTokensAsPlainText(token.children).trim();
   if (!plainLabel) {
     return escapeHtml(token.href);
@@ -241,7 +265,7 @@ function renderLinkLabelHtml(token: Extract<InlineToken, { type: 'link' }>): str
     return escapeHtml(insertSoftBreaks(plainLabel));
   }
 
-  return renderInlineTokens(token.children);
+  return renderInlineTokens(token.children, options);
 }
 
 function looksLikeUrlLabel(label: string, href: string): boolean {
