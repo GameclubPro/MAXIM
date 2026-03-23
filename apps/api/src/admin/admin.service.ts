@@ -142,6 +142,10 @@ type AdminAccessResolution =
   | {
       status: 'unknown';
       error: unknown;
+    }
+  | {
+      status: 'throttled';
+      error: unknown;
     };
 
 export type AdminActionSource = 'miniapp' | 'private_bot' | 'private_command' | 'group_command';
@@ -210,6 +214,7 @@ const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 30;
 const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 5;
+const MANAGED_ENTITIES_REFRESH_BACKOFF_MS = 60_000;
 const CHANNEL_DIALOG_MESSAGES_LIMIT = 80;
 const CHANNEL_DIALOG_ACTION_COMMENT = 'CHANNEL_DIALOG_COMMENT';
 const CHANNEL_DIALOG_ACTION_SUGGEST = 'CHANNEL_DIALOG_SUGGESTION';
@@ -377,6 +382,13 @@ type ChannelDialogTokenPayload = {
   s: string;
 };
 
+class ManagedEntitiesRefreshThrottledError extends Error {
+  constructor(readonly cause: unknown) {
+    super('Managed entity refresh throttled');
+    this.name = 'ManagedEntitiesRefreshThrottledError';
+  }
+}
+
 type ChannelDialogMessageSource = 'miniapp_dialog' | 'private_bot';
 
 type ChannelSuggestionFromBotPayload = {
@@ -404,6 +416,7 @@ export class AdminService {
   private readonly ownBotUserId: string | null;
   private readonly maxBotToken: string;
   private readonly adminAccessChecks = new Map<string, Promise<AdminAccessResolution>>();
+  private managedEntitiesRefreshBackoffUntilMs = 0;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -464,62 +477,86 @@ export class AdminService {
       return [];
     }
 
-    try {
-      const remoteChats = await this.maxClient.listBotChats();
-      const resolvedChats = await this.mapWithConcurrencyLimit(
-        remoteChats,
-        LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
-        async (remoteChat) => {
-          const access = await this.resolveUserAndBotAdminAccess(remoteChat.chatId, user.userId);
-          if (access.status !== 'granted') {
-            return null;
-          }
+    if (!this.isManagedEntitiesRefreshBackoffActive()) {
+      try {
+        const remoteChats = await this.maxClient.listBotChats();
+        const resolvedChats = await this.mapWithConcurrencyLimit(
+          remoteChats,
+          LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
+          async (remoteChat) => {
+            const access = await this.resolveUserAndBotAdminAccess(remoteChat.chatId, user.userId);
+            if (access.status === 'throttled') {
+              throw new ManagedEntitiesRefreshThrottledError(access.error);
+            }
 
-          const persistedChat = await this.upsertUserChatAccess(
-            remoteChat.chatId,
-            user.userId,
-            remoteChat.title,
-            remoteChat.entityType,
-            { updateEntityType: true },
+            if (access.status !== 'granted') {
+              return null;
+            }
+
+            const persistedChat = await this.upsertUserChatAccess(
+              remoteChat.chatId,
+              user.userId,
+              remoteChat.title,
+              remoteChat.entityType,
+              { updateEntityType: true },
+            );
+
+            const chat: ChatSummary = {
+              id: persistedChat.id,
+              title: persistedChat.title,
+              createdAt: persistedChat.createdAt.toISOString(),
+              entityType: this.fromPrismaEntityType(persistedChat.entityType),
+              link: remoteChat.link,
+              channelOverview: null,
+            };
+
+            if (this.isFallbackTitle(chat.id, chat.title)) {
+              await this.refreshChatTitle(chat);
+            }
+
+            return {
+              chat,
+              lastEventTime: remoteChat.lastEventTime ?? 0,
+            };
+          },
+        );
+
+        const filtered = resolvedChats.filter(
+          (item): item is { chat: ChatSummary; lastEventTime: number } => item !== null,
+        );
+
+        if (filtered.length > 0) {
+          const byType =
+            entityType === 'all'
+              ? filtered
+              : filtered.filter((item) => item.chat.entityType === entityType);
+          byType.sort((a, b) => b.lastEventTime - a.lastEventTime);
+          return this.attachChannelOverview(byType.map((item) => item.chat));
+        }
+      } catch (error: unknown) {
+        if (
+          this.isManagedEntitiesRefreshThrottledError(error) ||
+          this.isMaxApiThrottleError(error)
+        ) {
+          const rootError =
+            error instanceof ManagedEntitiesRefreshThrottledError ? error.cause : error;
+          const backoffMs = this.activateManagedEntitiesRefreshBackoff();
+          this.logger.warn(
+            {
+              entityType,
+              userId: user.userId,
+              backoffMs,
+              err: rootError instanceof Error ? rootError.message : String(rootError),
+            },
+            'Paused remote chat discovery after MAX API throttling',
           );
-
-          const chat: ChatSummary = {
-            id: persistedChat.id,
-            title: persistedChat.title,
-            createdAt: persistedChat.createdAt.toISOString(),
-            entityType: this.fromPrismaEntityType(persistedChat.entityType),
-            link: remoteChat.link,
-            channelOverview: null,
-          };
-
-          if (this.isFallbackTitle(chat.id, chat.title)) {
-            await this.refreshChatTitle(chat);
-          }
-
-          return {
-            chat,
-            lastEventTime: remoteChat.lastEventTime ?? 0,
-          };
-        },
-      );
-
-      const filtered = resolvedChats.filter(
-        (item): item is { chat: ChatSummary; lastEventTime: number } => item !== null,
-      );
-
-      if (filtered.length > 0) {
-        const byType =
-          entityType === 'all'
-            ? filtered
-            : filtered.filter((item) => item.chat.entityType === entityType);
-        byType.sort((a, b) => b.lastEventTime - a.lastEventTime);
-        return this.attachChannelOverview(byType.map((item) => item.chat));
+        } else {
+          this.logger.warn(
+            { err: error instanceof Error ? error.message : String(error) },
+            'Failed to auto-discover chats via MAX API',
+          );
+        }
       }
-    } catch (error: unknown) {
-      this.logger.warn(
-        { err: error instanceof Error ? error.message : String(error) },
-        'Failed to auto-discover chats via MAX API',
-      );
     }
 
     const cached = await this.listChatsFromAllowlist(user.userId, entityType);
@@ -6681,6 +6718,12 @@ export class AdminService {
       );
     }
 
+    if (access.status === 'throttled') {
+      throw new ServiceUnavailableException(
+        'MAX API временно ограничил проверку прав администратора. Повторите попытку.',
+      );
+    }
+
     await this.upsertUserChatAccess(chatId, userId, null, entityType);
   }
 
@@ -8930,6 +8973,13 @@ export class AdminService {
         source: 'remote',
       };
     } catch (error: unknown) {
+      if (this.isMaxApiThrottleError(error)) {
+        return {
+          status: 'throttled',
+          error,
+        };
+      }
+
       if (this.isBotAdminLookupDeniedError(error)) {
         await this.chatContextCache.setAdminAccess?.(chatId, userId, 'bot_denied');
         await this.prunePersistedChatAccess(chatId, userId);
@@ -9005,7 +9055,7 @@ export class AdminService {
     resolutionPromise: Promise<AdminAccessResolution>,
   ): Promise<AdminAccessResolution> {
     const resolution = await resolutionPromise;
-    if (resolution.status !== 'unknown') {
+    if (resolution.status !== 'unknown' && resolution.status !== 'throttled') {
       return resolution;
     }
 
@@ -9070,6 +9120,35 @@ export class AdminService {
       message.includes('not accessible') ||
       message.includes('chat not found')
     );
+  }
+
+  private isMaxApiThrottleError(error: unknown): boolean {
+    const status = this.extractMaxErrorStatus(error);
+    if (status === 429) {
+      return true;
+    }
+
+    const message = this.extractMaxErrorMessage(error);
+    return message.includes('rate limit exceeded') || message.includes('circuit breaker');
+  }
+
+  private isManagedEntitiesRefreshThrottledError(
+    error: unknown,
+  ): error is ManagedEntitiesRefreshThrottledError {
+    return error instanceof ManagedEntitiesRefreshThrottledError;
+  }
+
+  private isManagedEntitiesRefreshBackoffActive(): boolean {
+    return Date.now() < this.managedEntitiesRefreshBackoffUntilMs;
+  }
+
+  private activateManagedEntitiesRefreshBackoff(): number {
+    const now = Date.now();
+    this.managedEntitiesRefreshBackoffUntilMs = Math.max(
+      this.managedEntitiesRefreshBackoffUntilMs,
+      now + MANAGED_ENTITIES_REFRESH_BACKOFF_MS,
+    );
+    return this.managedEntitiesRefreshBackoffUntilMs - now;
   }
 
   private async hasPersistedChatAccess(chatId: string, userId: string): Promise<boolean> {

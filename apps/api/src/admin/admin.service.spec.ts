@@ -2352,6 +2352,92 @@ describe('AdminService.listChannels', () => {
     ]);
     expect(maxClient.listBotChats).not.toHaveBeenCalled();
   });
+
+  it('falls back to cached channels and backs off refresh after MAX API throttling', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockImplementation(async (args?: { where?: unknown }) => {
+      const where = args?.where as { chatId?: string } | undefined;
+      if (where?.chatId === 'remote-channel-1') {
+        return [];
+      }
+
+      return [
+        {
+          chat: {
+            id: 'cached-channel-1',
+            title: 'Кэш канала',
+            createdAt: new Date('2026-03-02T10:00:00.000Z'),
+            entityType: 'CHANNEL',
+          },
+        },
+      ];
+    });
+    prisma.channelSettings.findMany.mockResolvedValue([]);
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'remote-channel-1',
+          title: 'Удалённый канал',
+          lastEventTime: 200,
+          entityType: 'channel',
+          link: 'https://max.ru/remote-channel-1',
+        },
+      ]),
+      getChatAdminIds: jest
+        .fn()
+        .mockRejectedValue(new Error('MAX API global rate limit exceeded')),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const user = {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    };
+
+    await expect(service.listChannels(user, { refresh: true })).resolves.toEqual([
+      {
+        id: 'cached-channel-1',
+        title: 'Кэш канала',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'channel',
+        link: null,
+        channelOverview: {
+          enabledScenariosCount: 1,
+          commentsEnabled: true,
+          postSuggestionsEnabled: false,
+          commentsModerationEnabled: false,
+        },
+      },
+    ]);
+
+    await expect(service.listChannels(user, { refresh: true })).resolves.toEqual([
+      {
+        id: 'cached-channel-1',
+        title: 'Кэш канала',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'channel',
+        link: null,
+        channelOverview: {
+          enabledScenariosCount: 1,
+          commentsEnabled: true,
+          postSuggestionsEnabled: false,
+          commentsModerationEnabled: false,
+        },
+      },
+    ]);
+
+    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('AdminService.listChats', () => {
