@@ -7998,22 +7998,25 @@ export class AdminService {
       if (row.action === CHANNEL_DIALOG_ACTION_PUBLISH) {
         const messageId = this.readTrimmedString(payload.messageId);
         const includeCommentsButton = payload.includeCommentsButton !== false;
-        if (!messageId || !includeCommentsButton) {
+        const includeSuggestButton = payload.includeSuggestButton === true;
+        if (!messageId || (!includeCommentsButton && !includeSuggestButton)) {
           continue;
         }
 
-        const buttons: MaxMessageButton[][] = [
-          [
+        const buttons: MaxMessageButton[][] = [];
+
+        if (includeCommentsButton) {
+          buttons.push([
             this.buildChannelDialogButton(
               chatId,
               'comments',
               threadId,
               formatCommentsButtonText(this.readTrimmedString(payload.commentsButtonText), count),
             ),
-          ],
-        ];
+          ]);
+        }
 
-        if (payload.includeSuggestButton === true) {
+        if (includeSuggestButton) {
           buttons.push([
             this.buildChannelDialogButton(
               chatId,
@@ -8034,22 +8037,25 @@ export class AdminService {
 
       const messageId = this.readTrimmedString(payload.messageId);
       const includeCommentsButton = payload.includeCommentsButton !== false;
-      if (!messageId || !includeCommentsButton) {
+      const includeSuggestButton = payload.includeSuggestButton === true;
+      if (!messageId || (!includeCommentsButton && !includeSuggestButton)) {
         continue;
       }
 
-      const buttons: MaxMessageButton[][] = [
-        [
+      const buttons: MaxMessageButton[][] = [];
+
+      if (includeCommentsButton) {
+        buttons.push([
           this.buildChannelDialogButton(
             chatId,
             'comments',
             threadId,
             formatCommentsButtonText('💬 Комментарии', count),
           ),
-        ],
-      ];
+        ]);
+      }
 
-      if (payload.includeSuggestButton === true) {
+      if (includeSuggestButton) {
         buttons.push([
           this.buildChannelDialogButton(
             chatId,

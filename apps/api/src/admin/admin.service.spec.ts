@@ -6167,6 +6167,84 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
+  it('refreshes suggestion-only auto-attached channel buttons after a new comment', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+      }),
+    );
+    prisma.auditLog.count.mockResolvedValue(4);
+    prisma.auditLog.findMany.mockResolvedValue([
+      {
+        id: 'channel-auto-suggest-ref-1',
+        action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+        payload: {
+          messageId: 'mid-channel-auto-suggest-99',
+          threadId: 'channel-thread-counter',
+          includeCommentsButton: false,
+          includeSuggestButton: true,
+          suggestButtonText: 'Предложить пост',
+        },
+      },
+    ]);
+    prisma.auditLog.create.mockResolvedValue({
+      id: 'channel-comment-count-2',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-20T09:05:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = createChatContextCacheMock();
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const commentsToken = (
+      service as unknown as { buildEntityDialogToken: Function }
+    ).buildEntityDialogToken(
+      'channel',
+      'channel-1',
+      'comments',
+      'channel-thread-counter',
+    ) as string;
+
+    await service.createChannelDialogMessage(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        text: 'Новый комментарий в канале',
+      },
+    );
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-auto-suggest-99',
+      null,
+      expect.objectContaining({
+        buttons: [[expect.objectContaining({ text: 'Предложить пост', type: 'callback' })]],
+      }),
+    );
+  });
+
   it('accepts a suggestion from a thread-scoped button even when auto suggestions are disabled', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
