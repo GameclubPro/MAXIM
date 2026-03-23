@@ -1317,7 +1317,7 @@ describe('PrivateControlService', () => {
   });
 
   it('preserves incoming MAX text markup when sending broadcast from private bot', async () => {
-    const { service, adminService, channels } = createHarness();
+    const { service, adminService, maxClient, channels } = createHarness();
 
     await service.handleUpdate(
       createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
@@ -1333,6 +1333,15 @@ describe('PrivateControlService', () => {
         },
       ]),
     );
+
+    expect(getLastSendOptions(maxClient)).toEqual(
+      expect.objectContaining({
+        textFormat: 'html',
+      }),
+    );
+    expect(getLastSentText(maxClient)).toContain('<strong>Важный</strong>');
+    expect(getLastSentText(maxClient)).not.toContain('**Важный**');
+
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
 
     expect(adminService.sendChannelBroadcast).toHaveBeenCalledWith(
@@ -1345,6 +1354,44 @@ describe('PrivateControlService', () => {
       }),
       'private_bot',
     );
+  });
+
+  it('renders giveaway content preview without raw markdown markers in private bot', async () => {
+    const { service, maxClient, chats } = createHarness({
+      managedGiveaway: createGiveaway({
+        id: 'giveaway-draft-1',
+        status: 'DRAFT',
+        description: '',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        publicationMessageId: null,
+        publicationUrl: null,
+        publishedAt: null,
+      }),
+    });
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|giveaway_input_prompt|content'));
+    await service.handleUpdate(
+      createPrivateFormattedTextUpdate('Розыгрыш апреля', [
+        {
+          type: 'strong',
+          from: 0,
+          length: 9,
+        },
+      ]),
+    );
+
+    expect(getLastSendOptions(maxClient)).toEqual(
+      expect.objectContaining({
+        textFormat: 'html',
+      }),
+    );
+    expect(getLastSentText(maxClient)).toContain('<strong>Розыгрыш </strong>апреля');
+    expect(getLastSentText(maxClient)).not.toContain('**Розыгрыш**');
   });
 
   it('hands off chat broadcast from miniapp into private bot content flow', async () => {

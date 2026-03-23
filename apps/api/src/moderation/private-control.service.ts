@@ -26,7 +26,10 @@ import {
 } from '@maxim/contracts';
 import { AdminService } from '../admin/admin.service';
 import { ManagedGiveawayService } from '../admin/managed-giveaway.service';
-import { containsSupportedMarkdownSyntax } from '../common/max-markdown.util';
+import {
+  containsSupportedMarkdownSyntax,
+  renderSupportedMarkdownAsHtml,
+} from '../common/max-markdown.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   MaxClientService,
@@ -4675,31 +4678,28 @@ export class PrivateControlService {
       ),
     ]);
 
-    const lines: string[] = [];
-    if (entityLead) {
-      lines.push(entityLead);
-    }
-    if (previewText.length > 0) {
-      if (lines.length > 0) {
-        lines.push('');
-      }
-      lines.push(previewText, '', 'Пришлите новый текст или фото.');
-    } else {
-      if (lines.length > 0) {
-        lines.push('');
-      }
-      lines.push('Пришлите текст или фото.');
-    }
-    if (notice) {
-      lines.push('', usesMarkdown ? this.escapeMarkdown(notice) : notice);
-    }
+    const textPayload =
+      previewText.length > 0 && usesMarkdown
+        ? this.buildHtmlPreviewText({
+            entityLead,
+            contentText: previewText,
+            promptText: 'Пришлите новый текст или фото.',
+            notice,
+          })
+        : this.buildPlainPreviewText({
+            entityLead,
+            contentText: previewText.length > 0 ? previewText : null,
+            promptText:
+              previewText.length > 0 ? 'Пришлите новый текст или фото.' : 'Пришлите текст или фото.',
+            notice,
+          });
 
     return {
-      text: lines.join('\n'),
+      text: textPayload.text,
       options: {
         buttons: rows,
         ...(imagePayload ? { imagePayload } : {}),
-        ...(previewText.length > 0 ? { textFormat: this.buildGiveawayPreviewTextFormat(previewText) } : {}),
+        ...(textPayload.textFormat ? { textFormat: textPayload.textFormat } : {}),
       },
     };
   }
@@ -4746,27 +4746,29 @@ export class PrivateControlService {
     const previewTextFormat = this.buildGiveawayPreviewTextFormat(previewText);
     const usesMarkdown = previewTextFormat === 'markdown';
     const entityLead = await this.buildSelectedEntityLeadLine(context.actor, session, usesMarkdown);
-    const lines: string[] = [];
-
-    if (entityLead) {
-      lines.push(entityLead, '');
-    }
-
-    lines.push(previewText);
-
-    if (notice) {
-      lines.push('', usesMarkdown ? this.escapeMarkdown(notice) : notice);
-    }
+    const textPayload = usesMarkdown
+      ? this.buildHtmlPreviewText({
+          entityLead,
+          contentText: previewText,
+          promptText: null,
+          notice,
+        })
+      : this.buildPlainPreviewText({
+          entityLead,
+          contentText: previewText,
+          promptText: null,
+          notice,
+        });
 
     return {
-      text: lines.join('\n'),
+      text: textPayload.text,
       options: {
         buttons: this.buildGiveawayDraftActionRows(
           giveawaySettingsMiniappRoute,
           giveawaySettingsMiniappUrl,
         ),
         ...(imagePayload ? { imagePayload } : {}),
-        ...(previewTextFormat ? { textFormat: previewTextFormat } : {}),
+        ...(textPayload.textFormat ? { textFormat: textPayload.textFormat } : {}),
       },
     };
   }
@@ -5409,27 +5411,19 @@ export class PrivateControlService {
       waitingForContent || !hasContent
         ? 'Пришлите текст или фото.'
         : 'Пришлите новый текст или фото.';
-    const lines: string[] = [];
-
-    if (entityLead) {
-      lines.push(entityLead);
-    }
-
-    if (hasText) {
-      if (lines.length > 0) {
-        lines.push('');
-      }
-      lines.push(draft.text, '', promptText);
-    } else {
-      if (lines.length > 0) {
-        lines.push('');
-      }
-      lines.push(promptText);
-    }
-
-    if (notice) {
-      lines.push('', usesMarkdown ? this.escapeMarkdown(notice) : notice);
-    }
+    const textPayload = usesMarkdown
+      ? this.buildHtmlPreviewText({
+          entityLead,
+          contentText: hasText ? draft.text : null,
+          promptText,
+          notice,
+        })
+      : this.buildPlainPreviewText({
+          entityLead,
+          contentText: hasText ? draft.text : null,
+          promptText,
+          notice,
+        });
     const rows: MaxMessageButton[][] = [];
 
     if (hasContent) {
@@ -5439,11 +5433,11 @@ export class PrivateControlService {
     rows.push([this.buildMiniappLaunchButton('В приложение', plannerRoute, plannerUrl)]);
 
     return {
-      text: lines.join('\n'),
+      text: textPayload.text,
       options: {
         buttons: rows,
         ...(imagePayload ? { imagePayload } : {}),
-        ...(usesMarkdown ? { textFormat: 'markdown' as const } : {}),
+        ...(textPayload.textFormat ? { textFormat: textPayload.textFormat } : {}),
       },
     };
   }
@@ -5715,6 +5709,72 @@ export class PrivateControlService {
     previewText: string,
   ): MaxSendMessageOptions['textFormat'] | undefined {
     return this.shouldUseMarkdown(previewText) ? 'markdown' : undefined;
+  }
+
+  private buildPlainPreviewText(payload: {
+    entityLead: string | null;
+    contentText: string | null;
+    promptText: string | null;
+    notice: string | null;
+  }): { text: string; textFormat?: MaxSendMessageOptions['textFormat'] } {
+    const lines: string[] = [];
+
+    if (payload.entityLead) {
+      lines.push(payload.entityLead);
+    }
+
+    if (payload.contentText) {
+      if (lines.length > 0) {
+        lines.push('');
+      }
+      lines.push(payload.contentText);
+    }
+
+    if (payload.promptText) {
+      if (lines.length > 0) {
+        lines.push('');
+      }
+      lines.push(payload.promptText);
+    }
+
+    if (payload.notice) {
+      if (lines.length > 0) {
+        lines.push('');
+      }
+      lines.push(payload.notice);
+    }
+
+    return { text: lines.join('\n') };
+  }
+
+  private buildHtmlPreviewText(payload: {
+    entityLead: string | null;
+    contentText: string | null;
+    promptText: string | null;
+    notice: string | null;
+  }): { text: string; textFormat: MaxSendMessageOptions['textFormat'] } {
+    const blocks: string[] = [];
+
+    if (payload.entityLead) {
+      blocks.push(`<p>${this.escapeHtml(payload.entityLead)}</p>`);
+    }
+
+    if (payload.contentText) {
+      blocks.push(renderSupportedMarkdownAsHtml(payload.contentText));
+    }
+
+    if (payload.promptText) {
+      blocks.push(`<p>${this.escapeHtml(payload.promptText)}</p>`);
+    }
+
+    if (payload.notice) {
+      blocks.push(`<p>${this.escapeHtml(payload.notice)}</p>`);
+    }
+
+    return {
+      text: blocks.join(''),
+      textFormat: 'html',
+    };
   }
 
   private async buildContentPreviewImagePayload(
@@ -7564,6 +7624,15 @@ export class PrivateControlService {
 
   private escapeMarkdownText(value: string): string {
     return value.replace(/([\\`*_[\]()~+])/g, '\\$1');
+  }
+
+  private escapeHtml(value: string): string {
+    return value
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   }
 
   private withDebugContext(
