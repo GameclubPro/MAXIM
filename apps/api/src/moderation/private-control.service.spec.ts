@@ -1775,17 +1775,19 @@ describe('PrivateControlService', () => {
     expect(getLastEditedText(maxClient)).toContain('Опубликовано без ошибок.');
   });
 
-  it('greets the user and accepts channel suggestions from a bot deep link', async () => {
+  it('prompts for post content and accepts channel suggestions from a bot deep link', async () => {
     const { service, adminService, maxClient, channels } = createHarness();
     const startPayload = encodeChannelSuggestionStartPayload(channels[0].id, 'cdt-suggest-token-1');
 
     await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
 
-    expect(getLastSentText(maxClient)).toContain('Предложка');
+    expect(getLastSentText(maxClient)).toContain('Контент для поста');
     expect(getLastSentText(maxClient)).toContain(
-      'Отправьте одним сообщением текст, фото или фото с подписью.',
+      'Пришлите следующим сообщением текст, фото или фото с подписью.',
     );
-    expect(getLastSentText(maxClient)).toContain('Администраторы проверят материал');
+    expect(getLastSentText(maxClient)).toContain(
+      'После этого бот сразу отправит материал админу канала на проверку.',
+    );
     const introButtons = getLastButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
@@ -1802,8 +1804,8 @@ describe('PrivateControlService', () => {
         text: 'Текст для публикации',
       },
     );
-    expect(getLastSentText(maxClient)).toContain('Спасибо, предложка получена');
-    expect(getLastSentText(maxClient)).toContain('Передал её администраторам на проверку.');
+    expect(getLastSentText(maxClient)).toContain('Материал отправлен');
+    expect(getLastSentText(maxClient)).toContain('Бот переслал его админу канала на проверку.');
   });
 
   it('accepts a photo-only suggestion in the bot flow', async () => {
@@ -1829,7 +1831,7 @@ describe('PrivateControlService', () => {
         imageFileName: expect.stringContaining('channel-suggestion'),
       }),
     );
-    expect(getLastSentText(maxClient)).toContain('Спасибо, предложка получена');
+    expect(getLastSentText(maxClient)).toContain('Материал отправлен');
   });
 
   it('shows only channel discussion status on the handoff broadcast screen without footer links', async () => {
