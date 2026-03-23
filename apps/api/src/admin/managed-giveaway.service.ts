@@ -1547,14 +1547,19 @@ export class ManagedGiveawayService {
     }
 
     try {
-      const publicationText = this.buildGiveawayPublicationText(giveaway);
+      const publicationTextPayload = this.buildFormattedGiveawayTextPayload(
+        this.buildGiveawayPublicationText(giveaway),
+      );
       if (status === ManagedGiveawayStatus.CANCELED) {
         const button = this.buildGiveawayOpenButton(giveaway.id);
         await this.maxClient.editMessageInlineKeyboard(
           giveaway.sourceChatId,
           messageId,
-          publicationText,
-          button ? { buttons: [[button]] } : undefined,
+          publicationTextPayload.text,
+          this.mergeMessageOptionsWithTextFormat(
+            button ? { buttons: [[button]] } : undefined,
+            publicationTextPayload.textFormat,
+          ),
         );
         return;
       }
@@ -1564,8 +1569,11 @@ export class ManagedGiveawayService {
         await this.maxClient.editMessageInlineKeyboard(
           giveaway.sourceChatId,
           messageId,
-          publicationText,
-          button ? { buttons: [[button]] } : undefined,
+          publicationTextPayload.text,
+          this.mergeMessageOptionsWithTextFormat(
+            button ? { buttons: [[button]] } : undefined,
+            publicationTextPayload.textFormat,
+          ),
         );
         return;
       }
@@ -1574,8 +1582,11 @@ export class ManagedGiveawayService {
       await this.maxClient.editMessageInlineKeyboard(
         giveaway.sourceChatId,
         messageId,
-        publicationText,
-        button ? { buttons: [[button]] } : undefined,
+        publicationTextPayload.text,
+        this.mergeMessageOptionsWithTextFormat(
+          button ? { buttons: [[button]] } : undefined,
+          publicationTextPayload.textFormat,
+        ),
       );
     } catch (error: unknown) {
       this.logger.warn(

@@ -309,6 +309,55 @@ describe('ManagedGiveawayService', () => {
     );
   });
 
+  it('preserves markdown formatting when refreshing the published giveaway post', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-21T10:13:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+
+    const initial = createGiveaway({
+      description: '# Жирный заголовок\n\nТекст с **акцентом**.',
+      publicationMessageId: 'publication-1',
+      entries: [],
+    });
+    const savedEntry = createEntry({
+      eligibilityState: GiveawayEligibilityState.VERIFIED,
+      eligibilityReason: null,
+      missingChannelIds: [],
+    });
+    const latest = createGiveaway({
+      description: '# Жирный заголовок\n\nТекст с **акцентом**.',
+      publicationMessageId: 'publication-1',
+      entries: [savedEntry],
+    });
+
+    prisma.managedGiveaway.findUnique
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(latest);
+    prisma.managedGiveawayEntry.upsert.mockResolvedValue(savedEntry);
+    maxClient.hasChatMember.mockResolvedValueOnce(true).mockResolvedValueOnce(true);
+
+    await service.enterGiveaway('giveaway-1', user);
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'source-1',
+      'publication-1',
+      '<p><strong>Жирный заголовок</strong></p><p>Текст с <strong>акцентом</strong>.</p>',
+      expect.objectContaining({
+        textFormat: 'html',
+        buttons: [[expect.objectContaining({ text: 'Участвовать · 1' })]],
+      }),
+    );
+  });
+
   it('does not auto-recheck rejected entries when reading participant state', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-21T10:15:00.000Z'));
 
