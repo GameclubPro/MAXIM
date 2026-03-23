@@ -5658,10 +5658,204 @@
   color: var(--text-secondary);
 }
 
-.mailing-target-card {
-  border-radius: 16px;
+.broadcast-studio-shell {
+  display: grid;
+  gap: 14px;
+}
+
+.broadcast-studio-shell__tabs .segmented-control__item {
+  flex: 1 1 0;
+  justify-content: center;
+  min-width: 0;
+}
+
+.broadcast-studio-hero {
+  display: grid;
+  gap: 14px;
+  border-radius: 28px;
   border: 1px solid rgba(62, 96, 127, 0.14);
-  background: rgba(255, 255, 255, 0.92);
+  background:
+    radial-gradient(130% 140% at 0% 0%, rgba(11, 132, 255, 0.16), transparent 48%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(242, 248, 255, 0.96));
+  padding: 16px;
+}
+
+.broadcast-studio-hero__topline {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.broadcast-studio-hero__copy {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.broadcast-studio-hero__badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0 10px;
+  background: rgba(11, 132, 255, 0.1);
+  color: #0b66b6;
+  font-size: 0.67rem;
+  font-weight: 800;
+}
+
+.broadcast-studio-hero__copy strong {
+  font-size: 1.12rem;
+  line-height: 1.06;
+  color: rgba(18, 43, 63, 0.98);
+}
+
+.broadcast-studio-hero__copy small {
+  max-width: 32ch;
+  font-size: 0.78rem;
+  line-height: 1.42;
+  color: rgba(65, 86, 106, 0.96);
+}
+
+.broadcast-studio-hero__aside {
+  display: grid;
+  justify-items: end;
+}
+
+.broadcast-studio-hero__metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.broadcast-studio-hero__metric {
+  display: grid;
+  gap: 4px;
+  border-radius: 18px;
+  border: 1px solid rgba(62, 96, 127, 0.12);
+  background: rgba(255, 255, 255, 0.82);
+  padding: 10px 11px;
+}
+
+.broadcast-studio-hero__metric small {
+  font-size: 0.65rem;
+  font-weight: 800;
+  color: var(--text-muted);
+}
+
+.broadcast-studio-hero__metric strong {
+  font-size: 1.04rem;
+  line-height: 1;
+  letter-spacing: -0.05em;
+  color: var(--text-primary);
+}
+
+.broadcast-studio-hero__metric span {
+  font-size: 0.69rem;
+  line-height: 1.25;
+  color: var(--text-secondary);
+}
+
+.broadcast-compose-flow {
+  display: grid;
+  gap: 12px;
+}
+
+.broadcast-stage-card {
+  display: grid;
+  gap: 12px;
+  border-radius: 24px;
+  border: 1px solid rgba(62, 96, 127, 0.12);
+  background: rgba(255, 255, 255, 0.96);
+  padding: 14px;
+}
+
+.broadcast-stage-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.broadcast-stage-card__title-wrap {
+  min-width: 0;
+  display: grid;
+}
+
+.broadcast-stage-card__eyebrow {
+  font-size: 0.66rem;
+}
+
+.broadcast-stage-card__title-wrap strong {
+  font-size: 0.98rem;
+  line-height: 1.12;
+  letter-spacing: -0.03em;
+  color: var(--text-primary);
+}
+
+.broadcast-stage-card__title-wrap small {
+  font-size: 0.75rem;
+  line-height: 1.42;
+  color: var(--text-secondary);
+}
+
+.broadcast-stage-card__status {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  border-radius: 999px;
+  padding: 0 11px;
+  font-size: 0.7rem;
+  font-weight: 800;
+  line-height: 1;
+  white-space: normal;
+  border: 1px solid rgba(62, 96, 127, 0.12);
+  background: rgba(247, 250, 253, 0.96);
+  color: var(--text-secondary);
+}
+
+.broadcast-stage-card__status.is-ready {
+  border-color: rgba(11, 132, 255, 0.22);
+  background: rgba(236, 245, 255, 0.92);
+  color: #0b66b6;
+}
+
+.broadcast-stage-card__status.is-pending {
+  border-color: rgba(230, 175, 54, 0.22);
+  background: rgba(255, 247, 223, 0.94);
+  color: #9d6c0e;
+}
+
+.broadcast-stage-card__body {
+  display: grid;
+  gap: 10px;
+}
+
+.broadcast-stage-card__note {
+  border-radius: 16px;
+  border: 1px solid rgba(62, 96, 127, 0.1);
+  background: rgba(247, 250, 253, 0.96);
+  padding: 10px 12px;
+  font-size: 0.74rem;
+  line-height: 1.42;
+  color: var(--text-secondary);
+}
+
+.broadcast-stage-card__actions {
+  display: flex;
+}
+
+.broadcast-stage-card__actions .button {
+  flex: 1 1 0;
+  min-height: 46px;
+  border-radius: 16px;
+}
+
+.mailing-target-card {
+  border-radius: 18px;
+  border: 1px solid rgba(62, 96, 127, 0.14);
+  background: rgba(248, 251, 255, 0.92);
   padding: 12px;
   display: grid;
   gap: 6px;
@@ -5815,9 +6009,9 @@
 }
 
 .mailing-option-card {
-  border-radius: 16px;
+  border-radius: 18px;
   border: 1px solid rgba(62, 96, 127, 0.14);
-  background: rgba(255, 255, 255, 0.92);
+  background: rgba(248, 251, 255, 0.92);
   padding: 12px;
   display: grid;
   gap: 8px;
@@ -5874,7 +6068,7 @@
 .broadcast-planner__calendar-card,
 .broadcast-planner__sheet,
 .broadcast-planner__review-card {
-  border-radius: 18px;
+  border-radius: 22px;
   border: 1px solid rgba(62, 96, 127, 0.12);
   background: rgba(255, 255, 255, 0.94);
 }
@@ -5882,10 +6076,9 @@
 .broadcast-planner__calendar-card {
   box-sizing: border-box;
   min-width: 0;
-  padding: 14px;
+  padding: 16px;
   display: grid;
-  gap: 10px;
-  box-shadow: 0 8px 18px rgba(20, 50, 79, 0.04);
+  gap: 12px;
 }
 
 .broadcast-planner__calendar-toolbar {
@@ -5931,11 +6124,11 @@
   box-sizing: border-box;
   min-width: 0;
   display: grid;
-  gap: 8px;
-  border-radius: 16px;
+  gap: 10px;
+  border-radius: 18px;
   border: 1px solid rgba(62, 96, 127, 0.1);
-  background: rgba(248, 251, 255, 0.96);
-  padding: 10px;
+  background: rgba(251, 253, 255, 0.98);
+  padding: 12px;
 }
 
 .broadcast-planner__calendar-head {
@@ -5999,8 +6192,8 @@
   box-sizing: border-box;
   min-width: 0;
   position: relative;
-  min-height: 46px;
-  border-radius: 12px;
+  min-height: 48px;
+  border-radius: 14px;
   border: 1px solid rgba(62, 96, 127, 0.08);
   background: rgba(255, 255, 255, 0.98);
   padding: 6px 6px 4px;
@@ -6145,7 +6338,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border-radius: 16px;
+  border-radius: 18px;
   border: 1px solid rgba(62, 96, 127, 0.12);
   background: rgba(248, 251, 255, 0.92);
   padding: 10px 12px;
@@ -6210,7 +6403,7 @@
 
 .broadcast-planner__picked-chip {
   min-width: 92px;
-  border-radius: 14px;
+  border-radius: 16px;
   border: 1px solid rgba(62, 96, 127, 0.12);
   background: rgba(255, 255, 255, 0.94);
   padding: 8px 10px;
@@ -6252,7 +6445,7 @@
   inset: 0;
   border: 0;
   padding: 0;
-  background: rgba(8, 18, 30, 0.28);
+  background: rgba(8, 18, 30, 0.34);
 }
 
 .broadcast-planner-sheet__panel {
@@ -6271,10 +6464,10 @@
 }
 
 .broadcast-planner__sheet {
-  padding: 12px;
+  padding: 16px;
   display: grid;
-  gap: 10px;
-  max-height: min(78dvh, 760px);
+  gap: 12px;
+  max-height: min(82dvh, 780px);
   overflow-y: auto;
 }
 
@@ -6337,7 +6530,7 @@
 
 .broadcast-planner__day-tab {
   min-width: 86px;
-  border-radius: 14px;
+  border-radius: 16px;
   border: 1px solid rgba(62, 96, 127, 0.14);
   background: rgba(255, 255, 255, 0.94);
   padding: 8px 10px;
@@ -6395,8 +6588,8 @@
 }
 
 .broadcast-planner__count-card {
-  min-height: 70px;
-  border-radius: 16px;
+  min-height: 76px;
+  border-radius: 18px;
   border: 1px solid rgba(62, 96, 127, 0.14);
   background: rgba(255, 255, 255, 0.96);
   padding: 12px;
@@ -6424,8 +6617,8 @@
 }
 
 .broadcast-planner__manual-choice {
-  min-height: 42px;
-  border-radius: 14px;
+  min-height: 44px;
+  border-radius: 16px;
   border: 1px dashed rgba(62, 96, 127, 0.18);
   background: rgba(255, 255, 255, 0.72);
   color: var(--text-secondary);
@@ -6460,7 +6653,7 @@
 }
 
 .broadcast-planner__sheet-note {
-  border-radius: 12px;
+  border-radius: 14px;
   border: 1px solid rgba(62, 96, 127, 0.1);
   background: rgba(247, 250, 253, 0.96);
   padding: 8px 10px;
@@ -6477,7 +6670,7 @@
 
 .broadcast-planner__time-summary-item,
 .broadcast-planner__review-stat {
-  border-radius: 14px;
+  border-radius: 16px;
   border: 1px solid rgba(62, 96, 127, 0.12);
   background: rgba(247, 250, 253, 0.96);
   padding: 9px 10px;
@@ -6517,8 +6710,8 @@
 }
 
 .broadcast-planner__time-chip {
-  min-height: 48px;
-  border-radius: 12px;
+  min-height: 52px;
+  border-radius: 14px;
   border: 1px solid rgba(62, 96, 127, 0.12);
   background: rgba(255, 255, 255, 0.96);
   color: var(--text-primary);
@@ -6581,8 +6774,8 @@
 }
 
 .broadcast-planner__sheet-submit {
-  min-height: 46px;
-  border-radius: 14px;
+  min-height: 48px;
+  border-radius: 16px;
   border: 1px solid rgba(11, 132, 255, 0.2);
   background: #2496ff;
   color: #fff;
@@ -6599,9 +6792,9 @@
 }
 
 .broadcast-planner__review-card {
-  padding: 12px;
+  padding: 14px;
   display: grid;
-  gap: 10px;
+  gap: 12px;
 }
 
 .broadcast-planner__review-head {

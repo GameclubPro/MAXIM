@@ -977,6 +977,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         ? 'Кнопки будут только в этом посте.'
         : 'Кнопка будет только в этом посте.';
   const broadcastHasButton = broadcastButtonEnabled && Boolean(broadcastButtonText.trim());
+  const orderedBroadcastSlots = sortAndUniqueBroadcastSlots(broadcastScheduledSlots);
   const broadcastDayCount = countBroadcastScheduleDays(broadcastScheduledSlots);
   const broadcastSlotsLabel = formatChannelCountLabel(
     broadcastScheduledSlots.length,
@@ -988,6 +989,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     broadcastScheduledSlots.length > 0 ? broadcastSlotsLabel : 'без слотов';
   const normalizedBroadcastButtonUrl = broadcastButtonUrl.trim();
   const normalizedBroadcastButtonText = broadcastButtonText.trim();
+  const normalizedBroadcastText = broadcastText.trim();
+  const broadcastContentReady = broadcastBotHasContent;
+  const broadcastContentSummary = broadcastContentReady
+    ? 'Сообщение уже подготовлено в личном чате бота.'
+    : 'Текст и фото собираются в личном чате бота. Здесь остаются календарь и CTA.';
+  const broadcastContentActionLabel = broadcastContentReady
+    ? 'Обновить контент'
+    : 'Добавить контент';
   const broadcastButtonDraftValid =
     !broadcastButtonEnabled ||
     (isHttpUrl(normalizedBroadcastButtonUrl) &&
@@ -1003,28 +1012,50 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       broadcastButtonDraftValid &&
       broadcastPlannerState.isConfirmed &&
       broadcastHasFutureSlots);
+  const showBroadcastReviewCard =
+    broadcastScheduleReady && broadcastButtonDraftValid && broadcastPlannerState.isConfirmed;
   const showBroadcastResetAction =
     broadcastScheduledSlots.length > 0 ||
-    broadcastText.trim().length > 0 ||
+    normalizedBroadcastText.length > 0 ||
     broadcastImageEnabled ||
     broadcastButtonEnabled;
-  const broadcastStudioBadge = broadcastBotHasContent ? 'Контент в боте' : 'Новый сценарий';
-  const broadcastStudioTitle = broadcastBotHasContent
-    ? 'Настройте публикацию'
-    : 'Соберите публикацию';
-  const broadcastStudioMeta = [
-    'Этот канал',
-    broadcastScheduledSlots.length > 0 ? `${broadcastDayCount} дн.` : 'График не собран',
-    broadcastScheduledSlots.length > 0 ? broadcastSlotsLabel : null,
-    broadcastHasButton ? 'CTA' : null,
-  ].filter((item): item is string => Boolean(item));
+  const nextBroadcastSlot =
+    orderedBroadcastSlots.find((slot) => new Date(slot).getTime() > Date.now() + 30_000) ??
+    orderedBroadcastSlots[0] ??
+    null;
   const broadcastHeaderSummary = [
-    broadcastBotHasContent ? 'контент в боте' : 'без контента',
+    broadcastContentReady ? 'контент готов' : 'без контента',
     broadcastHasButton ? 'CTA' : null,
     broadcastSlotsSummary,
   ]
     .filter(Boolean)
     .join(' · ');
+  const broadcastHeroBadge = 'Студия канала';
+  const broadcastHeroTitle = broadcastContentReady
+    ? broadcastHasFutureSlots
+      ? 'Контент готов, осталось проверить запуск'
+      : 'Контент готов, выберите время публикации'
+    : 'Соберите публикацию для канала';
+  const broadcastHeroDescription = broadcastContentReady
+    ? 'Пост уже собран в боте. Здесь управляете календарём и кнопкой перехода.'
+    : 'Сначала откройте личный чат бота и подготовьте текст или фото, затем вернитесь сюда.';
+  const broadcastHeroMetrics = [
+    {
+      label: 'Контент',
+      value: broadcastContentReady ? 'Готов' : 'Ждёт',
+      caption: broadcastContentReady ? 'личный чат бота' : 'нужно открыть бота',
+    },
+    {
+      label: 'Канал',
+      value: '1',
+      caption: 'текущий канал',
+    },
+    {
+      label: 'Слоты',
+      value: broadcastScheduledSlots.length > 0 ? String(broadcastScheduledSlots.length) : '0',
+      caption: broadcastScheduledSlots.length > 0 ? `${broadcastDayCount} дн.` : 'не выбраны',
+    },
+  ] as const;
   const commentsCardSummary = !draft.commentsEnabled
     ? 'обсуждение выключено'
     : draft.commentsModerationEnabled
@@ -1041,10 +1072,16 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const postSuggestionsCardStatus = draft.postSuggestionsEnabled ? 'Авто' : 'Ручн';
   const broadcastCardStatus =
     broadcastScheduledSlots.length > 0 ? 'Календ' : broadcastHasButton ? 'CTA' : 'Бот';
-  const broadcastFooterLabel = broadcastBotHasContent
+  const broadcastReviewTitle = broadcastContentReady
+    ? 'Сценарий готов к подтверждению'
+    : 'Осталось добавить контент';
+  const broadcastReviewSummary = broadcastContentReady
+    ? 'Откроем бота с уже собранным сообщением и этим календарём.'
+    : 'Откроем бота и передадим туда календарь и CTA.';
+  const broadcastFooterLabel = broadcastContentReady
     ? 'Контент уже в боте'
     : 'Финальный шаг в боте';
-  const broadcastFooterHint = broadcastBotHasContent
+  const broadcastFooterHint = broadcastContentReady
     ? 'Кнопка ниже снова откроет бота для замены или подтверждения.'
     : 'В боте останется подтверждение отправки.';
   const broadcastDrilldownFooter = (
@@ -1069,7 +1106,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         >
           {handoffBroadcastMutation.isPending
             ? 'Передаём в бота...'
-            : broadcastBotHasContent
+            : broadcastContentReady
               ? 'Открыть бота'
               : 'Передать в бота'}
         </button>
@@ -1139,18 +1176,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  function handleSendChannelBroadcast() {
+  function validateBroadcastButtonDraft() {
+    let hasError = false;
     const normalizedButtonUrl = broadcastButtonUrl.trim();
     const normalizedButtonText = broadcastButtonText.trim() || 'Открыть';
-    const scheduledSlots = sortAndUniqueBroadcastSlots(broadcastScheduledSlots);
-    const scheduleTimezone = resolveBroadcastScheduleTimezone();
 
     setBroadcastButtonUrlError('');
     setBroadcastButtonTextError('');
-    setBroadcastScheduleError('');
-    setBroadcastCycleError('');
-
-    let hasError = false;
 
     if (broadcastButtonEnabled) {
       if (!isHttpUrl(normalizedButtonUrl)) {
@@ -1161,6 +1193,48 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         setBroadcastButtonTextError('Введите название кнопки до 32 символов.');
         hasError = true;
       }
+    }
+
+    return !hasError;
+  }
+
+  function buildBroadcastHandoffPayload(): BroadcastHandoffPayload {
+    const scheduledSlots = sortAndUniqueBroadcastSlots(broadcastScheduledSlots);
+
+    return {
+      applyToAllChats: false,
+      buttonEnabled: broadcastButtonEnabled,
+      buttonUrl: broadcastButtonUrl.trim(),
+      buttonText: broadcastButtonText.trim() || 'Открыть',
+      scheduleMode: 'calendar',
+      scheduleTimezone: resolveBroadcastScheduleTimezone(),
+      scheduledSlots,
+      sendAt: null,
+      cycleEnabled: false,
+      cycleEveryHours: 1,
+      cycleCount: Math.max(scheduledSlots.length, 1),
+    };
+  }
+
+  function handleOpenChannelBroadcastBot() {
+    if (!validateBroadcastButtonDraft()) {
+      return;
+    }
+
+    setBroadcastScheduleError('');
+    setBroadcastCycleError('');
+    handoffBroadcastMutation.mutate(buildBroadcastHandoffPayload());
+  }
+
+  function handleSendChannelBroadcast() {
+    const scheduledSlots = sortAndUniqueBroadcastSlots(broadcastScheduledSlots);
+    setBroadcastScheduleError('');
+    setBroadcastCycleError('');
+
+    let hasError = false;
+
+    if (!validateBroadcastButtonDraft()) {
+      hasError = true;
     }
 
     if (scheduledSlots.length === 0) {
@@ -1176,19 +1250,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    handoffBroadcastMutation.mutate({
-      applyToAllChats: false,
-      buttonEnabled: broadcastButtonEnabled,
-      buttonUrl: normalizedButtonUrl,
-      buttonText: normalizedButtonText,
-      scheduleMode: 'calendar',
-      scheduleTimezone,
-      scheduledSlots,
-      sendAt: null,
-      cycleEnabled: false,
-      cycleEveryHours: 1,
-      cycleCount: scheduledSlots.length,
-    });
+    handoffBroadcastMutation.mutate(buildBroadcastHandoffPayload());
   }
 
   return (
@@ -1483,18 +1545,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             {expandedSections.broadcast ? (
               <div className="settings-section__collapse-inner">
                 <div className="channel-broadcast-studio">
-                  <div className="managed-broadcast-editor-note managed-broadcast-editor-note--studio">
-                    <div className="managed-broadcast-editor-note__topline">
-                      <div className="managed-broadcast-editor-note__summary">
-                        <span className="managed-broadcast-editor-note__badge">
-                          {broadcastStudioBadge}
-                        </span>
-                        <strong>{broadcastStudioTitle}</strong>
-                        <small className="managed-broadcast-editor-note__meta">
-                          {broadcastStudioMeta.join(' · ')}
-                        </small>
+                  <div className="broadcast-studio-hero">
+                    <div className="broadcast-studio-hero__topline">
+                      <div className="broadcast-studio-hero__copy">
+                        <span className="broadcast-studio-hero__badge">{broadcastHeroBadge}</span>
+                        <strong>{broadcastHeroTitle}</strong>
+                        <small>{broadcastHeroDescription}</small>
                       </div>
-                      <div className="managed-broadcast-editor-note__actions">
+                      <div className="broadcast-studio-hero__aside">
                         {previewBroadcastCountdown ? (
                           <div className="managed-broadcast-editor-note__timer">
                             <span>{previewBroadcastCountdown.label}</span>
@@ -1514,122 +1572,256 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                         ) : null}
                       </div>
                     </div>
+
+                    <div className="broadcast-studio-hero__metrics">
+                      {broadcastHeroMetrics.map((metric) => (
+                        <div key={metric.label} className="broadcast-studio-hero__metric">
+                          <small>{metric.label}</small>
+                          <strong>{metric.value}</strong>
+                          <span>{metric.caption}</span>
+                        </div>
+                      ))}
+                    </div>
                   </div>
 
-                  <BroadcastSchedulePlanner
-                    resetKey={broadcastPlannerResetKey}
-                    value={broadcastScheduledSlots}
-                    occupiedSlots={managedBroadcasts.flatMap(
-                      (broadcast) => broadcast.scheduledSlots,
-                    )}
-                    error={broadcastScheduleError}
-                    disabled={handoffBroadcastMutation.isPending}
-                    onSelectionStateChange={setBroadcastPlannerState}
-                    onChange={(nextValue) => {
-                      setBroadcastScheduledSlots(nextValue);
-                      if (broadcastScheduleError) {
-                        setBroadcastScheduleError('');
-                      }
-                    }}
-                  />
-
-                  <div className="mailing-options-grid">
-                    <div
-                      className={cn(
-                        'mailing-option-card',
-                        broadcastButtonEnabled && 'is-enabled',
-                        (broadcastButtonUrlError || broadcastButtonTextError) && 'field--error',
-                      )}
-                    >
-                      <div className="mailing-option-card__head">
-                        <div className="mailing-option-card__title-wrap">
-                          <div className="mailing-card-title-row">
-                            <span className="mailing-option-card__title">Кнопка</span>
-                            <ChannelSettingsHintAnchor
-                              hintKey="broadcastButton"
-                              openHintKey={openHintKey}
-                              onToggleHint={toggleHint}
-                              label="Пояснение для кнопки в рассылке"
-                            >
-                              Ссылка `http/https`, подпись до 32 символов.
-                            </ChannelSettingsHintAnchor>
-                          </div>
+                  <div className="broadcast-compose-flow">
+                    <div className="broadcast-stage-card broadcast-stage-card--content">
+                      <div className="broadcast-stage-card__head">
+                        <div className="broadcast-stage-card__title-wrap">
+                          <span className="broadcast-stage-card__eyebrow">Шаг 1</span>
+                          <strong>Контент через бота</strong>
+                          <small>{broadcastContentSummary}</small>
                         </div>
-
-                        <label
-                          className="settings-native-switch"
-                          aria-label="Добавить кнопку в пост канала"
+                        <span
+                          className={cn(
+                            'broadcast-stage-card__status',
+                            broadcastContentReady ? 'is-ready' : 'is-pending',
+                          )}
                         >
-                          <input
-                            type="checkbox"
-                            checked={broadcastButtonEnabled}
-                            onChange={(event) => {
-                              const enabled = event.target.checked;
-                              setBroadcastButtonEnabled(enabled);
-                              if (!enabled) {
-                                setBroadcastButtonUrlError('');
-                                setBroadcastButtonTextError('');
-                              }
-                            }}
-                          />
-                          <span className="toggle-switch" aria-hidden>
-                            <span className="toggle-switch__thumb" />
-                          </span>
-                        </label>
+                          {broadcastContentReady ? 'Готов' : 'Нужно открыть'}
+                        </span>
                       </div>
 
-                      {broadcastButtonEnabled ? (
-                        <div className="mailing-option-card__body">
-                          <label
-                            className={cn(
-                              'field settings-url-field',
-                              broadcastButtonUrlError && 'field--error',
-                            )}
-                          >
-                            <span className="field__label">Ссылка кнопки</span>
-                            <input
-                              type="url"
-                              inputMode="url"
-                              value={broadcastButtonUrl}
-                              onChange={(event) => {
-                                setBroadcastButtonUrl(event.target.value);
-                                if (broadcastButtonUrlError) {
-                                  setBroadcastButtonUrlError('');
-                                }
-                              }}
-                              placeholder="https://max.ru/channel/..."
-                            />
-                            {broadcastButtonUrlError ? (
-                              <small className="field__hint">{broadcastButtonUrlError}</small>
-                            ) : null}
-                          </label>
-
-                          <label
-                            className={cn(
-                              'field settings-text-field',
-                              broadcastButtonTextError && 'field--error',
-                            )}
-                          >
-                            <span className="field__label">Название кнопки</span>
-                            <input
-                              type="text"
-                              maxLength={32}
-                              value={broadcastButtonText}
-                              onChange={(event) => {
-                                setBroadcastButtonText(event.target.value);
-                                if (broadcastButtonTextError) {
-                                  setBroadcastButtonTextError('');
-                                }
-                              }}
-                              placeholder="Открыть"
-                            />
-                            {broadcastButtonTextError ? (
-                              <small className="field__hint">{broadcastButtonTextError}</small>
-                            ) : null}
-                          </label>
+                      <div className="broadcast-stage-card__body">
+                        <div className="broadcast-stage-card__note">
+                          После возврата из бота календарь и CTA восстановятся в этом же экране.
                         </div>
-                      ) : null}
+                        <div className="broadcast-stage-card__actions">
+                          <button
+                            type="button"
+                            className="button button--accent"
+                            onClick={handleOpenChannelBroadcastBot}
+                            disabled={handoffBroadcastMutation.isPending}
+                          >
+                            {broadcastContentActionLabel}
+                          </button>
+                        </div>
+                      </div>
                     </div>
+
+                    <div className="broadcast-stage-card broadcast-stage-card--planner">
+                      <div className="broadcast-stage-card__head">
+                        <div className="broadcast-stage-card__title-wrap">
+                          <span className="broadcast-stage-card__eyebrow">Шаг 2</span>
+                          <strong>Календарь публикации</strong>
+                          <small>
+                            Разложите посты по дням и времени, затем быстро проверьте итог.
+                          </small>
+                        </div>
+                        <span
+                          className={cn(
+                            'broadcast-stage-card__status',
+                            broadcastHasFutureSlots ? 'is-ready' : 'is-pending',
+                          )}
+                        >
+                          {broadcastHasFutureSlots ? broadcastSlotsLabel : 'Нет слотов'}
+                        </span>
+                      </div>
+
+                      <div className="broadcast-stage-card__body">
+                        <BroadcastSchedulePlanner
+                          resetKey={broadcastPlannerResetKey}
+                          value={broadcastScheduledSlots}
+                          occupiedSlots={managedBroadcasts.flatMap(
+                            (broadcast) => broadcast.scheduledSlots,
+                          )}
+                          error={broadcastScheduleError}
+                          disabled={handoffBroadcastMutation.isPending}
+                          onSelectionStateChange={setBroadcastPlannerState}
+                          onChange={(nextValue) => {
+                            setBroadcastScheduledSlots(nextValue);
+                            if (broadcastScheduleError) {
+                              setBroadcastScheduleError('');
+                            }
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="broadcast-stage-card">
+                      <div className="broadcast-stage-card__head">
+                        <div className="broadcast-stage-card__title-wrap">
+                          <span className="broadcast-stage-card__eyebrow">Дополнительно</span>
+                          <strong>CTA на пост</strong>
+                          <small>
+                            Кнопка уходит сразу под сообщение канала и ведёт по вашей ссылке.
+                          </small>
+                        </div>
+                        <span
+                          className={cn(
+                            'broadcast-stage-card__status',
+                            broadcastHasButton ? 'is-ready' : 'is-muted',
+                          )}
+                        >
+                          {broadcastHasButton ? 'CTA включён' : 'Без CTA'}
+                        </span>
+                      </div>
+
+                      <div className="broadcast-stage-card__body">
+                        <div className="mailing-options-grid">
+                          <div
+                            className={cn(
+                              'mailing-option-card',
+                              broadcastButtonEnabled && 'is-enabled',
+                              (broadcastButtonUrlError || broadcastButtonTextError) &&
+                                'field--error',
+                            )}
+                          >
+                            <div className="mailing-option-card__head">
+                              <div className="mailing-option-card__title-wrap">
+                                <div className="mailing-card-title-row">
+                                  <span className="mailing-option-card__title">Кнопка</span>
+                                  <ChannelSettingsHintAnchor
+                                    hintKey="broadcastButton"
+                                    openHintKey={openHintKey}
+                                    onToggleHint={toggleHint}
+                                    label="Пояснение для кнопки в рассылке"
+                                  >
+                                    Ссылка `http/https`, подпись до 32 символов.
+                                  </ChannelSettingsHintAnchor>
+                                </div>
+                              </div>
+
+                              <label
+                                className="settings-native-switch"
+                                aria-label="Добавить кнопку в пост канала"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={broadcastButtonEnabled}
+                                  onChange={(event) => {
+                                    const enabled = event.target.checked;
+                                    setBroadcastButtonEnabled(enabled);
+                                    if (!enabled) {
+                                      setBroadcastButtonUrlError('');
+                                      setBroadcastButtonTextError('');
+                                    }
+                                  }}
+                                />
+                                <span className="toggle-switch" aria-hidden>
+                                  <span className="toggle-switch__thumb" />
+                                </span>
+                              </label>
+                            </div>
+
+                            {broadcastButtonEnabled ? (
+                              <div className="mailing-option-card__body">
+                                <label
+                                  className={cn(
+                                    'field settings-url-field',
+                                    broadcastButtonUrlError && 'field--error',
+                                  )}
+                                >
+                                  <span className="field__label">Ссылка кнопки</span>
+                                  <input
+                                    type="url"
+                                    inputMode="url"
+                                    value={broadcastButtonUrl}
+                                    onChange={(event) => {
+                                      setBroadcastButtonUrl(event.target.value);
+                                      if (broadcastButtonUrlError) {
+                                        setBroadcastButtonUrlError('');
+                                      }
+                                    }}
+                                    placeholder="https://max.ru/channel/..."
+                                  />
+                                  {broadcastButtonUrlError ? (
+                                    <small className="field__hint">
+                                      {broadcastButtonUrlError}
+                                    </small>
+                                  ) : null}
+                                </label>
+
+                                <label
+                                  className={cn(
+                                    'field settings-text-field',
+                                    broadcastButtonTextError && 'field--error',
+                                  )}
+                                >
+                                  <span className="field__label">Название кнопки</span>
+                                  <input
+                                    type="text"
+                                    maxLength={32}
+                                    value={broadcastButtonText}
+                                    onChange={(event) => {
+                                      setBroadcastButtonText(event.target.value);
+                                      if (broadcastButtonTextError) {
+                                        setBroadcastButtonTextError('');
+                                      }
+                                    }}
+                                    placeholder="Открыть"
+                                  />
+                                  {broadcastButtonTextError ? (
+                                    <small className="field__hint">
+                                      {broadcastButtonTextError}
+                                    </small>
+                                  ) : null}
+                                </label>
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {showBroadcastReviewCard ? (
+                      <div className="broadcast-stage-card broadcast-stage-card--review">
+                        <div className="broadcast-stage-card__head">
+                          <div className="broadcast-stage-card__title-wrap">
+                            <span className="broadcast-stage-card__eyebrow">Проверка</span>
+                            <strong>{broadcastReviewTitle}</strong>
+                            <small>{broadcastReviewSummary}</small>
+                          </div>
+                          <span
+                            className={cn(
+                              'broadcast-stage-card__status',
+                              broadcastContentReady ? 'is-ready' : 'is-pending',
+                            )}
+                          >
+                            {broadcastContentReady ? 'Можно запускать' : 'Остался бот'}
+                          </span>
+                        </div>
+
+                        <div className="broadcast-studio-hero__metrics">
+                          <div className="broadcast-studio-hero__metric">
+                            <small>Канал</small>
+                            <strong>Этот канал</strong>
+                          </div>
+                          <div className="broadcast-studio-hero__metric">
+                            <small>Календарь</small>
+                            <strong>{broadcastSlotsLabel}</strong>
+                          </div>
+                          <div className="broadcast-studio-hero__metric">
+                            <small>Следующий слот</small>
+                            <strong>
+                              {nextBroadcastSlot
+                                ? formatCompactChannelBroadcastDateTime(nextBroadcastSlot)
+                                : 'Не выбран'}
+                            </strong>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               </div>

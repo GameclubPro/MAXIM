@@ -235,10 +235,25 @@ export function BroadcastSchedulePlanner({
     (slot) => new Date(slot).getTime() < minimumTime,
   ).length;
   const futureSlotCount = normalizedValue.length - pastSlotCount;
+  const todayDayKey = getBroadcastScheduleDayKey(anchorNow);
   const isReviewStep =
     isConfirmed && normalizedValue.length > 0 && pickedDayKeys.length === 0 && !isDaySheetOpen;
   const slotCountLabel = formatCountLabel(normalizedValue.length, 'слот', 'слота', 'слотов');
   const dayCountLabel = formatCountLabel(selectedDayCount, 'день', 'дня', 'дней');
+  const timeStepHints: string[] = [];
+
+  if (applyToAllPickedDays && pickedDayKeys.length > 1) {
+    timeStepHints.push('Один набор часов для всех дат');
+  }
+
+  if (targetDayKeys.includes(todayDayKey)) {
+    timeStepHints.push('Прошедшие часы за сегодня засчитаем');
+  }
+
+  if (occupiedSlots.length > 0) {
+    timeStepHints.push('Занятые слоты уже помечены');
+  }
+
   const emitSelectionStateChange = useEffectEvent(
     (nextState: BroadcastSchedulePlannerSelectionState) => {
       onSelectionStateChange?.(nextState);
@@ -858,13 +873,12 @@ export function BroadcastSchedulePlanner({
 
                       {pickedDayKeys.length > 1 ? (
                         <div className="broadcast-planner__sheet-note">
-                          Частота применится ко всем выбранным датам.
+                          Частота применится ко всем датам.
                         </div>
                       ) : null}
 
                       <div className="broadcast-planner__sheet-note">
-                        Пресеты не сдвигают время автоматически. Занятые слоты будут отмечены на
-                        следующем шаге.
+                        Выберите основу, затем быстро поправьте отдельные часы.
                       </div>
 
                       <div className="broadcast-planner__count-grid">
@@ -985,19 +999,11 @@ export function BroadcastSchedulePlanner({
                             </span>
                           ))}
                         </div>
-                      ) : applyToAllPickedDays && pickedDayKeys.length > 1 ? (
-                        <div className="broadcast-planner__sheet-note">
-                          Эти часы применятся ко всем датам.
-                        </div>
                       ) : null}
 
-                      <div className="broadcast-planner__sheet-note">
-                        Прошедшие часы за сегодня просто засчитаем.
-                      </div>
-
-                      {occupiedSlots.length > 0 ? (
+                      {timeStepHints.length > 0 ? (
                         <div className="broadcast-planner__sheet-note">
-                          Слоты других рассылок помечены как занятые.
+                          {timeStepHints.join(' · ')}
                         </div>
                       ) : null}
 
