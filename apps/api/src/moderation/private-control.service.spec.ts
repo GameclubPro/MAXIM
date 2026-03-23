@@ -579,6 +579,14 @@ function createHarness(
       violations: [],
     }),
     applyManualModerationAction: jest.fn().mockResolvedValue({ success: true, message: 'Готово' }),
+    applyManualSystemBan: jest.fn().mockResolvedValue({
+      ok: true,
+      action: 'BAN',
+      userId: 'user-77',
+      banDurationHours: null,
+      unbanScheduledAt: null,
+      message: 'Участник забанен в чате.',
+    }),
     getChatPoll: jest.fn().mockResolvedValue(createPoll()),
     updateChatPoll: jest.fn().mockImplementation(async (_chatId, _actor, draft) =>
       createPoll({
@@ -1053,7 +1061,7 @@ describe('PrivateControlService', () => {
     expect(sentMessages.some((text) => text.includes('классический вид'))).toBe(false);
   });
 
-  it('bans a forwarded sender from private chat using the chat default duration', async () => {
+  it('bans a forwarded sender from private chat with the permanent ban command', async () => {
     const { service, adminService, maxClient, chats } = createHarness({
       settings: {
         ...defaultSettings,
@@ -1063,26 +1071,23 @@ describe('PrivateControlService', () => {
 
     await service.handleUpdate(createPrivateForwardedBanUpdate());
 
-    expect(adminService.applyManualModerationAction).toHaveBeenCalledWith(
+    expect(adminService.applyManualSystemBan).toHaveBeenCalledWith(
       chats[0].id,
       'user-77',
       expect.objectContaining({
         userId: 'user-1',
         chatId: '152517912',
       }),
-      {
-        action: 'BAN',
-        banDurationHours: 12,
-      },
-      'private_bot',
+      'private_command',
     );
-    expect(getLastSentText(maxClient)).toContain('Готово');
+    expect(adminService.applyManualModerationAction).not.toHaveBeenCalled();
+    expect(getLastSentText(maxClient)).toContain('Участник забанен в чате.');
     expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
     expect(getLastSentText(maxClient)).toContain('Пользователь: Нарушитель (user-77)');
   });
 
-  it('uses an explicit duration in the forwarded ban command', async () => {
-    const { service, adminService, chats } = createHarness({
+  it('rejects explicit duration in the forwarded ban command', async () => {
+    const { service, adminService, maxClient } = createHarness({
       settings: {
         ...defaultSettings,
         banDurationHours: 6,
@@ -1091,18 +1096,9 @@ describe('PrivateControlService', () => {
 
     await service.handleUpdate(createPrivateForwardedBanUpdate('бан 24'));
 
-    expect(adminService.applyManualModerationAction).toHaveBeenCalledWith(
-      chats[0].id,
-      'user-77',
-      expect.objectContaining({
-        userId: 'user-1',
-        chatId: '152517912',
-      }),
-      {
-        action: 'BAN',
-        banDurationHours: 24,
-      },
-      'private_bot',
+    expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
+    expect(getLastSentText(maxClient)).toContain(
+      'Команда «бан» теперь делает только постоянный системный бан. Используйте просто «бан».',
     );
   });
 

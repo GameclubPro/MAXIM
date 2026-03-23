@@ -308,7 +308,6 @@ type DownloadedImageAsset = {
 
 type ForwardedModerationCommand = {
   action: 'BAN';
-  banDurationHours: number | null;
 };
 
 type ForwardedModerationTarget = {
@@ -341,7 +340,6 @@ const MAX_CALLBACK_PREFIX = 'pc2';
 const LEGACY_CALLBACK_PREFIX = 'pc';
 const CALLBACK_REFRESH_NOTIFICATION = 'Меню обновлено';
 const CALLBACK_STALE_NOTIFICATION = 'Кнопки устарели, обновляю экран';
-const DEFAULT_FORWARDED_BAN_DURATION_HOURS = 6;
 const MAX_FORWARDED_COMMAND_SCAN_DEPTH = 8;
 const MINIAPP_SETTINGS_ONLY_CALLBACK_ACTIONS = new Set<string>([
   'open_settings_hub',
@@ -1439,12 +1437,7 @@ export class PrivateControlService {
     if (forwardedModerationCommand) {
       const forwardedTargets = this.extractForwardedModerationTargets(context.update);
       if (forwardedTargets.length > 0) {
-        await this.handleForwardedModerationCommand(
-          context,
-          session,
-          forwardedModerationCommand,
-          forwardedTargets,
-        );
+        await this.handleForwardedModerationCommand(context, session, forwardedTargets);
         return;
       }
     }
@@ -1541,7 +1534,6 @@ export class PrivateControlService {
   private async handleForwardedModerationCommand(
     context: PrivateContext,
     session: PrivateSession,
-    command: ForwardedModerationCommand,
     targets: ForwardedModerationTarget[],
   ): Promise<void> {
     const uniqueTargets = this.dedupeForwardedModerationTargets(targets);
@@ -1552,20 +1544,11 @@ export class PrivateControlService {
     }
 
     const target = uniqueTargets[0];
-    const banDurationHours = await this.resolveForwardedBanDurationHours(
-      target.chatId,
-      context.actor,
-      command.banDurationHours,
-    );
-    const result = await this.adminService.applyManualModerationAction(
+    const result = await this.adminService.applyManualSystemBan(
       target.chatId,
       target.userId,
       context.actor,
-      {
-        action: command.action,
-        banDurationHours,
-      },
-      'private_bot',
+      'private_command',
     );
 
     await this.saveSession(context.actor.userId, session);
@@ -1578,55 +1561,34 @@ export class PrivateControlService {
     await this.sendImmediate(context.chatId, lines.join('\n'));
   }
 
-  private async resolveForwardedBanDurationHours(
-    chatId: string,
-    actor: AuthUser,
-    explicitHours: number | null,
-  ): Promise<number> {
-    if (explicitHours !== null) {
-      return explicitHours;
-    }
-
-    try {
-      const settings = await this.adminService.getSettings(chatId, actor);
-      if (
-        typeof settings?.banDurationHours === 'number' &&
-        Number.isInteger(settings.banDurationHours) &&
-        settings.banDurationHours >= 1 &&
-        settings.banDurationHours <= 336
-      ) {
-        return settings.banDurationHours;
-      }
-    } catch (error: unknown) {
-      this.logger.debug(
-        {
-          chatId,
-          userId: actor.userId,
-          err: error instanceof Error ? error.message : String(error),
-        },
-        'Failed to resolve forwarded ban duration from chat settings',
-      );
-    }
-
-    return DEFAULT_FORWARDED_BAN_DURATION_HOURS;
-  }
-
   private parseForwardedModerationCommand(text: string): ForwardedModerationCommand | null {
     const normalized = this.readLowerString(text);
     if (!normalized) {
       return null;
     }
 
-    const match = normalized.match(
-      /^(?:бан|ban)(?:\s+(\d{1,3}))?(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.!]?$/u,
-    );
-    if (!match) {
+    if (normalized === 'бан' || normalized === 'ban' || normalized === 'бан!' || normalized === 'ban!') {
+      return {
+        action: 'BAN',
+      };
+    }
+
+    if (
+      /^(?:бан|ban)\s+\d{1,3}(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.!]?$/u.test(
+        normalized,
+      )
+    ) {
+      throw new BadRequestException(
+        'Команда «бан» теперь делает только постоянный системный бан. Используйте просто «бан».',
+      );
+    }
+
+    if (!/^(?:бан|ban)[.!]?$/u.test(normalized)) {
       return null;
     }
 
     return {
       action: 'BAN',
-      banDurationHours: match[1] ? this.parseIntInput(match[1], 1, 336) : null,
     };
   }
 

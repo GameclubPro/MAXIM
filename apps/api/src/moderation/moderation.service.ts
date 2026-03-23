@@ -89,7 +89,6 @@ type ChannelDialogType = 'comments' | 'suggest';
 
 type AdminForwardedModerationCommand = {
   action: 'BAN';
-  banDurationHours: number | null;
 };
 
 type ForwardedModerationTarget = {
@@ -3424,19 +3423,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       chatId,
       chatTitle: chatTitle?.trim() || null,
     };
-    const banDurationHours =
-      command.banDurationHours ??
-      this.resolveGroupCommandBanDurationHours(settings.banDurationHours);
-
     try {
-      const result = await this.adminService.applyManualModerationAction(
+      const result = await this.adminService.applyManualSystemBan(
         chatId,
         target.userId,
         actor,
-        {
-          action: command.action,
-          banDurationHours,
-        },
         'group_command',
       );
 
@@ -3469,12 +3460,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return true;
   }
 
-  private resolveGroupCommandBanDurationHours(value: number): number {
-    return Number.isInteger(value) && value >= 1 && value <= 336
-      ? value
-      : DEFAULT_BAN_DURATION_HOURS;
-  }
-
   private parseAdminForwardedModerationCommand(
     text: string,
   ): AdminForwardedModerationCommand | null {
@@ -3483,28 +3468,28 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
 
-    const match = normalized.match(
-      /^(?:бан|ban)(?:\s+(\d{1,3}))?(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.!]?$/u,
-    );
-    if (!match) {
-      return null;
-    }
-
-    if (!match[1]) {
+    if (normalized === 'бан' || normalized === 'ban' || normalized === 'бан!' || normalized === 'ban!') {
       return {
         action: 'BAN',
-        banDurationHours: null,
       };
     }
 
-    const hours = Number.parseInt(match[1], 10);
-    if (!Number.isInteger(hours) || hours < 1 || hours > 336) {
-      throw new BadRequestException('Длительность бана должна быть от 1 до 336 часов.');
+    if (
+      /^(?:бан|ban)\s+\d{1,3}(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.!]?$/u.test(
+        normalized,
+      )
+    ) {
+      throw new BadRequestException(
+        'Команда `бан` теперь делает только постоянный системный бан. Используйте просто `бан`.',
+      );
+    }
+
+    if (!/^(?:бан|ban)[.!]?$/u.test(normalized)) {
+      return null;
     }
 
     return {
       action: 'BAN',
-      banDurationHours: hours,
     };
   }
 

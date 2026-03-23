@@ -4146,7 +4146,7 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
   });
 
-  it('lets chat admins ban a forwarded sender from the same chat with the ban command', async () => {
+  it('lets chat admins permanently ban a forwarded sender from the same chat with the ban command', async () => {
     const prisma = {
       chat: {
         upsert: jest.fn().mockResolvedValue({
@@ -4188,13 +4188,13 @@ describe('ModerationService', () => {
       notifyModerators: jest.fn(),
     };
     const adminService = {
-      applyManualModerationAction: jest.fn().mockResolvedValue({
+      applyManualSystemBan: jest.fn().mockResolvedValue({
         ok: true,
         action: 'BAN',
         userId: 'user-2',
-        banDurationHours: 12,
-        unbanScheduledAt: new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString(),
-        message: 'Участник забанен на 12ч. Авторазбан запланирован.',
+        banDurationHours: null,
+        unbanScheduledAt: null,
+        message: 'Участник забанен в чате.',
       }),
     };
 
@@ -4214,7 +4214,7 @@ describe('ModerationService', () => {
     await service.handleUpdate(createAdminForwardedBanUpdate());
 
     expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
-    expect(adminService.applyManualModerationAction).toHaveBeenCalledWith(
+    expect(adminService.applyManualSystemBan).toHaveBeenCalledWith(
       'chat-1',
       'user-2',
       expect.objectContaining({
@@ -4222,10 +4222,6 @@ describe('ModerationService', () => {
         chatId: 'chat-1',
         chatTitle: null,
       }),
-      {
-        action: 'BAN',
-        banDurationHours: 12,
-      },
       'group_command',
     );
     expect(ruleEngine.detect).not.toHaveBeenCalled();
@@ -4233,10 +4229,75 @@ describe('ModerationService', () => {
       immediate: true,
     });
     const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
-    expect(
-      sentTexts.some((text) => text.includes('Участник забанен на 12ч. Авторазбан запланирован.')),
-    ).toBe(true);
+    expect(sentTexts.some((text) => text.includes('Участник забанен в чате.'))).toBe(true);
     expect(sentTexts.some((text) => text.includes('Пользователь: **Нарушитель**'))).toBe(true);
+  });
+
+  it('rejects duration suffix for the group ban command', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings(),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = {
+      applyManualSystemBan: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createAdminForwardedBanUpdate('бан 24'));
+
+    expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
+    const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
+    expect(
+      sentTexts.some((text) =>
+        text.includes(
+          'Команда `бан` теперь делает только постоянный системный бан. Используйте просто `бан`.',
+        ),
+      ),
+    ).toBe(true);
   });
 
   it('rejects admin ban command when the forwarded message comes from another chat', async () => {

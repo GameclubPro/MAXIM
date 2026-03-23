@@ -143,7 +143,11 @@ type AdminAccessResolution =
       error: unknown;
     };
 
-export type AdminActionSource = 'miniapp' | 'private_bot' | 'group_command';
+export type AdminActionSource =
+  | 'miniapp'
+  | 'private_bot'
+  | 'private_command'
+  | 'group_command';
 
 type ManualMemberModerationAction = 'KICK' | 'BAN';
 type ManualBanExecutionMode = 'MAX_BLOCK' | 'MAX_REMOVE_ONLY';
@@ -5757,14 +5761,7 @@ export class AdminService {
     body: unknown,
     source: AdminActionSource = 'miniapp',
   ): Promise<ManualModerationActionResult> {
-    await this.assertChatAdmin(chatId, user.userId);
-    const targetUserId = targetUserIdRaw.trim();
-    if (!targetUserId) {
-      throw new BadRequestException('User ID is required');
-    }
-    if (targetUserId === user.userId) {
-      throw new BadRequestException('Нельзя применять это действие к своему аккаунту.');
-    }
+    const targetUserId = await this.prepareManualModerationTarget(chatId, targetUserIdRaw, user);
 
     const parsed = manualModerationActionRequestSchema.safeParse(body);
     if (!parsed.success) {
@@ -5938,6 +5935,90 @@ export class AdminService {
     });
   }
 
+  async applyManualSystemBan(
+    chatId: string,
+    targetUserIdRaw: string,
+    user: AuthUser,
+    source: Extract<AdminActionSource, 'group_command' | 'private_command'> = 'group_command',
+  ): Promise<ManualModerationActionResult> {
+    const targetUserId = await this.prepareManualModerationTarget(chatId, targetUserIdRaw, user);
+    await this.assertManualMemberModerationPreconditions(chatId, targetUserId, 'BAN');
+
+    try {
+      await this.maxClient.cancelScheduledUnban(chatId, targetUserId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId: targetUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to cancel scheduled auto-unban before permanent manual ban',
+      );
+    }
+
+    try {
+      await this.maxClient.banMember(chatId, targetUserId, { immediate: true });
+    } catch (error: unknown) {
+      const resolvedMessage = await this.resolveManualMemberModerationErrorMessage(
+        chatId,
+        targetUserId,
+        'BAN',
+        error,
+      );
+      throw new BadRequestException(resolvedMessage || 'Не удалось применить системный бан.');
+    }
+
+    await this.recordManualModerationAction({
+      chatId,
+      targetUserId,
+      actorUserId: user.userId,
+      ruleCode: 'MANUAL_BAN',
+      sanctionAction: SanctionAction.BAN,
+      auditAction: 'MANUAL_BAN_MEMBER',
+      metadata: {
+        source,
+        initiatedByUserId: user.userId,
+        reason:
+          source === 'group_command'
+            ? 'Постоянный ручной бан участника через команду в чате'
+            : 'Постоянный ручной бан участника через команду в личке',
+        mode: 'MAX_BLOCK_PERMANENT',
+      },
+      auditPayload: {
+        userId: targetUserId,
+        source,
+        permanent: true,
+      },
+    });
+
+    return manualModerationActionResultSchema.parse({
+      ok: true,
+      action: 'BAN',
+      userId: targetUserId,
+      banDurationHours: null,
+      unbanScheduledAt: null,
+      message: 'Участник забанен в чате.',
+    });
+  }
+
+  private async prepareManualModerationTarget(
+    chatId: string,
+    targetUserIdRaw: string,
+    user: AuthUser,
+  ): Promise<string> {
+    await this.assertChatAdmin(chatId, user.userId);
+    const targetUserId = targetUserIdRaw.trim();
+    if (!targetUserId) {
+      throw new BadRequestException('User ID is required');
+    }
+    if (targetUserId === user.userId) {
+      throw new BadRequestException('Нельзя применять это действие к своему аккаунту.');
+    }
+
+    return targetUserId;
+  }
+
   private async assertManualMemberModerationPreconditions(
     chatId: string,
     targetUserId: string,
@@ -6073,7 +6154,7 @@ export class AdminService {
     }
 
     return action === 'BAN'
-      ? 'MAX отклонил блокировку участника. Для закрытых чатов без ссылки будет применяться удаление без block; если ошибка повторится, проверьте тип чата и статус цели.'
+      ? 'MAX отклонил бан участника. Проверьте тип чата, статус цели и права бота.'
       : 'MAX отклонил удаление участника. Проверьте тип чата и статус цели.';
   }
 
