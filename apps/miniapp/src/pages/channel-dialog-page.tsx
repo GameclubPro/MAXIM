@@ -163,6 +163,36 @@ function buildSwipeReplyStyle(preview: SwipeReplyPreview | null, messageId: stri
   } as CSSProperties;
 }
 
+function buildAdminBubbleStyle(isAdmin: boolean, isOwnMessage: boolean): CSSProperties | undefined {
+  if (!isAdmin) {
+    return undefined;
+  }
+
+  if (isOwnMessage) {
+    return {
+      background:
+        'linear-gradient(160deg, rgba(255, 231, 182, 0.96), rgba(255, 244, 220, 0.95))',
+      borderColor: 'rgba(225, 176, 82, 0.36)',
+    };
+  }
+
+  return {
+    background:
+      'linear-gradient(180deg, rgba(255, 249, 237, 0.98), rgba(255, 243, 214, 0.96))',
+    borderColor: 'rgba(224, 180, 96, 0.34)',
+  };
+}
+
+function buildAdminAuthorStyle(isAdmin: boolean): CSSProperties | undefined {
+  if (!isAdmin) {
+    return undefined;
+  }
+
+  return {
+    color: '#8f6117',
+  };
+}
+
 function getViewportDistanceToBottom(viewport: HTMLElement): number {
   return viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight;
 }
@@ -1530,6 +1560,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
               {messages.length ? (
                 messages.map((message, index) => {
                   const isOwnMessage = meQuery.data?.userId === message.authorUserId;
+                  const isAdminMessage = message.isAdmin === true;
                   const groupedWithPrevious = isGroupedWithPrevious(messages, index);
                   const isActiveMessage = activeMessageId === message.id;
                   const messageWidthTone = resolveMessageWidthTone(message);
@@ -1614,6 +1645,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                                 groupedWithPrevious && 'is-grouped',
                               )}
                               data-message-bubble-id={message.id}
+                              style={buildAdminBubbleStyle(isAdminMessage, isOwnMessage)}
                               onClick={dialogType === 'comments' ? handleBubbleClick(message.id) : undefined}
                               onKeyDown={
                                 dialogType === 'comments' ? handleBubbleKeyDown(message.id) : undefined
@@ -1644,7 +1676,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                             >
                               {!groupedWithPrevious ? (
                                 <div className="channel-dialog-message__meta">
-                                  <strong>{getAuthorLabel(message)}</strong>
+                                  <strong style={buildAdminAuthorStyle(isAdminMessage)}>
+                                    {getAuthorLabel(message)}
+                                  </strong>
                                   <time dateTime={message.createdAt}>
                                     {formatMessageTime(message.createdAt)}
                                   </time>

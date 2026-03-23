@@ -1760,6 +1760,7 @@ export const channelDialogMessageSchema = z.object({
   text: z.string(),
   authorUserId: z.string(),
   authorDisplayName: z.string().nullable(),
+  isAdmin: z.boolean().default(false),
   avatarUrl: z.string().trim().url().nullable().default(null),
   createdAt: z.string().datetime(),
   replyToMessageId: z.string().nullable().optional(),

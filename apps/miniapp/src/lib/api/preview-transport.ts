@@ -503,6 +503,7 @@ function buildPreviewDialogMessage(payload: {
   text: string;
   authorUserId: string;
   authorDisplayName: string | null;
+  isAdmin?: boolean;
   avatarUrl?: string | null;
   createdAt: string;
   replyToMessageId?: string | null;
@@ -517,6 +518,7 @@ function buildPreviewDialogMessage(payload: {
     text: payload.text,
     authorUserId: payload.authorUserId,
     authorDisplayName: payload.authorDisplayName,
+    isAdmin: payload.isAdmin ?? payload.authorUserId.startsWith('preview-admin'),
     avatarUrl: payload.avatarUrl ?? null,
     createdAt: payload.createdAt,
     ...(payload.replyToMessageId !== undefined ? { replyToMessageId: payload.replyToMessageId } : {}),

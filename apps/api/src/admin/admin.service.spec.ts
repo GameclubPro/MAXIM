@@ -4033,6 +4033,102 @@ describe('AdminService.sendBroadcast', () => {
       avatarUrl: 'https://cdn.max.ru/u/2/avatar-full.jpg',
     });
   });
+
+  it('marks admin authors in chat dialog responses and immediate create results', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatSettings.findUnique.mockResolvedValue(
+      chatSettingsSchema.parse({
+        commentsEnabled: true,
+        commentsAdminsEnabled: true,
+        commentsAllEnabled: true,
+        commentsChatBroadcastsEnabled: true,
+      }),
+    );
+    prisma.auditLog.create.mockResolvedValue({
+      id: 'chat-comment-admin-created',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-06T08:05:00.000Z'),
+    });
+    prisma.auditLog.findMany.mockResolvedValue([
+      {
+        id: 'chat-comment-user-2',
+        actorUserId: 'user-2',
+        payload: {
+          type: 'comments',
+          text: 'Обычный комментарий',
+          authorDisplayName: 'Марина',
+        },
+        createdAt: new Date('2026-03-06T07:59:00.000Z'),
+      },
+      {
+        id: 'chat-comment-admin-1',
+        actorUserId: 'admin-1',
+        payload: {
+          type: 'comments',
+          text: 'Комментарий администратора',
+          authorDisplayName: 'Александр',
+        },
+        createdAt: new Date('2026-03-06T07:54:00.000Z'),
+      },
+    ]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1', 'user-1']),
+      getChatMemberProfiles: jest.fn().mockResolvedValue(new Map()),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = createChatContextCacheMock();
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const threadId = 'chat-thread-admin-accent';
+    const commentsToken = (
+      service as unknown as { buildEntityDialogToken: Function }
+    ).buildEntityDialogToken('chat', 'chat-1', 'comments', threadId) as string;
+
+    const created = await service.createChatDialogMessage(
+      'chat-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Админ Алексей',
+        chatTitle: null,
+      },
+      'comments',
+      {
+        token: commentsToken,
+        text: 'Комментарий от администратора',
+      },
+    );
+
+    const loaded = await service.getChatDialog(
+      'chat-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Админ Алексей',
+        chatTitle: null,
+      },
+      'comments',
+      commentsToken,
+    );
+
+    expect(created.message.isAdmin).toBe(true);
+    expect(loaded.messages[0]).toMatchObject({
+      authorUserId: 'admin-1',
+      isAdmin: true,
+    });
+    expect(loaded.messages[1]).toMatchObject({
+      authorUserId: 'user-2',
+      isAdmin: false,
+    });
+  });
 });
 
 describe('AdminService.sendChannelBroadcast', () => {
@@ -5460,6 +5556,82 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         id: 'comment-1',
         reactionGroups: [{ emoji: '👍', count: 2, reactedByMe: true }],
       },
+    });
+  });
+
+  it('keeps admin marker on a channel comment after reaction toggle', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+      }),
+    );
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'comment-admin-1',
+      actorUserId: 'admin-1',
+      payload: {
+        type: 'comments',
+        threadId: 'channel-thread-admin-reactions',
+        text: 'Админский комментарий',
+        authorDisplayName: 'Александр',
+        reactions: [{ emoji: '👍', userIds: ['user-2'] }],
+      },
+      createdAt: new Date('2026-03-20T09:00:00.000Z'),
+    });
+    prisma.auditLog.update.mockResolvedValue({
+      id: 'comment-admin-1',
+      actorUserId: 'admin-1',
+      payload: {
+        type: 'comments',
+        threadId: 'channel-thread-admin-reactions',
+        text: 'Админский комментарий',
+        authorDisplayName: 'Александр',
+        reactions: [{ emoji: '👍', userIds: ['user-2', 'user-3'] }],
+      },
+      createdAt: new Date('2026-03-20T09:00:00.000Z'),
+    });
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const commentsToken = (
+      service as unknown as { buildEntityDialogToken: Function }
+    ).buildEntityDialogToken(
+      'channel',
+      'channel-1',
+      'comments',
+      'channel-thread-admin-reactions',
+    ) as string;
+
+    const result = await service.toggleChannelDialogReaction(
+      'channel-1',
+      {
+        userId: 'user-3',
+        username: 'user3',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'comments',
+      'comment-admin-1',
+      {
+        token: commentsToken,
+        emoji: '👍',
+      },
+    );
+
+    expect(result.message).toMatchObject({
+      id: 'comment-admin-1',
+      isAdmin: true,
+      reactionGroups: [{ emoji: '👍', count: 2, reactedByMe: true }],
     });
   });
 

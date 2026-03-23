@@ -1615,13 +1615,15 @@ export class AdminService {
       },
       take: CHANNEL_DIALOG_MESSAGES_LIMIT,
     });
+    const adminUserIds =
+      dialogType === 'comments' ? await this.readDialogAdminUserIds(chatId) : new Set<string>();
 
     const messages = await this.enrichDialogMessagesWithAuthorAvatars(
       chatId,
       rows
         .slice()
         .reverse()
-        .map((row) => this.mapChannelDialogAuditLog(row, dialogType, user.userId)),
+        .map((row) => this.mapChannelDialogAuditLog(row, dialogType, user.userId, adminUserIds)),
     );
 
     return channelDialogResponseSchema.parse({
@@ -1717,6 +1719,8 @@ export class AdminService {
       text,
       authorUserId: user.userId,
       authorDisplayName: authorDisplayName ?? null,
+      isAdmin:
+        dialogType === 'comments' ? (await this.readDialogAdminUserIds(chatId)).has(user.userId) : false,
       avatarUrl: authorAvatarUrl ?? null,
       createdAt: created.createdAt.toISOString(),
       replyToMessageId: replyTo?.messageId ?? null,
@@ -1775,13 +1779,15 @@ export class AdminService {
       },
       take: CHANNEL_DIALOG_MESSAGES_LIMIT,
     });
+    const adminUserIds =
+      dialogType === 'comments' ? await this.readDialogAdminUserIds(chatId) : new Set<string>();
 
     const messages = await this.enrichDialogMessagesWithAuthorAvatars(
       chatId,
       rows
         .slice()
         .reverse()
-        .map((row) => this.mapChannelDialogAuditLog(row, dialogType, user.userId)),
+        .map((row) => this.mapChannelDialogAuditLog(row, dialogType, user.userId, adminUserIds)),
     );
 
     return channelDialogResponseSchema.parse({
@@ -1858,6 +1864,7 @@ export class AdminService {
       text,
       authorUserId: user.userId,
       authorDisplayName: authorDisplayName ?? null,
+      isAdmin: (await this.readDialogAdminUserIds(chatId)).has(user.userId),
       avatarUrl: authorAvatarUrl ?? null,
       createdAt: created.createdAt.toISOString(),
       replyToMessageId: replyTo?.messageId ?? null,
@@ -7118,6 +7125,7 @@ export class AdminService {
     row: { id: string; actorUserId: string; payload: Prisma.JsonValue; createdAt: Date },
     fallbackType: ChannelDialogType,
     currentUserId?: string | null,
+    adminUserIds?: ReadonlySet<string>,
   ): ChannelDialogMessage {
     const payload = this.readObjectPayload(row.payload);
     const rawType = this.readLowerString(payload.type);
@@ -7136,6 +7144,7 @@ export class AdminService {
       text,
       authorUserId: row.actorUserId,
       authorDisplayName,
+      isAdmin: adminUserIds?.has(row.actorUserId) ?? false,
       avatarUrl: avatarUrl ?? null,
       createdAt: row.createdAt.toISOString(),
       replyToMessageId: replyTo?.messageId ?? null,
@@ -7259,11 +7268,59 @@ export class AdminService {
         createdAt: true,
       },
     });
+    const adminUserIds =
+      params.dialogType === 'comments'
+        ? await this.readDialogAdminUserIds(params.chatId)
+        : new Set<string>();
 
     return toggleChannelDialogReactionResponseSchema.parse({
       ok: true,
-      message: this.mapChannelDialogAuditLog(updated, params.dialogType, params.userId),
+      message: this.mapChannelDialogAuditLog(
+        updated,
+        params.dialogType,
+        params.userId,
+        adminUserIds,
+      ),
     });
+  }
+
+  private async readDialogAdminUserIds(chatId: string): Promise<Set<string>> {
+    try {
+      return new Set(
+        (await this.maxClient.getChatAdminIds(chatId))
+          .map((userId) => userId.trim())
+          .filter((userId) => userId.length > 0),
+      );
+    } catch (error: unknown) {
+      const persistedAdminIds = (
+        await this.prisma.chatAdminAllowlist.findMany({
+          where: { chatId },
+          select: { userId: true },
+        })
+      )
+        .map((row) => row.userId.trim())
+        .filter((userId) => userId.length > 0);
+
+      if (persistedAdminIds.length > 0) {
+        this.logger.warn(
+          {
+            chatId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Using persisted admin allowlist for dialog admin accents',
+        );
+        return new Set(persistedAdminIds);
+      }
+
+      this.logger.warn(
+        {
+          chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve admin ids for dialog messages',
+      );
+      return new Set();
+    }
   }
 
   private async enrichDialogMessagesWithAuthorAvatars(
