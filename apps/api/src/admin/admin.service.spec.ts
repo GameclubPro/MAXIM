@@ -1810,6 +1810,162 @@ describe('AdminService.applyManualModerationAction', () => {
     });
   });
 
+  it('falls back to removal-only manual ban for closed chats without link', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-15T14:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-3',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'chat-1',
+        title: 'Закрытый чат',
+        participantsCount: 6,
+        status: 'active',
+        isPublic: false,
+        link: null,
+        lastEventAt: null,
+        entityType: 'chat',
+      }),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      kickMember: jest.fn().mockResolvedValue(undefined),
+      banMember: jest.fn(),
+      unbanMember: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.applyManualModerationAction(
+      'chat-1',
+      'user-3',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { action: 'BAN', banDurationHours: 6 },
+    );
+
+    expect(maxClient.kickMember).toHaveBeenCalledWith('chat-1', 'user-3', { immediate: true });
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            mode: 'MAX_REMOVE_ONLY',
+          }),
+        }),
+      }),
+    );
+    expect(result).toEqual({
+      ok: true,
+      action: 'BAN',
+      userId: 'user-3',
+      banDurationHours: 6,
+      unbanScheduledAt: '2026-03-15T20:00:00.000Z',
+      message:
+        'Участник удалён из чата на 6ч. Автовозврат запланирован. Для этого типа чата MAX блокировка недоступна, поэтому применено удаление без block.',
+    });
+  });
+
+  it('returns clear error when bot lacks add_remove_members for manual ban', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['change_chat_info'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-3',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      banMember: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.applyManualModerationAction(
+        'chat-1',
+        'user-3',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { action: 'BAN', banDurationHours: 6 },
+      ),
+    ).rejects.toThrow('У бота нет права MAX add_remove_members, поэтому он не может банить участников.');
+
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+  });
+
+  it('returns clear error when manual ban target is no longer in chat', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue(null),
+      banMember: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.applyManualModerationAction(
+        'chat-1',
+        'user-3',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { action: 'BAN', banDurationHours: 6 },
+      ),
+    ).rejects.toThrow('Пользователь уже не состоит в этом чате.');
+
+    expect(maxClient.banMember).not.toHaveBeenCalled();
+  });
+
   it('rolls back manual ban when replacing auto-unban schedule fails', async () => {
     const prisma = createPrismaMock();
     const maxClient = {

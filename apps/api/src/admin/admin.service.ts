@@ -104,6 +104,7 @@ import {
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   MaxClientService,
+  type MaxChatMemberAccess,
   type MaxMessageButton,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
@@ -143,6 +144,9 @@ type AdminAccessResolution =
     };
 
 export type AdminActionSource = 'miniapp' | 'private_bot' | 'group_command';
+
+type ManualMemberModerationAction = 'KICK' | 'BAN';
+type ManualBanExecutionMode = 'MAX_BLOCK' | 'MAX_REMOVE_ONLY';
 
 type ResolvedUserProfile = {
   displayName: string | null;
@@ -5773,13 +5777,19 @@ export class AdminService {
     } as const;
 
     if (parsed.data.action === 'KICK') {
+      await this.assertManualMemberModerationPreconditions(chatId, targetUserId, 'KICK');
       await this.maxClient.cancelScheduledUnban(chatId, targetUserId);
 
       try {
         await this.maxClient.kickMember(chatId, targetUserId, { immediate: true });
       } catch (error: unknown) {
-        const maxApiMessage = this.extractMaxApiErrorMessage(error);
-        throw new BadRequestException(maxApiMessage || 'Не удалось удалить участника из чата.');
+        const resolvedMessage = await this.resolveManualMemberModerationErrorMessage(
+          chatId,
+          targetUserId,
+          'KICK',
+          error,
+        );
+        throw new BadRequestException(resolvedMessage || 'Не удалось удалить участника из чата.');
       }
 
       await this.recordManualModerationAction({
@@ -5815,9 +5825,15 @@ export class AdminService {
         throw new BadRequestException('Укажите длительность бана в часах.');
       }
       const unbanScheduledAt = new Date(Date.now() + banDurationHours * ONE_HOUR_MS);
+      await this.assertManualMemberModerationPreconditions(chatId, targetUserId, 'BAN');
+      const executionMode = await this.resolveManualBanExecutionMode(chatId);
 
       try {
-        await this.maxClient.banMember(chatId, targetUserId, { immediate: true });
+        if (executionMode === 'MAX_REMOVE_ONLY') {
+          await this.maxClient.kickMember(chatId, targetUserId, { immediate: true });
+        } else {
+          await this.maxClient.banMember(chatId, targetUserId, { immediate: true });
+        }
         try {
           await this.maxClient.cancelScheduledUnban(chatId, targetUserId);
           await this.maxClient.unbanMember(chatId, targetUserId, {
@@ -5840,8 +5856,13 @@ export class AdminService {
           throw scheduleError;
         }
       } catch (error: unknown) {
-        const maxApiMessage = this.extractMaxApiErrorMessage(error);
-        throw new BadRequestException(maxApiMessage || 'Не удалось применить временный бан.');
+        const resolvedMessage = await this.resolveManualMemberModerationErrorMessage(
+          chatId,
+          targetUserId,
+          'BAN',
+          error,
+        );
+        throw new BadRequestException(resolvedMessage || 'Не удалось применить временный бан.');
       }
 
       await this.recordManualModerationAction({
@@ -5856,13 +5877,14 @@ export class AdminService {
           reason: 'Ручной бан участника через miniapp',
           banDurationHours,
           unbanScheduledAt: unbanScheduledAt.toISOString(),
-          mode: 'MAX_BLOCK',
+          mode: executionMode,
         },
         auditPayload: {
           userId: targetUserId,
           banDurationHours,
           unbanScheduledAt: unbanScheduledAt.toISOString(),
           source,
+          mode: executionMode,
         },
       });
 
@@ -5872,7 +5894,10 @@ export class AdminService {
         userId: targetUserId,
         banDurationHours,
         unbanScheduledAt: unbanScheduledAt.toISOString(),
-        message: `Участник забанен на ${banDurationHours}ч. Авторазбан запланирован.`,
+        message:
+          executionMode === 'MAX_REMOVE_ONLY'
+            ? `Участник удалён из чата на ${banDurationHours}ч. Автовозврат запланирован. Для этого типа чата MAX блокировка недоступна, поэтому применено удаление без block.`
+            : `Участник забанен на ${banDurationHours}ч. Авторазбан запланирован.`,
       });
     }
 
@@ -5911,6 +5936,191 @@ export class AdminService {
       unbanScheduledAt: null,
       message: 'Участник возвращён в чат и разблокирован.',
     });
+  }
+
+  private async assertManualMemberModerationPreconditions(
+    chatId: string,
+    targetUserId: string,
+    action: ManualMemberModerationAction,
+  ): Promise<void> {
+    await this.assertBotCanManageMembers(chatId, action);
+    await this.assertTargetUserCanBeModerated(chatId, targetUserId, action);
+  }
+
+  private async assertBotCanManageMembers(
+    chatId: string,
+    action: ManualMemberModerationAction,
+  ): Promise<void> {
+    const maxClientWithAccess = this.maxClient as MaxClientService & {
+      getCurrentChatMemberAccess?: (chatId: string) => Promise<MaxChatMemberAccess>;
+    };
+    if (typeof maxClientWithAccess.getCurrentChatMemberAccess !== 'function') {
+      return;
+    }
+
+    let botAccess: MaxChatMemberAccess;
+    try {
+      botAccess = await maxClientWithAccess.getCurrentChatMemberAccess(chatId);
+    } catch (error: unknown) {
+      if (this.isBotAdminLookupDeniedError(error)) {
+        throw new ForbiddenException(
+          'Бот больше не состоит в этом чате MAX или не является его администратором.',
+        );
+      }
+      throw error;
+    }
+
+    if (botAccess.isOwner) {
+      return;
+    }
+
+    if (!botAccess.isAdmin) {
+      throw new ForbiddenException(
+        action === 'BAN'
+          ? 'Бот должен быть администратором этого чата MAX, чтобы банить участников.'
+          : 'Бот должен быть администратором этого чата MAX, чтобы удалять участников.',
+      );
+    }
+
+    if (
+      botAccess.permissions.length > 0 &&
+      !botAccess.permissions.some((permission) => this.isAddRemoveMembersPermission(permission))
+    ) {
+      throw new ForbiddenException(
+        action === 'BAN'
+          ? 'У бота нет права MAX add_remove_members, поэтому он не может банить участников.'
+          : 'У бота нет права MAX add_remove_members, поэтому он не может удалять участников.',
+      );
+    }
+  }
+
+  private async assertTargetUserCanBeModerated(
+    chatId: string,
+    targetUserId: string,
+    action: ManualMemberModerationAction,
+  ): Promise<void> {
+    const maxClientWithMemberAccess = this.maxClient as MaxClientService & {
+      getChatMemberAccess?: (
+        chatId: string,
+        userId: string,
+      ) => Promise<MaxChatMemberAccess | null>;
+    };
+    if (typeof maxClientWithMemberAccess.getChatMemberAccess !== 'function') {
+      return;
+    }
+
+    const targetAccess = await maxClientWithMemberAccess.getChatMemberAccess(chatId, targetUserId);
+    if (!targetAccess) {
+      throw new BadRequestException('Пользователь уже не состоит в этом чате.');
+    }
+
+    if (targetAccess.isOwner || targetAccess.isAdmin) {
+      throw new BadRequestException(
+        action === 'BAN'
+          ? 'Через бота нельзя забанить владельца или администратора чата.'
+          : 'Через бота нельзя удалить владельца или администратора чата.',
+      );
+    }
+  }
+
+  private async resolveManualBanExecutionMode(chatId: string): Promise<ManualBanExecutionMode> {
+    const maxClientWithSnapshot = this.maxClient as MaxClientService & {
+      getChatSnapshot?: (chatId: string) => Promise<{ isPublic: boolean | null; link: string | null }>;
+    };
+    if (typeof maxClientWithSnapshot.getChatSnapshot !== 'function') {
+      return 'MAX_BLOCK';
+    }
+
+    try {
+      const snapshot = await maxClientWithSnapshot.getChatSnapshot(chatId);
+      if (snapshot.isPublic === false && !snapshot.link) {
+        return 'MAX_REMOVE_ONLY';
+      }
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve chat visibility before manual ban',
+      );
+    }
+
+    return 'MAX_BLOCK';
+  }
+
+  private async resolveManualMemberModerationErrorMessage(
+    chatId: string,
+    targetUserId: string,
+    action: ManualMemberModerationAction,
+    error: unknown,
+  ): Promise<string> {
+    const maxApiMessage = this.extractMaxApiErrorMessage(error);
+    if (!this.isAmbiguousMaxMemberModerationError(maxApiMessage)) {
+      return maxApiMessage;
+    }
+
+    try {
+      await this.assertBotCanManageMembers(chatId, action);
+    } catch (diagnosticError: unknown) {
+      return this.extractHttpErrorMessage(diagnosticError) || maxApiMessage;
+    }
+
+    try {
+      await this.assertTargetUserCanBeModerated(chatId, targetUserId, action);
+    } catch (diagnosticError: unknown) {
+      return this.extractHttpErrorMessage(diagnosticError) || maxApiMessage;
+    }
+
+    return action === 'BAN'
+      ? 'MAX отклонил блокировку участника. Для закрытых чатов без ссылки будет применяться удаление без block; если ошибка повторится, проверьте тип чата и статус цели.'
+      : 'MAX отклонил удаление участника. Проверьте тип чата и статус цели.';
+  }
+
+  private isAmbiguousMaxMemberModerationError(message: string): boolean {
+    const normalized = message.trim().toLowerCase();
+    return (
+      normalized.includes('already been deleted') ||
+      normalized.includes('do not have sufficient rights')
+    );
+  }
+
+  private extractHttpErrorMessage(error: unknown): string {
+    const response = (error as { response?: unknown })?.response;
+    if (typeof response === 'string' && response.trim()) {
+      return response.trim();
+    }
+
+    const responseMessage = (error as { response?: { message?: unknown } })?.response?.message;
+    if (typeof responseMessage === 'string' && responseMessage.trim()) {
+      return responseMessage.trim();
+    }
+
+    if (error instanceof Error && error.message.trim()) {
+      return error.message.trim();
+    }
+
+    return '';
+  }
+
+  private isAddRemoveMembersPermission(permission: string): boolean {
+    const normalized = permission.trim().toLowerCase().replace(/[-\s]+/gu, '_');
+    return (
+      normalized === 'add_remove_members' ||
+      normalized === 'can_add_remove_members' ||
+      normalized === 'remove_members' ||
+      normalized === 'can_remove_members' ||
+      normalized === 'manage_members' ||
+      normalized === 'can_manage_members' ||
+      normalized === 'kick_members' ||
+      normalized === 'can_kick_members' ||
+      normalized === 'ban_members' ||
+      normalized === 'can_ban_members' ||
+      normalized === 'ban_users' ||
+      normalized === 'can_ban_users' ||
+      normalized === 'delete_members' ||
+      normalized === 'can_delete_members'
+    );
   }
 
   private async recordManualModerationAction(params: {

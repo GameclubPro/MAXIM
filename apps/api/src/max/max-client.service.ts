@@ -55,6 +55,13 @@ export type MaxChatMemberProfile = {
   avatarUrl: string | null;
 };
 
+export type MaxChatMemberAccess = {
+  userId: string | null;
+  isAdmin: boolean;
+  isOwner: boolean;
+  permissions: string[];
+};
+
 export type MaxPublishedMessage = {
   messageId: string;
   url: string | null;
@@ -1010,6 +1017,32 @@ export class MaxClientService implements OnModuleDestroy {
       .filter((value): value is string => value !== null);
   }
 
+  async getCurrentChatMemberAccess(chatId: string): Promise<MaxChatMemberAccess> {
+    const data = await this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/me`);
+    return this.parseChatMemberAccess(data);
+  }
+
+  async getChatMemberAccess(chatId: string, userId: string): Promise<MaxChatMemberAccess | null> {
+    const normalizedUserId = userId.trim();
+    if (!normalizedUserId) {
+      return null;
+    }
+
+    const data = await this.request<Record<string, unknown>>('get', `/chats/${chatId}/members`, {
+      params: {
+        user_ids: normalizedUserId,
+      },
+    });
+    const members = Array.isArray(data.members)
+      ? data.members
+      : Array.isArray(data.users)
+        ? data.users
+        : [];
+    const member = members.find((value) => this.readMemberUserId(value) === normalizedUserId);
+
+    return member ? this.parseChatMemberAccess(member) : null;
+  }
+
   async hasChatMember(chatId: string, userId: string): Promise<boolean> {
     const normalizedUserId = userId.trim();
     if (!normalizedUserId) {
@@ -1213,6 +1246,36 @@ export class MaxClientService implements OnModuleDestroy {
 
     const normalized = String(candidate).trim();
     return normalized.length > 0 ? normalized : null;
+  }
+
+  private parseChatMemberAccess(value: unknown): MaxChatMemberAccess {
+    const row = this.asRecord(value);
+    const roleValue = this.readLowerString(
+      row?.role ??
+        row?.member_role ??
+        row?.memberRole ??
+        row?.chat_role ??
+        row?.chatRole ??
+        row?.status ??
+        row?.member_status ??
+        row?.memberStatus,
+    );
+    const isOwner =
+      roleValue?.includes('owner') === true ||
+      roleValue?.includes('creator') === true ||
+      row?.is_owner === true ||
+      row?.isOwner === true ||
+      row?.owner === true ||
+      row?.is_creator === true ||
+      row?.isCreator === true ||
+      row?.creator === true;
+
+    return {
+      userId: this.readMemberUserId(value),
+      isAdmin: isOwner || (row ? this.isChatAdminMemberRow(row) : false),
+      isOwner,
+      permissions: row ? this.readChatAdminPermissions(row) : [],
+    };
   }
 
   private parseChatMemberProfile(value: unknown): MaxChatMemberProfile | null {

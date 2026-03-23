@@ -988,6 +988,69 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('returns current bot member access with granular permissions', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            user_id: 'bot-1',
+            role: 'admin',
+            is_admin: true,
+            permissions: ['add_remove_members', 'change_chat_info'],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.getCurrentChatMemberAccess('chat-1');
+
+    expect(result).toEqual({
+      userId: 'bot-1',
+      isAdmin: true,
+      isOwner: false,
+      permissions: ['add_remove_members', 'change_chat_info'],
+    });
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api.max.ru/chats/chat-1/members/me',
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
+  it('returns null when requested chat member is absent', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            members: [],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.getChatMemberAccess('chat-1', 'user-404');
+
+    expect(result).toBeNull();
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'get',
+        url: 'https://platform-api.max.ru/chats/chat-1/members',
+        params: {
+          user_ids: 'user-404',
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('returns chat member profiles with avatar urls and usernames', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(
