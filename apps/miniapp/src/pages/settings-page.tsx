@@ -8289,7 +8289,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             <div className="broadcast-stage-card broadcast-stage-card--planner">
                               <div className="broadcast-stage-card__head">
                                 <div className="broadcast-stage-card__title-wrap">
-                                  <strong>Календарь</strong>
+                                  <strong>Выберите дни</strong>
                                 </div>
                                 <span
                                   className={cn(
