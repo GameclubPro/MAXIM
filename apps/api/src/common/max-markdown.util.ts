@@ -42,9 +42,8 @@ export function renderSupportedMarkdownAsHtml(source: string): string {
     const headingMatch = /^(#{1,6})[ \t]+(.+)$/u.exec(trimmedLine);
     if (headingMatch) {
       flushParagraph();
-      const level = Math.min(6, headingMatch[1]?.length ?? 1);
       const content = renderInlineTokens(parseInlineTokens(headingMatch[2] ?? ''));
-      blocks.push(`<h${level}>${content}</h${level}>`);
+      blocks.push(`<p><strong>${content}</strong></p>`);
       continue;
     }
 
@@ -226,10 +225,39 @@ function renderInlineTokens(tokens: InlineToken[]): string {
         case 'strike':
           return `<s>${renderInlineTokens(token.children)}</s>`;
         case 'link':
-          return `<a href="${escapeAttribute(token.href)}">${renderInlineTokens(token.children)}</a>`;
+          return `<a href="${escapeAttribute(token.href)}">${renderLinkLabelHtml(token)}</a>`;
       }
     })
     .join('');
+}
+
+function renderLinkLabelHtml(token: Extract<InlineToken, { type: 'link' }>): string {
+  const plainLabel = renderInlineTokensAsPlainText(token.children).trim();
+  if (!plainLabel) {
+    return escapeHtml(token.href);
+  }
+
+  if (looksLikeUrlLabel(plainLabel, token.href)) {
+    return escapeHtml(insertSoftBreaks(plainLabel));
+  }
+
+  return renderInlineTokens(token.children);
+}
+
+function looksLikeUrlLabel(label: string, href: string): boolean {
+  if (!SAFE_LINK_PATTERN.test(label)) {
+    return false;
+  }
+
+  return normalizeComparableUrl(label) === normalizeComparableUrl(href);
+}
+
+function normalizeComparableUrl(value: string): string {
+  return value.trim().replace(/\/+$/u, '').toLowerCase();
+}
+
+function insertSoftBreaks(value: string): string {
+  return value.replace(/([/.:?&=#_-])/g, '$1\u200B');
 }
 
 function renderInlineTokensAsPlainText(tokens: InlineToken[]): string {

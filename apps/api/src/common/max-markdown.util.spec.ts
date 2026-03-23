@@ -20,6 +20,16 @@ describe('renderSupportedMarkdownAsHtml', () => {
     );
   });
 
+  it('falls back to bold block for markdown headings and inserts wraps into raw url labels', () => {
+    expect(
+      renderSupportedMarkdownAsHtml(
+        '# Заголовок\n\n[https://dev.max.ru/docs-api/very/long/path](https://dev.max.ru/docs-api/very/long/path)',
+      ),
+    ).toBe(
+      '<p><strong>Заголовок</strong></p><p><a href="https://dev.max.ru/docs-api/very/long/path">https:\u200B/\u200B/\u200Bdev.\u200Bmax.\u200Bru/\u200Bdocs-\u200Bapi/\u200Bvery/\u200Blong/\u200Bpath</a></p>',
+    );
+  });
+
   it('strips supported markdown to plain text', () => {
     expect(
       stripSupportedMarkdownToPlainText(
