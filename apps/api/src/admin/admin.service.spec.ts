@@ -2188,6 +2188,10 @@ describe('AdminService.applyManualSystemBan', () => {
 });
 
 describe('AdminService.listChannels', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it('returns channel overview summary for each managed channel', async () => {
     const prisma = createPrismaMock();
     prisma.chat.upsert
@@ -2437,6 +2441,86 @@ describe('AdminService.listChannels', () => {
 
     expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
     expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses cached channels during successful refresh cooldown before hitting MAX API again', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-24T00:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const cachedChannel = {
+      chat: {
+        id: 'channel-1',
+        title: 'Новости MAX',
+        createdAt: new Date('2026-03-02T10:00:00.000Z'),
+        entityType: 'CHANNEL',
+      },
+    };
+    let allowlistRows: typeof cachedChannel[] = [];
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      createdAt: new Date('2026-03-02T10:00:00.000Z'),
+      entityType: 'CHANNEL',
+    });
+    prisma.chatAdminAllowlist.findMany.mockImplementation(async (args?: { where?: unknown }) => {
+      const where = args?.where as { chatId?: string } | undefined;
+      if (where?.chatId) {
+        return allowlistRows.filter((row) => row.chat.id === where.chatId).map((row) => ({
+          chatId: row.chat.id,
+        }));
+      }
+
+      return allowlistRows;
+    });
+    prisma.chatAdminAllowlist.upsert.mockImplementation(async () => {
+      allowlistRows = [cachedChannel];
+      return undefined;
+    });
+    prisma.channelSettings.findMany.mockResolvedValue([]);
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'channel-1',
+          title: 'Новости MAX',
+          lastEventTime: 200,
+          entityType: 'channel',
+          link: 'https://max.ru/news',
+        },
+      ]),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const user = {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    };
+
+    await expect(service.listChannels(user, { refresh: true })).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'channel-1' })]),
+    );
+    await expect(service.listChannels(user, { refresh: true })).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'channel-1' })]),
+    );
+
+    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+
+    jest.advanceTimersByTime(30_001);
+
+    await expect(service.listChannels(user, { refresh: true })).resolves.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: 'channel-1' })]),
+    );
+
+    expect(maxClient.listBotChats).toHaveBeenCalledTimes(2);
   });
 });
 

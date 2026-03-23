@@ -214,6 +214,7 @@ const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 30;
 const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 5;
+const MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS = 30_000;
 const MANAGED_ENTITIES_REFRESH_BACKOFF_MS = 60_000;
 const CHANNEL_DIALOG_MESSAGES_LIMIT = 80;
 const CHANNEL_DIALOG_ACTION_COMMENT = 'CHANNEL_DIALOG_COMMENT';
@@ -416,6 +417,7 @@ export class AdminService {
   private readonly ownBotUserId: string | null;
   private readonly maxBotToken: string;
   private readonly adminAccessChecks = new Map<string, Promise<AdminAccessResolution>>();
+  private readonly managedEntitiesRefreshCooldownUntilMs = new Map<string, number>();
   private managedEntitiesRefreshBackoffUntilMs = 0;
 
   constructor(
@@ -477,7 +479,11 @@ export class AdminService {
       return [];
     }
 
-    if (!this.isManagedEntitiesRefreshBackoffActive()) {
+    const refreshCooldownKey = this.buildManagedEntitiesRefreshCooldownKey(user.userId, entityType);
+    if (
+      !this.isManagedEntitiesRefreshBackoffActive() &&
+      !this.isManagedEntitiesRefreshCooldownActive(refreshCooldownKey)
+    ) {
       try {
         const remoteChats = await this.maxClient.listBotChats();
         const resolvedChats = await this.mapWithConcurrencyLimit(
@@ -524,6 +530,8 @@ export class AdminService {
         const filtered = resolvedChats.filter(
           (item): item is { chat: ChatSummary; lastEventTime: number } => item !== null,
         );
+
+        this.activateManagedEntitiesRefreshCooldown(refreshCooldownKey);
 
         if (filtered.length > 0) {
           const byType =
@@ -9140,6 +9148,30 @@ export class AdminService {
 
   private isManagedEntitiesRefreshBackoffActive(): boolean {
     return Date.now() < this.managedEntitiesRefreshBackoffUntilMs;
+  }
+
+  private buildManagedEntitiesRefreshCooldownKey(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+  ): string {
+    return `${userId}:${entityType}`;
+  }
+
+  private isManagedEntitiesRefreshCooldownActive(key: string): boolean {
+    const untilMs = this.managedEntitiesRefreshCooldownUntilMs.get(key) ?? 0;
+    if (untilMs <= Date.now()) {
+      this.managedEntitiesRefreshCooldownUntilMs.delete(key);
+      return false;
+    }
+
+    return true;
+  }
+
+  private activateManagedEntitiesRefreshCooldown(key: string): void {
+    this.managedEntitiesRefreshCooldownUntilMs.set(
+      key,
+      Date.now() + MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS,
+    );
   }
 
   private activateManagedEntitiesRefreshBackoff(): number {

@@ -185,11 +185,60 @@ describe('ChannelStatsCollectorService', () => {
       maxClient as never,
       createConfigMock() as never,
     );
-    const syncSpy = jest.spyOn(service, 'syncChannel').mockResolvedValue(undefined);
+    const syncSpy = jest.spyOn(service, 'syncChannel').mockResolvedValue({
+      audienceSynced: false,
+      viewsSynced: false,
+      throttled: false,
+    });
 
     await service.syncChannelIfStale('channel-1');
 
     expect(syncSpy).not.toHaveBeenCalled();
+    await service.onModuleDestroy();
+  });
+
+  it('backs off background startup sync after MAX API throttling', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-07T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.chat.findMany.mockResolvedValue([{ id: 'channel-1' }]);
+    const maxClient = {
+      ensureWebhookSubscription: jest.fn().mockResolvedValue({
+        url: 'https://maxim.play-team.ru/api/webhook/max/test/secret',
+        updateTypes: ['message_created', 'user_added', 'user_removed'],
+      }),
+    };
+
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      maxClient as never,
+      createConfigMock() as never,
+    );
+    const syncSpy = jest
+      .spyOn(service, 'syncChannel')
+      .mockResolvedValueOnce({
+        audienceSynced: false,
+        viewsSynced: false,
+        throttled: true,
+      })
+      .mockResolvedValueOnce({
+        audienceSynced: true,
+        viewsSynced: true,
+        throttled: false,
+      });
+
+    await service.syncAllChannels('startup');
+    expect(syncSpy).toHaveBeenCalledTimes(1);
+
+    await service.syncAllChannels('startup');
+    expect(syncSpy).toHaveBeenCalledTimes(1);
+
+    jest.advanceTimersByTime(60_001);
+
+    await service.syncAllChannels('startup');
+    expect(syncSpy).toHaveBeenCalledTimes(2);
+    expect(syncSpy).toHaveBeenNthCalledWith(2, 'channel-1', { reason: 'startup' });
+
     await service.onModuleDestroy();
   });
 });

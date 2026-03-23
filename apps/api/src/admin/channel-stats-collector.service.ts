@@ -13,6 +13,9 @@ const CHANNEL_STATS_STALE_MS = 2 * 60 * 60 * 1000;
 const CHANNEL_STATS_ALL_LOCK_TTL_MS = 30 * 60 * 1000;
 const CHANNEL_STATS_CHAT_LOCK_TTL_MS = 10 * 60 * 1000;
 const CHANNEL_STATS_SUBSCRIPTIONS_LOCK_TTL_MS = 60 * 1000;
+const CHANNEL_STATS_STARTUP_INTER_CHANNEL_DELAY_MS = 2_000;
+const CHANNEL_STATS_SCHEDULED_INTER_CHANNEL_DELAY_MS = 500;
+const CHANNEL_STATS_BACKGROUND_THROTTLE_BACKOFF_MS = 60_000;
 const CHANNEL_STATS_REQUIRED_UPDATE_TYPES = [
   'message_created',
   'message_callback',
@@ -23,6 +26,12 @@ const CHANNEL_STATS_REQUIRED_UPDATE_TYPES = [
   'bot_started',
 ] as const;
 
+type ChannelStatsSyncResult = {
+  audienceSynced: boolean;
+  viewsSynced: boolean;
+  throttled: boolean;
+};
+
 @Injectable()
 export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ChannelStatsCollectorService.name);
@@ -31,6 +40,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   private readonly syncIntervalMs: number;
   private timer: NodeJS.Timeout | null = null;
   private scheduledSyncInFlight = false;
+  private backgroundSyncBackoffUntilMs = 0;
   private subscriptionCoverageFrom: Date | null = null;
 
   constructor(
@@ -107,7 +117,11 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   }
 
   async syncAllChannels(reason: 'startup' | 'scheduled') {
-    if (!this.backgroundEnabled || this.scheduledSyncInFlight) {
+    if (
+      !this.backgroundEnabled ||
+      this.scheduledSyncInFlight ||
+      this.isBackgroundSyncBackoffActive()
+    ) {
       return;
     }
 
@@ -124,8 +138,24 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
             orderBy: { updatedAt: 'desc' },
           });
 
-          for (const channel of channels) {
-            await this.syncChannel(channel.id, { reason });
+          for (const [index, channel] of channels.entries()) {
+            if (index > 0) {
+              await this.sleep(this.resolveInterChannelDelayMs(reason));
+            }
+
+            const syncResult = await this.syncChannel(channel.id, { reason });
+            if (syncResult.throttled) {
+              const backoffMs = this.activateBackgroundSyncBackoff();
+              this.logger.warn(
+                {
+                  reason,
+                  chatId: channel.id,
+                  backoffMs,
+                },
+                'Paused background channel stats sync after MAX API throttling',
+              );
+              break;
+            }
           }
         },
       );
@@ -148,7 +178,13 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       reason?: string;
       markOpportunistic?: boolean;
     },
-  ) {
+  ): Promise<ChannelStatsSyncResult> {
+    const result: ChannelStatsSyncResult = {
+      audienceSynced: false,
+      viewsSynced: false,
+      throttled: false,
+    };
+
     await this.withRedisLock(
       `channel-stats:chat:${chatId}`,
       CHANNEL_STATS_CHAT_LOCK_TTL_MS,
@@ -160,7 +196,6 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         });
         const ensuredCoverageFrom = await this.ensureWebhookCoverage();
 
-        let audienceSynced = false;
         try {
           const snapshot = await this.maxClient.getChatSnapshot(chatId);
           await this.prisma.$transaction([
@@ -183,8 +218,9 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
               },
             }),
           ]);
-          audienceSynced = true;
+          result.audienceSynced = true;
         } catch (error: unknown) {
+          result.throttled ||= this.isMaxApiThrottleError(error);
           this.logger.warn(
             {
               chatId,
@@ -195,33 +231,35 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           );
         }
 
-        let viewsSynced = false;
-        try {
-          const messages = await this.maxClient.listMessageSnapshots(chatId, {
-            from: lookbackFrom,
-            to: now,
-            count: 100,
-            maxPages: 80,
-          });
-          await this.upsertOfficialMessages(chatId, messages, now);
-          viewsSynced = true;
-        } catch (error: unknown) {
-          this.logger.warn(
-            {
-              chatId,
-              reason: options?.reason ?? 'manual',
-              err: error instanceof Error ? error.message : String(error),
-            },
-            'Failed to sync official channel posts and views',
-          );
+        if (!result.throttled) {
+          try {
+            const messages = await this.maxClient.listMessageSnapshots(chatId, {
+              from: lookbackFrom,
+              to: now,
+              count: 100,
+              maxPages: 80,
+            });
+            await this.upsertOfficialMessages(chatId, messages, now);
+            result.viewsSynced = true;
+          } catch (error: unknown) {
+            result.throttled ||= this.isMaxApiThrottleError(error);
+            this.logger.warn(
+              {
+                chatId,
+                reason: options?.reason ?? 'manual',
+                err: error instanceof Error ? error.message : String(error),
+              },
+              'Failed to sync official channel posts and views',
+            );
+          }
         }
 
         const nextStateCreate = {
           chatId,
           viewsCoverageFrom: state?.viewsCoverageFrom ?? lookbackFrom,
           membershipCoverageFrom: state?.membershipCoverageFrom ?? ensuredCoverageFrom,
-          lastAudienceSyncAt: audienceSynced ? now : (state?.lastAudienceSyncAt ?? null),
-          lastViewsSyncAt: viewsSynced ? now : (state?.lastViewsSyncAt ?? null),
+          lastAudienceSyncAt: result.audienceSynced ? now : (state?.lastAudienceSyncAt ?? null),
+          lastViewsSyncAt: result.viewsSynced ? now : (state?.lastViewsSyncAt ?? null),
           lastOpportunisticSyncAt: options?.markOpportunistic
             ? now
             : (state?.lastOpportunisticSyncAt ?? null),
@@ -233,13 +271,15 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
           update: {
             viewsCoverageFrom: state?.viewsCoverageFrom ?? lookbackFrom,
             membershipCoverageFrom: state?.membershipCoverageFrom ?? ensuredCoverageFrom,
-            ...(audienceSynced ? { lastAudienceSyncAt: now } : {}),
-            ...(viewsSynced ? { lastViewsSyncAt: now } : {}),
+            ...(result.audienceSynced ? { lastAudienceSyncAt: now } : {}),
+            ...(result.viewsSynced ? { lastViewsSyncAt: now } : {}),
             ...(options?.markOpportunistic ? { lastOpportunisticSyncAt: now } : {}),
           },
         });
       },
     );
+
+    return result;
   }
 
   private async upsertOfficialMessages(
@@ -323,6 +363,42 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     }
 
     return this.subscriptionCoverageFrom;
+  }
+
+  private isMaxApiThrottleError(error: unknown): boolean {
+    const status = (error as { response?: { status?: number } })?.response?.status;
+    if (status === 429) {
+      return true;
+    }
+
+    const message =
+      error instanceof Error && error.message.trim()
+        ? error.message.trim().toLowerCase()
+        : String(error).trim().toLowerCase();
+    return message.includes('rate limit exceeded') || message.includes('circuit breaker');
+  }
+
+  private isBackgroundSyncBackoffActive(): boolean {
+    return Date.now() < this.backgroundSyncBackoffUntilMs;
+  }
+
+  private activateBackgroundSyncBackoff(): number {
+    const now = Date.now();
+    this.backgroundSyncBackoffUntilMs = Math.max(
+      this.backgroundSyncBackoffUntilMs,
+      now + CHANNEL_STATS_BACKGROUND_THROTTLE_BACKOFF_MS,
+    );
+    return this.backgroundSyncBackoffUntilMs - now;
+  }
+
+  private resolveInterChannelDelayMs(reason: 'startup' | 'scheduled'): number {
+    return reason === 'startup'
+      ? CHANNEL_STATS_STARTUP_INTER_CHANNEL_DELAY_MS
+      : CHANNEL_STATS_SCHEDULED_INTER_CHANNEL_DELAY_MS;
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
   private async withRedisLock(
