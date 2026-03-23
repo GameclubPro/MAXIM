@@ -2415,9 +2415,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const messageStatus = this.buildMessageStatusLabel(canDeleteMessage);
 
     if (ruleCode === 'MESSAGE_BLOCKED_WORD') {
-      const reason = blockedWord
-        ? `запрещенное слово: ${blockedWord}`
-        : 'запрещенное слово из бан-листа';
+      const reason = blockedWord ? `стоп-слово: ${blockedWord}` : 'слово из стоп-листа';
       return this.renderEditableBotSpeechTemplate({
         style: botSpeechStyle ?? null,
         fieldKey: 'messageLimitsBotMessageText',
@@ -2638,7 +2636,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (ruleCode === 'MESSAGE_BLOCKED_WORD') {
-      return blockedWord ? `запрещенное слово: ${blockedWord}` : 'запрещенное слово';
+      return blockedWord ? `стоп-слово: ${blockedWord}` : 'слово из стоп-листа';
     }
 
     if (ruleCode === 'VIDEO_BLOCKED') {

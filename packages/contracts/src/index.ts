@@ -571,7 +571,7 @@ export const chatSettingsSchema = z
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['messageLimitsBlockedWords'],
-          message: 'Добавляйте отдельные слова без пробелов, 2-32 символа.',
+          message: 'Нужно одно слово без пробелов, от 2 до 32 символов.',
         });
         break;
       }
@@ -580,7 +580,7 @@ export const chatSettingsSchema = z
         ctx.addIssue({
           code: z.ZodIssueCode.custom,
           path: ['messageLimitsBlockedWords'],
-          message: 'Повторяющиеся слова не нужны.',
+          message: 'Это слово уже есть в списке.',
         });
         break;
       }

@@ -2713,7 +2713,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       if (messageLimitsBlockedWordsInput.trim()) {
         setFieldErrors((current) => ({
           ...current,
-          messageLimitsBlockedWords: 'Добавляйте отдельные слова без пробелов, 2-32 символа.',
+          messageLimitsBlockedWords: 'Нужно одно слово без пробелов, от 2 до 32 символов.',
         }));
       }
       return;
@@ -7323,13 +7323,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 addMessageLimitsBlockedWords();
                               }
                             }}
-                            placeholder="слово, слово, слово"
+                            placeholder="Введите слово"
                             maxLength={240}
                             disabled={
                               draft.messageLimitsBlockedWords.length >=
                               MESSAGE_LIMITS_BLOCKED_WORDS_MAX
                             }
-                            aria-label="Добавить слово в бан-лист ограничений"
+                            aria-label="Добавить стоп-слово"
                           />
                           <button
                             type="button"

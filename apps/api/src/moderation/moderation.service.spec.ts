@@ -52,7 +52,8 @@ function majorExplanation(
   }
 
   if (
-    reason.includes('запрещенное слово') ||
+    reason.includes('стоп-слово') ||
+    reason.includes('слово из стоп-листа') ||
     reason.includes('слишком длинное сообщение') ||
     reason.includes('видео в этом чате отключены') ||
     reason.includes('файлы в этом чате отключены') ||
@@ -7647,7 +7648,7 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      majorExplanation('Алексей', 'снято с линии', 'запрещенное слово: казино'),
+      majorExplanation('Алексей', 'снято с линии', 'стоп-слово: казино'),
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
       data: expect.objectContaining({
@@ -7792,7 +7793,7 @@ describe('ModerationService', () => {
 
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
-      messageLimitsWarnNotice('Алексей', 'запрещенное слово: казино'),
+      messageLimitsWarnNotice('Алексей', 'стоп-слово: казино'),
     );
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
