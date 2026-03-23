@@ -404,6 +404,59 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('honors explicit html text format when editing an existing message', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    text: 'Старый текст',
+                    attachments: [],
+                  },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              success: true,
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    await service.editMessageInlineKeyboard('chat-1', 'mid-edit-html-1', '<p>Новый текст</p>', {
+      textFormat: 'html',
+    });
+
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'put',
+        url: 'https://platform-api.max.ru/messages',
+        params: {
+          chat_id: 'chat-1',
+          message_id: 'mid-edit-html-1',
+        },
+        data: expect.objectContaining({
+          text: '<p>Новый текст</p>',
+          format: 'html',
+        }),
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('publishes message and resolves post link via follow-up message fetch', async () => {
     const httpService = {
       request: jest

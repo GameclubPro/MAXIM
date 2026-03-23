@@ -481,12 +481,14 @@ export class MaxClientService implements OnModuleDestroy {
     chatId: string,
     messageId: string,
     text: string | null,
-    options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext'>,
+    options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext' | 'textFormat'>,
   ) {
     const message = await this.getMessageById(messageId);
     const attachments = this.buildEditableMessageAttachments(message, options);
     const messageTextPayload =
-      typeof text === 'string' ? this.buildOutgoingMessageTextPayload(message, text) : null;
+      typeof text === 'string'
+        ? this.buildOutgoingMessageTextPayload(message, text, options?.textFormat ?? null)
+        : null;
 
     await this.executeMutation(chatId, async () => {
       await this.request('put', '/messages', {
@@ -1736,10 +1738,18 @@ export class MaxClientService implements OnModuleDestroy {
   private buildOutgoingMessageTextPayload(
     message: Record<string, unknown> | null,
     fallbackText: string | null,
+    fallbackTextFormat: MaxTextFormat | null = null,
   ): { text: string | null; textFormat: MaxTextFormat | null } {
     const body = this.asRecord(message?.body);
     const sourceText = typeof body?.text === 'string' ? body.text : null;
     const text = sourceText ?? fallbackText;
+
+    if (fallbackTextFormat && typeof fallbackText === 'string') {
+      return {
+        text: fallbackText,
+        textFormat: fallbackTextFormat,
+      };
+    }
 
     if (typeof sourceText === 'string' && typeof text === 'string' && text === sourceText) {
       const html = this.renderMessageMarkupAsHtml(sourceText, this.extractMessageMarkup(message));

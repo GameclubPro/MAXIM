@@ -291,17 +291,16 @@ export class ManagedGiveawayService {
     }
     const publicationButton = this.buildGiveawayEntryButton(giveaway);
     const imagePayload = await this.uploadGiveawayImage(giveaway);
-    const publicationText = this.buildGiveawayPublicationText(giveaway);
-    const publicationTextFormat = this.resolveGiveawayPublicationTextFormat(publicationText);
-    const renderedPublicationText =
-      publicationTextFormat === 'html'
-        ? renderSupportedMarkdownAsHtml(publicationText)
-        : publicationText;
+    const publicationTextPayload = this.buildFormattedGiveawayTextPayload(
+      this.buildGiveawayPublicationText(giveaway),
+    );
     const publication = await this.maxClient.sendMessageImmediateWithResolvedLink(
       sourceChatId,
-      renderedPublicationText,
+      publicationTextPayload.text,
       {
-        ...(publicationTextFormat ? { textFormat: publicationTextFormat } : {}),
+        ...(publicationTextPayload.textFormat
+          ? { textFormat: publicationTextPayload.textFormat }
+          : {}),
         ...(publicationButton ? { buttons: [[publicationButton]] } : {}),
         ...(imagePayload ? { imagePayload } : {}),
       },
@@ -1209,8 +1208,18 @@ export class ManagedGiveawayService {
       prize: PersistedManagedGiveawayPrize;
       entry: PersistedManagedGiveawayEntry;
     },
+    useRichText = false,
   ): string {
-    return this.resolvePublicWinnerDisplayName(winner) ?? 'победитель определён';
+    const displayName = this.resolvePublicWinnerDisplayName(winner);
+    if (!displayName) {
+      return 'победитель определён';
+    }
+
+    if (!useRichText) {
+      return displayName;
+    }
+
+    return `[${this.escapeMarkdown(displayName)}](max://user/${encodeURIComponent(winner.entry.userId)})`;
   }
 
   private pickNextRerollCandidate(
@@ -1341,14 +1350,15 @@ export class ManagedGiveawayService {
     return 'Розыгрыш';
   }
 
-  private resolveGiveawayPublicationTextFormat(
-    publicationText: string,
-  ): MaxSendMessageOptions['textFormat'] | undefined {
-    return this.shouldUseMarkdownForPublication(publicationText) ? 'html' : undefined;
-  }
-
-  private shouldUseMarkdownForPublication(text: string): boolean {
-    return containsSupportedMarkdownSyntax(text);
+  private buildFormattedGiveawayTextPayload(sourceText: string): {
+    text: string;
+    textFormat?: MaxSendMessageOptions['textFormat'];
+  } {
+    const textFormat = containsSupportedMarkdownSyntax(sourceText) ? 'html' : undefined;
+    return {
+      text: textFormat === 'html' ? renderSupportedMarkdownAsHtml(sourceText) : sourceText,
+      ...(textFormat ? { textFormat } : {}),
+    };
   }
 
   private buildGiveawayResultsText(giveaway: PersistedGiveawayWithRelations): string {
@@ -1357,6 +1367,9 @@ export class ManagedGiveawayService {
       .filter((winner) => winner.status !== ManagedGiveawayWinnerStatus.REROLLED)
       .sort((left, right) => left.prize.position - right.prize.position);
     const hasPublicationReference = Boolean(giveaway.publicationMessageId?.trim());
+    const useRichText = currentWinners.some((winner) =>
+      Boolean(this.resolvePublicWinnerDisplayName(winner)),
+    );
     const shouldShowPrizeTitle =
       currentWinners.length > 1 &&
       currentWinners.some((winner) => {
@@ -1365,7 +1378,7 @@ export class ManagedGiveawayService {
       });
 
     if (!hasPublicationReference && giveaway.title.trim()) {
-      lines.push('', giveaway.title.trim());
+      lines.push('', useRichText ? this.escapeMarkdown(giveaway.title.trim()) : giveaway.title.trim());
     }
 
     if (currentWinners.length === 0) {
@@ -1385,10 +1398,15 @@ export class ManagedGiveawayService {
         continue;
       }
 
-      const prizeSuffix = shouldShowPrizeTitle ? ` — ${winner.prize.title}` : '';
+      const prizeTitle = winner.prize.title.trim();
+      const prizeSuffix = shouldShowPrizeTitle
+        ? ` — ${useRichText ? this.escapeMarkdown(prizeTitle) : prizeTitle}`
+        : '';
       const statusSuffix =
         winner.status === ManagedGiveawayWinnerStatus.DELIVERED ? ' (приз выдан)' : '';
-      lines.push(`${winner.prize.position}. ${publicName}${prizeSuffix}${statusSuffix}`);
+      lines.push(
+        `${winner.prize.position}. ${this.formatPublicWinnerName(winner, useRichText)}${prizeSuffix}${statusSuffix}`,
+      );
     }
 
     return lines.join('\n');
@@ -1414,6 +1432,20 @@ export class ManagedGiveawayService {
             },
           }
         : {}),
+    };
+  }
+
+  private mergeMessageOptionsWithTextFormat(
+    options: MaxSendMessageOptions | undefined,
+    textFormat: MaxSendMessageOptions['textFormat'] | undefined,
+  ): MaxSendMessageOptions | undefined {
+    if (!options && !textFormat) {
+      return undefined;
+    }
+
+    return {
+      ...(options ?? {}),
+      ...(textFormat ? { textFormat } : {}),
     };
   }
 
@@ -1559,12 +1591,18 @@ export class ManagedGiveawayService {
   }
 
   private async republishGiveawayResults(giveaway: PersistedGiveawayWithRelations): Promise<void> {
-    const resultOptions = this.buildGiveawayResultsMessageOptions(giveaway);
+    const resultsTextPayload = this.buildFormattedGiveawayTextPayload(
+      this.buildGiveawayResultsText(giveaway),
+    );
+    const resultOptions = this.mergeMessageOptionsWithTextFormat(
+      this.buildGiveawayResultsMessageOptions(giveaway),
+      resultsTextPayload.textFormat,
+    );
     if (!giveaway.resultsMessageId?.trim()) {
       try {
         const result = await this.maxClient.sendMessageImmediateWithResolvedLink(
           giveaway.sourceChatId,
-          this.buildGiveawayResultsText(giveaway),
+          resultsTextPayload.text,
           resultOptions,
         );
         await this.prisma.managedGiveaway.update({
@@ -1590,7 +1628,7 @@ export class ManagedGiveawayService {
       await this.maxClient.editMessageInlineKeyboard(
         giveaway.sourceChatId,
         giveaway.resultsMessageId,
-        this.buildGiveawayResultsText(giveaway),
+        resultsTextPayload.text,
         resultOptions,
       );
     } catch (error: unknown) {
@@ -1602,6 +1640,10 @@ export class ManagedGiveawayService {
         'Failed to refresh giveaway results message',
       );
     }
+  }
+
+  private escapeMarkdown(value: string): string {
+    return value.replace(/([\\_*[\]()`])/g, '\\$1');
   }
 
   private assertGiveawayOpenForEntry(giveaway: PersistedGiveawayWithRelations): void {

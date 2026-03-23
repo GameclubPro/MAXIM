@@ -394,8 +394,9 @@ describe('ManagedGiveawayService', () => {
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'source-1',
-      expect.stringContaining('Результаты розыгрыша'),
+      expect.stringContaining('<a href="max://user/winner-1">CEO</a>'),
       expect.objectContaining({
+        textFormat: 'html',
         messageLink: {
           type: 'reply',
           mid: 'publication-1',
@@ -549,8 +550,42 @@ describe('ManagedGiveawayService', () => {
       }),
     );
 
-    expect(selectedText).toContain('1. CEO');
-    expect(confirmedText).toContain('1. CEO');
+    expect(selectedText).toContain('1. [CEO](max://user/winner-1)');
+    expect(confirmedText).toContain('1. [CEO](max://user/winner-1)');
+  });
+
+  it('keeps winner mention as a hyperlink when refreshing an existing results post', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+
+    await (service as any).republishGiveawayResults(
+      createGiveaway({
+        status: ManagedGiveawayStatus.COMPLETED,
+        publicationMessageId: 'publication-1',
+        resultsMessageId: 'results-1',
+        winners: [createWinner({ status: ManagedGiveawayWinnerStatus.CLAIMED })],
+      }),
+    );
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'source-1',
+      'results-1',
+      expect.stringContaining('<a href="max://user/winner-1">CEO</a>'),
+      expect.objectContaining({
+        textFormat: 'html',
+        messageLink: {
+          type: 'reply',
+          mid: 'publication-1',
+        },
+      }),
+    );
   });
 
   it('sends a direct message to each freshly selected winner', async () => {
