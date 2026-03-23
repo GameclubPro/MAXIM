@@ -2539,7 +2539,10 @@ export class PrivateControlService {
           throw new BadRequestException('Не удалось определить поле розыгрыша.');
         }
 
-        const view = this.renderInputPrompt(session.pendingInput);
+        const view =
+          session.pendingInput.kind === 'giveaway_content'
+            ? await this.renderGiveawayContentPrompt(context, session)
+            : this.renderInputPrompt(session.pendingInput);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Жду ввод',
@@ -2828,7 +2831,10 @@ export class PrivateControlService {
         }
 
         session.pendingInput = pendingInput;
-        const view = this.renderInputPrompt(pendingInput);
+        const view =
+          pendingInput.kind === 'broadcast_content'
+            ? await this.renderBroadcastScreen(context, session)
+            : this.renderInputPrompt(pendingInput);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Жду ввод',
@@ -4637,12 +4643,6 @@ export class PrivateControlService {
       return this.renderInputPrompt({ kind: 'giveaway_content' });
     }
 
-    const entityLabel = session.selectedEntityType === 'channel' ? 'Канал' : 'Чат';
-    const entityTitle = await this.resolveManagedEntityTitle(
-      context.actor,
-      session.selectedEntityType,
-      session.selectedChatId,
-    );
     const giveaway = await this.getManagedGiveawayForSession(context.actor, session);
     const giveawaySettingsMiniappUrl = this.buildGiveawaySettingsMiniappUrl(
       session.selectedChatId,
@@ -4653,37 +4653,37 @@ export class PrivateControlService {
       session.selectedEntityType,
     );
     const hasSavedContent = Boolean(giveaway?.description.trim() || giveaway?.imageEnabled);
-    const lines = [
-      this.markdownTitle('Заполните контент розыгрыша'),
-      '',
-      `${entityLabel}: ${this.escapeMarkdown(entityTitle)}`,
-      ...(giveaway ? [`Название: ${this.escapeMarkdown(giveaway.title)}`] : []),
-      ...(notice ? ['', `Результат: ${this.escapeMarkdown(notice)}`] : []),
-      '',
-      hasSavedContent
-        ? 'Пришлите новый текст публикации. Фото можно обновить сразу или отдельным сообщением.'
-        : 'Пришлите текст публикации. Фото можно добавить сразу подписью к фото или отдельным сообщением.',
-      'Сообщение `-` очищает текущий текст.',
-    ];
-    const rows: MaxMessageButton[][] = [
-      [this.callbackButton('Отмена', this.cb('input_cancel'))],
-    ];
+    const previewText = hasSavedContent && giveaway ? this.buildGiveawayPreviewText(giveaway) : '';
+    const imagePayload = giveaway
+      ? await this.buildContentPreviewImagePayload(giveaway, 'private-giveaway-preview')
+      : undefined;
+    const rows: MaxMessageButton[][] = [];
 
-    if (giveaway) {
-      rows.push([
-        this.buildMiniappLaunchButton(
-          'Вернуться в приложение',
-          giveawaySettingsMiniappRoute,
-          giveawaySettingsMiniappUrl,
-        ),
-      ]);
+    if (hasSavedContent) {
+      rows.push([this.callbackButton('Опубликовать', this.cb('giveaway_publish'), 'positive')]);
     }
 
+    rows.push([
+      this.buildMiniappLaunchButton(
+        'В приложение',
+        giveawaySettingsMiniappRoute,
+        giveawaySettingsMiniappUrl,
+      ),
+    ]);
+
+    const text =
+      previewText.length > 0
+        ? [previewText, '', 'Пришлите новый текст или фото.'].join('\n')
+        : 'Пришлите текст или фото.';
+
     return {
-      text: lines.join('\n'),
+      text,
       options: {
         buttons: rows,
-        textFormat: 'markdown',
+        ...(imagePayload ? { imagePayload } : {}),
+        ...(previewText.length > 0
+          ? { textFormat: this.buildGiveawayPreviewTextFormat(previewText) }
+          : {}),
       },
     };
   }
@@ -4721,7 +4721,10 @@ export class PrivateControlService {
       session.selectedChatId!,
       session.selectedEntityType!,
     );
-    const imagePayload = await this.buildGiveawayPreviewImagePayload(giveaway);
+    const imagePayload = await this.buildContentPreviewImagePayload(
+      giveaway,
+      'private-giveaway-preview',
+    );
     const previewText = this.buildGiveawayPreviewText(giveaway);
     const previewTextFormat = this.buildGiveawayPreviewTextFormat(previewText);
 
@@ -4729,7 +4732,6 @@ export class PrivateControlService {
       text: previewText,
       options: {
         buttons: this.buildGiveawayDraftActionRows(
-          giveaway,
           giveawaySettingsMiniappRoute,
           giveawaySettingsMiniappUrl,
         ),
@@ -5348,17 +5350,7 @@ export class PrivateControlService {
     }
 
     const draft = session.broadcastDraft;
-    const isChannel = session.selectedEntityType === 'channel';
     const entityType = session.selectedEntityType ?? 'chat';
-    const entityLabel = entityType === 'channel' ? 'Канал' : 'Чат';
-    const entityTitle = await this.resolveManagedEntityTitle(
-      context.actor,
-      entityType,
-      session.selectedChatId,
-    );
-    const channelSettings = isChannel
-      ? await this.adminService.getChannelSettings(session.selectedChatId, context.actor)
-      : null;
     const waitingForContent = session.pendingInput?.kind === 'broadcast_content';
     const plannerUrl = this.buildBroadcastSettingsMiniappUrl(
       session.selectedChatId,
@@ -5368,68 +5360,40 @@ export class PrivateControlService {
       session.selectedChatId,
       entityType,
     );
-    const plannerLaunchUrl = this.buildMiniappRouteLaunchUrl(plannerRoute);
     const hasText = draft.text.trim().length > 0;
     const hasContent = hasText || draft.imageEnabled;
+    const imagePayload = hasContent
+      ? await this.buildContentPreviewImagePayload(
+          {
+            imageEnabled: draft.imageEnabled,
+            imageBase64: draft.imageBase64,
+            imageMimeType: draft.imageMimeType,
+            imageFileName: draft.imageFileName,
+          },
+          'private-broadcast-preview',
+        )
+      : undefined;
+    const promptText =
+      waitingForContent || !hasContent
+        ? 'Пришлите текст или фото.'
+        : 'Пришлите новый текст или фото.';
+    const text = hasText ? [draft.text, '', promptText].join('\n') : promptText;
+    const rows: MaxMessageButton[][] = [];
 
-    const lines: string[] = [
-      this.markdownTitle(isChannel ? 'Рассылка в канал' : 'Рассылка'),
-      '',
-      `${entityLabel}: ${this.escapeMarkdown(entityTitle)}`,
-      ...(notice ? ['', `Результат: ${this.escapeMarkdown(notice)}`] : []),
-      ...(waitingForContent ? ['', 'Жду текст или фото публикации.'] : []),
-      '',
-      'Контент публикации:',
-      hasText ? draft.text : draft.imageEnabled ? '_Без текста, только фото._' : 'не задан',
-      ...(draft.imageEnabled ? ['', 'Медиа: фото будет отправлено вместе с публикацией.'] : []),
-      ...(draft.buttonEnabled
-        ? [
-            '',
-            `Кнопка: ${this.escapeMarkdown(draft.buttonText.trim() || 'Открыть')}`,
-            `Ссылка: ${this.escapeMarkdown(draft.buttonUrl.trim() || 'не задана')}`,
-          ]
-        : []),
-      ...(!hasContent && !waitingForContent
-        ? ['', 'Отправьте одно сообщение с текстом, фото или оба сразу.']
-        : []),
-      ...(channelSettings
-        ? ['', `Комменты: ${this.describeBooleanCompact(channelSettings.commentsEnabled)}`]
-        : []),
-      '',
-      'Остальные настройки и расписание меняются в mini app.',
-    ];
-
-    const rows: MaxMessageButton[][] = [
-      [
-        this.callbackButton(
-          draft.text.trim() || draft.imageEnabled ? 'Редактировать контент' : 'Добавить контент',
-          this.cb('broadcast_input_prompt', 'content'),
-        ),
-      ],
-    ];
-
-    if (draft.imageEnabled) {
-      rows.push([this.callbackButton('Убрать фото', this.cb('broadcast_clear_photo'), 'negative')]);
+    if (hasContent) {
+      rows.push([this.callbackButton('Опубликовать', this.cb('broadcast_send'), 'positive')]);
     }
 
-    rows.push([this.callbackButton('Опубликовать', this.cb('broadcast_send'), 'positive')]);
-
-    if (plannerLaunchUrl || plannerUrl) {
-      rows.push([
-        this.buildMiniappLaunchButton('Открыть настройки', plannerRoute, plannerUrl),
-      ]);
-    }
-
-    rows.push([
-      this.callbackButton('⬅️ Назад', this.cb('back')),
-      this.callbackButton('Главный экран', this.cb('home')),
-    ]);
+    rows.push([this.buildMiniappLaunchButton('В приложение', plannerRoute, plannerUrl)]);
 
     return {
-      text: lines.join('\n'),
+      text,
       options: {
         buttons: rows,
-        textFormat: 'markdown',
+        ...(imagePayload ? { imagePayload } : {}),
+        ...(hasText && draft.textFormat === 'markdown'
+          ? { textFormat: 'markdown' as const }
+          : {}),
       },
     };
   }
@@ -5570,6 +5534,14 @@ export class PrivateControlService {
     }
 
     const giveaway = await this.getManagedGiveawayForSession(context.actor, session);
+    if (giveaway?.status === 'DRAFT') {
+      if (session.pendingInput?.kind === 'giveaway_content' || !giveaway.description.trim()) {
+        return this.renderGiveawayContentPrompt(context, session);
+      }
+
+      return this.renderGiveawayDraftPreview(context, session);
+    }
+
     const entityLabel = session.selectedEntityType === 'channel' ? 'Канал' : 'Чат';
     const entityTitle = await this.resolveManagedEntityTitle(
       context.actor,
@@ -5577,34 +5549,17 @@ export class PrivateControlService {
       session.selectedChatId,
     );
     const rows: MaxMessageButton[][] = [];
-    const waitingForContent = session.pendingInput?.kind === 'giveaway_content';
-    const giveawaySettingsMiniappUrl = this.buildGiveawaySettingsMiniappUrl(
-      session.selectedChatId,
-      session.selectedEntityType,
-    );
-    const giveawaySettingsMiniappRoute = this.buildGiveawaySettingsMiniappRoute(
-      session.selectedChatId,
-      session.selectedEntityType,
-    );
     const lines: string[] = [
       this.markdownTitle('Розыгрыш'),
       '',
       `${entityLabel}: ${this.escapeMarkdown(entityTitle)}`,
     ];
-    const waitingLabel =
-      session.pendingInput?.kind === 'giveaway_content'
-        ? 'Текст публикации'
-        : session.pendingInput
-          ? this.describeInputPrompt(session.pendingInput).title
-          : null;
 
     if (!giveaway) {
       lines.push('', 'Черновик не создан.');
       rows.push([this.callbackButton('Создать черновик', this.cb('giveaway_create'), 'positive')]);
     } else {
       lines.push(
-        ...(waitingForContent ? ['Жду: Текст публикации'] : []),
-        '',
         `Название: ${this.escapeMarkdown(giveaway.title)}`,
         '',
         'Контент публикации:',
@@ -5625,20 +5580,6 @@ export class PrivateControlService {
           : []),
         'Остальные настройки редактируются в приложении.',
       );
-
-      if (waitingLabel && giveaway.status === 'DRAFT' && !waitingForContent) {
-        lines.push('', `Жду: ${waitingLabel}`);
-      }
-
-      if (giveaway.status === 'DRAFT') {
-        rows.push(
-          ...this.buildGiveawayDraftActionRows(
-            giveaway,
-            giveawaySettingsMiniappRoute,
-            giveawaySettingsMiniappUrl,
-          ),
-        );
-      }
 
       if (giveaway.status === 'ACTIVE' || giveaway.status === 'SCHEDULED') {
         rows.push([
@@ -5693,23 +5634,14 @@ export class PrivateControlService {
   }
 
   private buildGiveawayDraftActionRows(
-    giveaway: Pick<ManagedGiveawayDetails, 'description' | 'imageEnabled'>,
     giveawaySettingsMiniappRoute: string,
     giveawaySettingsMiniappUrl: string | null,
   ): MaxMessageButton[][] {
     return [
-      [
-        this.callbackButton(
-          giveaway.description.trim() || giveaway.imageEnabled
-            ? 'Изменить текст/фото'
-            : 'Заполнить текст/фото',
-          this.cb('giveaway_input_prompt', 'content'),
-        ),
-      ],
       [this.callbackButton('Опубликовать', this.cb('giveaway_publish'), 'positive')],
       [
         this.buildMiniappLaunchButton(
-          'Вернуться в приложение',
+          'В приложение',
           giveawaySettingsMiniappRoute,
           giveawaySettingsMiniappUrl,
         ),
@@ -5735,20 +5667,21 @@ export class PrivateControlService {
     return this.shouldUseMarkdown(previewText) ? 'markdown' : undefined;
   }
 
-  private async buildGiveawayPreviewImagePayload(
-    giveaway: Pick<
+  private async buildContentPreviewImagePayload(
+    content: Pick<
       ManagedGiveawayDetails,
       'imageEnabled' | 'imageBase64' | 'imageMimeType' | 'imageFileName'
     >,
+    filePrefix: string,
   ): Promise<Record<string, unknown> | undefined> {
-    if (!giveaway.imageEnabled || !giveaway.imageBase64.trim()) {
+    if (!content.imageEnabled || !content.imageBase64.trim()) {
       return undefined;
     }
 
-    const mimeType = giveaway.imageMimeType.trim() || 'image/jpeg';
+    const mimeType = content.imageMimeType.trim() || 'image/jpeg';
 
     try {
-      const imageBuffer = Buffer.from(giveaway.imageBase64, 'base64');
+      const imageBuffer = Buffer.from(content.imageBase64, 'base64');
       if (imageBuffer.length === 0) {
         return undefined;
       }
@@ -5756,8 +5689,8 @@ export class PrivateControlService {
       return await this.maxClient.uploadImage(
         imageBuffer,
         this.buildDownloadedFileName(
-          'private-giveaway-preview',
-          giveaway.imageFileName,
+          filePrefix,
+          content.imageFileName,
           null,
           mimeType,
         ),
@@ -5766,7 +5699,7 @@ export class PrivateControlService {
     } catch (error: unknown) {
       this.logger.warn(
         { err: error instanceof Error ? error.message : String(error) },
-        'Failed to upload giveaway preview image',
+        'Failed to upload private preview image',
       );
       return undefined;
     }

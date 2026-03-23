@@ -1377,8 +1377,7 @@ describe('PrivateControlService', () => {
 
     await service.handleBotStarted(createBotStartedPrivateUpdate());
 
-    expect(getLastSentText(maxClient)).toContain('Рассылка');
-    expect(getLastSentText(maxClient)).toContain('Жду текст или фото публикации.');
+    expect(getLastSentText(maxClient)).toContain('Пришлите текст или фото.');
 
     await service.handleUpdate(createPrivateTextUpdate('Контент из лички бота'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
@@ -1436,8 +1435,8 @@ describe('PrivateControlService', () => {
 
     await service.handleBotStarted(createBotStartedPrivateUpdate());
 
-    expect(getLastSentText(maxClient)).toContain('Рассылка в канал');
-    expect(getLastSentText(maxClient)).toContain('Комменты: вкл');
+    expect(getLastSentText(maxClient)).toContain('Пришлите текст или фото.');
+    expect(getLastSentText(maxClient)).not.toContain('Комменты:');
     expect(getLastSentText(maxClient)).not.toContain('Предложка:');
     expect(getLastSentText(maxClient)).not.toContain('Кнопка предложки:');
 
@@ -1633,13 +1632,12 @@ describe('PrivateControlService', () => {
       expect.objectContaining({ userId: 'user-1' }),
       'chat',
     );
-    expect(getLastSentText(maxClient)).toContain('Заполните контент розыгрыша');
-    expect(getLastSentText(maxClient)).toContain('Чат: Тестовый чат 1');
-    expect(getLastSentText(maxClient)).toContain('Название: Весенний розыгрыш');
+    expect(getLastSentText(maxClient)).toContain('Разыгрываем подписку.');
+    expect(getLastSentText(maxClient)).toContain('Пришлите новый текст или фото.');
     const buttonTexts = getLastButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(buttonTexts).toEqual(['Отмена', 'Вернуться в приложение']);
+    expect(buttonTexts).toEqual(['Опубликовать', 'В приложение']);
     expect(buttonTexts).not.toContain('Открыть приложение');
     expect(buttonTexts).not.toContain('Поддержка');
   });
@@ -1813,7 +1811,7 @@ describe('PrivateControlService', () => {
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       '152517912',
-      expect.stringContaining('Заполните контент розыгрыша'),
+      expect.stringContaining('Разыгрываем подписку.'),
       expect.anything(),
       expect.objectContaining({ immediate: true }),
     );
@@ -1858,8 +1856,7 @@ describe('PrivateControlService', () => {
       'chat',
       'private_bot',
     );
-    expect(getLastEditedText(maxClient)).toContain('Название: Новый розыгрыш');
-    expect(getLastEditedText(maxClient)).toContain('Контент публикации:');
+    expect(getLastEditedText(maxClient)).toContain('Пришлите текст или фото.');
   });
 
   it('updates giveaway title from private bot input prompt', async () => {
@@ -1907,19 +1904,16 @@ describe('PrivateControlService', () => {
     const buttonTexts = getLastButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(buttonTexts).toEqual([
-      'Изменить текст/фото',
-      'Опубликовать',
-      'Вернуться в приложение',
-    ]);
-    expect(getLastUiText(maxClient)).toContain('Контент публикации:');
-    expect(getLastUiText(maxClient)).toContain('Остальные настройки редактируются в приложении.');
+    expect(buttonTexts).toEqual(['Опубликовать', 'В приложение']);
+    expect(getLastUiText(maxClient)).toContain('Разыгрываем подписку.');
+    expect(getLastUiText(maxClient)).not.toContain('Контент публикации:');
+    expect(getLastUiText(maxClient)).not.toContain('Остальные настройки редактируются в приложении.');
     expect(getLastUiText(maxClient)).not.toContain('Подтверждение:');
 
     const returnButton = getLastButtons(maxClient)
-      .flat()
-      .find(
-        (button) => String((button as { text?: string }).text ?? '') === 'Вернуться в приложение',
+        .flat()
+        .find(
+        (button) => String((button as { text?: string }).text ?? '') === 'В приложение',
       ) as { url?: string } | undefined;
     expect(decodeStartAppRoute(String(returnButton?.url ?? ''))).toBe(
       `/chat/${encodeURIComponent(chats[0].id)}/settings?focus=giveaway&handoff=1`,
@@ -1970,7 +1964,7 @@ describe('PrivateControlService', () => {
         getLastButtons(maxClient)
           .flat()
           .map((button) => String((button as { text?: string }).text ?? '')),
-      ).toEqual(['Изменить текст/фото', 'Опубликовать', 'Вернуться в приложение']);
+      ).toEqual(['Опубликовать', 'В приложение']);
       expect(maxClient.uploadImage).not.toHaveBeenCalled();
 
       await service.handleUpdate(createPrivatePhotoUpdate());
@@ -2037,17 +2031,15 @@ describe('PrivateControlService', () => {
         'private_bot',
       );
       expect(maxClient.sendCustomMessageImmediate).not.toHaveBeenCalled();
-      expect(maxClient.uploadImage).not.toHaveBeenCalled();
-      expect(getLastUiText(maxClient)).toContain('Заполните контент розыгрыша');
-      expect(getLastUiText(maxClient)).toContain(
-        'Фото публикации обновлено. Теперь пришлите текст публикации.',
-      );
+      expect(maxClient.uploadImage).toHaveBeenCalledTimes(1);
+      expect(getLastUiText(maxClient)).toContain('Весенний розыгрыш');
+      expect(getLastUiText(maxClient)).toContain('Пришлите новый текст или фото.');
       expect(getLastUiText(maxClient)).not.toContain('Контент публикации:');
       expect(
         getLastButtons(maxClient)
           .flat()
           .map((button) => String((button as { text?: string }).text ?? '')),
-      ).toEqual(['Отмена', 'Вернуться в приложение']);
+      ).toEqual(['Опубликовать', 'В приложение']);
 
       await service.handleUpdate(createPrivateTextUpdate('Текст после фото'));
 
@@ -2068,13 +2060,13 @@ describe('PrivateControlService', () => {
       );
       expect(getLastUiText(maxClient)).toBe('Текст после фото');
       expect(getLastUiText(maxClient)).not.toContain('Контент публикации:');
-      expect(maxClient.uploadImage).toHaveBeenCalledTimes(1);
+      expect(maxClient.uploadImage).toHaveBeenCalledTimes(2);
       expect(getLastSendOptions(maxClient)?.imagePayload).toEqual({ token: 'upload-token-1' });
       expect(
         getLastButtons(maxClient)
           .flat()
           .map((button) => String((button as { text?: string }).text ?? '')),
-      ).toEqual(['Изменить текст/фото', 'Опубликовать', 'Вернуться в приложение']);
+      ).toEqual(['Опубликовать', 'В приложение']);
     } finally {
       restore();
     }
