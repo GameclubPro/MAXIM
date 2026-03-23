@@ -21,6 +21,7 @@ import {
   type ManagedEntityType,
   type ManagedPoll,
   type MaxUpdate,
+  type SendBroadcastResult,
   type UpdateManagedGiveawayRequest,
 } from '@maxim/contracts';
 import { AdminService } from '../admin/admin.service';
@@ -2218,7 +2219,7 @@ export class PrivateControlService {
           const view = await this.renderBroadcastScreen(
             context,
             session,
-            `Рассылка: отправлено ${sendResult.sentChats}/${sendResult.targetChats}, ошибок: ${sendResult.failedChats}.`,
+            this.buildBroadcastCompletionNotice(sendResult),
           );
           await this.respond(context, session, view, {
             callbackId: context.callbackId,
@@ -2902,7 +2903,7 @@ export class PrivateControlService {
         const view = await this.renderBroadcastScreen(
           context,
           session,
-          `Рассылка: отправлено ${result.sentChats}/${result.targetChats}, ошибок: ${result.failedChats}.`,
+          this.buildBroadcastCompletionNotice(result),
         );
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
@@ -4654,6 +4655,8 @@ export class PrivateControlService {
     );
     const hasSavedContent = Boolean(giveaway?.description.trim() || giveaway?.imageEnabled);
     const previewText = hasSavedContent && giveaway ? this.buildGiveawayPreviewText(giveaway) : '';
+    const usesMarkdown = this.shouldUseMarkdown(previewText);
+    const entityLead = await this.buildSelectedEntityLeadLine(context.actor, session, usesMarkdown);
     const imagePayload = giveaway
       ? await this.buildContentPreviewImagePayload(giveaway, 'private-giveaway-preview')
       : undefined;
@@ -4671,19 +4674,31 @@ export class PrivateControlService {
       ),
     ]);
 
-    const text =
-      previewText.length > 0
-        ? [previewText, '', 'Пришлите новый текст или фото.'].join('\n')
-        : 'Пришлите текст или фото.';
+    const lines: string[] = [];
+    if (entityLead) {
+      lines.push(entityLead);
+    }
+    if (previewText.length > 0) {
+      if (lines.length > 0) {
+        lines.push('');
+      }
+      lines.push(previewText, '', 'Пришлите новый текст или фото.');
+    } else {
+      if (lines.length > 0) {
+        lines.push('');
+      }
+      lines.push('Пришлите текст или фото.');
+    }
+    if (notice) {
+      lines.push('', usesMarkdown ? this.escapeMarkdown(notice) : notice);
+    }
 
     return {
-      text,
+      text: lines.join('\n'),
       options: {
         buttons: rows,
         ...(imagePayload ? { imagePayload } : {}),
-        ...(previewText.length > 0
-          ? { textFormat: this.buildGiveawayPreviewTextFormat(previewText) }
-          : {}),
+        ...(previewText.length > 0 ? { textFormat: this.buildGiveawayPreviewTextFormat(previewText) } : {}),
       },
     };
   }
@@ -4697,12 +4712,13 @@ export class PrivateControlService {
       return this.renderGiveawayContentPrompt(context, session, notice);
     }
 
-    return this.renderGiveawayDraftPreview(context, session);
+    return this.renderGiveawayDraftPreview(context, session, notice);
   }
 
   private async renderGiveawayDraftPreview(
     context: PrivateContext,
     session: PrivateSession,
+    notice: string | null = null,
   ): Promise<PrivateView> {
     const giveaway = await this.getManagedGiveawayForSession(context.actor, session);
     if (!giveaway || giveaway.status !== 'DRAFT') {
@@ -4710,7 +4726,7 @@ export class PrivateControlService {
     }
 
     if (!giveaway.description.trim()) {
-      return this.renderGiveawayContentPrompt(context, session);
+      return this.renderGiveawayContentPrompt(context, session, notice);
     }
 
     const giveawaySettingsMiniappUrl = this.buildGiveawaySettingsMiniappUrl(
@@ -4727,9 +4743,22 @@ export class PrivateControlService {
     );
     const previewText = this.buildGiveawayPreviewText(giveaway);
     const previewTextFormat = this.buildGiveawayPreviewTextFormat(previewText);
+    const usesMarkdown = previewTextFormat === 'markdown';
+    const entityLead = await this.buildSelectedEntityLeadLine(context.actor, session, usesMarkdown);
+    const lines: string[] = [];
+
+    if (entityLead) {
+      lines.push(entityLead, '');
+    }
+
+    lines.push(previewText);
+
+    if (notice) {
+      lines.push('', usesMarkdown ? this.escapeMarkdown(notice) : notice);
+    }
 
     return {
-      text: previewText,
+      text: lines.join('\n'),
       options: {
         buttons: this.buildGiveawayDraftActionRows(
           giveawaySettingsMiniappRoute,
@@ -5362,6 +5391,8 @@ export class PrivateControlService {
     );
     const hasText = draft.text.trim().length > 0;
     const hasContent = hasText || draft.imageEnabled;
+    const usesMarkdown = hasText && draft.textFormat === 'markdown';
+    const entityLead = await this.buildSelectedEntityLeadLine(context.actor, session, usesMarkdown);
     const imagePayload = hasContent
       ? await this.buildContentPreviewImagePayload(
           {
@@ -5377,7 +5408,27 @@ export class PrivateControlService {
       waitingForContent || !hasContent
         ? 'Пришлите текст или фото.'
         : 'Пришлите новый текст или фото.';
-    const text = hasText ? [draft.text, '', promptText].join('\n') : promptText;
+    const lines: string[] = [];
+
+    if (entityLead) {
+      lines.push(entityLead);
+    }
+
+    if (hasText) {
+      if (lines.length > 0) {
+        lines.push('');
+      }
+      lines.push(draft.text, '', promptText);
+    } else {
+      if (lines.length > 0) {
+        lines.push('');
+      }
+      lines.push(promptText);
+    }
+
+    if (notice) {
+      lines.push('', usesMarkdown ? this.escapeMarkdown(notice) : notice);
+    }
     const rows: MaxMessageButton[][] = [];
 
     if (hasContent) {
@@ -5387,13 +5438,11 @@ export class PrivateControlService {
     rows.push([this.buildMiniappLaunchButton('В приложение', plannerRoute, plannerUrl)]);
 
     return {
-      text,
+      text: lines.join('\n'),
       options: {
         buttons: rows,
         ...(imagePayload ? { imagePayload } : {}),
-        ...(hasText && draft.textFormat === 'markdown'
-          ? { textFormat: 'markdown' as const }
-          : {}),
+        ...(usesMarkdown ? { textFormat: 'markdown' as const } : {}),
       },
     };
   }
@@ -5536,10 +5585,10 @@ export class PrivateControlService {
     const giveaway = await this.getManagedGiveawayForSession(context.actor, session);
     if (giveaway?.status === 'DRAFT') {
       if (session.pendingInput?.kind === 'giveaway_content' || !giveaway.description.trim()) {
-        return this.renderGiveawayContentPrompt(context, session);
+        return this.renderGiveawayContentPrompt(context, session, notice);
       }
 
-      return this.renderGiveawayDraftPreview(context, session);
+      return this.renderGiveawayDraftPreview(context, session, notice);
     }
 
     const entityLabel = session.selectedEntityType === 'channel' ? 'Канал' : 'Чат';
@@ -5738,6 +5787,43 @@ export class PrivateControlService {
     const selected = entities.find((entity) => entity.id === entityId);
     const normalizedTitle = selected?.title?.trim() ?? '';
     return normalizedTitle.length > 0 ? normalizedTitle : entityId;
+  }
+
+  private async buildSelectedEntityLeadLine(
+    actor: AuthUser,
+    session: Pick<PrivateSession, 'selectedChatId' | 'selectedEntityType'>,
+    markdown: boolean,
+  ): Promise<string | null> {
+    if (!session.selectedChatId || !session.selectedEntityType) {
+      return null;
+    }
+
+    const entityLabel = session.selectedEntityType === 'channel' ? 'Канал' : 'Чат';
+    const entityTitle = await this.resolveManagedEntityTitle(
+      actor,
+      session.selectedEntityType,
+      session.selectedChatId,
+    );
+
+    return markdown
+      ? `${entityLabel}: ${this.escapeMarkdown(entityTitle)}`
+      : `${entityLabel}: ${entityTitle}`;
+  }
+
+  private buildBroadcastCompletionNotice(result: SendBroadcastResult): string {
+    if (result.sentChats === 0 && result.nextSendAt) {
+      return `Будет опубликовано: ${this.formatDateTimeLabel(result.nextSendAt)}.`;
+    }
+
+    if (result.failedChats > 0) {
+      return `Отправлено: ${result.sentChats}/${result.targetChats}, ошибок: ${result.failedChats}.`;
+    }
+
+    if (result.nextSendAt && result.scheduledOccurrences > 0) {
+      return `Опубликовано. Следующий слот: ${this.formatDateTimeLabel(result.nextSendAt)}.`;
+    }
+
+    return 'Опубликовано без ошибок.';
   }
 
   private renderGiveawayClaimView(

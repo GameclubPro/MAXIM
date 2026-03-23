@@ -1377,6 +1377,7 @@ describe('PrivateControlService', () => {
 
     await service.handleBotStarted(createBotStartedPrivateUpdate());
 
+    expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
     expect(getLastSentText(maxClient)).toContain('Пришлите текст или фото.');
 
     await service.handleUpdate(createPrivateTextUpdate('Контент из лички бота'));
@@ -1398,6 +1399,7 @@ describe('PrivateControlService', () => {
       }),
       'private_bot',
     );
+    expect(getLastEditedText(maxClient)).toContain('Опубликовано без ошибок.');
   });
 
   it('shows only channel discussion status on the handoff broadcast screen without footer links', async () => {
@@ -1435,6 +1437,7 @@ describe('PrivateControlService', () => {
 
     await service.handleBotStarted(createBotStartedPrivateUpdate());
 
+    expect(getLastSentText(maxClient)).toContain(`Канал: ${channels[0].title}`);
     expect(getLastSentText(maxClient)).toContain('Пришлите текст или фото.');
     expect(getLastSentText(maxClient)).not.toContain('Комменты:');
     expect(getLastSentText(maxClient)).not.toContain('Предложка:');
@@ -1632,6 +1635,7 @@ describe('PrivateControlService', () => {
       expect.objectContaining({ userId: 'user-1' }),
       'chat',
     );
+    expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
     expect(getLastSentText(maxClient)).toContain('Разыгрываем подписку.');
     expect(getLastSentText(maxClient)).toContain('Пришлите новый текст или фото.');
     const buttonTexts = getLastButtons(maxClient)
@@ -1905,6 +1909,7 @@ describe('PrivateControlService', () => {
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
     expect(buttonTexts).toEqual(['Опубликовать', 'В приложение']);
+    expect(getLastUiText(maxClient)).toContain(`Чат: ${chats[0].title}`);
     expect(getLastUiText(maxClient)).toContain('Разыгрываем подписку.');
     expect(getLastUiText(maxClient)).not.toContain('Контент публикации:');
     expect(getLastUiText(maxClient)).not.toContain('Остальные настройки редактируются в приложении.');
@@ -1958,7 +1963,8 @@ describe('PrivateControlService', () => {
         'chat',
         'private_bot',
       );
-      expect(getLastUiText(maxClient)).toBe('Текст перед фото');
+      expect(getLastUiText(maxClient)).toContain(`Чат: ${chats[0].title}`);
+      expect(getLastUiText(maxClient)).toContain('Текст перед фото');
       expect(getLastUiText(maxClient)).not.toContain('Контент публикации:');
       expect(
         getLastButtons(maxClient)
@@ -1984,7 +1990,8 @@ describe('PrivateControlService', () => {
         'chat',
         'private_bot',
       );
-      expect(getLastUiText(maxClient)).toBe('Текст перед фото');
+      expect(getLastUiText(maxClient)).toContain(`Чат: ${chats[0].title}`);
+      expect(getLastUiText(maxClient)).toContain('Текст перед фото');
       expect(getLastUiText(maxClient)).not.toContain('Контент публикации:');
       expect(maxClient.uploadImage).toHaveBeenCalledTimes(1);
       expect(getLastSendOptions(maxClient)?.imagePayload).toEqual({ token: 'upload-token-1' });
@@ -2032,6 +2039,7 @@ describe('PrivateControlService', () => {
       );
       expect(maxClient.sendCustomMessageImmediate).not.toHaveBeenCalled();
       expect(maxClient.uploadImage).toHaveBeenCalledTimes(1);
+      expect(getLastUiText(maxClient)).toContain(`Чат: ${chats[0].title}`);
       expect(getLastUiText(maxClient)).toContain('Весенний розыгрыш');
       expect(getLastUiText(maxClient)).toContain('Пришлите новый текст или фото.');
       expect(getLastUiText(maxClient)).not.toContain('Контент публикации:');
@@ -2058,7 +2066,8 @@ describe('PrivateControlService', () => {
         'chat',
         'private_bot',
       );
-      expect(getLastUiText(maxClient)).toBe('Текст после фото');
+      expect(getLastUiText(maxClient)).toContain(`Чат: ${chats[0].title}`);
+      expect(getLastUiText(maxClient)).toContain('Текст после фото');
       expect(getLastUiText(maxClient)).not.toContain('Контент публикации:');
       expect(maxClient.uploadImage).toHaveBeenCalledTimes(2);
       expect(getLastSendOptions(maxClient)?.imagePayload).toEqual({ token: 'upload-token-1' });
