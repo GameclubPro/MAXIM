@@ -1166,25 +1166,47 @@ export class RuleEngineService {
       return null;
     }
 
-    const blockedWordSet = new Set(
-      blockedWords
-        .map((item) => this.normalizeMessageLimitsBlockedWordToken(item))
-        .filter((item): item is string => Boolean(item)),
-    );
-    if (blockedWordSet.size === 0) {
+    const blockedWordList = [
+      ...new Set(
+        blockedWords
+          .map((item) => this.normalizeMessageLimitsBlockedWordToken(item))
+          .filter((item): item is string => Boolean(item)),
+      ),
+    ];
+    if (blockedWordList.length === 0) {
       return null;
     }
 
-    for (const token of this.extractTokens(text)) {
-      const normalizedToken = this.normalizeMessageLimitsBlockedWordToken(token);
-      if (normalizedToken && blockedWordSet.has(normalizedToken)) {
+    const normalizedText = this.normalizeMessageLimitsBlockedWordText(text);
+    if (!normalizedText) {
+      return null;
+    }
+
+    for (const blockedWord of blockedWordList) {
+      if (this.buildMessageLimitsBlockedWordPattern(blockedWord).test(normalizedText)) {
         return {
-          blockedWord: normalizedToken,
+          blockedWord,
         };
       }
     }
 
     return null;
+  }
+
+  private normalizeMessageLimitsBlockedWordText(value: string): string {
+    if (!value) {
+      return '';
+    }
+
+    let normalized = this.normalizeMixedWriting(value.toLowerCase()).replace(/ё/g, 'е');
+    normalized = normalized.replace(/([a-zа-я0-9])\1{2,}/giu, '$1$1');
+    return normalized;
+  }
+
+  private buildMessageLimitsBlockedWordPattern(value: string): RegExp {
+    const joinerPattern = String.raw`[^\p{L}\p{N}]*`;
+    const tokenPattern = [...value].map((char) => this.escapeRegExp(char)).join(joinerPattern);
+    return new RegExp(String.raw`(?<![\p{L}\p{N}])${tokenPattern}(?![\p{L}\p{N}])`, 'iu');
   }
 
   private normalizeMessageLimitsBlockedWordToken(value: string): string | null {
@@ -1194,11 +1216,11 @@ export class RuleEngineService {
 
     const normalized = this.normalizeMixedWriting(value.toLowerCase()).replace(/ё/g, 'е');
     const fragments = normalized.match(/[\p{L}\p{N}]+/gu);
-    if (!fragments || fragments.length !== 1) {
+    if (!fragments || fragments.length === 0) {
       return null;
     }
 
-    const token = fragments[0];
+    const token = fragments.join('');
     return token.length >= 2 && token.length <= 32 ? token : null;
   }
 

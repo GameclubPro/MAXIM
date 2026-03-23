@@ -810,6 +810,46 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD')).toBe(false);
   });
 
+  it('detects MESSAGE_BLOCKED_WORD with special characters and digits', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Обход через к@3и-н0 тоже должен ловиться.',
+      settings: buildSettings({ messageLimitsBlockedWords: ['казино'] }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleCode: 'MESSAGE_BLOCKED_WORD',
+          metadata: expect.objectContaining({ blockedWord: 'казино' }),
+        }),
+      ]),
+    );
+  });
+
+  it('detects MESSAGE_BLOCKED_WORD inside obfuscated link text', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Линк: https://k-a-z-1-n-0.ru/join',
+      settings: buildSettings({ messageLimitsBlockedWords: ['казино'] }),
+      domainAllowlist: ['https://k-a-z-1-n-0.ru/join'],
+    });
+
+    expect(result.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleCode: 'MESSAGE_BLOCKED_WORD',
+          metadata: expect.objectContaining({ blockedWord: 'казино' }),
+        }),
+      ]),
+    );
+  });
+
   it('detects VIDEO_BLOCKED when video messages are disabled', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({
