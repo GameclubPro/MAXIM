@@ -76,6 +76,13 @@ export const MANAGED_GIVEAWAY_DESCRIPTION_MAX_LENGTH = 2_000;
 export const MANAGED_GIVEAWAY_PRIZE_TITLE_MAX_LENGTH = 120;
 export const REQUIRED_SUBSCRIPTION_MAX_CHANNELS = 10;
 export const MESSAGE_LIMITS_BLOCKED_WORDS_MAX = 50;
+export const DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES = 0.5;
+export const DELETE_BOT_MESSAGES_DELAY_MAX_MINUTES = 60;
+export const DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES = 2;
+export const DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES = Object.freeze([
+  DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES,
+  ...Array.from({ length: DELETE_BOT_MESSAGES_DELAY_MAX_MINUTES }, (_, index) => index + 1),
+]);
 
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
 const duplicateMaxCountSchema = z.number().int().min(2).max(20);
@@ -115,6 +122,61 @@ const managedGiveawayPrizeTitleSchema = z
   .trim()
   .min(1)
   .max(MANAGED_GIVEAWAY_PRIZE_TITLE_MAX_LENGTH);
+
+export function isValidDeleteBotMessagesDelayMinutes(value: number): boolean {
+  if (!Number.isFinite(value)) {
+    return false;
+  }
+
+  return DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES.some(
+    (candidate) => Math.abs(candidate - value) < 1e-9,
+  );
+}
+
+export function normalizeDeleteBotMessagesDelayMinutes(value: number): number {
+  if (!Number.isFinite(value)) {
+    return DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES;
+  }
+
+  let closest = DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES[0];
+  let closestDistance = Math.abs(closest - value);
+
+  for (const candidate of DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES.slice(1)) {
+    const distance = Math.abs(candidate - value);
+    if (distance < closestDistance || (distance === closestDistance && candidate > closest)) {
+      closest = candidate;
+      closestDistance = distance;
+    }
+  }
+
+  return closest;
+}
+
+export function stepDeleteBotMessagesDelayMinutes(value: number, direction: number): number {
+  const normalized = normalizeDeleteBotMessagesDelayMinutes(value);
+  const currentIndex = DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES.findIndex(
+    (candidate) => Math.abs(candidate - normalized) < 1e-9,
+  );
+  if (currentIndex < 0) {
+    return normalized;
+  }
+
+  const nextIndex = Math.min(
+    DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES.length - 1,
+    Math.max(0, currentIndex + Math.sign(direction)),
+  );
+
+  return DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES[nextIndex] ?? normalized;
+}
+
+export function formatDeleteBotMessagesDelayLabel(value: number): string {
+  const normalized = normalizeDeleteBotMessagesDelayMinutes(value);
+  if (normalized < 1) {
+    return '30 сек';
+  }
+
+  return `${normalized} мин`;
+}
 
 function normalizeThematicCodewordCandidate(value: string): string | null {
   const normalized = value.trim().toLowerCase().replace(/ё/g, 'е');
@@ -315,7 +377,14 @@ export const chatSettingsSchema = z
     commentsAllEnabled: z.boolean().default(false),
     commentsChatBroadcastsEnabled: z.boolean().default(false),
     deleteBotMessagesEnabled: z.boolean().default(true),
-    deleteBotMessagesDelayMinutes: z.number().int().min(1).max(60).default(2),
+    deleteBotMessagesDelayMinutes: z
+      .number()
+      .min(DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES)
+      .max(DELETE_BOT_MESSAGES_DELAY_MAX_MINUTES)
+      .refine(isValidDeleteBotMessagesDelayMinutes, {
+        message: 'Допустимо 30 сек или целое число минут от 1 до 60.',
+      })
+      .default(DELETE_BOT_MESSAGES_DELAY_DEFAULT_MINUTES),
     removeBotsFromGroupEnabled: z.boolean().default(true),
     deleteSpammersEnabled: z.boolean().default(false),
     antiSpamEnabled: z.boolean().default(true),

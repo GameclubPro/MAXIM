@@ -175,7 +175,7 @@ model ChatSettings {
   commentsAllEnabled               Boolean                  @default(false) @map("comments_all_enabled")
   commentsChatBroadcastsEnabled    Boolean                  @default(false) @map("comments_chat_broadcasts_enabled")
   deleteBotMessagesEnabled         Boolean                  @default(true) @map("delete_bot_messages_enabled")
-  deleteBotMessagesDelayMinutes    Int                      @default(2) @map("delete_bot_messages_delay_minutes")
+  deleteBotMessagesDelayMinutes    Float                    @default(2) @map("delete_bot_messages_delay_minutes")
   removeBotsFromGroupEnabled       Boolean                  @default(true) @map("remove_bots_from_group_enabled")
   deleteSpammersEnabled            Boolean                  @default(false) @map("delete_spammers_enabled")
   antiSpamEnabled                  Boolean                  @default(true) @map("anti_spam_enabled")

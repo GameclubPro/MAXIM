@@ -11,6 +11,7 @@ import { ConfigService } from '@nestjs/config';
 import {
   getBotSpeechEditableTemplate,
   getBotSpeechSystemTemplate,
+  normalizeDeleteBotMessagesDelayMinutes,
   type BotSpeechEditableFieldKey,
   type BotSpeechStyle,
   type BotSpeechSystemTemplateKey,
@@ -103,9 +104,6 @@ const MAX_ACTIVE_BAN_DURATION_HOURS = 336;
 const DEFAULT_BOT_BUTTON_TEXT = 'Открыть';
 const RULES_BOT_BUTTON_TEXT = 'Правила';
 const RULES_CALLBACK_PAYLOAD = 'rules:open';
-const DEFAULT_BOT_MESSAGES_DELETE_DELAY_MINUTES = 2;
-const BOT_MESSAGES_DELETE_DELAY_MIN_MINUTES = 1;
-const BOT_MESSAGES_DELETE_DELAY_MAX_MINUTES = 60;
 const DEFAULT_NIGHT_MODE_TIMEZONE = 'Europe/Moscow';
 const NIGHT_MODE_NOTICE_RULE_CODE = 'NIGHT_MODE_NOTICE';
 const NIGHT_MODE_OPEN_NOTICE_RULE_CODE = 'NIGHT_MODE_OPEN_NOTICE';
@@ -3404,10 +3402,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const latestAction = latestRelevantEvent.action ?? SanctionAction.BAN;
-    if (
-      latestRelevantEvent.ruleCode === 'MANUAL_UNBAN' ||
-      latestAction !== SanctionAction.BAN
-    ) {
+    if (latestRelevantEvent.ruleCode === 'MANUAL_UNBAN' || latestAction !== SanctionAction.BAN) {
       return null;
     }
 
@@ -3545,7 +3540,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
 
-    if (normalized === 'бан' || normalized === 'ban' || normalized === 'бан!' || normalized === 'ban!') {
+    if (
+      normalized === 'бан' ||
+      normalized === 'ban' ||
+      normalized === 'бан!' ||
+      normalized === 'ban!'
+    ) {
       return {
         action: 'BAN',
       };
@@ -3976,7 +3976,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     delayMinutes: number;
   }) {
     const { chatId, userId, messageId, text, delayMinutes } = params;
-    const safeDelayMinutes = this.normalizeDeleteBotMessagesDelayMinutes(delayMinutes);
+    const safeDelayMinutes = normalizeDeleteBotMessagesDelayMinutes(delayMinutes);
 
     try {
       await this.maxClient.deleteMessage(chatId, messageId, {
@@ -8023,11 +8023,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `${CHANNEL_DIALOG_TOKEN_PREFIX}${encoded}`;
   }
 
-  private buildChatDialogToken(
-    chatId: string,
-    type: ChannelDialogType,
-    threadId: string,
-  ): string {
+  private buildChatDialogToken(chatId: string, type: ChannelDialogType, threadId: string): string {
     const payload = JSON.stringify({
       v: 1,
       d: threadId,
@@ -8443,9 +8439,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     if (params.deleteBotMessagesEnabled) {
       dispatchOptions.autoDeleteDelayMs =
-        this.normalizeDeleteBotMessagesDelayMinutes(params.deleteBotMessagesDelayMinutes) *
-        60 *
-        1000;
+        normalizeDeleteBotMessagesDelayMinutes(params.deleteBotMessagesDelayMinutes) * 60 * 1000;
     }
 
     return Object.keys(dispatchOptions).length > 0 ? dispatchOptions : undefined;
@@ -8535,17 +8529,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return null;
   }
 
-  private normalizeDeleteBotMessagesDelayMinutes(value: number): number {
-    if (!Number.isInteger(value)) {
-      return DEFAULT_BOT_MESSAGES_DELETE_DELAY_MINUTES;
-    }
-
-    return Math.min(
-      BOT_MESSAGES_DELETE_DELAY_MAX_MINUTES,
-      Math.max(BOT_MESSAGES_DELETE_DELAY_MIN_MINUTES, value),
-    );
-  }
-
   private readBanDurationHoursFromMetadata(metadata: unknown, fallback: number): number {
     if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
       const value = (metadata as Record<string, unknown>).banDurationHours;
@@ -8559,11 +8542,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    if (
-      Number.isInteger(fallback) &&
-      fallback >= 1 &&
-      fallback <= MAX_ACTIVE_BAN_DURATION_HOURS
-    ) {
+    if (Number.isInteger(fallback) && fallback >= 1 && fallback <= MAX_ACTIVE_BAN_DURATION_HOURS) {
       return fallback;
     }
 

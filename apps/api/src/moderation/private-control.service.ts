@@ -4,8 +4,10 @@ import {
   broadcastHandoffRequestSchema,
   broadcastHandoffResponseSchema,
   broadcastHandoffStateSchema,
+  formatDeleteBotMessagesDelayLabel,
   managedGiveawayHandoffRequestSchema,
   profileMentionHandoffRequestSchema,
+  stepDeleteBotMessagesDelayMinutes,
   type BroadcastTextFormat,
   type BroadcastHandoffState,
   type BroadcastHandoffResponse,
@@ -753,12 +755,12 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'deleteBotMessagesEnabled', label: 'Удалять сообщения бота', type: 'boolean' },
     {
       key: 'deleteBotMessagesDelayMinutes',
-      label: 'Задержка удаления (мин)',
+      label: 'Задержка удаления',
       type: 'number',
-      min: 1,
+      min: 0.5,
       max: 60,
       step: 1,
-      presets: [1, 5, 15],
+      presets: [0.5, 1, 5],
     },
     { key: 'removeBotsFromGroupEnabled', label: 'Удалять ботов из чата', type: 'boolean' },
   ],
@@ -1098,9 +1100,8 @@ export class PrivateControlService {
       await this.saveSession(context.actor.userId, session);
       return;
     }
-    const channelSuggestionPayload = this.adminService.parseChannelSuggestionStartPayload(
-      startPayload,
-    );
+    const channelSuggestionPayload =
+      this.adminService.parseChannelSuggestionStartPayload(startPayload);
     if (channelSuggestionPayload) {
       session.pendingInput = {
         kind: 'channel_suggestion',
@@ -1608,7 +1609,12 @@ export class PrivateControlService {
       return null;
     }
 
-    if (normalized === 'бан' || normalized === 'ban' || normalized === 'бан!' || normalized === 'ban!') {
+    if (
+      normalized === 'бан' ||
+      normalized === 'ban' ||
+      normalized === 'бан!' ||
+      normalized === 'ban!'
+    ) {
       return {
         action: 'BAN',
       };
@@ -2003,10 +2009,7 @@ export class PrivateControlService {
       session.pendingInput &&
       session.pendingInput.kind !== 'broadcast_content' &&
       session.pendingInput.kind !== 'giveaway_content' &&
-      !(
-        session.pendingInput.kind === 'channel_suggestion' &&
-        callback.action === 'suggest_help'
-      ) &&
+      !(session.pendingInput.kind === 'channel_suggestion' && callback.action === 'suggest_help') &&
       callback.action !== 'input_cancel'
     ) {
       const view = this.renderInputPrompt(session.pendingInput);
@@ -2465,13 +2468,16 @@ export class PrivateControlService {
           throw new BadRequestException('Setting does not support presets');
         }
 
-        const nextValue = this.parseIntInput(rawValue, config.min ?? 0, config.max ?? 1_000_000);
+        const nextValue = Number(rawValue);
+        if (!Number.isFinite(nextValue) || Number.isNaN(nextValue)) {
+          throw new BadRequestException('Preset is invalid');
+        }
         await this.updateSingleSetting(session.selectedChatId!, context.actor, key, nextValue);
 
         const view = await this.renderSectionCardScreen(context, session, section);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: `${config.label}: ${nextValue}`,
+          notification: `${config.label}: ${this.formatNumberPreset(config, nextValue)}`,
         });
         return;
       }
@@ -2490,23 +2496,26 @@ export class PrivateControlService {
           throw new BadRequestException('Setting does not support stepper');
         }
 
-        const delta = Number.parseInt(rawDelta, 10);
+        const delta = Number(rawDelta);
         if (!Number.isFinite(delta) || Number.isNaN(delta)) {
           throw new BadRequestException('Delta is invalid');
         }
 
         const current = await this.adminService.getSettings(session.selectedChatId!, context.actor);
         const currentValue = Number(current[key] ?? 0);
-        const bounded = Math.max(
-          config.min ?? Number.MIN_SAFE_INTEGER,
-          Math.min(config.max ?? Number.MAX_SAFE_INTEGER, currentValue + delta),
-        );
+        const bounded =
+          key === 'deleteBotMessagesDelayMinutes'
+            ? stepDeleteBotMessagesDelayMinutes(currentValue, delta)
+            : Math.max(
+                config.min ?? Number.MIN_SAFE_INTEGER,
+                Math.min(config.max ?? Number.MAX_SAFE_INTEGER, currentValue + delta),
+              );
         await this.updateSingleSetting(session.selectedChatId!, context.actor, key, bounded);
 
         const view = await this.renderSectionCardScreen(context, session, section);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: `${config.label}: ${bounded}`,
+          notification: `${config.label}: ${this.formatNumberPreset(config, bounded)}`,
         });
         return;
       }
@@ -6895,7 +6904,7 @@ export class PrivateControlService {
       case 'extra':
         return [
           `Удаление спаммеров: ${this.describeBooleanCompact(settings.deleteSpammersEnabled)}`,
-          `Сообщения бота: ${this.describeBooleanCompact(settings.deleteBotMessagesEnabled)} • задержка ${settings.deleteBotMessagesDelayMinutes}м`,
+          `Сообщения бота: ${this.describeBooleanCompact(settings.deleteBotMessagesEnabled)} • задержка ${formatDeleteBotMessagesDelayLabel(settings.deleteBotMessagesDelayMinutes)}`,
           `Удаление ботов: ${this.describeBooleanCompact(settings.removeBotsFromGroupEnabled)}`,
         ];
     }
@@ -6952,7 +6961,7 @@ export class PrivateControlService {
             this.cb('step_number', section, String(field.key), String(-step)),
           ),
           this.callbackButton(
-            `${field.label}: ${this.compactText(String(numericValue), 12)}`,
+            `${field.label}: ${this.compactText(this.formatNumberPreset(field, numericValue), 12)}`,
             this.cb('noop'),
           ),
           this.callbackButton(
@@ -7094,6 +7103,9 @@ export class PrivateControlService {
 
   private formatNumberPreset(field: SettingFieldConfig, value: number): string {
     const key = String(field.key).toLowerCase();
+    if (key === 'deletebotmessagesdelayminutes') {
+      return formatDeleteBotMessagesDelayLabel(value);
+    }
     if (key.includes('windowsec')) {
       return value % 3600 === 0 ? `${value / 3600}ч` : `${Math.round(value / 60)}м`;
     }

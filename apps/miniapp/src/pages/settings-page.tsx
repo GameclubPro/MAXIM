@@ -2,16 +2,19 @@ import {
   BOT_SPEECH_EDITABLE_FIELD_KEYS,
   BOT_SPEECH_STYLE_METADATA,
   BOT_SPEECH_STYLE_OPTIONS,
+  DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES,
   MESSAGE_LIMITS_BLOCKED_WORDS_MAX,
   REQUIRED_SUBSCRIPTION_MAX_CHANNELS,
   applyBotSpeechStylePreset,
   chatRulesSchema,
   chatSettingsSchema,
+  formatDeleteBotMessagesDelayLabel,
   getBotSpeechEditableTemplate,
   getBotSpeechSystemTemplate,
   hasBotSpeechEditableOverrides,
   normalizeAllowlistLink,
   normalizeMessageLimitsBlockedWordCandidate,
+  stepDeleteBotMessagesDelayMinutes,
   type BotSpeechEditableFieldKey,
   type BotSpeechStyle,
   type ChatRules,
@@ -111,8 +114,7 @@ const NIGHT_FORCE_CLOSE_MAX_DAYS = 30;
 const COMMERCIAL_SENSITIVITY_MIN = 0;
 const COMMERCIAL_SENSITIVITY_MAX = 100;
 const COMMERCIAL_BALANCED_MAX = 69;
-const BOT_MESSAGES_DELETE_DELAY_MIN = 1;
-const BOT_MESSAGES_DELETE_DELAY_MAX = 60;
+const BOT_MESSAGES_DELETE_DELAY_OPTIONS = DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES;
 const DOMAIN_REMOVAL_MIN_FUTURE_MS = 30_000;
 const MAX_BROADCAST_TEXT_LENGTH = 1_000;
 const MIN_BROADCAST_CYCLE_HOURS = 1;
@@ -1471,8 +1473,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [editingManagedBroadcast, setEditingManagedBroadcast] =
     useState<ManagedBroadcastDetails | null>(null);
   const [mailingNowMs, setMailingNowMs] = useState(() => Date.now());
-  const [mailingWorkspaceView, setMailingWorkspaceView] =
-    useState<MailingWorkspaceView>('compose');
+  const [mailingWorkspaceView, setMailingWorkspaceView] = useState<MailingWorkspaceView>('compose');
   const [duplicateWindowInputValues, setDuplicateWindowInputValues] = useState<
     Partial<Record<DuplicateWindowKey, string>>
   >({});
@@ -2618,17 +2619,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setFieldValue('banDurationHours', next as ChatSettings['banDurationHours']);
   }
 
-  function adjustDeleteBotMessagesDelay(deltaMinutes: number) {
+  function adjustDeleteBotMessagesDelay(direction: number) {
     if (!draft) {
       return;
     }
 
-    const next = Math.min(
-      BOT_MESSAGES_DELETE_DELAY_MAX,
-      Math.max(
-        BOT_MESSAGES_DELETE_DELAY_MIN,
-        Number(draft.deleteBotMessagesDelayMinutes) + deltaMinutes,
-      ),
+    const next = stepDeleteBotMessagesDelayMinutes(
+      Number(draft.deleteBotMessagesDelayMinutes),
+      direction,
     );
 
     setFieldValue(
@@ -3546,8 +3544,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       mailingPlannerState.isConfirmed &&
       mailingHasFutureSlots);
   const mailingSendDisabled = isMailingBusy;
-  const showMailingWorkspaceTabs =
-    !editingManagedBroadcast && orderedManagedBroadcasts.length > 0;
+  const showMailingWorkspaceTabs = !editingManagedBroadcast && orderedManagedBroadcasts.length > 0;
   const mailingDrilldownFooter = (
     <>
       <div className="settings-drilldown__footer-actions is-single-action">
@@ -4947,9 +4944,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       <div className="settings-native-toggle">
                         <div className="settings-native-toggle__row">
                           <div className="settings-native-toggle__title-wrap">
-                            <span className="settings-native-toggle__title">
-                              Включить приветствие
-                            </span>
+                            <span className="settings-native-toggle__title">Приветствие</span>
                             <button
                               type="button"
                               className={cn(
@@ -8576,7 +8571,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                           >
                                             {resolveManagedBroadcastCardBadge(broadcast)}
                                           </span>
-                                          <strong>{resolveManagedBroadcastCardTitle(broadcast)}</strong>
+                                          <strong>
+                                            {resolveManagedBroadcastCardTitle(broadcast)}
+                                          </strong>
                                           <small>{broadcast.textPreview}</small>
                                         </span>
                                         <span className="managed-broadcast-card__aside">
@@ -9414,7 +9411,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             <div
                               className="ban-duration-stepper"
                               role="group"
-                              aria-label="Задержка удаления сообщений бота в минутах"
+                              aria-label="Задержка удаления сообщений бота"
                             >
                               <button
                                 type="button"
@@ -9422,7 +9419,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 onClick={() => adjustDeleteBotMessagesDelay(-1)}
                                 disabled={
                                   draft.deleteBotMessagesDelayMinutes <=
-                                  BOT_MESSAGES_DELETE_DELAY_MIN
+                                  BOT_MESSAGES_DELETE_DELAY_OPTIONS[0]
                                 }
                                 aria-label="Уменьшить задержку удаления сообщений бота"
                               >
@@ -9430,7 +9427,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </button>
 
                               <output className="ban-duration-stepper__value" aria-live="polite">
-                                {draft.deleteBotMessagesDelayMinutes} мин
+                                {formatDeleteBotMessagesDelayLabel(
+                                  draft.deleteBotMessagesDelayMinutes,
+                                )}
                               </output>
 
                               <button
@@ -9439,7 +9438,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 onClick={() => adjustDeleteBotMessagesDelay(1)}
                                 disabled={
                                   draft.deleteBotMessagesDelayMinutes >=
-                                  BOT_MESSAGES_DELETE_DELAY_MAX
+                                  BOT_MESSAGES_DELETE_DELAY_OPTIONS[
+                                    BOT_MESSAGES_DELETE_DELAY_OPTIONS.length - 1
+                                  ]
                                 }
                                 aria-label="Увеличить задержку удаления сообщений бота"
                               >

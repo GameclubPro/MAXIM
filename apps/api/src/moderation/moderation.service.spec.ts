@@ -1360,6 +1360,69 @@ describe('ModerationService', () => {
     expect(maxClient.banMember).not.toHaveBeenCalled();
   });
 
+  it('supports 30-second auto-delete for own bot messages', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            removeBotsFromGroupEnabled: false,
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 0.5,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalSpammer: {
+        upsert: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn().mockReturnValue('id613002203036_4_bot'),
+      } as never,
+    );
+
+    await service.handleUpdate(createOwnBotUpdateWithoutBotFlags());
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-own-bot-no-flags-1', {
+      delayMs: 30_000,
+    });
+  });
+
   it('does not auto-delete tracked greeting message from own bot', async () => {
     const prisma = {
       chat: {
@@ -6988,7 +7051,9 @@ describe('ModerationService', () => {
 
     await service.handleUpdate(createChannelSuggestionCallbackUpdate('cds-channel-1:token'));
 
-    expect(adminService.parseChannelSuggestionStartPayload).toHaveBeenCalledWith('cds-channel-1:token');
+    expect(adminService.parseChannelSuggestionStartPayload).toHaveBeenCalledWith(
+      'cds-channel-1:token',
+    );
     expect(privateControlService.openChannelSuggestionFromCallback).toHaveBeenCalledWith({
       userId: 'user-1',
       chatId: 'channel-1',
