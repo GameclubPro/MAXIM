@@ -7447,7 +7447,7 @@ export class PrivateControlService {
       case 'broadcast_text':
         return {
           title: 'Текст рассылки',
-          description: 'Введите текст рассылки (до 1000 символов).',
+          description: 'Введите текст рассылки (до 2000 символов).',
         };
       case 'broadcast_button_url':
         return {

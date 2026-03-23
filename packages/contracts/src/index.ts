@@ -1512,7 +1512,7 @@ export const sendBroadcastRequestSchema = z
     text: z
       .string()
       .trim()
-      .max(1_000, 'Текст рассылки слишком длинный. Максимум 1000 символов.')
+      .max(2_000, 'Текст рассылки слишком длинный. Максимум 2000 символов.')
       .default(''),
     textFormat: broadcastTextFormatSchema.default('plain'),
     applyToAllChats: z.boolean().default(false),

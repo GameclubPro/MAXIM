@@ -2053,7 +2053,7 @@ describe('PrivateControlService', () => {
       new BadRequestException({
         _errors: [],
         text: {
-          _errors: ['Текст рассылки слишком длинный. Максимум 1000 символов.'],
+          _errors: ['Текст рассылки слишком длинный. Максимум 2000 символов.'],
         },
       }),
     );
@@ -2071,7 +2071,7 @@ describe('PrivateControlService', () => {
 
     expect(sendBroadcast).toHaveBeenCalledTimes(1);
     expect(getLastSentText(maxClient)).toContain(
-      'Текст рассылки слишком длинный. Максимум 1000 символов.',
+      'Текст рассылки слишком длинный. Максимум 2000 символов.',
     );
     expect(getLastSentText(maxClient)).not.toContain('Bad Request Exception');
   });
