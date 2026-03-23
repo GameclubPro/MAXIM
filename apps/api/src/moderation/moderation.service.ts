@@ -141,6 +141,7 @@ const PRIVATE_HELP_TEXT = [
 ].join('\n');
 const MAX_FORWARD_SCAN_DEPTH = 8;
 const CHANNEL_AUTO_POST_SCAN_INTERVAL_MS = 5_000;
+const CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS = 60_000;
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
 const CHANNEL_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
@@ -220,6 +221,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private nightModeAnnounceInFlight = false;
   private channelAutoPostTimer: NodeJS.Timeout | null = null;
   private channelAutoPostInFlight = false;
+  private channelAutoPostBackoffUntilMs = 0;
   private readonly appBaseUrl: string | null;
   private readonly explicitBotContactId: string | null;
   private readonly maxBotToken: string | null;
@@ -7264,6 +7266,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (this.channelAutoPostInFlight) {
       return;
     }
+    if (Date.now() < this.channelAutoPostBackoffUntilMs) {
+      return;
+    }
     if (typeof this.prisma.channelSettings?.findMany !== 'function') {
       return;
     }
@@ -7313,6 +7318,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             },
             'Failed channel auto post buttons scan',
           );
+          if (this.isMaxApiThrottleError(error)) {
+            this.channelAutoPostBackoffUntilMs =
+              Date.now() + CHANNEL_AUTO_POST_RATE_LIMIT_BACKOFF_MS;
+            break;
+          }
         }
       }
     } finally {
@@ -8293,6 +8303,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private extractStatusCode(error: unknown): number | null {
     const maybeStatus = (error as { response?: { status?: number } })?.response?.status;
     return typeof maybeStatus === 'number' ? maybeStatus : null;
+  }
+
+  private isMaxApiThrottleError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    if (status === 429) {
+      return true;
+    }
+
+    if (!(error instanceof Error)) {
+      return false;
+    }
+
+    const message = error.message.toLowerCase();
+    return message.includes('rate limit exceeded') || message.includes('circuit breaker');
   }
 
   private normalizeSecret(value: string | undefined): string | null {
