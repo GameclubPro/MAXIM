@@ -156,7 +156,7 @@ model ChatSettings {
   linkPolicy                       LinkPolicy               @default(ALLOWLIST_ONLY) @map("link_policy")
   botSpeechStyle                   BotSpeechStyle?          @default(FRIENDLY) @map("bot_speech_style")
   greetingEnabled                  Boolean                  @default(false) @map("greeting_enabled")
-  greetingBotMessageEnabled        Boolean                  @default(true) @map("greeting_bot_message_enabled")
+  greetingBotMessageEnabled        Boolean                  @default(false) @map("greeting_bot_message_enabled")
   greetingBotMessageText           String                   @default("") @map("greeting_bot_message_text")
   greetingBotButtonEnabled         Boolean                  @default(false) @map("greeting_bot_button_enabled")
   greetingBotButtonUrl             String                   @default("") @map("greeting_bot_button_url")

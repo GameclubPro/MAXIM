@@ -833,8 +833,8 @@ function createChatViolations(now: Date): LogsDashboardResponse['violations'] {
 function createInitialState(): PreviewState {
   const now = new Date();
   const chatSettings = chatSettingsSchema.parse({
-    greetingEnabled: true,
-    greetingBotMessageEnabled: true,
+    greetingEnabled: false,
+    greetingBotMessageEnabled: false,
     greetingBotMessageText: 'Добро пожаловать в чат. Ознакомьтесь с правилами и пишите по делу.',
     linkPolicy: 'ALLOWLIST_ONLY',
     antiSpamEnabled: true,

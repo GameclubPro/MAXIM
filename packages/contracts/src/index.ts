@@ -271,7 +271,7 @@ export const chatSettingsSchema = z
     linkPolicy: linkPolicySchema.default('ALLOWLIST_ONLY'),
     botSpeechStyle: botSpeechStyleSchema.nullable().default('FRIENDLY'),
     greetingEnabled: z.boolean().default(false),
-    greetingBotMessageEnabled: z.boolean().default(true),
+    greetingBotMessageEnabled: z.boolean().default(false),
     greetingBotMessageText: botMessageTextSchema,
     greetingBotButtonEnabled: z.boolean().default(false),
     greetingBotButtonUrl: botButtonUrlSchema,
