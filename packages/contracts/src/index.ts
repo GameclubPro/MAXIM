@@ -1509,7 +1509,11 @@ function normalizeBroadcastScheduledSlots(values: string[]): string[] {
 
 export const sendBroadcastRequestSchema = z
   .object({
-    text: z.string().trim().max(1_000).default(''),
+    text: z
+      .string()
+      .trim()
+      .max(1_000, 'Текст рассылки слишком длинный. Максимум 1000 символов.')
+      .default(''),
     textFormat: broadcastTextFormatSchema.default('plain'),
     applyToAllChats: z.boolean().default(false),
     buttonEnabled: z.boolean().default(false),

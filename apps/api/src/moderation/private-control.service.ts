@@ -1020,15 +1020,17 @@ export class PrivateControlService {
 
       await this.processTextMessage(context);
     } catch (error: unknown) {
+      const badRequestDetails = this.extractBadRequestDetails(error);
       const userMessage =
-        error instanceof BadRequestException &&
-        typeof error.message === 'string' &&
-        error.message.trim().length > 0
-          ? error.message
+        typeof badRequestDetails === 'string' && badRequestDetails.trim().length > 0
+          ? badRequestDetails
+          : error instanceof BadRequestException &&
+              typeof error.message === 'string' &&
+              error.message.trim().length > 0
+            ? error.message
           : 'Что-то пошло не так. Попробуйте ещё раз через несколько секунд.';
       const session = await this.loadSessionForDiagnostics(context.actor.userId);
       const badRequestResponse = error instanceof BadRequestException ? error.getResponse() : null;
-      const badRequestDetails = this.extractBadRequestDetails(error);
 
       this.logger.warn(
         {
@@ -9676,32 +9678,20 @@ export class PrivateControlService {
   }
 
   private normalizeBadRequestResponse(response: unknown): string | null {
-    if (typeof response === 'string' && response.trim().length > 0) {
-      return response.trim();
+    const messages = this.collectBadRequestMessages(response);
+    if (messages.length > 0) {
+      return Array.from(new Set(messages)).join('; ');
     }
 
-    if (!response || typeof response !== 'object') {
-      return null;
-    }
-
-    const row = response as Record<string, unknown>;
-    const message = row.message;
-    if (typeof message === 'string' && message.trim().length > 0) {
-      return message.trim();
-    }
-
-    if (Array.isArray(message)) {
-      const normalized = message
-        .map((item) => this.normalizeBadRequestResponse(item))
-        .filter((item): item is string => Boolean(item));
-      if (normalized.length > 0) {
-        return normalized.join('; ');
+    if (
+      response &&
+      typeof response === 'object' &&
+      typeof (response as Record<string, unknown>).error === 'string'
+    ) {
+      const errorLabel = ((response as Record<string, unknown>).error as string).trim();
+      if (errorLabel.length > 0) {
+        return errorLabel;
       }
-    }
-
-    const errorLabel = row.error;
-    if (typeof errorLabel === 'string' && errorLabel.trim().length > 0) {
-      return errorLabel.trim();
     }
 
     try {
@@ -9709,6 +9699,53 @@ export class PrivateControlService {
     } catch {
       return null;
     }
+  }
+
+  private collectBadRequestMessages(response: unknown): string[] {
+    if (typeof response === 'string') {
+      const normalized = response.trim();
+      return normalized.length > 0 ? [normalized] : [];
+    }
+
+    if (Array.isArray(response)) {
+      return response.flatMap((item) => this.collectBadRequestMessages(item));
+    }
+
+    if (!response || typeof response !== 'object') {
+      return [];
+    }
+
+    const row = response as Record<string, unknown>;
+    const messages: string[] = [];
+    const directMessage = row.message;
+
+    if (typeof directMessage === 'string' && directMessage.trim().length > 0) {
+      messages.push(directMessage.trim());
+    } else if (Array.isArray(directMessage)) {
+      messages.push(...directMessage.flatMap((item) => this.collectBadRequestMessages(item)));
+    }
+
+    const zodErrors = row._errors;
+    if (Array.isArray(zodErrors)) {
+      messages.push(
+        ...zodErrors
+          .filter((item): item is string => typeof item === 'string')
+          .map((item) => item.trim())
+          .filter(Boolean),
+      );
+    }
+
+    for (const [key, value] of Object.entries(row)) {
+      if (key === 'message' || key === 'error' || key === '_errors') {
+        continue;
+      }
+      if (!value || (typeof value !== 'object' && !Array.isArray(value))) {
+        continue;
+      }
+      messages.push(...this.collectBadRequestMessages(value));
+    }
+
+    return messages;
   }
 
   private async saveSession(userId: string, session: PrivateSession): Promise<void> {

@@ -2048,6 +2048,34 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).toContain('Рассылка недоступна');
   });
 
+  it('shows nested validation details instead of generic bad request exception in broadcast flow', async () => {
+    const sendBroadcast = jest.fn().mockRejectedValue(
+      new BadRequestException({
+        _errors: [],
+        text: {
+          _errors: ['Текст рассылки слишком длинный. Максимум 1000 символов.'],
+        },
+      }),
+    );
+    const { service, chats, maxClient } = createHarness({
+      adminService: {
+        sendBroadcast,
+      },
+    });
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
+    await service.handleUpdate(createPrivateTextUpdate('Слишком длинная рассылка'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+
+    expect(sendBroadcast).toHaveBeenCalledTimes(1);
+    expect(getLastSentText(maxClient)).toContain(
+      'Текст рассылки слишком длинный. Максимум 1000 символов.',
+    );
+    expect(getLastSentText(maxClient)).not.toContain('Bad Request Exception');
+  });
+
   it('hands off giveaway from miniapp into private bot management flow', async () => {
     const { service, maxClient, chats, managedGiveawayService } = createHarness();
     const actor = {
