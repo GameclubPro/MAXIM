@@ -501,7 +501,7 @@ async function publishSuggestDialogToken(
 
   const [, , options] = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
   const suggestButton = options.buttons?.[0]?.[0];
-  const suggestStartParam = String(suggestButton.payload ?? '');
+  const suggestStartParam = new URL(suggestButton.url).searchParams.get('start');
   const parsed = service.parseChannelSuggestionStartPayload(suggestStartParam);
   return parsed?.token ?? '';
 }
@@ -4800,9 +4800,12 @@ describe('AdminService.sendChannelBroadcast', () => {
     expect(dispatch).toEqual({ immediate: true });
     expect(options).toMatchObject({
       textFormat: 'html',
-      buttons: [[expect.objectContaining({ text: '📰 Предложить пост', type: 'callback' })]],
+      buttons: [[expect.objectContaining({ text: '📰 Предложить пост', type: 'link' })]],
     });
-    expect(String(options.buttons[0][0].payload ?? '')).toMatch(/^cds-/u);
+    const suggestStartParam = new URL(String(options.buttons[0][0].url ?? '')).searchParams.get(
+      'start',
+    );
+    expect(suggestStartParam).toMatch(/^cds-/u);
   });
 
   it('treats past slots from today as already sent for calendar broadcast scheduling', async () => {
@@ -5498,14 +5501,15 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       text: 'Комментарии · 0',
     });
     expect(suggestButton).toMatchObject({
-      type: 'callback',
+      type: 'link',
       text: 'Предложить пост',
     });
     expect(commentsButton.url).toContain('https://max.ru/777000_bot?startapp=');
+    expect(suggestButton.url).toContain('https://max.ru/777000_bot?start=');
 
     const commentsUrl = new URL(commentsButton.url);
     const commentsStartParam = commentsUrl.searchParams.get('startapp');
-    const suggestStartParam = String(suggestButton.payload ?? '');
+    const suggestStartParam = new URL(suggestButton.url).searchParams.get('start');
 
     expect(commentsStartParam).toMatch(/^cd-/u);
     expect(suggestStartParam).toMatch(/^cds-/u);
@@ -5592,7 +5596,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(options.buttons).toHaveLength(1);
     expect(options.buttons?.[0]).toHaveLength(1);
     expect(options.buttons?.[0]?.[0]).toMatchObject({
-      type: 'callback',
+      type: 'link',
       text: 'Предложить пост',
     });
   });
@@ -6161,7 +6165,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       expect.objectContaining({
         buttons: [
           [expect.objectContaining({ text: 'Комментарии · 4', type: 'link' })],
-          [expect.objectContaining({ text: 'Предложить пост', type: 'callback' })],
+          [expect.objectContaining({ text: 'Предложить пост', type: 'link' })],
         ],
       }),
     );
@@ -6240,7 +6244,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       'mid-channel-auto-suggest-99',
       null,
       expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: 'Предложить пост', type: 'callback' })]],
+        buttons: [[expect.objectContaining({ text: 'Предложить пост', type: 'link' })]],
       }),
     );
   });

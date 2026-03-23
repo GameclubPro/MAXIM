@@ -50,7 +50,7 @@ function createConfigMock() {
 
 function createAdminServiceMock() {
   return {
-    buildChannelSuggestionCallbackPayload: jest.fn(
+    buildChannelSuggestionStartPayload: jest.fn(
       (chatId: string, threadId: string) => `cds-${chatId}:${threadId}`,
     ),
   };
@@ -125,15 +125,15 @@ describe('ModerationService channel auto post buttons', () => {
           ],
           [
             expect.objectContaining({
-              type: 'callback',
+              type: 'link',
               text: '📰 Предложить пост',
-              payload: expect.stringMatching(/^cds-channel-1:/),
+              url: expect.stringContaining('https://max.ru/777000_bot?start=cds-channel-1%3A'),
             }),
           ],
         ],
       }),
     );
-    expect(adminService.buildChannelSuggestionCallbackPayload).toHaveBeenCalledWith(
+    expect(adminService.buildChannelSuggestionStartPayload).toHaveBeenCalledWith(
       'channel-1',
       expect.any(String),
     );
@@ -323,9 +323,9 @@ describe('ModerationService channel auto post buttons', () => {
         buttons: [
           [
             expect.objectContaining({
-              type: 'callback',
+              type: 'link',
               text: '📰 Предложить пост',
-              payload: expect.stringMatching(/^cds-channel-1:/),
+              url: expect.stringContaining('https://max.ru/777000_bot?start=cds-channel-1%3A'),
             }),
           ],
         ],
@@ -435,9 +435,9 @@ describe('ModerationService channel auto post buttons', () => {
           [expect.objectContaining({ text: '💬 Комментарии · 0' })],
           [
             expect.objectContaining({
-              type: 'callback',
+              type: 'link',
               text: '📰 Предложить пост',
-              payload: expect.stringMatching(/^cds-channel-1:/),
+              url: expect.stringContaining('https://max.ru/777000_bot?start=cds-channel-1%3A'),
             }),
           ],
         ],

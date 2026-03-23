@@ -1473,6 +1473,7 @@ export class AdminService {
     const threadId = existingThreadId || randomUUID();
     const commentsUrl = this.buildChannelDialogLaunchUrl(chatId, 'comments', threadId);
     const suggestPayload = this.buildChannelSuggestionStartPayload(chatId, threadId);
+    const suggestUrl = this.buildBotStartUrl(suggestPayload);
     const commentsWebAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, 'comments', threadId);
     const botContactId = this.resolveBotContactId();
     const commentsButton: MaxMessageButton = commentsUrl
@@ -1493,11 +1494,13 @@ export class AdminService {
             text: formatCommentsButtonText(parsed.data.commentsButtonText, 0),
             url: commentsWebAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
           };
-    const suggestButton: MaxMessageButton = {
-      type: 'callback',
-      text: parsed.data.suggestButtonText,
-      payload: suggestPayload,
-    };
+    const suggestButton: MaxMessageButton = suggestUrl
+      ? {
+          type: 'link',
+          text: parsed.data.suggestButtonText,
+          url: suggestUrl,
+        }
+      : this.buildChannelDialogButton(chatId, 'suggest', threadId, parsed.data.suggestButtonText);
     const buttons: MaxMessageButton[][] = [];
     if (parsed.data.includeCommentsButton) {
       buttons.push([commentsButton]);
@@ -1576,6 +1579,7 @@ export class AdminService {
           recreatedFromMessageId,
           commentsUrl,
           suggestPayload,
+          suggestUrl,
         },
       },
     });
@@ -2456,10 +2460,6 @@ export class AdminService {
     }
 
     return null;
-  }
-
-  buildChannelSuggestionCallbackPayload(chatId: string, threadId: string): string {
-    return this.buildChannelSuggestionStartPayload(chatId, threadId);
   }
 
   private async assertRequiredSubscriptionSettings(settings: ChatSettings): Promise<void> {
@@ -5049,10 +5049,21 @@ export class AdminService {
     text: string,
   ): MaxMessageButton {
     if (type === 'suggest') {
+      const suggestUrl = this.buildBotStartUrl(this.buildChannelSuggestionStartPayload(chatId, threadId));
+      if (suggestUrl) {
+        return {
+          type: 'link',
+          text,
+          url: suggestUrl,
+        };
+      }
+
       return {
-        type: 'callback',
+        type: 'link',
         text,
-        payload: this.buildChannelSuggestionStartPayload(chatId, threadId),
+        url:
+          this.buildChannelDialogDirectWebAppUrl(chatId, type, threadId) ??
+          `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
       };
     }
 
@@ -8478,7 +8489,7 @@ export class AdminService {
     return this.buildEntityDialogStartParam('channel', chatId, type, threadId);
   }
 
-  private buildChannelSuggestionStartPayload(chatId: string, threadId: string): string {
+  buildChannelSuggestionStartPayload(chatId: string, threadId: string): string {
     const normalizedChatId = chatId.trim();
     const normalizedThreadId = threadId.trim();
     const compactThreadId = this.compactSuggestionThreadId(normalizedThreadId);
