@@ -99,6 +99,7 @@ type ForwardedModerationTarget = {
 };
 
 const DEFAULT_BAN_DURATION_HOURS = 6;
+const MAX_ACTIVE_BAN_DURATION_HOURS = 336;
 const DEFAULT_BOT_BUTTON_TEXT = 'Открыть';
 const RULES_BOT_BUTTON_TEXT = 'Правила';
 const RULES_CALLBACK_PAYLOAD = 'rules:open';
@@ -3316,11 +3317,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userId: string,
     fallbackBanDurationHours: number,
   ): Promise<ActiveBan | null> {
-    const latestBan = await this.prisma.moderationEvent.findFirst({
+    const latestRelevantEvent = await this.prisma.moderationEvent.findFirst({
       where: {
         chatId,
         userId,
-        action: SanctionAction.BAN,
+        OR: [{ action: SanctionAction.BAN }, { ruleCode: 'MANUAL_UNBAN' }],
       },
       orderBy: {
         createdAt: 'desc',
@@ -3329,25 +3330,37 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         id: true,
         createdAt: true,
         metadata: true,
+        action: true,
+        ruleCode: true,
       },
     });
 
-    if (!latestBan) {
+    if (!latestRelevantEvent) {
+      return null;
+    }
+
+    const latestAction = latestRelevantEvent.action ?? SanctionAction.BAN;
+    if (
+      latestRelevantEvent.ruleCode === 'MANUAL_UNBAN' ||
+      latestAction !== SanctionAction.BAN
+    ) {
       return null;
     }
 
     const durationHours = this.readBanDurationHoursFromMetadata(
-      latestBan.metadata,
+      latestRelevantEvent.metadata,
       fallbackBanDurationHours,
     );
-    const expiresAt = new Date(latestBan.createdAt.getTime() + durationHours * 60 * 60 * 1000);
+    const expiresAt = new Date(
+      latestRelevantEvent.createdAt.getTime() + durationHours * 60 * 60 * 1000,
+    );
     if (expiresAt.getTime() <= Date.now()) {
       return null;
     }
 
     return {
-      eventId: latestBan.id,
-      issuedAt: latestBan.createdAt,
+      eventId: latestRelevantEvent.id,
+      issuedAt: latestRelevantEvent.createdAt,
       expiresAt,
       durationHours,
     };
@@ -8451,12 +8464,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readBanDurationHoursFromMetadata(metadata: unknown, fallback: number): number {
     if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
       const value = (metadata as Record<string, unknown>).banDurationHours;
-      if (typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= 36) {
+      if (
+        typeof value === 'number' &&
+        Number.isInteger(value) &&
+        value >= 1 &&
+        value <= MAX_ACTIVE_BAN_DURATION_HOURS
+      ) {
         return value;
       }
     }
 
-    if (Number.isInteger(fallback) && fallback >= 1 && fallback <= 36) {
+    if (
+      Number.isInteger(fallback) &&
+      fallback >= 1 &&
+      fallback <= MAX_ACTIVE_BAN_DURATION_HOURS
+    ) {
       return fallback;
     }
 
