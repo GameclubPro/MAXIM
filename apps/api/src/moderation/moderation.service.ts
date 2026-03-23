@@ -348,6 +348,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const callbackId = this.extractCallbackId(update);
     const callbackPayload = this.extractCallbackPayload(update);
+    const suggestionPayload =
+      callbackPayload && this.adminService
+        ? this.adminService.parseChannelSuggestionStartPayload(callbackPayload)
+        : null;
+    if (callbackId && suggestionPayload && this.privateControlService) {
+      const callbackUserId = this.extractCallbackUserId(update) ?? senderId;
+      const delivered = await this.privateControlService.openChannelSuggestionFromCallback({
+        userId: callbackUserId,
+        chatId: suggestionPayload.chatId,
+        token: suggestionPayload.token,
+      });
+      await this.answerCallbackSafe(
+        callbackId,
+        delivered ? 'Бот написал в личку' : 'Не удалось открыть личку бота',
+      );
+      return;
+    }
     const pollCallback = parseManagedPollCallbackPayload(callbackPayload);
     if (pollCallback) {
       await this.handleManagedPollCallback(update, pollCallback, callbackId);

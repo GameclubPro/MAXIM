@@ -756,6 +756,36 @@ function createGroupRulesCallbackUpdate(): MaxUpdate {
   };
 }
 
+function createChannelSuggestionCallbackUpdate(payload: string): MaxUpdate {
+  return {
+    updateId: 'upd-channel-suggest-callback-1',
+    type: 'message_callback',
+    message: {
+      messageId: 'msg-channel-suggest-callback-1',
+      chatId: 'channel-1',
+      senderId: '613002203036',
+      senderName: 'Майор Максимов',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'message_callback',
+      callback: {
+        callback_id: 'callback-suggest-1',
+        payload,
+        user: {
+          user_id: 'user-1',
+        },
+      },
+      message: {
+        recipient: {
+          chat_id: 'channel-1',
+        },
+      },
+    },
+  };
+}
+
 function createManagedPollCallbackUpdate(
   payload: string,
   overrides: Partial<MaxUpdate['message']> = {},
@@ -6907,6 +6937,63 @@ describe('ModerationService', () => {
     expect(maxClient.answerCallback).toHaveBeenCalledWith(
       'callback-rules-1',
       'Кнопка обновлена. Нажмите ещё раз',
+    );
+  });
+
+  it('opens channel suggestion flow in private bot chat from channel callback', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn(),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const maxClient = {
+      answerCallback: jest.fn(),
+    };
+    const privateControlService = {
+      openChannelSuggestionFromCallback: jest.fn().mockResolvedValue(true),
+    };
+    const adminService = {
+      parseChannelSuggestionStartPayload: jest.fn().mockReturnValue({
+        chatId: 'channel-1',
+        token: 'cdt-suggest-token-1',
+      }),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      privateControlService as never,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createChannelSuggestionCallbackUpdate('cds-channel-1:token'));
+
+    expect(adminService.parseChannelSuggestionStartPayload).toHaveBeenCalledWith('cds-channel-1:token');
+    expect(privateControlService.openChannelSuggestionFromCallback).toHaveBeenCalledWith({
+      userId: 'user-1',
+      chatId: 'channel-1',
+      token: 'cdt-suggest-token-1',
+    });
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-suggest-1',
+      'Бот написал в личку',
     );
   });
 

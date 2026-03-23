@@ -1299,6 +1299,52 @@ export class PrivateControlService {
     return broadcastHandoffResponseSchema.parse({ botUrl });
   }
 
+  async openChannelSuggestionFromCallback(params: {
+    userId: string;
+    chatId: string;
+    token: string;
+  }): Promise<boolean> {
+    const session = await this.loadSession(params.userId);
+    session.pendingInput = {
+      kind: 'channel_suggestion',
+      chatId: params.chatId,
+      token: params.token,
+    };
+    session.pendingMassAction = null;
+    session.managedGiveawayId = null;
+    session.section = null;
+    session.channelSection = null;
+    session.searchQuery = null;
+    session.lastScreenStack = [];
+
+    await this.saveSession(params.userId, session);
+
+    const view = this.renderChannelSuggestionIntroView();
+    const text = this.limitMessageText(view.text);
+    const compactOptions = this.compactButtonLayout(view.options);
+    const inferredTextFormat =
+      compactOptions?.textFormat ?? (this.shouldUseMarkdown(text) ? 'markdown' : undefined);
+    const optionsWithFormat = inferredTextFormat
+      ? { ...(compactOptions ?? {}), textFormat: inferredTextFormat }
+      : compactOptions;
+    const options = this.withDebugContext(optionsWithFormat, session, 'suggest_callback_handoff');
+
+    try {
+      await this.maxClient.sendMessageImmediateToUser(params.userId, text, options);
+      return true;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          userId: params.userId,
+          chatId: params.chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to open channel suggestion in private bot chat',
+      );
+      return false;
+    }
+  }
+
   async handoffGiveawayFromMiniapp(
     sourceChatId: string,
     user: AuthUser,

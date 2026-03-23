@@ -1472,11 +1472,8 @@ export class AdminService {
     const existingThreadId = persistedSettings.engagementPublishedThreadId?.trim() ?? '';
     const threadId = existingThreadId || randomUUID();
     const commentsUrl = this.buildChannelDialogLaunchUrl(chatId, 'comments', threadId);
-    const suggestUrl =
-      this.buildBotStartUrl(this.buildChannelSuggestionStartPayload(chatId, threadId)) ??
-      this.buildChannelDialogLaunchUrl(chatId, 'suggest', threadId);
+    const suggestPayload = this.buildChannelSuggestionStartPayload(chatId, threadId);
     const commentsWebAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, 'comments', threadId);
-    const suggestWebAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, 'suggest', threadId);
     const botContactId = this.resolveBotContactId();
     const commentsButton: MaxMessageButton = commentsUrl
       ? {
@@ -1496,24 +1493,11 @@ export class AdminService {
             text: formatCommentsButtonText(parsed.data.commentsButtonText, 0),
             url: commentsWebAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
           };
-    const suggestButton: MaxMessageButton = suggestUrl
-      ? {
-          type: 'link',
-          text: parsed.data.suggestButtonText,
-          url: suggestUrl,
-        }
-      : suggestWebAppUrl && botContactId
-        ? {
-            type: 'open_app',
-            text: parsed.data.suggestButtonText,
-            webApp: suggestWebAppUrl,
-            contactId: botContactId,
-          }
-        : {
-            type: 'link',
-            text: parsed.data.suggestButtonText,
-            url: suggestWebAppUrl ?? `${this.appBaseUrl ?? 'https://maxim.play-team.ru'}/app/`,
-          };
+    const suggestButton: MaxMessageButton = {
+      type: 'callback',
+      text: parsed.data.suggestButtonText,
+      payload: suggestPayload,
+    };
     const buttons: MaxMessageButton[][] = [];
     if (parsed.data.includeCommentsButton) {
       buttons.push([commentsButton]);
@@ -1591,7 +1575,7 @@ export class AdminService {
           updatedExisting,
           recreatedFromMessageId,
           commentsUrl,
-          suggestUrl,
+          suggestPayload,
         },
       },
     });
@@ -5060,21 +5044,17 @@ export class AdminService {
     threadId: string,
     text: string,
   ): MaxMessageButton {
-    const botStartUrl =
-      type === 'suggest'
-        ? this.buildBotStartUrl(this.buildChannelSuggestionStartPayload(chatId, threadId))
-        : null;
+    if (type === 'suggest') {
+      return {
+        type: 'callback',
+        text,
+        payload: this.buildChannelSuggestionStartPayload(chatId, threadId),
+      };
+    }
+
     const launchUrl = this.buildChannelDialogLaunchUrl(chatId, type, threadId);
     const webAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, type, threadId);
     const botContactId = this.resolveBotContactId();
-
-    if (botStartUrl) {
-      return {
-        type: 'link',
-        text,
-        url: botStartUrl,
-      };
-    }
 
     if (launchUrl) {
       return {
