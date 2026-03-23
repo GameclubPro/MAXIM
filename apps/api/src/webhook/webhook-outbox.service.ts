@@ -10,6 +10,14 @@ type ProcessWebhookJob = {
   webhookEventId: string;
 };
 
+const WEBHOOK_JOB_PRIORITY = {
+  callback: 1,
+  membershipJoin: 2,
+  membershipLeave: 3,
+  message: 5,
+  default: 6,
+} as const;
+
 @Injectable()
 export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WebhookOutboxService.name);
@@ -107,15 +115,34 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       },
       orderBy: { createdAt: 'asc' },
       take: this.batchSize,
-      select: { id: true, enqueueAttempts: true },
+      select: { id: true, enqueueAttempts: true, createdAt: true, normalizedPayload: true },
     });
 
-    for (const event of candidates) {
-      await this.enqueueOne(event.id, event.enqueueAttempts);
+    const prioritizedCandidates = [...candidates].sort((left, right) => {
+      const priorityDiff =
+        this.resolveWebhookJobPriority(left.normalizedPayload) -
+        this.resolveWebhookJobPriority(right.normalizedPayload);
+      if (priorityDiff !== 0) {
+        return priorityDiff;
+      }
+
+      return left.createdAt.getTime() - right.createdAt.getTime();
+    });
+
+    for (const event of prioritizedCandidates) {
+      await this.enqueueOne(
+        event.id,
+        event.enqueueAttempts,
+        this.resolveWebhookJobPriority(event.normalizedPayload),
+      );
     }
   }
 
-  private async enqueueOne(webhookEventId: string, enqueueAttempts: number) {
+  private async enqueueOne(
+    webhookEventId: string,
+    enqueueAttempts: number,
+    priority: number = WEBHOOK_JOB_PRIORITY.default,
+  ) {
     if (enqueueAttempts >= this.maxEnqueueAttempts) {
       await this.markExhausted(webhookEventId, enqueueAttempts);
       return;
@@ -133,6 +160,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
         { webhookEventId },
         {
           jobId: webhookEventId,
+          priority,
           attempts: 1,
           removeOnComplete: true,
           removeOnFail: false,
@@ -315,6 +343,33 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
   private isAlreadyExistsError(message: string): boolean {
     return message.toLowerCase().includes('already exists');
+  }
+
+  private resolveWebhookJobPriority(payload: unknown): number {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      return WEBHOOK_JOB_PRIORITY.default;
+    }
+
+    const rawType =
+      (payload as { type?: unknown; update_type?: unknown }).type ??
+      (payload as { update_type?: unknown }).update_type;
+    const type = typeof rawType === 'string' ? rawType.trim().toLowerCase() : '';
+
+    switch (type) {
+      case 'message_callback':
+        return WEBHOOK_JOB_PRIORITY.callback;
+      case 'user_added':
+      case 'bot_added':
+      case 'bot_started':
+        return WEBHOOK_JOB_PRIORITY.membershipJoin;
+      case 'user_removed':
+      case 'bot_removed':
+        return WEBHOOK_JOB_PRIORITY.membershipLeave;
+      case 'message_created':
+        return WEBHOOK_JOB_PRIORITY.message;
+      default:
+        return WEBHOOK_JOB_PRIORITY.default;
+    }
   }
 
   private async cleanupRetention() {

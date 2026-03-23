@@ -425,7 +425,10 @@ describe('ModerationService channel auto post buttons', () => {
         },
       },
     });
-    expect(maxClient.listMessages).toHaveBeenCalledWith('channel-1', 10);
+    expect(maxClient.listMessages).toHaveBeenCalledWith('channel-1', {
+      count: 10,
+      trafficClass: 'background',
+    });
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       'channel-1',
       'mid-polled-1',
@@ -518,6 +521,9 @@ describe('ModerationService channel auto post buttons', () => {
 
     expect(prisma.channelSettings.findMany).toHaveBeenCalledTimes(1);
     expect(maxClient.listMessages).toHaveBeenCalledTimes(1);
-    expect(maxClient.listMessages).toHaveBeenCalledWith('channel-1', 10);
+    expect(maxClient.listMessages).toHaveBeenCalledWith('channel-1', {
+      count: 10,
+      trafficClass: 'background',
+    });
   });
 });

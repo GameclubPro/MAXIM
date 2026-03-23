@@ -62,6 +62,8 @@ export type MaxChatMemberAccess = {
   permissions: string[];
 };
 
+export type MaxApiTrafficClass = 'critical' | 'interactive' | 'background';
+
 export type MaxPublishedMessage = {
   messageId: string;
   url: string | null;
@@ -210,6 +212,10 @@ export type MaxActionDispatchOptions = {
   autoDeleteDelayMs?: number;
 };
 
+type MaxApiRequestOptions = {
+  trafficClass?: MaxApiTrafficClass;
+};
+
 const MAX_ACTION_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_INLINE_KEYBOARD_BUTTONS = 210;
 
@@ -220,6 +226,9 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly token: string;
   private readonly dispatchEnabled: boolean;
   private readonly globalRpsLimit: number;
+  private readonly criticalGlobalRpsLimit: number;
+  private readonly interactiveGlobalRpsLimit: number;
+  private readonly backgroundGlobalRpsLimit: number;
   private readonly chatRpsLimit: number;
   private readonly circuitFailureThreshold: number;
   private readonly circuitWindowSec: number;
@@ -244,6 +253,18 @@ export class MaxClientService implements OnModuleDestroy {
     this.token = configService.getOrThrow<string>('MAX_BOT_TOKEN');
     this.dispatchEnabled = configService.get<boolean>('MAX_ACTION_DISPATCH_ENABLED', true);
     this.globalRpsLimit = configService.get<number>('MAX_API_GLOBAL_RPS', 120);
+    this.criticalGlobalRpsLimit = configService.get<number>(
+      'MAX_API_GLOBAL_RPS_CRITICAL',
+      Math.max(1, Math.floor(this.globalRpsLimit * 0.45)),
+    );
+    this.interactiveGlobalRpsLimit = configService.get<number>(
+      'MAX_API_GLOBAL_RPS_INTERACTIVE',
+      Math.max(1, Math.floor(this.globalRpsLimit * 0.35)),
+    );
+    this.backgroundGlobalRpsLimit = configService.get<number>(
+      'MAX_API_GLOBAL_RPS_BACKGROUND',
+      Math.max(1, this.globalRpsLimit - this.criticalGlobalRpsLimit - this.interactiveGlobalRpsLimit),
+    );
     this.chatRpsLimit = configService.get<number>('MAX_API_CHAT_RPS', 10);
     this.circuitFailureThreshold = configService.get<number>(
       'MAX_API_CIRCUIT_FAILURE_THRESHOLD',
@@ -524,29 +545,34 @@ export class MaxClientService implements OnModuleDestroy {
           count?: number;
           from?: number | string | Date | null;
           to?: number | string | Date | null;
+          trafficClass?: MaxApiTrafficClass;
         } = 10,
   ): Promise<Record<string, unknown>[]> {
     const options =
       typeof countOrOptions === 'number'
-        ? { count: countOrOptions }
+        ? { count: countOrOptions, trafficClass: undefined }
         : {
             count: countOrOptions.count ?? 10,
             from: countOrOptions.from ?? null,
             to: countOrOptions.to ?? null,
+            trafficClass: countOrOptions.trafficClass,
           };
-    const data = await this.executeChatRequest(chatId, async () =>
-      this.request<Record<string, unknown>>('get', '/messages', {
-        params: {
-          chat_id: chatId,
-          count: options.count,
-          ...(options.from !== null && options.from !== undefined
-            ? { from: this.normalizeMessageQueryBoundary(options.from) }
-            : {}),
-          ...(options.to !== null && options.to !== undefined
-            ? { to: this.normalizeMessageQueryBoundary(options.to) }
-            : {}),
-        },
-      }),
+    const data = await this.executeChatRequest(
+      chatId,
+      async () =>
+        this.request<Record<string, unknown>>('get', '/messages', {
+          params: {
+            chat_id: chatId,
+            count: options.count,
+            ...(options.from !== null && options.from !== undefined
+              ? { from: this.normalizeMessageQueryBoundary(options.from) }
+              : {}),
+            ...(options.to !== null && options.to !== undefined
+              ? { to: this.normalizeMessageQueryBoundary(options.to) }
+              : {}),
+          },
+        }),
+      options.trafficClass,
     );
     return this.normalizeMessageRows(data);
   }
@@ -558,6 +584,7 @@ export class MaxClientService implements OnModuleDestroy {
       to?: Date | number | string | null;
       count?: number;
       maxPages?: number;
+      trafficClass?: MaxApiTrafficClass;
     } = {},
   ): Promise<MaxChannelMessageSnapshot[]> {
     const fromMs = this.normalizeMessageTimestamp(options.from ?? null);
@@ -572,6 +599,7 @@ export class MaxClientService implements OnModuleDestroy {
       const rows = await this.listMessages(chatId, {
         count,
         ...(cursorTo !== null ? { to: cursorTo } : {}),
+        trafficClass: options.trafficClass,
       });
       if (rows.length === 0) {
         break;
@@ -631,8 +659,13 @@ export class MaxClientService implements OnModuleDestroy {
     );
   }
 
-  async listWebhookSubscriptions(): Promise<MaxWebhookSubscription[]> {
-    const data = await this.request<Record<string, unknown> | unknown[]>('get', '/subscriptions');
+  async listWebhookSubscriptions(
+    options: MaxApiRequestOptions = {},
+  ): Promise<MaxWebhookSubscription[]> {
+    const data = await this.executeGlobalRequest(
+      () => this.request<Record<string, unknown> | unknown[]>('get', '/subscriptions'),
+      options.trafficClass,
+    );
     const rows = Array.isArray(data)
       ? data
       : Array.isArray((data as { subscriptions?: unknown }).subscriptions)
@@ -646,6 +679,7 @@ export class MaxClientService implements OnModuleDestroy {
 
   async ensureWebhookSubscription(
     requiredUpdateTypes: string[],
+    options: MaxApiRequestOptions = {},
   ): Promise<MaxWebhookSubscription | null> {
     const normalizedRequired = Array.from(
       new Set(
@@ -658,7 +692,8 @@ export class MaxClientService implements OnModuleDestroy {
       return null;
     }
 
-    const existing = await this.listWebhookSubscriptions();
+    const trafficClass = options.trafficClass ?? 'background';
+    const existing = await this.listWebhookSubscriptions({ trafficClass });
     const current =
       existing.find((item) => item.url === this.webhookUrl) ??
       existing.find((item) => this.normalizeUrl(item.url) === this.normalizeUrl(this.webhookUrl!));
@@ -674,13 +709,18 @@ export class MaxClientService implements OnModuleDestroy {
       return current;
     }
 
-    await this.request('post', '/subscriptions', {
-      data: {
-        url: this.webhookUrl,
-        update_types: mergedUpdateTypes,
-        secret: this.webhookHeaderSecret,
-      },
-    });
+    await this.executeMutation(
+      null,
+      () =>
+        this.request('post', '/subscriptions', {
+          data: {
+            url: this.webhookUrl,
+            update_types: mergedUpdateTypes,
+            secret: this.webhookHeaderSecret,
+          },
+        }),
+      trafficClass,
+    );
 
     return {
       url: this.webhookUrl,
@@ -710,11 +750,16 @@ export class MaxClientService implements OnModuleDestroy {
     fileName: string,
     mimeType: string,
   ): Promise<Record<string, unknown>> {
-    const uploadMeta = await this.request<Record<string, unknown>>('post', '/uploads', {
-      params: {
-        type: uploadType,
-      },
-    });
+    const uploadMeta = await this.executeMutation(
+      null,
+      () =>
+        this.request<Record<string, unknown>>('post', '/uploads', {
+          params: {
+            type: uploadType,
+          },
+        }),
+      'critical',
+    );
     const uploadUrl = typeof uploadMeta.url === 'string' ? uploadMeta.url.trim() : '';
     const uploadMetaToken = typeof uploadMeta.token === 'string' ? uploadMeta.token.trim() : '';
     if (!uploadUrl) {
@@ -936,16 +981,23 @@ export class MaxClientService implements OnModuleDestroy {
     }
   }
 
-  async getChatTitle(chatId: string): Promise<string | null> {
-    const data = await this.executeChatRequest(chatId, async () =>
-      this.request<Record<string, unknown>>('get', `/chats/${chatId}`),
+  async getChatTitle(chatId: string, options: MaxApiRequestOptions = {}): Promise<string | null> {
+    const data = await this.executeChatRequest(
+      chatId,
+      async () => this.request<Record<string, unknown>>('get', `/chats/${chatId}`),
+      options.trafficClass,
     );
     return this.readTrimmedString(data.title ?? data.name);
   }
 
-  async getChatSnapshot(chatId: string): Promise<MaxChatSnapshot> {
-    const data = await this.executeChatRequest(chatId, async () =>
-      this.request<Record<string, unknown>>('get', `/chats/${chatId}`),
+  async getChatSnapshot(
+    chatId: string,
+    options: MaxApiRequestOptions = {},
+  ): Promise<MaxChatSnapshot> {
+    const data = await this.executeChatRequest(
+      chatId,
+      async () => this.request<Record<string, unknown>>('get', `/chats/${chatId}`),
+      options.trafficClass,
     );
     const link = this.parseChatLink(data);
     const isPublic = this.readBoolean(data.is_public ?? data.isPublic ?? data.public);
@@ -969,9 +1021,14 @@ export class MaxClientService implements OnModuleDestroy {
     };
   }
 
-  async getChatAdminIds(chatId: string): Promise<string[]> {
-    const data = await this.executeChatRequest(chatId, async () =>
-      this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/admins`),
+  async getChatAdminIds(
+    chatId: string,
+    options: MaxApiRequestOptions = {},
+  ): Promise<string[]> {
+    const data = await this.executeChatRequest(
+      chatId,
+      async () => this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/admins`),
+      options.trafficClass,
     );
     const members = Array.isArray(data.members) ? data.members : [];
 
@@ -995,9 +1052,14 @@ export class MaxClientService implements OnModuleDestroy {
       .filter((value): value is string => value !== null);
   }
 
-  async getChatEditableAdminIds(chatId: string): Promise<string[]> {
-    const data = await this.executeChatRequest(chatId, async () =>
-      this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/admins`),
+  async getChatEditableAdminIds(
+    chatId: string,
+    options: MaxApiRequestOptions = {},
+  ): Promise<string[]> {
+    const data = await this.executeChatRequest(
+      chatId,
+      async () => this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/admins`),
+      options.trafficClass,
     );
     const members = Array.isArray(data.members) ? data.members : [];
 
@@ -1021,25 +1083,37 @@ export class MaxClientService implements OnModuleDestroy {
       .filter((value): value is string => value !== null);
   }
 
-  async getCurrentChatMemberAccess(chatId: string): Promise<MaxChatMemberAccess> {
-    const data = await this.executeChatRequest(chatId, async () =>
-      this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/me`),
+  async getCurrentChatMemberAccess(
+    chatId: string,
+    options: MaxApiRequestOptions = {},
+  ): Promise<MaxChatMemberAccess> {
+    const data = await this.executeChatRequest(
+      chatId,
+      async () => this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/me`),
+      options.trafficClass,
     );
     return this.parseChatMemberAccess(data);
   }
 
-  async getChatMemberAccess(chatId: string, userId: string): Promise<MaxChatMemberAccess | null> {
+  async getChatMemberAccess(
+    chatId: string,
+    userId: string,
+    options: MaxApiRequestOptions = {},
+  ): Promise<MaxChatMemberAccess | null> {
     const normalizedUserId = userId.trim();
     if (!normalizedUserId) {
       return null;
     }
 
-    const data = await this.executeChatRequest(chatId, async () =>
-      this.request<Record<string, unknown>>('get', `/chats/${chatId}/members`, {
-        params: {
-          user_ids: normalizedUserId,
-        },
-      }),
+    const data = await this.executeChatRequest(
+      chatId,
+      async () =>
+        this.request<Record<string, unknown>>('get', `/chats/${chatId}/members`, {
+          params: {
+            user_ids: normalizedUserId,
+          },
+        }),
+      options.trafficClass,
     );
     const members = Array.isArray(data.members)
       ? data.members
@@ -1051,18 +1125,25 @@ export class MaxClientService implements OnModuleDestroy {
     return member ? this.parseChatMemberAccess(member) : null;
   }
 
-  async hasChatMember(chatId: string, userId: string): Promise<boolean> {
+  async hasChatMember(
+    chatId: string,
+    userId: string,
+    options: MaxApiRequestOptions = {},
+  ): Promise<boolean> {
     const normalizedUserId = userId.trim();
     if (!normalizedUserId) {
       return false;
     }
 
-    const data = await this.executeChatRequest(chatId, async () =>
-      this.request<Record<string, unknown>>('get', `/chats/${chatId}/members`, {
-        params: {
-          user_ids: normalizedUserId,
-        },
-      }),
+    const data = await this.executeChatRequest(
+      chatId,
+      async () =>
+        this.request<Record<string, unknown>>('get', `/chats/${chatId}/members`, {
+          params: {
+            user_ids: normalizedUserId,
+          },
+        }),
+      options.trafficClass,
     );
     const members = Array.isArray(data.members)
       ? data.members
@@ -1076,6 +1157,7 @@ export class MaxClientService implements OnModuleDestroy {
   async getChatMemberProfiles(
     chatId: string,
     userIds: readonly string[],
+    options: MaxApiRequestOptions = {},
   ): Promise<Map<string, MaxChatMemberProfile>> {
     const normalizedUserIds = Array.from(
       new Set(
@@ -1095,8 +1177,14 @@ export class MaxClientService implements OnModuleDestroy {
         query.append('user_ids', userId);
       }
 
-      const data = await this.executeChatRequest(chatId, async () =>
-        this.request<Record<string, unknown>>('get', `/chats/${chatId}/members?${query.toString()}`),
+      const data = await this.executeChatRequest(
+        chatId,
+        async () =>
+          this.request<Record<string, unknown>>(
+            'get',
+            `/chats/${chatId}/members?${query.toString()}`,
+          ),
+        options.trafficClass,
       );
       const members = Array.isArray(data.members)
         ? data.members
@@ -1117,18 +1205,22 @@ export class MaxClientService implements OnModuleDestroy {
     return profiles;
   }
 
-  async listBotChats(): Promise<MaxBotChat[]> {
+  async listBotChats(options: MaxApiRequestOptions = {}): Promise<MaxBotChat[]> {
     const results: MaxBotChat[] = [];
     const seenMarkers = new Set<string>();
     let marker: string | number | null = null;
 
     for (let i = 0; i < 20; i += 1) {
-      const pageData: Record<string, unknown> = await this.request('get', '/chats', {
-        params: {
-          count: 100,
-          ...(marker !== null ? { marker } : {}),
-        },
-      });
+      const pageData: Record<string, unknown> = await this.executeGlobalRequest(
+        () =>
+          this.request('get', '/chats', {
+            params: {
+              count: 100,
+              ...(marker !== null ? { marker } : {}),
+            },
+          }),
+        options.trafficClass,
+      );
 
       const pageChats = Array.isArray(pageData.chats) ? pageData.chats : [];
       for (const item of pageChats) {
@@ -1186,11 +1278,15 @@ export class MaxClientService implements OnModuleDestroy {
       return null;
     }
 
-    const data = await this.request<Record<string, unknown>>('get', '/messages', {
-      params: {
-        message_ids: normalizedMessageId,
-      },
-    });
+    const data = await this.executeGlobalRequest(
+      () =>
+        this.request<Record<string, unknown>>('get', '/messages', {
+          params: {
+            message_ids: normalizedMessageId,
+          },
+        }),
+      'critical',
+    );
     const messages = Array.isArray(data.messages) ? data.messages : [];
     const firstMessage = messages[0];
     return firstMessage && typeof firstMessage === 'object' && !Array.isArray(firstMessage)
@@ -1204,9 +1300,13 @@ export class MaxClientService implements OnModuleDestroy {
       return null;
     }
 
-    const data = await this.request<Record<string, unknown>>(
-      'get',
-      `/messages/${encodeURIComponent(normalizedMessageId)}`,
+    const data = await this.executeGlobalRequest(
+      () =>
+        this.request<Record<string, unknown>>(
+          'get',
+          `/messages/${encodeURIComponent(normalizedMessageId)}`,
+        ),
+      'critical',
     );
     return data && typeof data === 'object' && !Array.isArray(data) ? data : null;
   }
@@ -1626,12 +1726,17 @@ export class MaxClientService implements OnModuleDestroy {
       };
     }
 
-    await this.request('post', '/answers', {
-      params: {
-        callback_id: normalizedCallbackId,
-      },
-      data: callbackData,
-    });
+    await this.executeMutation(
+      null,
+      () =>
+        this.request('post', '/answers', {
+          params: {
+            callback_id: normalizedCallbackId,
+          },
+          data: callbackData,
+        }),
+      'critical',
+    );
   }
 
   private async dispatchAction(
@@ -2284,9 +2389,15 @@ export class MaxClientService implements OnModuleDestroy {
     }
   }
 
-  private async executeChatRequest<T>(chatId: string, operation: () => Promise<T>): Promise<T> {
+  private async executeReadRequest<T>(
+    operation: () => Promise<T>,
+    options: {
+      chatId?: string | null;
+      trafficClass?: MaxApiTrafficClass;
+    } = {},
+  ): Promise<T> {
     await this.ensureCircuitClosed();
-    await this.enforceRateLimit(chatId);
+    await this.enforceRateLimit(options.chatId ?? null, options.trafficClass ?? 'interactive');
 
     try {
       const result = await operation();
@@ -2303,8 +2414,27 @@ export class MaxClientService implements OnModuleDestroy {
     }
   }
 
-  private async executeMutation<T>(chatId: string, operation: () => Promise<T>): Promise<T> {
-    return this.executeChatRequest(chatId, operation);
+  private async executeChatRequest<T>(
+    chatId: string,
+    operation: () => Promise<T>,
+    trafficClass: MaxApiTrafficClass = 'interactive',
+  ): Promise<T> {
+    return this.executeReadRequest(operation, { chatId, trafficClass });
+  }
+
+  private async executeGlobalRequest<T>(
+    operation: () => Promise<T>,
+    trafficClass: MaxApiTrafficClass = 'interactive',
+  ): Promise<T> {
+    return this.executeReadRequest(operation, { trafficClass });
+  }
+
+  private async executeMutation<T>(
+    chatId: string | null,
+    operation: () => Promise<T>,
+    trafficClass: MaxApiTrafficClass = 'critical',
+  ): Promise<T> {
+    return this.executeReadRequest(operation, { chatId, trafficClass });
   }
 
   private extractMessageIdFromSendResponse(payload: unknown): string | null {
@@ -2356,7 +2486,7 @@ export class MaxClientService implements OnModuleDestroy {
     return null;
   }
 
-  private async enforceRateLimit(chatId: string) {
+  private async enforceRateLimit(chatId: string | null, trafficClass: MaxApiTrafficClass) {
     const nowSec = Math.floor(Date.now() / 1_000);
     const globalKey = `maxapi:rps:global:${nowSec}`;
     const globalCount = await this.limiterRedis.incr(globalKey);
@@ -2367,6 +2497,19 @@ export class MaxClientService implements OnModuleDestroy {
       throw new Error('MAX API global rate limit exceeded');
     }
 
+    const trafficKey = `maxapi:rps:global:${trafficClass}:${nowSec}`;
+    const trafficCount = await this.limiterRedis.incr(trafficKey);
+    if (trafficCount === 1) {
+      await this.limiterRedis.expire(trafficKey, 2);
+    }
+    if (trafficCount > this.resolveTrafficClassGlobalRpsLimit(trafficClass)) {
+      throw new Error(`MAX API ${trafficClass} rate limit exceeded`);
+    }
+
+    if (!chatId) {
+      return;
+    }
+
     const chatKey = `maxapi:rps:chat:${chatId}:${nowSec}`;
     const chatCount = await this.limiterRedis.incr(chatKey);
     if (chatCount === 1) {
@@ -2374,6 +2517,18 @@ export class MaxClientService implements OnModuleDestroy {
     }
     if (chatCount > this.chatRpsLimit) {
       throw new Error(`MAX API per-chat rate limit exceeded for chat ${chatId}`);
+    }
+  }
+
+  private resolveTrafficClassGlobalRpsLimit(trafficClass: MaxApiTrafficClass): number {
+    switch (trafficClass) {
+      case 'critical':
+        return this.criticalGlobalRpsLimit;
+      case 'background':
+        return this.backgroundGlobalRpsLimit;
+      case 'interactive':
+      default:
+        return this.interactiveGlobalRpsLimit;
     }
   }
 

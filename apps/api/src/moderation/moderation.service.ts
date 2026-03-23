@@ -5612,7 +5612,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      const isMember = await this.maxClient.hasChatMember(channelId, userId);
+      const isMember = await this.maxClient.hasChatMember(channelId, userId, {
+        trafficClass: 'critical',
+      });
       await this.redisCounter?.setStringWithTtl(
         cacheKey,
         isMember ? '1' : '0',
@@ -5653,7 +5655,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       }
 
       try {
-        const snapshot = await this.maxClient.getChatSnapshot(channelId);
+        const snapshot = await this.maxClient.getChatSnapshot(channelId, {
+          trafficClass: 'critical',
+        });
         const title = snapshot.title?.trim() || `Канал ${channelId}`;
         const link = snapshot.link?.trim() || null;
         await this.chatContextCache?.setManagedEntityHeader({
@@ -7333,7 +7337,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private async processManagedChannelAutoPostButtons(
     managedChannel: ManagedChannelContext,
   ): Promise<void> {
-    const messages = await this.maxClient.listMessages(managedChannel.channelSettings.chatId, 10);
+    const messages = await this.maxClient.listMessages(managedChannel.channelSettings.chatId, {
+      count: 10,
+      trafficClass: 'background',
+    });
 
     for (const message of messages) {
       const normalized = this.parseChannelListedMessage(message);

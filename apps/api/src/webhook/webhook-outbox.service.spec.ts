@@ -7,13 +7,23 @@ type JobMock = {
 };
 
 function createService(params?: {
-  findManyResult?: Array<{ id: string; enqueueAttempts: number }>;
+  findManyResult?: Array<{
+    id: string;
+    enqueueAttempts: number;
+    createdAt?: Date;
+    normalizedPayload?: unknown;
+  }>;
   addError?: Error | null;
   job?: JobMock | null;
 }) {
   const prisma = {
     webhookEvent: {
-      findMany: jest.fn().mockResolvedValue(params?.findManyResult ?? []),
+      findMany: jest.fn().mockResolvedValue(
+        (params?.findManyResult ?? []).map((item) => ({
+          ...item,
+          createdAt: item.createdAt ?? new Date('2026-03-24T00:00:00.000Z'),
+        })),
+      ),
       updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
@@ -145,5 +155,55 @@ describe('WebhookOutboxService', () => {
         }),
       }),
     );
+  });
+
+  it('assigns highest BullMQ priority to callback events', async () => {
+    const { service, queue } = createService({
+      findManyResult: [
+        {
+          id: 'evt-callback',
+          enqueueAttempts: 0,
+          createdAt: new Date('2026-03-24T00:00:00.000Z'),
+          normalizedPayload: { type: 'message_callback' },
+        },
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(queue.add).toHaveBeenCalledWith(
+      'process-webhook-event',
+      { webhookEventId: 'evt-callback' },
+      expect.objectContaining({
+        jobId: 'evt-callback',
+        priority: 1,
+      }),
+    );
+  });
+
+  it('enqueues high-priority membership joins before older message_created events', async () => {
+    const { service, queue } = createService({
+      findManyResult: [
+        {
+          id: 'evt-message',
+          enqueueAttempts: 0,
+          createdAt: new Date('2026-03-24T00:00:00.000Z'),
+          normalizedPayload: { type: 'message_created' },
+        },
+        {
+          id: 'evt-user-added',
+          enqueueAttempts: 0,
+          createdAt: new Date('2026-03-24T00:00:05.000Z'),
+          normalizedPayload: { type: 'user_added' },
+        },
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(queue.add.mock.calls.map((call) => call[1].webhookEventId)).toEqual([
+      'evt-user-added',
+      'evt-message',
+    ]);
   });
 });

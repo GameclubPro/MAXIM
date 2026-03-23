@@ -1124,6 +1124,44 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('applies interactive MAX API rate limit to global chat discovery requests', async () => {
+    const httpService = {
+      request: jest.fn(),
+    };
+    const service = createService(httpService, {
+      MAX_API_GLOBAL_RPS: '30',
+      MAX_API_GLOBAL_RPS_INTERACTIVE: '1',
+    });
+
+    const limiterRedis = (service as unknown as { limiterRedis: { incr: jest.Mock } }).limiterRedis;
+    limiterRedis.incr.mockResolvedValueOnce(1).mockResolvedValueOnce(2);
+
+    await expect(service.listBotChats()).rejects.toThrow('MAX API interactive rate limit exceeded');
+    expect(httpService.request).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('applies background MAX API rate limit to background snapshot reads', async () => {
+    const httpService = {
+      request: jest.fn(),
+    };
+    const service = createService(httpService, {
+      MAX_API_GLOBAL_RPS: '30',
+      MAX_API_GLOBAL_RPS_BACKGROUND: '2',
+    });
+
+    const limiterRedis = (service as unknown as { limiterRedis: { incr: jest.Mock } }).limiterRedis;
+    limiterRedis.incr.mockResolvedValueOnce(1).mockResolvedValueOnce(3);
+
+    await expect(
+      service.getChatSnapshot('chat-1', { trafficClass: 'background' }),
+    ).rejects.toThrow('MAX API background rate limit exceeded');
+    expect(httpService.request).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
   it('applies per-chat MAX API rate limit to profile lookups', async () => {
     const httpService = {
       request: jest.fn(),
@@ -1134,7 +1172,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     });
 
     const limiterRedis = (service as unknown as { limiterRedis: { incr: jest.Mock } }).limiterRedis;
-    limiterRedis.incr.mockResolvedValueOnce(1).mockResolvedValueOnce(2);
+    limiterRedis.incr.mockResolvedValueOnce(1).mockResolvedValueOnce(1).mockResolvedValueOnce(2);
 
     await expect(service.getChatMemberProfiles('chat-1', ['user-1'])).rejects.toThrow(
       'MAX API per-chat rate limit exceeded for chat chat-1',

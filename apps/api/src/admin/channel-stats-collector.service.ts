@@ -199,7 +199,9 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         const ensuredCoverageFrom = await this.ensureWebhookCoverage();
 
         try {
-          const snapshot = await this.maxClient.getChatSnapshot(chatId);
+          const snapshot = await this.maxClient.getChatSnapshot(chatId, {
+            trafficClass: 'background',
+          });
           await this.prisma.$transaction([
             this.prisma.chat.update({
               where: { id: chatId },
@@ -240,6 +242,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
               to: now,
               count: 100,
               maxPages: 80,
+              trafficClass: 'background',
             });
             await this.upsertOfficialMessages(chatId, messages, now);
             result.viewsSynced = true;
@@ -354,7 +357,9 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       'channel-stats:webhook-subscriptions',
       CHANNEL_STATS_SUBSCRIPTIONS_LOCK_TTL_MS,
       async () => {
-        await this.maxClient.ensureWebhookSubscription([...CHANNEL_STATS_REQUIRED_UPDATE_TYPES]);
+        await this.maxClient.ensureWebhookSubscription([...CHANNEL_STATS_REQUIRED_UPDATE_TYPES], {
+          trafficClass: 'background',
+        });
         ensuredAt = new Date();
       },
     );
