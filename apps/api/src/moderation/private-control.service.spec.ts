@@ -573,6 +573,22 @@ function createHarness(
     updateChannelSettings: jest
       .fn()
       .mockResolvedValue(overrides.channelSettings ?? defaultChannelSettings),
+    createChannelSuggestionFromBot: jest.fn().mockResolvedValue({
+      ok: true,
+      message: {
+        id: 'suggestion-1',
+        type: 'suggest',
+        text: 'Тестовая предложка',
+        authorUserId: 'user-1',
+        authorDisplayName: 'Тестовый пользователь',
+        isAdmin: false,
+        avatarUrl: null,
+        createdAt: new Date('2026-03-23T09:00:00.000Z').toISOString(),
+        reactionGroups: [],
+        delivered: true,
+        deliveredToUserId: 'admin-1',
+      },
+    }),
     publishChannelEngagementMessage: jest.fn().mockResolvedValue(undefined),
     ...overrides.adminService,
   };
@@ -815,6 +831,21 @@ function getLastSendOptions(maxClient: { sendMessage: jest.Mock }) {
 function extractStartPayload(url: string): string {
   const parsed = new URL(url);
   return parsed.searchParams.get('start') ?? '';
+}
+
+function encodeChannelSuggestionStartPayload(chatId: string, token: string): string {
+  const payload = Buffer.from(
+    JSON.stringify({
+      v: 1,
+      k: 'channel-dialog',
+      c: chatId,
+      m: 'suggest',
+      t: token,
+    }),
+    'utf8',
+  ).toString('base64url');
+
+  return `cd-${payload}`;
 }
 
 function mockImageFetch(buffer: Buffer = TINY_PNG, mimeType = 'image/png') {
@@ -1660,6 +1691,49 @@ describe('PrivateControlService', () => {
       'private_bot',
     );
     expect(getLastEditedText(maxClient)).toContain('Опубликовано без ошибок.');
+  });
+
+  it('greets the user and accepts channel suggestions from a bot deep link', async () => {
+    const { service, adminService, maxClient, channels } = createHarness();
+    const startPayload = encodeChannelSuggestionStartPayload(
+      channels[0].id,
+      'cdt-suggest-token-1',
+    );
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
+
+    expect(getLastSentText(maxClient)).toContain('Предложка');
+    expect(getLastSentText(maxClient)).toContain('Пришлите текст поста одним сообщением.');
+    expect(getLastSentText(maxClient)).toContain('Администраторы проверят материал');
+
+    await service.handleUpdate(createPrivateTextUpdate('Текст для публикации'));
+
+    expect(adminService.createChannelSuggestionFromBot).toHaveBeenCalledWith(
+      channels[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      {
+        token: 'cdt-suggest-token-1',
+        text: 'Текст для публикации',
+      },
+    );
+    expect(getLastSentText(maxClient)).toContain('Спасибо, предложка получена');
+    expect(getLastSentText(maxClient)).toContain('Передал её администраторам на проверку.');
+  });
+
+  it('asks for text when a user sends media-only content into the bot suggestion flow', async () => {
+    const { service, adminService, maxClient, channels } = createHarness();
+    const startPayload = encodeChannelSuggestionStartPayload(
+      channels[0].id,
+      'cdt-suggest-token-2',
+    );
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
+    await service.handleUpdate(createPrivatePhotoUpdate());
+
+    expect(adminService.createChannelSuggestionFromBot).not.toHaveBeenCalled();
+    expect(getLastSentText(maxClient)).toContain(
+      'Сейчас через предложку можно отправить только текст.',
+    );
   });
 
   it('shows only channel discussion status on the handoff broadcast screen without footer links', async () => {

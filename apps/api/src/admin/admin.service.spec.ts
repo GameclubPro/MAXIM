@@ -501,7 +501,7 @@ async function publishSuggestDialogToken(
 
   const [, , options] = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
   const suggestButton = options.buttons?.[0]?.[0];
-  const suggestStartParam = new URL(suggestButton.url).searchParams.get('startapp');
+  const suggestStartParam = new URL(suggestButton.url).searchParams.get('start');
   const suggestLaunch = decodeBase64UrlJson<{ t: string }>(suggestStartParam!.slice(3));
   return suggestLaunch.t;
 }
@@ -4528,7 +4528,7 @@ describe('AdminService.sendChannelBroadcast', () => {
       textFormat: 'html',
       buttons: [[expect.objectContaining({ text: '📰 Предложить пост', type: 'link' })]],
     });
-    expect(options.buttons[0][0].url).toContain('https://max.ru/777000_bot?startapp=');
+    expect(options.buttons[0][0].url).toContain('https://max.ru/777000_bot?start=');
   });
 
   it('treats past slots from today as already sent for calendar broadcast scheduling', async () => {
@@ -5228,12 +5228,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       text: 'Предложить пост',
     });
     expect(commentsButton.url).toContain('https://max.ru/777000_bot?startapp=');
-    expect(suggestButton.url).toContain('https://max.ru/777000_bot?startapp=');
+    expect(suggestButton.url).toContain('https://max.ru/777000_bot?start=');
 
     const commentsUrl = new URL(commentsButton.url);
     const commentsStartParam = commentsUrl.searchParams.get('startapp');
     const suggestUrl = new URL(suggestButton.url);
-    const suggestStartParam = suggestUrl.searchParams.get('startapp');
+    const suggestStartParam = suggestUrl.searchParams.get('start');
 
     expect(commentsStartParam).toMatch(/^cd-/u);
     expect(suggestStartParam).toMatch(/^cd-/u);
@@ -5968,6 +5968,75 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           action: 'CHANNEL_DIALOG_SUGGESTION',
           payload: expect.objectContaining({
             threadId: suggestTokenPayload.d,
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('marks bot-submitted suggestions with private_bot source', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue({
+      postSuggestionsEnabled: false,
+    });
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        recipient_chat_id: '555001',
+      },
+    ]);
+    prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+      id: 'suggestion-2',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-10T12:11:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-6', url: null }),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const suggestToken = await publishSuggestDialogToken(service, maxClient);
+
+    await service.createChannelSuggestionFromBot(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      {
+        token: suggestToken,
+        text: 'Предложка через бота',
+      },
+    );
+
+    expect(prisma.auditLog.create).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'CHANNEL_DIALOG_SUGGESTION',
+          payload: expect.objectContaining({
+            source: 'private_bot',
           }),
         }),
       }),

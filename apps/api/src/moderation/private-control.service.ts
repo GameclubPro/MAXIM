@@ -94,6 +94,7 @@ type PendingInput =
   | { kind: 'broadcast_photo' }
   | { kind: 'rules_text' }
   | { kind: 'rules_photo' }
+  | { kind: 'channel_suggestion'; chatId: string; token: string }
   | { kind: 'giveaway_title' }
   | { kind: 'giveaway_content' }
   | { kind: 'giveaway_description' }
@@ -248,6 +249,14 @@ type ProfileMentionStartPayload = {
   n: string;
 };
 
+type ChannelSuggestionStartPayload = {
+  v: 1;
+  k: 'channel-dialog';
+  c: string;
+  m: 'suggest';
+  t: string;
+};
+
 type ParsedImageAttachment = {
   url: string;
   token: string | null;
@@ -306,6 +315,7 @@ const RULES_HANDOFF_START_PAYLOAD = 'rules_handoff';
 const GIVEAWAY_HANDOFF_START_PAYLOAD = 'giveaway_handoff';
 const GIVEAWAY_HANDOFF_START_PREFIX = 'ggh-';
 const PROFILE_MENTION_START_PREFIX = 'pmh-';
+const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const PAGE_SIZE_CHATS = 8;
 const PAGE_SIZE_DOMAINS = 8;
 const PAGE_SIZE_EVENTS = 10;
@@ -1083,6 +1093,26 @@ export class PrivateControlService {
       await this.saveSession(context.actor.userId, session);
       return;
     }
+    const channelSuggestionPayload = this.parseChannelSuggestionStartPayload(startPayload);
+    if (channelSuggestionPayload) {
+      session.pendingInput = {
+        kind: 'channel_suggestion',
+        chatId: channelSuggestionPayload.chatId,
+        token: channelSuggestionPayload.token,
+      };
+      session.pendingMassAction = null;
+      session.managedGiveawayId = null;
+      session.section = null;
+      session.channelSection = null;
+      session.searchQuery = null;
+      session.lastScreenStack = [];
+      const view = this.renderChannelSuggestionIntroView();
+      await this.respond(context, session, view, {
+        callbackId: null,
+        notification: null,
+      });
+      return;
+    }
     const handoffPayload = this.parseGiveawayHandoffStartPayload(startPayload);
     if (handoffPayload) {
       session.selectedChatId = handoffPayload.chatId;
@@ -1105,6 +1135,7 @@ export class PrivateControlService {
           ? this.resolvePrimaryScreen(session)
           : session.screen;
     if (
+      session.pendingInput?.kind !== 'channel_suggestion' &&
       session.pendingInput?.kind !== 'broadcast_content' &&
       session.pendingInput?.kind !== 'giveaway_content'
     ) {
@@ -3379,9 +3410,19 @@ export class PrivateControlService {
       return;
     }
 
+    const pendingInput = session.pendingInput;
     const rawText = context.text.trim();
     if (rawText.toLowerCase() === 'отмена') {
       session.pendingInput = null;
+
+      if (pendingInput.kind === 'channel_suggestion') {
+        const view = this.renderChannelSuggestionCancelledView();
+        await this.respond(context, session, view, {
+          callbackId: null,
+          notification: null,
+        });
+        return;
+      }
 
       if (session.screen === 'channel_section' && session.channelSection) {
         const view = await this.renderChannelSectionScreen(
@@ -3479,8 +3520,6 @@ export class PrivateControlService {
       });
       return;
     }
-
-    const pendingInput = session.pendingInput;
 
     switch (pendingInput.kind) {
       case 'search_settings': {
@@ -3629,6 +3668,41 @@ export class PrivateControlService {
         session.pendingInput = null;
         session.screen = 'rules';
         const view = await this.renderRulesScreen(context, session, notice);
+        await this.respond(context, session, view, {
+          callbackId: null,
+          notification: null,
+        });
+        return;
+      }
+
+      case 'channel_suggestion': {
+        const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
+        const fileAttachment = this.extractFirstFileAttachment(context.update);
+        const hasVideoAttachment = this.hasVideoAttachment(context.update);
+
+        if (imageSourceAttachment || fileAttachment || hasVideoAttachment) {
+          throw new BadRequestException(
+            'Сейчас через предложку можно отправить только текст. Пришлите текст поста, ссылки и пояснение одним сообщением.',
+          );
+        }
+
+        if (!rawText) {
+          throw new BadRequestException('Пришлите текст поста одним сообщением.');
+        }
+
+        const result = await this.adminService.createChannelSuggestionFromBot(
+          pendingInput.chatId,
+          context.actor,
+          {
+            token: pendingInput.token,
+            text: rawText,
+          },
+        );
+
+        const view =
+          result.message.delivered === false
+            ? this.renderChannelSuggestionQueuedView()
+            : this.renderChannelSuggestionSubmittedView();
         await this.respond(context, session, view, {
           callbackId: null,
           notification: null,
@@ -6681,6 +6755,55 @@ export class PrivateControlService {
     };
   }
 
+  private renderChannelSuggestionIntroView(): PrivateView {
+    return {
+      text: [
+        this.markdownTitle('Предложка'),
+        '',
+        'Пришлите текст поста одним сообщением.',
+        'Администраторы проверят материал и, если он подойдёт, опубликуют его в канале.',
+        '',
+        'Чтобы выйти из предложки, отправьте `Отмена`.',
+      ].join('\n'),
+    };
+  }
+
+  private renderChannelSuggestionSubmittedView(): PrivateView {
+    return {
+      text: [
+        this.markdownTitle('Спасибо, предложка получена'),
+        '',
+        'Передал её администраторам на проверку.',
+        'Если материал подойдёт, его опубликуют в канале.',
+        '',
+        'Можете отправить ещё один вариант или напишите `Отмена`.',
+      ].join('\n'),
+    };
+  }
+
+  private renderChannelSuggestionQueuedView(): PrivateView {
+    return {
+      text: [
+        this.markdownTitle('Предложка сохранена'),
+        '',
+        'Сообщение записал, но сейчас не удалось сразу доставить его в личку администраторам.',
+        'Они всё равно смогут забрать материал на проверку позже.',
+        '',
+        'Можете отправить ещё один вариант или напишите `Отмена`.',
+      ].join('\n'),
+    };
+  }
+
+  private renderChannelSuggestionCancelledView(): PrivateView {
+    return {
+      text: [
+        this.markdownTitle('Предложка закрыта'),
+        '',
+        'Если захотите отправить материал позже, снова нажмите кнопку под постом.',
+      ].join('\n'),
+    };
+  }
+
   private renderMassActionConfirmation(pendingMassAction: PendingMassAction): PrivateView {
     const text =
       pendingMassAction.kind === 'apply_section'
@@ -6824,6 +6947,12 @@ export class PrivateControlService {
         return {
           title: 'Фото правил',
           description: 'Отправьте только фото или PNG/WebP/JPG файлом следующим сообщением.',
+        };
+      case 'channel_suggestion':
+        return {
+          title: 'Предложка',
+          description:
+            'Пришлите текст поста, ссылки и пояснение одним сообщением. Чтобы выйти из режима, отправьте `Отмена`.',
         };
       case 'giveaway_title':
         return {
@@ -8133,6 +8262,38 @@ export class PrivateControlService {
     }
   }
 
+  private parseChannelSuggestionStartPayload(
+    startPayload: string | null,
+  ): { chatId: string; token: string } | null {
+    if (!startPayload || !startPayload.startsWith(CHANNEL_DIALOG_START_PARAM_PREFIX)) {
+      return null;
+    }
+
+    const encodedPayload = startPayload.slice(CHANNEL_DIALOG_START_PARAM_PREFIX.length);
+    if (!encodedPayload) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(
+        Buffer.from(encodedPayload, 'base64url').toString('utf8'),
+      ) as Partial<ChannelSuggestionStartPayload>;
+      const chatId = typeof parsed.c === 'string' ? parsed.c.trim() : '';
+      const token = typeof parsed.t === 'string' ? parsed.t.trim() : '';
+
+      if (parsed.v !== 1 || parsed.k !== 'channel-dialog' || parsed.m !== 'suggest' || !chatId || !token) {
+        return null;
+      }
+
+      return {
+        chatId,
+        token,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   private resolveBotContactId(): string | null {
     if (this.explicitBotContactId) {
       return this.explicitBotContactId;
@@ -9239,6 +9400,20 @@ export class PrivateControlService {
       };
     }
 
+    if (kind === 'channel_suggestion') {
+      if (typeof row.chatId !== 'string' || !row.chatId.trim()) {
+        return null;
+      }
+      if (typeof row.token !== 'string' || !row.token.trim()) {
+        return null;
+      }
+      return {
+        kind,
+        chatId: row.chatId.trim(),
+        token: row.token.trim(),
+      };
+    }
+
     if (kind === 'manual_ban_duration') {
       if (typeof row.targetUserId !== 'string' || !row.targetUserId.trim()) {
         return null;
@@ -9278,6 +9453,7 @@ export class PrivateControlService {
       'broadcast_photo',
       'rules_text',
       'rules_photo',
+      'channel_suggestion',
       'giveaway_title',
       'giveaway_content',
       'giveaway_description',

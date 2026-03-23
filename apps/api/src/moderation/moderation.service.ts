@@ -7279,9 +7279,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     threadId: string,
     text: string,
   ): MaxMessageButton {
+    const botStartUrl =
+      type === 'suggest'
+        ? this.buildBotStartUrl(this.buildChannelDialogStartParam(chatId, type, threadId))
+        : null;
     const launchUrl = this.buildChannelDialogLaunchUrl(chatId, type, threadId);
     const webAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, type, threadId);
     const botContactId = this.resolveBotContactId();
+
+    if (botStartUrl) {
+      return {
+        type: 'link',
+        text,
+        url: botStartUrl,
+      };
+    }
 
     if (launchUrl) {
       return {
@@ -7425,6 +7437,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?startapp=${encodeURIComponent(startParam)}`;
+  }
+
+  private buildBotStartUrl(startPayload: string): string | null {
+    if (!this.ownBotUserId) {
+      return null;
+    }
+
+    return `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?start=${encodeURIComponent(startPayload)}`;
   }
 
   private buildChannelDialogToken(

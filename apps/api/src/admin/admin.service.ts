@@ -369,6 +369,8 @@ type ChannelDialogTokenPayload = {
   s: string;
 };
 
+type ChannelDialogMessageSource = 'miniapp_dialog' | 'private_bot';
+
 type ProfileMentionStartPayload = {
   v: 1;
   k: 'profile-mention';
@@ -1453,7 +1455,9 @@ export class AdminService {
     const existingThreadId = persistedSettings.engagementPublishedThreadId?.trim() ?? '';
     const threadId = existingThreadId || randomUUID();
     const commentsUrl = this.buildChannelDialogLaunchUrl(chatId, 'comments', threadId);
-    const suggestUrl = this.buildChannelDialogLaunchUrl(chatId, 'suggest', threadId);
+    const suggestUrl =
+      this.buildBotStartUrl(this.buildChannelDialogStartParam(chatId, 'suggest', threadId)) ??
+      this.buildChannelDialogLaunchUrl(chatId, 'suggest', threadId);
     const commentsWebAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, 'comments', threadId);
     const suggestWebAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, 'suggest', threadId);
     const botContactId = this.resolveBotContactId();
@@ -1641,6 +1645,36 @@ export class AdminService {
     body: unknown,
   ) {
     const dialogType = channelDialogTypeSchema.parse(dialogTypeRaw);
+    return this.createChannelDialogMessageInternal(
+      chatId,
+      user,
+      dialogType,
+      body,
+      'miniapp_dialog',
+    );
+  }
+
+  async createChannelSuggestionFromBot(
+    chatId: string,
+    user: AuthUser,
+    body: unknown,
+  ) {
+    return this.createChannelDialogMessageInternal(
+      chatId,
+      user,
+      'suggest',
+      body,
+      'private_bot',
+    );
+  }
+
+  private async createChannelDialogMessageInternal(
+    chatId: string,
+    user: AuthUser,
+    dialogType: ChannelDialogType,
+    body: unknown,
+    source: ChannelDialogMessageSource,
+  ) {
     const parsed = createChannelDialogMessageRequestSchema.safeParse(body);
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
@@ -1708,7 +1742,7 @@ export class AdminService {
             : {}),
           delivered,
           deliveredToUserId,
-          source: 'miniapp_dialog',
+          source,
         },
       },
     });
@@ -4922,9 +4956,21 @@ export class AdminService {
     threadId: string,
     text: string,
   ): MaxMessageButton {
+    const botStartUrl =
+      type === 'suggest'
+        ? this.buildBotStartUrl(this.buildChannelDialogStartParam(chatId, type, threadId))
+        : null;
     const launchUrl = this.buildChannelDialogLaunchUrl(chatId, type, threadId);
     const webAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, type, threadId);
     const botContactId = this.resolveBotContactId();
+
+    if (botStartUrl) {
+      return {
+        type: 'link',
+        text,
+        url: botStartUrl,
+      };
+    }
 
     if (launchUrl) {
       return {
