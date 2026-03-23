@@ -63,6 +63,7 @@ import {
   type ManagedEntityHeader,
   type ResolveRequiredSubscriptionChannelResponse,
   managedPollSchema,
+  normalizeMessageLimitsBlockedWordCandidate,
   updateManagedPollRequestSchema,
   type ManagedPoll,
   normalizeAllowlistLink,
@@ -313,6 +314,7 @@ const SETTINGS_SECTION_KEYS = {
     'videoMessagesEnabled',
     'fileMessagesEnabled',
     'voiceMessagesEnabled',
+    'messageLimitsBlockedWords',
     'messageLimitsBotMessageEnabled',
     'messageLimitsBotMessageText',
     'messageLimitsWarnEnabled',
@@ -2223,7 +2225,7 @@ export class AdminService {
     > | null,
   ): ChatSettings {
     return this.normalizeNightModeSettings(
-      this.normalizeRequiredSubscriptionSettings(settings),
+      this.normalizeMessageLimitsBlockedWords(this.normalizeRequiredSubscriptionSettings(settings)),
       currentState,
     );
   }
@@ -2240,6 +2242,21 @@ export class AdminService {
     return {
       ...settings,
       requiredSubscriptionChannelIds,
+    };
+  }
+
+  private normalizeMessageLimitsBlockedWords(settings: ChatSettings): ChatSettings {
+    const messageLimitsBlockedWords = Array.from(
+      new Set(
+        settings.messageLimitsBlockedWords
+          .map((item) => normalizeMessageLimitsBlockedWordCandidate(item) ?? null)
+          .filter((item): item is string => Boolean(item)),
+      ),
+    );
+
+    return {
+      ...settings,
+      messageLimitsBlockedWords,
     };
   }
 

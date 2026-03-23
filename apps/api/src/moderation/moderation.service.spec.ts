@@ -52,6 +52,7 @@ function majorExplanation(
   }
 
   if (
+    reason.includes('запрещенное слово') ||
     reason.includes('слишком длинное сообщение') ||
     reason.includes('видео в этом чате отключены') ||
     reason.includes('файлы в этом чате отключены') ||
@@ -151,6 +152,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     videoMessagesEnabled: true,
     fileMessagesEnabled: true,
     voiceMessagesEnabled: true,
+    messageLimitsBlockedWords: [],
     messageLimitsBotMessageEnabled: false,
     messageLimitsBotMessageText: '',
     messageLimitsWarnEnabled: false,
@@ -7586,6 +7588,75 @@ describe('ModerationService', () => {
     expect(sanctionService.resolveAction).not.toHaveBeenCalled();
   });
 
+  it('includes blocked word in MESSAGE_BLOCKED_WORD bot explanation', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            messageLimitsBlockedWords: ['казино'],
+            messageLimitsBotMessageEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [
+          {
+            ruleCode: 'MESSAGE_BLOCKED_WORD',
+            score: 0.89,
+            reason: 'Blocked word detected: казино',
+            metadata: { blockedWord: 'казино' },
+          },
+        ],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      majorExplanation('Алексей', 'снято с линии', 'запрещенное слово: казино'),
+    );
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
+      data: expect.objectContaining({
+        ruleCode: 'MESSAGE_BLOCKED_WORD_DELETE',
+        metadata: expect.objectContaining({ blockedWord: 'казино' }),
+      }),
+    });
+  });
+
   it('issues WARN on second MESSAGE_TOO_LONG violation in 12h when warning stage is enabled', async () => {
     const prisma = {
       chat: {
@@ -7655,6 +7726,81 @@ describe('ModerationService', () => {
         metadata: expect.objectContaining({
           messageLimitsViolationCount12h: 2,
           messageLimitsEscalationWindowHours: 12,
+        }),
+      }),
+    });
+  });
+
+  it('issues WARN on second MESSAGE_BLOCKED_WORD violation with matched word reason', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            messageLimitsBlockedWords: ['казино'],
+            messageLimitsBotMessageEnabled: true,
+            messageLimitsWarnEnabled: true,
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+        count: jest.fn().mockResolvedValue(2),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [
+          {
+            ruleCode: 'MESSAGE_BLOCKED_WORD',
+            score: 0.89,
+            reason: 'Blocked word detected: казино',
+            metadata: { blockedWord: 'казино' },
+          },
+        ],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      messageLimitsWarnNotice('Алексей', 'запрещенное слово: казино'),
+    );
+    expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
+      data: expect.objectContaining({
+        ruleCode: 'MESSAGE_BLOCKED_WORD',
+        action: SanctionAction.WARN,
+        metadata: expect.objectContaining({
+          blockedWord: 'казино',
+          messageLimitsViolationCount12h: 2,
         }),
       }),
     });

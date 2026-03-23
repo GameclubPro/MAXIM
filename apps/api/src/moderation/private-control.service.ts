@@ -714,6 +714,7 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'videoMessagesEnabled', label: 'Разрешить видео', type: 'boolean' },
     { key: 'fileMessagesEnabled', label: 'Разрешить файлы', type: 'boolean' },
     { key: 'voiceMessagesEnabled', label: 'Разрешить голосовые', type: 'boolean' },
+    { key: 'messageLimitsBlockedWords', label: 'Стоп-слова', type: 'text' },
     { key: 'messageLimitsBotMessageEnabled', label: 'Показывать сообщение бота', type: 'boolean' },
     { key: 'messageLimitsBotMessageText', label: 'Текст сообщения бота', type: 'text' },
     { key: 'messageLimitsWarnEnabled', label: 'Штраф: предупреждение', type: 'boolean' },
@@ -892,6 +893,7 @@ const SECTION_CARD_FIELDS: Record<
       'videoMessagesEnabled',
       'fileMessagesEnabled',
       'voiceMessagesEnabled',
+      'messageLimitsBlockedWords',
     ],
     advanced: [
       'photoMessageCooldownEnabled',
@@ -6880,6 +6882,7 @@ export class PrivateControlService {
           `Антиспам: ${this.describeBooleanCompact(settings.antiSpamEnabled)} • макс. длина ${settings.maxMessageLengthEnabled ? settings.maxMessageLength : 'выкл'}`,
           `Лимит сообщений: ${settings.messageCountLimitEnabled ? `${settings.messageCountLimitMessages} за ${settings.messageCountLimitWindowHours}ч` : 'выкл'}`,
           `Медиа: видео ${this.describeBooleanCompact(settings.videoMessagesEnabled)} • файлы ${this.describeBooleanCompact(settings.fileMessagesEnabled)} • голосовые ${this.describeBooleanCompact(settings.voiceMessagesEnabled)}`,
+          `Стоп-слова: ${settings.messageLimitsBlockedWords.length > 0 ? settings.messageLimitsBlockedWords.length : 'выкл'}`,
           `Сообщение: ${this.describeBooleanCompact(settings.messageLimitsBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.messageLimitsBotButtonEnabled)}`,
         ];
       case 'night':
@@ -7059,6 +7062,9 @@ export class PrivateControlService {
       case 'duplicates':
         return settings.antiDuplicateEnabled ? 'активны штрафы за повторы' : 'выключено';
       case 'limits':
+        if (settings.messageLimitsBlockedWords.length > 0) {
+          return `${settings.messageLimitsBlockedWords.length} стоп-слов`;
+        }
         if (settings.messageCountLimitEnabled) {
           return `${settings.messageCountLimitMessages} сообщ. за ${settings.messageCountLimitWindowHours}ч`;
         }

@@ -80,6 +80,10 @@ type TopicFilterDetection = {
   messageFirstToken: string | null;
 };
 
+type BlockedWordDetection = {
+  blockedWord: string;
+};
+
 const PROFANITY_CORE_TOKEN_PATTERNS = [
   /^бля(?:[дт][а-я0-9]*)?$/u,
   /^пизд[а-я0-9]*$/u,
@@ -359,6 +363,21 @@ export class RuleEngineService {
           reason: `Messages are limited to ${maxMessages} per ${windowHours}h`,
         });
       }
+    }
+
+    const blockedWord = this.detectMessageLimitsBlockedWord(
+      text,
+      settings.messageLimitsBlockedWords,
+    );
+    if (blockedWord) {
+      violations.push({
+        ruleCode: 'MESSAGE_BLOCKED_WORD',
+        score: 0.89,
+        reason: `Blocked word detected: ${blockedWord.blockedWord}`,
+        metadata: {
+          blockedWord: blockedWord.blockedWord,
+        },
+      });
     }
 
     if (hasVideoAttachment && !settings.videoMessagesEnabled) {
@@ -1137,6 +1156,50 @@ export class RuleEngineService {
   private extractTokens(value: string): string[] {
     const normalized = this.normalizeForDetection(value);
     return normalized.match(/[a-zа-яё0-9]+/giu) ?? [];
+  }
+
+  private detectMessageLimitsBlockedWord(
+    text: string,
+    blockedWords: readonly string[],
+  ): BlockedWordDetection | null {
+    if (!text || !Array.isArray(blockedWords) || blockedWords.length === 0) {
+      return null;
+    }
+
+    const blockedWordSet = new Set(
+      blockedWords
+        .map((item) => this.normalizeMessageLimitsBlockedWordToken(item))
+        .filter((item): item is string => Boolean(item)),
+    );
+    if (blockedWordSet.size === 0) {
+      return null;
+    }
+
+    for (const token of this.extractTokens(text)) {
+      const normalizedToken = this.normalizeMessageLimitsBlockedWordToken(token);
+      if (normalizedToken && blockedWordSet.has(normalizedToken)) {
+        return {
+          blockedWord: normalizedToken,
+        };
+      }
+    }
+
+    return null;
+  }
+
+  private normalizeMessageLimitsBlockedWordToken(value: string): string | null {
+    if (!value) {
+      return null;
+    }
+
+    const normalized = this.normalizeMixedWriting(value.toLowerCase()).replace(/ё/g, 'е');
+    const fragments = normalized.match(/[\p{L}\p{N}]+/gu);
+    if (!fragments || fragments.length !== 1) {
+      return null;
+    }
+
+    const token = fragments[0];
+    return token.length >= 2 && token.length <= 32 ? token : null;
   }
 
 }

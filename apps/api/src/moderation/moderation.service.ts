@@ -179,6 +179,7 @@ const NON_SANCTION_RULE_CODES = new Set([
   'PROFANITY',
   'COMMERCIAL_AD',
   'TOPIC_FILTER_MISMATCH',
+  'MESSAGE_BLOCKED_WORD',
   'MESSAGE_TOO_LONG',
   'MESSAGE_COUNT_LIMIT',
   'VIDEO_BLOCKED',
@@ -188,6 +189,7 @@ const NON_SANCTION_RULE_CODES = new Set([
   'STICKER_RATE_LIMIT',
 ]);
 const MESSAGE_LIMITS_RULE_CODES = new Set([
+  'MESSAGE_BLOCKED_WORD',
   'MESSAGE_TOO_LONG',
   'MESSAGE_COUNT_LIMIT',
   'VIDEO_BLOCKED',
@@ -715,6 +717,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       violations.find((item) => item.ruleCode === 'COMMERCIAL_AD') ??
       violations.find((item) => item.ruleCode === 'PROFANITY') ??
       violations.find((item) => item.ruleCode === 'TOPIC_FILTER_MISMATCH') ??
+      violations.find((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD') ??
       violations.find((item) => item.ruleCode === 'MESSAGE_TOO_LONG') ??
       violations.find((item) => item.ruleCode === 'MESSAGE_COUNT_LIMIT') ??
       violations.find((item) => item.ruleCode === 'VIDEO_BLOCKED') ??
@@ -751,7 +754,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           operator: Operator.BOT,
           metadata: {
             reason: topViolation.reason,
-            ...(topViolation.ruleCode === 'TOPIC_FILTER_MISMATCH' &&
+            ...((topViolation.ruleCode === 'TOPIC_FILTER_MISMATCH' ||
+              topViolation.ruleCode === 'MESSAGE_BLOCKED_WORD') &&
             topViolation.metadata &&
             typeof topViolation.metadata === 'object'
               ? topViolation.metadata
@@ -785,6 +789,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const isTextFilterHit = this.isTextFilterViolation(topViolation.ruleCode);
     const isTopicFilterHit = this.isTopicFilterViolation(topViolation.ruleCode);
     const isMessageLimitsHit = this.isMessageLimitsViolation(topViolation.ruleCode);
+    const messageLimitsBlockedWord = this.extractMessageLimitsBlockedWord(topViolation.metadata);
     const textFilterEscalationSettings = isTextFilterHit
       ? this.resolveTextFilterEscalationSettings(topViolation.ruleCode, settings)
       : null;
@@ -950,6 +955,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               settings.stickerMessageCooldownMinutes,
               effectiveMessageLength,
               settings.maxMessageLength,
+              messageLimitsBlockedWord,
               settings.messageLimitsBotMessageText,
               settings.botSpeechStyle,
             ),
@@ -973,6 +979,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             this.buildMessageLimitsWarnExplanation(
               userLabel,
               topViolation.ruleCode,
+              messageLimitsBlockedWord,
               settings.botSpeechStyle,
             ),
             limitsMessageOptions ?? undefined,
@@ -1121,6 +1128,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
                 userLabel,
                 topViolation.ruleCode,
                 actionBanDurationHours,
+                messageLimitsBlockedWord,
                 settings.botSpeechStyle,
               )
             : isTopicFilterHit && action === SanctionAction.BAN
@@ -1205,6 +1213,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             this.buildMessageLimitsKickExplanation(
               userLabel,
               topViolation.ruleCode,
+              messageLimitsBlockedWord,
               settings.botSpeechStyle,
             ),
             limitsMessageOptions ?? undefined,
@@ -1238,7 +1247,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         metadata: {
           reason: topViolation.reason,
           action,
-          ...(isTopicFilterHit && topViolation.metadata && typeof topViolation.metadata === 'object'
+          ...((isTopicFilterHit || topViolation.ruleCode === 'MESSAGE_BLOCKED_WORD') &&
+          topViolation.metadata &&
+          typeof topViolation.metadata === 'object'
             ? topViolation.metadata
             : {}),
           ...(action === SanctionAction.BAN ? { banDurationHours: actionBanDurationHours } : {}),
@@ -2397,10 +2408,27 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     stickerCooldownMinutes: number,
     messageLength?: number,
     maxMessageLength?: number,
+    blockedWord?: string | null,
     templateText?: string,
     botSpeechStyle?: BotSpeechStyle | null,
   ): string {
     const messageStatus = this.buildMessageStatusLabel(canDeleteMessage);
+
+    if (ruleCode === 'MESSAGE_BLOCKED_WORD') {
+      const reason = blockedWord
+        ? `запрещенное слово: ${blockedWord}`
+        : 'запрещенное слово из бан-листа';
+      return this.renderEditableBotSpeechTemplate({
+        style: botSpeechStyle ?? null,
+        fieldKey: 'messageLimitsBotMessageText',
+        overrideText: templateText ?? '',
+        replacements: {
+          user: userLabel,
+          message_status: messageStatus,
+          reason,
+        },
+      });
+    }
 
     if (ruleCode === 'MESSAGE_TOO_LONG') {
       const actualLength =
@@ -2542,6 +2570,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private buildMessageLimitsKickExplanation(
     userLabel: string,
     ruleCode: string,
+    blockedWord: string | null | undefined,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
     return this.renderSystemBotSpeechTemplate({
@@ -2549,7 +2578,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       templateKey: 'messageLimitsKick',
       replacements: {
         user: userLabel,
-        reason: this.resolveMessageLimitsSanctionReasonLabel(ruleCode),
+        reason: this.resolveMessageLimitsSanctionReasonLabel(ruleCode, blockedWord),
       },
     });
   }
@@ -2557,6 +2586,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private buildMessageLimitsWarnExplanation(
     userLabel: string,
     ruleCode: string,
+    blockedWord: string | null | undefined,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
     return this.renderSystemBotSpeechTemplate({
@@ -2564,7 +2594,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       templateKey: 'messageLimitsWarn',
       replacements: {
         user: userLabel,
-        reason: this.resolveMessageLimitsSanctionReasonLabel(ruleCode),
+        reason: this.resolveMessageLimitsSanctionReasonLabel(ruleCode, blockedWord),
       },
     });
   }
@@ -2573,6 +2603,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userLabel: string,
     ruleCode: string,
     banDurationHours: number,
+    blockedWord: string | null | undefined,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
     return this.renderSystemBotSpeechTemplate({
@@ -2581,12 +2612,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       replacements: {
         user: userLabel,
         ban_duration: this.formatBanDurationLabel(banDurationHours),
-        reason: this.resolveMessageLimitsSanctionReasonLabel(ruleCode),
+        reason: this.resolveMessageLimitsSanctionReasonLabel(ruleCode, blockedWord),
       },
     });
   }
 
-  private resolveMessageLimitsSanctionReasonLabel(ruleCode: string): string {
+  private resolveMessageLimitsSanctionReasonLabel(
+    ruleCode: string,
+    blockedWord?: string | null,
+  ): string {
     if (ruleCode === 'PHOTO_RATE_LIMIT') {
       return 'слишком частая отправка фото';
     }
@@ -2603,6 +2637,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return 'слишком длинное сообщение';
     }
 
+    if (ruleCode === 'MESSAGE_BLOCKED_WORD') {
+      return blockedWord ? `запрещенное слово: ${blockedWord}` : 'запрещенное слово';
+    }
+
     if (ruleCode === 'VIDEO_BLOCKED') {
       return 'видео в этом чате отключены';
     }
@@ -2616,6 +2654,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     return 'нарушение ограничений сообщений';
+  }
+
+  private extractMessageLimitsBlockedWord(metadata: unknown): string | null {
+    if (!metadata || typeof metadata !== 'object') {
+      return null;
+    }
+
+    const blockedWord = (metadata as { blockedWord?: unknown }).blockedWord;
+    return typeof blockedWord === 'string' && blockedWord.trim().length > 0
+      ? blockedWord.trim()
+      : null;
   }
 
   private calculateEffectiveMessageLength(update: MaxUpdate): number {

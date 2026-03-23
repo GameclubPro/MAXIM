@@ -851,6 +851,7 @@ function createInitialState(): PreviewState {
     nightModeEnabled: true,
     nightModeOpenMessageEnabled: true,
     nightModeOpenMessageText: 'Ночью чат закрыт. Напишите утром.',
+    messageLimitsBlockedWords: ['казино', 'ставки', 'скидка'],
     requiredSubscriptionEnabled: true,
     requiredSubscriptionChannelIds: [PREVIEW_CHANNEL_ID, 'preview-channel-2'],
     requiredSubscriptionBotMessageEnabled: true,

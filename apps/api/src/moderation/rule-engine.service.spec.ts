@@ -52,6 +52,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     videoMessagesEnabled: true,
     fileMessagesEnabled: true,
     voiceMessagesEnabled: true,
+    messageLimitsBlockedWords: [],
     messageLimitsBotMessageEnabled: false,
     messageLimitsBotMessageText: '',
     messageLimitsWarnEnabled: false,
@@ -774,6 +775,39 @@ describe('RuleEngineService', () => {
     expect(first.violations.some((item) => item.ruleCode === 'MESSAGE_COUNT_LIMIT')).toBe(false);
     expect(second.violations.some((item) => item.ruleCode === 'MESSAGE_COUNT_LIMIT')).toBe(false);
     expect(third.violations.some((item) => item.ruleCode === 'MESSAGE_COUNT_LIMIT')).toBe(true);
+  });
+
+  it('detects MESSAGE_BLOCKED_WORD for configured stop words', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Сегодня обсуждаем казино и ставки.',
+      settings: buildSettings({ messageLimitsBlockedWords: ['казино', 'ставки'] }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleCode: 'MESSAGE_BLOCKED_WORD',
+          metadata: expect.objectContaining({ blockedWord: 'казино' }),
+        }),
+      ]),
+    );
+  });
+
+  it('does not detect MESSAGE_BLOCKED_WORD inside larger word', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const result = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'Тут только казиношка без совпадения по целому слову.',
+      settings: buildSettings({ messageLimitsBlockedWords: ['казино'] }),
+      domainAllowlist: [],
+    });
+
+    expect(result.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD')).toBe(false);
   });
 
   it('detects VIDEO_BLOCKED when video messages are disabled', async () => {

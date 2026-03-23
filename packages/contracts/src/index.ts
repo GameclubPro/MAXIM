@@ -75,6 +75,7 @@ export const MANAGED_GIVEAWAY_TITLE_MAX_LENGTH = 120;
 export const MANAGED_GIVEAWAY_DESCRIPTION_MAX_LENGTH = 2_000;
 export const MANAGED_GIVEAWAY_PRIZE_TITLE_MAX_LENGTH = 120;
 export const REQUIRED_SUBSCRIPTION_MAX_CHANNELS = 10;
+export const MESSAGE_LIMITS_BLOCKED_WORDS_MAX = 50;
 
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
 const duplicateMaxCountSchema = z.number().int().min(2).max(20);
@@ -82,6 +83,11 @@ const botButtonUrlSchema = z.string().trim().max(2_048).default('');
 const botButtonTextSchema = z.string().trim().max(32).default('Открыть');
 const botMessageTextSchema = z.string().max(1_000).default('');
 const thematicCodewordSchema = z.string().trim().max(32).default('');
+const messageLimitsBlockedWordSchema = z.string().trim().max(32);
+const messageLimitsBlockedWordsSchema = z
+  .array(messageLimitsBlockedWordSchema)
+  .max(MESSAGE_LIMITS_BLOCKED_WORDS_MAX, `До ${MESSAGE_LIMITS_BLOCKED_WORDS_MAX} слов.`)
+  .default([]);
 const nightModeForceCloseUntilSchema = z.string().trim().max(64).default('');
 const requiredSubscriptionChannelIdsSchema = z
   .array(z.string().trim().min(1).max(128))
@@ -127,6 +133,25 @@ function normalizeThematicCodewordCandidate(value: string): string | null {
   }
 
   return fragments.join('');
+}
+
+export function normalizeMessageLimitsBlockedWordCandidate(value: string): string | null {
+  const normalized = value.trim().toLowerCase().replace(/ё/g, 'е');
+  if (!normalized) {
+    return null;
+  }
+
+  const parts = normalized.split(/\s+/u).filter(Boolean);
+  if (parts.length !== 1) {
+    return null;
+  }
+
+  const fragments = parts[0].match(/[\p{L}\p{N}]+/gu);
+  if (!fragments || fragments.length !== 1) {
+    return null;
+  }
+
+  return fragments[0];
 }
 
 function isValidBotButtonUrl(value: string): boolean {
@@ -306,6 +331,7 @@ export const chatSettingsSchema = z
     videoMessagesEnabled: z.boolean().default(true),
     fileMessagesEnabled: z.boolean().default(true),
     voiceMessagesEnabled: z.boolean().default(true),
+    messageLimitsBlockedWords: messageLimitsBlockedWordsSchema,
     messageLimitsBotMessageEnabled: z.boolean().default(false),
     messageLimitsBotMessageText: botMessageTextSchema,
     messageLimitsWarnEnabled: z.boolean().default(false),
@@ -536,6 +562,30 @@ export const chatSettingsSchema = z
         path: ['messageLimitsBotButtonText'],
         message: 'Введите название кнопки.',
       });
+    }
+
+    const normalizedMessageLimitsBlockedWords = new Set<string>();
+    for (const rawWord of value.messageLimitsBlockedWords) {
+      const normalizedWord = normalizeMessageLimitsBlockedWordCandidate(rawWord);
+      if (!normalizedWord || normalizedWord.length < 2 || normalizedWord.length > 32) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['messageLimitsBlockedWords'],
+          message: 'Добавляйте отдельные слова без пробелов, 2-32 символа.',
+        });
+        break;
+      }
+
+      if (normalizedMessageLimitsBlockedWords.has(normalizedWord)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['messageLimitsBlockedWords'],
+          message: 'Повторяющиеся слова не нужны.',
+        });
+        break;
+      }
+
+      normalizedMessageLimitsBlockedWords.add(normalizedWord);
     }
 
     if (
