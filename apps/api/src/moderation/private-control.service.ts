@@ -2706,15 +2706,7 @@ export class PrivateControlService {
         if (session.pendingMassAction.kind === 'broadcast') {
           const sendResult = await this.sendBroadcastFromSession(context, session);
           session.pendingMassAction = null;
-          const view = await this.renderBroadcastScreen(
-            context,
-            session,
-            this.buildBroadcastCompletionNotice(sendResult),
-          );
-          await this.respond(context, session, view, {
-            callbackId: context.callbackId,
-            notification: 'Рассылка отправлена',
-          });
+          await this.respondToSuccessfulBroadcast(context, session, sendResult);
           return;
         }
 
@@ -3390,15 +3382,7 @@ export class PrivateControlService {
         }
 
         const result = await this.sendBroadcastFromSession(context, session);
-        const view = await this.renderBroadcastScreen(
-          context,
-          session,
-          this.buildBroadcastCompletionNotice(result),
-        );
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: 'Рассылка отправлена',
-        });
+        await this.respondToSuccessfulBroadcast(context, session, result);
         return;
       }
 
@@ -4868,6 +4852,28 @@ export class PrivateControlService {
           );
 
     return result;
+  }
+
+  private async respondToSuccessfulBroadcast(
+    context: PrivateContext,
+    session: PrivateSession,
+    result: SendBroadcastResult,
+  ): Promise<void> {
+    const view = await this.renderBroadcastScreen(
+      context,
+      session,
+      this.buildBroadcastCompletionNotice(result),
+    );
+    await this.respond(context, session, view, {
+      callbackId: context.callbackId,
+      notification: 'Рассылка отправлена',
+    });
+
+    if (result.failedChats > 0) {
+      return;
+    }
+
+    await this.sendImmediate(context.chatId, this.buildBroadcastSuccessMessage(result));
   }
 
   private createDefaultGiveawayDraft(): UpdateManagedGiveawayRequest {
@@ -6430,6 +6436,18 @@ export class PrivateControlService {
     }
 
     return 'Опубликовано без ошибок.';
+  }
+
+  private buildBroadcastSuccessMessage(result: SendBroadcastResult): string {
+    if (result.sentChats === 0 && result.nextSendAt) {
+      return `✅ Всё успешно. Рассылка запланирована на ${this.formatDateTimeLabel(result.nextSendAt)}.`;
+    }
+
+    if (result.nextSendAt && result.scheduledOccurrences > 0) {
+      return `✅ Всё успешно. Первый слот отправлен, следующий: ${this.formatDateTimeLabel(result.nextSendAt)}.`;
+    }
+
+    return '✅ Всё успешно. Рассылка отправлена без ошибок.';
   }
 
   private renderGiveawayClaimView(

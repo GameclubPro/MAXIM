@@ -1420,8 +1420,8 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).toContain('Сначала заполните текст правил.');
   });
 
-  it('sends a channel broadcast from private control', async () => {
-    const { service, adminService, channels } = createHarness();
+  it('sends a channel broadcast from private control and posts a success follow-up', async () => {
+    const { service, adminService, maxClient, channels } = createHarness();
 
     await service.handleUpdate(
       createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
@@ -1440,6 +1440,9 @@ describe('PrivateControlService', () => {
       }),
       'private_bot',
     );
+    expect(getLastEditedText(maxClient)).toContain('Опубликовано без ошибок.');
+    expect(getLastSentText(maxClient)).toContain('✅ Всё успешно.');
+    expect(getLastSentText(maxClient)).toContain('Рассылка отправлена без ошибок.');
   });
 
   it('preserves incoming MAX text markup when sending broadcast from private bot', async () => {
@@ -1727,7 +1730,7 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).not.toContain('**Жирный**');
   });
 
-  it('hands off chat broadcast from miniapp into private bot content flow', async () => {
+  it('hands off chat broadcast from miniapp into private bot content flow and sends success follow-up', async () => {
     const { service, adminService, maxClient, chats } = createHarness();
     const actor = {
       userId: 'user-1',
@@ -1780,6 +1783,8 @@ describe('PrivateControlService', () => {
       'private_bot',
     );
     expect(getLastEditedText(maxClient)).toContain('Опубликовано без ошибок.');
+    expect(getLastSentText(maxClient)).toContain('✅ Всё успешно.');
+    expect(getLastSentText(maxClient)).toContain('Рассылка отправлена без ошибок.');
   });
 
   it('prompts for post content and accepts channel suggestions from a bot deep link', async () => {
