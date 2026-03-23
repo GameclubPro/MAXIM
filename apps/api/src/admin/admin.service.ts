@@ -481,8 +481,8 @@ export class AdminService {
 
     const refreshCooldownKey = this.buildManagedEntitiesRefreshCooldownKey(user.userId, entityType);
     if (
-      !this.isManagedEntitiesRefreshBackoffActive() &&
-      !this.isManagedEntitiesRefreshCooldownActive(refreshCooldownKey)
+      !(await this.isManagedEntitiesRefreshBackoffActive()) &&
+      !(await this.isManagedEntitiesRefreshCooldownActive(user.userId, entityType, refreshCooldownKey))
     ) {
       try {
         const remoteChats = await this.maxClient.listBotChats();
@@ -531,7 +531,11 @@ export class AdminService {
           (item): item is { chat: ChatSummary; lastEventTime: number } => item !== null,
         );
 
-        this.activateManagedEntitiesRefreshCooldown(refreshCooldownKey);
+        await this.activateManagedEntitiesRefreshCooldown(
+          user.userId,
+          entityType,
+          refreshCooldownKey,
+        );
 
         if (filtered.length > 0) {
           const byType =
@@ -548,7 +552,7 @@ export class AdminService {
         ) {
           const rootError =
             error instanceof ManagedEntitiesRefreshThrottledError ? error.cause : error;
-          const backoffMs = this.activateManagedEntitiesRefreshBackoff();
+          const backoffMs = await this.activateManagedEntitiesRefreshBackoff();
           this.logger.warn(
             {
               entityType,
@@ -9146,8 +9150,15 @@ export class AdminService {
     return error instanceof ManagedEntitiesRefreshThrottledError;
   }
 
-  private isManagedEntitiesRefreshBackoffActive(): boolean {
-    return Date.now() < this.managedEntitiesRefreshBackoffUntilMs;
+  private async isManagedEntitiesRefreshBackoffActive(): Promise<boolean> {
+    const memoryActive = Date.now() < this.managedEntitiesRefreshBackoffUntilMs;
+    try {
+      return (
+        memoryActive || (await this.chatContextCache.isManagedEntitiesRefreshBackoffActive())
+      );
+    } catch {
+      return memoryActive;
+    }
   }
 
   private buildManagedEntitiesRefreshCooldownKey(
@@ -9157,30 +9168,62 @@ export class AdminService {
     return `${userId}:${entityType}`;
   }
 
-  private isManagedEntitiesRefreshCooldownActive(key: string): boolean {
+  private async isManagedEntitiesRefreshCooldownActive(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    key: string,
+  ): Promise<boolean> {
     const untilMs = this.managedEntitiesRefreshCooldownUntilMs.get(key) ?? 0;
-    if (untilMs <= Date.now()) {
+    const memoryActive = untilMs > Date.now();
+    if (!memoryActive && untilMs > 0) {
       this.managedEntitiesRefreshCooldownUntilMs.delete(key);
-      return false;
     }
 
-    return true;
+    try {
+      return (
+        memoryActive ||
+        (await this.chatContextCache.isManagedEntitiesRefreshCooldownActive(userId, entityType))
+      );
+    } catch {
+      return memoryActive;
+    }
   }
 
-  private activateManagedEntitiesRefreshCooldown(key: string): void {
-    this.managedEntitiesRefreshCooldownUntilMs.set(
-      key,
-      Date.now() + MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS,
-    );
+  private async activateManagedEntitiesRefreshCooldown(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    key: string,
+  ): Promise<void> {
+    const untilMs = Date.now() + MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS;
+    this.managedEntitiesRefreshCooldownUntilMs.set(key, untilMs);
+    try {
+      await this.chatContextCache.activateManagedEntitiesRefreshCooldown(
+        userId,
+        entityType,
+        Math.max(1, Math.ceil((untilMs - Date.now()) / 1000)),
+      );
+    } catch {
+      return;
+    }
   }
 
-  private activateManagedEntitiesRefreshBackoff(): number {
+  private async activateManagedEntitiesRefreshBackoff(): Promise<number> {
     const now = Date.now();
     this.managedEntitiesRefreshBackoffUntilMs = Math.max(
       this.managedEntitiesRefreshBackoffUntilMs,
       now + MANAGED_ENTITIES_REFRESH_BACKOFF_MS,
     );
-    return this.managedEntitiesRefreshBackoffUntilMs - now;
+    const backoffMs = this.managedEntitiesRefreshBackoffUntilMs - now;
+
+    try {
+      await this.chatContextCache.activateManagedEntitiesRefreshBackoff(
+        Math.max(1, Math.ceil(backoffMs / 1000)),
+      );
+    } catch {
+      return backoffMs;
+    }
+
+    return backoffMs;
   }
 
   private async hasPersistedChatAccess(chatId: string, userId: string): Promise<boolean> {

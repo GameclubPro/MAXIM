@@ -16,6 +16,8 @@ const CHANNEL_STATS_SUBSCRIPTIONS_LOCK_TTL_MS = 60 * 1000;
 const CHANNEL_STATS_STARTUP_INTER_CHANNEL_DELAY_MS = 2_000;
 const CHANNEL_STATS_SCHEDULED_INTER_CHANNEL_DELAY_MS = 500;
 const CHANNEL_STATS_BACKGROUND_THROTTLE_BACKOFF_MS = 60_000;
+const CHANNEL_STATS_BACKGROUND_THROTTLE_BACKOFF_KEY =
+  'channel-stats:background-sync-backoff:v1';
 const CHANNEL_STATS_REQUIRED_UPDATE_TYPES = [
   'message_created',
   'message_callback',
@@ -120,7 +122,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     if (
       !this.backgroundEnabled ||
       this.scheduledSyncInFlight ||
-      this.isBackgroundSyncBackoffActive()
+      (await this.isBackgroundSyncBackoffActive())
     ) {
       return;
     }
@@ -145,7 +147,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
 
             const syncResult = await this.syncChannel(channel.id, { reason });
             if (syncResult.throttled) {
-              const backoffMs = this.activateBackgroundSyncBackoff();
+              const backoffMs = await this.activateBackgroundSyncBackoff();
               this.logger.warn(
                 {
                   reason,
@@ -378,17 +380,36 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     return message.includes('rate limit exceeded') || message.includes('circuit breaker');
   }
 
-  private isBackgroundSyncBackoffActive(): boolean {
-    return Date.now() < this.backgroundSyncBackoffUntilMs;
+  private async isBackgroundSyncBackoffActive(): Promise<boolean> {
+    const memoryActive = Date.now() < this.backgroundSyncBackoffUntilMs;
+    try {
+      const raw = await this.redis.get(CHANNEL_STATS_BACKGROUND_THROTTLE_BACKOFF_KEY);
+      return memoryActive || (typeof raw === 'string' && raw.length > 0);
+    } catch {
+      return memoryActive;
+    }
   }
 
-  private activateBackgroundSyncBackoff(): number {
+  private async activateBackgroundSyncBackoff(): Promise<number> {
     const now = Date.now();
     this.backgroundSyncBackoffUntilMs = Math.max(
       this.backgroundSyncBackoffUntilMs,
       now + CHANNEL_STATS_BACKGROUND_THROTTLE_BACKOFF_MS,
     );
-    return this.backgroundSyncBackoffUntilMs - now;
+    const backoffMs = this.backgroundSyncBackoffUntilMs - now;
+
+    try {
+      await this.redis.set(
+        CHANNEL_STATS_BACKGROUND_THROTTLE_BACKOFF_KEY,
+        '1',
+        'EX',
+        Math.max(1, Math.ceil(backoffMs / 1000)),
+      );
+    } catch {
+      return backoffMs;
+    }
+
+    return backoffMs;
   }
 
   private resolveInterChannelDelayMs(reason: 'startup' | 'scheduled'): number {

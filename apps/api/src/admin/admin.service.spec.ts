@@ -444,6 +444,10 @@ function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
     getManagedEntityHeader: jest.fn().mockResolvedValue(null),
     setManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
     invalidateManagedEntityHeader: jest.fn().mockResolvedValue(undefined),
+    isManagedEntitiesRefreshCooldownActive: jest.fn().mockResolvedValue(false),
+    activateManagedEntitiesRefreshCooldown: jest.fn().mockResolvedValue(undefined),
+    isManagedEntitiesRefreshBackoffActive: jest.fn().mockResolvedValue(false),
+    activateManagedEntitiesRefreshBackoff: jest.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -2393,10 +2397,11 @@ describe('AdminService.listChannels', () => {
         .mockRejectedValue(new Error('MAX API global rate limit exceeded')),
     };
 
+    const chatContextCache = createChatContextCacheMock();
     const service = new AdminService(
       prisma as never,
       maxClient as never,
-      createChatContextCacheMock() as never,
+      chatContextCache as never,
       createConfigMock() as never,
     );
 
@@ -2441,6 +2446,7 @@ describe('AdminService.listChannels', () => {
 
     expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
     expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
+    expect(chatContextCache.activateManagedEntitiesRefreshBackoff).toHaveBeenCalledWith(60);
   });
 
   it('reuses cached channels during successful refresh cooldown before hitting MAX API again', async () => {
@@ -2491,10 +2497,11 @@ describe('AdminService.listChannels', () => {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
     };
 
+    const chatContextCache = createChatContextCacheMock();
     const service = new AdminService(
       prisma as never,
       maxClient as never,
-      createChatContextCacheMock() as never,
+      chatContextCache as never,
       createConfigMock() as never,
     );
 
@@ -2513,6 +2520,11 @@ describe('AdminService.listChannels', () => {
     );
 
     expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+    expect(chatContextCache.activateManagedEntitiesRefreshCooldown).toHaveBeenCalledWith(
+      'admin-1',
+      'channel',
+      30,
+    );
 
     jest.advanceTimersByTime(30_001);
 

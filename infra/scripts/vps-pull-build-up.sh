@@ -137,6 +137,29 @@ wait_for_postgres() {
   return 1
 }
 
+remove_stale_service_containers() {
+  local service
+  local container_id
+  local state
+  local container_ids=()
+
+  for service in "$@"; do
+    mapfile -t container_ids < <(docker compose "${COMPOSE_FILES[@]}" ps -a -q "$service" 2>/dev/null || true)
+    for container_id in "${container_ids[@]}"; do
+      [[ -n "$container_id" ]] || continue
+      state="$(docker inspect --format '{{.State.Status}}' "$container_id" 2>/dev/null || true)"
+      case "$state" in
+        running|restarting|paused)
+          continue
+          ;;
+      esac
+
+      echo "Removing stale $service container: $container_id (state=${state:-unknown})"
+      docker rm -f "$container_id" >/dev/null 2>&1 || true
+    done
+  done
+}
+
 run_migrations() {
   ensure_compose_env
   docker compose "${COMPOSE_FILES[@]}" run --rm --no-deps api npx prisma migrate deploy --schema apps/api/prisma/schema.prisma
@@ -185,6 +208,7 @@ if [[ "${#SERVICES_TO_BUILD[@]}" -gt 0 ]]; then
 fi
 
 ensure_compose_env
+remove_stale_service_containers "${SERVICES[@]}"
 docker compose "${COMPOSE_FILES[@]}" up -d --no-deps --force-recreate "${SERVICES[@]}"
 
 wait_for_url "http://127.0.0.1:3001/api/health/live" 180

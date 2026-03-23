@@ -260,4 +260,40 @@ describe('ChatContextCacheService', () => {
       ChatContextCacheService.managedEntityHeaderKey('chat-1', 'channel'),
     );
   });
+
+  it('stores managed entity refresh cooldown and backoff markers in redis', async () => {
+    const config = {
+      getOrThrow: jest.fn().mockReturnValue('redis://127.0.0.1:6379'),
+    };
+
+    const service = new ChatContextCacheService({} as never, config as never);
+    const redisInstance = (Redis as unknown as jest.Mock).mock.results.at(-1)?.value as {
+      set: jest.Mock;
+      get: jest.Mock;
+    };
+
+    await service.activateManagedEntitiesRefreshCooldown('user-1', 'channel', 30);
+    expect(redisInstance.set).toHaveBeenCalledWith(
+      ChatContextCacheService.managedEntitiesRefreshCooldownKey('user-1', 'channel'),
+      '1',
+      'EX',
+      30,
+    );
+
+    redisInstance.get.mockResolvedValueOnce('1');
+    await expect(
+      service.isManagedEntitiesRefreshCooldownActive('user-1', 'channel'),
+    ).resolves.toBe(true);
+
+    await service.activateManagedEntitiesRefreshBackoff(60);
+    expect(redisInstance.set).toHaveBeenCalledWith(
+      ChatContextCacheService.managedEntitiesRefreshBackoffKey(),
+      '1',
+      'EX',
+      60,
+    );
+
+    redisInstance.get.mockResolvedValueOnce('1');
+    await expect(service.isManagedEntitiesRefreshBackoffActive()).resolves.toBe(true);
+  });
 });

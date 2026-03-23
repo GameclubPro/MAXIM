@@ -3,6 +3,7 @@ import { ChannelStatsCollectorService } from './channel-stats-collector.service'
 jest.mock('ioredis', () => ({
   __esModule: true,
   default: jest.fn().mockImplementation(() => ({
+    get: jest.fn().mockResolvedValue(null),
     set: jest.fn().mockResolvedValue('OK'),
     eval: jest.fn().mockResolvedValue(1),
     quit: jest.fn().mockResolvedValue(undefined),

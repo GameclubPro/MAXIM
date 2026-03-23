@@ -47,6 +47,17 @@ export class ChatContextCacheService implements OnModuleDestroy {
     return `chat:managed-header:v1:${entityType}:${chatId}`;
   }
 
+  static managedEntitiesRefreshCooldownKey(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+  ): string {
+    return `chat:managed-refresh-cooldown:v1:${entityType}:${userId}`;
+  }
+
+  static managedEntitiesRefreshBackoffKey(): string {
+    return 'chat:managed-refresh-backoff:v1';
+  }
+
   async getChatContext(chatId: string, chatTitle?: string | null): Promise<ChatContext> {
     const key = ChatContextCacheService.cacheKey(chatId);
     const cached = await this.redis.get(key);
@@ -148,6 +159,43 @@ export class ChatContextCacheService implements OnModuleDestroy {
     await this.redis.del(
       ChatContextCacheService.managedEntityHeaderKey(chatId, 'chat'),
       ChatContextCacheService.managedEntityHeaderKey(chatId, 'channel'),
+    );
+  }
+
+  async isManagedEntitiesRefreshCooldownActive(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+  ): Promise<boolean> {
+    const raw = await this.redis.get(
+      ChatContextCacheService.managedEntitiesRefreshCooldownKey(userId, entityType),
+    );
+    return typeof raw === 'string' && raw.length > 0;
+  }
+
+  async activateManagedEntitiesRefreshCooldown(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+    ttlSec: number,
+  ): Promise<void> {
+    await this.redis.set(
+      ChatContextCacheService.managedEntitiesRefreshCooldownKey(userId, entityType),
+      '1',
+      'EX',
+      ttlSec,
+    );
+  }
+
+  async isManagedEntitiesRefreshBackoffActive(): Promise<boolean> {
+    const raw = await this.redis.get(ChatContextCacheService.managedEntitiesRefreshBackoffKey());
+    return typeof raw === 'string' && raw.length > 0;
+  }
+
+  async activateManagedEntitiesRefreshBackoff(ttlSec: number): Promise<void> {
+    await this.redis.set(
+      ChatContextCacheService.managedEntitiesRefreshBackoffKey(),
+      '1',
+      'EX',
+      ttlSec,
     );
   }
 
