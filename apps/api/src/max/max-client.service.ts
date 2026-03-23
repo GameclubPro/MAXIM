@@ -1720,7 +1720,7 @@ export class MaxClientService implements OnModuleDestroy {
       return null;
     }
 
-    return `member-action:${actionType}:${chatId}:${userId}`;
+    return `member-action__${actionType}__${chatId}__${userId}`;
   }
 
   private async removeQueuedActionJob(jobId: string) {

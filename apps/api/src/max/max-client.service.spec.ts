@@ -1208,23 +1208,25 @@ describe('MaxClientService delayed member actions', () => {
       getJob: jest.fn().mockResolvedValue(null),
     };
     const service = createServiceWithQueue(queue);
+    const expectedJobId = 'member-action__UNBAN_MEMBER__chat-1__user-1';
 
     await service.unbanMember('chat-1', 'user-1', { delayMs: 60_000 });
 
-    expect(queue.getJob).toHaveBeenCalledWith('member-action:UNBAN_MEMBER:chat-1:user-1');
+    expect(queue.getJob).toHaveBeenCalledWith(expectedJobId);
     expect(queue.add).toHaveBeenCalledWith(
       'execute-max-action',
       expect.objectContaining({
         actionType: 'UNBAN_MEMBER',
         chatId: 'chat-1',
         userId: 'user-1',
-        idempotencyKey: 'member-action:UNBAN_MEMBER:chat-1:user-1',
+        idempotencyKey: expectedJobId,
       }),
       expect.objectContaining({
-        jobId: 'member-action:UNBAN_MEMBER:chat-1:user-1',
+        jobId: expectedJobId,
         delay: 60_000,
       }),
     );
+    expect(expectedJobId.includes(':')).toBe(false);
 
     await service.onModuleDestroy();
   });
@@ -1239,7 +1241,7 @@ describe('MaxClientService delayed member actions', () => {
 
     await service.cancelScheduledUnban('chat-1', 'user-2');
 
-    expect(queue.getJob).toHaveBeenCalledWith('member-action:UNBAN_MEMBER:chat-1:user-2');
+    expect(queue.getJob).toHaveBeenCalledWith('member-action__UNBAN_MEMBER__chat-1__user-2');
     expect(remove).toHaveBeenCalledTimes(1);
 
     await service.onModuleDestroy();
