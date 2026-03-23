@@ -47,7 +47,6 @@ import {
   applySettingsSectionToAll,
   cancelManagedBroadcast,
   getBroadcastHandoffState,
-  getManagedBroadcast,
   getSettingsScreen,
   handoffBroadcast,
   handoffRules,
@@ -1156,27 +1155,6 @@ function getRouteChatTitle(state: unknown): string {
   return '';
 }
 
-function SectionChevron({ isOpen }: { isOpen: boolean }) {
-  return (
-    <span className={cn('settings-section__chevron', isOpen && 'is-open')} aria-hidden>
-      <svg
-        className="settings-section__chevron-icon"
-        viewBox="0 0 20 20"
-        fill="none"
-        focusable="false"
-      >
-        <path
-          d="M5.5 7.75L10 12.25L14.5 7.75"
-          stroke="currentColor"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        />
-      </svg>
-    </span>
-  );
-}
-
 function EditIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
@@ -1492,7 +1470,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     useState<BroadcastSchedulePlannerSelectionState>(EMPTY_BROADCAST_PLANNER_STATE);
   const [editingManagedBroadcast, setEditingManagedBroadcast] =
     useState<ManagedBroadcastDetails | null>(null);
-  const [expandedManagedBroadcastId, setExpandedManagedBroadcastId] = useState<string | null>(null);
   const [mailingNowMs, setMailingNowMs] = useState(() => Date.now());
   const [mailingWorkspaceView, setMailingWorkspaceView] =
     useState<MailingWorkspaceView>('compose');
@@ -1579,7 +1556,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setResolvedRequiredSubscriptionChannels([]);
     resetMailingPlanner();
     setEditingManagedBroadcast(null);
-    setExpandedManagedBroadcastId(null);
     setMailingWorkspaceView('compose');
     setDuplicateWindowInputValues({});
     setPendingSpeechStyle(null);
@@ -2261,22 +2237,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     },
   });
 
-  const loadManagedBroadcastMutation = useMutation({
-    mutationFn: (broadcastId: string) => getManagedBroadcast(api, chatId ?? '', broadcastId),
-    onSuccess: (broadcast) => {
-      applyManagedBroadcastToComposer(broadcast);
-      setExpandedSections((current) => ({ ...current, mailing: true }));
-      setExpandedManagedBroadcastId(broadcast.id);
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Не удалось открыть рассылку',
-        description: formatApiError(error),
-      });
-    },
-  });
-
   const updateManagedBroadcastMutation = useMutation({
     mutationFn: ({
       broadcastId,
@@ -2314,13 +2274,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       }
       pushToast({
         tone: 'info',
-        title: 'Рассылка остановлена',
+        title: 'Рассылка удалена',
+        description: 'Будущие отправки сняты, карточка убрана из списка.',
       });
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось остановить рассылку',
+        title: 'Не удалось удалить рассылку',
         description: formatApiError(error),
       });
     },
@@ -2987,45 +2948,29 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     resetMailingPlanner();
   }
 
-  function applyManagedBroadcastToComposer(broadcast: ManagedBroadcastDetails) {
-    setEditingManagedBroadcast(broadcast);
-    setMailingWorkspaceView('compose');
-    setMailingApplyToAllChats(broadcast.applyToAllChats);
-    setMailingBotHasContent(false);
-    setMailingText(broadcast.text);
-    setMailingButtonEnabled(broadcast.buttonEnabled);
-    setMailingButtonUrl(broadcast.buttonUrl);
-    setMailingButtonText(broadcast.buttonText || 'Открыть');
-    setMailingImageEnabled(broadcast.imageEnabled);
-    setMailingImageBase64(broadcast.imageBase64);
-    setMailingImageMimeType(broadcast.imageMimeType);
-    setMailingImageFileName(broadcast.imageFileName);
-    setMailingScheduledSlots(sortAndUniqueBroadcastSlots(broadcast.scheduledSlots));
-    setMailingScheduleEnabled(false);
-    setMailingScheduleDays(0);
-    setMailingScheduleTime(toLocalTimeInputValue(new Date(Date.now() + BROADCAST_HOUR_MS)));
-    setMailingCycleEnabled(false);
-    setMailingCycleEveryHours(clampBroadcastCycleHours(broadcast.cycleEveryHours));
-    setMailingCycleCount(Math.max(2, broadcast.cycleCount));
-    setMailingTextError('');
-    setMailingButtonUrlError('');
-    setMailingButtonTextError('');
-    setMailingImageError('');
-    setMailingScheduleError('');
-    setMailingCycleError('');
-    resetMailingPlanner();
+  function handleCancelMailingEdit() {
+    resetMailingComposer();
   }
 
-  function handleEditManagedBroadcast(broadcastId: string) {
-    if (!chatId || loadManagedBroadcastMutation.isPending) {
+  function handleDeleteManagedBroadcast(broadcast: ManagedBroadcastListItem) {
+    if (!chatId || cancelManagedBroadcastMutation.isPending) {
       return;
     }
 
-    loadManagedBroadcastMutation.mutate(broadcastId);
-  }
+    const nextSendLabel = formatCompactBroadcastDateTime(broadcast.nextSendAt);
+    const confirmationText = [
+      'Удалить рассылку?',
+      nextSendLabel ? `Следующая отправка: ${nextSendLabel}.` : null,
+      'Все будущие слоты будут сняты, а карточка исчезнет из раздела «В работе».',
+    ]
+      .filter(Boolean)
+      .join('\n\n');
 
-  function handleCancelMailingEdit() {
-    resetMailingComposer();
+    if (typeof window !== 'undefined' && !window.confirm(confirmationText)) {
+      return;
+    }
+
+    cancelManagedBroadcastMutation.mutate(broadcast.id);
   }
 
   function validateMailingButtonDraft() {
@@ -8603,34 +8548,25 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 ) : null}
 
                                 {orderedManagedBroadcasts.map((broadcast) => {
-                                  const isOpen = expandedManagedBroadcastId === broadcast.id;
                                   const cardTone = resolveManagedBroadcastCardTone(broadcast);
                                   const cardMetric = resolveManagedBroadcastMetric(
                                     broadcast,
                                     mailingNowMs,
                                   );
                                   const cardFacts = buildManagedBroadcastFactChips(broadcast);
+                                  const isDeletingBroadcast =
+                                    cancelManagedBroadcastMutation.isPending &&
+                                    cancelManagedBroadcastMutation.variables === broadcast.id;
+                                  const isRetryingBroadcast =
+                                    retryManagedBroadcastMutation.isPending &&
+                                    retryManagedBroadcastMutation.variables === broadcast.id;
 
                                   return (
                                     <div
                                       key={broadcast.id}
-                                      className={cn(
-                                        'managed-broadcast-card',
-                                        isOpen && 'is-open',
-                                        `is-${cardTone}`,
-                                      )}
+                                      className={cn('managed-broadcast-card', `is-${cardTone}`)}
                                     >
-                                      <button
-                                        type="button"
-                                        className="managed-broadcast-card__toggle"
-                                        aria-expanded={isOpen}
-                                        aria-controls={`managed-broadcast-${broadcast.id}`}
-                                        onClick={() =>
-                                          setExpandedManagedBroadcastId((current) =>
-                                            current === broadcast.id ? null : broadcast.id,
-                                          )
-                                        }
-                                      >
+                                      <div className="managed-broadcast-card__top">
                                         <span className="managed-broadcast-card__main">
                                           <span
                                             className={cn(
@@ -8654,9 +8590,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                             <strong>{cardMetric.value}</strong>
                                             <span>{cardMetric.caption}</span>
                                           </span>
-                                          <SectionChevron isOpen={isOpen} />
                                         </span>
-                                      </button>
+                                      </div>
 
                                       <div className="managed-broadcast-card__facts">
                                         {cardFacts.map((fact) => (
@@ -8664,68 +8599,40 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         ))}
                                       </div>
 
-                                      <div
-                                        id={`managed-broadcast-${broadcast.id}`}
-                                        className={cn(
-                                          'managed-broadcast-card__body',
-                                          isOpen && 'is-open',
-                                        )}
-                                      >
-                                        {isOpen ? (
-                                          <>
-                                            {broadcast.lastError ? (
-                                              <small className="managed-broadcast-card__error">
-                                                {broadcast.lastError}
-                                              </small>
-                                            ) : null}
-                                            <div className="managed-broadcast-card__actions">
-                                              {broadcast.canRetry ? (
-                                                <button
-                                                  type="button"
-                                                  className="button button--accent"
-                                                  onClick={() =>
-                                                    retryManagedBroadcastMutation.mutate(broadcast.id)
-                                                  }
-                                                  disabled={isMailingBusy}
-                                                >
-                                                  Повторить ошибки
-                                                </button>
-                                              ) : null}
-                                              <button
-                                                type="button"
-                                                className={cn(
-                                                  'button',
-                                                  broadcast.canRetry
-                                                    ? 'button--ghost'
-                                                    : 'button--accent',
-                                                )}
-                                                onClick={() =>
-                                                  handleEditManagedBroadcast(broadcast.id)
-                                                }
-                                                disabled={
-                                                  isMailingBusy ||
-                                                  loadManagedBroadcastMutation.isPending ||
-                                                  broadcast.canRetry
-                                                }
-                                              >
-                                                {loadManagedBroadcastMutation.isPending &&
-                                                expandedManagedBroadcastId === broadcast.id
-                                                  ? 'Открываем...'
-                                                  : 'Изменить'}
-                                              </button>
-                                              <button
-                                                type="button"
-                                                className="button button--ghost"
-                                                onClick={() =>
-                                                  cancelManagedBroadcastMutation.mutate(broadcast.id)
-                                                }
-                                                disabled={isMailingBusy}
-                                              >
-                                                Остановить
-                                              </button>
-                                            </div>
-                                          </>
+                                      <div className="managed-broadcast-card__body">
+                                        {broadcast.lastError ? (
+                                          <small className="managed-broadcast-card__error">
+                                            {broadcast.lastError}
+                                          </small>
                                         ) : null}
+                                        <p className="managed-broadcast-card__note">
+                                          Удаление снимет будущие отправки и уберёт карточку из
+                                          списка.
+                                        </p>
+                                        <div className="managed-broadcast-card__actions">
+                                          {broadcast.canRetry ? (
+                                            <button
+                                              type="button"
+                                              className="button button--accent"
+                                              onClick={() =>
+                                                retryManagedBroadcastMutation.mutate(broadcast.id)
+                                              }
+                                              disabled={isMailingBusy}
+                                            >
+                                              {isRetryingBroadcast
+                                                ? 'Повторяем...'
+                                                : 'Повторить ошибки'}
+                                            </button>
+                                          ) : null}
+                                          <button
+                                            type="button"
+                                            className="button button--danger"
+                                            onClick={() => handleDeleteManagedBroadcast(broadcast)}
+                                            disabled={isMailingBusy}
+                                          >
+                                            {isDeletingBroadcast ? 'Удаляем...' : 'Удалить'}
+                                          </button>
+                                        </div>
                                       </div>
                                     </div>
                                   );
