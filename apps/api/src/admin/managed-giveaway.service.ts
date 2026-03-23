@@ -1386,7 +1386,7 @@ export class ManagedGiveawayService {
       return lines.join('\n');
     }
 
-    lines.push('', currentWinners.length === 1 ? '🏆 Победитель:' : '🏆 Победители:');
+    lines.push('', currentWinners.length === 1 ? '🏆 Победитель:' : '🏆 Победители:', '');
     for (const winner of currentWinners) {
       const publicName = this.resolvePublicWinnerDisplayName(winner);
       if (!publicName) {

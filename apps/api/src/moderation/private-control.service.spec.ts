@@ -1553,6 +1553,60 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).not.toContain('[**_++MAX Docs++_**](');
   });
 
+  it('renders heading and bold giveaway content from incoming MAX markup without raw stars', async () => {
+    const { service, maxClient, chats, managedGiveawayService } = createHarness({
+      managedGiveaway: createGiveaway({
+        id: 'giveaway-draft-1',
+        status: 'DRAFT',
+        description: '',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        publicationMessageId: null,
+        publicationUrl: null,
+        publishedAt: null,
+      }),
+    });
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_giveaway'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|giveaway_input_prompt|content'));
+    await service.handleUpdate(
+      createPrivateFormattedTextUpdate('Заголовок\nЖирный текст', [
+        {
+          type: 'heading',
+          from: 0,
+          length: 9,
+        },
+        {
+          type: 'strong',
+          from: 10,
+          length: 6,
+        },
+      ]),
+    );
+
+    expect(managedGiveawayService.updateManagedGiveaway).toHaveBeenCalledWith(
+      chats[0].id,
+      'giveaway-draft-1',
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        description: '# Заголовок\n**Жирный** текст',
+      }),
+      'chat',
+      'private_bot',
+    );
+    expect(getLastSendOptions(maxClient)).toEqual(
+      expect.objectContaining({
+        textFormat: 'html',
+      }),
+    );
+    expect(getLastSentText(maxClient)).toContain('<p><strong>Заголовок</strong></p>');
+    expect(getLastSentText(maxClient)).toContain('<p><strong>Жирный</strong> текст</p>');
+    expect(getLastSentText(maxClient)).not.toContain('**Жирный**');
+  });
+
   it('hands off chat broadcast from miniapp into private bot content flow', async () => {
     const { service, adminService, maxClient, chats } = createHarness();
     const actor = {

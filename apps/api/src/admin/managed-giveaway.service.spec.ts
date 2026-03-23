@@ -156,6 +156,39 @@ function createWinner(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function createSecondWinner(overrides: Record<string, unknown> = {}) {
+  const entry = createEntry({
+    id: 'entry-winner-2',
+    userId: 'winner-2',
+    displayName: 'CTO',
+  });
+  const prize = createPrize({
+    id: 'prize-2',
+    position: 2,
+    title: 'Второй приз',
+  });
+
+  return {
+    id: 'winner-2',
+    giveawayId: 'giveaway-1',
+    prizeId: prize.id,
+    entryId: entry.id,
+    rank: 2,
+    status: ManagedGiveawayWinnerStatus.SELECTED,
+    claimDeadlineAt: new Date('2026-03-23T12:00:00.000Z'),
+    claimedAt: null,
+    deliveredAt: null,
+    expiredAt: null,
+    rerolledAt: null,
+    selectedAt: new Date('2026-03-21T12:05:00.000Z'),
+    createdAt: new Date('2026-03-21T12:05:00.000Z'),
+    updatedAt: new Date('2026-03-21T12:05:00.000Z'),
+    prize,
+    entry,
+    ...overrides,
+  };
+}
+
 describe('ManagedGiveawayService', () => {
   const user = {
     userId: 'user-1',
@@ -599,8 +632,32 @@ describe('ManagedGiveawayService', () => {
       }),
     );
 
-    expect(selectedText).toContain('1. [CEO](max://user/winner-1)');
-    expect(confirmedText).toContain('1. [CEO](max://user/winner-1)');
+    expect(selectedText).toContain('🏆 Победитель:\n\n1. [CEO](max://user/winner-1)');
+    expect(confirmedText).toContain('🏆 Победитель:\n\n1. [CEO](max://user/winner-1)');
+  });
+
+  it('uses plural winner heading when multiple prizes are awarded', () => {
+    const service = new ManagedGiveawayService(
+      createPrismaMock() as never,
+      createMaxClientMock() as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+
+    const text = (service as any).buildGiveawayResultsText(
+      createGiveaway({
+        status: ManagedGiveawayStatus.COMPLETED,
+        publicationMessageId: 'publication-1',
+        winners: [
+          createWinner({ status: ManagedGiveawayWinnerStatus.SELECTED }),
+          createSecondWinner({ status: ManagedGiveawayWinnerStatus.SELECTED }),
+        ],
+      }),
+    );
+
+    expect(text).toContain('🏆 Победители:\n\n1. [CEO](max://user/winner-1)');
+    expect(text).toContain('2. [CTO](max://user/winner-2)');
   });
 
   it('keeps winner mention as a hyperlink when refreshing an existing results post', async () => {

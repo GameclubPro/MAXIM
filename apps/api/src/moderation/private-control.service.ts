@@ -7579,8 +7579,9 @@ export class PrivateControlService {
   ): { open: string; close: string; priority: number } | null {
     switch (markup.type) {
       case 'strong':
-      case 'heading':
         return { open: '**', close: '**', priority: 20 };
+      case 'heading':
+        return { open: '# ', close: '', priority: 5 };
       case 'emphasized':
         return { open: '_', close: '_', priority: 30 };
       case 'underline':
