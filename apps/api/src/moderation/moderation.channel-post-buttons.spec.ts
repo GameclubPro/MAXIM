@@ -48,6 +48,14 @@ function createConfigMock() {
   };
 }
 
+function createAdminServiceMock() {
+  return {
+    buildChannelSuggestionCallbackPayload: jest.fn(
+      (chatId: string, threadId: string) => `cds-${chatId}:${threadId}`,
+    ),
+  };
+}
+
 describe('ModerationService channel auto post buttons', () => {
   it('auto-attaches buttons to a fresh admin post in a managed channel', async () => {
     const prisma = {
@@ -85,6 +93,7 @@ describe('ModerationService channel auto post buttons', () => {
       banMember: jest.fn(),
       notifyModerators: jest.fn(),
     };
+    const adminService = createAdminServiceMock();
 
     const service = new ModerationService(
       prisma as never,
@@ -94,6 +103,9 @@ describe('ModerationService channel auto post buttons', () => {
       undefined,
       undefined,
       createConfigMock() as never,
+      undefined,
+      undefined,
+      adminService as never,
     );
 
     await service.handleUpdate(createChannelPostUpdate());
@@ -113,12 +125,17 @@ describe('ModerationService channel auto post buttons', () => {
           ],
           [
             expect.objectContaining({
-              type: 'link',
+              type: 'callback',
               text: '📰 Предложить пост',
+              payload: expect.stringMatching(/^cds-channel-1:/),
             }),
           ],
         ],
       }),
+    );
+    expect(adminService.buildChannelSuggestionCallbackPayload).toHaveBeenCalledWith(
+      'channel-1',
+      expect.any(String),
     );
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -281,6 +298,7 @@ describe('ModerationService channel auto post buttons', () => {
       banMember: jest.fn(),
       notifyModerators: jest.fn(),
     };
+    const adminService = createAdminServiceMock();
 
     const service = new ModerationService(
       prisma as never,
@@ -290,6 +308,9 @@ describe('ModerationService channel auto post buttons', () => {
       undefined,
       undefined,
       createConfigMock() as never,
+      undefined,
+      undefined,
+      adminService as never,
     );
 
     await service.handleUpdate(createChannelPostUpdate());
@@ -299,7 +320,15 @@ describe('ModerationService channel auto post buttons', () => {
       'mid-channel-1',
       'Новый пост в канале',
       expect.objectContaining({
-        buttons: [[expect.objectContaining({ text: '📰 Предложить пост' })]],
+        buttons: [
+          [
+            expect.objectContaining({
+              type: 'callback',
+              text: '📰 Предложить пост',
+              payload: expect.stringMatching(/^cds-channel-1:/),
+            }),
+          ],
+        ],
       }),
     );
   });
@@ -351,6 +380,7 @@ describe('ModerationService channel auto post buttons', () => {
       banMember: jest.fn(),
       notifyModerators: jest.fn(),
     };
+    const adminService = createAdminServiceMock();
 
     const service = new ModerationService(
       prisma as never,
@@ -360,6 +390,9 @@ describe('ModerationService channel auto post buttons', () => {
       undefined,
       undefined,
       createConfigMock() as never,
+      undefined,
+      undefined,
+      adminService as never,
     );
 
     await (service as any).processChannelAutoPostButtons();
@@ -400,7 +433,13 @@ describe('ModerationService channel auto post buttons', () => {
       expect.objectContaining({
         buttons: [
           [expect.objectContaining({ text: '💬 Комментарии · 0' })],
-          [expect.objectContaining({ text: '📰 Предложить пост' })],
+          [
+            expect.objectContaining({
+              type: 'callback',
+              text: '📰 Предложить пост',
+              payload: expect.stringMatching(/^cds-channel-1:/),
+            }),
+          ],
         ],
         debugContext: {
           screen: 'channel-auto-post',

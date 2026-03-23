@@ -2458,6 +2458,10 @@ export class AdminService {
     return null;
   }
 
+  buildChannelSuggestionCallbackPayload(chatId: string, threadId: string): string {
+    return this.buildChannelSuggestionStartPayload(chatId, threadId);
+  }
+
   private async assertRequiredSubscriptionSettings(settings: ChatSettings): Promise<void> {
     if (!settings.requiredSubscriptionEnabled) {
       return;

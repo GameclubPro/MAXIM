@@ -7773,6 +7773,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     threadId: string,
     text: string,
   ): MaxMessageButton {
+    if (type === 'suggest' && this.adminService) {
+      return {
+        type: 'callback',
+        text,
+        payload: this.adminService.buildChannelSuggestionCallbackPayload(chatId, threadId),
+      };
+    }
+
     const botStartUrl =
       type === 'suggest'
         ? this.buildBotStartUrl(this.buildChannelDialogStartParam(chatId, type, threadId))
