@@ -379,6 +379,14 @@ type ChannelDialogTokenPayload = {
 
 type ChannelDialogMessageSource = 'miniapp_dialog' | 'private_bot';
 
+type ChannelSuggestionFromBotPayload = {
+  token: string;
+  text: string;
+  imageBase64: string | null;
+  imageMimeType: string | null;
+  imageFileName: string | null;
+};
+
 type ProfileMentionStartPayload = {
   v: 1;
   k: 'profile-mention';
@@ -1667,13 +1675,49 @@ export class AdminService {
     user: AuthUser,
     body: unknown,
   ) {
-    return this.createChannelDialogMessageInternal(
-      chatId,
-      user,
-      'suggest',
-      body,
-      'private_bot',
-    );
+    const parsed = this.parseChannelSuggestionFromBotPayload(body);
+    const threadId = this.resolveChannelDialogThreadId(chatId, 'suggest', parsed.token);
+    const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
+    const authorAvatarUrl = this.readTrimmedString(user.avatarUrl);
+    const channelSettings = await this.getPublicChannelSettings(chatId);
+
+    if (!channelSettings.postSuggestionsEnabled && !threadId) {
+      throw new BadRequestException('Предложить пост для этого канала сейчас нельзя.');
+    }
+
+    const delivery = await this.deliverSuggestionToAdminPrivate(chatId, user, {
+      text: parsed.text,
+      imageBase64: parsed.imageBase64,
+      imageMimeType: parsed.imageMimeType,
+      imageFileName: parsed.imageFileName,
+    });
+
+    await this.prisma.auditLog.create({
+      data: {
+        chatId,
+        actorUserId: user.userId,
+        action: CHANNEL_DIALOG_ACTION_SUGGEST,
+        payload: {
+          type: 'suggest',
+          threadId,
+          text: parsed.text,
+          authorDisplayName: authorDisplayName ?? null,
+          authorAvatarUrl: authorAvatarUrl ?? null,
+          delivered: delivery.delivered,
+          deliveredToUserId: delivery.deliveredToUserId,
+          source: 'private_bot',
+          hasImage: Boolean(parsed.imageBase64),
+          imageMimeType: parsed.imageMimeType,
+          imageFileName: parsed.imageFileName,
+        },
+      },
+    });
+
+    return {
+      ok: true,
+      delivered: delivery.delivered,
+      deliveredToUserId: delivery.deliveredToUserId,
+    } as const;
   }
 
   private async createChannelDialogMessageInternal(
@@ -1722,7 +1766,9 @@ export class AdminService {
     let delivered = true;
     let deliveredToUserId: string | null = null;
     if (dialogType === 'suggest') {
-      const delivery = await this.deliverSuggestionToAdminPrivate(chatId, user, text);
+      const delivery = await this.deliverSuggestionToAdminPrivate(chatId, user, {
+        text,
+      });
       delivered = delivery.delivered;
       deliveredToUserId = delivery.deliveredToUserId;
     }
@@ -8078,7 +8124,12 @@ export class AdminService {
   private async deliverSuggestionToAdminPrivate(
     chatId: string,
     user: AuthUser,
-    text: string,
+    suggestion: {
+      text: string;
+      imageBase64?: string | null;
+      imageMimeType?: string | null;
+      imageFileName?: string | null;
+    },
   ): Promise<{ delivered: boolean; deliveredToUserId: string | null }> {
     const adminIds = Array.from(
       new Set(
@@ -8094,14 +8145,15 @@ export class AdminService {
 
     const channelTitle = await this.resolveChannelTitle(chatId);
     const actorName = user.displayName?.trim() || user.username?.trim() || `user:${user.userId}`;
+    const normalizedText = suggestion.text.trim();
     const message = [
       'Новая предложка поста',
       '',
       `Канал: ${channelTitle}`,
       `Отправитель: ${actorName} (${user.userId})`,
-      '',
-      text,
+      ...(normalizedText ? ['', normalizedText] : []),
     ].join('\n');
+    const uploadedImagePayload = await this.uploadChannelSuggestionImage(suggestion);
 
     for (const adminUserId of adminIds) {
       const privateChatId = await this.findLatestPrivateChatIdForUser(adminUserId);
@@ -8110,7 +8162,12 @@ export class AdminService {
       }
 
       try {
-        await this.maxClient.sendMessage(privateChatId, message, undefined, { immediate: true });
+        await this.maxClient.sendMessage(
+          privateChatId,
+          message,
+          uploadedImagePayload ? { imagePayload: uploadedImagePayload } : undefined,
+          { immediate: true },
+        );
         return { delivered: true, deliveredToUserId: adminUserId };
       } catch (error: unknown) {
         this.logger.warn(
@@ -8126,6 +8183,86 @@ export class AdminService {
     }
 
     return { delivered: false, deliveredToUserId: null };
+  }
+
+  private parseChannelSuggestionFromBotPayload(body: unknown): ChannelSuggestionFromBotPayload {
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new BadRequestException('Некорректная предложка.');
+    }
+
+    const row = body as Record<string, unknown>;
+    const token = this.readTrimmedString(row.token);
+    if (!token || token.length < 16 || token.length > 256) {
+      throw new BadRequestException('Неверный токен предложки.');
+    }
+
+    const text = this.readTrimmedString(row.text) ?? '';
+    if (text.length > 2_000) {
+      throw new BadRequestException('Текст предложки слишком длинный.');
+    }
+
+    const imageBase64 = this.readTrimmedString(row.imageBase64);
+    const imageMimeType = this.readTrimmedString(row.imageMimeType);
+    const imageFileName = this.readTrimmedString(row.imageFileName);
+
+    if (!text && !imageBase64) {
+      throw new BadRequestException('Пришлите текст, фото или фото с подписью.');
+    }
+
+    if (imageBase64 && (!imageMimeType || !imageMimeType.toLowerCase().startsWith('image/'))) {
+      throw new BadRequestException('Фото предложки передано в неверном формате.');
+    }
+
+    return {
+      token,
+      text,
+      imageBase64,
+      imageMimeType,
+      imageFileName,
+    };
+  }
+
+  private async uploadChannelSuggestionImage(suggestion: {
+    imageBase64?: string | null;
+    imageMimeType?: string | null;
+    imageFileName?: string | null;
+  }): Promise<Record<string, unknown> | undefined> {
+    const imageBase64 = suggestion.imageBase64?.trim() ?? '';
+    if (!imageBase64) {
+      return undefined;
+    }
+
+    const mimeType = suggestion.imageMimeType?.trim().toLowerCase() || 'image/jpeg';
+    if (!mimeType.startsWith('image/')) {
+      throw new BadRequestException('Фото предложки передано в неверном формате.');
+    }
+
+    let imageBuffer: Buffer;
+    try {
+      imageBuffer = Buffer.from(imageBase64, 'base64');
+    } catch {
+      throw new BadRequestException('Не удалось прочитать фото предложки.');
+    }
+
+    if (imageBuffer.length === 0) {
+      throw new BadRequestException('Фото предложки оказалось пустым.');
+    }
+
+    const fileName =
+      this.readTrimmedString(suggestion.imageFileName) || this.resolveBroadcastImageFileName('', mimeType);
+
+    try {
+      return await this.maxClient.uploadImage(imageBuffer, fileName, mimeType);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          err: error instanceof Error ? error.message : String(error),
+          mimeType,
+        },
+        'Failed to upload channel suggestion image',
+      );
+      throw new BadRequestException('Не удалось загрузить фото предложки.');
+    }
   }
 
   private async findLatestPrivateChatIdForUser(userId: string): Promise<string | null> {

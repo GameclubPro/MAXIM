@@ -1962,6 +1962,10 @@ export class PrivateControlService {
       session.pendingInput &&
       session.pendingInput.kind !== 'broadcast_content' &&
       session.pendingInput.kind !== 'giveaway_content' &&
+      !(
+        session.pendingInput.kind === 'channel_suggestion' &&
+        callback.action === 'suggest_help'
+      ) &&
       callback.action !== 'input_cancel'
     ) {
       const view = this.renderInputPrompt(session.pendingInput);
@@ -2058,6 +2062,19 @@ export class PrivateControlService {
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Открываю помощь',
+        });
+        return;
+      }
+
+      case 'suggest_help': {
+        if (session.pendingInput?.kind !== 'channel_suggestion') {
+          throw new BadRequestException('Подсказка доступна только внутри предложки.');
+        }
+
+        const view = this.renderChannelSuggestionHelpView();
+        await this.respond(context, session, view, {
+          callbackId: context.callbackId,
+          notification: 'Подсказка открыта',
         });
         return;
       }
@@ -3682,7 +3699,17 @@ export class PrivateControlService {
       }
 
       case 'input_cancel': {
+        const canceledInput = session.pendingInput;
         session.pendingInput = null;
+        if (canceledInput?.kind === 'channel_suggestion') {
+          const view = this.renderChannelSuggestionCancelledView();
+          await this.respond(context, session, view, {
+            callbackId: context.callbackId,
+            notification: 'Предложка закрыта',
+          });
+          return;
+        }
+
         if (session.screen === 'channel_section' && session.channelSection) {
           const view = await this.renderChannelSectionScreen(
             context,
@@ -4070,29 +4097,38 @@ export class PrivateControlService {
         const fileAttachment = this.extractFirstFileAttachment(context.update);
         const hasVideoAttachment = this.hasVideoAttachment(context.update);
 
-        if (imageSourceAttachment || fileAttachment || hasVideoAttachment) {
+        if (hasVideoAttachment || (fileAttachment && !imageSourceAttachment)) {
           throw new BadRequestException(
-            'Сейчас через предложку можно отправить только текст. Пришлите текст поста, ссылки и пояснение одним сообщением.',
+            'Сейчас через предложку можно отправить текст, фото или фото с подписью. Видео и произвольные файлы не поддерживаются.',
           );
         }
 
-        if (!rawText) {
-          throw new BadRequestException('Пришлите текст поста одним сообщением.');
+        if (!rawText && !imageSourceAttachment) {
+          throw new BadRequestException('Пришлите текст поста, фото или фото с подписью.');
         }
 
+        const downloadedImage = imageSourceAttachment
+          ? await this.downloadImageSourceAttachment(imageSourceAttachment, 'channel-suggestion')
+          : null;
         const result = await this.adminService.createChannelSuggestionFromBot(
           pendingInput.chatId,
           context.actor,
           {
             token: pendingInput.token,
             text: rawText,
+            ...(downloadedImage
+              ? {
+                  imageBase64: downloadedImage.base64,
+                  imageMimeType: downloadedImage.mimeType,
+                  imageFileName: downloadedImage.fileName,
+                }
+              : {}),
           },
         );
 
-        const view =
-          result.message.delivered === false
-            ? this.renderChannelSuggestionQueuedView()
-            : this.renderChannelSuggestionSubmittedView();
+        const view = result.delivered
+          ? this.renderChannelSuggestionSubmittedView()
+          : this.renderChannelSuggestionQueuedView();
         await this.respond(context, session, view, {
           callbackId: null,
           notification: null,
@@ -7150,11 +7186,13 @@ export class PrivateControlService {
       text: [
         this.markdownTitle('Предложка'),
         '',
-        'Пришлите текст поста одним сообщением.',
+        'Отправьте одним сообщением текст, фото или фото с подписью.',
         'Администраторы проверят материал и, если он подойдёт, опубликуют его в канале.',
-        '',
-        'Чтобы выйти из предложки, отправьте `Отмена`.',
+        'Если нужен ориентир, нажмите «Что отправить».',
       ].join('\n'),
+      options: {
+        buttons: this.buildChannelSuggestionButtons(),
+      },
     };
   }
 
@@ -7166,8 +7204,11 @@ export class PrivateControlService {
         'Передал её администраторам на проверку.',
         'Если материал подойдёт, его опубликуют в канале.',
         '',
-        'Можете отправить ещё один вариант или напишите `Отмена`.',
+        'Можете сразу прислать ещё один вариант.',
       ].join('\n'),
+      options: {
+        buttons: this.buildChannelSuggestionButtons(),
+      },
     };
   }
 
@@ -7179,8 +7220,28 @@ export class PrivateControlService {
         'Сообщение записал, но сейчас не удалось сразу доставить его в личку администраторам.',
         'Они всё равно смогут забрать материал на проверку позже.',
         '',
-        'Можете отправить ещё один вариант или напишите `Отмена`.',
+        'Можно сразу отправить ещё один вариант.',
       ].join('\n'),
+      options: {
+        buttons: this.buildChannelSuggestionButtons(),
+      },
+    };
+  }
+
+  private renderChannelSuggestionHelpView(): PrivateView {
+    return {
+      text: [
+        this.markdownTitle('Что лучше прислать'),
+        '',
+        '1. Готовый текст поста или короткий черновик.',
+        '2. Фото, если оно важно для публикации.',
+        '3. Ссылку и 1-2 строки контекста, если нужен источник.',
+        '',
+        'Фото без текста тоже подойдёт.',
+      ].join('\n'),
+      options: {
+        buttons: this.buildChannelSuggestionButtons(),
+      },
     };
   }
 
@@ -7192,6 +7253,15 @@ export class PrivateControlService {
         'Если захотите отправить материал позже, снова нажмите кнопку под постом.',
       ].join('\n'),
     };
+  }
+
+  private buildChannelSuggestionButtons(): MaxMessageButton[][] {
+    return [
+      [
+        this.callbackButton('Что отправить', this.cb('suggest_help')),
+        this.callbackButton('Отмена', this.cb('input_cancel'), 'negative'),
+      ],
+    ];
   }
 
   private renderMassActionConfirmation(pendingMassAction: PendingMassAction): PrivateView {
@@ -7342,7 +7412,7 @@ export class PrivateControlService {
         return {
           title: 'Предложка',
           description:
-            'Пришлите текст поста, ссылки и пояснение одним сообщением. Чтобы выйти из режима, отправьте `Отмена`.',
+            'Отправьте одним сообщением текст, фото или фото с подписью. Для деталей нажмите «Что отправить», для выхода используйте `Отмена`.',
         };
       case 'giveaway_title':
         return {

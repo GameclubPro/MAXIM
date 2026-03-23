@@ -627,19 +627,8 @@ function createHarness(
       .mockResolvedValue(overrides.channelSettings ?? defaultChannelSettings),
     createChannelSuggestionFromBot: jest.fn().mockResolvedValue({
       ok: true,
-      message: {
-        id: 'suggestion-1',
-        type: 'suggest',
-        text: 'Тестовая предложка',
-        authorUserId: 'user-1',
-        authorDisplayName: 'Тестовый пользователь',
-        isAdmin: false,
-        avatarUrl: null,
-        createdAt: new Date('2026-03-23T09:00:00.000Z').toISOString(),
-        reactionGroups: [],
-        delivered: true,
-        deliveredToUserId: 'admin-1',
-      },
+      delivered: true,
+      deliveredToUserId: 'admin-1',
     }),
     publishChannelEngagementMessage: jest.fn().mockResolvedValue(undefined),
     ...overrides.adminService,
@@ -1793,8 +1782,15 @@ describe('PrivateControlService', () => {
     await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
 
     expect(getLastSentText(maxClient)).toContain('Предложка');
-    expect(getLastSentText(maxClient)).toContain('Пришлите текст поста одним сообщением.');
+    expect(getLastSentText(maxClient)).toContain(
+      'Отправьте одним сообщением текст, фото или фото с подписью.',
+    );
     expect(getLastSentText(maxClient)).toContain('Администраторы проверят материал');
+    const introButtons = getLastButtons(maxClient)
+      .flat()
+      .map((button) => String((button as { text?: string }).text ?? ''));
+    expect(introButtons).toContain('Что отправить');
+    expect(introButtons).toContain('Отмена');
 
     await service.handleUpdate(createPrivateTextUpdate('Текст для публикации'));
 
@@ -1810,17 +1806,30 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).toContain('Передал её администраторам на проверку.');
   });
 
-  it('asks for text when a user sends media-only content into the bot suggestion flow', async () => {
+  it('accepts a photo-only suggestion in the bot flow', async () => {
     const { service, adminService, maxClient, channels } = createHarness();
     const startPayload = encodeChannelSuggestionStartPayload(channels[0].id, 'cdt-suggest-token-2');
+    const imageMock = mockImageFetch();
 
-    await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
-    await service.handleUpdate(createPrivatePhotoUpdate());
+    try {
+      await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
+      await service.handleUpdate(createPrivatePhotoUpdate());
+    } finally {
+      imageMock.restore();
+    }
 
-    expect(adminService.createChannelSuggestionFromBot).not.toHaveBeenCalled();
-    expect(getLastSentText(maxClient)).toContain(
-      'Сейчас через предложку можно отправить только текст.',
+    expect(adminService.createChannelSuggestionFromBot).toHaveBeenCalledWith(
+      channels[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        token: 'cdt-suggest-token-2',
+        text: '',
+        imageBase64: expect.any(String),
+        imageMimeType: expect.stringMatching(/^image\//),
+        imageFileName: expect.stringContaining('channel-suggestion'),
+      }),
     );
+    expect(getLastSentText(maxClient)).toContain('Спасибо, предложка получена');
   });
 
   it('shows only channel discussion status on the handoff broadcast screen without footer links', async () => {

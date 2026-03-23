@@ -6317,6 +6317,95 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
+  it('delivers bot-submitted suggestions with photo to admins as an image message', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue({
+      postSuggestionsEnabled: false,
+    });
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        recipient_chat_id: '555001',
+      },
+    ]);
+    prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+      id: 'suggestion-3',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-10T12:12:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-7', url: null }),
+      uploadImage: jest.fn().mockResolvedValue({ token: 'upload-suggest-1' }),
+      sendMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const suggestToken = await publishSuggestDialogToken(service, maxClient);
+
+    await service.createChannelSuggestionFromBot(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      {
+        token: suggestToken,
+        text: '',
+        imageBase64:
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
+        imageMimeType: 'image/png',
+        imageFileName: 'suggestion.png',
+      },
+    );
+
+    expect(maxClient.uploadImage).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      'suggestion.png',
+      'image/png',
+    );
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      '555001',
+      expect.stringContaining('Новая предложка поста'),
+      expect.objectContaining({
+        imagePayload: { token: 'upload-suggest-1' },
+      }),
+      { immediate: true },
+    );
+    expect(prisma.auditLog.create).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            source: 'private_bot',
+            hasImage: true,
+            imageMimeType: 'image/png',
+            imageFileName: 'suggestion.png',
+          }),
+        }),
+      }),
+    );
+  });
+
   it('updates the existing published engagement post instead of creating a new one', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
