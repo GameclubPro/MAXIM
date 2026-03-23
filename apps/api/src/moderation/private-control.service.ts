@@ -6426,7 +6426,10 @@ export class PrivateControlService {
 
   private buildBroadcastCompletionNotice(result: SendBroadcastResult): string {
     if (result.sentChats === 0 && result.nextSendAt) {
-      return `Будет опубликовано: ${this.formatDateTimeLabel(result.nextSendAt)}.`;
+      return `Будет опубликовано: ${this.formatDateTimeLabel(
+        result.nextSendAt,
+        result.scheduleTimezone,
+      )}.`;
     }
 
     if (result.failedChats > 0) {
@@ -6434,7 +6437,10 @@ export class PrivateControlService {
     }
 
     if (result.nextSendAt && result.scheduledOccurrences > 0) {
-      return `Опубликовано. Следующий слот: ${this.formatDateTimeLabel(result.nextSendAt)}.`;
+      return `Опубликовано. Следующий слот: ${this.formatDateTimeLabel(
+        result.nextSendAt,
+        result.scheduleTimezone,
+      )}.`;
     }
 
     return 'Опубликовано без ошибок.';
@@ -6442,11 +6448,17 @@ export class PrivateControlService {
 
   private buildBroadcastSuccessMessage(result: SendBroadcastResult): string {
     if (result.sentChats === 0 && result.nextSendAt) {
-      return `✅ Всё успешно. Рассылка запланирована на ${this.formatDateTimeLabel(result.nextSendAt)}.`;
+      return `✅ Всё успешно. Рассылка запланирована на ${this.formatDateTimeLabel(
+        result.nextSendAt,
+        result.scheduleTimezone,
+      )}.`;
     }
 
     if (result.nextSendAt && result.scheduledOccurrences > 0) {
-      return `✅ Всё успешно. Первый слот отправлен, следующий: ${this.formatDateTimeLabel(result.nextSendAt)}.`;
+      return `✅ Всё успешно. Первый слот отправлен, следующий: ${this.formatDateTimeLabel(
+        result.nextSendAt,
+        result.scheduleTimezone,
+      )}.`;
     }
 
     return '✅ Всё успешно. Рассылка отправлена без ошибок.';
@@ -10264,38 +10276,52 @@ export class PrivateControlService {
     return value.replace(/([\\_*[\]()`])/g, '\\$1');
   }
 
-  private formatIsoDate(iso: string): string {
+  private formatIsoDate(iso: string, timeZone?: string | null): string {
     const date = new Date(iso);
     if (Number.isNaN(date.getTime())) {
       return iso;
     }
 
-    return new Intl.DateTimeFormat('ru-RU', {
+    const formatterOptions: Intl.DateTimeFormatOptions = {
       day: '2-digit',
       month: '2-digit',
       year: 'numeric',
       hour: '2-digit',
       minute: '2-digit',
       hour12: false,
-    }).format(date);
+      ...(timeZone?.trim() ? { timeZone: timeZone.trim() } : {}),
+    };
+
+    try {
+      return new Intl.DateTimeFormat('ru-RU', formatterOptions).format(date);
+    } catch {
+      return new Intl.DateTimeFormat('ru-RU', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false,
+      }).format(date);
+    }
   }
 
-  private formatDateTimeLabel(iso: string | null): string {
+  private formatDateTimeLabel(iso: string | null, timeZone?: string | null): string {
     if (!iso) {
       return 'не задано';
     }
 
-    return this.formatIsoDate(iso);
+    return this.formatIsoDate(iso, timeZone);
   }
 
-  private formatBroadcastCalendarSummary(slots: string[]): string {
+  private formatBroadcastCalendarSummary(slots: string[], timeZone?: string | null): string {
     if (slots.length === 0) {
       return 'не настроен';
     }
 
     const preview = slots
       .slice(0, 3)
-      .map((slot) => this.formatIsoDate(slot))
+      .map((slot) => this.formatIsoDate(slot, timeZone))
       .join(' • ');
     const extraCount = slots.length - 3;
     return extraCount > 0 ? `${preview} • +${extraCount}` : preview;

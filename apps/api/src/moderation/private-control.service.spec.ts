@@ -1445,6 +1445,34 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).toContain('Рассылка отправлена без ошибок.');
   });
 
+  it('formats scheduled broadcast time in the broadcast timezone for private bot messages', async () => {
+    const { service, maxClient, channels } = createHarness({
+      adminService: {
+        sendChannelBroadcast: jest.fn().mockResolvedValue({
+          targetChats: 1,
+          sentChats: 0,
+          failedChats: 0,
+          nextSendAt: '2026-03-24T12:00:00.000Z',
+          scheduleTimezone: 'Asia/Yekaterinburg',
+          scheduledOccurrences: 1,
+        }),
+      },
+    });
+
+    await service.handleUpdate(
+      createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
+    );
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
+    await service.handleUpdate(createPrivateTextUpdate('Пост по расписанию'));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+
+    expect(getLastEditedText(maxClient)).toContain('Будет опубликовано: 24.03.2026, 17:00.');
+    expect(getLastSentText(maxClient)).toContain(
+      '✅ Всё успешно. Рассылка запланирована на 24.03.2026, 17:00.',
+    );
+  });
+
   it('preserves incoming MAX text markup when sending broadcast from private bot', async () => {
     const { service, adminService, maxClient, channels } = createHarness();
 

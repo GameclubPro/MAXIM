@@ -50,6 +50,7 @@ import {
   applySettingsSectionToAll,
   cancelManagedBroadcast,
   getBroadcastHandoffState,
+  getManagedBroadcast,
   getSettingsScreen,
   handoffBroadcast,
   handoffRules,
@@ -840,7 +841,11 @@ function parseIsoToLocalDateTime(value: string | null): { date: string; time: st
   };
 }
 
-function formatRemovalDateTime(value: string | null): string {
+function formatDateTimeInTimeZone(
+  value: string | null,
+  options: Intl.DateTimeFormatOptions,
+  timeZone?: string | null,
+): string {
   if (!value) {
     return '';
   }
@@ -850,31 +855,45 @@ function formatRemovalDateTime(value: string | null): string {
     return '';
   }
 
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(parsed);
+  const formatterOptions: Intl.DateTimeFormatOptions = {
+    ...options,
+    ...(timeZone?.trim() ? { timeZone: timeZone.trim() } : {}),
+  };
+
+  try {
+    return new Intl.DateTimeFormat('ru-RU', formatterOptions).format(parsed);
+  } catch {
+    return new Intl.DateTimeFormat('ru-RU', options).format(parsed);
+  }
 }
 
-function formatCompactBroadcastDateTime(value: string | null): string {
-  if (!value) {
-    return '';
-  }
+function formatRemovalDateTime(value: string | null, timeZone?: string | null): string {
+  return formatDateTimeInTimeZone(
+    value,
+    {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    },
+    timeZone,
+  );
+}
 
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    return '';
-  }
-
-  return new Intl.DateTimeFormat('ru-RU', {
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(parsed);
+function formatCompactBroadcastDateTime(value: string | null, timeZone?: string | null): string {
+  return formatDateTimeInTimeZone(
+    value,
+    {
+      day: '2-digit',
+      month: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    },
+    timeZone,
+  );
 }
 
 function formatRussianCountLabel(
@@ -926,6 +945,7 @@ function formatBroadcastCountdownValue(remainingMs: number): string {
 function resolveBroadcastCountdown(
   nextSendAt: string | null,
   nowMs: number,
+  scheduleTimezone?: string | null,
 ): BroadcastCountdownPresentation | null {
   if (!nextSendAt) {
     return null;
@@ -939,7 +959,7 @@ function resolveBroadcastCountdown(
   return {
     label: 'До отправки',
     value: formatBroadcastCountdownValue(targetMs - nowMs),
-    caption: formatCompactBroadcastDateTime(nextSendAt),
+    caption: formatCompactBroadcastDateTime(nextSendAt, scheduleTimezone),
   };
 }
 
@@ -994,7 +1014,11 @@ function resolveManagedBroadcastMetric(
   broadcast: ManagedBroadcastListItem,
   nowMs: number,
 ): BroadcastCountdownPresentation & { tone: ManagedBroadcastCardTone } {
-  const countdown = resolveBroadcastCountdown(broadcast.nextSendAt, nowMs);
+  const countdown = resolveBroadcastCountdown(
+    broadcast.nextSendAt,
+    nowMs,
+    broadcast.scheduleTimezone,
+  );
   if (countdown && (broadcast.status === 'ACTIVE' || broadcast.status === 'PARTIAL')) {
     return {
       ...countdown,
@@ -1438,6 +1462,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [mailingImageMimeType, setMailingImageMimeType] = useState('');
   const [mailingImageFileName, setMailingImageFileName] = useState('');
   const [mailingScheduledSlots, setMailingScheduledSlots] = useState<string[]>([]);
+  const [mailingScheduleTimezone, setMailingScheduleTimezone] = useState(() =>
+    resolveBroadcastScheduleTimezone(),
+  );
   const [mailingBotHasContent, setMailingBotHasContent] = useState(false);
   const [, setMailingScheduleEnabled] = useState(false);
   const [, setMailingScheduleDays] = useState(0);
@@ -1541,6 +1568,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageMimeType('');
     setMailingImageFileName('');
     setMailingScheduledSlots([]);
+    setMailingScheduleTimezone(resolveBroadcastScheduleTimezone());
     setMailingBotHasContent(false);
     setMailingScheduleEnabled(false);
     setMailingScheduleDays(0);
@@ -1760,6 +1788,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingButtonText(broadcastHandoffStateQuery.data.buttonText || 'Открыть');
     setMailingScheduledSlots(
       sortAndUniqueBroadcastSlots(broadcastHandoffStateQuery.data.scheduledSlots),
+    );
+    setMailingScheduleTimezone(
+      broadcastHandoffStateQuery.data.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
     );
     setMailingBotHasContent(broadcastHandoffStateQuery.data.hasContent);
     setMailingText('');
@@ -2255,7 +2286,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         tone: broadcast.status === 'FAILED' ? 'info' : 'success',
         title: 'Рассылка обновлена',
         description: broadcast.nextSendAt
-          ? `Следующая отправка: ${formatRemovalDateTime(broadcast.nextSendAt)}.`
+          ? `Следующая отправка: ${formatRemovalDateTime(
+              broadcast.nextSendAt,
+              broadcast.scheduleTimezone,
+            )}.`
           : 'Изменения сохранены.',
       });
     },
@@ -2301,7 +2335,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             ? 'Часть чатов все еще с ошибкой'
             : 'Повтор выполнен',
         description: broadcast.nextSendAt
-          ? `Следующая отправка: ${formatRemovalDateTime(broadcast.nextSendAt)}.`
+          ? `Следующая отправка: ${formatRemovalDateTime(
+              broadcast.nextSendAt,
+              broadcast.scheduleTimezone,
+            )}.`
           : 'Ошибка закрыта.',
       });
     },
@@ -2309,6 +2346,53 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       pushToast({
         tone: 'danger',
         title: 'Не удалось повторить рассылку',
+        description: formatApiError(error),
+      });
+    },
+  });
+
+  const openManagedBroadcastEditorMutation = useMutation({
+    mutationFn: (broadcastId: string) => getManagedBroadcast(api, chatId ?? '', broadcastId),
+    onSuccess: (broadcast) => {
+      setEditingManagedBroadcast(broadcast);
+      setMailingApplyToAllChats(broadcast.applyToAllChats && canApplyToAllChats);
+      setMailingText(broadcast.text);
+      setMailingBotHasContent(false);
+      setMailingButtonEnabled(broadcast.buttonEnabled);
+      setMailingButtonUrl(broadcast.buttonUrl);
+      setMailingButtonText(broadcast.buttonText || 'Открыть');
+      setMailingImageEnabled(broadcast.imageEnabled);
+      setMailingImageBase64(broadcast.imageBase64);
+      setMailingImageMimeType(broadcast.imageMimeType);
+      setMailingImageFileName(broadcast.imageFileName);
+      setMailingScheduledSlots(sortAndUniqueBroadcastSlots(broadcast.scheduledSlots));
+      setMailingScheduleTimezone(
+        broadcast.scheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
+      );
+      setMailingTextError('');
+      setMailingButtonUrlError('');
+      setMailingButtonTextError('');
+      setMailingImageError('');
+      setMailingScheduleError('');
+      setMailingCycleError('');
+      resetMailingPlanner();
+      setMailingWorkspaceView('compose');
+      setExpandedSections((current) => ({ ...current, mailing: true }));
+      pushToast({
+        tone: 'info',
+        title: 'Редактирование рассылки',
+        description: broadcast.nextSendAt
+          ? `Следующая отправка: ${formatRemovalDateTime(
+              broadcast.nextSendAt,
+              broadcast.scheduleTimezone,
+            )}.`
+          : 'Измените время и сохраните рассылку.',
+      });
+    },
+    onError: (error) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось открыть рассылку',
         description: formatApiError(error),
       });
     },
@@ -2933,6 +3017,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setMailingImageMimeType('');
     setMailingImageFileName('');
     setMailingScheduledSlots([]);
+    setMailingScheduleTimezone(resolveBroadcastScheduleTimezone());
     setMailingScheduleEnabled(false);
     setMailingScheduleDays(0);
     setMailingScheduleTime(toLocalTimeInputValue(new Date(Date.now() + BROADCAST_HOUR_MS)));
@@ -2957,7 +3042,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    const nextSendLabel = formatCompactBroadcastDateTime(broadcast.nextSendAt);
+    const nextSendLabel = formatCompactBroadcastDateTime(
+      broadcast.nextSendAt,
+      broadcast.scheduleTimezone,
+    );
     const confirmationText = [
       'Удалить рассылку?',
       nextSendLabel ? `Следующая отправка: ${nextSendLabel}.` : null,
@@ -2971,6 +3059,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     cancelManagedBroadcastMutation.mutate(broadcast.id);
+  }
+
+  function handleEditManagedBroadcast(broadcast: ManagedBroadcastListItem) {
+    if (!chatId || openManagedBroadcastEditorMutation.isPending) {
+      return;
+    }
+
+    openManagedBroadcastEditorMutation.mutate(broadcast.id);
   }
 
   function validateMailingButtonDraft() {
@@ -3011,28 +3107,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       buttonUrl: normalizedButtonUrl,
       buttonText: normalizedButtonText || 'Открыть',
       scheduleMode: 'calendar',
-      scheduleTimezone: resolveBroadcastScheduleTimezone(),
+      scheduleTimezone: mailingScheduleTimezone.trim() || resolveBroadcastScheduleTimezone(),
       scheduledSlots,
       sendAt: null,
       cycleEnabled: false,
       cycleEveryHours: 1,
       cycleCount: Math.max(scheduledSlots.length, 1),
     };
-  }
-
-  function handleOpenMailingBot() {
-    if (!chatId || editingManagedBroadcast) {
-      return;
-    }
-
-    const buttonDraftValid = validateMailingButtonDraft();
-    setMailingScheduleError('');
-    setMailingCycleError('');
-    if (!buttonDraftValid) {
-      return;
-    }
-
-    handoffBroadcastMutation.mutate(buildMailingHandoffPayload());
   }
 
   function handleSendBroadcast() {
@@ -3487,8 +3568,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     ? resolveBroadcastCountdown(activeManagedBroadcast.nextSendAt, mailingNowMs)
     : null;
   const isUpdatingManagedBroadcast = updateManagedBroadcastMutation.isPending;
+  const isOpeningManagedBroadcastEditor = openManagedBroadcastEditorMutation.isPending;
   const isMailingBusy =
     handoffBroadcastMutation.isPending ||
+    isOpeningManagedBroadcastEditor ||
     isUpdatingManagedBroadcast ||
     cancelManagedBroadcastMutation.isPending ||
     retryManagedBroadcastMutation.isPending;
@@ -3560,11 +3643,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             ? 'Сохраняем...'
             : handoffBroadcastMutation.isPending
               ? 'Передаём в бота...'
-              : editingManagedBroadcast
-                ? 'Сохранить рассылку'
-                : mailingContentReady
-                  ? 'Открыть бота'
-                  : 'Передать в бота'}
+              : isOpeningManagedBroadcastEditor
+                ? 'Открываем...'
+                : editingManagedBroadcast
+                  ? 'Сохранить рассылку'
+                  : 'Открыть бота'}
         </button>
       </div>
     </>
@@ -8357,35 +8440,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                         {mailingWorkspaceView === 'compose' ? (
                           <div className="broadcast-compose-flow">
-                            {!editingManagedBroadcast ? (
-                              <div className="broadcast-stage-card broadcast-stage-card--content">
-                                <div className="broadcast-stage-card__head">
-                                  <div className="broadcast-stage-card__title-wrap">
-                                    <strong>Контент</strong>
-                                  </div>
-                                  <span
-                                    className={cn(
-                                      'broadcast-stage-card__status',
-                                      mailingContentReady ? 'is-ready' : 'is-pending',
-                                    )}
-                                  >
-                                    {mailingContentReady ? 'Готов' : 'Пусто'}
-                                  </span>
-                                </div>
-
-                                <div className="broadcast-stage-card__actions">
-                                  <button
-                                    type="button"
-                                    className="button button--accent"
-                                    onClick={handleOpenMailingBot}
-                                    disabled={isMailingBusy}
-                                  >
-                                    Открыть бота
-                                  </button>
-                                </div>
-                              </div>
-                            ) : null}
-
                             <div className="broadcast-stage-card">
                               <div className="broadcast-stage-card__head">
                                 <div className="broadcast-stage-card__title-wrap">
@@ -8608,9 +8662,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     mailingNowMs,
                                   );
                                   const cardFacts = buildManagedBroadcastFactChips(broadcast);
+                                  const canEditBroadcastSchedule =
+                                    broadcast.scheduleMode === 'calendar';
                                   const isDeletingBroadcast =
                                     cancelManagedBroadcastMutation.isPending &&
                                     cancelManagedBroadcastMutation.variables === broadcast.id;
+                                  const isOpeningBroadcastEditor =
+                                    openManagedBroadcastEditorMutation.isPending &&
+                                    openManagedBroadcastEditorMutation.variables === broadcast.id;
                                   const isRetryingBroadcast =
                                     retryManagedBroadcastMutation.isPending &&
                                     retryManagedBroadcastMutation.variables === broadcast.id;
@@ -8662,10 +8721,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                           </small>
                                         ) : null}
                                         <p className="managed-broadcast-card__note">
-                                          Удаление снимет будущие отправки и уберёт карточку из
-                                          списка.
+                                          {canEditBroadcastSchedule
+                                            ? 'Можно изменить время отправки или удалить рассылку.'
+                                            : 'Удаление снимет будущие отправки и уберёт карточку из списка.'}
                                         </p>
                                         <div className="managed-broadcast-card__actions">
+                                          {canEditBroadcastSchedule ? (
+                                            <button
+                                              type="button"
+                                              className="button button--ghost"
+                                              onClick={() => handleEditManagedBroadcast(broadcast)}
+                                              disabled={isMailingBusy}
+                                            >
+                                              {isOpeningBroadcastEditor
+                                                ? 'Открываем...'
+                                                : 'Изменить время'}
+                                            </button>
+                                          ) : null}
                                           {broadcast.canRetry ? (
                                             <button
                                               type="button"

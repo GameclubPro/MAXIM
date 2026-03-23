@@ -973,9 +973,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         >
           {handoffBroadcastMutation.isPending
             ? 'Передаём в бота...'
-            : broadcastContentReady
-              ? 'Открыть бота'
-              : 'Передать в бота'}
+            : 'Открыть бота'}
         </button>
       </div>
     </>
@@ -1081,16 +1079,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       cycleEveryHours: 1,
       cycleCount: Math.max(scheduledSlots.length, 1),
     };
-  }
-
-  function handleOpenChannelBroadcastBot() {
-    if (!validateBroadcastButtonDraft()) {
-      return;
-    }
-
-    setBroadcastScheduleError('');
-    setBroadcastCycleError('');
-    handoffBroadcastMutation.mutate(buildBroadcastHandoffPayload());
   }
 
   function handleSendChannelBroadcast() {
@@ -1426,33 +1414,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                   ) : null}
 
                   <div className="broadcast-compose-flow">
-                    <div className="broadcast-stage-card broadcast-stage-card--content">
-                      <div className="broadcast-stage-card__head">
-                        <div className="broadcast-stage-card__title-wrap">
-                          <strong>Контент</strong>
-                        </div>
-                        <span
-                          className={cn(
-                            'broadcast-stage-card__status',
-                            broadcastContentReady ? 'is-ready' : 'is-pending',
-                          )}
-                        >
-                          {broadcastContentReady ? 'Готов' : 'Пусто'}
-                        </span>
-                      </div>
-
-                      <div className="broadcast-stage-card__actions">
-                        <button
-                          type="button"
-                          className="button button--accent"
-                          onClick={handleOpenChannelBroadcastBot}
-                          disabled={handoffBroadcastMutation.isPending}
-                        >
-                          Открыть бота
-                        </button>
-                      </div>
-                    </div>
-
                     <div className="broadcast-stage-card broadcast-stage-card--planner">
                       <div className="broadcast-stage-card__head">
                         <div className="broadcast-stage-card__title-wrap">
