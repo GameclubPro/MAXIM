@@ -493,6 +493,11 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
   greeting: [
     { key: 'greetingEnabled', label: 'Включить приветствие', type: 'boolean' },
     { key: 'greetingBotMessageEnabled', label: 'Отправлять приветствие', type: 'boolean' },
+    {
+      key: 'greetingDeleteBotMessageEnabled',
+      label: 'Удалять приветствие',
+      type: 'boolean',
+    },
     { key: 'greetingBotMessageText', label: 'Текст приветствия', type: 'text' },
     { key: 'greetingBotButtonEnabled', label: 'Показывать кнопку', type: 'boolean' },
     { key: 'greetingBotButtonUrl', label: 'Ссылка кнопки', type: 'url' },
@@ -811,7 +816,7 @@ const SECTION_CARD_FIELDS: Record<
     ],
   },
   greeting: {
-    basic: ['greetingEnabled', 'greetingBotMessageEnabled'],
+    basic: ['greetingEnabled', 'greetingBotMessageEnabled', 'greetingDeleteBotMessageEnabled'],
     advanced: [
       'greetingBotMessageText',
       'greetingBotButtonEnabled',
@@ -6859,7 +6864,7 @@ export class PrivateControlService {
       case 'greeting':
         return [
           `Приветствие: ${this.describeBooleanCompact(settings.greetingEnabled)}`,
-          `Сообщение: ${this.describeBooleanCompact(settings.greetingBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.greetingBotButtonEnabled)}`,
+          `Сообщение: ${this.describeBooleanCompact(settings.greetingBotMessageEnabled)} • автоудаление ${this.describeBooleanCompact(settings.greetingDeleteBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.greetingBotButtonEnabled)}`,
         ];
       case 'profanityFilter':
         return [

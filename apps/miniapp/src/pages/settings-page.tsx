@@ -235,6 +235,7 @@ type HintKey =
   | 'linkBotButton'
   | 'greetingEnabled'
   | 'greetingBotMessage'
+  | 'greetingDeleteBotMessages'
   | 'greetingBotButton'
   | 'textFiltersProfanity'
   | 'textFiltersCommercial'
@@ -348,6 +349,7 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
   greeting: [
     'greetingEnabled',
     'greetingBotMessageEnabled',
+    'greetingDeleteBotMessageEnabled',
     'greetingBotMessageText',
     'greetingBotButtonEnabled',
     'greetingBotButtonUrl',
@@ -5072,6 +5074,63 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               />
                             ) : null}
                           </div>
+
+                          {draft.greetingBotMessageEnabled ? (
+                            <div className="settings-native-toggle settings-native-toggle--nested">
+                              <div className="settings-native-toggle__row">
+                                <div className="settings-native-toggle__title-wrap">
+                                  <span className="settings-native-toggle__title">
+                                    Удалять свои сообщения
+                                  </span>
+                                  <button
+                                    type="button"
+                                    className={cn(
+                                      'settings-info-button',
+                                      openHintKey === 'greetingDeleteBotMessages' && 'is-open',
+                                    )}
+                                    aria-label="Пояснение для автоудаления приветствия"
+                                    aria-controls="greeting-delete-bot-messages-hint"
+                                    aria-expanded={openHintKey === 'greetingDeleteBotMessages'}
+                                    onClick={() => toggleHint('greetingDeleteBotMessages')}
+                                  >
+                                    <span aria-hidden>i</span>
+                                  </button>
+                                </div>
+
+                                <label
+                                  className="settings-native-switch"
+                                  aria-label="Включить автоудаление приветственных сообщений бота"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={draft.greetingDeleteBotMessageEnabled}
+                                    onChange={(event) =>
+                                      setFieldValue(
+                                        'greetingDeleteBotMessageEnabled',
+                                        event.target.checked,
+                                      )
+                                    }
+                                  />
+                                  <span className="toggle-switch" aria-hidden>
+                                    <span className="toggle-switch__thumb" />
+                                  </span>
+                                </label>
+                              </div>
+
+                              {openHintKey === 'greetingDeleteBotMessages' ? (
+                                <p
+                                  id="greeting-delete-bot-messages-hint"
+                                  className="settings-native-toggle__hint"
+                                >
+                                  Приветствие будет удаляться через{' '}
+                                  {formatDeleteBotMessagesDelayLabel(
+                                    draft.deleteBotMessagesDelayMinutes,
+                                  )}
+                                  . Задержка настраивается в разделе «Сервис».
+                                </p>
+                              ) : null}
+                            </div>
+                          ) : null}
 
                           {draft.greetingBotMessageEnabled ? (
                             <div

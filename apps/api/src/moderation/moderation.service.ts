@@ -456,6 +456,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           messageId,
           update,
           greetingBotMessageEnabled: settings.greetingBotMessageEnabled,
+          greetingDeleteBotMessageEnabled: settings.greetingDeleteBotMessageEnabled,
           greetingBotMessageText: settings.greetingBotMessageText,
           botSpeechStyle: settings.botSpeechStyle,
           greetingBotButtonEnabled: settings.greetingBotButtonEnabled,
@@ -4153,6 +4154,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageId: string;
     update: MaxUpdate;
     greetingBotMessageEnabled: boolean;
+    greetingDeleteBotMessageEnabled: boolean;
     greetingBotMessageText: string;
     botSpeechStyle: BotSpeechStyle | null;
     greetingBotButtonEnabled: boolean;
@@ -4167,6 +4169,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       messageId,
       update,
       greetingBotMessageEnabled,
+      greetingDeleteBotMessageEnabled,
       greetingBotMessageText,
       botSpeechStyle,
       greetingBotButtonEnabled,
@@ -4209,8 +4212,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         greetingBotMessageText,
         botSpeechStyle,
       );
+      const shouldDeleteGreetingMessage = greetingDeleteBotMessageEnabled;
+      const shouldSendPersistentGreetingMessage =
+        shouldDeleteGreetingMessage || deleteBotMessagesEnabled;
       try {
-        const sentMessageId = deleteBotMessagesEnabled
+        const sentMessageId = shouldSendPersistentGreetingMessage
           ? await this.sendPersistentBotMessage({
               chatId,
               text: greetingMessage,
@@ -4218,7 +4224,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             })
           : null;
 
-        if (!deleteBotMessagesEnabled) {
+        if (shouldDeleteGreetingMessage && sentMessageId) {
+          await this.handleBotMessageAutoDelete({
+            chatId,
+            userId: member.userId,
+            messageId: sentMessageId,
+            text: greetingMessage,
+            delayMinutes: deleteBotMessagesDelayMinutes,
+          });
+        }
+
+        if (!shouldSendPersistentGreetingMessage) {
           await this.sendBotMessageWithOptionalAutoDelete({
             chatId,
             text: greetingMessage,

@@ -359,6 +359,7 @@ export const chatSettingsSchema = z
     botSpeechStyle: botSpeechStyleSchema.nullable().default('FRIENDLY'),
     greetingEnabled: z.boolean().default(false),
     greetingBotMessageEnabled: z.boolean().default(false),
+    greetingDeleteBotMessageEnabled: z.boolean().default(false),
     greetingBotMessageText: botMessageTextSchema,
     greetingBotButtonEnabled: z.boolean().default(false),
     greetingBotButtonUrl: botButtonUrlSchema,

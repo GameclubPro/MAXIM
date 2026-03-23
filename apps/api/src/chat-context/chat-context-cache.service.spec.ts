@@ -30,6 +30,7 @@ function buildSettings(chatId: string): ChatSettings {
     botSpeechStyle: null,
     greetingEnabled: false,
     greetingBotMessageEnabled: true,
+    greetingDeleteBotMessageEnabled: false,
     greetingBotMessageText: '',
     greetingBotButtonEnabled: false,
     greetingBotButtonUrl: '',

@@ -144,11 +144,7 @@ type AdminAccessResolution =
       error: unknown;
     };
 
-export type AdminActionSource =
-  | 'miniapp'
-  | 'private_bot'
-  | 'private_command'
-  | 'group_command';
+export type AdminActionSource = 'miniapp' | 'private_bot' | 'private_command' | 'group_command';
 
 type ManualMemberModerationAction = 'KICK' | 'BAN';
 type ManualBanExecutionMode = 'MAX_BLOCK' | 'MAX_REMOVE_ONLY';
@@ -244,6 +240,7 @@ const SETTINGS_SECTION_KEYS = {
   greeting: [
     'greetingEnabled',
     'greetingBotMessageEnabled',
+    'greetingDeleteBotMessageEnabled',
     'greetingBotMessageText',
     'greetingBotButtonEnabled',
     'greetingBotButtonUrl',
@@ -758,11 +755,17 @@ export class AdminService {
 
     const bucketStarts = this.buildChannelStatsBucketStarts(from, now, bucket);
     const topReactions = this.buildTopReactions(periodPosts);
-    const activityFeed = await this.getMembershipActivityFeedPage(chatId, from, now, {
-      range: parsed.data.range,
-      filter: 'all',
-      limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
-    }, 'channel');
+    const activityFeed = await this.getMembershipActivityFeedPage(
+      chatId,
+      from,
+      now,
+      {
+        range: parsed.data.range,
+        filter: 'all',
+        limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
+      },
+      'channel',
+    );
     const response: ChannelStatsResponse = {
       channel: {
         id: chatId,
@@ -1661,11 +1664,7 @@ export class AdminService {
     );
   }
 
-  async createChannelSuggestionFromBot(
-    chatId: string,
-    user: AuthUser,
-    body: unknown,
-  ) {
+  async createChannelSuggestionFromBot(chatId: string, user: AuthUser, body: unknown) {
     const parsed = this.parseChannelSuggestionFromBotPayload(body);
     const threadId = this.resolveChannelDialogThreadId(chatId, 'suggest', parsed.token);
     const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
@@ -1848,7 +1847,9 @@ export class AdminService {
       authorUserId: user.userId,
       authorDisplayName: authorDisplayName ?? null,
       isAdmin:
-        dialogType === 'comments' ? (await this.readDialogAdminUserIds(chatId)).has(user.userId) : false,
+        dialogType === 'comments'
+          ? (await this.readDialogAdminUserIds(chatId)).has(user.userId)
+          : false,
       avatarUrl: authorAvatarUrl ?? null,
       createdAt: created.createdAt.toISOString(),
       replyToMessageId: replyTo?.messageId ?? null,
@@ -5066,7 +5067,9 @@ export class AdminService {
     text: string,
   ): MaxMessageButton {
     if (type === 'suggest') {
-      const suggestUrl = this.buildBotStartUrl(this.buildChannelSuggestionStartPayload(chatId, threadId));
+      const suggestUrl = this.buildBotStartUrl(
+        this.buildChannelSuggestionStartPayload(chatId, threadId),
+      );
       if (suggestUrl) {
         return {
           type: 'link',
@@ -5789,11 +5792,17 @@ export class AdminService {
     const membershipSource = membershipRows[0] ?? { joined_users: 0, left_users: 0 };
     const joinedUsers = this.toSafeInteger(membershipSource.joined_users);
     const leftUsers = this.toSafeInteger(membershipSource.left_users);
-    const activityFeed = await this.getMembershipActivityFeedPage(chatId, from, now, {
-      range: parsed.data.range,
-      filter: 'all',
-      limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
-    }, 'chat');
+    const activityFeed = await this.getMembershipActivityFeedPage(
+      chatId,
+      from,
+      now,
+      {
+        range: parsed.data.range,
+        filter: 'all',
+        limit: MEMBERSHIP_ACTIVITY_PAGE_LIMIT,
+      },
+      'chat',
+    );
     const response: LogsDashboardResponse = {
       chat: {
         id: chatId,
@@ -6189,10 +6198,7 @@ export class AdminService {
     action: ManualMemberModerationAction,
   ): Promise<void> {
     const maxClientWithMemberAccess = this.maxClient as MaxClientService & {
-      getChatMemberAccess?: (
-        chatId: string,
-        userId: string,
-      ) => Promise<MaxChatMemberAccess | null>;
+      getChatMemberAccess?: (chatId: string, userId: string) => Promise<MaxChatMemberAccess | null>;
     };
     if (typeof maxClientWithMemberAccess.getChatMemberAccess !== 'function') {
       return;
@@ -6214,7 +6220,9 @@ export class AdminService {
 
   private async resolveManualBanExecutionMode(chatId: string): Promise<ManualBanExecutionMode> {
     const maxClientWithSnapshot = this.maxClient as MaxClientService & {
-      getChatSnapshot?: (chatId: string) => Promise<{ isPublic: boolean | null; link: string | null }>;
+      getChatSnapshot?: (
+        chatId: string,
+      ) => Promise<{ isPublic: boolean | null; link: string | null }>;
     };
     if (typeof maxClientWithSnapshot.getChatSnapshot !== 'function') {
       return 'MAX_BLOCK';
@@ -6293,7 +6301,10 @@ export class AdminService {
   }
 
   private isAddRemoveMembersPermission(permission: string): boolean {
-    const normalized = permission.trim().toLowerCase().replace(/[-\s]+/gu, '_');
+    const normalized = permission
+      .trim()
+      .toLowerCase()
+      .replace(/[-\s]+/gu, '_');
     return (
       normalized === 'add_remove_members' ||
       normalized === 'can_add_remove_members' ||
@@ -7702,7 +7713,11 @@ export class AdminService {
       data: {
         payload: {
           ...payload,
-          reactions: this.toggleDialogReactionEntries(payload.reactions, params.emoji, params.userId),
+          reactions: this.toggleDialogReactionEntries(
+            payload.reactions,
+            params.emoji,
+            params.userId,
+          ),
         } as Prisma.InputJsonValue,
       },
       select: {
@@ -7818,7 +7833,9 @@ export class AdminService {
   }
 
   private resolveDialogAction(dialogType: ChannelDialogType): string {
-    return dialogType === 'comments' ? CHANNEL_DIALOG_ACTION_COMMENT : CHANNEL_DIALOG_ACTION_SUGGEST;
+    return dialogType === 'comments'
+      ? CHANNEL_DIALOG_ACTION_COMMENT
+      : CHANNEL_DIALOG_ACTION_SUGGEST;
   }
 
   private normalizeChannelCommentText(value: string): string {
@@ -7852,7 +7869,9 @@ export class AdminService {
     return this.readDialogReactionEntries(value).map((entry) => ({
       emoji: entry.emoji,
       count: entry.userIds.length,
-      reactedByMe: normalizedCurrentUserId ? entry.userIds.includes(normalizedCurrentUserId) : false,
+      reactedByMe: normalizedCurrentUserId
+        ? entry.userIds.includes(normalizedCurrentUserId)
+        : false,
     }));
   }
 
@@ -7894,7 +7913,10 @@ export class AdminService {
         emoji,
         userIds: Array.from(userIds),
       }))
-      .sort((left, right) => right.userIds.length - left.userIds.length || left.emoji.localeCompare(right.emoji));
+      .sort(
+        (left, right) =>
+          right.userIds.length - left.userIds.length || left.emoji.localeCompare(right.emoji),
+      );
   }
 
   private toggleDialogReactionEntries(
@@ -7933,7 +7955,8 @@ export class AdminService {
     }
 
     return clearedEntries.sort(
-      (left, right) => right.userIds.length - left.userIds.length || left.emoji.localeCompare(right.emoji),
+      (left, right) =>
+        right.userIds.length - left.userIds.length || left.emoji.localeCompare(right.emoji),
     );
   }
 
@@ -8317,7 +8340,8 @@ export class AdminService {
     }
 
     const fileName =
-      this.readTrimmedString(suggestion.imageFileName) || this.resolveBroadcastImageFileName('', mimeType);
+      this.readTrimmedString(suggestion.imageFileName) ||
+      this.resolveBroadcastImageFileName('', mimeType);
 
     try {
       return await this.maxClient.uploadImage(imageBuffer, fileName, mimeType);
@@ -8597,7 +8621,9 @@ export class AdminService {
 
   private compactSuggestionThreadId(threadId: string): string | null {
     const normalized = threadId.trim().toLowerCase();
-    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.test(normalized)) {
+    if (
+      !/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.test(normalized)
+    ) {
       return null;
     }
 

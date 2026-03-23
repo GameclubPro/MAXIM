@@ -835,6 +835,7 @@ function createInitialState(): PreviewState {
   const chatSettings = chatSettingsSchema.parse({
     greetingEnabled: false,
     greetingBotMessageEnabled: false,
+    greetingDeleteBotMessageEnabled: false,
     greetingBotMessageText: 'Добро пожаловать в чат. Ознакомьтесь с правилами и пишите по делу.',
     linkPolicy: 'ALLOWLIST_ONLY',
     antiSpamEnabled: true,

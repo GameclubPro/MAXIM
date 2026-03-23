@@ -130,6 +130,7 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     botSpeechStyle: null,
     greetingEnabled: false,
     greetingBotMessageEnabled: true,
+    greetingDeleteBotMessageEnabled: false,
     greetingBotMessageText: '',
     greetingBotButtonEnabled: false,
     greetingBotButtonUrl: '',
@@ -2524,6 +2525,78 @@ describe('ModerationService', () => {
         messageId: 'msg-service-user-join-1',
         ruleCode: 'GREETING_MESSAGE',
         action: SanctionAction.NONE,
+      }),
+    });
+  });
+
+  it('auto-deletes greeting message when greeting delete toggle is enabled', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            greetingEnabled: true,
+            greetingBotMessageEnabled: true,
+            greetingDeleteBotMessageEnabled: true,
+            greetingBotMessageText: 'Добро пожаловать, {user}! {greeting}.',
+            deleteBotMessagesEnabled: false,
+            deleteBotMessagesDelayMinutes: 0.5,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      sendMessageImmediateWithId: jest.fn().mockResolvedValue({
+        messageId: 'msg-greeting-autodelete-1',
+        url: null,
+      }),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createServiceUserJoinedUpdate());
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-greeting-autodelete-1', {
+      delayMs: 30_000,
+    });
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        userId: 'user-black-2',
+        ruleCode: 'GREETING_MESSAGE',
+        metadata: expect.objectContaining({
+          sentMessageId: 'msg-greeting-autodelete-1',
+        }),
       }),
     });
   });
