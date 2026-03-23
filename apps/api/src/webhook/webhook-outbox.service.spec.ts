@@ -108,6 +108,26 @@ describe('WebhookOutboxService', () => {
     expect(updateArg.data.enqueueAttempts).toEqual({ increment: 1 });
   });
 
+  it('retries an existing failed job before attempting duplicate add', async () => {
+    const job: JobMock = {
+      getState: jest.fn().mockResolvedValue('failed'),
+      retry: jest.fn().mockResolvedValue(undefined),
+    };
+    const { service, prisma, queue } = createService({
+      findManyResult: [{ id: 'evt-2b', enqueueAttempts: 5 }],
+      job,
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(queue.getJob).toHaveBeenCalledWith('evt-2b');
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(job.retry).toHaveBeenCalledTimes(1);
+    const updateArg = prisma.webhookEvent.updateMany.mock.calls[0][0];
+    expect(updateArg.data.status).toBe(WebhookStatus.QUEUED);
+    expect(updateArg.data.enqueueAttempts).toEqual({ increment: 1 });
+  });
+
   it('marks event as FAILED without re-enqueue when max attempts is reached', async () => {
     const { service, prisma, queue } = createService();
 

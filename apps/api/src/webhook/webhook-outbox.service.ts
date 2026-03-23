@@ -121,6 +121,12 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const existingJob = await this.queue.getJob(webhookEventId);
+    if (existingJob) {
+      await this.handleExistingJob(webhookEventId, enqueueAttempts, existingJob);
+      return;
+    }
+
     try {
       await this.queue.add(
         'process-webhook-event',
@@ -156,6 +162,14 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    await this.handleExistingJob(webhookEventId, enqueueAttempts, job);
+  }
+
+  private async handleExistingJob(
+    webhookEventId: string,
+    enqueueAttempts: number,
+    job: Job<ProcessWebhookJob>,
+  ) {
     const state = await job.getState();
     if (state === 'failed') {
       await this.retryFailedJob(webhookEventId, enqueueAttempts, job);

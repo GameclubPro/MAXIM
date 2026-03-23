@@ -534,18 +534,20 @@ export class MaxClientService implements OnModuleDestroy {
             from: countOrOptions.from ?? null,
             to: countOrOptions.to ?? null,
           };
-    const data = await this.request<Record<string, unknown>>('get', '/messages', {
-      params: {
-        chat_id: chatId,
-        count: options.count,
-        ...(options.from !== null && options.from !== undefined
-          ? { from: this.normalizeMessageQueryBoundary(options.from) }
-          : {}),
-        ...(options.to !== null && options.to !== undefined
-          ? { to: this.normalizeMessageQueryBoundary(options.to) }
-          : {}),
-      },
-    });
+    const data = await this.executeChatRequest(chatId, async () =>
+      this.request<Record<string, unknown>>('get', '/messages', {
+        params: {
+          chat_id: chatId,
+          count: options.count,
+          ...(options.from !== null && options.from !== undefined
+            ? { from: this.normalizeMessageQueryBoundary(options.from) }
+            : {}),
+          ...(options.to !== null && options.to !== undefined
+            ? { to: this.normalizeMessageQueryBoundary(options.to) }
+            : {}),
+        },
+      }),
+    );
     return this.normalizeMessageRows(data);
   }
 
@@ -935,12 +937,16 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async getChatTitle(chatId: string): Promise<string | null> {
-    const data = await this.request<Record<string, unknown>>('get', `/chats/${chatId}`);
+    const data = await this.executeChatRequest(chatId, async () =>
+      this.request<Record<string, unknown>>('get', `/chats/${chatId}`),
+    );
     return this.readTrimmedString(data.title ?? data.name);
   }
 
   async getChatSnapshot(chatId: string): Promise<MaxChatSnapshot> {
-    const data = await this.request<Record<string, unknown>>('get', `/chats/${chatId}`);
+    const data = await this.executeChatRequest(chatId, async () =>
+      this.request<Record<string, unknown>>('get', `/chats/${chatId}`),
+    );
     const link = this.parseChatLink(data);
     const isPublic = this.readBoolean(data.is_public ?? data.isPublic ?? data.public);
 
@@ -964,9 +970,8 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async getChatAdminIds(chatId: string): Promise<string[]> {
-    const data = await this.request<Record<string, unknown>>(
-      'get',
-      `/chats/${chatId}/members/admins`,
+    const data = await this.executeChatRequest(chatId, async () =>
+      this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/admins`),
     );
     const members = Array.isArray(data.members) ? data.members : [];
 
@@ -991,9 +996,8 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async getChatEditableAdminIds(chatId: string): Promise<string[]> {
-    const data = await this.request<Record<string, unknown>>(
-      'get',
-      `/chats/${chatId}/members/admins`,
+    const data = await this.executeChatRequest(chatId, async () =>
+      this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/admins`),
     );
     const members = Array.isArray(data.members) ? data.members : [];
 
@@ -1018,7 +1022,9 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async getCurrentChatMemberAccess(chatId: string): Promise<MaxChatMemberAccess> {
-    const data = await this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/me`);
+    const data = await this.executeChatRequest(chatId, async () =>
+      this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/me`),
+    );
     return this.parseChatMemberAccess(data);
   }
 
@@ -1028,11 +1034,13 @@ export class MaxClientService implements OnModuleDestroy {
       return null;
     }
 
-    const data = await this.request<Record<string, unknown>>('get', `/chats/${chatId}/members`, {
-      params: {
-        user_ids: normalizedUserId,
-      },
-    });
+    const data = await this.executeChatRequest(chatId, async () =>
+      this.request<Record<string, unknown>>('get', `/chats/${chatId}/members`, {
+        params: {
+          user_ids: normalizedUserId,
+        },
+      }),
+    );
     const members = Array.isArray(data.members)
       ? data.members
       : Array.isArray(data.users)
@@ -1049,11 +1057,13 @@ export class MaxClientService implements OnModuleDestroy {
       return false;
     }
 
-    const data = await this.request<Record<string, unknown>>('get', `/chats/${chatId}/members`, {
-      params: {
-        user_ids: normalizedUserId,
-      },
-    });
+    const data = await this.executeChatRequest(chatId, async () =>
+      this.request<Record<string, unknown>>('get', `/chats/${chatId}/members`, {
+        params: {
+          user_ids: normalizedUserId,
+        },
+      }),
+    );
     const members = Array.isArray(data.members)
       ? data.members
       : Array.isArray(data.users)
@@ -1085,9 +1095,8 @@ export class MaxClientService implements OnModuleDestroy {
         query.append('user_ids', userId);
       }
 
-      const data = await this.request<Record<string, unknown>>(
-        'get',
-        `/chats/${chatId}/members?${query.toString()}`,
+      const data = await this.executeChatRequest(chatId, async () =>
+        this.request<Record<string, unknown>>('get', `/chats/${chatId}/members?${query.toString()}`),
       );
       const members = Array.isArray(data.members)
         ? data.members
@@ -2275,7 +2284,7 @@ export class MaxClientService implements OnModuleDestroy {
     }
   }
 
-  private async executeMutation<T>(chatId: string, operation: () => Promise<T>): Promise<T> {
+  private async executeChatRequest<T>(chatId: string, operation: () => Promise<T>): Promise<T> {
     await this.ensureCircuitClosed();
     await this.enforceRateLimit(chatId);
 
@@ -2292,6 +2301,10 @@ export class MaxClientService implements OnModuleDestroy {
       }
       throw error;
     }
+  }
+
+  private async executeMutation<T>(chatId: string, operation: () => Promise<T>): Promise<T> {
+    return this.executeChatRequest(chatId, operation);
   }
 
   private extractMessageIdFromSendResponse(payload: unknown): string | null {

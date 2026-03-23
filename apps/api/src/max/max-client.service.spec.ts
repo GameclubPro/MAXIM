@@ -1104,6 +1104,46 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('applies global MAX API rate limit to read requests', async () => {
+    const httpService = {
+      request: jest.fn(),
+    };
+    const service = createService(httpService, {
+      MAX_API_GLOBAL_RPS: '30',
+    });
+
+    ((service as unknown as { limiterRedis: { incr: jest.Mock } }).limiterRedis.incr).mockResolvedValueOnce(
+      31,
+    );
+
+    await expect(service.listMessages('chat-1', 10)).rejects.toThrow(
+      'MAX API global rate limit exceeded',
+    );
+    expect(httpService.request).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
+  it('applies per-chat MAX API rate limit to profile lookups', async () => {
+    const httpService = {
+      request: jest.fn(),
+    };
+    const service = createService(httpService, {
+      MAX_API_GLOBAL_RPS: '100',
+      MAX_API_CHAT_RPS: '1',
+    });
+
+    const limiterRedis = (service as unknown as { limiterRedis: { incr: jest.Mock } }).limiterRedis;
+    limiterRedis.incr.mockResolvedValueOnce(1).mockResolvedValueOnce(2);
+
+    await expect(service.getChatMemberProfiles('chat-1', ['user-1'])).rejects.toThrow(
+      'MAX API per-chat rate limit exceeded for chat chat-1',
+    );
+    expect(httpService.request).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
+
   it('extends webhook subscriptions with churn update types', async () => {
     const httpService = {
       request: jest
