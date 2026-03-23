@@ -985,9 +985,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     'слотов',
   );
   const broadcastSlotsSummary =
-    broadcastScheduledSlots.length > 0
-      ? broadcastSlotsLabel
-      : 'без слотов';
+    broadcastScheduledSlots.length > 0 ? broadcastSlotsLabel : 'без слотов';
   const normalizedBroadcastButtonUrl = broadcastButtonUrl.trim();
   const normalizedBroadcastButtonText = broadcastButtonText.trim();
   const broadcastButtonDraftValid =
@@ -1005,26 +1003,20 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       broadcastButtonDraftValid &&
       broadcastPlannerState.isConfirmed &&
       broadcastHasFutureSlots);
-  const showBroadcastInlineReset =
+  const showBroadcastResetAction =
     broadcastScheduledSlots.length > 0 ||
     broadcastText.trim().length > 0 ||
     broadcastImageEnabled ||
     broadcastButtonEnabled;
-  const broadcastStudioBadge = broadcastBotHasContent ? 'Контент готов' : 'Новый сценарий';
-  const broadcastStudioEyebrow =
-    broadcastScheduledSlots.length > 0 ? 'График уже собран' : 'Сначала настройте график';
+  const broadcastStudioBadge = broadcastBotHasContent ? 'Контент в боте' : 'Новый сценарий';
   const broadcastStudioTitle = broadcastBotHasContent
-    ? 'Управляйте графиком и CTA'
-    : 'Соберите график и передайте рассылку в бота';
-  const broadcastStudioDescription = broadcastBotHasContent
-    ? 'Текст или фото уже сохранены в личке бота. Здесь остаются только календарь и CTA.'
-    : 'В приложении соберите расписание и кнопку действия, а финальное подтверждение останется в боте.';
-  const broadcastStudioFacts = [
-    'Только этот канал',
+    ? 'Настройте публикацию'
+    : 'Соберите публикацию';
+  const broadcastStudioMeta = [
+    'Этот канал',
     broadcastScheduledSlots.length > 0 ? `${broadcastDayCount} дн.` : 'График не собран',
     broadcastScheduledSlots.length > 0 ? broadcastSlotsLabel : null,
     broadcastHasButton ? 'CTA' : null,
-    broadcastBotHasContent ? 'Контент в боте' : null,
   ].filter((item): item is string => Boolean(item));
   const broadcastHeaderSummary = [
     broadcastBotHasContent ? 'контент в боте' : 'без контента',
@@ -1053,8 +1045,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     ? 'Контент уже в боте'
     : 'Финальный шаг в боте';
   const broadcastFooterHint = broadcastBotHasContent
-    ? 'Контент уже сохранён в личке бота. Кнопка ниже снова откроет бота для замены или подтверждения.'
-    : 'В боте останется только подтверждение отправки.';
+    ? 'Кнопка ниже снова откроет бота для замены или подтверждения.'
+    : 'В боте останется подтверждение отправки.';
   const broadcastDrilldownFooter = (
     <>
       <div className="managed-broadcast-editor-note__topline">
@@ -1493,52 +1485,36 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                 <div className="channel-broadcast-studio">
                   <div className="managed-broadcast-editor-note managed-broadcast-editor-note--studio">
                     <div className="managed-broadcast-editor-note__topline">
-                      <span className="managed-broadcast-editor-note__badge">
-                        {broadcastStudioBadge}
-                      </span>
-                      {previewBroadcastCountdown ? (
-                        <div className="managed-broadcast-editor-note__timer">
-                          <span>{previewBroadcastCountdown.label}</span>
-                          <strong>{previewBroadcastCountdown.value}</strong>
-                          <small>{previewBroadcastCountdown.caption}</small>
-                        </div>
-                      ) : null}
-                    </div>
-                    <div className="mailing-option-card__head">
-                      <div className="mailing-option-card__title-wrap">
-                        <span className="managed-broadcast-editor-note__eyebrow">
-                          {broadcastStudioEyebrow}
+                      <div className="managed-broadcast-editor-note__summary">
+                        <span className="managed-broadcast-editor-note__badge">
+                          {broadcastStudioBadge}
                         </span>
                         <strong>{broadcastStudioTitle}</strong>
+                        <small className="managed-broadcast-editor-note__meta">
+                          {broadcastStudioMeta.join(' · ')}
+                        </small>
                       </div>
-                      <ChannelSettingsHintAnchor
-                        hintKey="broadcastStudio"
-                        openHintKey={openHintKey}
-                        onToggleHint={toggleHint}
-                        label="Что настраивается в студии рассылки"
-                      >
-                        {broadcastStudioDescription}
-                      </ChannelSettingsHintAnchor>
-                    </div>
-                    <div className="managed-broadcast-editor-note__facts">
-                      {broadcastStudioFacts.map((fact) => (
-                        <span key={fact}>{fact}</span>
-                      ))}
+                      <div className="managed-broadcast-editor-note__actions">
+                        {previewBroadcastCountdown ? (
+                          <div className="managed-broadcast-editor-note__timer">
+                            <span>{previewBroadcastCountdown.label}</span>
+                            <strong>{previewBroadcastCountdown.value}</strong>
+                            <small>{previewBroadcastCountdown.caption}</small>
+                          </div>
+                        ) : null}
+                        {showBroadcastResetAction ? (
+                          <button
+                            type="button"
+                            className="managed-broadcast-editor-note__link"
+                            onClick={resetBroadcastComposer}
+                            disabled={handoffBroadcastMutation.isPending}
+                          >
+                            Очистить
+                          </button>
+                        ) : null}
+                      </div>
                     </div>
                   </div>
-
-                  {showBroadcastInlineReset ? (
-                    <div className="mailing-inline-tools">
-                      <button
-                        type="button"
-                        className="mailing-inline-tools__link"
-                        onClick={resetBroadcastComposer}
-                        disabled={handoffBroadcastMutation.isPending}
-                      >
-                        Очистить рассылку
-                      </button>
-                    </div>
-                  ) : null}
 
                   <BroadcastSchedulePlanner
                     resetKey={broadcastPlannerResetKey}
@@ -1568,19 +1544,16 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                       <div className="mailing-option-card__head">
                         <div className="mailing-option-card__title-wrap">
                           <div className="mailing-card-title-row">
-                            <span className="mailing-option-card__title">Кнопка действия</span>
+                            <span className="mailing-option-card__title">Кнопка</span>
                             <ChannelSettingsHintAnchor
                               hintKey="broadcastButton"
                               openHintKey={openHintKey}
                               onToggleHint={toggleHint}
                               label="Пояснение для кнопки в рассылке"
                             >
-                              Кнопка для перехода в канал, пост или ссылку.
+                              Ссылка `http/https`, подпись до 32 символов.
                             </ChannelSettingsHintAnchor>
                           </div>
-                          <small className="mailing-option-card__subtitle">
-                            {broadcastButtonEnabled ? 'CTA включён' : 'Необязательно'}
-                          </small>
                         </div>
 
                         <label

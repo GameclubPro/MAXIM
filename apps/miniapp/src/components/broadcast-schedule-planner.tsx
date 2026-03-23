@@ -1,7 +1,6 @@
 import { useEffect, useEffectEvent, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../lib/cn';
-import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import {
   BROADCAST_SCHEDULE_MAX_DAYS,
   BROADCAST_SCHEDULE_STEP_MINUTES,
@@ -9,7 +8,6 @@ import {
   countBroadcastScheduleDays,
   formatBroadcastScheduleDay,
   formatBroadcastScheduleSlot,
-  formatBroadcastScheduleSummary,
   getBroadcastScheduleDayKey,
   sortAndUniqueBroadcastSlots,
 } from '../lib/broadcast-schedule';
@@ -203,7 +201,6 @@ export function BroadcastSchedulePlanner({
   onSelectionStateChange,
 }: BroadcastSchedulePlannerProps) {
   const [anchorNow] = useState(() => new Date());
-  const [isGuideHintOpen, setIsGuideHintOpen] = useState(false);
   const normalizedValue = sortAndUniqueBroadcastSlots(value);
   const scheduledDayKeys = sortDayKeys(
     normalizedValue.map((slot) => getBroadcastScheduleDayKey(slot)),
@@ -231,7 +228,6 @@ export function BroadcastSchedulePlanner({
   const activeDaySlots = getSelectedDaySlots(activeDayKey, normalizedValue);
   const pickedDayLabel = formatCountLabel(pickedDayKeys.length, 'день', 'дня', 'дней');
   const pickedDaySummary = formatDaySummary(pickedDayKeys);
-  const scheduledDaySummary = formatDaySummary(scheduledDayKeys);
   const targetDayKeys =
     applyToAllPickedDays && pickedDayKeys.length > 1 ? pickedDayKeys : [activeDayKey];
   const isDaySheetOpen = sheetStep !== null;
@@ -241,13 +237,13 @@ export function BroadcastSchedulePlanner({
   const futureSlotCount = normalizedValue.length - pastSlotCount;
   const isReviewStep =
     isConfirmed && normalizedValue.length > 0 && pickedDayKeys.length === 0 && !isDaySheetOpen;
+  const slotCountLabel = formatCountLabel(normalizedValue.length, 'слот', 'слота', 'слотов');
+  const dayCountLabel = formatCountLabel(selectedDayCount, 'день', 'дня', 'дней');
   const emitSelectionStateChange = useEffectEvent(
     (nextState: BroadcastSchedulePlannerSelectionState) => {
       onSelectionStateChange?.(nextState);
     },
   );
-
-  useHintPopoverAutoPosition(isGuideHintOpen);
 
   useEffect(() => {
     if (pickedDayKeys.length > 0) {
@@ -556,88 +552,24 @@ export function BroadcastSchedulePlanner({
   return (
     <>
       <section className={cn('broadcast-planner', disabled && 'is-disabled')}>
-        <div className="broadcast-planner__topline">
-          <div className="broadcast-planner__topline-copy">
-            <div className="broadcast-planner__topline-head">
-              <strong>{isReviewStep ? 'Шаг 4. Финальная проверка' : 'Шаг 1. Дни публикации'}</strong>
-              <span className="mailing-card-title-row">
-                <span className="broadcast-planner__calendar-badge">
-                  {isReviewStep
-                    ? `${futureSlotCount} к отправке`
-                    : pickedDayKeys.length > 0
-                      ? pickedDayLabel
-                      : normalizedValue.length > 0
-                        ? `${selectedDayCount} дн.`
-                        : 'Календарь'}
-                </span>
-                <span className="channel-settings-hint-anchor">
-                  <button
-                    type="button"
-                    className={cn('settings-info-button', isGuideHintOpen && 'is-open')}
-                    aria-label={
-                      isReviewStep
-                        ? 'Подсказка для финальной проверки расписания'
-                        : 'Подсказка для выбора дней публикации'
-                    }
-                    aria-controls="broadcast-planner-guide-hint"
-                    aria-expanded={isGuideHintOpen}
-                    onClick={(event) => {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      setIsGuideHintOpen((current) => !current);
-                    }}
-                  >
-                    <span aria-hidden>i</span>
-                  </button>
-                  {isGuideHintOpen ? (
-                    <p
-                      id="broadcast-planner-guide-hint"
-                      className="channel-settings-hint-popover"
-                      onClick={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                      }}
-                    >
-                      {isReviewStep
-                        ? 'Проверьте итоговый план и только после этого передавайте рассылку в бота.'
-                        : 'Сначала отметьте даты. Шаги с количеством и временем открываются отдельно, чтобы экран оставался компактным.'}
-                    </p>
-                  ) : null}
-                </span>
-              </span>
-            </div>
-            <small>
-              {isReviewStep
-                ? 'Итог перед подтверждением в боте.'
-                : pickedDayKeys.length > 0
-                  ? `${pickedDayLabel} отмечены. Переходите к времени.`
-                  : normalizedValue.length > 0
-                    ? 'График уже собран. Можно скорректировать отдельные дни.'
-                    : 'Отметьте даты в календаре.'}
-            </small>
-          </div>
-        </div>
-
         <div className="broadcast-planner__calendar-card">
           <div className="broadcast-planner__calendar-toolbar">
             <div className="broadcast-planner__calendar-copy">
-              <strong>Календарь публикаций</strong>
+              <strong>{isReviewStep ? 'Расписание' : 'Дни публикации'}</strong>
               <small>
                 {pickedDayKeys.length > 0
-                  ? `${pickedDayLabel} готовы к настройке времени.`
+                  ? `${pickedDaySummary} · настройте время`
                   : normalizedValue.length > 0
-                    ? formatBroadcastScheduleSummary(normalizedValue)
-                    : 'Можно отметить несколько дней сразу, а потом одним действием задать им время.'}
+                    ? `${dayCountLabel} · ${slotCountLabel}`
+                    : 'Выберите даты'}
               </small>
             </div>
 
-            <span className="broadcast-planner__calendar-badge">
-              {pickedDayKeys.length > 0
-                ? pickedDayLabel
-                : normalizedValue.length > 0
-                  ? formatCountLabel(selectedDayCount, 'день', 'дня', 'дней')
-                  : `до ${BROADCAST_SCHEDULE_MAX_DAYS} дн.`}
-            </span>
+            {pickedDayKeys.length > 0 || normalizedValue.length > 0 ? (
+              <span className="broadcast-planner__calendar-badge">
+                {pickedDayKeys.length > 0 ? pickedDayLabel : slotCountLabel}
+              </span>
+            ) : null}
           </div>
 
           <div className="broadcast-planner__calendar-surface">
@@ -696,7 +628,11 @@ export function BroadcastSchedulePlanner({
                 const isActive = dayKey === activeDayKey;
                 const isPicked = pickedDaySet.has(dayKey);
                 const dayIndicatorCount =
-                  daySlots.length > 0 ? Math.min(daySlots.length, 3) : isPicked || busyCount > 0 ? 1 : 0;
+                  daySlots.length > 0
+                    ? Math.min(daySlots.length, 3)
+                    : isPicked || busyCount > 0
+                      ? 1
+                      : 0;
                 const dayAriaLabelParts = [formatDayChipLabel(dayKey)];
 
                 if (isToday) {
@@ -789,45 +725,31 @@ export function BroadcastSchedulePlanner({
             </div>
           ) : null}
 
-          {!isReviewStep ? (
+          {!isReviewStep && pickedDayKeys.length > 0 ? (
             <div className="broadcast-planner__selection-bar">
               <div className="broadcast-planner__selection-copy">
-                <strong>
-                  {pickedDayKeys.length > 0
-                    ? `Выбрано ${pickedDayLabel}: ${pickedDaySummary}`
-                    : normalizedValue.length > 0
-                      ? 'Расписание готово'
-                      : 'Выберите хотя бы один день'}
-                </strong>
-                <small>
-                  {pickedDayKeys.length > 0
-                    ? 'Когда даты выбраны, переходите к следующему шагу.'
-                    : normalizedValue.length > 0
-                      ? 'Чтобы изменить план, снова отметьте нужные даты в календаре.'
-                      : 'Повторный тап по дате снимает выбор.'}
-                </small>
+                <strong>{pickedDaySummary}</strong>
+                <small>{pickedDayLabel}</small>
               </div>
 
-              {pickedDayKeys.length > 0 ? (
-                <div className="broadcast-planner__selection-actions">
-                  <button
-                    type="button"
-                    className="broadcast-planner__selection-reset"
-                    onClick={clearPickedSelection}
-                    disabled={disabled}
-                  >
-                    Сбросить
-                  </button>
-                  <button
-                    type="button"
-                    className="broadcast-planner__selection-open"
-                    onClick={openCountStep}
-                    disabled={disabled || pickedDayKeys.length === 0}
-                  >
-                    Выбрать количество
-                  </button>
-                </div>
-              ) : null}
+              <div className="broadcast-planner__selection-actions">
+                <button
+                  type="button"
+                  className="broadcast-planner__selection-reset"
+                  onClick={clearPickedSelection}
+                  disabled={disabled}
+                >
+                  Сбросить
+                </button>
+                <button
+                  type="button"
+                  className="broadcast-planner__selection-open"
+                  onClick={openCountStep}
+                  disabled={disabled || pickedDayKeys.length === 0}
+                >
+                  Настроить время
+                </button>
+              </div>
             </div>
           ) : null}
         </div>
@@ -836,11 +758,11 @@ export function BroadcastSchedulePlanner({
           <div className="broadcast-planner__review-card">
             <div className="broadcast-planner__review-head">
               <div>
-                <strong>Шаг 4. Проверьте расписание</strong>
+                <strong>Проверьте расписание</strong>
                 <small>
                   {futureSlotCount > 0
-                    ? 'Проверьте итог и передавайте рассылку в бота.'
-                    : 'Новых отправок не осталось. Добавьте хотя бы одно будущее время.'}
+                    ? `${dayCountLabel} · ${slotCountLabel}`
+                    : 'Добавьте хотя бы один будущий слот.'}
                 </small>
               </div>
             </div>
@@ -851,18 +773,13 @@ export function BroadcastSchedulePlanner({
                 <strong>{selectedDayCount}</strong>
               </div>
               <div className="broadcast-planner__review-stat">
-                <small>Засчитаем</small>
-                <strong>{pastSlotCount}</strong>
+                <small>Слотов</small>
+                <strong>{normalizedValue.length}</strong>
               </div>
               <div className="broadcast-planner__review-stat">
-                <small>Отправим</small>
+                <small>К отправке</small>
                 <strong>{futureSlotCount}</strong>
               </div>
-            </div>
-
-            <div className="broadcast-planner__review-summary">
-              <span>Дни</span>
-              <strong>{scheduledDaySummary}</strong>
             </div>
 
             <div className="broadcast-planner__review-actions">
@@ -894,31 +811,13 @@ export function BroadcastSchedulePlanner({
                       <span>{formatBroadcastScheduleDay(getBroadcastScheduleDayKey(slot))}</span>
                     </div>
                     <span
-                      className={cn(
-                        'broadcast-planner__agenda-badge',
-                        isPastSlot && 'is-past',
-                      )}
+                      className={cn('broadcast-planner__agenda-badge', isPastSlot && 'is-past')}
                     >
                       {isPastSlot ? 'Уже засчитано' : 'Отправим'}
                     </span>
                   </div>
                 );
               })}
-            </div>
-          </div>
-        ) : normalizedValue.length > 0 ? (
-          <div className="broadcast-planner__agenda">
-            <div className="broadcast-planner__agenda-head">
-              <strong>План публикаций</strong>
-              <small>{normalizedValue.length} слотов</small>
-            </div>
-            <div className="broadcast-planner__agenda-list">
-              {normalizedValue.map((slot) => (
-                <div key={slot} className="broadcast-planner__agenda-row">
-                  <strong>{formatBroadcastScheduleSlot(slot)}</strong>
-                  <span>{formatBroadcastScheduleDay(getBroadcastScheduleDayKey(slot))}</span>
-                </div>
-              ))}
             </div>
           </div>
         ) : null}
@@ -952,10 +851,7 @@ export function BroadcastSchedulePlanner({
                           <strong id="broadcast-planner-sheet-title">
                             Шаг 2. Сколько раз отправлять?
                           </strong>
-                          <small>
-                            Для {pickedDayLabel} выберите частоту. После выбора сразу откроется
-                            настройка времени.
-                          </small>
+                          <small>Выберите частоту. Потом откроется время.</small>
                         </div>
 
                         <div className="broadcast-planner__sheet-facts">
@@ -997,16 +893,11 @@ export function BroadcastSchedulePlanner({
                         ))}
                       </div>
 
-                      <div className="broadcast-planner__review-summary">
-                        <span>Дни</span>
-                        <strong>{pickedDaySummary}</strong>
-                      </div>
-
-                      <div className="broadcast-planner__sheet-note">
-                        {pickedDayKeys.length > 1
-                          ? 'Частота применится ко всем датам. Дальше можно оставить общее время или настроить дни отдельно.'
-                          : 'Выберите быстрый пресет или задайте слоты вручную.'}
-                      </div>
+                      {pickedDayKeys.length > 1 ? (
+                        <div className="broadcast-planner__sheet-note">
+                          Частота применится ко всем выбранным датам.
+                        </div>
+                      ) : null}
 
                       <div className="broadcast-planner__count-grid">
                         {SLOT_PRESETS.slice(0, 3).map((preset) => (
@@ -1045,8 +936,8 @@ export function BroadcastSchedulePlanner({
                           <strong id="broadcast-planner-sheet-title">Шаг 3. Выберите время</strong>
                           <small>
                             {selectedCountChoice
-                              ? `Основа: ${formatCountChoiceLabel(selectedCountChoice)}. Можно оставить её или точно поправить часы.`
-                              : 'Выберите нужные слоты вручную.'}
+                              ? `Основа: ${formatCountChoiceLabel(selectedCountChoice)}. При необходимости поправьте часы.`
+                              : 'Выберите слоты.'}
                           </small>
                         </div>
 
@@ -1128,12 +1019,12 @@ export function BroadcastSchedulePlanner({
                         </div>
                       ) : applyToAllPickedDays && pickedDayKeys.length > 1 ? (
                         <div className="broadcast-planner__sheet-note">
-                          Эти часы применятся ко всем выбранным датам.
+                          Эти часы применятся ко всем датам.
                         </div>
                       ) : null}
 
                       <div className="broadcast-planner__sheet-note">
-                        Сегодня можно выбрать и прошедшее время: такие слоты просто засчитаем.
+                        Прошедшие часы за сегодня просто засчитаем.
                       </div>
 
                       <div className="broadcast-planner__time-summary">

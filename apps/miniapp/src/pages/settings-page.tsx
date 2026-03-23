@@ -1015,29 +1015,25 @@ function resolveManagedBroadcastMetric(
 }
 
 function buildManagedBroadcastFactChips(broadcast: ManagedBroadcastListItem): string[] {
-  const facts: string[] = [
-    broadcast.applyToAllChats ? 'Все чаты' : 'Этот чат',
-    formatRussianCountLabel(broadcast.targetChats, 'чат', 'чата', 'чатов'),
+  const scopeLabel = broadcast.applyToAllChats
+    ? formatRussianCountLabel(broadcast.targetChats, 'чат', 'чата', 'чатов')
+    : 'Текущий чат';
+  const scheduleLabel =
     broadcast.scheduleMode === 'calendar'
       ? formatRussianCountLabel(broadcast.scheduledSlots.length, 'слот', 'слота', 'слотов')
       : broadcast.cycleEnabled
         ? `Цикл ${broadcast.sentCount}/${broadcast.cycleCount}`
-        : 'Одна отправка',
-  ];
+        : '1 отправка';
+  const extras = [broadcast.buttonEnabled ? 'CTA' : null, broadcast.hasImage ? 'Фото' : null]
+    .filter((item): item is string => Boolean(item))
+    .join(' · ');
 
-  if (broadcast.hasImage) {
-    facts.push('С фото');
-  }
-
-  if (broadcast.buttonEnabled) {
-    facts.push('CTA');
-  }
-
-  if (broadcast.pendingChats > 0) {
-    facts.push(`В очереди ${broadcast.pendingChats}`);
-  }
-
-  return facts;
+  return [
+    scopeLabel,
+    scheduleLabel,
+    extras || null,
+    broadcast.pendingChats > 0 ? `В очереди ${broadcast.pendingChats}` : null,
+  ].filter((item): item is string => Boolean(item));
 }
 
 function formatNightForceCloseDuration(days: number, hours: number): string {
@@ -3452,9 +3448,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     ? 'обсуждение выключено'
     : commentsTargetSummary || 'не выбрано, где бот публикует кнопку';
   const mailingTargetLabel =
-    mailingApplyToAllChats && canApplyToAllChats
-      ? `Во все чаты (${chatsCount})`
-      : 'Только текущий чат';
+    mailingApplyToAllChats && canApplyToAllChats ? `Во все чаты (${chatsCount})` : 'Текущий чат';
   const mailingHeaderTargetLabel =
     mailingApplyToAllChats && canApplyToAllChats ? 'Все чаты' : 'Текущий чат';
   const mailingDayCount = countBroadcastScheduleDays(mailingScheduledSlots);
@@ -3464,52 +3458,37 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     'слота',
     'слотов',
   );
-  const mailingContentLabel = editingManagedBroadcast
-    ? mailingImageEnabled && mailingImageBase64
-      ? 'контент сохранён'
-      : mailingText.trim()
-        ? 'контент сохранён'
-        : 'без контента'
-    : mailingBotHasContent
-      ? 'контент хранится в боте'
-      : 'контент в боте';
-  const mailingHeaderContentLabel = mailingBotHasContent ? 'контент в боте' : 'без контента';
-  const mailingHeaderSummary = `${mailingHeaderTargetLabel} · ${mailingHeaderContentLabel} · ${mailingSlotsLabel}`;
+  const mailingHeaderSummary = [
+    mailingHeaderTargetLabel,
+    mailingSlotsLabel,
+    mailingBotHasContent ? 'контент в боте' : null,
+    mailingButtonEnabled ? 'CTA' : null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
   const mailingStudioBadge = editingManagedBroadcast
     ? 'Редактирование'
     : mailingBotHasContent
-      ? 'Контент готов'
+      ? 'Контент в боте'
       : 'Новый сценарий';
-  const mailingStudioEyebrow = editingManagedBroadcast
-    ? 'Текущий сценарий'
-    : mailingScheduledSlots.length > 0
-      ? 'График уже собран'
-      : 'Сначала настройте график';
   const mailingStudioTitle = editingManagedBroadcast
-    ? 'Обновляете график и CTA'
+    ? 'Параметры рассылки'
     : mailingBotHasContent
-      ? 'Управляйте графиком и охватом'
-      : 'Соберите график и откройте бота';
-  const mailingStudioDescription = editingManagedBroadcast
-    ? editingManagedBroadcast.sentCount > 0
-      ? `Уже отправлено ${editingManagedBroadcast.sentCount} из ${editingManagedBroadcast.cycleCount}.`
-      : 'Контент уже сохранён. Здесь меняются только календарь, охват и CTA.'
-    : mailingBotHasContent
-      ? 'Текст или фото уже лежат в личке бота. Здесь остаются только параметры публикации.'
-      : 'Контент откроется в боте после подтверждения. В приложении соберите расписание и действия.'
-  const mailingStudioFacts = [
+      ? 'Настройте публикацию'
+      : 'Соберите публикацию';
+  const mailingStudioMeta = [
     mailingTargetLabel,
     mailingScheduledSlots.length > 0 ? `${mailingDayCount} дн.` : 'График не собран',
     mailingScheduledSlots.length > 0 ? mailingSlotsLabel : null,
     mailingButtonEnabled ? 'CTA' : null,
-    editingManagedBroadcast
-      ? editingManagedBroadcast.imageEnabled
-        ? 'С фото'
-        : null
-      : mailingBotHasContent
-        ? 'Контент в боте'
-        : null,
+    editingManagedBroadcast && editingManagedBroadcast.imageEnabled ? 'Фото' : null,
   ].filter((item): item is string => Boolean(item));
+  const showMailingResetAction =
+    editingManagedBroadcast !== null ||
+    mailingScheduledSlots.length > 0 ||
+    mailingText.trim().length > 0 ||
+    mailingImageEnabled ||
+    mailingButtonEnabled;
   const normalizedMailingButtonUrl = mailingButtonUrl.trim();
   const normalizedMailingButtonText = mailingButtonText.trim();
   const mailingButtonDraftValid =
@@ -3527,12 +3506,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       mailingButtonDraftValid &&
       mailingPlannerState.isConfirmed &&
       mailingHasFutureSlots);
-  const showMailingInlineReset =
-    editingManagedBroadcast !== null ||
-    mailingScheduledSlots.length > 0 ||
-    mailingText.trim().length > 0 ||
-    mailingImageEnabled ||
-    mailingButtonEnabled;
   const mailingSendDisabled = isMailingBusy;
   const mailingFooterLabel = editingManagedBroadcast
     ? 'Изменения применятся сразу'
@@ -3540,10 +3513,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       ? 'Контент уже в боте'
       : 'Финальный шаг в боте';
   const mailingFooterHint = editingManagedBroadcast
-    ? 'Сохраним обновлённый календарь и CTA прямо здесь.'
+    ? 'Сохраним календарь и CTA.'
     : mailingBotHasContent
-      ? 'Контент уже сохранён в личке бота. Кнопка ниже снова откроет бота для замены или подтверждения.'
-      : 'В боте останется только подтверждение отправки.';
+      ? 'Кнопка ниже снова откроет бота для замены или подтверждения.'
+      : 'В боте останется подтверждение отправки.';
   const mailingDrilldownFooter = (
     <>
       <div className="managed-broadcast-editor-note__topline">
@@ -3579,7 +3552,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   );
 
   useEffect(() => {
-    if (typeof window === 'undefined' || !expandedSections.mailing || !activeManagedBroadcastCountdown) {
+    if (
+      typeof window === 'undefined' ||
+      !expandedSections.mailing ||
+      !activeManagedBroadcastCountdown
+    ) {
       return undefined;
     }
 
@@ -8189,58 +8166,40 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                     <div className="settings-section__collapse-inner settings-mailing">
                       <div className="managed-broadcast-editor-note managed-broadcast-editor-note--studio">
                         <div className="managed-broadcast-editor-note__topline">
-                          <span className="managed-broadcast-editor-note__badge">
-                            {mailingStudioBadge}
-                          </span>
-                          {activeManagedBroadcastCountdown ? (
-                            <div className="managed-broadcast-editor-note__timer">
-                              <span>{activeManagedBroadcastCountdown.label}</span>
-                              <strong>{activeManagedBroadcastCountdown.value}</strong>
-                              <small>{activeManagedBroadcastCountdown.caption}</small>
-                            </div>
-                          ) : null}
-                        </div>
-                        <div className="mailing-option-card__head">
-                          <div className="mailing-option-card__title-wrap">
-                            <span className="managed-broadcast-editor-note__eyebrow">
-                              {mailingStudioEyebrow}
+                          <div className="managed-broadcast-editor-note__summary">
+                            <span className="managed-broadcast-editor-note__badge">
+                              {mailingStudioBadge}
                             </span>
                             <strong>{mailingStudioTitle}</strong>
+                            <small className="managed-broadcast-editor-note__meta">
+                              {mailingStudioMeta.join(' · ')}
+                            </small>
                           </div>
-                          <SettingsHintAnchor
-                            hintKey="mailingStudio"
-                            openHintKey={openHintKey}
-                            onToggleHint={toggleHint}
-                            label="Что настраивается в студии рассылки"
-                          >
-                            {mailingStudioDescription}
-                          </SettingsHintAnchor>
-                        </div>
-                        <div className="managed-broadcast-editor-note__facts">
-                          {mailingStudioFacts.map((fact) => (
-                            <span key={fact}>{fact}</span>
-                          ))}
+                          <div className="managed-broadcast-editor-note__actions">
+                            {activeManagedBroadcastCountdown ? (
+                              <div className="managed-broadcast-editor-note__timer">
+                                <span>{activeManagedBroadcastCountdown.label}</span>
+                                <strong>{activeManagedBroadcastCountdown.value}</strong>
+                                <small>{activeManagedBroadcastCountdown.caption}</small>
+                              </div>
+                            ) : null}
+                            {showMailingResetAction ? (
+                              <button
+                                type="button"
+                                className="managed-broadcast-editor-note__link"
+                                onClick={
+                                  editingManagedBroadcast
+                                    ? handleCancelMailingEdit
+                                    : resetMailingComposer
+                                }
+                                disabled={isMailingBusy}
+                              >
+                                {editingManagedBroadcast ? 'Сбросить' : 'Очистить'}
+                              </button>
+                            ) : null}
+                          </div>
                         </div>
                       </div>
-
-                      {showMailingInlineReset ? (
-                        <div className="mailing-inline-tools">
-                          <button
-                            type="button"
-                            className="mailing-inline-tools__link"
-                            onClick={
-                              editingManagedBroadcast
-                                ? handleCancelMailingEdit
-                                : resetMailingComposer
-                            }
-                            disabled={isMailingBusy}
-                          >
-                            {editingManagedBroadcast
-                              ? 'Отменить редактирование'
-                              : 'Очистить рассылку'}
-                          </button>
-                        </div>
-                      ) : null}
 
                       <div className="mailing-options-grid mailing-options-grid--timing">
                         <BroadcastSchedulePlanner
@@ -8317,15 +8276,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           <div className="mailing-option-card__head">
                             <div className="mailing-option-card__title-wrap">
                               <div className="mailing-card-title-row">
-                                <span className="mailing-option-card__title">Кнопка действия</span>
+                                <span className="mailing-option-card__title">Кнопка</span>
                                 <SettingsHintAnchor
                                   hintKey="mailingButton"
                                   openHintKey={openHintKey}
                                   onToggleHint={toggleHint}
                                   label="Пояснение для кнопки рассылки"
                                 >
-                                  Кнопка ведёт на канал, пост или внешнюю форму. Ссылка должна быть
-                                  `http/https`, подпись кнопки до 32 символов.
+                                  Ссылка `http/https`, подпись до 32 символов.
                                 </SettingsHintAnchor>
                               </div>
                             </div>
@@ -8411,7 +8369,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                       <div className="managed-broadcasts-list">
                         <div className="managed-broadcasts-list__head">
-                          <span className="managed-broadcasts-list__title">Текущие рассылки</span>
+                          <span className="managed-broadcasts-list__title">В работе</span>
                           <small className="managed-broadcasts-list__meta">
                             {managedBroadcastsQuery.isLoading
                               ? 'Загрузка...'
@@ -8421,9 +8379,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           </small>
                         </div>
 
-                        {orderedManagedBroadcasts.length === 0 && !managedBroadcastsQuery.isLoading ? (
+                        {orderedManagedBroadcasts.length === 0 &&
+                        !managedBroadcastsQuery.isLoading ? (
                           <div className="managed-broadcasts-list__empty">
-                            Ближайшие активные сценарии и повторы появятся здесь.
+                            Активных рассылок нет.
                           </div>
                         ) : null}
 

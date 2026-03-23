@@ -216,7 +216,7 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(1000);
-      await page.getByRole('button', { name: 'Выбрать количество' }).click();
+      await page.getByRole('button', { name: /(?:Настроить время|Выбрать количество)/u }).click();
       await page.waitForTimeout(300);
     },
   },
@@ -229,7 +229,7 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(1000);
-      await page.getByRole('button', { name: 'Выбрать количество' }).click();
+      await page.getByRole('button', { name: /(?:Настроить время|Выбрать количество)/u }).click();
       await page.waitForTimeout(150);
       await page.getByRole('button', { name: '2 раза' }).click();
       await page.waitForTimeout(300);
@@ -244,7 +244,7 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(1000);
-      await page.getByRole('button', { name: 'Выбрать количество' }).click();
+      await page.getByRole('button', { name: /(?:Настроить время|Выбрать количество)/u }).click();
       await page.waitForTimeout(150);
       await page.getByRole('button', { name: '2 раза' }).click();
       await page.waitForTimeout(150);
@@ -284,7 +284,7 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(1000);
-      await page.getByRole('button', { name: 'Выбрать количество' }).click();
+      await page.getByRole('button', { name: /(?:Настроить время|Выбрать количество)/u }).click();
       await page.waitForTimeout(300);
     },
   },
@@ -297,7 +297,7 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(1000);
-      await page.getByRole('button', { name: 'Выбрать количество' }).click();
+      await page.getByRole('button', { name: /(?:Настроить время|Выбрать количество)/u }).click();
       await page.waitForTimeout(150);
       await page.getByRole('button', { name: '2 раза' }).click();
       await page.waitForTimeout(300);
@@ -312,7 +312,7 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(1000);
-      await page.getByRole('button', { name: 'Выбрать количество' }).click();
+      await page.getByRole('button', { name: /(?:Настроить время|Выбрать количество)/u }).click();
       await page.waitForTimeout(150);
       await page.getByRole('button', { name: '2 раза' }).click();
       await page.waitForTimeout(150);
