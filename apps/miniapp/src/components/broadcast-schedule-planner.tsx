@@ -471,51 +471,14 @@ export function BroadcastSchedulePlanner({
     maxImpact(shouldAdd ? 'light' : 'soft');
   }
 
-  function findPresetMinute(
-    dayKey: string,
-    preferredMinute: number,
-    usedMinutes: Set<number>,
-  ): number | null {
-    const maxStepOffset = Math.floor((4 * 60) / BROADCAST_SCHEDULE_STEP_MINUTES);
-    for (let offset = 0; offset <= maxStepOffset; offset += 1) {
-      const candidates =
-        offset === 0
-          ? [preferredMinute]
-          : [
-              preferredMinute + offset * BROADCAST_SCHEDULE_STEP_MINUTES,
-              preferredMinute - offset * BROADCAST_SCHEDULE_STEP_MINUTES,
-            ];
-
-      for (const candidate of candidates) {
-        if (candidate < 0 || candidate >= 24 * 60 || usedMinutes.has(candidate)) {
-          continue;
-        }
-
-        if (!isSlotUnavailable(dayKey, candidate)) {
-          return candidate;
-        }
-      }
-    }
-
-    return null;
-  }
-
   function applyPresetToDayKeys(dayKeys: string[], preset: SlotPreset) {
     if (disabled) {
       return;
     }
 
     replaceSlotsForDays(dayKeys, (dayKey) => {
-      const nextMinutes = new Set<number>();
-      for (const preferredMinute of preset.minutes) {
-        const resolvedMinute = findPresetMinute(dayKey, preferredMinute, nextMinutes);
-        if (resolvedMinute != null) {
-          nextMinutes.add(resolvedMinute);
-        }
-      }
-
-      return Array.from(nextMinutes)
-        .sort((left, right) => left - right)
+      return preset.minutes
+        .filter((minute) => !isSlotUnavailable(dayKey, minute))
         .map((minute) => buildBroadcastScheduleSlotIso(dayKey, minute));
     });
     maxImpact('medium');
@@ -899,6 +862,11 @@ export function BroadcastSchedulePlanner({
                         </div>
                       ) : null}
 
+                      <div className="broadcast-planner__sheet-note">
+                        Пресеты не сдвигают время автоматически. Занятые слоты будут отмечены на
+                        следующем шаге.
+                      </div>
+
                       <div className="broadcast-planner__count-grid">
                         {SLOT_PRESETS.slice(0, 3).map((preset) => (
                           <button
@@ -1027,6 +995,12 @@ export function BroadcastSchedulePlanner({
                         Прошедшие часы за сегодня просто засчитаем.
                       </div>
 
+                      {occupiedSlots.length > 0 ? (
+                        <div className="broadcast-planner__sheet-note">
+                          Слоты других рассылок помечены как занятые.
+                        </div>
+                      ) : null}
+
                       <div className="broadcast-planner__time-summary">
                         <div className="broadcast-planner__time-summary-item">
                           <small>Всего</small>
@@ -1052,17 +1026,28 @@ export function BroadcastSchedulePlanner({
                               const selectedCountForTargets = targetDayKeys.filter((dayKey) =>
                                 isSlotSelectedForDay(dayKey, minutes),
                               ).length;
+                              const conflictTargetCount = targetDayKeys.filter((dayKey) =>
+                                isSlotUnavailable(dayKey, minutes),
+                              ).length;
                               const isSelected = selectedCountForTargets === targetDayKeys.length;
                               const isMixed =
                                 selectedCountForTargets > 0 &&
                                 selectedCountForTargets < targetDayKeys.length;
                               const pastTargetCount = getPastTargetDayCount(minutes);
                               const hasPastToday = pastTargetCount > 0;
-                              const hasConflict = targetDayKeys.some(
-                                (dayKey) =>
-                                  isSlotUnavailable(dayKey, minutes) &&
-                                  !isSlotSelectedForDay(dayKey, minutes),
-                              );
+                              const hasConflict =
+                                conflictTargetCount > 0 && !isSelected && !isMixed;
+                              const chipCaption = hasConflict
+                                ? conflictTargetCount === targetDayKeys.length
+                                  ? 'занято'
+                                  : 'часть занята'
+                                : hasPastToday
+                                  ? isSelected
+                                    ? 'засчитаем'
+                                    : pastTargetCount === targetDayKeys.length
+                                      ? 'уже прошло'
+                                      : 'часть прошла'
+                                  : null;
 
                               return (
                                 <button
@@ -1079,15 +1064,7 @@ export function BroadcastSchedulePlanner({
                                   disabled={disabled || (hasConflict && !isSelected && !isMixed)}
                                 >
                                   <strong>{formatMinuteLabel(minutes)}</strong>
-                                  {hasPastToday ? (
-                                    <small>
-                                      {isSelected
-                                        ? 'засчитаем'
-                                        : pastTargetCount === targetDayKeys.length
-                                          ? 'уже прошло'
-                                          : 'часть прошла'}
-                                    </small>
-                                  ) : null}
+                                  {chipCaption ? <small>{chipCaption}</small> : null}
                                 </button>
                               );
                             })}

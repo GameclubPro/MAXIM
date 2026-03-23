@@ -6564,7 +6564,14 @@
 
 .broadcast-planner__time-chip.is-disabled {
   border-style: dashed;
-  opacity: 0.45;
+  border-color: rgba(122, 137, 153, 0.26);
+  background: rgba(245, 248, 251, 0.98);
+  color: rgba(66, 82, 97, 0.78);
+  opacity: 1;
+}
+
+.broadcast-planner__time-chip.is-disabled small {
+  color: rgba(95, 111, 127, 0.9);
 }
 
 .broadcast-planner__sheet-footer {
