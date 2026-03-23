@@ -36,6 +36,10 @@ import {
   normalizeManagedGiveawayDraft,
 } from '../common/managed-giveaway.util';
 import {
+  containsSupportedMarkdownSyntax,
+  renderSupportedMarkdownAsHtml,
+} from '../common/max-markdown.util';
+import {
   MaxClientService,
   type MaxMessageButton,
   type MaxSendMessageOptions,
@@ -288,10 +292,14 @@ export class ManagedGiveawayService {
     const publicationButton = this.buildGiveawayEntryButton(giveaway);
     const imagePayload = await this.uploadGiveawayImage(giveaway);
     const publicationText = this.buildGiveawayPublicationText(giveaway);
-    const publicationTextFormat = this.resolveGiveawayPublicationTextFormat(giveaway);
+    const publicationTextFormat = this.resolveGiveawayPublicationTextFormat(publicationText);
+    const renderedPublicationText =
+      publicationTextFormat === 'html'
+        ? renderSupportedMarkdownAsHtml(publicationText)
+        : publicationText;
     const publication = await this.maxClient.sendMessageImmediateWithResolvedLink(
       sourceChatId,
-      publicationText,
+      renderedPublicationText,
       {
         ...(publicationTextFormat ? { textFormat: publicationTextFormat } : {}),
         ...(publicationButton ? { buttons: [[publicationButton]] } : {}),
@@ -1341,15 +1349,13 @@ export class ManagedGiveawayService {
   }
 
   private resolveGiveawayPublicationTextFormat(
-    giveaway: Pick<PersistedGiveawayWithRelations, 'description'>,
+    publicationText: string,
   ): MaxSendMessageOptions['textFormat'] | undefined {
-    return this.shouldUseMarkdownForPublication(giveaway.description) ? 'markdown' : undefined;
+    return this.shouldUseMarkdownForPublication(publicationText) ? 'html' : undefined;
   }
 
   private shouldUseMarkdownForPublication(text: string): boolean {
-    return /(?:\*\*[^*\n]+?\*\*|__[^_\n]+?__|\*[^*\n]+?\*|_[^_\n]+?_|~~[^~\n]+?~~|\+\+[^+\n]+?\+\+|`[^`\n]+`|\[[^\]\n]+\]\((?:https?:\/\/|max:\/\/)[^)]+\))/u.test(
-      text,
-    );
+    return containsSupportedMarkdownSyntax(text);
   }
 
   private buildGiveawayResultsText(giveaway: PersistedGiveawayWithRelations): string {

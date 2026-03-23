@@ -115,6 +115,7 @@ import {
   validateManagedPollForPublish,
 } from '../common/managed-poll.util';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
+import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
 
@@ -3812,10 +3813,10 @@ export class AdminService {
       customButtonUrl: payload.buttonUrl.trim(),
     });
     const shouldUseRichText = payload.textFormat === 'markdown' && normalizedSourceText.length > 0;
-    const messageText = normalizedSourceText || (payload.imageEnabled ? ' ' : '');
-    const textFormat: MaxSendMessageOptions['textFormat'] = shouldUseRichText
-      ? 'markdown'
-      : undefined;
+    const messageText = shouldUseRichText
+      ? renderSupportedMarkdownAsHtml(normalizedSourceText)
+      : normalizedSourceText || (payload.imageEnabled ? ' ' : '');
+    const textFormat: MaxSendMessageOptions['textFormat'] = shouldUseRichText ? 'html' : undefined;
     const messageOptions =
       broadcastButtons.length > 0 || imagePayload || textFormat
         ? {

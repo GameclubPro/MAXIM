@@ -432,7 +432,7 @@ describe('ManagedGiveawayService', () => {
     const draft = createGiveaway({
       status: ManagedGiveawayStatus.DRAFT,
       description:
-        '**Жирный заголовок**\nТекст с _курсивом_ и [ссылкой](https://max.ru/).',
+        '# Жирный заголовок\n\nТекст с **акцентом**, _курсивом_ и [ссылкой](https://max.ru/).',
       entries: [],
       winners: [],
     });
@@ -457,9 +457,9 @@ describe('ManagedGiveawayService', () => {
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'source-1',
-      draft.description,
+      '<h1>Жирный заголовок</h1><p>Текст с <strong>акцентом</strong>, <em>курсивом</em> и <a href="https://max.ru/">ссылкой</a>.</p>',
       expect.objectContaining({
-        textFormat: 'markdown',
+        textFormat: 'html',
         buttons: [[expect.objectContaining({ text: 'Участвовать · 0' })]],
       }),
     );

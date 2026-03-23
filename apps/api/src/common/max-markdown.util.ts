@@ -5,6 +5,12 @@ type InlineToken =
   | { type: 'link'; href: string; children: InlineToken[] };
 
 const SAFE_LINK_PATTERN = /^(https?:\/\/|max:\/\/)/iu;
+const SUPPORTED_MARKDOWN_PATTERN =
+  /(?:^#{1,6}\s+\S.*$|\*\*[^*\n]+?\*\*|__[^_\n]+?__|\*[^*\n]+?\*|_[^_\n]+?_|~~[^~\n]+?~~|\+\+[^+\n]+?\+\+|`[^`\n]+`|\[[^\]\n]+\]\((?:https?:\/\/|max:\/\/)[^)]+\))/mu;
+
+export function containsSupportedMarkdownSyntax(source: string): boolean {
+  return SUPPORTED_MARKDOWN_PATTERN.test(source.replace(/\r/g, '').trim());
+}
 
 export function renderSupportedMarkdownAsHtml(source: string): string {
   const normalized = source.replace(/\r/g, '').trim();
@@ -12,18 +18,42 @@ export function renderSupportedMarkdownAsHtml(source: string): string {
     return '';
   }
 
-  const paragraphs = normalized
-    .split(/\n{2,}/u)
-    .map((paragraph) => paragraph.trim())
-    .filter(Boolean);
+  const blocks: string[] = [];
+  let paragraphLines: string[] = [];
 
-  return paragraphs
-    .map((paragraph) => {
-      const lines = paragraph.split('\n');
-      const renderedLines = lines.map((line) => renderInlineTokens(parseInlineTokens(line)));
-      return `<p>${renderedLines.join('<br>')}</p>`;
-    })
-    .join('');
+  const flushParagraph = () => {
+    if (paragraphLines.length === 0) {
+      return;
+    }
+
+    const renderedLines = paragraphLines.map((line) => renderInlineTokens(parseInlineTokens(line)));
+    blocks.push(`<p>${renderedLines.join('<br>')}</p>`);
+    paragraphLines = [];
+  };
+
+  for (const rawLine of normalized.split('\n')) {
+    const line = rawLine.trimEnd();
+    const trimmedLine = line.trim();
+    if (!trimmedLine) {
+      flushParagraph();
+      continue;
+    }
+
+    const headingMatch = /^(#{1,6})[ \t]+(.+)$/u.exec(trimmedLine);
+    if (headingMatch) {
+      flushParagraph();
+      const level = Math.min(6, headingMatch[1]?.length ?? 1);
+      const content = renderInlineTokens(parseInlineTokens(headingMatch[2] ?? ''));
+      blocks.push(`<h${level}>${content}</h${level}>`);
+      continue;
+    }
+
+    paragraphLines.push(line);
+  }
+
+  flushParagraph();
+
+  return blocks.join('');
 }
 
 export function stripSupportedMarkdownToPlainText(source: string): string {
@@ -32,17 +62,41 @@ export function stripSupportedMarkdownToPlainText(source: string): string {
     return '';
   }
 
-  const paragraphs = normalized
-    .split(/\n{2,}/u)
-    .map((paragraph) => paragraph.trim())
-    .filter(Boolean);
+  const blocks: string[] = [];
+  let paragraphLines: string[] = [];
 
-  return paragraphs
-    .map((paragraph) => {
-      const lines = paragraph.split('\n');
-      return lines.map((line) => renderInlineTokensAsPlainText(parseInlineTokens(line))).join('\n');
-    })
-    .join('\n\n');
+  const flushParagraph = () => {
+    if (paragraphLines.length === 0) {
+      return;
+    }
+
+    blocks.push(
+      paragraphLines.map((line) => renderInlineTokensAsPlainText(parseInlineTokens(line))).join('\n'),
+    );
+    paragraphLines = [];
+  };
+
+  for (const rawLine of normalized.split('\n')) {
+    const line = rawLine.trimEnd();
+    const trimmedLine = line.trim();
+    if (!trimmedLine) {
+      flushParagraph();
+      continue;
+    }
+
+    const headingMatch = /^(#{1,6})[ \t]+(.+)$/u.exec(trimmedLine);
+    if (headingMatch) {
+      flushParagraph();
+      blocks.push(renderInlineTokensAsPlainText(parseInlineTokens(headingMatch[2] ?? '')));
+      continue;
+    }
+
+    paragraphLines.push(line);
+  }
+
+  flushParagraph();
+
+  return blocks.join('\n\n');
 }
 
 function parseInlineTokens(source: string): InlineToken[] {

@@ -26,6 +26,7 @@ import {
 } from '@maxim/contracts';
 import { AdminService } from '../admin/admin.service';
 import { ManagedGiveawayService } from '../admin/managed-giveaway.service';
+import { containsSupportedMarkdownSyntax } from '../common/max-markdown.util';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import {
   MaxClientService,
@@ -7349,9 +7350,7 @@ export class PrivateControlService {
   }
 
   private shouldUseMarkdown(text: string): boolean {
-    return /(?:\*\*[^*\n]+?\*\*|__[^_\n]+?__|\*[^*\n]+?\*|_[^_\n]+?_|~~[^~\n]+?~~|\+\+[^+\n]+?\+\+|`[^`\n]+`|\[[^\]\n]+\]\((?:https?:\/\/|max:\/\/)[^)]+\))/u.test(
-      text,
-    );
+    return containsSupportedMarkdownSyntax(text);
   }
 
   private extractIncomingFormattedText(update: MaxUpdate, fallbackText: string): string {

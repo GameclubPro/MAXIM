@@ -4201,9 +4201,9 @@ describe('AdminService.sendChannelBroadcast', () => {
     expect(maxClient.uploadImage).toHaveBeenCalledTimes(1);
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'channel-1',
-      '**Новый выпуск** уже в канале.',
+      '<p><strong>Новый выпуск</strong> уже в канале.</p>',
       {
-        textFormat: 'markdown',
+        textFormat: 'html',
         buttons: [[{ text: 'Открыть выпуск', type: 'link', url: 'https://max.ru/channel/maxim' }]],
         imagePayload: { token: 'upload-token-channel-1' },
       },
@@ -4293,9 +4293,9 @@ describe('AdminService.sendChannelBroadcast', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'channel-1',
-      '**Новый выпуск** уже в [канале](https://max.ru/channel/maxim).',
+      '<p><strong>Новый выпуск</strong> уже в <a href="https://max.ru/channel/maxim">канале</a>.</p>',
       {
-        textFormat: 'markdown',
+        textFormat: 'html',
       },
       { immediate: true },
     );
@@ -4369,10 +4369,10 @@ describe('AdminService.sendChannelBroadcast', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     const [, messageText, options, dispatch] = maxClient.sendMessage.mock.calls[0];
-    expect(messageText).toBe('**Новый выпуск** уже в канале.');
+    expect(messageText).toBe('<p><strong>Новый выпуск</strong> уже в канале.</p>');
     expect(dispatch).toEqual({ immediate: true });
     expect(options).toMatchObject({
-      textFormat: 'markdown',
+      textFormat: 'html',
       buttons: [[expect.objectContaining({ text: '💬 Комментарии · 0', type: 'link' })]],
     });
     expect(options.buttons[0][0].url).toContain('https://max.ru/777000_bot?startapp=');
@@ -4446,10 +4446,10 @@ describe('AdminService.sendChannelBroadcast', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
     const [, messageText, options, dispatch] = maxClient.sendMessage.mock.calls[0];
-    expect(messageText).toBe('**Новый выпуск** уже в канале.');
+    expect(messageText).toBe('<p><strong>Новый выпуск</strong> уже в канале.</p>');
     expect(dispatch).toEqual({ immediate: true });
     expect(options).toMatchObject({
-      textFormat: 'markdown',
+      textFormat: 'html',
       buttons: [[expect.objectContaining({ text: '📰 Предложить пост', type: 'link' })]],
     });
     expect(options.buttons[0][0].url).toContain('https://max.ru/777000_bot?startapp=');
