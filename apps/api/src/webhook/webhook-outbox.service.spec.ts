@@ -8,7 +8,7 @@ type JobMock = {
 
 type QueueMock = {
   add: jest.Mock<Promise<void>, [string, { webhookEventId: string }, Record<string, unknown>]>;
-  getJob: jest.Mock<Promise<JobMock | null>, [string]>;
+  getJob: jest.Mock<Promise<JobMock | null | undefined>, [string]>;
 };
 
 function createService(params?: {
@@ -23,6 +23,7 @@ function createService(params?: {
   defaultJob?: JobMock | null;
   backgroundJob?: JobMock | null;
   legacyJob?: JobMock | null;
+  undefinedJobs?: boolean;
 }) {
   const prisma = {
     webhookEvent: {
@@ -48,7 +49,9 @@ function createService(params?: {
     job: JobMock | null | undefined,
   ): QueueMock => ({
     add: addError ? jest.fn().mockRejectedValue(addError) : jest.fn().mockResolvedValue(undefined),
-    getJob: jest.fn().mockResolvedValue(job ?? null),
+    getJob: jest
+      .fn()
+      .mockResolvedValue(params?.undefinedJobs ? undefined : (job ?? null)),
   });
 
   const criticalQueue = createQueue(params?.addError, params?.criticalJob);
@@ -282,5 +285,22 @@ describe('WebhookOutboxService', () => {
     expect(queues.legacyQueue.getJob).toHaveBeenCalledWith('evt-legacy');
     expect(job.retry).toHaveBeenCalledTimes(1);
     expect(queues.defaultQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('treats undefined BullMQ lookups as missing jobs and enqueues normally', async () => {
+    const { service, queues } = createService({
+      findManyResult: [{ id: 'evt-undefined', enqueueAttempts: 0 }],
+      undefinedJobs: true,
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(queues.defaultQueue.add).toHaveBeenCalledWith(
+      'process-webhook-event',
+      { webhookEventId: 'evt-undefined' },
+      expect.objectContaining({
+        jobId: 'evt-undefined',
+      }),
+    );
   });
 });

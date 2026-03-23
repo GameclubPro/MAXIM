@@ -373,7 +373,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
     const matches = jobs.filter(
       (item): item is { queueName: AnyWebhookQueueName; job: Job<ProcessWebhookJob> } =>
-        item.job !== null,
+        item.job != null,
     );
     if (matches.length === 0) {
       return null;
