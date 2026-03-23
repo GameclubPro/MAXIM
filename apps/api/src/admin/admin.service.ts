@@ -223,6 +223,7 @@ const MANAGED_POLL_ACTION_UPDATE = 'UPDATE_MANAGED_POLL';
 const MANAGED_POLL_ACTION_PUBLISH = 'PUBLISH_MANAGED_POLL';
 const MANAGED_POLL_ACTION_CLOSE = 'CLOSE_MANAGED_POLL';
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
+const CHANNEL_SUGGESTION_START_PARAM_PREFIX = 'cds-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
 const DEFAULT_CHAT_SETTINGS = chatSettingsSchema.parse({});
 const DEFAULT_CHANNEL_SETTINGS = channelSettingsSchema.parse({});
@@ -1472,7 +1473,7 @@ export class AdminService {
     const threadId = existingThreadId || randomUUID();
     const commentsUrl = this.buildChannelDialogLaunchUrl(chatId, 'comments', threadId);
     const suggestUrl =
-      this.buildBotStartUrl(this.buildChannelDialogStartParam(chatId, 'suggest', threadId)) ??
+      this.buildBotStartUrl(this.buildChannelSuggestionStartPayload(chatId, threadId)) ??
       this.buildChannelDialogLaunchUrl(chatId, 'suggest', threadId);
     const commentsWebAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, 'comments', threadId);
     const suggestWebAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, 'suggest', threadId);
@@ -1718,6 +1719,55 @@ export class AdminService {
       delivered: delivery.delivered,
       deliveredToUserId: delivery.deliveredToUserId,
     } as const;
+  }
+
+  parseChannelSuggestionStartPayload(
+    startPayload: string | null,
+  ): { chatId: string; token: string } | null {
+    const compactPayload = this.parseCompactChannelSuggestionStartPayload(startPayload);
+    if (compactPayload) {
+      return compactPayload;
+    }
+
+    if (!startPayload || !startPayload.startsWith(CHANNEL_DIALOG_START_PARAM_PREFIX)) {
+      return null;
+    }
+
+    const encodedPayload = startPayload.slice(CHANNEL_DIALOG_START_PARAM_PREFIX.length);
+    if (!encodedPayload) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(
+        Buffer.from(encodedPayload, 'base64url').toString('utf8'),
+      ) as Partial<{
+        v: number;
+        k: string;
+        c: string;
+        m: string;
+        t: string;
+      }>;
+      const chatId = typeof parsed.c === 'string' ? parsed.c.trim() : '';
+      const token = typeof parsed.t === 'string' ? parsed.t.trim() : '';
+
+      if (
+        parsed.v !== 1 ||
+        parsed.k !== 'channel-dialog' ||
+        parsed.m !== 'suggest' ||
+        !chatId ||
+        !token
+      ) {
+        return null;
+      }
+
+      return {
+        chatId,
+        token,
+      };
+    } catch {
+      return null;
+    }
   }
 
   private async createChannelDialogMessageInternal(
@@ -5012,7 +5062,7 @@ export class AdminService {
   ): MaxMessageButton {
     const botStartUrl =
       type === 'suggest'
-        ? this.buildBotStartUrl(this.buildChannelDialogStartParam(chatId, type, threadId))
+        ? this.buildBotStartUrl(this.buildChannelSuggestionStartPayload(chatId, threadId))
         : null;
     const launchUrl = this.buildChannelDialogLaunchUrl(chatId, type, threadId);
     const webAppUrl = this.buildChannelDialogDirectWebAppUrl(chatId, type, threadId);
@@ -8438,6 +8488,22 @@ export class AdminService {
     return this.buildEntityDialogStartParam('channel', chatId, type, threadId);
   }
 
+  private buildChannelSuggestionStartPayload(chatId: string, threadId: string): string {
+    const normalizedChatId = chatId.trim();
+    const normalizedThreadId = threadId.trim();
+    const compactThreadId = this.compactSuggestionThreadId(normalizedThreadId);
+
+    if (!normalizedChatId || !compactThreadId) {
+      return this.buildChannelDialogStartParam(chatId, 'suggest', threadId);
+    }
+
+    const signature = this.buildChannelSuggestionStartSignature(
+      normalizedChatId,
+      normalizedThreadId,
+    );
+    return `${CHANNEL_SUGGESTION_START_PARAM_PREFIX}${normalizedChatId}.${compactThreadId}.${signature}`;
+  }
+
   private buildEntityDialogStartParam(
     entityType: ManagedEntityType,
     chatId: string,
@@ -8470,6 +8536,69 @@ export class AdminService {
     }
 
     return `https://max.ru/${encodeURIComponent(this.ownBotUserId)}?start=${encodeURIComponent(startPayload)}`;
+  }
+
+  private parseCompactChannelSuggestionStartPayload(
+    startPayload: string | null,
+  ): { chatId: string; token: string } | null {
+    if (!startPayload || !startPayload.startsWith(CHANNEL_SUGGESTION_START_PARAM_PREFIX)) {
+      return null;
+    }
+
+    const rawPayload = startPayload.slice(CHANNEL_SUGGESTION_START_PARAM_PREFIX.length);
+    const [chatIdRaw, compactThreadIdRaw, signatureRaw, ...rest] = rawPayload.split('.');
+    if (rest.length > 0) {
+      return null;
+    }
+
+    const chatId = chatIdRaw?.trim() ?? '';
+    const compactThreadId = compactThreadIdRaw?.trim().toLowerCase() ?? '';
+    const signature = signatureRaw?.trim().toLowerCase() ?? '';
+    const threadId = this.expandSuggestionThreadId(compactThreadId);
+    if (!chatId || !threadId || !/^[a-f0-9]{24}$/u.test(signature)) {
+      return null;
+    }
+
+    const expectedSignature = this.buildChannelSuggestionStartSignature(chatId, threadId);
+    if (!this.isValidChannelDialogSignature(signature, expectedSignature)) {
+      return null;
+    }
+
+    return {
+      chatId,
+      token: this.buildChannelDialogToken(chatId, 'suggest', threadId),
+    };
+  }
+
+  private buildChannelSuggestionStartSignature(chatId: string, threadId: string): string {
+    return createHmac('sha256', this.maxBotToken)
+      .update(`suggest-start:${chatId}:${threadId}`)
+      .digest('hex')
+      .slice(0, 24);
+  }
+
+  private compactSuggestionThreadId(threadId: string): string | null {
+    const normalized = threadId.trim().toLowerCase();
+    if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/u.test(normalized)) {
+      return null;
+    }
+
+    return normalized.replace(/-/gu, '');
+  }
+
+  private expandSuggestionThreadId(compactThreadId: string): string | null {
+    const normalized = compactThreadId.trim().toLowerCase();
+    if (!/^[a-f0-9]{32}$/u.test(normalized)) {
+      return null;
+    }
+
+    return [
+      normalized.slice(0, 8),
+      normalized.slice(8, 12),
+      normalized.slice(12, 16),
+      normalized.slice(16, 20),
+      normalized.slice(20),
+    ].join('-');
   }
 
   private buildProfileMentionStartPayload(params: {

@@ -249,14 +249,6 @@ type ProfileMentionStartPayload = {
   n: string;
 };
 
-type ChannelSuggestionStartPayload = {
-  v: 1;
-  k: 'channel-dialog';
-  c: string;
-  m: 'suggest';
-  t: string;
-};
-
 type ParsedImageAttachment = {
   url: string;
   token: string | null;
@@ -326,7 +318,6 @@ const RULES_HANDOFF_START_PAYLOAD = 'rules_handoff';
 const GIVEAWAY_HANDOFF_START_PAYLOAD = 'giveaway_handoff';
 const GIVEAWAY_HANDOFF_START_PREFIX = 'ggh-';
 const PROFILE_MENTION_START_PREFIX = 'pmh-';
-const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const PAGE_SIZE_CHATS = 8;
 const PAGE_SIZE_DOMAINS = 8;
 const PAGE_SIZE_EVENTS = 10;
@@ -1105,7 +1096,9 @@ export class PrivateControlService {
       await this.saveSession(context.actor.userId, session);
       return;
     }
-    const channelSuggestionPayload = this.parseChannelSuggestionStartPayload(startPayload);
+    const channelSuggestionPayload = this.adminService.parseChannelSuggestionStartPayload(
+      startPayload,
+    );
     if (channelSuggestionPayload) {
       session.pendingInput = {
         kind: 'channel_suggestion',
@@ -8716,44 +8709,6 @@ export class PrivateControlService {
         entityType,
         userId,
         displayName: displayName || 'Пользователь',
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  private parseChannelSuggestionStartPayload(
-    startPayload: string | null,
-  ): { chatId: string; token: string } | null {
-    if (!startPayload || !startPayload.startsWith(CHANNEL_DIALOG_START_PARAM_PREFIX)) {
-      return null;
-    }
-
-    const encodedPayload = startPayload.slice(CHANNEL_DIALOG_START_PARAM_PREFIX.length);
-    if (!encodedPayload) {
-      return null;
-    }
-
-    try {
-      const parsed = JSON.parse(
-        Buffer.from(encodedPayload, 'base64url').toString('utf8'),
-      ) as Partial<ChannelSuggestionStartPayload>;
-      const chatId = typeof parsed.c === 'string' ? parsed.c.trim() : '';
-      const token = typeof parsed.t === 'string' ? parsed.t.trim() : '';
-
-      if (
-        parsed.v !== 1 ||
-        parsed.k !== 'channel-dialog' ||
-        parsed.m !== 'suggest' ||
-        !chatId ||
-        !token
-      ) {
-        return null;
-      }
-
-      return {
-        chatId,
-        token,
       };
     } catch {
       return null;

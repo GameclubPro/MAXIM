@@ -630,6 +630,24 @@ function createHarness(
       delivered: true,
       deliveredToUserId: 'admin-1',
     }),
+    parseChannelSuggestionStartPayload: jest.fn((payload: string | null) => {
+      if (!payload?.startsWith('cds-')) {
+        return null;
+      }
+
+      const separatorIndex = payload.indexOf(':');
+      if (separatorIndex <= 4) {
+        return null;
+      }
+
+      const chatId = payload.slice(4, separatorIndex).trim();
+      const token = payload.slice(separatorIndex + 1).trim();
+      if (!chatId || !token) {
+        return null;
+      }
+
+      return { chatId, token };
+    }),
     publishChannelEngagementMessage: jest.fn().mockResolvedValue(undefined),
     ...overrides.adminService,
   };
@@ -875,18 +893,7 @@ function extractStartPayload(url: string): string {
 }
 
 function encodeChannelSuggestionStartPayload(chatId: string, token: string): string {
-  const payload = Buffer.from(
-    JSON.stringify({
-      v: 1,
-      k: 'channel-dialog',
-      c: chatId,
-      m: 'suggest',
-      t: token,
-    }),
-    'utf8',
-  ).toString('base64url');
-
-  return `cd-${payload}`;
+  return `cds-${chatId}:${token}`;
 }
 
 function mockImageFetch(buffer: Buffer = TINY_PNG, mimeType = 'image/png') {

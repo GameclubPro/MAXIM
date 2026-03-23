@@ -502,8 +502,8 @@ async function publishSuggestDialogToken(
   const [, , options] = maxClient.sendMessageImmediateWithResolvedLink.mock.calls[0] ?? [];
   const suggestButton = options.buttons?.[0]?.[0];
   const suggestStartParam = new URL(suggestButton.url).searchParams.get('start');
-  const suggestLaunch = decodeBase64UrlJson<{ t: string }>(suggestStartParam!.slice(3));
-  return suggestLaunch.t;
+  const parsed = service.parseChannelSuggestionStartPayload(suggestStartParam);
+  return parsed?.token ?? '';
 }
 
 describe('AdminService night mode settings normalization', () => {
@@ -5510,27 +5510,27 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     const suggestStartParam = suggestUrl.searchParams.get('start');
 
     expect(commentsStartParam).toMatch(/^cd-/u);
-    expect(suggestStartParam).toMatch(/^cd-/u);
+    expect(suggestStartParam).toMatch(/^cds-/u);
+    expect(suggestStartParam!.length).toBeLessThanOrEqual(128);
 
     const commentsLaunch = decodeBase64UrlJson<{ c: string; m: string; t: string }>(
       commentsStartParam!.slice(3),
     );
-    const suggestLaunch = decodeBase64UrlJson<{ c: string; m: string; t: string }>(
-      suggestStartParam!.slice(3),
-    );
     const commentsToken = decodeBase64UrlJson<{ d: string; s: string }>(commentsLaunch.t.slice(4));
-    const suggestToken = decodeBase64UrlJson<{ d: string; s: string }>(suggestLaunch.t.slice(4));
+    const parsedSuggestLaunch = service.parseChannelSuggestionStartPayload(suggestStartParam);
+    const suggestToken = decodeBase64UrlJson<{ d: string; s: string }>(
+      parsedSuggestLaunch!.token.slice(4),
+    );
 
     expect(commentsLaunch).toMatchObject({
       c: 'channel-1',
       m: 'comments',
     });
-    expect(suggestLaunch).toMatchObject({
-      c: 'channel-1',
-      m: 'suggest',
+    expect(parsedSuggestLaunch).toMatchObject({
+      chatId: 'channel-1',
+      token: expect.stringMatching(/^cdt-/u),
     });
     expect(commentsLaunch.t).toMatch(/^cdt-/u);
-    expect(suggestLaunch.t).toMatch(/^cdt-/u);
     expect(commentsToken.d).toBe(suggestToken.d);
     expect(commentsToken.s).not.toBe(suggestToken.s);
 
