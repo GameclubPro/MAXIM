@@ -242,4 +242,48 @@ describe('ChannelStatsCollectorService', () => {
 
     await service.onModuleDestroy();
   });
+
+  it('pauses scheduled background sync while the shared system mode is degraded', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findMany.mockResolvedValue([{ id: 'channel-1' }]);
+    const maxClient = {
+      ensureWebhookSubscription: jest.fn(),
+    };
+    const systemModeService = {
+      getEffectiveSnapshot: jest.fn().mockResolvedValue({
+        mode: 'degrade',
+        source: 'auto',
+        reason: 'queue lag 22.0s',
+        updatedAt: new Date().toISOString(),
+        manualMode: null,
+        queueLagSec: 22,
+        action: {
+          windowSec: 60,
+          total: 200,
+          success: 190,
+          failure: 10,
+          critical: 0,
+          errorRate: 0.05,
+          criticalRate: 0,
+        },
+      }),
+    };
+
+    const service = new ChannelStatsCollectorService(
+      prisma as never,
+      maxClient as never,
+      createConfigMock() as never,
+      systemModeService as never,
+    );
+    const syncSpy = jest.spyOn(service, 'syncChannel');
+
+    await service.syncAllChannels('scheduled');
+
+    expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalled();
+    expect(prisma.chat.findMany).not.toHaveBeenCalled();
+    expect(syncSpy).not.toHaveBeenCalled();
+    expect(maxClient.ensureWebhookSubscription).not.toHaveBeenCalled();
+
+    await service.onModuleDestroy();
+  });
 });

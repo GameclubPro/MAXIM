@@ -6,6 +6,11 @@ type JobMock = {
   retry: jest.Mock<Promise<void>, []>;
 };
 
+type QueueMock = {
+  add: jest.Mock<Promise<void>, [string, { webhookEventId: string }, Record<string, unknown>]>;
+  getJob: jest.Mock<Promise<JobMock | null>, [string]>;
+};
+
 function createService(params?: {
   findManyResult?: Array<{
     id: string;
@@ -14,7 +19,10 @@ function createService(params?: {
     normalizedPayload?: unknown;
   }>;
   addError?: Error | null;
-  job?: JobMock | null;
+  criticalJob?: JobMock | null;
+  defaultJob?: JobMock | null;
+  backgroundJob?: JobMock | null;
+  legacyJob?: JobMock | null;
 }) {
   const prisma = {
     webhookEvent: {
@@ -35,12 +43,18 @@ function createService(params?: {
     },
   };
 
-  const queue = {
-    add: params?.addError
-      ? jest.fn().mockRejectedValue(params.addError)
-      : jest.fn().mockResolvedValue(undefined),
-    getJob: jest.fn().mockResolvedValue(params?.job ?? null),
-  };
+  const createQueue = (
+    addError: Error | null | undefined,
+    job: JobMock | null | undefined,
+  ): QueueMock => ({
+    add: addError ? jest.fn().mockRejectedValue(addError) : jest.fn().mockResolvedValue(undefined),
+    getJob: jest.fn().mockResolvedValue(job ?? null),
+  });
+
+  const criticalQueue = createQueue(params?.addError, params?.criticalJob);
+  const defaultQueue = createQueue(params?.addError, params?.defaultJob);
+  const backgroundQueue = createQueue(params?.addError, params?.backgroundJob);
+  const legacyQueue = createQueue(params?.addError, params?.legacyJob);
 
   const configValues: Record<string, number> = {
     ENQUEUE_POLL_INTERVAL_MS: 500,
@@ -55,8 +69,24 @@ function createService(params?: {
     ),
   };
 
-  const service = new WebhookOutboxService(prisma as never, config as never, queue as never);
-  return { service, prisma, queue };
+  const service = new WebhookOutboxService(
+    prisma as never,
+    config as never,
+    criticalQueue as never,
+    defaultQueue as never,
+    backgroundQueue as never,
+    legacyQueue as never,
+  );
+  return {
+    service,
+    prisma,
+    queues: {
+      criticalQueue,
+      defaultQueue,
+      backgroundQueue,
+      legacyQueue,
+    },
+  };
 }
 
 describe('WebhookOutboxService', () => {
@@ -87,7 +117,7 @@ describe('WebhookOutboxService', () => {
     const { service, prisma } = createService({
       findManyResult: [{ id: 'evt-1', enqueueAttempts: 5 }],
       addError: new Error('Job evt-1 already exists'),
-      job,
+      defaultJob: job,
     });
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
@@ -107,7 +137,7 @@ describe('WebhookOutboxService', () => {
     const { service, prisma } = createService({
       findManyResult: [{ id: 'evt-2', enqueueAttempts: 5 }],
       addError: new Error('Job evt-2 already exists'),
-      job,
+      defaultJob: job,
     });
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
@@ -123,15 +153,15 @@ describe('WebhookOutboxService', () => {
       getState: jest.fn().mockResolvedValue('failed'),
       retry: jest.fn().mockResolvedValue(undefined),
     };
-    const { service, prisma, queue } = createService({
+    const { service, prisma, queues } = createService({
       findManyResult: [{ id: 'evt-2b', enqueueAttempts: 5 }],
-      job,
+      defaultJob: job,
     });
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
-    expect(queue.getJob).toHaveBeenCalledWith('evt-2b');
-    expect(queue.add).not.toHaveBeenCalled();
+    expect(queues.defaultQueue.getJob).toHaveBeenCalledWith('evt-2b');
+    expect(queues.defaultQueue.add).not.toHaveBeenCalled();
     expect(job.retry).toHaveBeenCalledTimes(1);
     const updateArg = prisma.webhookEvent.updateMany.mock.calls[0][0];
     expect(updateArg.data.status).toBe(WebhookStatus.QUEUED);
@@ -139,14 +169,20 @@ describe('WebhookOutboxService', () => {
   });
 
   it('marks event as FAILED without re-enqueue when max attempts is reached', async () => {
-    const { service, prisma, queue } = createService();
+    const { service, prisma, queues } = createService();
 
-    await (service as unknown as { enqueueOne: (id: string, attempts: number) => Promise<void> }).enqueueOne(
-      'evt-3',
-      120,
-    );
+    await (
+      service as unknown as {
+        enqueueOne: (
+          id: string,
+          attempts: number,
+          priority: number,
+          queueName: 'moderation-default',
+        ) => Promise<void>;
+      }
+    ).enqueueOne('evt-3', 120, 6, 'moderation-default');
 
-    expect(queue.add).not.toHaveBeenCalled();
+    expect(queues.defaultQueue.add).not.toHaveBeenCalled();
     expect(prisma.webhookEvent.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -158,7 +194,7 @@ describe('WebhookOutboxService', () => {
   });
 
   it('assigns highest BullMQ priority to callback events', async () => {
-    const { service, queue } = createService({
+    const { service, queues } = createService({
       findManyResult: [
         {
           id: 'evt-callback',
@@ -171,7 +207,7 @@ describe('WebhookOutboxService', () => {
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
-    expect(queue.add).toHaveBeenCalledWith(
+    expect(queues.criticalQueue.add).toHaveBeenCalledWith(
       'process-webhook-event',
       { webhookEventId: 'evt-callback' },
       expect.objectContaining({
@@ -182,7 +218,7 @@ describe('WebhookOutboxService', () => {
   });
 
   it('enqueues high-priority membership joins before older message_created events', async () => {
-    const { service, queue } = createService({
+    const { service, queues } = createService({
       findManyResult: [
         {
           id: 'evt-message',
@@ -201,9 +237,50 @@ describe('WebhookOutboxService', () => {
 
     await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
 
-    expect(queue.add.mock.calls.map((call) => call[1].webhookEventId)).toEqual([
+    expect(queues.criticalQueue.add.mock.calls.map((call) => call[1].webhookEventId)).toEqual([
       'evt-user-added',
+    ]);
+    expect(queues.defaultQueue.add.mock.calls.map((call) => call[1].webhookEventId)).toEqual([
       'evt-message',
     ]);
+  });
+
+  it('routes membership leave events into the background queue', async () => {
+    const { service, queues } = createService({
+      findManyResult: [
+        {
+          id: 'evt-user-removed',
+          enqueueAttempts: 0,
+          normalizedPayload: { type: 'user_removed' },
+        },
+      ],
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(queues.backgroundQueue.add).toHaveBeenCalledWith(
+      'process-webhook-event',
+      { webhookEventId: 'evt-user-removed' },
+      expect.objectContaining({
+        jobId: 'evt-user-removed',
+      }),
+    );
+  });
+
+  it('retries existing jobs found in the legacy queue before scheduling new work', async () => {
+    const job: JobMock = {
+      getState: jest.fn().mockResolvedValue('failed'),
+      retry: jest.fn().mockResolvedValue(undefined),
+    };
+    const { service, queues } = createService({
+      findManyResult: [{ id: 'evt-legacy', enqueueAttempts: 1 }],
+      legacyJob: job,
+    });
+
+    await (service as unknown as { enqueueBatch: () => Promise<void> }).enqueueBatch();
+
+    expect(queues.legacyQueue.getJob).toHaveBeenCalledWith('evt-legacy');
+    expect(job.retry).toHaveBeenCalledTimes(1);
+    expect(queues.defaultQueue.add).not.toHaveBeenCalled();
   });
 });

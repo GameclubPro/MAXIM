@@ -20,14 +20,14 @@ export class SystemController {
   async getQueueMetrics() {
     const [queues, mode] = await Promise.all([
       this.queueMetricsService.getSnapshot(),
-      Promise.resolve(this.systemModeService.getSnapshot()),
+      this.systemModeService.getEffectiveSnapshot(),
     ]);
     return { queues, mode };
   }
 
   @Get('mode')
-  getMode() {
-    return this.systemModeService.getSnapshot();
+  async getMode() {
+    return this.systemModeService.getEffectiveSnapshot();
   }
 
   @Post('mode')

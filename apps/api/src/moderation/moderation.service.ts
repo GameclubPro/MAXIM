@@ -41,7 +41,7 @@ import { AdminService } from '../admin/admin.service';
 import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
-import { SystemModeService } from '../system/system-mode.service';
+import { SystemModeService, type SystemModeSnapshot } from '../system/system-mode.service';
 import { ChatContextCacheService } from '../chat-context/chat-context-cache.service';
 import { PrivateControlService } from './private-control.service';
 import { RedisCounterService } from './redis-counter.service';
@@ -57,10 +57,13 @@ import {
   parseManagedPollCallbackPayload,
 } from '../common/managed-poll.util';
 import { formatCommentsButtonText } from '../common/dialog-button-label.util';
-
-type ProcessWebhookJob = {
-  webhookEventId: string;
-};
+import {
+  LEGACY_WEBHOOK_QUEUE,
+  type ProcessWebhookJob,
+  WEBHOOK_QUEUE_BACKGROUND,
+  WEBHOOK_QUEUE_CRITICAL,
+  WEBHOOK_QUEUE_DEFAULT,
+} from '../webhook/webhook-queues';
 
 type ActiveBan = {
   eventId: string;
@@ -118,6 +121,26 @@ const REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC = 15 * 60;
 const REQUIRED_SUBSCRIPTION_RULE_CODE = 'REQUIRED_SUBSCRIPTION';
 const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
 const CHAT_ADMIN_CACHE_TTL_SEC = Math.ceil(CHAT_ADMIN_CACHE_TTL_MS / 1_000);
+const BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS = 60_000;
+const MODERATION_CONCURRENCY_SPLIT = resolveModerationConcurrencySplit(
+  readPositiveInt(process.env.MODERATION_CONCURRENCY, 24),
+);
+const LEGACY_MODERATION_CONCURRENCY = readPositiveInt(
+  process.env.MODERATION_CONCURRENCY_LEGACY,
+  1,
+);
+const CRITICAL_MODERATION_CONCURRENCY = readPositiveInt(
+  process.env.MODERATION_CONCURRENCY_CRITICAL,
+  MODERATION_CONCURRENCY_SPLIT.critical,
+);
+const DEFAULT_MODERATION_CONCURRENCY = readPositiveInt(
+  process.env.MODERATION_CONCURRENCY_DEFAULT,
+  MODERATION_CONCURRENCY_SPLIT.default,
+);
+const BACKGROUND_MODERATION_CONCURRENCY = readPositiveInt(
+  process.env.MODERATION_CONCURRENCY_BACKGROUND,
+  MODERATION_CONCURRENCY_SPLIT.background,
+);
 const CHAT_ADMIN_SHARED_CACHE_KEY_PREFIX = 'chat-admins:v2';
 const SUPPORT_CHAT_URL = 'https://max.ru/join/qX7U_Hj-L-xMJG8V7wlF6dD-6a6cXIzTBGRtU2mRMzk';
 const MINIAPP_ROUTE_START_PARAM_PREFIX = 'mr-';
@@ -219,9 +242,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly ownBotUserIdVariants: Set<string>;
   private nightModeAnnounceTimer: NodeJS.Timeout | null = null;
   private nightModeAnnounceInFlight = false;
+  private nightModePausedLogAtMs = 0;
   private channelAutoPostTimer: NodeJS.Timeout | null = null;
   private channelAutoPostInFlight = false;
   private channelAutoPostBackoffUntilMs = 0;
+  private channelAutoPostPausedLogAtMs = 0;
   private readonly appBaseUrl: string | null;
   private readonly explicitBotContactId: string | null;
   private readonly maxBotToken: string | null;
@@ -388,23 +413,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const userLabel = this.formatUserLabel(senderName);
-    const mode = this.systemModeService?.getSnapshot() ?? {
-      mode: 'normal',
-      source: 'auto',
-      reason: 'fallback',
-      updatedAt: new Date().toISOString(),
-      manualMode: null,
-      queueLagSec: 0,
-      action: {
-        windowSec: 60,
-        total: 0,
-        success: 0,
-        failure: 0,
-        critical: 0,
-        errorRate: 0,
-        criticalRate: 0,
-      },
-    };
+    const mode = await this.resolveSystemModeSnapshot();
     const degradeMode = mode.mode === 'degrade';
     const chat = await this.loadChatContext(chatId, chatTitle);
     const settings = this.applyDegradeSettings(chat.settings, degradeMode);
@@ -4975,6 +4984,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (this.nightModeAnnounceInFlight || !roleRunsModeration(getAppRole())) {
       return;
     }
+    if (await this.shouldPauseBackgroundWork('night-mode-announcements')) {
+      return;
+    }
 
     this.nightModeAnnounceInFlight = true;
     try {
@@ -7273,6 +7285,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (Date.now() < this.channelAutoPostBackoffUntilMs) {
       return;
     }
+    if (await this.shouldPauseBackgroundWork('channel-auto-post-buttons')) {
+      return;
+    }
     if (typeof this.prisma.channelSettings?.findMany !== 'function') {
       return;
     }
@@ -8601,12 +8616,91 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       Number.isInteger(hours) && hours >= 1 && hours <= 36 ? hours : DEFAULT_BAN_DURATION_HOURS;
     return `${safeHours}ч`;
   }
+
+  private async resolveSystemModeSnapshot(): Promise<SystemModeSnapshot> {
+    if (!this.systemModeService) {
+      return this.createFallbackSystemModeSnapshot();
+    }
+
+    const systemModeService = this.systemModeService as SystemModeService & {
+      getEffectiveSnapshot?: () => Promise<SystemModeSnapshot>;
+      getSnapshot?: () => SystemModeSnapshot;
+    };
+    if (typeof systemModeService.getEffectiveSnapshot === 'function') {
+      return systemModeService.getEffectiveSnapshot();
+    }
+    if (typeof systemModeService.getSnapshot === 'function') {
+      return systemModeService.getSnapshot();
+    }
+
+    return this.createFallbackSystemModeSnapshot();
+  }
+
+  private createFallbackSystemModeSnapshot(): SystemModeSnapshot {
+    return {
+      mode: 'normal',
+      source: 'auto',
+      reason: 'fallback',
+      updatedAt: new Date().toISOString(),
+      manualMode: null,
+      queueLagSec: 0,
+      action: {
+        windowSec: 60,
+        total: 0,
+        success: 0,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      },
+    };
+  }
+
+  private async shouldPauseBackgroundWork(
+    task: 'night-mode-announcements' | 'channel-auto-post-buttons',
+  ): Promise<boolean> {
+    const mode = await this.resolveSystemModeSnapshot();
+    if (mode.mode !== 'degrade') {
+      return false;
+    }
+
+    const now = Date.now();
+    if (task === 'night-mode-announcements') {
+      if (now - this.nightModePausedLogAtMs >= BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS) {
+        this.nightModePausedLogAtMs = now;
+        this.logger.log(
+          {
+            task,
+            mode: mode.mode,
+            source: mode.source,
+            reason: mode.reason,
+          },
+          'Paused moderation background work because the system is degraded',
+        );
+      }
+      return true;
+    }
+
+    if (now - this.channelAutoPostPausedLogAtMs >= BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS) {
+      this.channelAutoPostPausedLogAtMs = now;
+      this.logger.log(
+        {
+          task,
+          mode: mode.mode,
+          source: mode.source,
+          reason: mode.reason,
+        },
+        'Paused moderation background work because the system is degraded',
+      );
+    }
+    return true;
+  }
 }
 
-@Processor('moderation', {
-  concurrency: Number(process.env.MODERATION_CONCURRENCY ?? 24),
+@Processor(LEGACY_WEBHOOK_QUEUE, {
+  concurrency: LEGACY_MODERATION_CONCURRENCY,
 })
-export class ModerationProcessor extends WorkerHost {
+export class LegacyModerationProcessor extends WorkerHost {
   constructor(private readonly moderationService: ModerationService) {
     super();
   }
@@ -8617,4 +8711,92 @@ export class ModerationProcessor extends WorkerHost {
     }
     await this.moderationService.processWebhookEvent(job.data.webhookEventId);
   }
+}
+
+@Processor(WEBHOOK_QUEUE_CRITICAL, {
+  concurrency: CRITICAL_MODERATION_CONCURRENCY,
+})
+export class CriticalWebhookProcessor extends WorkerHost {
+  constructor(private readonly moderationService: ModerationService) {
+    super();
+  }
+
+  async process(job: Job<ProcessWebhookJob>) {
+    if (!roleRunsModeration(getAppRole())) {
+      return;
+    }
+    await this.moderationService.processWebhookEvent(job.data.webhookEventId);
+  }
+}
+
+@Processor(WEBHOOK_QUEUE_DEFAULT, {
+  concurrency: DEFAULT_MODERATION_CONCURRENCY,
+})
+export class DefaultWebhookProcessor extends WorkerHost {
+  constructor(private readonly moderationService: ModerationService) {
+    super();
+  }
+
+  async process(job: Job<ProcessWebhookJob>) {
+    if (!roleRunsModeration(getAppRole())) {
+      return;
+    }
+    await this.moderationService.processWebhookEvent(job.data.webhookEventId);
+  }
+}
+
+@Processor(WEBHOOK_QUEUE_BACKGROUND, {
+  concurrency: BACKGROUND_MODERATION_CONCURRENCY,
+})
+export class BackgroundWebhookProcessor extends WorkerHost {
+  constructor(private readonly moderationService: ModerationService) {
+    super();
+  }
+
+  async process(job: Job<ProcessWebhookJob>) {
+    if (!roleRunsModeration(getAppRole())) {
+      return;
+    }
+    await this.moderationService.processWebhookEvent(job.data.webhookEventId);
+  }
+}
+
+function readPositiveInt(rawValue: string | undefined, fallback: number): number {
+  const parsed = Number(rawValue);
+  if (Number.isInteger(parsed) && parsed > 0) {
+    return parsed;
+  }
+  return fallback;
+}
+
+function resolveModerationConcurrencySplit(total: number): {
+  critical: number;
+  default: number;
+  background: number;
+} {
+  if (total <= 2) {
+    return {
+      critical: 1,
+      default: 1,
+      background: 1,
+    };
+  }
+
+  if (total === 3) {
+    return {
+      critical: 1,
+      default: 1,
+      background: 1,
+    };
+  }
+
+  const background = total >= 8 ? 2 : 1;
+  const critical = Math.max(1, Math.ceil(total * 0.35));
+  const defaultQueue = Math.max(1, total - critical - background);
+
+  return {
+    critical,
+    default: defaultQueue,
+    background,
+  };
 }

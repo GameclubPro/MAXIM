@@ -5,7 +5,14 @@ import { ChatContextModule } from '../chat-context/chat-context.module';
 import { MaxModule } from '../max/max.module';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
 import { SystemModule } from '../system/system.module';
-import { ModerationProcessor, ModerationService } from './moderation.service';
+import {
+  BackgroundWebhookProcessor,
+  CriticalWebhookProcessor,
+  DefaultWebhookProcessor,
+  LegacyModerationProcessor,
+  ModerationService,
+} from './moderation.service';
+import { ALL_WEBHOOK_QUEUE_NAMES } from '../webhook/webhook-queues';
 import { PrivateControlController } from './private-control.controller';
 import { PrivateControlService } from './private-control.service';
 import { RedisCounterService } from './redis-counter.service';
@@ -18,12 +25,19 @@ const moderationProviders = [
   RedisCounterService,
   RuleEngineService,
   SanctionService,
-  ...(roleRunsModeration(getAppRole()) ? [ModerationProcessor] : []),
+  ...(roleRunsModeration(getAppRole())
+    ? [
+        LegacyModerationProcessor,
+        CriticalWebhookProcessor,
+        DefaultWebhookProcessor,
+        BackgroundWebhookProcessor,
+      ]
+    : []),
 ];
 
 @Module({
   imports: [
-    BullModule.registerQueue({ name: 'moderation' }),
+    BullModule.registerQueue(...ALL_WEBHOOK_QUEUE_NAMES.map((name) => ({ name }))),
     MaxModule,
     SystemModule,
     ChatContextModule,

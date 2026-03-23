@@ -526,4 +526,67 @@ describe('ModerationService channel auto post buttons', () => {
       trafficClass: 'background',
     });
   });
+
+  it('pauses channel polling while the shared system mode is degraded', async () => {
+    const prisma = {
+      channelSettings: {
+        findMany: jest.fn(),
+      },
+      auditLog: {
+        findFirst: jest.fn(),
+        create: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      listMessages: jest.fn(),
+      editMessageInlineKeyboard: jest.fn(),
+      getChatAdminIds: jest.fn(),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const systemModeService = {
+      getEffectiveSnapshot: jest.fn().mockResolvedValue({
+        mode: 'degrade',
+        source: 'auto',
+        reason: 'queue lag 20.0s',
+        updatedAt: new Date().toISOString(),
+        manualMode: null,
+        queueLagSec: 20,
+        action: {
+          windowSec: 60,
+          total: 100,
+          success: 95,
+          failure: 5,
+          critical: 0,
+          errorRate: 0.05,
+          criticalRate: 0,
+        },
+      }),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      systemModeService as never,
+      createConfigMock() as never,
+    );
+
+    await (service as any).processChannelAutoPostButtons();
+
+    expect(systemModeService.getEffectiveSnapshot).toHaveBeenCalled();
+    expect(prisma.channelSettings.findMany).not.toHaveBeenCalled();
+    expect(maxClient.listMessages).not.toHaveBeenCalled();
+  });
 });

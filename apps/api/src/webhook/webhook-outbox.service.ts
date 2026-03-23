@@ -5,18 +5,17 @@ import { WebhookStatus } from '@prisma/client';
 import type { Job, Queue } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsEnqueue } from '../runtime/app-role';
-
-type ProcessWebhookJob = {
-  webhookEventId: string;
-};
-
-const WEBHOOK_JOB_PRIORITY = {
-  callback: 1,
-  membershipJoin: 2,
-  membershipLeave: 3,
-  message: 5,
-  default: 6,
-} as const;
+import {
+  ALL_WEBHOOK_QUEUE_NAMES,
+  LEGACY_WEBHOOK_QUEUE,
+  type AnyWebhookQueueName,
+  type ProcessWebhookJob,
+  resolveWebhookJobPriority,
+  resolveWebhookQueueName,
+  WEBHOOK_QUEUE_BACKGROUND,
+  WEBHOOK_QUEUE_CRITICAL,
+  WEBHOOK_QUEUE_DEFAULT,
+} from './webhook-queues';
 
 @Injectable()
 export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
@@ -32,11 +31,19 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private cleaner: NodeJS.Timeout | null = null;
   private draining = false;
   private cleaning = false;
+  private readonly queuesByName: Record<AnyWebhookQueueName, Queue<ProcessWebhookJob>>;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly configService: ConfigService,
-    @InjectQueue('moderation') private readonly queue: Queue<ProcessWebhookJob>,
+    @InjectQueue(WEBHOOK_QUEUE_CRITICAL)
+    private readonly criticalQueue: Queue<ProcessWebhookJob>,
+    @InjectQueue(WEBHOOK_QUEUE_DEFAULT)
+    private readonly defaultQueue: Queue<ProcessWebhookJob>,
+    @InjectQueue(WEBHOOK_QUEUE_BACKGROUND)
+    private readonly backgroundQueue: Queue<ProcessWebhookJob>,
+    @InjectQueue(LEGACY_WEBHOOK_QUEUE)
+    private readonly legacyQueue: Queue<ProcessWebhookJob>,
   ) {
     this.enabled = roleRunsEnqueue(getAppRole());
     this.pollIntervalMs = this.configService.get<number>('ENQUEUE_POLL_INTERVAL_MS', 500);
@@ -44,6 +51,12 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     this.maxEnqueueAttempts = this.configService.get<number>('ENQUEUE_MAX_ATTEMPTS', 120);
     this.webhookRetentionDays = this.configService.get<number>('WEBHOOK_RETENTION_DAYS', 7);
     this.moderationRetentionDays = this.configService.get<number>('MODERATION_RETENTION_DAYS', 90);
+    this.queuesByName = {
+      [WEBHOOK_QUEUE_CRITICAL]: this.criticalQueue,
+      [WEBHOOK_QUEUE_DEFAULT]: this.defaultQueue,
+      [WEBHOOK_QUEUE_BACKGROUND]: this.backgroundQueue,
+      [LEGACY_WEBHOOK_QUEUE]: this.legacyQueue,
+    };
   }
 
   onModuleInit() {
@@ -120,8 +133,8 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
 
     const prioritizedCandidates = [...candidates].sort((left, right) => {
       const priorityDiff =
-        this.resolveWebhookJobPriority(left.normalizedPayload) -
-        this.resolveWebhookJobPriority(right.normalizedPayload);
+        resolveWebhookJobPriority(left.normalizedPayload) -
+        resolveWebhookJobPriority(right.normalizedPayload);
       if (priorityDiff !== 0) {
         return priorityDiff;
       }
@@ -133,7 +146,8 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       await this.enqueueOne(
         event.id,
         event.enqueueAttempts,
-        this.resolveWebhookJobPriority(event.normalizedPayload),
+        resolveWebhookJobPriority(event.normalizedPayload),
+        resolveWebhookQueueName(event.normalizedPayload),
       );
     }
   }
@@ -141,21 +155,22 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   private async enqueueOne(
     webhookEventId: string,
     enqueueAttempts: number,
-    priority: number = WEBHOOK_JOB_PRIORITY.default,
+    priority: number,
+    queueName: AnyWebhookQueueName,
   ) {
     if (enqueueAttempts >= this.maxEnqueueAttempts) {
       await this.markExhausted(webhookEventId, enqueueAttempts);
       return;
     }
 
-    const existingJob = await this.queue.getJob(webhookEventId);
+    const existingJob = await this.findExistingJob(webhookEventId);
     if (existingJob) {
-      await this.handleExistingJob(webhookEventId, enqueueAttempts, existingJob);
+      await this.handleExistingJob(webhookEventId, enqueueAttempts, existingJob.job);
       return;
     }
 
     try {
-      await this.queue.add(
+      await this.queuesByName[queueName].add(
         'process-webhook-event',
         { webhookEventId },
         {
@@ -180,8 +195,8 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async handleAlreadyExists(webhookEventId: string, enqueueAttempts: number) {
-    const job = await this.queue.getJob(webhookEventId);
-    if (!job) {
+    const existingJob = await this.findExistingJob(webhookEventId);
+    if (!existingJob) {
       await this.markFailedWithBackoff(
         webhookEventId,
         enqueueAttempts,
@@ -190,7 +205,7 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    await this.handleExistingJob(webhookEventId, enqueueAttempts, job);
+    await this.handleExistingJob(webhookEventId, enqueueAttempts, existingJob.job);
   }
 
   private async handleExistingJob(
@@ -345,31 +360,43 @@ export class WebhookOutboxService implements OnModuleInit, OnModuleDestroy {
     return message.toLowerCase().includes('already exists');
   }
 
-  private resolveWebhookJobPriority(payload: unknown): number {
-    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-      return WEBHOOK_JOB_PRIORITY.default;
+  private async findExistingJob(webhookEventId: string): Promise<{
+    queueName: AnyWebhookQueueName;
+    job: Job<ProcessWebhookJob>;
+  } | null> {
+    const jobs = await Promise.all(
+      ALL_WEBHOOK_QUEUE_NAMES.map(async (queueName) => ({
+        queueName,
+        job: await this.queuesByName[queueName].getJob(webhookEventId),
+      })),
+    );
+
+    const matches = jobs.filter(
+      (item): item is { queueName: AnyWebhookQueueName; job: Job<ProcessWebhookJob> } =>
+        item.job !== null,
+    );
+    if (matches.length === 0) {
+      return null;
     }
 
-    const rawType =
-      (payload as { type?: unknown; update_type?: unknown }).type ??
-      (payload as { update_type?: unknown }).update_type;
-    const type = typeof rawType === 'string' ? rawType.trim().toLowerCase() : '';
-
-    switch (type) {
-      case 'message_callback':
-        return WEBHOOK_JOB_PRIORITY.callback;
-      case 'user_added':
-      case 'bot_added':
-      case 'bot_started':
-        return WEBHOOK_JOB_PRIORITY.membershipJoin;
-      case 'user_removed':
-      case 'bot_removed':
-        return WEBHOOK_JOB_PRIORITY.membershipLeave;
-      case 'message_created':
-        return WEBHOOK_JOB_PRIORITY.message;
-      default:
-        return WEBHOOK_JOB_PRIORITY.default;
+    if (matches.length > 1) {
+      this.logger.warn(
+        {
+          webhookEventId,
+          queues: matches.map((item) => item.queueName),
+        },
+        'Webhook event is present in multiple processing queues',
+      );
     }
+
+    for (const queueName of ALL_WEBHOOK_QUEUE_NAMES) {
+      const match = matches.find((item) => item.queueName === queueName);
+      if (match) {
+        return match;
+      }
+    }
+
+    return matches[0] ?? null;
   }
 
   private async cleanupRetention() {

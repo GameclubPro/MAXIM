@@ -1,11 +1,12 @@
 import { ChatEntityType, Prisma } from '@prisma/client';
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 import Redis from 'ioredis';
 import { getAppRole, roleRunsAction } from '../runtime/app-role';
 import { MaxClientService, type MaxChannelMessageSnapshot } from '../max/max-client.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { SystemModeService, type SystemModeSnapshot } from '../system/system-mode.service';
 
 const CHANNEL_STATS_SYNC_INTERVAL_MS = 60 * 60 * 1000;
 const CHANNEL_STATS_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
@@ -18,6 +19,7 @@ const CHANNEL_STATS_SCHEDULED_INTER_CHANNEL_DELAY_MS = 500;
 const CHANNEL_STATS_BACKGROUND_THROTTLE_BACKOFF_MS = 60_000;
 const CHANNEL_STATS_BACKGROUND_THROTTLE_BACKOFF_KEY =
   'channel-stats:background-sync-backoff:v1';
+const CHANNEL_STATS_DEGRADE_PAUSE_LOG_INTERVAL_MS = 60_000;
 const CHANNEL_STATS_REQUIRED_UPDATE_TYPES = [
   'message_created',
   'message_callback',
@@ -44,11 +46,13 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
   private scheduledSyncInFlight = false;
   private backgroundSyncBackoffUntilMs = 0;
   private subscriptionCoverageFrom: Date | null = null;
+  private degradePauseLogAtMs = 0;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly maxClient: MaxClientService,
     configService: ConfigService,
+    @Optional() private readonly systemModeService?: SystemModeService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
     this.syncIntervalMs = CHANNEL_STATS_SYNC_INTERVAL_MS;
@@ -122,6 +126,7 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
     if (
       !this.backgroundEnabled ||
       this.scheduledSyncInFlight ||
+      (await this.isBackgroundWorkPaused(reason)) ||
       (await this.isBackgroundSyncBackoffActive())
     ) {
       return;
@@ -423,6 +428,29 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
       : CHANNEL_STATS_SCHEDULED_INTER_CHANNEL_DELAY_MS;
   }
 
+  private async isBackgroundWorkPaused(reason: 'startup' | 'scheduled'): Promise<boolean> {
+    const snapshot = await this.resolveSystemModeSnapshot();
+    if (snapshot.mode !== 'degrade') {
+      return false;
+    }
+
+    const now = Date.now();
+    if (now - this.degradePauseLogAtMs >= CHANNEL_STATS_DEGRADE_PAUSE_LOG_INTERVAL_MS) {
+      this.degradePauseLogAtMs = now;
+      this.logger.log(
+        {
+          reason,
+          mode: snapshot.mode,
+          source: snapshot.source,
+          details: snapshot.reason,
+        },
+        'Paused background channel stats sync because the system is degraded',
+      );
+    }
+
+    return true;
+  }
+
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
@@ -449,5 +477,44 @@ export class ChannelStatsCollectorService implements OnModuleInit, OnModuleDestr
         token,
       );
     }
+  }
+
+  private async resolveSystemModeSnapshot(): Promise<SystemModeSnapshot> {
+    if (!this.systemModeService) {
+      return this.createFallbackSystemModeSnapshot();
+    }
+
+    const systemModeService = this.systemModeService as SystemModeService & {
+      getEffectiveSnapshot?: () => Promise<SystemModeSnapshot>;
+      getSnapshot?: () => SystemModeSnapshot;
+    };
+    if (typeof systemModeService.getEffectiveSnapshot === 'function') {
+      return systemModeService.getEffectiveSnapshot();
+    }
+    if (typeof systemModeService.getSnapshot === 'function') {
+      return systemModeService.getSnapshot();
+    }
+
+    return this.createFallbackSystemModeSnapshot();
+  }
+
+  private createFallbackSystemModeSnapshot(): SystemModeSnapshot {
+    return {
+      mode: 'normal',
+      source: 'auto',
+      reason: 'fallback',
+      updatedAt: new Date().toISOString(),
+      manualMode: null,
+      queueLagSec: 0,
+      action: {
+        windowSec: 60,
+        total: 0,
+        success: 0,
+        failure: 0,
+        critical: 0,
+        errorRate: 0,
+        criticalRate: 0,
+      },
+    };
   }
 }

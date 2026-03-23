@@ -3,11 +3,12 @@ import { Module } from '@nestjs/common';
 import { WebhookController } from './webhook.controller';
 import { WebhookOutboxService } from './webhook-outbox.service';
 import { WebhookParser } from './webhook.parser';
+import { ALL_WEBHOOK_QUEUE_NAMES } from './webhook-queues';
 import { WebhookRateLimitService } from './webhook-rate-limit.service';
 import { WebhookService } from './webhook.service';
 
 @Module({
-  imports: [BullModule.registerQueue({ name: 'moderation' })],
+  imports: [BullModule.registerQueue(...ALL_WEBHOOK_QUEUE_NAMES.map((name) => ({ name })))],
   controllers: [WebhookController],
   providers: [WebhookParser, WebhookService, WebhookRateLimitService, WebhookOutboxService],
   exports: [WebhookService],
