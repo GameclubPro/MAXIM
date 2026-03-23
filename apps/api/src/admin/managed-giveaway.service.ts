@@ -381,10 +381,11 @@ export class ManagedGiveawayService {
     }
     if (
       winner.status !== ManagedGiveawayWinnerStatus.SELECTED &&
+      winner.status !== ManagedGiveawayWinnerStatus.CLAIMED &&
       winner.status !== ManagedGiveawayWinnerStatus.EXPIRED
     ) {
       throw new BadRequestException(
-        'Реролл доступен только для непринятого или просроченного места.',
+        'Реролл доступен только для актуального или просроченного места.',
       );
     }
 
@@ -415,8 +416,8 @@ export class ManagedGiveawayService {
           prizeId: winner.prizeId,
           entryId: nextEntry.entry.id,
           rank: winner.rank,
-          status: ManagedGiveawayWinnerStatus.SELECTED,
-          claimDeadlineAt: new Date(now.getTime() + giveaway.claimHours * 60 * 60 * 1000),
+          status: ManagedGiveawayWinnerStatus.CLAIMED,
+          claimedAt: now,
         },
       });
 
@@ -428,6 +429,10 @@ export class ManagedGiveawayService {
 
     await this.editGiveawayPublicationIfNeeded(updated, ManagedGiveawayStatus.COMPLETED);
     await this.republishGiveawayResults(updated);
+    const refreshed = await this.findGiveawayById(updated.id);
+    await this.sendWinnerDirectMessages(refreshed, [
+      this.buildWinnerNotificationKey(nextEntry.entry.id, winner.prizeId),
+    ]);
     await this.writeAuditLog(sourceChatId, user.userId, 'REROLL_GIVEAWAY_WINNER', {
       giveawayId,
       winnerId: winner.id,
@@ -436,7 +441,7 @@ export class ManagedGiveawayService {
       source,
     });
 
-    return managedGiveawayDetailsSchema.parse(this.mapGiveawayDetails(updated));
+    return managedGiveawayDetailsSchema.parse(this.mapGiveawayDetails(refreshed));
   }
 
   async markManagedGiveawayWinnerDelivered(
@@ -766,9 +771,6 @@ export class ManagedGiveawayService {
     for (const row of rows) {
       await this.processDueManagedGiveaway(row.id, reason, staleLockBefore);
     }
-
-    const expiredWinners = await this.expireDueClaimWinners();
-    await this.processAutoRerollForExpiredWinners(expiredWinners);
   }
 
   getGiveawaySettingsMiniappUrl(chatId: string, entityType: ManagedEntityType): string | null {
@@ -1139,13 +1141,6 @@ export class ManagedGiveawayService {
             item.entryId === entry.id && item.status !== ManagedGiveawayWinnerStatus.REROLLED,
         ) ?? null)
       : null;
-    const claimBotUrl =
-      winner &&
-      winner.status === ManagedGiveawayWinnerStatus.SELECTED &&
-      (!winner.claimDeadlineAt || winner.claimDeadlineAt.getTime() > Date.now())
-        ? this.buildGiveawayClaimBotStartUrl(row.id, winner.id)
-        : null;
-
     return {
       joined: Boolean(entry),
       entryId: entry?.id ?? null,
@@ -1167,10 +1162,8 @@ export class ManagedGiveawayService {
       claimDeadlineAt: winner?.claimDeadlineAt?.toISOString() ?? null,
       prizePosition: winner?.prize.position ?? null,
       prizeTitle: winner?.prize.title ?? null,
-      canClaim:
-        winner?.status === ManagedGiveawayWinnerStatus.SELECTED &&
-        (!winner.claimDeadlineAt || winner.claimDeadlineAt.getTime() > Date.now()),
-      claimBotUrl,
+      canClaim: false,
+      claimBotUrl: null,
     };
   }
 
@@ -1204,7 +1197,8 @@ export class ManagedGiveawayService {
       entry: PersistedManagedGiveawayEntry;
     },
   ): string | null {
-    return winner.status === ManagedGiveawayWinnerStatus.CLAIMED ||
+    return winner.status === ManagedGiveawayWinnerStatus.SELECTED ||
+      winner.status === ManagedGiveawayWinnerStatus.CLAIMED ||
       winner.status === ManagedGiveawayWinnerStatus.DELIVERED
       ? (winner.entry.displayName ?? null)
       : null;
@@ -1216,7 +1210,7 @@ export class ManagedGiveawayService {
       entry: PersistedManagedGiveawayEntry;
     },
   ): string {
-    return this.resolvePublicWinnerDisplayName(winner) ?? 'победитель подтверждает приз';
+    return this.resolvePublicWinnerDisplayName(winner) ?? 'победитель определён';
   }
 
   private pickNextRerollCandidate(
@@ -1324,8 +1318,7 @@ export class ManagedGiveawayService {
     }
 
     if (value >= 1_000) {
-      const normalized =
-        value >= 10_000 ? (value / 1_000).toFixed(0) : (value / 1_000).toFixed(1);
+      const normalized = value >= 10_000 ? (value / 1_000).toFixed(0) : (value / 1_000).toFixed(1);
       return `${normalized.replace(/\.0$/u, '')}K`;
     }
 
@@ -1386,8 +1379,8 @@ export class ManagedGiveawayService {
       if (!publicName) {
         lines.push(
           winner.status === ManagedGiveawayWinnerStatus.EXPIRED
-            ? `${winner.prize.position}. Подтверждение истекло, запускаем перевыбор`
-            : `${winner.prize.position}. Победитель подтверждает приз`,
+            ? `${winner.prize.position}. Место освобождено, можно запустить реролл`
+            : `${winner.prize.position}. Победитель определён`,
         );
         continue;
       }
@@ -1422,6 +1415,94 @@ export class ManagedGiveawayService {
           }
         : {}),
     };
+  }
+
+  private buildWinnerNotificationKey(entryId: string, prizeId: string): string {
+    return `${entryId}:${prizeId}`;
+  }
+
+  private buildGiveawayWinnerDirectMessageText(
+    giveaway: PersistedGiveawayWithRelations,
+    winner: PersistedManagedGiveawayWinner & {
+      prize: PersistedManagedGiveawayPrize;
+      entry: PersistedManagedGiveawayEntry;
+    },
+  ): string {
+    const lines = ['🎉 Вы выиграли в розыгрыше!'];
+    const title = giveaway.title.trim();
+    const prizeTitle = winner.prize.title.trim();
+
+    if (title) {
+      lines.push('', title);
+    }
+
+    lines.push('', `Место: ${winner.prize.position}`);
+    if (prizeTitle && prizeTitle !== `${winner.prize.position} место`) {
+      lines.push(`Приз: ${prizeTitle}`);
+    }
+
+    lines.push('', 'Итоги уже опубликованы в группе.');
+    return lines.join('\n');
+  }
+
+  private buildGiveawayWinnerDirectMessageOptions(
+    giveaway: PersistedGiveawayWithRelations,
+  ): MaxSendMessageOptions | undefined {
+    const row: MaxMessageButton[] = [];
+
+    if (giveaway.publicationUrl) {
+      row.push({
+        type: 'link',
+        text: 'Открыть пост',
+        url: giveaway.publicationUrl,
+      });
+    }
+
+    if (giveaway.resultsUrl) {
+      row.push({
+        type: 'link',
+        text: 'Итоги',
+        url: giveaway.resultsUrl,
+      });
+    }
+
+    return row.length > 0 ? { buttons: [row] } : undefined;
+  }
+
+  private async sendWinnerDirectMessages(
+    giveaway: PersistedGiveawayWithRelations,
+    targetWinnerKeys: string[],
+  ): Promise<void> {
+    const targetKeys = new Set(targetWinnerKeys);
+    if (targetKeys.size === 0) {
+      return;
+    }
+
+    const winners = giveaway.winners.filter(
+      (winner) =>
+        winner.status !== ManagedGiveawayWinnerStatus.REROLLED &&
+        targetKeys.has(this.buildWinnerNotificationKey(winner.entryId, winner.prizeId)),
+    );
+
+    for (const winner of winners) {
+      try {
+        await this.maxClient.sendMessageImmediateToUser(
+          winner.entry.userId,
+          this.buildGiveawayWinnerDirectMessageText(giveaway, winner),
+          this.buildGiveawayWinnerDirectMessageOptions(giveaway),
+        );
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            giveawayId: giveaway.id,
+            winnerId: winner.id,
+            userId: winner.entry.userId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to send direct giveaway winner message',
+        );
+      }
+    }
   }
 
   private async editGiveawayPublicationIfNeeded(
@@ -1842,8 +1923,8 @@ export class ManagedGiveawayService {
             prizeId: row.prize.id,
             entryId: row.rankedEntry.entry.id,
             rank: row.rank,
-            status: ManagedGiveawayWinnerStatus.SELECTED,
-            claimDeadlineAt: new Date(now.getTime() + giveaway.claimHours * 60 * 60 * 1000),
+            status: ManagedGiveawayWinnerStatus.CLAIMED,
+            claimedAt: now,
           })),
         });
       }
@@ -1865,6 +1946,13 @@ export class ManagedGiveawayService {
 
     await this.editGiveawayPublicationIfNeeded(completed, ManagedGiveawayStatus.COMPLETED);
     await this.republishGiveawayResults(completed);
+    const refreshed = await this.findGiveawayById(completed.id);
+    await this.sendWinnerDirectMessages(
+      refreshed,
+      winnersToCreate.map((row) =>
+        this.buildWinnerNotificationKey(row.rankedEntry.entry.id, row.prize.id),
+      ),
+    );
     await this.writeAuditLog(
       giveaway.sourceChatId,
       actorUserId ?? giveaway.actorUserId,
@@ -1877,7 +1965,7 @@ export class ManagedGiveawayService {
       },
     );
 
-    return completed;
+    return refreshed;
   }
 
   private async expireDueClaimWinners(): Promise<Array<{ id: string; giveawayId: string }>> {
@@ -1980,8 +2068,8 @@ export class ManagedGiveawayService {
           prizeId: winner.prizeId,
           entryId: nextEntry.entry.id,
           rank: winner.rank,
-          status: ManagedGiveawayWinnerStatus.SELECTED,
-          claimDeadlineAt: new Date(now.getTime() + giveaway.claimHours * 60 * 60 * 1000),
+          status: ManagedGiveawayWinnerStatus.CLAIMED,
+          claimedAt: now,
         },
       });
 
@@ -1997,6 +2085,10 @@ export class ManagedGiveawayService {
 
     await this.editGiveawayPublicationIfNeeded(updated, ManagedGiveawayStatus.COMPLETED);
     await this.republishGiveawayResults(updated);
+    const refreshed = await this.findGiveawayById(updated.id);
+    await this.sendWinnerDirectMessages(refreshed, [
+      this.buildWinnerNotificationKey(nextEntry.entry.id, winner.prizeId),
+    ]);
     await this.writeAuditLog(
       updated.sourceChatId,
       updated.actorUserId,

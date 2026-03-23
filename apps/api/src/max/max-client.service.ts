@@ -338,6 +338,38 @@ export class MaxClientService implements OnModuleDestroy {
     };
   }
 
+  async sendMessageImmediateToUser(
+    userId: string,
+    text: string,
+    options?: MaxSendMessageOptions,
+  ): Promise<MaxPublishedMessage> {
+    const attachments = this.buildMessageAttachments(options);
+    const messageLink = this.buildMessageLinkData(options?.messageLink);
+    const sendResponse = await this.executeMutation(`user:${userId}`, async () => {
+      return this.request<Record<string, unknown>>('post', '/messages', {
+        params: {
+          user_id: userId,
+        },
+        data: {
+          text,
+          ...(options?.textFormat ? { format: options.textFormat } : {}),
+          ...(messageLink ? { link: messageLink } : {}),
+          ...(attachments.length > 0 ? { attachments } : {}),
+        },
+      });
+    });
+
+    const messageId = this.extractMessageIdFromSendResponse(sendResponse);
+    if (!messageId) {
+      throw new Error('MAX send response is missing message id');
+    }
+
+    return {
+      messageId,
+      url: this.parseChatLink(sendResponse),
+    };
+  }
+
   async sendMessageImmediateWithResolvedLink(
     chatId: string,
     text: string,

@@ -405,12 +405,12 @@ function buildPreviewGiveawayParticipantState(
       joinedAt: addHours(now, -12).toISOString(),
       isWinner: true,
       winnerId: 'preview-winner-1',
-      winnerStatus: 'SELECTED',
-      claimDeadlineAt: addHours(now, 32).toISOString(),
+      winnerStatus: 'CLAIMED',
+      claimDeadlineAt: null,
       prizePosition: 1,
       prizeTitle: 'Подарочный бокс MAX',
-      canClaim: true,
-      claimBotUrl: 'https://max.ru/maxim-bot?start=claim-preview',
+      canClaim: false,
+      claimBotUrl: null,
     });
   }
 
@@ -521,7 +521,9 @@ function buildPreviewDialogMessage(payload: {
     isAdmin: payload.isAdmin ?? payload.authorUserId.startsWith('preview-admin'),
     avatarUrl: payload.avatarUrl ?? null,
     createdAt: payload.createdAt,
-    ...(payload.replyToMessageId !== undefined ? { replyToMessageId: payload.replyToMessageId } : {}),
+    ...(payload.replyToMessageId !== undefined
+      ? { replyToMessageId: payload.replyToMessageId }
+      : {}),
     ...(payload.replyTo !== undefined ? { replyTo: payload.replyTo } : {}),
     ...(payload.reactionGroups !== undefined ? { reactionGroups: payload.reactionGroups } : {}),
     ...(payload.delivered !== undefined ? { delivered: payload.delivered } : {}),
@@ -1826,7 +1828,10 @@ async function handleChatRequest(
 
     if (tail[2] === 'messages' && method === 'POST') {
       const payload = createChannelDialogMessageRequestSchema.parse(parseJsonBody(init));
-      const replyTarget = findPreviewDialogMessage(state.chatDialogs[dialogType], payload.replyToMessageId);
+      const replyTarget = findPreviewDialogMessage(
+        state.chatDialogs[dialogType],
+        payload.replyToMessageId,
+      );
       const message = buildPreviewDialogMessage({
         id: `chat-${dialogType}-${Date.now()}`,
         type: dialogType,

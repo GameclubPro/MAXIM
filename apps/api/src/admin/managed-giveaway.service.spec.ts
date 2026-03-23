@@ -56,6 +56,7 @@ function createMaxClientMock() {
     getChatTitle: jest.fn(),
     getChatSnapshot: jest.fn(),
     sendMessageImmediateWithResolvedLink: jest.fn(),
+    sendMessageImmediateToUser: jest.fn(),
     editMessageInlineKeyboard: jest.fn(),
   };
 }
@@ -444,9 +445,7 @@ describe('ManagedGiveawayService', () => {
       publishedAt: new Date('2026-03-21T12:30:00.000Z'),
     });
 
-    prisma.managedGiveaway.findFirst
-      .mockResolvedValueOnce(draft)
-      .mockResolvedValueOnce(null);
+    prisma.managedGiveaway.findFirst.mockResolvedValueOnce(draft).mockResolvedValueOnce(null);
     prisma.managedGiveaway.update.mockResolvedValue(published);
     maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
       messageId: 'publication-1',
@@ -507,9 +506,7 @@ describe('ManagedGiveawayService', () => {
       publishedAt: new Date('2026-03-21T12:30:00.000Z'),
     });
 
-    prisma.managedGiveaway.findFirst
-      .mockResolvedValueOnce(draft)
-      .mockResolvedValueOnce(null);
+    prisma.managedGiveaway.findFirst.mockResolvedValueOnce(draft).mockResolvedValueOnce(null);
     prisma.managedGiveaway.update.mockResolvedValue(published);
     maxClient.sendMessageImmediateWithResolvedLink.mockResolvedValue({
       messageId: 'publication-1',
@@ -528,7 +525,7 @@ describe('ManagedGiveawayService', () => {
     );
   });
 
-  it('does not expose winner name in public results before claim confirmation', () => {
+  it('exposes winner name in public results immediately after draw', () => {
     const service = new ManagedGiveawayService(
       createPrismaMock() as never,
       createMaxClientMock() as never,
@@ -537,7 +534,7 @@ describe('ManagedGiveawayService', () => {
       createConfigMock() as never,
     );
 
-    const pendingConfirmationText = (service as any).buildGiveawayResultsText(
+    const selectedText = (service as any).buildGiveawayResultsText(
       createGiveaway({
         status: ManagedGiveawayStatus.COMPLETED,
         publicationMessageId: 'publication-1',
@@ -552,8 +549,46 @@ describe('ManagedGiveawayService', () => {
       }),
     );
 
-    expect(pendingConfirmationText).toContain('Победитель подтверждает приз');
-    expect(pendingConfirmationText).not.toContain('CEO');
+    expect(selectedText).toContain('1. CEO');
     expect(confirmedText).toContain('1. CEO');
+  });
+
+  it('sends a direct message to each freshly selected winner', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = createMaxClientMock();
+    const service = new ManagedGiveawayService(
+      prisma as never,
+      maxClient as never,
+      { invalidate: jest.fn() } as never,
+      {} as never,
+      createConfigMock() as never,
+    );
+
+    await (service as any).sendWinnerDirectMessages(
+      createGiveaway({
+        status: ManagedGiveawayStatus.COMPLETED,
+        publicationUrl: 'https://max.ru/chats/chat-1/message/1',
+        resultsUrl: 'https://max.ru/chats/chat-1/message/2',
+        winners: [
+          createWinner({
+            status: ManagedGiveawayWinnerStatus.CLAIMED,
+          }),
+        ],
+      }),
+      ['entry-winner-1:prize-1'],
+    );
+
+    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
+      'winner-1',
+      expect.stringContaining('Вы выиграли в розыгрыше'),
+      expect.objectContaining({
+        buttons: [
+          [
+            expect.objectContaining({ text: 'Открыть пост' }),
+            expect.objectContaining({ text: 'Итоги' }),
+          ],
+        ],
+      }),
+    );
   });
 });

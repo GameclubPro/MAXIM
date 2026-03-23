@@ -29,7 +29,6 @@ import { useToast } from './ui/toast';
 
 const MIN_CLAIM_HOURS = 1;
 const MAX_CLAIM_HOURS = 336;
-const CLAIM_HOUR_PRESETS = [24, 48, 72, 168] as const;
 const FINISH_PRESETS = [
   { hours: 24, label: '24 часа' },
   { hours: 48, label: '48 часов' },
@@ -823,7 +822,9 @@ export function ManagedGiveawayCard({
     }
 
     const selected = new Set(draft.requiredChannelIds);
-    return ownedSelectableChannels.filter((channel) => selected.has(channel.id)).map((channel) => channel.id);
+    return ownedSelectableChannels
+      .filter((channel) => selected.has(channel.id))
+      .map((channel) => channel.id);
   }, [draft, ownedSelectableChannels]);
 
   const editorSteps = useMemo(
@@ -1065,13 +1066,6 @@ export function ManagedGiveawayCard({
         endsAtLocal: formatDateTimeInputValue(nextEnd),
       };
     });
-  };
-
-  const applyClaimPreset = (hours: number) => {
-    updateDraft((current) => ({
-      ...current,
-      claimHours: hours,
-    }));
   };
 
   const openOwnedChannelsModal = () => {
@@ -1376,10 +1370,7 @@ export function ManagedGiveawayCard({
         };
       }
 
-      const extraPrizes = Array.from(
-        { length: normalizedCount - current.prizes.length },
-        () => '',
-      );
+      const extraPrizes = Array.from({ length: normalizedCount - current.prizes.length }, () => '');
       return {
         ...current,
         prizes: [...current.prizes, ...extraPrizes],
@@ -1782,8 +1773,8 @@ export function ManagedGiveawayCard({
                     onToggleHint={toggleHint}
                     label="Подсказка по таймингу розыгрыша"
                   >
-                    Здесь задаются старт, финиш и срок на подтверждение приза. Быстрые чипы
-                    ускоряют типовые сценарии, а ниже можно вручную уточнить дату и время.
+                    Здесь задаются старт, финиш и срок на подтверждение приза. Быстрые чипы ускоряют
+                    типовые сценарии, а ниже можно вручную уточнить дату и время.
                   </GiveawayHintAnchor>
                 </div>
               </div>
@@ -1916,62 +1907,6 @@ export function ManagedGiveawayCard({
                       type="time"
                       value={readTimeInputPart(draft.endsAtLocal, '21:00')}
                       onChange={(event) => updateEndTime(event.target.value)}
-                      disabled={isBusy}
-                    />
-                  </label>
-                </div>
-              </div>
-
-              <div className="managed-giveaway__subsection">
-                <div className="managed-giveaway__subsection-row">
-                  <div className="managed-giveaway__subsection-copy">
-                    <strong>Подтверждение приза</strong>
-                  </div>
-                  <div className="managed-giveaway__section-actions">
-                    <span className="managed-giveaway__chip">{draft.claimHours}ч</span>
-                    <GiveawayHintAnchor
-                      hintKey="claim"
-                      openHintKey={openHintKey}
-                      onToggleHint={toggleHint}
-                      label="Подсказка по сроку подтверждения приза"
-                    >
-                      Победителю нужен понятный срок на ответ. Обычно хватает 24-72 часов, но можно
-                      поставить и более длинное окно.
-                    </GiveawayHintAnchor>
-                  </div>
-                </div>
-
-                <div className="managed-giveaway__quick-actions">
-                  {CLAIM_HOUR_PRESETS.map((hours) => (
-                    <button
-                      key={`claim-preset-${hours}`}
-                      type="button"
-                      className={cn(
-                        'managed-giveaway__chip-button',
-                        draft.claimHours === hours && 'is-active',
-                      )}
-                      disabled={isBusy}
-                      onClick={() => applyClaimPreset(hours)}
-                    >
-                      {hours}ч
-                    </button>
-                  ))}
-                </div>
-
-                <div className="managed-giveaway__split-fields">
-                  <label className="field">
-                    <span>Срок подтверждения, ч</span>
-                    <input
-                      type="number"
-                      min={MIN_CLAIM_HOURS}
-                      max={MAX_CLAIM_HOURS}
-                      value={draft.claimHours}
-                      onChange={(event) =>
-                        updateDraft((current) => ({
-                          ...current,
-                          claimHours: Number.parseInt(event.target.value, 10) || MIN_CLAIM_HOURS,
-                        }))
-                      }
                       disabled={isBusy}
                     />
                   </label>
@@ -2335,7 +2270,9 @@ export function ManagedGiveawayCard({
               </div>
             ) : null}
 
-            {!channelsQuery.isLoading && !channelsQuery.error && ownedSelectableChannels.length > 0 ? (
+            {!channelsQuery.isLoading &&
+            !channelsQuery.error &&
+            ownedSelectableChannels.length > 0 ? (
               <div className="managed-giveaway-modal__list" aria-label="Список своих каналов">
                 {ownedSelectableChannels.map((channel) => {
                   const checked = channelModalSelection.includes(channel.id);

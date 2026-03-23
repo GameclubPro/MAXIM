@@ -19,9 +19,11 @@ function decodeStartAppRoute(url: string): string | null {
   const encodedPayload = startParam.slice(3);
   const normalized = encodedPayload.replace(/-/g, '+').replace(/_/g, '/');
   const padding = '='.repeat((4 - (normalized.length % 4)) % 4);
-  const payload = JSON.parse(
-    Buffer.from(`${normalized}${padding}`, 'base64').toString('utf8'),
-  ) as { v?: number; k?: string; r?: string };
+  const payload = JSON.parse(Buffer.from(`${normalized}${padding}`, 'base64').toString('utf8')) as {
+    v?: number;
+    k?: string;
+    r?: string;
+  };
 
   return payload.v === 1 && payload.k === 'route' && typeof payload.r === 'string'
     ? payload.r
@@ -475,9 +477,7 @@ function createHarness(
     }),
     listChats: jest.fn().mockResolvedValue(chats),
     getChatHeader: jest.fn().mockResolvedValue({ id: chats[0].id, title: chats[0].title }),
-    getChannelHeader: jest
-      .fn()
-      .mockResolvedValue({ id: channels[0].id, title: channels[0].title }),
+    getChannelHeader: jest.fn().mockResolvedValue({ id: channels[0].id, title: channels[0].title }),
     getSettings: jest.fn().mockResolvedValue(overrides.settings ?? defaultSettings),
     updateSettings: jest.fn().mockResolvedValue(overrides.settings ?? defaultSettings),
     applySettingsToAllChats: jest.fn().mockResolvedValue({
@@ -613,7 +613,11 @@ function createHarness(
         status: 'COMPLETED',
         winnersCount: 1,
       }),
-      winner: createGiveawayWinner(),
+      winner: createGiveawayWinner({
+        status: 'CLAIMED',
+        claimDeadlineAt: null,
+        claimedAt: new Date().toISOString(),
+      }),
     }),
     claimGiveaway: jest.fn().mockResolvedValue({
       ok: true,
@@ -871,8 +875,9 @@ describe('PrivateControlService', () => {
         entityType: 'chat' as const,
       },
     ];
-    const listManagedEntities = jest.fn().mockImplementation(
-      async (_actor, entityType = 'all', options?: { refresh?: boolean }) => {
+    const listManagedEntities = jest
+      .fn()
+      .mockImplementation(async (_actor, entityType = 'all', options?: { refresh?: boolean }) => {
         if (entityType === 'channel') {
           return [];
         }
@@ -880,8 +885,7 @@ describe('PrivateControlService', () => {
           return options?.refresh === true ? freshChats : staleChats;
         }
         return options?.refresh === true ? freshChats : staleChats;
-      },
-    );
+      });
     const { service, maxClient } = createHarness({
       adminService: {
         listManagedEntities,
@@ -1049,9 +1053,7 @@ describe('PrivateControlService', () => {
 
     const miniappButton = getLastButtons(maxClient)
       .flat()
-      .find(
-        (button) => String((button as { text?: string }).text ?? '') === 'Мини-апп',
-      ) as
+      .find((button) => String((button as { text?: string }).text ?? '') === 'Мини-апп') as
       | {
           type?: string;
           url?: string;
@@ -1147,7 +1149,9 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateTextUpdate('Новый текст правил'));
 
     expect(adminService.updateRules).not.toHaveBeenCalled();
-    expect(getLastSentText(maxClient)).toContain('Сначала нажмите «Изменить текст» или «Добавить фото»');
+    expect(getLastSentText(maxClient)).toContain(
+      'Сначала нажмите «Изменить текст» или «Добавить фото»',
+    );
   });
 
   it('keeps the user on the rules screen after pressing the text button', async () => {
@@ -1283,7 +1287,9 @@ describe('PrivateControlService', () => {
   it('surfaces publish error when rules text is empty', async () => {
     const { service, maxClient, chats } = createHarness({
       adminService: {
-        publishRules: jest.fn().mockRejectedValue(new BadRequestException('Сначала заполните текст правил.')),
+        publishRules: jest
+          .fn()
+          .mockRejectedValue(new BadRequestException('Сначала заполните текст правил.')),
       },
     });
 
@@ -2112,14 +2118,16 @@ describe('PrivateControlService', () => {
     expect(getLastUiText(maxClient)).toContain(`Чат: ${chats[0].title}`);
     expect(getLastUiText(maxClient)).toContain('Разыгрываем подписку.');
     expect(getLastUiText(maxClient)).not.toContain('Контент публикации:');
-    expect(getLastUiText(maxClient)).not.toContain('Остальные настройки редактируются в приложении.');
+    expect(getLastUiText(maxClient)).not.toContain(
+      'Остальные настройки редактируются в приложении.',
+    );
     expect(getLastUiText(maxClient)).not.toContain('Подтверждение:');
 
     const returnButton = getLastButtons(maxClient)
-        .flat()
-        .find(
-        (button) => String((button as { text?: string }).text ?? '') === 'В приложение',
-      ) as { url?: string } | undefined;
+      .flat()
+      .find((button) => String((button as { text?: string }).text ?? '') === 'В приложение') as
+      | { url?: string }
+      | undefined;
     expect(decodeStartAppRoute(String(returnButton?.url ?? ''))).toBe(
       `/chat/${encodeURIComponent(chats[0].id)}/settings?focus=giveaway&handoff=1`,
     );
@@ -2404,7 +2412,7 @@ describe('PrivateControlService', () => {
     );
   });
 
-  it('renders giveaway claim flow on bot_started deep link and confirms claim', async () => {
+  it('renders giveaway winner notice on bot_started deep link without confirmation CTA', async () => {
     const { service, maxClient, managedGiveawayService } = createHarness();
 
     await service.handleBotStarted(createBotStartedGiveawayClaimUpdate());
@@ -2417,9 +2425,9 @@ describe('PrivateControlService', () => {
             typeof button === 'object' &&
             button !== null &&
             'text' in button &&
-            button.text === 'Подтвердить приз',
+            button.text === 'Открыть розыгрыш',
         ),
-    ).toBe(true);
+    ).toBe(false);
     expect(
       getLastButtons(maxClient)
         .flat()
@@ -2428,26 +2436,11 @@ describe('PrivateControlService', () => {
             typeof button === 'object' &&
             button !== null &&
             'text' in button &&
-            button.text === 'Открыть розыгрыш',
+            button.text === 'Подтвердить приз',
         ),
     ).toBe(false);
-
-    await service.handleUpdate(
-      createPrivateCallbackUpdate('pc2|giveaway_claim_confirm|giveaway-1|winner-1'),
-    );
-
-    expect(managedGiveawayService.claimGiveaway).toHaveBeenCalledWith(
-      'giveaway-1',
-      expect.objectContaining({ userId: 'user-1' }),
-      'private_claim',
-    );
-    expect(maxClient.answerCallback).toHaveBeenCalledWith(
-      'callback-1',
-      'Приз подтверждён',
-      expect.objectContaining({
-        text: expect.stringContaining('Приз подтверждён'),
-      }),
-    );
+    expect(getLastUiText(maxClient)).toContain('Победитель зафиксирован');
+    expect(managedGiveawayService.claimGiveaway).not.toHaveBeenCalled();
   });
 
   it('keeps key private screens under a safe inline-button count', async () => {

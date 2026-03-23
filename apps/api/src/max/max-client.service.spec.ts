@@ -192,6 +192,41 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('sends direct messages via user_id when notifying a private user', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            mid: 'mid-private-1',
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.sendMessageImmediateToUser('user-42', 'Личное уведомление');
+
+    expect(result).toEqual({
+      messageId: 'mid-private-1',
+      url: null,
+    });
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api.max.ru/messages',
+        params: {
+          user_id: 'user-42',
+        },
+        data: {
+          text: 'Личное уведомление',
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('reposts a source chat message as bot copy with preserved attachments and reply link', async () => {
     const httpService = {
       request: jest

@@ -1345,7 +1345,9 @@ export class PrivateControlService {
 
     let resolvedDisplayName = parsed.data.displayName;
     try {
-      const profiles = await this.maxClient.getChatMemberProfiles(sourceChatId, [normalizedTargetUserId]);
+      const profiles = await this.maxClient.getChatMemberProfiles(sourceChatId, [
+        normalizedTargetUserId,
+      ]);
       const profile = profiles.get(normalizedTargetUserId);
       const displayName = this.readString(profile?.displayName);
       if (displayName) {
@@ -1399,9 +1401,7 @@ export class PrivateControlService {
     if (
       session.screen === 'broadcast' &&
       session.selectedChatId &&
-      (context.text.trim().length > 0 ||
-        imageSourceAttachment !== null ||
-        hasVideoAttachment)
+      (context.text.trim().length > 0 || imageSourceAttachment !== null || hasVideoAttachment)
     ) {
       await this.captureBroadcastContent(context, session, context.text);
       const view = await this.renderBroadcastScreen(context, session, 'Контент сохранён.');
@@ -1512,22 +1512,15 @@ export class PrivateControlService {
         const view = this.renderUnavailableGiveawayClaimView();
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: 'Подтверждение уже недоступно',
+          notification: 'Экран обновлён',
         });
         return;
       }
 
-      await this.managedGiveawayService.claimGiveaway(giveawayId, context.actor, 'private_claim');
-      const refreshedClaim =
-        (await this.managedGiveawayService.getGiveawayClaimContext(
-          giveawayId,
-          winnerId,
-          context.actor.userId,
-        )) ?? currentClaim;
-      const view = this.renderGiveawayClaimView(refreshedClaim, 'Приз подтверждён.');
+      const view = this.renderGiveawayClaimView(currentClaim, 'Подтверждение больше не требуется.');
       await this.respond(context, session, view, {
         callbackId: context.callbackId,
-        notification: 'Приз подтверждён',
+        notification: 'Подтверждение больше не нужно',
       });
       return;
     }
@@ -4690,7 +4683,9 @@ export class PrivateControlService {
             entityLead,
             contentText: previewText.length > 0 ? previewText : null,
             promptText:
-              previewText.length > 0 ? 'Пришлите новый текст или фото.' : 'Пришлите текст или фото.',
+              previewText.length > 0
+                ? 'Пришлите новый текст или фото.'
+                : 'Пришлите текст или фото.',
             notice,
           });
 
@@ -5384,10 +5379,7 @@ export class PrivateControlService {
     const draft = session.broadcastDraft;
     const entityType = session.selectedEntityType ?? 'chat';
     const waitingForContent = session.pendingInput?.kind === 'broadcast_content';
-    const plannerUrl = this.buildBroadcastSettingsMiniappUrl(
-      session.selectedChatId,
-      entityType,
-    );
+    const plannerUrl = this.buildBroadcastSettingsMiniappUrl(session.selectedChatId, entityType);
     const plannerRoute = this.buildBroadcastSettingsMiniappRoute(
       session.selectedChatId,
       entityType,
@@ -5617,10 +5609,7 @@ export class PrivateControlService {
         ...(giveaway.status === 'ACTIVE' ||
         giveaway.status === 'SCHEDULED' ||
         giveaway.status === 'COMPLETED'
-          ? [
-              `Участники: ${giveaway.entriesCount}`,
-              `Победители: ${giveaway.winnersCount}`,
-            ]
+          ? [`Участники: ${giveaway.entriesCount}`, `Победители: ${giveaway.winnersCount}`]
           : []),
         'Остальные настройки редактируются в приложении.',
       );
@@ -5639,7 +5628,9 @@ export class PrivateControlService {
 
         if (
           giveaway.status === 'COMPLETED' &&
-          (winner.status === 'SELECTED' || winner.status === 'EXPIRED')
+          (winner.status === 'SELECTED' ||
+            winner.status === 'CLAIMED' ||
+            winner.status === 'EXPIRED')
         ) {
           actionRow.push(
             this.callbackButton(
@@ -5802,12 +5793,7 @@ export class PrivateControlService {
 
       return await this.maxClient.uploadImage(
         imageBuffer,
-        this.buildDownloadedFileName(
-          filePrefix,
-          content.imageFileName,
-          null,
-          mimeType,
-        ),
+        this.buildDownloadedFileName(filePrefix, content.imageFileName, null, mimeType),
         mimeType,
       );
     } catch (error: unknown) {
@@ -5900,13 +5886,11 @@ export class PrivateControlService {
   ): PrivateView {
     const { giveaway, winner } = claimContext;
     const statusLabel =
-      winner.status === 'CLAIMED'
-        ? 'Приз подтверждён'
-        : winner.status === 'DELIVERED'
-          ? 'Приз выдан'
-          : winner.status === 'EXPIRED'
-            ? 'Срок подтверждения истёк'
-            : 'Ждёт подтверждения';
+      winner.status === 'DELIVERED'
+        ? 'Приз выдан'
+        : winner.status === 'EXPIRED'
+          ? 'Место ждёт реролл'
+          : 'Победитель зафиксирован';
     const lines = [
       this.markdownTitle('Розыгрыш'),
       '',
@@ -5914,22 +5898,10 @@ export class PrivateControlService {
       `${winner.prizePosition}. ${this.escapeMarkdown(winner.prizeTitle)}`,
       `Статус: ${statusLabel}`,
       `Победитель: ${this.escapeMarkdown(winner.displayName ?? winner.userId)}`,
-      ...(winner.claimDeadlineAt
-        ? [`Подтвердить до: ${this.formatDateTimeLabel(winner.claimDeadlineAt)}`]
-        : []),
       ...(notice ? ['', `Статус: ${this.escapeMarkdown(notice)}`] : []),
     ];
 
     const rows: MaxMessageButton[][] = [];
-    if (winner.status === 'SELECTED') {
-      rows.push([
-        this.callbackButton(
-          'Подтвердить приз',
-          this.cb('giveaway_claim_confirm', giveaway.id, winner.id),
-          'positive',
-        ),
-      ]);
-    }
     const linkRow: MaxMessageButton[] = [];
     if (giveaway.publicationUrl) {
       linkRow.push({
@@ -5963,7 +5935,7 @@ export class PrivateControlService {
       text: [
         this.markdownTitle('Розыгрыш'),
         '',
-        'Подтверждение приза недоступно: место уже перевыбрано или срок истёк.',
+        'Итоги уже зафиксированы. Подтверждение победителя больше не требуется.',
       ].join('\n'),
       options: {
         buttons: [[this.callbackButton('Главный экран', this.cb('home'))]],
@@ -7229,7 +7201,9 @@ export class PrivateControlService {
   }
 
   private rememberPrivateChatId(session: PrivateSession, chatId: string): void {
-    session.lastPrivateChatId = this.isPrivateDirectChat(chatId) ? chatId : session.lastPrivateChatId;
+    session.lastPrivateChatId = this.isPrivateDirectChat(chatId)
+      ? chatId
+      : session.lastPrivateChatId;
   }
 
   private wasGiveawayHandoffAlreadyDelivered(session: PrivateSession, chatId: string): boolean {
@@ -7574,9 +7548,7 @@ export class PrivateControlService {
       if (opening) {
         opening
           .slice()
-          .sort(
-            (left, right) => right.end - left.end || left.priority - right.priority,
-          )
+          .sort((left, right) => right.end - left.end || left.priority - right.priority)
           .forEach((tag) => {
             markdown += tag.open;
           });
@@ -7616,9 +7588,7 @@ export class PrivateControlService {
       case 'strikethrough':
         return { open: '~~', close: '~~', priority: 50 };
       case 'monospaced':
-        return visibleText.includes('\n')
-          ? null
-          : { open: '`', close: '`', priority: 60 };
+        return visibleText.includes('\n') ? null : { open: '`', close: '`', priority: 60 };
       case 'link':
         return markup.url
           ? {
@@ -7862,10 +7832,7 @@ export class PrivateControlService {
     return `${this.appBaseUrl}/app${this.buildEntityActivityMiniappRoute(chatId, entityType)}`;
   }
 
-  private buildEntityActivityMiniappRoute(
-    chatId: string,
-    entityType: ManagedEntityType,
-  ): string {
+  private buildEntityActivityMiniappRoute(chatId: string, entityType: ManagedEntityType): string {
     const encodedChatId = encodeURIComponent(chatId);
     return entityType === 'channel'
       ? `/channel/${encodedChatId}/stats`
@@ -7992,8 +7959,7 @@ export class PrivateControlService {
     const chatId = session.selectedChatId ?? context.chatId;
     return this.renderMiniappMovedScreen(context, session, {
       title: 'Активность открывается в mini app',
-      description:
-        'События, логи и ручная модерация теперь доступны в экране активности mini app.',
+      description: 'События, логи и ручная модерация теперь доступны в экране активности mini app.',
       buttonText: entityType === 'channel' ? 'Открыть статистику' : 'Открыть активность',
       miniappRoute: this.buildEntityActivityMiniappRoute(chatId, entityType),
       miniappUrl: this.buildEntityActivityMiniappUrl(chatId, entityType),
@@ -8014,10 +7980,7 @@ export class PrivateControlService {
       : `${this.appBaseUrl}/app/chat/${encodedChatId}/settings?focus=giveaway&handoff=1`;
   }
 
-  private buildGiveawaySettingsMiniappRoute(
-    chatId: string,
-    entityType: ManagedEntityType,
-  ): string {
+  private buildGiveawaySettingsMiniappRoute(chatId: string, entityType: ManagedEntityType): string {
     const encodedChatId = encodeURIComponent(chatId);
     return entityType === 'channel'
       ? `/channel/${encodedChatId}/settings?focus=giveaway&handoff=1`
