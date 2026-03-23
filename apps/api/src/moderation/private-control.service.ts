@@ -306,6 +306,18 @@ type DownloadedImageAsset = {
   fileName: string;
 };
 
+type ForwardedModerationCommand = {
+  action: 'BAN';
+  banDurationHours: number | null;
+};
+
+type ForwardedModerationTarget = {
+  chatId: string;
+  chatTitle: string | null;
+  userId: string;
+  senderName: string | null;
+};
+
 const SESSION_TTL_SEC = 45 * 60;
 const SESSION_KEY_PREFIX = 'private-ui:v2';
 const GIVEAWAY_HANDOFF_DEDUP_WINDOW_MS = 20_000;
@@ -329,6 +341,8 @@ const MAX_CALLBACK_PREFIX = 'pc2';
 const LEGACY_CALLBACK_PREFIX = 'pc';
 const CALLBACK_REFRESH_NOTIFICATION = 'Меню обновлено';
 const CALLBACK_STALE_NOTIFICATION = 'Кнопки устарели, обновляю экран';
+const DEFAULT_FORWARDED_BAN_DURATION_HOURS = 6;
+const MAX_FORWARDED_COMMAND_SCAN_DEPTH = 8;
 const MINIAPP_SETTINGS_ONLY_CALLBACK_ACTIONS = new Set<string>([
   'open_settings_hub',
   'open_section',
@@ -1420,6 +1434,21 @@ export class PrivateControlService {
   private async processTextMessage(context: PrivateContext): Promise<void> {
     const session = await this.loadSession(context.actor.userId);
     this.rememberPrivateChatId(session, context.chatId);
+    const directText = this.extractDirectIncomingText(context.update);
+    const forwardedModerationCommand = this.parseForwardedModerationCommand(directText);
+    if (forwardedModerationCommand) {
+      const forwardedTargets = this.extractForwardedModerationTargets(context.update);
+      if (forwardedTargets.length > 0) {
+        await this.handleForwardedModerationCommand(
+          context,
+          session,
+          forwardedModerationCommand,
+          forwardedTargets,
+        );
+        return;
+      }
+    }
+
     const imageSourceAttachment = this.extractFirstImageSourceAttachment(context.update);
     const fileAttachment = this.extractFirstFileAttachment(context.update);
     const hasVideoAttachment = this.hasVideoAttachment(context.update);
@@ -1507,6 +1536,405 @@ export class PrivateControlService {
       callbackId: null,
       notification: null,
     });
+  }
+
+  private async handleForwardedModerationCommand(
+    context: PrivateContext,
+    session: PrivateSession,
+    command: ForwardedModerationCommand,
+    targets: ForwardedModerationTarget[],
+  ): Promise<void> {
+    const uniqueTargets = this.dedupeForwardedModerationTargets(targets);
+    if (uniqueTargets.length !== 1) {
+      throw new BadRequestException(
+        'Перешлите одно сообщение из нужной группы одним сообщением и добавьте слово «бан».',
+      );
+    }
+
+    const target = uniqueTargets[0];
+    const banDurationHours = await this.resolveForwardedBanDurationHours(
+      target.chatId,
+      context.actor,
+      command.banDurationHours,
+    );
+    const result = await this.adminService.applyManualModerationAction(
+      target.chatId,
+      target.userId,
+      context.actor,
+      {
+        action: command.action,
+        banDurationHours,
+      },
+      'private_bot',
+    );
+
+    await this.saveSession(context.actor.userId, session);
+
+    const targetLabel = target.senderName
+      ? `${target.senderName} (${target.userId})`
+      : target.userId;
+    const chatLabel = target.chatTitle ? target.chatTitle : target.chatId;
+    const lines = [result.message, `Чат: ${chatLabel}`, `Пользователь: ${targetLabel}`];
+    await this.sendImmediate(context.chatId, lines.join('\n'));
+  }
+
+  private async resolveForwardedBanDurationHours(
+    chatId: string,
+    actor: AuthUser,
+    explicitHours: number | null,
+  ): Promise<number> {
+    if (explicitHours !== null) {
+      return explicitHours;
+    }
+
+    try {
+      const settings = await this.adminService.getSettings(chatId, actor);
+      if (
+        typeof settings?.banDurationHours === 'number' &&
+        Number.isInteger(settings.banDurationHours) &&
+        settings.banDurationHours >= 1 &&
+        settings.banDurationHours <= 336
+      ) {
+        return settings.banDurationHours;
+      }
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          userId: actor.userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve forwarded ban duration from chat settings',
+      );
+    }
+
+    return DEFAULT_FORWARDED_BAN_DURATION_HOURS;
+  }
+
+  private parseForwardedModerationCommand(text: string): ForwardedModerationCommand | null {
+    const normalized = this.readLowerString(text);
+    if (!normalized) {
+      return null;
+    }
+
+    const match = normalized.match(
+      /^(?:бан|ban)(?:\s+(\d{1,3}))?(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.!]?$/u,
+    );
+    if (!match) {
+      return null;
+    }
+
+    return {
+      action: 'BAN',
+      banDurationHours: match[1] ? this.parseIntInput(match[1], 1, 336) : null,
+    };
+  }
+
+  private extractDirectIncomingText(update: MaxUpdate): string {
+    const messageNode = this.extractIncomingMessageNode(update);
+    if (!messageNode) {
+      return '';
+    }
+
+    const body = this.asRecord(messageNode.body);
+    const content = this.asRecord(messageNode.content);
+    const payload = this.asRecord(messageNode.payload);
+    const nestedMessage = this.asRecord(messageNode.message);
+    const candidates = [
+      messageNode.text,
+      messageNode.caption,
+      messageNode.message_text,
+      messageNode.messageText,
+      body?.text,
+      body?.plain,
+      content?.text,
+      content?.caption,
+      payload?.text,
+      nestedMessage?.text,
+    ];
+
+    for (const candidate of candidates) {
+      const value = this.readString(candidate);
+      if (value) {
+        return value;
+      }
+    }
+
+    return '';
+  }
+
+  private extractForwardedModerationTargets(update: MaxUpdate): ForwardedModerationTarget[] {
+    const messageNode = this.extractIncomingMessageNode(update);
+    if (!messageNode) {
+      return [];
+    }
+
+    const body = this.asRecord(messageNode.body);
+    const content = this.asRecord(messageNode.content);
+    const payload = this.asRecord(messageNode.payload);
+    const nestedMessage = this.asRecord(messageNode.message);
+    const candidates = [
+      messageNode.link,
+      messageNode.forward,
+      messageNode.forwarded_message,
+      messageNode.forwardedMessage,
+      body?.link,
+      body?.forward,
+      body?.forwarded_message,
+      body?.forwardedMessage,
+      content?.link,
+      content?.forward,
+      content?.forwarded_message,
+      content?.forwardedMessage,
+      payload?.link,
+      payload?.forward,
+      payload?.forwarded_message,
+      payload?.forwardedMessage,
+      nestedMessage?.link,
+      nestedMessage?.forward,
+      nestedMessage?.forwarded_message,
+      nestedMessage?.forwardedMessage,
+    ];
+
+    const targets: ForwardedModerationTarget[] = [];
+    for (const candidate of candidates) {
+      this.collectForwardedModerationTargets(candidate, targets);
+    }
+
+    return this.dedupeForwardedModerationTargets(targets);
+  }
+
+  private collectForwardedModerationTargets(
+    node: unknown,
+    acc: ForwardedModerationTarget[],
+    depth = 0,
+  ): void {
+    if (depth > MAX_FORWARDED_COMMAND_SCAN_DEPTH || node === null || node === undefined) {
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        this.collectForwardedModerationTargets(item, acc, depth + 1);
+      }
+      return;
+    }
+
+    const row = this.asRecord(node);
+    if (!row) {
+      return;
+    }
+
+    const target = this.parseForwardedModerationTarget(row);
+    if (target) {
+      acc.push(target);
+    }
+
+    for (const value of Object.values(row)) {
+      if (value && (typeof value === 'object' || Array.isArray(value))) {
+        this.collectForwardedModerationTargets(value, acc, depth + 1);
+      }
+    }
+  }
+
+  private parseForwardedModerationTarget(
+    row: Record<string, unknown>,
+  ): ForwardedModerationTarget | null {
+    const chatId = this.extractChatIdFromNode(row);
+    const userId = this.extractUserIdFromNode(row);
+    if (!chatId || !userId || this.isPrivateDirectChat(chatId)) {
+      return null;
+    }
+
+    return {
+      chatId,
+      chatTitle: this.extractChatTitleFromNode(row),
+      userId,
+      senderName: this.extractSenderNameFromNode(row),
+    };
+  }
+
+  private dedupeForwardedModerationTargets(
+    targets: ForwardedModerationTarget[],
+  ): ForwardedModerationTarget[] {
+    const unique = new Map<string, ForwardedModerationTarget>();
+    for (const target of targets) {
+      const key = `${target.chatId}:${target.userId}`;
+      if (!unique.has(key)) {
+        unique.set(key, target);
+      }
+    }
+
+    return [...unique.values()];
+  }
+
+  private extractChatIdFromNode(node: Record<string, unknown>): string | null {
+    const chat = this.asRecord(node.chat);
+    const recipient = this.asRecord(node.recipient);
+    const conversation = this.asRecord(node.conversation);
+    const payloadChat = this.asRecord(this.asRecord(node.payload)?.chat);
+    const candidates = [
+      node.chatId,
+      node.chat_id,
+      chat?.chatId,
+      chat?.chat_id,
+      chat?.id,
+      recipient?.chatId,
+      recipient?.chat_id,
+      recipient?.id,
+      conversation?.chat_id,
+      conversation?.chatId,
+      conversation?.id,
+      payloadChat?.chat_id,
+      payloadChat?.chatId,
+      payloadChat?.id,
+    ];
+
+    for (const candidate of candidates) {
+      const value = this.normalizeEntityId(candidate);
+      if (value) {
+        return value;
+      }
+    }
+
+    return null;
+  }
+
+  private extractUserIdFromNode(node: Record<string, unknown>): string | null {
+    const sender = this.asRecord(node.sender);
+    const from = this.asRecord(node.from);
+    const user = this.asRecord(node.user);
+    const actor = this.asRecord(node.actor);
+    const payloadSender = this.asRecord(this.asRecord(node.payload)?.sender);
+    const candidates = [
+      node.senderId,
+      node.sender_id,
+      sender?.id,
+      sender?.user_id,
+      sender?.userId,
+      from?.id,
+      from?.user_id,
+      from?.userId,
+      user?.id,
+      user?.user_id,
+      user?.userId,
+      actor?.id,
+      actor?.user_id,
+      actor?.userId,
+      payloadSender?.id,
+      payloadSender?.user_id,
+      payloadSender?.userId,
+    ];
+
+    for (const candidate of candidates) {
+      const value = this.normalizeEntityId(candidate);
+      if (value) {
+        return value;
+      }
+    }
+
+    return null;
+  }
+
+  private extractSenderNameFromNode(node: Record<string, unknown>): string | null {
+    const sender = this.asRecord(node.sender);
+    const from = this.asRecord(node.from);
+    const user = this.asRecord(node.user);
+    const actor = this.asRecord(node.actor);
+    const payloadSender = this.asRecord(this.asRecord(node.payload)?.sender);
+    const directCandidates = [
+      node.sender_name,
+      node.senderName,
+      node.display_name,
+      node.displayName,
+      sender?.display_name,
+      sender?.displayName,
+      sender?.name,
+      sender?.full_name,
+      sender?.fullName,
+      sender?.nickname,
+      from?.display_name,
+      from?.displayName,
+      from?.name,
+      from?.full_name,
+      from?.fullName,
+      user?.display_name,
+      user?.displayName,
+      user?.name,
+      user?.full_name,
+      user?.fullName,
+      actor?.display_name,
+      actor?.displayName,
+      actor?.name,
+      actor?.full_name,
+      actor?.fullName,
+      payloadSender?.display_name,
+      payloadSender?.displayName,
+      payloadSender?.name,
+      payloadSender?.full_name,
+      payloadSender?.fullName,
+    ];
+
+    for (const candidate of directCandidates) {
+      const value = this.readString(candidate);
+      if (value) {
+        return value;
+      }
+    }
+
+    const nameNodes = [sender, from, user, actor, payloadSender].filter(
+      (item): item is Record<string, unknown> => Boolean(item),
+    );
+    for (const value of nameNodes) {
+      const firstName = this.readString(
+        value.first_name ?? value.firstName ?? value.given_name ?? value.givenName,
+      );
+      const lastName = this.readString(
+        value.last_name ?? value.lastName ?? value.family_name ?? value.familyName,
+      );
+      const fullName = [firstName, lastName].filter(Boolean).join(' ').trim();
+      if (fullName) {
+        return fullName;
+      }
+    }
+
+    return null;
+  }
+
+  private extractChatTitleFromNode(node: Record<string, unknown>): string | null {
+    const chat = this.asRecord(node.chat);
+    const recipient = this.asRecord(node.recipient);
+    const candidates = [
+      node.chatTitle,
+      node.chat_title,
+      node.chatName,
+      node.chat_name,
+      chat?.title,
+      chat?.name,
+      recipient?.title,
+      recipient?.chat_title,
+      recipient?.chatTitle,
+      recipient?.name,
+      recipient?.display_name,
+    ];
+
+    for (const candidate of candidates) {
+      const value = this.readString(candidate);
+      if (value) {
+        return value;
+      }
+    }
+
+    return null;
+  }
+
+  private normalizeEntityId(value: unknown): string | null {
+    if (typeof value !== 'string' && typeof value !== 'number') {
+      return null;
+    }
+
+    const normalized = String(value).trim();
+    return normalized.length > 0 ? normalized : null;
   }
 
   private async processCallback(context: PrivateContext): Promise<void> {
@@ -8281,7 +8709,13 @@ export class PrivateControlService {
       const chatId = typeof parsed.c === 'string' ? parsed.c.trim() : '';
       const token = typeof parsed.t === 'string' ? parsed.t.trim() : '';
 
-      if (parsed.v !== 1 || parsed.k !== 'channel-dialog' || parsed.m !== 'suggest' || !chatId || !token) {
+      if (
+        parsed.v !== 1 ||
+        parsed.k !== 'channel-dialog' ||
+        parsed.m !== 'suggest' ||
+        !chatId ||
+        !token
+      ) {
         return null;
       }
 

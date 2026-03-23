@@ -61,6 +61,50 @@ function createPrivateTextUpdate(text: string): MaxUpdate {
   };
 }
 
+function createPrivateForwardedBanUpdate(text = 'бан'): MaxUpdate {
+  return {
+    updateId: `upd-forwarded-ban-${Date.now()}`,
+    type: 'message_created',
+    message: {
+      messageId: `msg-forwarded-ban-${Date.now()}`,
+      chatId: '152517912',
+      senderId: 'user-1',
+      senderName: 'Тестовый пользователь',
+      text,
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'message_created',
+      message: {
+        body: {
+          text,
+          forwarded_message: {
+            sender: {
+              user_id: 'user-77',
+              name: 'Нарушитель',
+            },
+            recipient: {
+              chat_id: -70000000000001,
+              title: 'Тестовый чат 1',
+            },
+            body: {
+              text: 'Сомнительное сообщение',
+            },
+          },
+        },
+        sender: {
+          user_id: 'user-1',
+          name: 'Тестовый пользователь',
+        },
+        recipient: {
+          chat_id: 152517912,
+          chat_type: 'dialog',
+        },
+      },
+    },
+  };
+}
+
 function createPrivateFormattedTextUpdate(
   text: string,
   markup: Array<{
@@ -1009,6 +1053,59 @@ describe('PrivateControlService', () => {
     expect(sentMessages.some((text) => text.includes('классический вид'))).toBe(false);
   });
 
+  it('bans a forwarded sender from private chat using the chat default duration', async () => {
+    const { service, adminService, maxClient, chats } = createHarness({
+      settings: {
+        ...defaultSettings,
+        banDurationHours: 12,
+      },
+    });
+
+    await service.handleUpdate(createPrivateForwardedBanUpdate());
+
+    expect(adminService.applyManualModerationAction).toHaveBeenCalledWith(
+      chats[0].id,
+      'user-77',
+      expect.objectContaining({
+        userId: 'user-1',
+        chatId: '152517912',
+      }),
+      {
+        action: 'BAN',
+        banDurationHours: 12,
+      },
+      'private_bot',
+    );
+    expect(getLastSentText(maxClient)).toContain('Готово');
+    expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
+    expect(getLastSentText(maxClient)).toContain('Пользователь: Нарушитель (user-77)');
+  });
+
+  it('uses an explicit duration in the forwarded ban command', async () => {
+    const { service, adminService, chats } = createHarness({
+      settings: {
+        ...defaultSettings,
+        banDurationHours: 6,
+      },
+    });
+
+    await service.handleUpdate(createPrivateForwardedBanUpdate('бан 24'));
+
+    expect(adminService.applyManualModerationAction).toHaveBeenCalledWith(
+      chats[0].id,
+      'user-77',
+      expect.objectContaining({
+        userId: 'user-1',
+        chatId: '152517912',
+      }),
+      {
+        action: 'BAN',
+        banDurationHours: 24,
+      },
+      'private_bot',
+    );
+  });
+
   it('handles stale legacy callback payload and refreshes current screen', async () => {
     const { service, maxClient } = createHarness();
 
@@ -1695,10 +1792,7 @@ describe('PrivateControlService', () => {
 
   it('greets the user and accepts channel suggestions from a bot deep link', async () => {
     const { service, adminService, maxClient, channels } = createHarness();
-    const startPayload = encodeChannelSuggestionStartPayload(
-      channels[0].id,
-      'cdt-suggest-token-1',
-    );
+    const startPayload = encodeChannelSuggestionStartPayload(channels[0].id, 'cdt-suggest-token-1');
 
     await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
 
@@ -1722,10 +1816,7 @@ describe('PrivateControlService', () => {
 
   it('asks for text when a user sends media-only content into the bot suggestion flow', async () => {
     const { service, adminService, maxClient, channels } = createHarness();
-    const startPayload = encodeChannelSuggestionStartPayload(
-      channels[0].id,
-      'cdt-suggest-token-2',
-    );
+    const startPayload = encodeChannelSuggestionStartPayload(channels[0].id, 'cdt-suggest-token-2');
 
     await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
     await service.handleUpdate(createPrivatePhotoUpdate());
