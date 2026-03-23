@@ -1,5 +1,12 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit, Optional } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+  Optional,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   getBotSpeechEditableTemplate,
@@ -29,6 +36,8 @@ import {
   type MaxMessageButton,
   type MaxSendMessageOptions,
 } from '../max/max-client.service';
+import { AdminService } from '../admin/admin.service';
+import type { AuthUser } from '../common/decorators/current-user.decorator';
 import { PrismaService } from '../prisma/prisma.service';
 import { getAppRole, roleRunsModeration } from '../runtime/app-role';
 import { SystemModeService } from '../system/system-mode.service';
@@ -77,6 +86,18 @@ type RulesButtonReference = {
 };
 
 type ChannelDialogType = 'comments' | 'suggest';
+
+type AdminForwardedModerationCommand = {
+  action: 'BAN';
+  banDurationHours: number | null;
+};
+
+type ForwardedModerationTarget = {
+  chatId: string;
+  chatTitle: string | null;
+  userId: string;
+  senderName: string | null;
+};
 
 const DEFAULT_BAN_DURATION_HOURS = 6;
 const DEFAULT_BOT_BUTTON_TEXT = 'Открыть';
@@ -213,6 +234,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     @Optional() configService?: ConfigService,
     @Optional() private readonly redisCounter?: RedisCounterService,
     @Optional() private readonly privateControlService?: PrivateControlService,
+    @Optional() private readonly adminService?: AdminService,
   ) {
     this.maxBotToken = this.normalizeSecret(configService?.get<string>('MAX_BOT_TOKEN'));
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
@@ -462,6 +484,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       senderId,
     );
     if (senderChatAdminCheck.isAdmin) {
+      const handledAdminCommand = await this.handleAdminForwardedModerationCommand({
+        update,
+        chatId,
+        chatTitle,
+        senderId,
+        senderName,
+        messageId,
+        settings,
+      });
+      if (handledAdminCommand) {
+        return;
+      }
+
       if (messageId && this.shouldAutoAttachChatCommentsButton(settings, true)) {
         await this.tryAutoAttachChatMessageComments({
           chatId,
@@ -3317,6 +3352,450 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       expiresAt,
       durationHours,
     };
+  }
+
+  private async handleAdminForwardedModerationCommand(params: {
+    update: MaxUpdate;
+    chatId: string;
+    chatTitle?: string;
+    senderId: string;
+    senderName?: string;
+    messageId: string;
+    settings: ChatSettings;
+  }): Promise<boolean> {
+    const { update, chatId, chatTitle, senderId, senderName, messageId, settings } = params;
+    const directText = this.extractDirectIncomingMessageText(update);
+    let command: AdminForwardedModerationCommand | null;
+    try {
+      command = this.parseAdminForwardedModerationCommand(directText);
+    } catch (error: unknown) {
+      await this.sendGroupAdminCommandNotice({
+        chatId,
+        settings,
+        text: this.extractGroupAdminCommandErrorMessage(error),
+      });
+      return true;
+    }
+    if (!command) {
+      return false;
+    }
+
+    const targets = this.extractForwardedModerationTargets(update);
+    if (targets.length === 0) {
+      return false;
+    }
+
+    const uniqueTargets = this.dedupeForwardedModerationTargets(targets);
+    if (uniqueTargets.length !== 1) {
+      await this.sendGroupAdminCommandNotice({
+        chatId,
+        settings,
+        text: 'Перешлите одно сообщение из этого чата и добавьте слово `бан`.',
+      });
+      return true;
+    }
+
+    const target = uniqueTargets[0];
+    if (target.chatId !== chatId) {
+      await this.sendGroupAdminCommandNotice({
+        chatId,
+        settings,
+        text: 'Команда `бан` работает только для пересланных сообщений из этого чата.',
+      });
+      return true;
+    }
+
+    if (!this.adminService) {
+      this.logger.warn(
+        {
+          chatId,
+          actorUserId: senderId,
+          targetUserId: target.userId,
+        },
+        'Admin forwarded moderation command ignored: AdminService is unavailable',
+      );
+      return false;
+    }
+
+    const actor: AuthUser = {
+      userId: senderId,
+      username: null,
+      displayName: senderName?.trim() || null,
+      chatId,
+      chatTitle: chatTitle?.trim() || null,
+    };
+    const banDurationHours =
+      command.banDurationHours ??
+      this.resolveGroupCommandBanDurationHours(settings.banDurationHours);
+
+    try {
+      const result = await this.adminService.applyManualModerationAction(
+        chatId,
+        target.userId,
+        actor,
+        {
+          action: command.action,
+          banDurationHours,
+        },
+        'group_command',
+      );
+
+      await this.deleteAdminCommandMessage(chatId, messageId);
+      await this.sendGroupAdminCommandNotice({
+        chatId,
+        settings,
+        text: `${result.message}\nПользователь: ${this.formatUserLabel(target.senderName ?? undefined)}`,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          actorUserId: senderId,
+          targetUserId: target.userId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to apply forwarded admin moderation command',
+      );
+
+      await this.sendGroupAdminCommandNotice({
+        chatId,
+        settings,
+        text: `Не удалось применить бан: ${this.escapeMaxMarkdownText(
+          this.extractGroupAdminCommandErrorMessage(error),
+        )}`,
+      });
+    }
+
+    return true;
+  }
+
+  private resolveGroupCommandBanDurationHours(value: number): number {
+    return Number.isInteger(value) && value >= 1 && value <= 336
+      ? value
+      : DEFAULT_BAN_DURATION_HOURS;
+  }
+
+  private parseAdminForwardedModerationCommand(
+    text: string,
+  ): AdminForwardedModerationCommand | null {
+    const normalized = this.readLowerString(text);
+    if (!normalized) {
+      return null;
+    }
+
+    const match = normalized.match(
+      /^(?:бан|ban)(?:\s+(\d{1,3}))?(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.!]?$/u,
+    );
+    if (!match) {
+      return null;
+    }
+
+    if (!match[1]) {
+      return {
+        action: 'BAN',
+        banDurationHours: null,
+      };
+    }
+
+    const hours = Number.parseInt(match[1], 10);
+    if (!Number.isInteger(hours) || hours < 1 || hours > 336) {
+      throw new BadRequestException('Длительность бана должна быть от 1 до 336 часов.');
+    }
+
+    return {
+      action: 'BAN',
+      banDurationHours: hours,
+    };
+  }
+
+  private extractDirectIncomingMessageText(update: MaxUpdate): string {
+    const raw = this.asRecord(update.raw);
+    if (!raw) {
+      return '';
+    }
+
+    const messageNode = this.extractRawMessageNode(raw) ?? raw;
+    const body = this.asRecord(messageNode.body);
+    const content = this.asRecord(messageNode.content);
+    const payload = this.asRecord(messageNode.payload);
+    const nestedMessage = this.asRecord(messageNode.message);
+    const candidates = [
+      messageNode.text,
+      messageNode.caption,
+      messageNode.message_text,
+      messageNode.messageText,
+      body?.text,
+      body?.plain,
+      content?.text,
+      content?.caption,
+      payload?.text,
+      nestedMessage?.text,
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim().length > 0) {
+        return candidate.trim();
+      }
+    }
+
+    return '';
+  }
+
+  private extractForwardedModerationTargets(update: MaxUpdate): ForwardedModerationTarget[] {
+    const raw = this.asRecord(update.raw);
+    if (!raw) {
+      return [];
+    }
+
+    const messageNode = this.extractRawMessageNode(raw) ?? raw;
+    const body = this.asRecord(messageNode.body);
+    const content = this.asRecord(messageNode.content);
+    const payload = this.asRecord(messageNode.payload);
+    const nestedMessage = this.asRecord(messageNode.message);
+    const candidates = [
+      messageNode.link,
+      messageNode.forward,
+      messageNode.forwarded_message,
+      messageNode.forwardedMessage,
+      body?.link,
+      body?.forward,
+      body?.forwarded_message,
+      body?.forwardedMessage,
+      content?.link,
+      content?.forward,
+      content?.forwarded_message,
+      content?.forwardedMessage,
+      payload?.link,
+      payload?.forward,
+      payload?.forwarded_message,
+      payload?.forwardedMessage,
+      nestedMessage?.link,
+      nestedMessage?.forward,
+      nestedMessage?.forwarded_message,
+      nestedMessage?.forwardedMessage,
+    ];
+
+    const targets: ForwardedModerationTarget[] = [];
+    for (const candidate of candidates) {
+      this.collectForwardedModerationTargets(candidate, targets);
+    }
+
+    return this.dedupeForwardedModerationTargets(targets);
+  }
+
+  private collectForwardedModerationTargets(
+    node: unknown,
+    acc: ForwardedModerationTarget[],
+    depth = 0,
+  ): void {
+    if (depth > MAX_FORWARD_SCAN_DEPTH || node === null || node === undefined) {
+      return;
+    }
+
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        this.collectForwardedModerationTargets(item, acc, depth + 1);
+      }
+      return;
+    }
+
+    const row = this.asRecord(node);
+    if (!row) {
+      return;
+    }
+
+    const target = this.parseForwardedModerationTarget(row);
+    if (target) {
+      acc.push(target);
+    }
+
+    for (const value of Object.values(row)) {
+      if (value && (typeof value === 'object' || Array.isArray(value))) {
+        this.collectForwardedModerationTargets(value, acc, depth + 1);
+      }
+    }
+  }
+
+  private parseForwardedModerationTarget(
+    row: Record<string, unknown>,
+  ): ForwardedModerationTarget | null {
+    const chatId = this.readChatIdFromEntity(row);
+    const userId = this.readUserIdFromForwardedNode(row);
+    if (!chatId || !userId) {
+      return null;
+    }
+
+    return {
+      chatId,
+      chatTitle: this.readChatTitleFromEntity(row),
+      userId,
+      senderName: this.readSenderNameFromForwardedNode(row),
+    };
+  }
+
+  private dedupeForwardedModerationTargets(
+    targets: ForwardedModerationTarget[],
+  ): ForwardedModerationTarget[] {
+    const unique = new Map<string, ForwardedModerationTarget>();
+    for (const target of targets) {
+      const key = `${target.chatId}:${target.userId}`;
+      if (!unique.has(key)) {
+        unique.set(key, target);
+      }
+    }
+
+    return [...unique.values()];
+  }
+
+  private readUserIdFromForwardedNode(node: Record<string, unknown>): string | null {
+    const sender = this.asRecord(node.sender);
+    const from = this.asRecord(node.from);
+    const user = this.asRecord(node.user);
+    const actor = this.asRecord(node.actor);
+    const payloadSender = this.asRecord(this.asRecord(node.payload)?.sender);
+    const candidates = [sender, from, user, actor, payloadSender].filter(
+      (item): item is Record<string, unknown> => item !== null,
+    );
+
+    for (const candidate of candidates) {
+      const userId = this.readUserIdFromEntity(candidate);
+      if (userId) {
+        return userId;
+      }
+    }
+
+    return this.readUserIdFromEntity(node);
+  }
+
+  private readSenderNameFromForwardedNode(node: Record<string, unknown>): string | null {
+    const sender = this.asRecord(node.sender);
+    const from = this.asRecord(node.from);
+    const user = this.asRecord(node.user);
+    const actor = this.asRecord(node.actor);
+    const payloadSender = this.asRecord(this.asRecord(node.payload)?.sender);
+    const candidates = [sender, from, user, actor, payloadSender, node].filter(
+      (item): item is Record<string, unknown> => item !== null,
+    );
+
+    for (const candidate of candidates) {
+      const displayName = this.readDisplayNameFromEntity(candidate);
+      if (displayName) {
+        return displayName;
+      }
+    }
+
+    return null;
+  }
+
+  private readChatIdFromEntity(node: Record<string, unknown>): string | null {
+    const chat = this.asRecord(node.chat);
+    const recipient = this.asRecord(node.recipient);
+    const conversation = this.asRecord(node.conversation);
+    const payloadChat = this.asRecord(this.asRecord(node.payload)?.chat);
+    const candidates = [
+      node.chatId,
+      node.chat_id,
+      chat?.chatId,
+      chat?.chat_id,
+      chat?.id,
+      recipient?.chatId,
+      recipient?.chat_id,
+      recipient?.id,
+      conversation?.chatId,
+      conversation?.chat_id,
+      conversation?.id,
+      payloadChat?.chatId,
+      payloadChat?.chat_id,
+      payloadChat?.id,
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' || typeof candidate === 'number') {
+        const normalized = String(candidate).trim();
+        if (normalized.length > 0) {
+          return normalized;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private readChatTitleFromEntity(node: Record<string, unknown>): string | null {
+    const chat = this.asRecord(node.chat);
+    const recipient = this.asRecord(node.recipient);
+    const candidates = [
+      node.chatTitle,
+      node.chat_title,
+      node.chatName,
+      node.chat_name,
+      chat?.title,
+      chat?.name,
+      recipient?.title,
+      recipient?.chat_title,
+      recipient?.chatTitle,
+      recipient?.name,
+      recipient?.display_name,
+    ];
+
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim().length > 0) {
+        return candidate.trim();
+      }
+    }
+
+    return null;
+  }
+
+  private async deleteAdminCommandMessage(chatId: string, messageId: string): Promise<void> {
+    try {
+      await this.maxClient.deleteMessage(chatId, messageId, { immediate: true });
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          messageId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to delete handled admin command message',
+      );
+    }
+  }
+
+  private async sendGroupAdminCommandNotice(params: {
+    chatId: string;
+    settings: ChatSettings;
+    text: string;
+  }): Promise<void> {
+    await this.sendBotMessageWithOptionalAutoDelete({
+      chatId: params.chatId,
+      text: params.text,
+      deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
+      deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
+      immediate: true,
+    });
+  }
+
+  private extractGroupAdminCommandErrorMessage(error: unknown): string {
+    if (error instanceof BadRequestException) {
+      const response = error.getResponse();
+      if (typeof response === 'string' && response.trim().length > 0) {
+        return response.trim();
+      }
+
+      if (response && typeof response === 'object') {
+        const message = (response as { message?: unknown }).message;
+        if (typeof message === 'string' && message.trim().length > 0) {
+          return message.trim();
+        }
+      }
+    }
+
+    if (error instanceof Error && error.message.trim().length > 0) {
+      return error.message.trim();
+    }
+
+    return 'Попробуйте ещё раз через несколько секунд.';
   }
 
   private async handleActiveBanMessage(params: {

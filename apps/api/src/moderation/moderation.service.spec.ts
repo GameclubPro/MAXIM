@@ -255,6 +255,52 @@ function createUpdate(): MaxUpdate {
   };
 }
 
+function createAdminForwardedBanUpdate(
+  text = 'бан',
+  forwardedChatId: string | number = 'chat-1',
+): MaxUpdate {
+  return {
+    updateId: 'upd-admin-forward-ban-1',
+    type: 'message_created',
+    message: {
+      messageId: 'msg-admin-forward-ban-1',
+      chatId: 'chat-1',
+      senderId: 'admin-1',
+      senderName: 'Админ',
+      text,
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'message_created',
+      message: {
+        sender: {
+          user_id: 'admin-1',
+          display_name: 'Админ',
+        },
+        recipient: {
+          chat_id: 'chat-1',
+        },
+        body: {
+          text,
+          forwarded_message: {
+            sender: {
+              user_id: 'user-2',
+              display_name: 'Нарушитель',
+            },
+            recipient: {
+              chat_id: forwardedChatId,
+              title: forwardedChatId === 'chat-1' ? 'Chat 1' : 'Другой чат',
+            },
+            body: {
+              text: 'spam message',
+            },
+          },
+        },
+      },
+    },
+  };
+}
+
 function createBotAuthoredUpdate(): MaxUpdate {
   return {
     updateId: 'upd-bot-1',
@@ -4098,6 +4144,169 @@ describe('ModerationService', () => {
     expect(maxClient.sendMessage).not.toHaveBeenCalled();
     expect(maxClient.kickMember).not.toHaveBeenCalled();
     expect(maxClient.banMember).not.toHaveBeenCalled();
+  });
+
+  it('lets chat admins ban a forwarded sender from the same chat with the ban command', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            banDurationHours: 12,
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 3,
+          }),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = {
+      applyManualModerationAction: jest.fn().mockResolvedValue({
+        ok: true,
+        action: 'BAN',
+        userId: 'user-2',
+        banDurationHours: 12,
+        unbanScheduledAt: new Date(Date.now() + 12 * 60 * 60 * 1000).toISOString(),
+        message: 'Участник забанен на 12ч. Авторазбан запланирован.',
+      }),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createAdminForwardedBanUpdate());
+
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
+    expect(adminService.applyManualModerationAction).toHaveBeenCalledWith(
+      'chat-1',
+      'user-2',
+      expect.objectContaining({
+        userId: 'admin-1',
+        chatId: 'chat-1',
+        chatTitle: null,
+      }),
+      {
+        action: 'BAN',
+        banDurationHours: 12,
+      },
+      'group_command',
+    );
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-admin-forward-ban-1', {
+      immediate: true,
+    });
+    const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
+    expect(
+      sentTexts.some((text) => text.includes('Участник забанен на 12ч. Авторазбан запланирован.')),
+    ).toBe(true);
+    expect(sentTexts.some((text) => text.includes('Пользователь: **Нарушитель**'))).toBe(true);
+  });
+
+  it('rejects admin ban command when the forwarded message comes from another chat', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            banDurationHours: 12,
+            deleteBotMessagesEnabled: true,
+            deleteBotMessagesDelayMinutes: 3,
+          }),
+          domains: [],
+          admins: [{ userId: 'admin-1' }],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = {
+      applyManualModerationAction: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createAdminForwardedBanUpdate('бан', 'chat-2'));
+
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
+    expect(adminService.applyManualModerationAction).not.toHaveBeenCalled();
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    const sentTexts = maxClient.sendMessage.mock.calls.map((call) => String(call[1] ?? ''));
+    expect(
+      sentTexts.some((text) => text.includes('только для пересланных сообщений из этого чата')),
+    ).toBe(true);
   });
 
   it('keeps local allowlist admin bypass even when remote list does not include sender', async () => {

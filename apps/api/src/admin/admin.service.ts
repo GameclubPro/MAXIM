@@ -142,7 +142,7 @@ type AdminAccessResolution =
       error: unknown;
     };
 
-export type AdminActionSource = 'miniapp' | 'private_bot';
+export type AdminActionSource = 'miniapp' | 'private_bot' | 'group_command';
 
 type ResolvedUserProfile = {
   displayName: string | null;
