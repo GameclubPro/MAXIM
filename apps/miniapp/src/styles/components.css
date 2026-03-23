@@ -5937,9 +5937,9 @@
 .broadcast-planner__calendar-card {
   box-sizing: border-box;
   min-width: 0;
-  padding: 16px;
+  padding: 18px;
   display: grid;
-  gap: 12px;
+  gap: 14px;
 }
 
 .broadcast-planner__calendar-toolbar {
@@ -5985,28 +5985,28 @@
   box-sizing: border-box;
   min-width: 0;
   display: grid;
-  gap: 10px;
-  border-radius: 18px;
+  gap: 12px;
+  border-radius: 20px;
   border: 1px solid rgba(62, 96, 127, 0.1);
   background: rgba(251, 253, 255, 0.98);
-  padding: 12px;
+  padding: 14px;
 }
 
 .broadcast-planner__calendar-head {
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr) 36px;
+  grid-template-columns: 40px minmax(0, 1fr) 40px;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .broadcast-planner__month-button {
-  width: 36px;
-  height: 36px;
-  border-radius: 12px;
+  width: 40px;
+  height: 40px;
+  border-radius: 14px;
   border: 1px solid rgba(62, 96, 127, 0.16);
   background: rgba(255, 255, 255, 0.92);
   color: var(--text-primary);
-  font-size: 0.95rem;
+  font-size: 1rem;
   font-weight: 800;
 }
 
@@ -6015,15 +6015,15 @@
 }
 
 .broadcast-planner__calendar-head strong {
-  min-height: 36px;
+  min-height: 40px;
   border-radius: 999px;
   border: 1px solid rgba(62, 96, 127, 0.12);
   background: rgba(255, 255, 255, 0.92);
-  padding: 0 14px;
+  padding: 0 16px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.96rem;
+  font-size: 0.98rem;
   line-height: 1;
   color: var(--text-primary);
 }
@@ -6031,7 +6031,7 @@
 .broadcast-planner__weekdays {
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 4px;
+  gap: 6px;
   padding: 0 2px;
 }
 
@@ -6046,23 +6046,24 @@
   min-width: 0;
   display: grid;
   grid-template-columns: repeat(7, minmax(0, 1fr));
-  gap: 6px;
+  gap: 8px;
 }
 
 .broadcast-planner__day {
   box-sizing: border-box;
   min-width: 0;
   position: relative;
-  min-height: 48px;
-  border-radius: 14px;
+  min-height: 44px;
+  aspect-ratio: 1 / 1;
+  border-radius: 16px;
   border: 1px solid rgba(62, 96, 127, 0.08);
   background: rgba(255, 255, 255, 0.98);
-  padding: 6px 6px 4px;
+  padding: 8px 7px 6px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
   align-items: flex-start;
-  gap: 4px;
+  gap: 6px;
   color: var(--text-primary);
   text-align: left;
 }
@@ -6097,7 +6098,7 @@
 
 .broadcast-planner__day.is-active {
   transform: translateY(-1px);
-  box-shadow: 0 6px 14px rgba(19, 62, 96, 0.08);
+  box-shadow: 0 10px 18px rgba(19, 62, 96, 0.1);
 }
 
 .broadcast-planner__day:disabled {
@@ -6106,14 +6107,14 @@
 
 .broadcast-planner__day-head {
   width: 100%;
-  min-height: 18px;
+  min-height: 20px;
   display: flex;
   align-items: flex-start;
   justify-content: flex-start;
 }
 
 .broadcast-planner__day-number {
-  font-size: 0.88rem;
+  font-size: 0.92rem;
   font-weight: 820;
   line-height: 1;
   letter-spacing: -0.02em;
@@ -6122,8 +6123,8 @@
 
 .broadcast-planner__day-today-dot {
   position: absolute;
-  top: 9px;
-  right: 9px;
+  top: 10px;
+  right: 10px;
   width: 7px;
   height: 7px;
   border-radius: 999px;
@@ -6133,10 +6134,10 @@
 
 .broadcast-planner__day-marker {
   position: absolute;
-  top: 8px;
-  right: 8px;
-  width: 16px;
-  height: 16px;
+  top: 9px;
+  right: 9px;
+  width: 18px;
+  height: 18px;
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
@@ -6152,7 +6153,7 @@
 .broadcast-planner__day-foot {
   width: 100%;
   display: flex;
-  justify-content: flex-start;
+  justify-content: center;
   align-items: center;
   min-height: 8px;
 }
@@ -6199,10 +6200,10 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border-radius: 18px;
+  border-radius: 20px;
   border: 1px solid rgba(62, 96, 127, 0.12);
   background: rgba(248, 251, 255, 0.92);
-  padding: 10px 12px;
+  padding: 12px 14px;
 }
 
 .broadcast-planner__selection-copy {
@@ -6232,9 +6233,9 @@
 
 .broadcast-planner__selection-open,
 .broadcast-planner__selection-reset {
-  min-height: 34px;
-  border-radius: 12px;
-  padding: 0 11px;
+  min-height: 38px;
+  border-radius: 14px;
+  padding: 0 13px;
   font-size: 0.74rem;
   font-weight: 700;
 }
@@ -6263,11 +6264,11 @@
 }
 
 .broadcast-planner__picked-chip {
-  min-width: 92px;
-  border-radius: 16px;
+  min-width: 100px;
+  border-radius: 18px;
   border: 1px solid rgba(62, 96, 127, 0.12);
   background: rgba(255, 255, 255, 0.94);
-  padding: 8px 10px;
+  padding: 10px 12px;
   display: grid;
   gap: 3px;
   text-align: left;
@@ -6325,9 +6326,9 @@
 }
 
 .broadcast-planner__sheet {
-  padding: 16px;
+  padding: 18px;
   display: grid;
-  gap: 12px;
+  gap: 14px;
   max-height: min(82dvh, 780px);
   overflow-y: auto;
 }
@@ -6384,19 +6385,19 @@
 
 .broadcast-planner__day-tabs {
   display: flex;
-  gap: 8px;
+  gap: 10px;
   overflow-x: auto;
   padding-bottom: 2px;
 }
 
 .broadcast-planner__day-tab {
-  min-width: 86px;
-  border-radius: 16px;
+  min-width: 96px;
+  border-radius: 18px;
   border: 1px solid rgba(62, 96, 127, 0.14);
   background: rgba(255, 255, 255, 0.94);
-  padding: 8px 10px;
+  padding: 10px 12px;
   display: grid;
-  gap: 2px;
+  gap: 4px;
   text-align: left;
   color: var(--text-primary);
 }
@@ -6423,14 +6424,14 @@
 
 .broadcast-planner__mode-row {
   display: flex;
-  gap: 8px;
+  gap: 10px;
 }
 
 .broadcast-planner__mode-chip {
-  min-height: 34px;
+  min-height: 38px;
   border-radius: 999px;
   border: 1px solid rgba(62, 96, 127, 0.14);
-  padding: 0 14px;
+  padding: 0 16px;
   background: rgba(255, 255, 255, 0.86);
   color: var(--text-secondary);
   font-size: 0.75rem;
@@ -6443,61 +6444,10 @@
   color: #0b66b6;
 }
 
-.broadcast-planner__count-grid {
-  display: grid;
-  gap: 10px;
-}
-
-.broadcast-planner__count-card {
-  min-height: 76px;
-  border-radius: 18px;
-  border: 1px solid rgba(62, 96, 127, 0.14);
-  background: rgba(255, 255, 255, 0.96);
-  padding: 12px;
-  display: grid;
-  gap: 4px;
-  text-align: left;
-  color: var(--text-primary);
-}
-
-.broadcast-planner__count-card strong {
-  font-size: 0.92rem;
-  line-height: 1.2;
-}
-
-.broadcast-planner__count-card small {
-  font-size: 0.72rem;
-  line-height: 1.35;
-  color: var(--text-secondary);
-}
-
-.broadcast-planner__count-card.is-selected {
-  border-color: rgba(11, 132, 255, 0.28);
-  background: rgba(232, 243, 255, 0.9);
-  box-shadow: inset 0 0 0 1px rgba(11, 132, 255, 0.14);
-}
-
-.broadcast-planner__manual-choice {
-  min-height: 44px;
-  border-radius: 16px;
-  border: 1px dashed rgba(62, 96, 127, 0.18);
-  background: rgba(255, 255, 255, 0.72);
-  color: var(--text-secondary);
-  font-size: 0.78rem;
-  font-weight: 700;
-}
-
-.broadcast-planner__manual-choice.is-selected {
-  border-style: solid;
-  border-color: rgba(11, 132, 255, 0.22);
-  background: rgba(11, 132, 255, 0.08);
-  color: #0b66b6;
-}
-
 .broadcast-planner__selected-strip {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 10px;
 }
 
 .broadcast-planner__selected-chip {
@@ -6513,23 +6463,6 @@
   font-weight: 800;
 }
 
-.broadcast-planner__sheet-note {
-  border-radius: 14px;
-  border: 1px solid rgba(62, 96, 127, 0.1);
-  background: rgba(247, 250, 253, 0.96);
-  padding: 8px 10px;
-  font-size: 0.72rem;
-  line-height: 1.35;
-  color: var(--text-secondary);
-}
-
-.broadcast-planner__time-summary {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.broadcast-planner__time-summary-item,
 .broadcast-planner__review-stat {
   border-radius: 16px;
   border: 1px solid rgba(62, 96, 127, 0.12);
@@ -6539,14 +6472,12 @@
   gap: 4px;
 }
 
-.broadcast-planner__time-summary-item small,
 .broadcast-planner__review-stat small {
   font-size: 0.7rem;
   line-height: 1.2;
   color: var(--text-secondary);
 }
 
-.broadcast-planner__time-summary-item strong,
 .broadcast-planner__review-stat strong {
   font-size: 1rem;
   line-height: 1;
@@ -6555,7 +6486,7 @@
 
 .broadcast-planner__time-group {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 
 .broadcast-planner__time-group-head strong {
@@ -6567,33 +6498,25 @@
 .broadcast-planner__time-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
+  gap: 10px;
 }
 
 .broadcast-planner__time-chip {
-  min-height: 52px;
-  border-radius: 14px;
+  min-height: 58px;
+  border-radius: 16px;
   border: 1px solid rgba(62, 96, 127, 0.12);
   background: rgba(255, 255, 255, 0.96);
   color: var(--text-primary);
-  padding: 8px 6px;
-  display: grid;
-  align-content: center;
-  justify-items: center;
-  gap: 2px;
+  padding: 10px 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   text-align: center;
 }
 
 .broadcast-planner__time-chip strong {
-  font-size: 0.79rem;
+  font-size: 0.82rem;
   line-height: 1.1;
-}
-
-.broadcast-planner__time-chip small {
-  min-height: 1.05em;
-  font-size: 0.62rem;
-  line-height: 1.15;
-  color: var(--text-secondary);
 }
 
 .broadcast-planner__time-chip.is-selected {
@@ -6601,19 +6524,10 @@
   background: rgba(255, 240, 194, 0.92);
 }
 
-.broadcast-planner__time-chip.is-past {
-  border-color: rgba(204, 144, 39, 0.18);
-  background: rgba(255, 247, 222, 0.88);
-}
-
 .broadcast-planner__time-chip.is-mixed {
   border-color: rgba(11, 132, 255, 0.26);
   background: rgba(232, 243, 255, 0.9);
   color: #0b66b6;
-}
-
-.broadcast-planner__time-chip.is-mixed small {
-  color: rgba(11, 102, 182, 0.86);
 }
 
 .broadcast-planner__time-chip.is-disabled {
@@ -6624,10 +6538,6 @@
   opacity: 1;
 }
 
-.broadcast-planner__time-chip.is-disabled small {
-  color: rgba(95, 111, 127, 0.9);
-}
-
 .broadcast-planner__sheet-footer {
   display: grid;
   gap: 8px;
@@ -6635,7 +6545,7 @@
 }
 
 .broadcast-planner__sheet-submit {
-  min-height: 48px;
+  min-height: 50px;
   border-radius: 16px;
   border: 1px solid rgba(11, 132, 255, 0.2);
   background: #2496ff;
@@ -6702,8 +6612,8 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  border-radius: 14px;
-  padding: 9px 10px;
+  border-radius: 16px;
+  padding: 11px 12px;
   background: rgba(247, 250, 253, 0.96);
   border: 1px solid rgba(62, 96, 127, 0.1);
 }
@@ -6726,24 +6636,6 @@
   font-size: 0.71rem;
   line-height: 1.35;
   color: var(--text-secondary);
-}
-
-.broadcast-planner__agenda-badge {
-  flex: 0 0 auto;
-  border-radius: 999px;
-  border: 1px solid rgba(11, 132, 255, 0.16);
-  background: rgba(11, 132, 255, 0.08);
-  padding: 5px 8px;
-  font-size: 0.68rem;
-  line-height: 1;
-  font-weight: 700;
-  color: #0b66b6;
-}
-
-.broadcast-planner__agenda-badge.is-past {
-  border-color: rgba(204, 144, 39, 0.18);
-  background: rgba(204, 144, 39, 0.08);
-  color: #8a5a0a;
 }
 
 @media (max-width: 420px) {
@@ -6787,7 +6679,7 @@
 
 @media (max-width: 360px) {
   .broadcast-planner__calendar-card {
-    padding: 12px;
+    padding: 14px;
     gap: 10px;
   }
 
@@ -6806,24 +6698,24 @@
   }
 
   .broadcast-planner__calendar-surface {
-    padding: 10px;
+    padding: 12px;
     gap: 8px;
   }
 
   .broadcast-planner__calendar-head {
-    grid-template-columns: 32px minmax(0, 1fr) 32px;
+    grid-template-columns: 36px minmax(0, 1fr) 36px;
     gap: 6px;
   }
 
   .broadcast-planner__month-button {
-    width: 32px;
-    height: 32px;
+    width: 36px;
+    height: 36px;
     border-radius: 10px;
     font-size: 0.86rem;
   }
 
   .broadcast-planner__calendar-head strong {
-    min-height: 32px;
+    min-height: 36px;
     padding: 0 10px;
     font-size: 0.9rem;
   }
@@ -6838,14 +6730,14 @@
   }
 
   .broadcast-planner__grid {
-    gap: 4px;
+    gap: 6px;
   }
 
   .broadcast-planner__day {
-    min-height: 44px;
-    border-radius: 12px;
-    padding: 5px 3px 4px;
-    gap: 3px;
+    min-height: 40px;
+    border-radius: 14px;
+    padding: 6px 4px 5px;
+    gap: 4px;
   }
 
   .broadcast-planner__day-number {
@@ -6855,8 +6747,8 @@
   .broadcast-planner__day-marker {
     top: 7px;
     right: 7px;
-    width: 14px;
-    height: 14px;
+    width: 16px;
+    height: 16px;
     font-size: 0.48rem;
   }
 
@@ -6875,12 +6767,6 @@
   .broadcast-planner__day-dot {
     width: 4px;
     height: 4px;
-  }
-}
-
-@media (min-width: 520px) {
-  .broadcast-planner__count-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
