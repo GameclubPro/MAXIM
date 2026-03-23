@@ -25,7 +25,6 @@ import {
 import type { ApiTransport } from '../lib/api/transport';
 import type { BroadcastHandoffPayload } from '../lib/api/shared-types';
 import {
-  countBroadcastScheduleDays,
   resolveBroadcastScheduleTimezone,
   sortAndUniqueBroadcastSlots,
 } from '../lib/broadcast-schedule';
@@ -204,44 +203,6 @@ function formatCompactChannelBroadcastDateTime(value: string | null): string {
     hour: '2-digit',
     minute: '2-digit',
   }).format(parsed);
-}
-
-function formatChannelBroadcastCountdownValue(remainingMs: number): string {
-  const totalMinutes = Math.max(0, Math.floor(remainingMs / 60_000));
-  const days = Math.floor(totalMinutes / (24 * 60));
-  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
-  const minutes = totalMinutes % 60;
-
-  if (days > 0) {
-    return `${days}д ${String(hours).padStart(2, '0')}ч`;
-  }
-
-  if (hours > 0) {
-    return `${String(hours).padStart(2, '0')}ч ${String(minutes).padStart(2, '0')}м`;
-  }
-
-  if (minutes > 0) {
-    return `${minutes}м`;
-  }
-
-  return '<1м';
-}
-
-function resolveChannelBroadcastCountdown(nextSendAt: string | null, nowMs: number) {
-  if (!nextSendAt) {
-    return null;
-  }
-
-  const targetMs = new Date(nextSendAt).getTime();
-  if (!Number.isFinite(targetMs) || targetMs <= nowMs) {
-    return null;
-  }
-
-  return {
-    label: 'До слота',
-    value: formatChannelBroadcastCountdownValue(targetMs - nowMs),
-    caption: formatCompactChannelBroadcastDateTime(nextSendAt),
-  };
 }
 
 function ChannelSettingsInfoButton({
@@ -471,7 +432,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const [broadcastPlannerResetKey, setBroadcastPlannerResetKey] = useState(0);
   const [broadcastPlannerState, setBroadcastPlannerState] =
     useState<BroadcastSchedulePlannerSelectionState>(EMPTY_BROADCAST_PLANNER_STATE);
-  const [broadcastNowMs, setBroadcastNowMs] = useState(() => Date.now());
   const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
 
   const settingsScreenQuery = useQuery({
@@ -858,35 +818,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     },
   });
 
-  const liveBroadcastSlot =
-    sortAndUniqueBroadcastSlots(
-      managedBroadcasts.flatMap((broadcast) => broadcast.scheduledSlots),
-    ).find((slot) => new Date(slot).getTime() > broadcastNowMs) ?? null;
-  const draftBroadcastSlot =
-    sortAndUniqueBroadcastSlots(broadcastScheduledSlots).find(
-      (slot) => new Date(slot).getTime() > broadcastNowMs,
-    ) ?? null;
-  const previewBroadcastSlot = draftBroadcastSlot ?? liveBroadcastSlot;
-  const previewBroadcastCountdown = resolveChannelBroadcastCountdown(
-    previewBroadcastSlot,
-    broadcastNowMs,
-  );
-
-  useEffect(() => {
-    if (typeof window === 'undefined' || !expandedSections.broadcast || !previewBroadcastSlot) {
-      return undefined;
-    }
-
-    setBroadcastNowMs(Date.now());
-    const timerId = window.setInterval(() => {
-      setBroadcastNowMs(Date.now());
-    }, 30_000);
-
-    return () => {
-      window.clearInterval(timerId);
-    };
-  }, [expandedSections.broadcast, previewBroadcastSlot]);
-
   useHintPopoverAutoPosition(openHintKey !== null);
 
   if (!chatId) {
@@ -977,8 +908,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         ? 'Кнопки будут только в этом посте.'
         : 'Кнопка будет только в этом посте.';
   const broadcastHasButton = broadcastButtonEnabled && Boolean(broadcastButtonText.trim());
-  const orderedBroadcastSlots = sortAndUniqueBroadcastSlots(broadcastScheduledSlots);
-  const broadcastDayCount = countBroadcastScheduleDays(broadcastScheduledSlots);
   const broadcastSlotsLabel = formatChannelCountLabel(
     broadcastScheduledSlots.length,
     'слот',
@@ -991,12 +920,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const normalizedBroadcastButtonText = broadcastButtonText.trim();
   const normalizedBroadcastText = broadcastText.trim();
   const broadcastContentReady = broadcastBotHasContent;
-  const broadcastContentSummary = broadcastContentReady
-    ? 'Сообщение уже подготовлено в личном чате бота.'
-    : 'Текст и фото собираются в личном чате бота. Здесь остаются календарь и CTA.';
-  const broadcastContentActionLabel = broadcastContentReady
-    ? 'Обновить контент'
-    : 'Добавить контент';
   const broadcastButtonDraftValid =
     !broadcastButtonEnabled ||
     (isHttpUrl(normalizedBroadcastButtonUrl) &&
@@ -1012,50 +935,17 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       broadcastButtonDraftValid &&
       broadcastPlannerState.isConfirmed &&
       broadcastHasFutureSlots);
-  const showBroadcastReviewCard =
-    broadcastScheduleReady && broadcastButtonDraftValid && broadcastPlannerState.isConfirmed;
   const showBroadcastResetAction =
     broadcastScheduledSlots.length > 0 ||
     normalizedBroadcastText.length > 0 ||
     broadcastImageEnabled ||
     broadcastButtonEnabled;
-  const nextBroadcastSlot =
-    orderedBroadcastSlots.find((slot) => new Date(slot).getTime() > Date.now() + 30_000) ??
-    orderedBroadcastSlots[0] ??
-    null;
   const broadcastHeaderSummary = [
-    broadcastContentReady ? 'контент готов' : 'без контента',
-    broadcastHasButton ? 'CTA' : null,
     broadcastSlotsSummary,
+    broadcastContentReady ? 'готово' : null,
   ]
     .filter(Boolean)
     .join(' · ');
-  const broadcastHeroBadge = 'Студия канала';
-  const broadcastHeroTitle = broadcastContentReady
-    ? broadcastHasFutureSlots
-      ? 'Контент готов, осталось проверить запуск'
-      : 'Контент готов, выберите время публикации'
-    : 'Соберите публикацию для канала';
-  const broadcastHeroDescription = broadcastContentReady
-    ? 'Пост уже собран в боте. Здесь управляете календарём и кнопкой перехода.'
-    : 'Сначала откройте личный чат бота и подготовьте текст или фото, затем вернитесь сюда.';
-  const broadcastHeroMetrics = [
-    {
-      label: 'Контент',
-      value: broadcastContentReady ? 'Готов' : 'Ждёт',
-      caption: broadcastContentReady ? 'личный чат бота' : 'нужно открыть бота',
-    },
-    {
-      label: 'Канал',
-      value: '1',
-      caption: 'текущий канал',
-    },
-    {
-      label: 'Слоты',
-      value: broadcastScheduledSlots.length > 0 ? String(broadcastScheduledSlots.length) : '0',
-      caption: broadcastScheduledSlots.length > 0 ? `${broadcastDayCount} дн.` : 'не выбраны',
-    },
-  ] as const;
   const commentsCardSummary = !draft.commentsEnabled
     ? 'обсуждение выключено'
     : draft.commentsModerationEnabled
@@ -1072,31 +962,8 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const postSuggestionsCardStatus = draft.postSuggestionsEnabled ? 'Авто' : 'Ручн';
   const broadcastCardStatus =
     broadcastScheduledSlots.length > 0 ? 'Календ' : broadcastHasButton ? 'CTA' : 'Бот';
-  const broadcastReviewTitle = broadcastContentReady
-    ? 'Сценарий готов к подтверждению'
-    : 'Осталось добавить контент';
-  const broadcastReviewSummary = broadcastContentReady
-    ? 'Откроем бота с уже собранным сообщением и этим календарём.'
-    : 'Откроем бота и передадим туда календарь и CTA.';
-  const broadcastFooterLabel = broadcastContentReady
-    ? 'Контент уже в боте'
-    : 'Финальный шаг в боте';
-  const broadcastFooterHint = broadcastContentReady
-    ? 'Кнопка ниже снова откроет бота для замены или подтверждения.'
-    : 'В боте останется подтверждение отправки.';
   const broadcastDrilldownFooter = (
     <>
-      <div className="managed-broadcast-editor-note__topline">
-        <span className="settings-drilldown__footer-note">{broadcastFooterLabel}</span>
-        <ChannelSettingsHintAnchor
-          hintKey="broadcastSend"
-          openHintKey={openHintKey}
-          onToggleHint={toggleHint}
-          label="Что произойдёт после передачи рассылки"
-        >
-          {broadcastFooterHint}
-        </ChannelSettingsHintAnchor>
-      </div>
       <div className="settings-drilldown__footer-actions is-single-action">
         <button
           type="button"
@@ -1545,52 +1412,24 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
             {expandedSections.broadcast ? (
               <div className="settings-section__collapse-inner">
                 <div className="channel-broadcast-studio">
-                  <div className="broadcast-studio-hero">
-                    <div className="broadcast-studio-hero__topline">
-                      <div className="broadcast-studio-hero__copy">
-                        <span className="broadcast-studio-hero__badge">{broadcastHeroBadge}</span>
-                        <strong>{broadcastHeroTitle}</strong>
-                        <small>{broadcastHeroDescription}</small>
-                      </div>
-                      <div className="broadcast-studio-hero__aside">
-                        {previewBroadcastCountdown ? (
-                          <div className="managed-broadcast-editor-note__timer">
-                            <span>{previewBroadcastCountdown.label}</span>
-                            <strong>{previewBroadcastCountdown.value}</strong>
-                            <small>{previewBroadcastCountdown.caption}</small>
-                          </div>
-                        ) : null}
-                        {showBroadcastResetAction ? (
-                          <button
-                            type="button"
-                            className="managed-broadcast-editor-note__link"
-                            onClick={resetBroadcastComposer}
-                            disabled={handoffBroadcastMutation.isPending}
-                          >
-                            Очистить
-                          </button>
-                        ) : null}
-                      </div>
+                  {showBroadcastResetAction ? (
+                    <div className="managed-broadcast-editor-note__actions">
+                      <button
+                        type="button"
+                        className="managed-broadcast-editor-note__link"
+                        onClick={resetBroadcastComposer}
+                        disabled={handoffBroadcastMutation.isPending}
+                      >
+                        Очистить
+                      </button>
                     </div>
-
-                    <div className="broadcast-studio-hero__metrics">
-                      {broadcastHeroMetrics.map((metric) => (
-                        <div key={metric.label} className="broadcast-studio-hero__metric">
-                          <small>{metric.label}</small>
-                          <strong>{metric.value}</strong>
-                          <span>{metric.caption}</span>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+                  ) : null}
 
                   <div className="broadcast-compose-flow">
                     <div className="broadcast-stage-card broadcast-stage-card--content">
                       <div className="broadcast-stage-card__head">
                         <div className="broadcast-stage-card__title-wrap">
-                          <span className="broadcast-stage-card__eyebrow">Шаг 1</span>
-                          <strong>Контент через бота</strong>
-                          <small>{broadcastContentSummary}</small>
+                          <strong>Контент</strong>
                         </div>
                         <span
                           className={cn(
@@ -1598,35 +1437,26 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                             broadcastContentReady ? 'is-ready' : 'is-pending',
                           )}
                         >
-                          {broadcastContentReady ? 'Готов' : 'Нужно открыть'}
+                          {broadcastContentReady ? 'Готов' : 'Пусто'}
                         </span>
                       </div>
 
-                      <div className="broadcast-stage-card__body">
-                        <div className="broadcast-stage-card__note">
-                          После возврата из бота календарь и CTA восстановятся в этом же экране.
-                        </div>
-                        <div className="broadcast-stage-card__actions">
-                          <button
-                            type="button"
-                            className="button button--accent"
-                            onClick={handleOpenChannelBroadcastBot}
-                            disabled={handoffBroadcastMutation.isPending}
-                          >
-                            {broadcastContentActionLabel}
-                          </button>
-                        </div>
+                      <div className="broadcast-stage-card__actions">
+                        <button
+                          type="button"
+                          className="button button--accent"
+                          onClick={handleOpenChannelBroadcastBot}
+                          disabled={handoffBroadcastMutation.isPending}
+                        >
+                          Открыть бота
+                        </button>
                       </div>
                     </div>
 
                     <div className="broadcast-stage-card broadcast-stage-card--planner">
                       <div className="broadcast-stage-card__head">
                         <div className="broadcast-stage-card__title-wrap">
-                          <span className="broadcast-stage-card__eyebrow">Шаг 2</span>
-                          <strong>Календарь публикации</strong>
-                          <small>
-                            Разложите посты по дням и времени, затем быстро проверьте итог.
-                          </small>
+                          <strong>Календарь</strong>
                         </div>
                         <span
                           className={cn(
@@ -1661,11 +1491,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                     <div className="broadcast-stage-card">
                       <div className="broadcast-stage-card__head">
                         <div className="broadcast-stage-card__title-wrap">
-                          <span className="broadcast-stage-card__eyebrow">Дополнительно</span>
-                          <strong>CTA на пост</strong>
-                          <small>
-                            Кнопка уходит сразу под сообщение канала и ведёт по вашей ссылке.
-                          </small>
+                          <strong>Кнопка</strong>
                         </div>
                         <span
                           className={cn(
@@ -1673,7 +1499,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                             broadcastHasButton ? 'is-ready' : 'is-muted',
                           )}
                         >
-                          {broadcastHasButton ? 'CTA включён' : 'Без CTA'}
+                          {broadcastHasButton ? 'Есть' : 'Нет'}
                         </span>
                       </div>
 
@@ -1688,19 +1514,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                             )}
                           >
                             <div className="mailing-option-card__head">
-                              <div className="mailing-option-card__title-wrap">
-                                <div className="mailing-card-title-row">
-                                  <span className="mailing-option-card__title">Кнопка</span>
-                                  <ChannelSettingsHintAnchor
-                                    hintKey="broadcastButton"
-                                    openHintKey={openHintKey}
-                                    onToggleHint={toggleHint}
-                                    label="Пояснение для кнопки в рассылке"
-                                  >
-                                    Ссылка `http/https`, подпись до 32 символов.
-                                  </ChannelSettingsHintAnchor>
-                                </div>
-                              </div>
+                              <span className="mailing-option-card__title">Добавить кнопку</span>
 
                               <label
                                 className="settings-native-switch"
@@ -1732,7 +1546,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                     broadcastButtonUrlError && 'field--error',
                                   )}
                                 >
-                                  <span className="field__label">Ссылка кнопки</span>
+                                  <span className="field__label">Ссылка</span>
                                   <input
                                     type="url"
                                     inputMode="url"
@@ -1758,7 +1572,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                                     broadcastButtonTextError && 'field--error',
                                   )}
                                 >
-                                  <span className="field__label">Название кнопки</span>
+                                  <span className="field__label">Текст</span>
                                   <input
                                     type="text"
                                     maxLength={32}
@@ -1783,45 +1597,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                         </div>
                       </div>
                     </div>
-
-                    {showBroadcastReviewCard ? (
-                      <div className="broadcast-stage-card broadcast-stage-card--review">
-                        <div className="broadcast-stage-card__head">
-                          <div className="broadcast-stage-card__title-wrap">
-                            <span className="broadcast-stage-card__eyebrow">Проверка</span>
-                            <strong>{broadcastReviewTitle}</strong>
-                            <small>{broadcastReviewSummary}</small>
-                          </div>
-                          <span
-                            className={cn(
-                              'broadcast-stage-card__status',
-                              broadcastContentReady ? 'is-ready' : 'is-pending',
-                            )}
-                          >
-                            {broadcastContentReady ? 'Можно запускать' : 'Остался бот'}
-                          </span>
-                        </div>
-
-                        <div className="broadcast-studio-hero__metrics">
-                          <div className="broadcast-studio-hero__metric">
-                            <small>Канал</small>
-                            <strong>Этот канал</strong>
-                          </div>
-                          <div className="broadcast-studio-hero__metric">
-                            <small>Календарь</small>
-                            <strong>{broadcastSlotsLabel}</strong>
-                          </div>
-                          <div className="broadcast-studio-hero__metric">
-                            <small>Следующий слот</small>
-                            <strong>
-                              {nextBroadcastSlot
-                                ? formatCompactChannelBroadcastDateTime(nextBroadcastSlot)
-                                : 'Не выбран'}
-                            </strong>
-                          </div>
-                        </div>
-                      </div>
-                    ) : null}
                   </div>
                 </div>
               </div>

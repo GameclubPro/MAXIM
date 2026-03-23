@@ -67,7 +67,6 @@ import type {
   UpdateChatRulesPayload,
 } from '../lib/api/shared-types';
 import {
-  countBroadcastScheduleDays,
   resolveBroadcastScheduleTimezone,
   sortAndUniqueBroadcastSlots,
 } from '../lib/broadcast-schedule';
@@ -3490,8 +3489,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingApplyToAllChats && canApplyToAllChats ? `Во все чаты (${chatsCount})` : 'Текущий чат';
   const mailingHeaderTargetLabel =
     mailingApplyToAllChats && canApplyToAllChats ? 'Все чаты' : 'Текущий чат';
-  const orderedMailingSlots = sortAndUniqueBroadcastSlots(mailingScheduledSlots);
-  const mailingDayCount = countBroadcastScheduleDays(mailingScheduledSlots);
   const mailingSlotsLabel = formatRussianCountLabel(
     mailingScheduledSlots.length,
     'слот',
@@ -3504,23 +3501,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const mailingContentReady = editingManagedBroadcast
     ? normalizedMailingText.length > 0 || mailingImageEnabled
     : mailingBotHasContent;
-  const mailingContentSummary = editingManagedBroadcast
-    ? [
-        normalizedMailingText.length > 0 ? `${normalizedMailingText.length} симв.` : null,
-        mailingImageEnabled ? 'Фото' : null,
-        'Контент сохранён в рассылке',
-      ]
-        .filter(Boolean)
-        .join(' · ')
-    : mailingContentReady
-      ? 'Сообщение уже подготовлено в личном чате бота.'
-      : 'Текст и фото собираются в личном чате бота. Календарь и CTA остаются здесь.';
-  const mailingContentActionLabel = mailingContentReady ? 'Обновить контент' : 'Добавить контент';
   const mailingHeaderSummary = [
     mailingHeaderTargetLabel,
     mailingSlotsLabel,
-    mailingContentReady ? 'контент готов' : 'без контента',
-    mailingButtonEnabled ? 'CTA' : null,
+    mailingContentReady ? 'готово' : null,
   ]
     .filter(Boolean)
     .join(' · ');
@@ -3545,82 +3529,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       mailingButtonDraftValid &&
       mailingPlannerState.isConfirmed &&
       mailingHasFutureSlots);
-  const showMailingReviewCard =
-    mailingScheduleReady && mailingButtonDraftValid && mailingPlannerState.isConfirmed;
-  const nextMailingSlot =
-    orderedMailingSlots.find((slot) => new Date(slot).getTime() > Date.now() + 30_000) ??
-    orderedMailingSlots[0] ??
-    null;
   const mailingSendDisabled = isMailingBusy;
   const showMailingWorkspaceTabs =
     !editingManagedBroadcast && orderedManagedBroadcasts.length > 0;
-  const mailingHeroBadge = editingManagedBroadcast ? 'Редактирование' : 'Студия рассылки';
-  const mailingHeroTitle = editingManagedBroadcast
-    ? 'Измените график действующей рассылки'
-    : mailingContentReady
-      ? mailingHasFutureSlots
-        ? 'Контент готов, осталось проверить запуск'
-        : 'Контент готов, выберите время отправки'
-      : 'Соберите сценарий рассылки под смартфон';
-  const mailingHeroDescription = editingManagedBroadcast
-    ? 'Контент уже сохранён. В mini app меняем календарь, охват и CTA без лишних шагов.'
-    : mailingContentReady
-      ? 'Сообщение уже собрано в боте. Здесь управляете охватом, временем и кнопкой перехода.'
-      : 'Сначала откройте личный чат бота и соберите сообщение, затем вернитесь сюда за расписанием.';
-  const mailingHeroMetrics = [
-    {
-      label: 'Контент',
-      value: editingManagedBroadcast ? 'Сохранён' : mailingContentReady ? 'Готов' : 'Ждёт',
-      caption: editingManagedBroadcast
-        ? 'в этой рассылке'
-        : mailingContentReady
-          ? 'личный чат бота'
-          : 'нужно открыть бота',
-    },
-    {
-      label: 'Охват',
-      value: mailingApplyToAllChats && canApplyToAllChats ? String(chatsCount) : '1',
-      caption: mailingApplyToAllChats && canApplyToAllChats ? 'чатов' : 'текущий чат',
-    },
-    {
-      label: 'Слоты',
-      value: mailingScheduledSlots.length > 0 ? String(mailingScheduledSlots.length) : '0',
-      caption: mailingScheduledSlots.length > 0 ? `${mailingDayCount} дн.` : 'не выбраны',
-    },
-  ] as const;
-  const mailingReviewTitle = editingManagedBroadcast
-    ? 'Изменения готовы к сохранению'
-    : mailingContentReady
-      ? 'Сценарий готов к подтверждению'
-      : 'Осталось добавить контент';
-  const mailingReviewSummary = editingManagedBroadcast
-    ? 'Сохраним календарь и CTA в текущей рассылке.'
-    : mailingContentReady
-      ? 'Откроем бота с уже собранным сообщением и этим расписанием.'
-      : 'Откроем бота и передадим туда охват, календарь и CTA.';
-  const mailingFooterLabel = editingManagedBroadcast
-    ? 'Изменения применятся сразу'
-    : mailingContentReady
-      ? 'Контент уже в боте'
-      : 'Финальный шаг в боте';
-  const mailingFooterHint = editingManagedBroadcast
-    ? 'Сохраним календарь и CTA.'
-    : mailingContentReady
-      ? 'Кнопка ниже снова откроет бота для замены или подтверждения.'
-      : 'В боте останется подтверждение отправки.';
   const mailingDrilldownFooter = (
     <>
-      <div className="managed-broadcast-editor-note__topline">
-        <span className="settings-drilldown__footer-note">{mailingFooterLabel}</span>
-        <SettingsHintAnchor
-          hintKey="mailingSend"
-          openHintKey={openHintKey}
-          onToggleHint={toggleHint}
-          label="Что произойдёт после передачи рассылки"
-        >
-          {mailingFooterHint}
-        </SettingsHintAnchor>
-      </div>
       <div className="settings-drilldown__footer-actions is-single-action">
         <button
           type="button"
@@ -8266,51 +8179,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                   {expandedSections.mailing ? (
                     <div className="settings-section__collapse-inner settings-mailing">
                       <div className="broadcast-studio-shell">
-                        <div className="broadcast-studio-hero">
-                          <div className="broadcast-studio-hero__topline">
-                            <div className="broadcast-studio-hero__copy">
-                              <span className="broadcast-studio-hero__badge">
-                                {mailingHeroBadge}
-                              </span>
-                              <strong>{mailingHeroTitle}</strong>
-                              <small>{mailingHeroDescription}</small>
-                            </div>
-                            <div className="broadcast-studio-hero__aside">
-                              {activeManagedBroadcastCountdown ? (
-                                <div className="managed-broadcast-editor-note__timer">
-                                  <span>{activeManagedBroadcastCountdown.label}</span>
-                                  <strong>{activeManagedBroadcastCountdown.value}</strong>
-                                  <small>{activeManagedBroadcastCountdown.caption}</small>
-                                </div>
-                              ) : null}
-                              {showMailingResetAction ? (
-                                <button
-                                  type="button"
-                                  className="managed-broadcast-editor-note__link"
-                                  onClick={
-                                    editingManagedBroadcast
-                                      ? handleCancelMailingEdit
-                                      : resetMailingComposer
-                                  }
-                                  disabled={isMailingBusy}
-                                >
-                                  {editingManagedBroadcast ? 'Сбросить' : 'Очистить'}
-                                </button>
-                              ) : null}
-                            </div>
-                          </div>
-
-                          <div className="broadcast-studio-hero__metrics">
-                            {mailingHeroMetrics.map((metric) => (
-                              <div key={metric.label} className="broadcast-studio-hero__metric">
-                                <small>{metric.label}</small>
-                                <strong>{metric.value}</strong>
-                                <span>{metric.caption}</span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-
                         {showMailingWorkspaceTabs ? (
                           <SegmentedControl
                             className="broadcast-studio-shell__tabs"
@@ -8327,69 +8195,58 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           />
                         ) : null}
 
+                        {showMailingResetAction ? (
+                          <div className="managed-broadcast-editor-note__actions">
+                            <button
+                              type="button"
+                              className="managed-broadcast-editor-note__link"
+                              onClick={
+                                editingManagedBroadcast
+                                  ? handleCancelMailingEdit
+                                  : resetMailingComposer
+                              }
+                              disabled={isMailingBusy}
+                            >
+                              {editingManagedBroadcast ? 'Сбросить' : 'Очистить'}
+                            </button>
+                          </div>
+                        ) : null}
+
                         {mailingWorkspaceView === 'compose' ? (
                           <div className="broadcast-compose-flow">
-                            <div className="broadcast-stage-card broadcast-stage-card--content">
-                              <div className="broadcast-stage-card__head">
-                                <div className="broadcast-stage-card__title-wrap">
-                                  <span className="broadcast-stage-card__eyebrow">Шаг 1</span>
-                                  <strong>Контент через бота</strong>
-                                  <small>{mailingContentSummary}</small>
-                                </div>
-                                <span
-                                  className={cn(
-                                    'broadcast-stage-card__status',
-                                    editingManagedBroadcast
-                                      ? 'is-muted'
-                                      : mailingContentReady
-                                        ? 'is-ready'
-                                        : 'is-pending',
-                                  )}
-                                >
-                                  {editingManagedBroadcast
-                                    ? 'Зафиксирован'
-                                    : mailingContentReady
-                                      ? 'Готов'
-                                      : 'Нужно открыть'}
-                                </span>
-                              </div>
-
-                              <div className="broadcast-stage-card__body">
-                                {editingManagedBroadcast ? (
-                                  <div className="broadcast-stage-card__note">
-                                    Контент уже сохранён в этой рассылке. Здесь меняются только
-                                    календарь, охват и CTA.
+                            {!editingManagedBroadcast ? (
+                              <div className="broadcast-stage-card broadcast-stage-card--content">
+                                <div className="broadcast-stage-card__head">
+                                  <div className="broadcast-stage-card__title-wrap">
+                                    <strong>Контент</strong>
                                   </div>
-                                ) : (
-                                  <>
-                                    <div className="broadcast-stage-card__note">
-                                      Возврат из бота восстановит охват, слоты и кнопку в этом же
-                                      черновике.
-                                    </div>
-                                    <div className="broadcast-stage-card__actions">
-                                      <button
-                                        type="button"
-                                        className="button button--accent"
-                                        onClick={handleOpenMailingBot}
-                                        disabled={isMailingBusy}
-                                      >
-                                        {mailingContentActionLabel}
-                                      </button>
-                                    </div>
-                                  </>
-                                )}
+                                  <span
+                                    className={cn(
+                                      'broadcast-stage-card__status',
+                                      mailingContentReady ? 'is-ready' : 'is-pending',
+                                    )}
+                                  >
+                                    {mailingContentReady ? 'Готов' : 'Пусто'}
+                                  </span>
+                                </div>
+
+                                <div className="broadcast-stage-card__actions">
+                                  <button
+                                    type="button"
+                                    className="button button--accent"
+                                    onClick={handleOpenMailingBot}
+                                    disabled={isMailingBusy}
+                                  >
+                                    Открыть бота
+                                  </button>
+                                </div>
                               </div>
-                            </div>
+                            ) : null}
 
                             <div className="broadcast-stage-card">
                               <div className="broadcast-stage-card__head">
                                 <div className="broadcast-stage-card__title-wrap">
-                                  <span className="broadcast-stage-card__eyebrow">Шаг 2</span>
-                                  <strong>Охват рассылки</strong>
-                                  <small>
-                                    Сразу видно, уйдёт ли публикация только в этот чат или во всю
-                                    вашу сетку.
-                                  </small>
+                                  <strong>Охват</strong>
                                 </div>
                                 <span className="broadcast-stage-card__status is-ready">
                                   {mailingTargetLabel}
@@ -8404,28 +8261,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   )}
                                 >
                                   <div className="mailing-target-card__row">
-                                    <div className="mailing-target-card__title-wrap">
-                                      <div className="mailing-card-title-row">
-                                        <span className="mailing-target-card__title">
-                                          Применить во всех чатах
-                                        </span>
-                                        <SettingsHintAnchor
-                                          hintKey="mailingTargets"
-                                          openHintKey={openHintKey}
-                                          onToggleHint={toggleHint}
-                                          label="Пояснение для массовой рассылки"
-                                        >
-                                          {canApplyToAllChats
-                                            ? `Отправим в ${chatsCount} чатах, где у вас и у бота есть админ-права.`
-                                            : 'Пока доступен только текущий чат.'}
-                                        </SettingsHintAnchor>
-                                      </div>
-                                      <small className="mailing-target-card__meta">
-                                        {mailingApplyToAllChats && canApplyToAllChats
-                                          ? `Выбрано чатов: ${chatsCount}`
-                                          : 'Отправка в текущий чат'}
-                                      </small>
-                                    </div>
+                                    <span className="mailing-target-card__title">
+                                      {canApplyToAllChats ? 'Все чаты' : 'Только этот чат'}
+                                    </span>
 
                                     <label
                                       className="settings-native-switch"
@@ -8451,12 +8289,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             <div className="broadcast-stage-card broadcast-stage-card--planner">
                               <div className="broadcast-stage-card__head">
                                 <div className="broadcast-stage-card__title-wrap">
-                                  <span className="broadcast-stage-card__eyebrow">Шаг 3</span>
-                                  <strong>Календарь публикации</strong>
-                                  <small>
-                                    Выберите дни, разложите часы и сразу проверьте итог перед
-                                    запуском.
-                                  </small>
+                                  <strong>Календарь</strong>
                                 </div>
                                 <span
                                   className={cn(
@@ -8489,14 +8322,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             <div className="broadcast-stage-card">
                               <div className="broadcast-stage-card__head">
                                 <div className="broadcast-stage-card__title-wrap">
-                                  <span className="broadcast-stage-card__eyebrow">
-                                    Дополнительно
-                                  </span>
-                                  <strong>CTA на сообщение</strong>
-                                  <small>
-                                    Ссылка и короткая подпись. Кнопка появится прямо под
-                                    рассылкой.
-                                  </small>
+                                  <strong>Кнопка</strong>
                                 </div>
                                 <span
                                   className={cn(
@@ -8504,7 +8330,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     mailingButtonEnabled ? 'is-ready' : 'is-muted',
                                   )}
                                 >
-                                  {mailingButtonEnabled ? 'CTA включён' : 'Без CTA'}
+                                  {mailingButtonEnabled ? 'Есть' : 'Нет'}
                                 </span>
                               </div>
 
@@ -8519,21 +8345,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     )}
                                   >
                                     <div className="mailing-option-card__head">
-                                      <div className="mailing-option-card__title-wrap">
-                                        <div className="mailing-card-title-row">
-                                          <span className="mailing-option-card__title">
-                                            Кнопка
-                                          </span>
-                                          <SettingsHintAnchor
-                                            hintKey="mailingButton"
-                                            openHintKey={openHintKey}
-                                            onToggleHint={toggleHint}
-                                            label="Пояснение для кнопки рассылки"
-                                          >
-                                            Ссылка `http/https`, подпись до 32 символов.
-                                          </SettingsHintAnchor>
-                                        </div>
-                                      </div>
+                                      <span className="mailing-option-card__title">
+                                        Добавить кнопку
+                                      </span>
 
                                       <label
                                         className="settings-native-switch"
@@ -8566,7 +8380,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                             mailingButtonUrlError && 'field--error',
                                           )}
                                         >
-                                          <span className="field__label">Ссылка кнопки</span>
+                                          <span className="field__label">Ссылка</span>
                                           <input
                                             type="url"
                                             inputMode="url"
@@ -8593,7 +8407,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                             mailingButtonTextError && 'field--error',
                                           )}
                                         >
-                                          <span className="field__label">Название кнопки</span>
+                                          <span className="field__label">Текст</span>
                                           <input
                                             type="text"
                                             maxLength={32}
@@ -8619,60 +8433,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 </div>
                               </div>
                             </div>
-
-                            {showMailingReviewCard ? (
-                              <div className="broadcast-stage-card broadcast-stage-card--review">
-                                <div className="broadcast-stage-card__head">
-                                  <div className="broadcast-stage-card__title-wrap">
-                                    <span className="broadcast-stage-card__eyebrow">Проверка</span>
-                                    <strong>{mailingReviewTitle}</strong>
-                                    <small>{mailingReviewSummary}</small>
-                                  </div>
-                                  <span
-                                    className={cn(
-                                      'broadcast-stage-card__status',
-                                      mailingContentReady || editingManagedBroadcast
-                                        ? 'is-ready'
-                                        : 'is-pending',
-                                    )}
-                                  >
-                                    {mailingContentReady || editingManagedBroadcast
-                                      ? 'Можно запускать'
-                                      : 'Остался бот'}
-                                  </span>
-                                </div>
-
-                                <div className="broadcast-studio-hero__metrics">
-                                  <div className="broadcast-studio-hero__metric">
-                                    <small>Охват</small>
-                                    <strong>{mailingTargetLabel}</strong>
-                                  </div>
-                                  <div className="broadcast-studio-hero__metric">
-                                    <small>Календарь</small>
-                                    <strong>{mailingSlotsLabel}</strong>
-                                  </div>
-                                  <div className="broadcast-studio-hero__metric">
-                                    <small>Следующий слот</small>
-                                    <strong>
-                                      {nextMailingSlot
-                                        ? formatCompactBroadcastDateTime(nextMailingSlot)
-                                        : 'Не выбран'}
-                                    </strong>
-                                  </div>
-                                </div>
-                              </div>
-                            ) : null}
                           </div>
                         ) : (
                           <div className="broadcast-stage-card broadcast-stage-card--active">
                             <div className="broadcast-stage-card__head">
                               <div className="broadcast-stage-card__title-wrap">
-                                <span className="broadcast-stage-card__eyebrow">Операционка</span>
-                                <strong>Активные рассылки</strong>
-                                <small>
-                                  Все текущие сценарии вынесены отдельно, чтобы не мешать сборке
-                                  нового.
-                                </small>
+                                <strong>В работе</strong>
                               </div>
                               <span className="broadcast-stage-card__status is-ready">
                                 {managedBroadcastsQuery.isLoading
