@@ -4047,7 +4047,7 @@ describe('ModerationService', () => {
     });
   });
 
-  it('sends night mode notice when deleting the first blocked message in an active window', async () => {
+  it('sends night mode notice before deleting the first blocked message in an active window', async () => {
     const nowParts = new Intl.DateTimeFormat('en-GB', {
       timeZone: 'Europe/Moscow',
       hour: '2-digit',
@@ -4113,6 +4113,9 @@ describe('ModerationService', () => {
     await service.handleUpdate(createUpdate());
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
+    expect(maxClient.sendMessage.mock.invocationCallOrder[0]).toBeLessThan(
+      maxClient.deleteMessage.mock.invocationCallOrder[0],
+    );
     expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-1');
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
@@ -4121,22 +4124,22 @@ describe('ModerationService', () => {
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(1, {
       data: expect.objectContaining({
         chatId: 'chat-1',
-        userId: 'user-1',
-        messageId: 'msg-1',
-        ruleCode: 'NIGHT_MODE_DELETE',
-        action: SanctionAction.DELETE_MESSAGE,
+        userId: 'system',
+        ruleCode: 'NIGHT_MODE_NOTICE',
+        action: SanctionAction.NONE,
+        metadata: expect.objectContaining({
+          reason: 'Night mode notice sent before blocked message',
+          sourceMessageId: 'msg-1',
+        }),
       }),
     });
     expect(prisma.moderationEvent.create).toHaveBeenNthCalledWith(2, {
       data: expect.objectContaining({
         chatId: 'chat-1',
-        userId: 'system',
-        ruleCode: 'NIGHT_MODE_NOTICE',
-        action: SanctionAction.NONE,
-        metadata: expect.objectContaining({
-          reason: 'Night mode notice sent after blocked message',
-          sourceMessageId: 'msg-1',
-        }),
+        userId: 'user-1',
+        messageId: 'msg-1',
+        ruleCode: 'NIGHT_MODE_DELETE',
+        action: SanctionAction.DELETE_MESSAGE,
       }),
     });
   });
@@ -4287,6 +4290,84 @@ describe('ModerationService', () => {
 
     expect(ruleEngine.detect).not.toHaveBeenCalled();
     expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      expect.stringContaining('Ночной режим, граждане'),
+    );
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        ruleCode: 'NIGHT_MODE_NOTICE',
+        action: SanctionAction.NONE,
+      }),
+    });
+  });
+
+  it('sends scheduled night closed notice even when startup missed the exact start minute', async () => {
+    const nowParts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Europe/Moscow',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date());
+    const currentHour = Number(nowParts.find((item) => item.type === 'hour')?.value ?? '0');
+    const currentMinute = Number(nowParts.find((item) => item.type === 'minute')?.value ?? '0');
+    const currentMinutes = currentHour * 60 + currentMinute;
+    const startMinutes = (currentMinutes + 23 * 60) % (24 * 60);
+    const endMinutes = (currentMinutes + 60) % (24 * 60);
+
+    const prisma = {
+      chatSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'chat-1',
+            botSpeechStyle: null,
+            nightModeStartTimeMinutes: startMinutes,
+            nightModeEndTimeMinutes: endMinutes,
+            nightModeTimezone: 'Europe/Moscow',
+            nightModeBotMessageEnabled: true,
+            nightModeBotMessageText: '',
+            nightModeOpenMessageEnabled: true,
+            nightModeOpenMessageText: '',
+            nightModeBotButtonEnabled: false,
+            nightModeBotButtonUrl: '',
+            nightModeBotButtonText: 'Открыть',
+          },
+        ]),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await (
+      service as unknown as { processNightModeAnnouncements: () => Promise<void> }
+    ).processNightModeAnnouncements();
+
     (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
       'chat-1',
       expect.stringContaining('Ночной режим, граждане'),

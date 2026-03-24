@@ -5025,11 +5025,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         const startMinutes = this.normalizeDayMinutes(settings.nightModeStartTimeMinutes, 23 * 60);
         const endMinutes = this.normalizeDayMinutes(settings.nightModeEndTimeMinutes, 8 * 60);
         const timezone = this.normalizeNightModeTimezone(settings.nightModeTimezone);
+        const nightModeActiveNow = this.isNightModeActiveNow({
+          nightModeEnabled: true,
+          nightModeStartTimeMinutes: startMinutes,
+          nightModeEndTimeMinutes: endMinutes,
+          nightModeTimezone: timezone,
+        });
 
-        if (
-          settings.nightModeBotMessageEnabled &&
-          this.isNightModeStartMomentNow(startMinutes, timezone)
-        ) {
+        if (settings.nightModeBotMessageEnabled && nightModeActiveNow) {
           try {
             await this.sendNightModeClosedNoticeIfNeeded({
               chatId: settings.chatId,
@@ -5041,7 +5044,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               nightModeBotButtonEnabled: settings.nightModeBotButtonEnabled,
               nightModeBotButtonUrl: settings.nightModeBotButtonUrl,
               nightModeBotButtonText: settings.nightModeBotButtonText,
-              sessionMoment: 'start',
               reason: 'Night mode notice sent by schedule',
             });
           } catch (error: unknown) {
@@ -5202,6 +5204,38 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
 
+    if (nightModeBotMessageEnabled) {
+      try {
+        await this.sendNightModeClosedNoticeIfNeeded({
+          chatId,
+          startMinutes,
+          endMinutes,
+          timezone,
+          botSpeechStyle,
+          nightModeBotMessageText,
+          nightModeBotButtonEnabled,
+          nightModeBotButtonUrl,
+          nightModeBotButtonText,
+          nightModeRulesButtonEnabled,
+          rulesPublishedUrl,
+          rulesPublishedMessageId,
+          sessionMoment: 'current',
+          reason: 'Night mode notice sent before blocked message',
+          sourceMessageId: messageId,
+        });
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            userId,
+            messageId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to send night mode notice before blocked message',
+        );
+      }
+    }
+
     if (canDeleteMessage) {
       try {
         await this.maxClient.deleteMessage(chatId, messageId);
@@ -5248,38 +5282,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           },
           'Failed to persist night mode deletion event',
         );
-      }
-
-      if (nightModeBotMessageEnabled) {
-        try {
-          await this.sendNightModeClosedNoticeIfNeeded({
-            chatId,
-            startMinutes,
-            endMinutes,
-            timezone,
-            botSpeechStyle,
-            nightModeBotMessageText,
-            nightModeBotButtonEnabled,
-            nightModeBotButtonUrl,
-            nightModeBotButtonText,
-            nightModeRulesButtonEnabled,
-            rulesPublishedUrl,
-            rulesPublishedMessageId,
-            sessionMoment: 'current',
-            reason: 'Night mode notice sent after blocked message',
-            sourceMessageId: messageId,
-          });
-        } catch (error: unknown) {
-          this.logger.warn(
-            {
-              chatId,
-              userId,
-              messageId,
-              error: error instanceof Error ? error.message : 'Unknown error',
-            },
-            'Failed to send night mode notice after blocked message',
-          );
-        }
       }
     } else {
       await this.maxClient.notifyModerators(
