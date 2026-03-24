@@ -609,6 +609,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         nightModeStartTimeMinutes: settings.nightModeStartTimeMinutes,
         nightModeEndTimeMinutes: settings.nightModeEndTimeMinutes,
         nightModeTimezone: settings.nightModeTimezone,
+        botSpeechStyle: settings.botSpeechStyle,
+        nightModeBotMessageEnabled: settings.nightModeBotMessageEnabled,
+        nightModeBotMessageText: settings.nightModeBotMessageText,
+        nightModeBotButtonEnabled: settings.nightModeBotButtonEnabled,
+        nightModeBotButtonUrl: settings.nightModeBotButtonUrl,
+        nightModeBotButtonText: settings.nightModeBotButtonText,
+        nightModeRulesButtonEnabled: settings.nightModeRulesButtonEnabled,
+        rulesPublishedUrl,
+        rulesPublishedMessageId,
       });
       return;
     }
@@ -5021,67 +5030,28 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           settings.nightModeBotMessageEnabled &&
           this.isNightModeStartMomentNow(startMinutes, timezone)
         ) {
-          const nightSessionKey = this.buildNightModeSessionKey(
-            startMinutes,
-            endMinutes,
-            timezone,
-            'start',
-          );
-          const noticeAlreadySent = await this.wasNightModeScheduledNoticeProcessed(
-            settings.chatId,
-            nightSessionKey,
-            NIGHT_MODE_NOTICE_RULE_CODE,
-          );
-          if (!noticeAlreadySent) {
-            const messageText = this.buildNightModeClosedNotice(
+          try {
+            await this.sendNightModeClosedNoticeIfNeeded({
+              chatId: settings.chatId,
               startMinutes,
               endMinutes,
               timezone,
-              settings.nightModeBotMessageText,
-              settings.botSpeechStyle,
-            );
-            const nightModeMessageOptions = this.buildBotMessageOptions(
-              settings.chatId,
-              settings.nightModeBotButtonEnabled,
-              settings.nightModeBotButtonUrl,
-              settings.nightModeBotButtonText,
-            );
-
-            try {
-              const noticeMessageId = await this.sendScheduledBotMessage({
+              botSpeechStyle: settings.botSpeechStyle,
+              nightModeBotMessageText: settings.nightModeBotMessageText,
+              nightModeBotButtonEnabled: settings.nightModeBotButtonEnabled,
+              nightModeBotButtonUrl: settings.nightModeBotButtonUrl,
+              nightModeBotButtonText: settings.nightModeBotButtonText,
+              sessionMoment: 'start',
+              reason: 'Night mode notice sent by schedule',
+            });
+          } catch (error: unknown) {
+            this.logger.warn(
+              {
                 chatId: settings.chatId,
-                text: messageText,
-                messageOptions: nightModeMessageOptions ?? undefined,
-              });
-
-              await this.prisma.moderationEvent.create({
-                data: {
-                  chatId: settings.chatId,
-                  userId: 'system',
-                  eventType: EventType.SYSTEM,
-                  ruleCode: NIGHT_MODE_NOTICE_RULE_CODE,
-                  action: SanctionAction.NONE,
-                  score: 0,
-                  operator: Operator.BOT,
-                  metadata: {
-                    reason: 'Night mode notice sent by schedule',
-                    nightSessionKey,
-                    nightModeTimezone: timezone,
-                    nightModeStartTime: this.formatMinutesAsTime(startMinutes),
-                    nightModeEndTime: this.formatMinutesAsTime(endMinutes),
-                    ...(noticeMessageId ? { noticeMessageId } : {}),
-                  },
-                },
-              });
-            } catch (error: unknown) {
-              this.logger.warn(
-                {
-                  chatId: settings.chatId,
-                  error: error instanceof Error ? error.message : 'Unknown error',
-                },
-                'Failed to send scheduled night mode notice',
-              );
-            }
+                error: error instanceof Error ? error.message : 'Unknown error',
+              },
+              'Failed to send scheduled night mode notice',
+            );
           }
         }
 
@@ -5197,6 +5167,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     nightModeStartTimeMinutes: number;
     nightModeEndTimeMinutes: number;
     nightModeTimezone: string;
+    botSpeechStyle: BotSpeechStyle | null;
+    nightModeBotMessageEnabled: boolean;
+    nightModeBotMessageText: string;
+    nightModeBotButtonEnabled: boolean;
+    nightModeBotButtonUrl: string;
+    nightModeBotButtonText: string;
+    nightModeRulesButtonEnabled: boolean;
+    rulesPublishedUrl: string | null;
+    rulesPublishedMessageId: string | null;
   }) {
     const {
       chatId,
@@ -5207,6 +5186,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       nightModeStartTimeMinutes,
       nightModeEndTimeMinutes,
       nightModeTimezone,
+      botSpeechStyle,
+      nightModeBotMessageEnabled,
+      nightModeBotMessageText,
+      nightModeBotButtonEnabled,
+      nightModeBotButtonUrl,
+      nightModeBotButtonText,
+      nightModeRulesButtonEnabled,
+      rulesPublishedUrl,
+      rulesPublishedMessageId,
     } = params;
     const startMinutes = this.normalizeDayMinutes(nightModeStartTimeMinutes, 23 * 60);
     const endMinutes = this.normalizeDayMinutes(nightModeEndTimeMinutes, 8 * 60);
@@ -5217,6 +5205,20 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     if (canDeleteMessage) {
       try {
         await this.maxClient.deleteMessage(chatId, messageId);
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            userId,
+            messageId,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to delete message during night mode',
+        );
+        return;
+      }
+
+      try {
         await this.prisma.moderationEvent.create({
           data: {
             chatId,
@@ -5244,8 +5246,40 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             messageId,
             error: error instanceof Error ? error.message : 'Unknown error',
           },
-          'Failed to delete message during night mode',
+          'Failed to persist night mode deletion event',
         );
+      }
+
+      if (nightModeBotMessageEnabled) {
+        try {
+          await this.sendNightModeClosedNoticeIfNeeded({
+            chatId,
+            startMinutes,
+            endMinutes,
+            timezone,
+            botSpeechStyle,
+            nightModeBotMessageText,
+            nightModeBotButtonEnabled,
+            nightModeBotButtonUrl,
+            nightModeBotButtonText,
+            nightModeRulesButtonEnabled,
+            rulesPublishedUrl,
+            rulesPublishedMessageId,
+            sessionMoment: 'current',
+            reason: 'Night mode notice sent after blocked message',
+            sourceMessageId: messageId,
+          });
+        } catch (error: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              userId,
+              messageId,
+              error: error instanceof Error ? error.message : 'Unknown error',
+            },
+            'Failed to send night mode notice after blocked message',
+          );
+        }
       }
     } else {
       await this.maxClient.notifyModerators(
@@ -6900,6 +6934,82 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
 
     return Boolean(existingNotice);
+  }
+
+  private async sendNightModeClosedNoticeIfNeeded(params: {
+    chatId: string;
+    startMinutes: number;
+    endMinutes: number;
+    timezone: string;
+    botSpeechStyle: BotSpeechStyle | null;
+    nightModeBotMessageText: string;
+    nightModeBotButtonEnabled: boolean;
+    nightModeBotButtonUrl: string;
+    nightModeBotButtonText: string;
+    nightModeRulesButtonEnabled?: boolean;
+    rulesPublishedUrl?: string | null;
+    rulesPublishedMessageId?: string | null;
+    sessionMoment?: 'current' | 'start';
+    reason: string;
+    sourceMessageId?: string;
+  }): Promise<void> {
+    const nightSessionKey = this.buildNightModeSessionKey(
+      params.startMinutes,
+      params.endMinutes,
+      params.timezone,
+      params.sessionMoment ?? 'current',
+    );
+    const noticeAlreadySent = await this.wasNightModeScheduledNoticeProcessed(
+      params.chatId,
+      nightSessionKey,
+      NIGHT_MODE_NOTICE_RULE_CODE,
+    );
+    if (noticeAlreadySent) {
+      return;
+    }
+
+    const messageText = this.buildNightModeClosedNotice(
+      params.startMinutes,
+      params.endMinutes,
+      params.timezone,
+      params.nightModeBotMessageText,
+      params.botSpeechStyle,
+    );
+    const nightModeMessageOptions = this.buildBotMessageOptions(
+      params.chatId,
+      params.nightModeBotButtonEnabled,
+      params.nightModeBotButtonUrl,
+      params.nightModeBotButtonText,
+      params.nightModeRulesButtonEnabled ?? false,
+      params.rulesPublishedUrl ?? null,
+      params.rulesPublishedMessageId ?? null,
+    );
+    const noticeMessageId = await this.sendScheduledBotMessage({
+      chatId: params.chatId,
+      text: messageText,
+      messageOptions: nightModeMessageOptions ?? undefined,
+    });
+
+    await this.prisma.moderationEvent.create({
+      data: {
+        chatId: params.chatId,
+        userId: 'system',
+        eventType: EventType.SYSTEM,
+        ruleCode: NIGHT_MODE_NOTICE_RULE_CODE,
+        action: SanctionAction.NONE,
+        score: 0,
+        operator: Operator.BOT,
+        metadata: {
+          reason: params.reason,
+          nightSessionKey,
+          nightModeTimezone: params.timezone,
+          nightModeStartTime: this.formatMinutesAsTime(params.startMinutes),
+          nightModeEndTime: this.formatMinutesAsTime(params.endMinutes),
+          ...(params.sourceMessageId ? { sourceMessageId: params.sourceMessageId } : {}),
+          ...(noticeMessageId ? { noticeMessageId } : {}),
+        },
+      },
+    });
   }
 
   private async findNightModeClosedNoticeMessageId(
