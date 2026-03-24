@@ -2303,6 +2303,73 @@ describe('AdminService.listChannels', () => {
     });
   });
 
+  it('checks admin access only for matching channel candidates during channel discovery', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      createdAt: new Date('2026-03-02T10:00:00.000Z'),
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findMany.mockResolvedValue([]);
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'chat-1',
+          title: 'Команда MAX',
+          lastEventTime: 300,
+          entityType: 'chat',
+          link: null,
+        },
+        {
+          chatId: 'channel-1',
+          title: 'Новости MAX',
+          lastEventTime: 200,
+          entityType: 'channel',
+          link: 'https://max.ru/news',
+        },
+      ]),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.listChannels(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { refresh: true },
+      ),
+    ).resolves.toEqual([
+      {
+        id: 'channel-1',
+        title: 'Новости MAX',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'channel',
+        link: 'https://max.ru/news',
+        channelOverview: {
+          enabledScenariosCount: 1,
+          commentsEnabled: true,
+          postSuggestionsEnabled: false,
+          commentsModerationEnabled: false,
+        },
+      },
+    ]);
+
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('channel-1');
+  });
+
   it('uses allowlist cache by default and skips remote MAX discovery', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([
@@ -2605,6 +2672,78 @@ describe('AdminService.listChannels', () => {
       'channel',
       30,
     );
+  });
+
+  it('shares one in-flight channel discovery across parallel refresh requests', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      createdAt: new Date('2026-03-02T10:00:00.000Z'),
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findMany.mockResolvedValue([]);
+
+    let releaseAdminCheck: (() => void) | undefined;
+    const adminCheckPromise = new Promise<void>((resolve) => {
+      releaseAdminCheck = resolve;
+    });
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'channel-1',
+          title: 'Новости MAX',
+          lastEventTime: 200,
+          entityType: 'channel',
+          link: 'https://max.ru/news',
+        },
+      ]),
+      getChatAdminIds: jest.fn().mockImplementation(async () => {
+        await adminCheckPromise;
+        return ['admin-1'];
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const user = {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    };
+
+    const first = service.listChannels(user, { refresh: true });
+    const second = service.listChannels(user, { refresh: true });
+
+    if (!releaseAdminCheck) {
+      throw new Error('releaseAdminCheck was not initialized');
+    }
+    releaseAdminCheck();
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      [
+        expect.objectContaining({
+          id: 'channel-1',
+          entityType: 'channel',
+        }),
+      ],
+      [
+        expect.objectContaining({
+          id: 'channel-1',
+          entityType: 'channel',
+        }),
+      ],
+    ]);
+
+    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
   });
 });
 

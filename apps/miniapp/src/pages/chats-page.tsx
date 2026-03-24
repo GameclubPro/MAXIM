@@ -25,43 +25,58 @@ import {
 type ManagedTab = 'chat' | 'channel';
 const LIST_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 15_000;
 
+function getEntitiesKey(tab: ManagedTab): 'chats' | 'channels' {
+  return tab === 'chat' ? 'chats' : 'channels';
+}
+
 export function ChatsPage({ api }: { api: ApiTransport }) {
   const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
   const [refreshNonce, setRefreshNonce] = useState(0);
   const [entities, setEntities] = useState<{
-    chats: Awaited<ReturnType<typeof getChats>>;
-    channels: Awaited<ReturnType<typeof getChannels>>;
-  } | null>(null);
+    chats: Awaited<ReturnType<typeof getChats>> | null;
+    channels: Awaited<ReturnType<typeof getChannels>> | null;
+  }>({
+    chats: null,
+    channels: null,
+  });
   const [loadingState, setLoadingState] = useState<'idle' | 'loading' | 'refreshing' | 'error'>(
     'loading',
   );
   const [loadError, setLoadError] = useState<Error | null>(null);
   const requestIdRef = useRef(0);
   const lastRefreshAtRef = useRef(0);
+  const awaitingReturnRefreshRef = useRef(false);
   const deferredQuery = useDeferredValue(query);
   const activeTab = normalizeEntityType(
     searchParams.get('view'),
     readLastEntityType(),
   ) as ManagedTab;
+  const activeEntitiesKey = getEntitiesKey(activeTab);
 
   useEffect(() => {
     let cancelled = false;
     const requestId = requestIdRef.current + 1;
     requestIdRef.current = requestId;
     const refresh = refreshNonce > 0;
-    const hasEntities = entities !== null;
+    const hasEntities = entities[activeEntitiesKey] !== null;
 
     setLoadingState(hasEntities ? 'refreshing' : 'loading');
+    setLoadError(null);
 
-    void Promise.all([getChats(api, { refresh }), getChannels(api, { refresh })])
-      .then(([chats, channels]) => {
+    const loadEntities =
+      activeTab === 'chat' ? getChats(api, { refresh }) : getChannels(api, { refresh });
+
+    void loadEntities
+      .then((nextEntities) => {
         if (cancelled || requestId !== requestIdRef.current) {
           return;
         }
 
-        setEntities({ chats, channels });
-        setLoadError(null);
+        setEntities((current) => ({
+          ...current,
+          [activeEntitiesKey]: nextEntities,
+        }));
         setLoadingState('idle');
       })
       .catch((error: unknown) => {
@@ -76,24 +91,24 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     return () => {
       cancelled = true;
     };
-  }, [api, refreshNonce]);
+  }, [activeEntitiesKey, activeTab, api, refreshNonce]);
 
   const activeEntities = useMemo(() => {
-    const data = entities;
-    if (!data) {
+    return entities[activeEntitiesKey];
+  }, [activeEntitiesKey, entities]);
+
+  const isLoading = loadingState === 'loading' && activeEntities === null;
+  const isFetching = loadingState === 'refreshing';
+  const queryError = activeEntities === null && loadingState === 'error' ? loadError : null;
+
+  const isNoEntitiesForTab =
+    !isLoading && !queryError && Array.isArray(activeEntities) && activeEntities.length === 0;
+
+  const filteredEntities = useMemo(() => {
+    if (!Array.isArray(activeEntities)) {
       return [];
     }
 
-    return activeTab === 'chat' ? data.chats : data.channels;
-  }, [activeTab, entities]);
-
-  const isLoading = loadingState === 'loading' && !entities;
-  const isFetching = loadingState === 'refreshing';
-  const queryError = !entities && loadingState === 'error' ? loadError : null;
-
-  const isNoEntitiesForTab = !isLoading && !queryError && activeEntities.length === 0;
-
-  const filteredEntities = useMemo(() => {
     const normalized = deferredQuery.trim().toLowerCase();
 
     if (!normalized) {
@@ -108,13 +123,21 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
 
   function handleRefresh() {
     lastRefreshAtRef.current = Date.now();
+    awaitingReturnRefreshRef.current = false;
     startTransition(() => {
       setRefreshNonce((current) => current + 1);
     });
   }
 
   useEffect(() => {
+    const markRefreshOnReturn = () => {
+      awaitingReturnRefreshRef.current = true;
+    };
+
     const refreshAfterReturn = () => {
+      if (!awaitingReturnRefreshRef.current) {
+        return;
+      }
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
         return;
       }
@@ -127,26 +150,41 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         return;
       }
 
+      awaitingReturnRefreshRef.current = false;
       handleRefresh();
     };
 
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        markRefreshOnReturn();
+        return;
+      }
+
+      refreshAfterReturn();
+    };
+
+    window.addEventListener('blur', markRefreshOnReturn);
+    window.addEventListener('pagehide', markRefreshOnReturn);
     window.addEventListener('focus', refreshAfterReturn);
     window.addEventListener('pageshow', refreshAfterReturn);
-    document.addEventListener('visibilitychange', refreshAfterReturn);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
+      window.removeEventListener('blur', markRefreshOnReturn);
+      window.removeEventListener('pagehide', markRefreshOnReturn);
       window.removeEventListener('focus', refreshAfterReturn);
       window.removeEventListener('pageshow', refreshAfterReturn);
-      document.removeEventListener('visibilitychange', refreshAfterReturn);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [loadingState]);
 
   useEffect(() => {
-    if (!entities) {
+    const allEntities = [...(entities.chats ?? []), ...(entities.channels ?? [])];
+    if (allEntities.length === 0) {
       return;
     }
 
-    saveChatTitles([...entities.chats, ...entities.channels]);
+    saveChatTitles(allEntities);
   }, [entities]);
 
   useEffect(() => {

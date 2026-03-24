@@ -417,6 +417,7 @@ export class AdminService {
   private readonly ownBotUserId: string | null;
   private readonly maxBotToken: string;
   private readonly adminAccessChecks = new Map<string, Promise<AdminAccessResolution>>();
+  private readonly managedEntitiesDiscoveryChecks = new Map<string, Promise<ChatSummary[]>>();
   private readonly managedEntitiesRefreshCooldownUntilMs = new Map<string, number>();
   private managedEntitiesRefreshBackoffUntilMs = 0;
 
@@ -519,94 +520,111 @@ export class AdminService {
           refreshCooldownKey,
         )))
     ) {
+      const discoveryKey = `${user.userId}:${entityType}`;
+      const inFlight = this.managedEntitiesDiscoveryChecks.get(discoveryKey);
+      const pending = inFlight ?? this.runManagedEntitiesDiscovery(user, entityType, refreshCooldownKey);
+
+      if (!inFlight) {
+        this.managedEntitiesDiscoveryChecks.set(discoveryKey, pending);
+      }
+
       try {
-        const remoteChats = await this.maxClient.listBotChats();
-        const resolvedChats = await this.mapWithConcurrencyLimit(
-          remoteChats,
-          LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
-          async (remoteChat) => {
-            const access = await this.resolveUserAndBotAdminAccess(remoteChat.chatId, user.userId);
-            if (access.status === 'throttled') {
-              throw new ManagedEntitiesRefreshThrottledError(access.error);
-            }
-
-            if (access.status !== 'granted') {
-              return null;
-            }
-
-            const persistedChat = await this.upsertUserChatAccess(
-              remoteChat.chatId,
-              user.userId,
-              remoteChat.title,
-              remoteChat.entityType,
-              { updateEntityType: true },
-            );
-
-            const chat: ChatSummary = {
-              id: persistedChat.id,
-              title: persistedChat.title,
-              createdAt: persistedChat.createdAt.toISOString(),
-              entityType: this.fromPrismaEntityType(persistedChat.entityType),
-              link: remoteChat.link,
-              channelOverview: null,
-            };
-
-            if (this.isFallbackTitle(chat.id, chat.title)) {
-              await this.refreshChatTitle(chat);
-            }
-
-            return {
-              chat,
-              lastEventTime: remoteChat.lastEventTime ?? 0,
-            };
-          },
-        );
-
-        const filtered = resolvedChats.filter(
-          (item): item is { chat: ChatSummary; lastEventTime: number } => item !== null,
-        );
-
-        await this.activateManagedEntitiesRefreshCooldown(
-          user.userId,
-          entityType,
-          refreshCooldownKey,
-        );
-
-        if (filtered.length > 0) {
-          const byType =
-            entityType === 'all'
-              ? filtered
-              : filtered.filter((item) => item.chat.entityType === entityType);
-          byType.sort((a, b) => b.lastEventTime - a.lastEventTime);
-          return this.attachChannelOverview(byType.map((item) => item.chat));
+        const discovered = await pending;
+        if (discovered.length > 0) {
+          return this.attachChannelOverview(discovered);
         }
-      } catch (error: unknown) {
-        if (
-          this.isManagedEntitiesRefreshThrottledError(error) ||
-          this.isMaxApiThrottleError(error)
-        ) {
-          const rootError =
-            error instanceof ManagedEntitiesRefreshThrottledError ? error.cause : error;
-          const backoffMs = await this.activateManagedEntitiesRefreshBackoff();
-          this.logger.warn(
-            {
-              entityType,
-              userId: user.userId,
-              backoffMs,
-              err: rootError instanceof Error ? rootError.message : String(rootError),
-            },
-            'Paused remote chat discovery after MAX API throttling',
-          );
-        } else {
-          this.logger.warn(
-            { err: error instanceof Error ? error.message : String(error) },
-            'Failed to auto-discover chats via MAX API',
-          );
+      } finally {
+        if (!inFlight) {
+          this.managedEntitiesDiscoveryChecks.delete(discoveryKey);
         }
       }
     }
 
     return [];
+  }
+
+  private async runManagedEntitiesDiscovery(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+    refreshCooldownKey: string,
+  ): Promise<ChatSummary[]> {
+    try {
+      const remoteChats = await this.maxClient.listBotChats();
+      const candidateChats =
+        entityType === 'all'
+          ? remoteChats
+          : remoteChats.filter((chat) => chat.entityType === entityType);
+      const resolvedChats = await this.mapWithConcurrencyLimit(
+        candidateChats,
+        LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
+        async (remoteChat) => {
+          const access = await this.resolveUserAndBotAdminAccess(remoteChat.chatId, user.userId);
+          if (access.status === 'throttled') {
+            throw new ManagedEntitiesRefreshThrottledError(access.error);
+          }
+
+          if (access.status !== 'granted') {
+            return null;
+          }
+
+          const persistedChat = await this.upsertUserChatAccess(
+            remoteChat.chatId,
+            user.userId,
+            remoteChat.title,
+            remoteChat.entityType,
+            { updateEntityType: true },
+          );
+
+          const chat: ChatSummary = {
+            id: persistedChat.id,
+            title: persistedChat.title,
+            createdAt: persistedChat.createdAt.toISOString(),
+            entityType: this.fromPrismaEntityType(persistedChat.entityType),
+            link: remoteChat.link,
+            channelOverview: null,
+          };
+
+          if (this.isFallbackTitle(chat.id, chat.title)) {
+            await this.refreshChatTitle(chat);
+          }
+
+          return {
+            chat,
+            lastEventTime: remoteChat.lastEventTime ?? 0,
+          };
+        },
+      );
+
+      const filtered = resolvedChats.filter(
+        (item): item is { chat: ChatSummary; lastEventTime: number } => item !== null,
+      );
+
+      await this.activateManagedEntitiesRefreshCooldown(user.userId, entityType, refreshCooldownKey);
+
+      filtered.sort((a, b) => b.lastEventTime - a.lastEventTime);
+      return filtered.map((item) => item.chat);
+    } catch (error: unknown) {
+      if (this.isManagedEntitiesRefreshThrottledError(error) || this.isMaxApiThrottleError(error)) {
+        const rootError = error instanceof ManagedEntitiesRefreshThrottledError ? error.cause : error;
+        const backoffMs = await this.activateManagedEntitiesRefreshBackoff();
+        this.logger.warn(
+          {
+            entityType,
+            userId: user.userId,
+            backoffMs,
+            err: rootError instanceof Error ? rootError.message : String(rootError),
+          },
+          'Paused remote chat discovery after MAX API throttling',
+        );
+      } else {
+        this.logger.warn(
+          { err: error instanceof Error ? error.message : String(error) },
+          'Failed to auto-discover chats via MAX API',
+        );
+      }
+
+      return [];
+    }
   }
 
   async getChannelStats(
