@@ -9186,7 +9186,9 @@ describe('ModerationService', () => {
 
       await service.handleUpdate(createUpdate());
 
-      expect(maxClient.hasChatMember).toHaveBeenCalledWith('channel-1', 'user-1');
+      expect(maxClient.hasChatMember).toHaveBeenCalledWith('channel-1', 'user-1', {
+        trafficClass: 'critical',
+      });
       expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
       expect(maxClient.sendMessage).not.toHaveBeenCalled();
