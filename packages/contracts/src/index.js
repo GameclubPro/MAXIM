@@ -2,7 +2,6 @@ import { z } from 'zod';
 export const sanctionActionSchema = z.enum(['NONE', 'WARN', 'DELETE_MESSAGE', 'KICK', 'BAN']);
 export const linkPolicySchema = z.enum(['ALLOWLIST_ONLY', 'BLOCKLIST_ONLY', 'ALERT_ONLY']);
 export const commercialAdsSensitivitySchema = z.enum(['BALANCED', 'STRICT']);
-export const BOT_BUTTON_USER_PROFILE_URL_PLACEHOLDER = 'https://max.ru/__maxim__/user-profile';
 const duplicateWindowSecSchema = z.number().int().min(3600).max(604800);
 const duplicateMaxCountSchema = z.number().int().min(2).max(20);
 const botButtonUrlSchema = z.string().trim().max(2048).default('');
@@ -18,9 +17,6 @@ function isValidBotButtonUrl(value) {
   } catch {
     return false;
   }
-}
-export function isBotButtonUserProfileUrlPlaceholder(value) {
-  return value.trim() === BOT_BUTTON_USER_PROFILE_URL_PLACEHOLDER;
 }
 function isValidBotButtonText(value) {
   const normalized = value.trim();

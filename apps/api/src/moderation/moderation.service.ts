@@ -11,7 +11,6 @@ import { ConfigService } from '@nestjs/config';
 import {
   getBotSpeechEditableTemplate,
   getBotSpeechSystemTemplate,
-  isBotButtonUserProfileUrlPlaceholder,
   normalizeDeleteBotMessagesDelayMinutes,
   type BotSpeechEditableFieldKey,
   type BotSpeechStyle,
@@ -128,7 +127,10 @@ const BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS = 60_000;
 const MODERATION_CONCURRENCY_SPLIT = resolveModerationConcurrencySplit(
   readPositiveInt(process.env.MODERATION_CONCURRENCY, 24),
 );
-const LEGACY_MODERATION_CONCURRENCY = readPositiveInt(process.env.MODERATION_CONCURRENCY_LEGACY, 1);
+const LEGACY_MODERATION_CONCURRENCY = readPositiveInt(
+  process.env.MODERATION_CONCURRENCY_LEGACY,
+  1,
+);
 const CRITICAL_MODERATION_CONCURRENCY = readPositiveInt(
   process.env.MODERATION_CONCURRENCY_CRITICAL,
   MODERATION_CONCURRENCY_SPLIT.critical,
@@ -793,7 +795,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     const linkMessageOptions =
       topViolation.ruleCode === 'LINK_BLOCKED'
-        ? await this.buildBotMessageOptions(
+        ? this.buildBotMessageOptions(
             chatId,
             settings.linkBotButtonEnabled,
             settings.linkBotButtonUrl,
@@ -801,7 +803,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             settings.rulesAttachViolationsEnabled,
             rulesPublishedUrl,
             rulesPublishedMessageId,
-            senderId,
           )
         : null;
     const linkViolationCount24h =
@@ -816,7 +817,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       ? this.resolveTextFilterEscalationSettings(topViolation.ruleCode, settings)
       : null;
     const textFilterMessageOptions = isTextFilterHit
-      ? await this.buildBotMessageOptions(
+      ? this.buildBotMessageOptions(
           chatId,
           settings.textFiltersBotButtonEnabled,
           settings.textFiltersBotButtonUrl,
@@ -824,11 +825,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           settings.rulesAttachViolationsEnabled,
           rulesPublishedUrl,
           rulesPublishedMessageId,
-          senderId,
         )
       : null;
     const limitsMessageOptions = isMessageLimitsHit
-      ? await this.buildBotMessageOptions(
+      ? this.buildBotMessageOptions(
           chatId,
           settings.messageLimitsBotButtonEnabled,
           settings.messageLimitsBotButtonUrl,
@@ -836,11 +836,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           settings.rulesAttachViolationsEnabled,
           rulesPublishedUrl,
           rulesPublishedMessageId,
-          senderId,
         )
       : null;
     const topicMessageOptions = isTopicFilterHit
-      ? await this.buildBotMessageOptions(
+      ? this.buildBotMessageOptions(
           chatId,
           settings.thematicFiltersBotButtonEnabled,
           settings.thematicFiltersBotButtonUrl,
@@ -848,7 +847,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           settings.rulesAttachViolationsEnabled,
           rulesPublishedUrl,
           rulesPublishedMessageId,
-          senderId,
         )
       : null;
     const textFilterViolationCount24h = isTextFilterHit
@@ -1392,7 +1390,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
-    const duplicateMessageOptions = await this.buildBotMessageOptions(
+    const duplicateMessageOptions = this.buildBotMessageOptions(
       chatId,
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
@@ -1400,7 +1398,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       rulesAttachViolationsEnabled,
       rulesPublishedUrl,
       rulesPublishedMessageId,
-      userId,
     );
 
     if (duplicateBotMessageEnabled && decision.action !== 'BAN') {
@@ -1549,7 +1546,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       );
     }
 
-    const duplicateMessageOptions = await this.buildBotMessageOptions(
+    const duplicateMessageOptions = this.buildBotMessageOptions(
       chatId,
       duplicateBotButtonEnabled,
       duplicateBotButtonUrl,
@@ -1557,7 +1554,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       rulesAttachViolationsEnabled,
       rulesPublishedUrl,
       rulesPublishedMessageId,
-      userId,
     );
 
     if (duplicateBotMessageEnabled) {
@@ -3042,7 +3038,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return /\.(ogg|opus|mp3|m4a|wav|flac)$/i.test(value);
   }
 
-  private async buildBotMessageOptions(
+  private buildBotMessageOptions(
     chatId: string,
     buttonEnabled: boolean,
     buttonUrl: string,
@@ -3050,21 +3046,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     rulesButtonEnabled = false,
     rulesPublishedUrl: string | null = null,
     rulesPublishedMessageId: string | null = null,
-    userId: string | null = null,
-  ): Promise<MaxSendMessageOptions | null> {
+  ): MaxSendMessageOptions | null {
     const buttons: MaxMessageButton[] = [];
     const rulesMessageLink = this.buildRulesMessageLink(
       rulesButtonEnabled,
       rulesPublishedUrl,
       rulesPublishedMessageId,
     );
-    const primaryButton = await this.buildLinkButton(
-      chatId,
-      buttonEnabled,
-      buttonUrl,
-      buttonText,
-      userId,
-    );
+    const primaryButton = this.buildLinkButton(buttonEnabled, buttonUrl, buttonText);
     if (primaryButton) {
       buttons.push(primaryButton);
     }
@@ -3147,18 +3136,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         };
   }
 
-  private async buildLinkButton(
-    chatId: string,
+  private buildLinkButton(
     buttonEnabled: boolean,
     buttonUrl: string,
     buttonText: string,
-    userId: string | null = null,
-  ): Promise<MaxLinkButton | null> {
+  ): MaxLinkButton | null {
     if (!buttonEnabled) {
       return null;
     }
 
-    const normalizedUrl = await this.resolveBotButtonUrl(chatId, buttonUrl, userId);
+    const normalizedUrl = this.normalizeBotButtonUrl(buttonUrl);
     if (!normalizedUrl) {
       return null;
     }
@@ -3179,12 +3166,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return null;
     }
 
-    const normalizedPublishedUrl = this.normalizeBotButtonUrl(publishedUrl ?? '');
-    if (normalizedPublishedUrl) {
-      return {
-        text: RULES_BOT_BUTTON_TEXT,
-        url: normalizedPublishedUrl,
-      };
+    const directLinkButton = this.buildLinkButton(
+      Boolean(publishedUrl),
+      publishedUrl ?? '',
+      RULES_BOT_BUTTON_TEXT,
+    );
+    if (directLinkButton) {
+      return directLinkButton;
     }
 
     if (!chatId.trim() || !publishedMessageId?.trim()) {
@@ -4235,17 +4223,14 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    const greetingMessageOptions = this.buildBotMessageOptions(
+      chatId,
+      greetingBotButtonEnabled,
+      greetingBotButtonUrl,
+      greetingBotButtonText,
+    );
+
     for (const member of joinedMembers) {
-      const greetingMessageOptions = await this.buildBotMessageOptions(
-        chatId,
-        greetingBotButtonEnabled,
-        greetingBotButtonUrl,
-        greetingBotButtonText,
-        false,
-        null,
-        null,
-        member.userId,
-      );
       const greetingMessage = this.buildGreetingMessage(
         member.userLabel,
         greetingBotMessageText,
@@ -7029,7 +7014,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         params.nightModeBotMessageText,
         params.botSpeechStyle,
       );
-      const nightModeMessageOptions = await this.buildNightModeClosedNoticeOptions(params);
+      const nightModeMessageOptions = this.buildNightModeClosedNoticeOptions(params);
       const noticeMessageId = await this.sendScheduledBotMessage({
         chatId: params.chatId,
         text: messageText,
@@ -7265,7 +7250,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  private async buildNightModeClosedNoticeOptions(params: {
+  private buildNightModeClosedNoticeOptions(params: {
     chatId: string;
     commentsEnabled: boolean;
     nightModeCommentsEnabled: boolean;
@@ -7275,8 +7260,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     nightModeRulesButtonEnabled?: boolean;
     rulesPublishedUrl?: string | null;
     rulesPublishedMessageId?: string | null;
-  }): Promise<MaxSendMessageOptions | null> {
-    const baseOptions = await this.buildBotMessageOptions(
+  }): MaxSendMessageOptions | null {
+    const baseOptions = this.buildBotMessageOptions(
       params.chatId,
       params.nightModeBotButtonEnabled,
       params.nightModeBotButtonUrl,
@@ -7308,56 +7293,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       ...(baseOptions?.textFormat ? { textFormat: baseOptions.textFormat } : {}),
       ...(baseOptions?.debugContext ? { debugContext: baseOptions.debugContext } : {}),
     };
-  }
-
-  private async resolveBotButtonUrl(
-    chatId: string,
-    buttonUrl: string,
-    userId: string | null,
-  ): Promise<string | null> {
-    if (!isBotButtonUserProfileUrlPlaceholder(buttonUrl)) {
-      return this.normalizeBotButtonUrl(buttonUrl);
-    }
-
-    return this.resolveUserProfileButtonUrl(chatId, userId);
-  }
-
-  private async resolveUserProfileButtonUrl(
-    chatId: string,
-    userId: string | null,
-  ): Promise<string | null> {
-    const normalizedChatId = this.readTrimmedString(chatId);
-    const normalizedUserId = this.readTrimmedString(userId);
-    if (!normalizedChatId || !normalizedUserId) {
-      return null;
-    }
-
-    try {
-      const profiles = await this.maxClient.getChatMemberProfiles(normalizedChatId, [
-        normalizedUserId,
-      ]);
-      const username = this.readTrimmedString(profiles.get(normalizedUserId)?.username);
-      return this.buildUserProfileUrl(username);
-    } catch (error: unknown) {
-      this.logger.warn(
-        {
-          chatId: normalizedChatId,
-          userId: normalizedUserId,
-          error: error instanceof Error ? error.message : 'Unknown error',
-        },
-        'Failed to resolve user profile url for bot button',
-      );
-      return null;
-    }
-  }
-
-  private buildUserProfileUrl(username: string | null): string | null {
-    const normalizedUsername = username?.replace(/^@+/u, '').trim() ?? '';
-    if (!normalizedUsername) {
-      return null;
-    }
-
-    return `https://max.ru/${encodeURIComponent(normalizedUsername)}`;
   }
 
   private buildNightModeCommentsButton(
@@ -8728,10 +8663,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private readLowerString(value: unknown): string | null {
     return typeof value === 'string' && value.trim().length > 0 ? value.trim().toLowerCase() : null;
-  }
-
-  private readTrimmedString(value: unknown): string | null {
-    return typeof value === 'string' && value.trim().length > 0 ? value.trim() : null;
   }
 
   private extractStatusCode(error: unknown): number | null {
