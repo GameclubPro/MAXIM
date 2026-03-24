@@ -8987,6 +8987,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       textFormat: 'markdown' as const,
     };
 
+    if (typeof this.maxClient.sendMessageImmediateWithId === 'function') {
+      const sent = await this.maxClient.sendMessageImmediateWithId(
+        params.chatId,
+        params.text,
+        options,
+      );
+
+      return typeof sent.messageId === 'string' && sent.messageId.trim().length > 0
+        ? sent.messageId.trim()
+        : null;
+    }
+
     if (typeof this.maxClient.sendMessageImmediateWithResolvedLink === 'function') {
       const sent = await this.maxClient.sendMessageImmediateWithResolvedLink(
         params.chatId,
