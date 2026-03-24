@@ -7001,7 +7001,9 @@ export class AdminService {
     userId: string,
     entityType: ManagedEntityType | null = null,
   ) {
-    const access = await this.resolveUserAndBotAdminAccess(chatId, userId);
+    const access = await this.resolveUserAndBotAdminAccess(chatId, userId, {
+      bypassNegativeCache: true,
+    });
     if (access.status === 'denied') {
       if (access.reason === 'bot_not_admin') {
         throw new ForbiddenException(

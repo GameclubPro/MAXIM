@@ -3563,6 +3563,46 @@ describe('AdminService admin access validation', () => {
     expect(maxClient.getChatEditableAdminIds).not.toHaveBeenCalled();
   });
 
+  it('rechecks stale bot_denied cache before rejecting admin access', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock({
+      getAdminAccess: jest.fn().mockResolvedValue('bot_denied'),
+    });
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(service.assertChatAdmin('chat-1', user.userId, 'chat')).resolves.toBeUndefined();
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
+    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('chat-1', 'admin-1', 'granted');
+  });
+
+  it('rechecks stale user_denied cache before rejecting admin access', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock({
+      getAdminAccess: jest.fn().mockResolvedValue('user_denied'),
+    });
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(service.assertChatAdmin('chat-1', user.userId, 'chat')).resolves.toBeUndefined();
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
+    expect(chatContextCache.setAdminAccess).toHaveBeenCalledWith('chat-1', 'admin-1', 'granted');
+  });
+
   it('falls back to persisted allowlist on transient MAX admin check failures', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ chatId: 'chat-1' }]);
@@ -3651,7 +3691,7 @@ describe('AdminService admin access validation', () => {
         userId: 'admin-1',
       },
     });
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(2);
   });
 });
 
