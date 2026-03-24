@@ -214,6 +214,7 @@ const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 30;
 const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 5;
+const MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT = 100;
 const MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS = 30_000;
 const MANAGED_ENTITIES_REFRESH_BACKOFF_MS = 60_000;
 const CHANNEL_DIALOG_MESSAGES_LIMIT = 80;
@@ -554,12 +555,37 @@ export class AdminService {
   ): Promise<ChatSummary[]> {
     try {
       const remoteChats = await this.maxClient.listBotChats();
+      const cachedChats = await this.listChatsFromAllowlist(user.userId, entityType);
+      const cachedIds = new Set(cachedChats.map((chat) => chat.id));
+      const cachedById = new Map(cachedChats.map((chat) => [chat.id, chat]));
       const candidateChats =
         entityType === 'all'
           ? remoteChats
           : remoteChats.filter((chat) => chat.entityType === entityType);
+      const mergedKnownChats = candidateChats.flatMap((remoteChat, remoteIndex) => {
+        const cachedChat = cachedById.get(remoteChat.chatId);
+        if (!cachedChat) {
+          return [];
+        }
+
+        cachedById.delete(remoteChat.chatId);
+        return [
+          {
+            chat: {
+              ...cachedChat,
+              title: remoteChat.title?.trim() ? remoteChat.title : cachedChat.title,
+              link: remoteChat.link,
+            },
+            lastEventTime: remoteChat.lastEventTime ?? 0,
+            remoteIndex,
+          },
+        ];
+      });
+      const uncachedCandidates = candidateChats
+        .filter((remoteChat) => !cachedIds.has(remoteChat.chatId))
+        .slice(0, MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT);
       const resolvedChats = await this.mapWithConcurrencyLimit(
-        candidateChats,
+        uncachedCandidates,
         LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
         async (remoteChat) => {
           const access = await this.resolveUserAndBotAdminAccess(remoteChat.chatId, user.userId, {
@@ -597,18 +623,32 @@ export class AdminService {
           return {
             chat,
             lastEventTime: remoteChat.lastEventTime ?? 0,
+            remoteIndex: candidateChats.findIndex((chat) => chat.chatId === remoteChat.chatId),
           };
         },
       );
 
       const filtered = resolvedChats.filter(
-        (item): item is { chat: ChatSummary; lastEventTime: number } => item !== null,
+        (item): item is { chat: ChatSummary; lastEventTime: number; remoteIndex: number } =>
+          item !== null,
       );
+      const remainingCachedChats = [...cachedById.values()].map((chat) => ({
+        chat,
+        lastEventTime: 0,
+        remoteIndex: Number.MAX_SAFE_INTEGER,
+      }));
+      const mergedChats = [...mergedKnownChats, ...filtered, ...remainingCachedChats];
 
       await this.activateManagedEntitiesRefreshCooldown(user.userId, entityType, refreshCooldownKey);
 
-      filtered.sort((a, b) => b.lastEventTime - a.lastEventTime);
-      return filtered.map((item) => item.chat);
+      mergedChats.sort((a, b) => {
+        if (a.remoteIndex !== b.remoteIndex) {
+          return a.remoteIndex - b.remoteIndex;
+        }
+
+        return b.lastEventTime - a.lastEventTime;
+      });
+      return mergedChats.map((item) => item.chat);
     } catch (error: unknown) {
       if (this.isManagedEntitiesRefreshThrottledError(error) || this.isMaxApiThrottleError(error)) {
         const rootError = error instanceof ManagedEntitiesRefreshThrottledError ? error.cause : error;

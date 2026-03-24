@@ -2428,6 +2428,96 @@ describe('AdminService.listChannels', () => {
     expect(maxClient.listBotChats).not.toHaveBeenCalled();
   });
 
+  it('reuses cached channels during refresh and checks admin only for uncached candidates', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'channel-1',
+          title: 'Кэш канала',
+          createdAt: new Date('2026-03-02T10:00:00.000Z'),
+          entityType: 'CHANNEL',
+        },
+      },
+    ]);
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-2',
+      title: 'Новый канал',
+      createdAt: new Date('2026-03-03T10:00:00.000Z'),
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findMany.mockResolvedValue([]);
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'channel-1',
+          title: 'Кэш канала',
+          lastEventTime: 300,
+          entityType: 'channel',
+          link: 'https://max.ru/cached',
+        },
+        {
+          chatId: 'channel-2',
+          title: 'Новый канал',
+          lastEventTime: 200,
+          entityType: 'channel',
+          link: 'https://max.ru/new',
+        },
+      ]),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.listChannels(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { refresh: true },
+      ),
+    ).resolves.toEqual([
+      {
+        id: 'channel-1',
+        title: 'Кэш канала',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'channel',
+        link: 'https://max.ru/cached',
+        channelOverview: {
+          enabledScenariosCount: 1,
+          commentsEnabled: true,
+          postSuggestionsEnabled: false,
+          commentsModerationEnabled: false,
+        },
+      },
+      {
+        id: 'channel-2',
+        title: 'Новый канал',
+        createdAt: '2026-03-03T10:00:00.000Z',
+        entityType: 'channel',
+        link: 'https://max.ru/new',
+        channelOverview: {
+          enabledScenariosCount: 1,
+          commentsEnabled: true,
+          postSuggestionsEnabled: false,
+          commentsModerationEnabled: false,
+        },
+      },
+    ]);
+
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('channel-2');
+  });
+
   it('auto-discovers channels on default load when allowlist cache is empty', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-24T00:00:00.000Z'));
 
@@ -2726,7 +2816,7 @@ describe('AdminService.listChannels', () => {
     );
 
     expect(maxClient.listBotChats).toHaveBeenCalledTimes(2);
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(2);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
     expect(chatContextCache.activateManagedEntitiesRefreshCooldown).toHaveBeenCalledWith(
       'admin-1',
       'channel',
