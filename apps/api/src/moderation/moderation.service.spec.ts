@@ -4231,6 +4231,107 @@ describe('ModerationService', () => {
     );
   });
 
+  it('deduplicates concurrent night mode notice attempts across service instances', async () => {
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    const redisLocks = new Map<string, string>();
+    const prisma = {
+      moderationEvent: {
+        findFirst: jest.fn().mockImplementation(async () => {
+          await sleep(25);
+          return null;
+        }),
+        create: jest.fn().mockImplementation(async () => {
+          await sleep(25);
+          return undefined;
+        }),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const maxClient = {
+      sendMessage: jest.fn().mockImplementation(async () => {
+        await sleep(25);
+      }),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const redisCounter = {
+      getString: jest.fn().mockResolvedValue(null),
+      setStringWithTtl: jest.fn().mockResolvedValue(undefined),
+      acquireLock: jest.fn().mockImplementation(async (key: string) => {
+        if (redisLocks.has(key)) {
+          return null;
+        }
+
+        const token = `lock-${redisLocks.size + 1}`;
+        redisLocks.set(key, token);
+        return token;
+      }),
+      releaseLock: jest.fn().mockImplementation(async (key: string, token: string) => {
+        if (redisLocks.get(key) === token) {
+          redisLocks.delete(key);
+        }
+      }),
+    };
+
+    const serviceA = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+    );
+    const serviceB = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      undefined,
+      redisCounter as never,
+    );
+
+    const params = {
+      chatId: 'chat-1',
+      startMinutes: 23 * 60,
+      endMinutes: 8 * 60,
+      timezone: 'Europe/Moscow',
+      botSpeechStyle: null,
+      nightModeBotMessageText: '',
+      commentsEnabled: false,
+      nightModeCommentsEnabled: false,
+      nightModeBotButtonEnabled: false,
+      nightModeBotButtonUrl: '',
+      nightModeBotButtonText: 'Открыть',
+      reason: 'concurrent-race-check',
+    };
+
+    await Promise.all([
+      (
+        serviceA as unknown as {
+          sendNightModeClosedNoticeIfNeeded: (params: Record<string, unknown>) => Promise<void>;
+        }
+      ).sendNightModeClosedNoticeIfNeeded(params),
+      (
+        serviceB as unknown as {
+          sendNightModeClosedNoticeIfNeeded: (params: Record<string, unknown>) => Promise<void>;
+        }
+      ).sendNightModeClosedNoticeIfNeeded(params),
+    ]);
+
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.create).toHaveBeenCalledTimes(1);
+    expect(redisCounter.acquireLock).toHaveBeenCalledTimes(2);
+    expect(redisCounter.releaseLock).toHaveBeenCalledTimes(1);
+  });
+
   it('deletes messages during manual group close silently', async () => {
     const prisma = {
       chat: {

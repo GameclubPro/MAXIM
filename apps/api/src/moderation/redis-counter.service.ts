@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
+import { randomUUID } from 'node:crypto';
 
 @Injectable()
 export class RedisCounterService {
@@ -60,5 +61,28 @@ export class RedisCounterService {
     }
 
     await this.redis.set(key, value, 'EX', Math.trunc(ttlSeconds));
+  }
+
+  async acquireLock(key: string, ttlMs: number): Promise<string | null> {
+    if (!key.trim() || !Number.isFinite(ttlMs) || ttlMs <= 0) {
+      return null;
+    }
+
+    const token = randomUUID();
+    const acquired = await this.redis.set(key, token, 'PX', Math.trunc(ttlMs), 'NX');
+    return acquired === 'OK' ? token : null;
+  }
+
+  async releaseLock(key: string, token: string): Promise<void> {
+    if (!key.trim() || !token.trim()) {
+      return;
+    }
+
+    await this.redis.eval(
+      'if redis.call("get", KEYS[1]) == ARGV[1] then return redis.call("del", KEYS[1]) else return 0 end',
+      1,
+      key,
+      token,
+    );
   }
 }

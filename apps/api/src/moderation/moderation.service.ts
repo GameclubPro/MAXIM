@@ -119,6 +119,8 @@ const REQUIRED_SUBSCRIPTION_MEMBER_PRESENT_TTL_SEC = 30;
 const REQUIRED_SUBSCRIPTION_MEMBER_MISSING_TTL_SEC = 10;
 const REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC = 15 * 60;
 const REQUIRED_SUBSCRIPTION_RULE_CODE = 'REQUIRED_SUBSCRIPTION';
+const NIGHT_MODE_NOTICE_LOCK_TTL_MS = 2 * 60 * 1_000;
+const NIGHT_MODE_NOTICE_MARKER_TTL_SEC = 2 * 24 * 60 * 60;
 const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
 const CHAT_ADMIN_CACHE_TTL_SEC = Math.ceil(CHAT_ADMIN_CACHE_TTL_MS / 1_000);
 const BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS = 60_000;
@@ -240,6 +242,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   >();
   private readonly ownBotUserId: string | null;
   private readonly ownBotUserIdVariants: Set<string>;
+  private readonly nightModeNoticeMemoryLocks = new Map<string, string>();
   private nightModeAnnounceTimer: NodeJS.Timeout | null = null;
   private nightModeAnnounceInFlight = false;
   private channelAutoPostTimer: NodeJS.Timeout | null = null;
@@ -6932,6 +6935,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     nightSessionKey: string,
     ruleCode: string,
   ): Promise<boolean> {
+    const markerKey = this.buildNightModeNoticeMarkerKey(chatId, nightSessionKey, ruleCode);
+    const cachedMarker = await this.readNightModeNoticeMarker(markerKey);
+    if (cachedMarker) {
+      return true;
+    }
+
     const existingNotice = await this.prisma.moderationEvent.findFirst({
       where: {
         chatId,
@@ -6945,6 +6954,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         id: true,
       },
     });
+
+    if (existingNotice) {
+      await this.writeNightModeNoticeMarker(markerKey);
+    }
 
     return Boolean(existingNotice);
   }
@@ -6974,49 +6987,71 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       params.timezone,
       params.sessionMoment ?? 'current',
     );
-    const noticeAlreadySent = await this.wasNightModeScheduledNoticeProcessed(
+    const noticeLockKey = this.buildNightModeNoticeLockKey(
       params.chatId,
       nightSessionKey,
       NIGHT_MODE_NOTICE_RULE_CODE,
     );
-    if (noticeAlreadySent) {
+    const noticeLock = await this.acquireNightModeNoticeLock(noticeLockKey);
+    if (!noticeLock) {
       return;
     }
 
-    const messageText = this.buildNightModeClosedNotice(
-      params.startMinutes,
-      params.endMinutes,
-      params.timezone,
-      params.nightModeBotMessageText,
-      params.botSpeechStyle,
-    );
-    const nightModeMessageOptions = this.buildNightModeClosedNoticeOptions(params);
-    const noticeMessageId = await this.sendScheduledBotMessage({
-      chatId: params.chatId,
-      text: messageText,
-      messageOptions: nightModeMessageOptions ?? undefined,
-    });
+    try {
+      const noticeAlreadySent = await this.wasNightModeScheduledNoticeProcessed(
+        params.chatId,
+        nightSessionKey,
+        NIGHT_MODE_NOTICE_RULE_CODE,
+      );
+      if (noticeAlreadySent) {
+        return;
+      }
 
-    await this.prisma.moderationEvent.create({
-      data: {
+      const messageText = this.buildNightModeClosedNotice(
+        params.startMinutes,
+        params.endMinutes,
+        params.timezone,
+        params.nightModeBotMessageText,
+        params.botSpeechStyle,
+      );
+      const nightModeMessageOptions = this.buildNightModeClosedNoticeOptions(params);
+      const noticeMessageId = await this.sendScheduledBotMessage({
         chatId: params.chatId,
-        userId: 'system',
-        eventType: EventType.SYSTEM,
-        ruleCode: NIGHT_MODE_NOTICE_RULE_CODE,
-        action: SanctionAction.NONE,
-        score: 0,
-        operator: Operator.BOT,
-        metadata: {
-          reason: params.reason,
+        text: messageText,
+        messageOptions: nightModeMessageOptions ?? undefined,
+      });
+
+      await this.writeNightModeNoticeMarker(
+        this.buildNightModeNoticeMarkerKey(
+          params.chatId,
           nightSessionKey,
-          nightModeTimezone: params.timezone,
-          nightModeStartTime: this.formatMinutesAsTime(params.startMinutes),
-          nightModeEndTime: this.formatMinutesAsTime(params.endMinutes),
-          ...(params.sourceMessageId ? { sourceMessageId: params.sourceMessageId } : {}),
-          ...(noticeMessageId ? { noticeMessageId } : {}),
+          NIGHT_MODE_NOTICE_RULE_CODE,
+        ),
+      );
+
+      await this.prisma.moderationEvent.create({
+        data: {
+          chatId: params.chatId,
+          userId: 'system',
+          eventType: EventType.SYSTEM,
+          ruleCode: NIGHT_MODE_NOTICE_RULE_CODE,
+          action: SanctionAction.NONE,
+          score: 0,
+          operator: Operator.BOT,
+          metadata: {
+            reason: params.reason,
+            nightSessionKey,
+            nightModeTimezone: params.timezone,
+            nightModeStartTime: this.formatMinutesAsTime(params.startMinutes),
+            nightModeEndTime: this.formatMinutesAsTime(params.endMinutes),
+            ...(params.sourceMessageId ? { sourceMessageId: params.sourceMessageId } : {}),
+            ...(noticeMessageId ? { noticeMessageId } : {}),
+          },
         },
-      },
-    });
+      });
+    } finally {
+      await this.releaseNightModeNoticeLock(noticeLock);
+    }
   }
 
   private async findNightModeClosedNoticeMessageId(
@@ -7084,6 +7119,135 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         night_status: nightStatus,
       },
     });
+  }
+
+  private buildNightModeNoticeLockKey(
+    chatId: string,
+    nightSessionKey: string,
+    ruleCode: string,
+  ): string {
+    return `night-notice-lock:v1:${ruleCode}:${chatId}:${nightSessionKey}`;
+  }
+
+  private buildNightModeNoticeMarkerKey(
+    chatId: string,
+    nightSessionKey: string,
+    ruleCode: string,
+  ): string {
+    return `night-notice-sent:v1:${ruleCode}:${chatId}:${nightSessionKey}`;
+  }
+
+  private async readNightModeNoticeMarker(key: string): Promise<boolean> {
+    const getString = (this.redisCounter as Partial<RedisCounterService> | undefined)?.getString;
+    if (!getString || !this.redisCounter) {
+      return false;
+    }
+
+    try {
+      return (await getString.call(this.redisCounter, key)) === '1';
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          key,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to read night mode notice marker from redis',
+      );
+      return false;
+    }
+  }
+
+  private async writeNightModeNoticeMarker(key: string): Promise<void> {
+    const setStringWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
+      ?.setStringWithTtl;
+    if (!setStringWithTtl || !this.redisCounter) {
+      return;
+    }
+
+    try {
+      await setStringWithTtl.call(this.redisCounter, key, '1', NIGHT_MODE_NOTICE_MARKER_TTL_SEC);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          key,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to write night mode notice marker to redis',
+      );
+    }
+  }
+
+  private async acquireNightModeNoticeLock(
+    key: string,
+  ): Promise<{ key: string; token: string; mode: 'redis' | 'memory' } | null> {
+    const acquireLock = (this.redisCounter as Partial<RedisCounterService> | undefined)
+      ?.acquireLock;
+
+    if (acquireLock && this.redisCounter) {
+      try {
+        const token = await acquireLock.call(this.redisCounter, key, NIGHT_MODE_NOTICE_LOCK_TTL_MS);
+        if (!token) {
+          return null;
+        }
+
+        return {
+          key,
+          token,
+          mode: 'redis',
+        };
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            key,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to acquire redis night mode notice lock; falling back to memory lock',
+        );
+      }
+    }
+
+    if (this.nightModeNoticeMemoryLocks.has(key)) {
+      return null;
+    }
+
+    const token = randomUUID();
+    this.nightModeNoticeMemoryLocks.set(key, token);
+    return {
+      key,
+      token,
+      mode: 'memory',
+    };
+  }
+
+  private async releaseNightModeNoticeLock(lock: {
+    key: string;
+    token: string;
+    mode: 'redis' | 'memory';
+  }): Promise<void> {
+    if (lock.mode === 'memory') {
+      if (this.nightModeNoticeMemoryLocks.get(lock.key) === lock.token) {
+        this.nightModeNoticeMemoryLocks.delete(lock.key);
+      }
+      return;
+    }
+
+    const releaseLock = (this.redisCounter as Partial<RedisCounterService> | undefined)
+      ?.releaseLock;
+    if (!releaseLock || !this.redisCounter) {
+      return;
+    }
+
+    try {
+      await releaseLock.call(this.redisCounter, lock.key, lock.token);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          key: lock.key,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to release redis night mode notice lock',
+      );
+    }
   }
 
   private buildNightModeClosedNoticeOptions(params: {
