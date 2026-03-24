@@ -487,11 +487,15 @@ export class AdminService {
         return this.attachChannelOverview(initial);
       }
 
-      return this.discoverManagedEntities(user, entityType, { respectCooldown: true });
+      return this.discoverManagedEntities(user, entityType, {
+        respectCooldown: true,
+        fullScan: false,
+      });
     }
 
     const discovered = await this.discoverManagedEntities(user, entityType, {
       respectCooldown: false,
+      fullScan: true,
     });
     if (discovered.length > 0) {
       return discovered;
@@ -607,7 +611,7 @@ export class AdminService {
   private async discoverManagedEntities(
     user: AuthUser,
     entityType: ManagedEntityTypeFilter,
-    options: { respectCooldown: boolean },
+    options: { respectCooldown: boolean; fullScan: boolean },
   ): Promise<ChatSummary[]> {
     const refreshCooldownKey = this.buildManagedEntitiesRefreshCooldownKey(user.userId, entityType);
     if (
@@ -623,9 +627,13 @@ export class AdminService {
           refreshCooldownKey,
         )))
     ) {
-      const discoveryKey = `${user.userId}:${entityType}`;
+      const discoveryKey = `${user.userId}:${entityType}:${options.fullScan ? 'full' : 'delta'}`;
       const inFlight = this.managedEntitiesDiscoveryChecks.get(discoveryKey);
-      const pending = inFlight ?? this.runManagedEntitiesDiscovery(user, entityType, refreshCooldownKey);
+      const pending =
+        inFlight ??
+        this.runManagedEntitiesDiscovery(user, entityType, refreshCooldownKey, {
+          fullScan: options.fullScan,
+        });
 
       if (!inFlight) {
         this.managedEntitiesDiscoveryChecks.set(discoveryKey, pending);
@@ -650,6 +658,7 @@ export class AdminService {
     user: AuthUser,
     entityType: ManagedEntityTypeFilter,
     refreshCooldownKey: string,
+    options: { fullScan: boolean },
   ): Promise<ChatSummary[]> {
     try {
       const remoteChats = await this.maxClient.listBotChats();
@@ -679,11 +688,13 @@ export class AdminService {
           },
         ];
       });
-      const uncachedCandidates = candidateChats
-        .filter((remoteChat) => !cachedIds.has(remoteChat.chatId))
-        .slice(0, MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT);
+      const uncachedCandidates = candidateChats.filter((remoteChat) => !cachedIds.has(remoteChat.chatId));
+      const candidateSlice =
+        options.fullScan === true
+          ? uncachedCandidates
+          : uncachedCandidates.slice(0, MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT);
       const resolvedChats = await this.mapWithConcurrencyLimit(
-        uncachedCandidates,
+        candidateSlice,
         LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
         async (remoteChat) => {
           const access = await this.resolveUserAndBotAdminAccess(remoteChat.chatId, user.userId, {

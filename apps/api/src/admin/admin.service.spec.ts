@@ -2745,6 +2745,96 @@ describe('AdminService.listChannels', () => {
     expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
   });
 
+  it('scans beyond the uncached chat delta limit during explicit refresh', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-cached',
+          title: 'Кэшированный чат',
+          createdAt: new Date('2026-03-02T10:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+    prisma.chat.upsert.mockImplementation(
+      async ({
+        where,
+        create,
+      }: {
+        where: { id: string };
+        create: { title?: string; entityType?: string };
+      }) => ({
+        id: where.id,
+        title: create.title ?? where.id,
+        createdAt: new Date('2026-03-03T10:00:00.000Z'),
+        entityType: create.entityType ?? 'CHAT',
+      }),
+    );
+
+    const uncachedRemoteChats = Array.from({ length: 101 }, (_, index) => ({
+      chatId: `chat-${index + 1}`,
+      title: index === 100 ? 'Хвостовой чат' : `Чат ${index + 1}`,
+      lastEventTime: 300 - index,
+      entityType: 'chat' as const,
+      link: null,
+    }));
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'chat-cached',
+          title: 'Кэшированный чат',
+          lastEventTime: 500,
+          entityType: 'chat',
+          link: null,
+        },
+        ...uncachedRemoteChats,
+      ]),
+      getChatAdminIds: jest
+        .fn()
+        .mockImplementation(async (chatId: string) => (chatId === 'chat-101' ? ['admin-1'] : [])),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.listChats(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { refresh: true },
+      ),
+    ).resolves.toEqual([
+      {
+        id: 'chat-cached',
+        title: 'Кэшированный чат',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'chat',
+        link: null,
+        channelOverview: null,
+      },
+      {
+        id: 'chat-101',
+        title: 'Хвостовой чат',
+        createdAt: '2026-03-03T10:00:00.000Z',
+        entityType: 'chat',
+        link: null,
+        channelOverview: null,
+      },
+    ]);
+
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-101');
+  });
+
   it('re-runs remote discovery on repeated explicit refreshes even during success cooldown', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-24T00:00:00.000Z'));
 

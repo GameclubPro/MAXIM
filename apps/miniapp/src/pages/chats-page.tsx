@@ -47,6 +47,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const requestIdRef = useRef(0);
   const lastRefreshAtRef = useRef(0);
   const awaitingReturnRefreshRef = useRef(false);
+  const explicitlyRefreshedTabsRef = useRef<Set<ManagedTab>>(new Set());
   const deferredQuery = useDeferredValue(query);
   const activeTab = normalizeEntityType(
     searchParams.get('view'),
@@ -60,6 +61,10 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     requestIdRef.current = requestId;
     const refresh = refreshNonce > 0;
     const hasEntities = entities[activeEntitiesKey] !== null;
+
+    if (refresh) {
+      explicitlyRefreshedTabsRef.current.add(activeTab);
+    }
 
     setLoadingState(hasEntities ? 'refreshing' : 'loading');
     setLoadError(null);
@@ -177,6 +182,23 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, [loadingState]);
+
+  useEffect(() => {
+    if (loadingState !== 'idle') {
+      return;
+    }
+
+    if (entities[activeEntitiesKey] === null) {
+      return;
+    }
+
+    if (explicitlyRefreshedTabsRef.current.has(activeTab)) {
+      return;
+    }
+
+    explicitlyRefreshedTabsRef.current.add(activeTab);
+    handleRefresh();
+  }, [activeEntitiesKey, activeTab, entities, loadingState]);
 
   useEffect(() => {
     const allEntities = [...(entities.chats ?? []), ...(entities.channels ?? [])];
