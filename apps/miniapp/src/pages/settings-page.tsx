@@ -234,6 +234,8 @@ type HintKey =
   | 'commentsEnabled'
   | 'commentsAdmins'
   | 'commentsChatBroadcasts'
+  | 'linkAllowlistScope'
+  | 'linkAllowlistMode'
   | 'linkBotMessage'
   | 'linkWarnMessage'
   | 'linkBotButton'
@@ -509,23 +511,27 @@ const DUPLICATE_STAGE_OPTIONS: Array<{
 
 const LINK_POLICY_OPTIONS: Array<{
   value: ChatSettings['linkPolicy'];
+  eyebrow: string;
   label: string;
   description: string;
 }> = [
   {
     value: 'ALERT_ONLY',
+    eyebrow: 'Наблюдение',
     label: 'Не удалять ссылки',
-    description: 'Ссылки остаются в чате, блок санкций скрыт.',
-  },
-  {
-    value: 'ALLOWLIST_ONLY',
-    label: 'Удалять кроме...',
-    description: 'Разрешите нужные ссылки в нижней панели.',
+    description: 'Ссылки остаются в чате, а блок санкций скрыт.',
   },
   {
     value: 'BLOCKLIST_ONLY',
+    eyebrow: 'Жёсткий режим',
     label: 'Удалять все ссылки',
     description: 'Любая ссылка удаляется сразу.',
+  },
+  {
+    value: 'ALLOWLIST_ONLY',
+    eyebrow: 'Разрешённые',
+    label: 'Удалять кроме...',
+    description: 'Ниже можно добавить точные ссылки и целые домены.',
   },
 ];
 
@@ -4191,11 +4197,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   )}
                                   onClick={() => setFieldValue('linkPolicy', option.value)}
                                 >
-                                  <span className="policy-card__title-row">
-                                    <span className="policy-card__marker" aria-hidden />
-                                    <span>{option.label}</span>
+                                  <span className="policy-card__content">
+                                    <span className="policy-card__eyebrow">
+                                      {option.eyebrow}
+                                    </span>
+                                    <span className="policy-card__text">
+                                      <span className="policy-card__title">{option.label}</span>
+                                      <small className="policy-card__description">
+                                        {option.description}
+                                      </small>
+                                    </span>
                                   </span>
-                                  <small>{option.description}</small>
+                                  <span className="policy-card__selection" aria-hidden />
                                 </button>
                               );
                             })}
@@ -4216,17 +4229,41 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             >
                               <div className="allowlist-panel__head">
                                 <div className="allowlist-panel__title-block">
-                                  <span className="field__label">Разрешенные ссылки и домены</span>
-                                  <p className="allowlist-panel__subtitle">
-                                    Выберите точную ссылку или весь домен. Доменные правила
-                                    разрешают все пути только этого хоста, без wildcard по
-                                    поддоменам.
-                                  </p>
+                                  <div className="allowlist-panel__title-row">
+                                    <span className="field__label">
+                                      Разрешенные ссылки и домены
+                                    </span>
+                                    <SettingsHintAnchor
+                                      hintKey="linkAllowlistScope"
+                                      openHintKey={openHintKey}
+                                      onToggleHint={toggleHint}
+                                      label="Пояснение по разрешенным ссылкам и доменам"
+                                    >
+                                      Выберите точную ссылку или весь домен. Доменные правила
+                                      разрешают все пути только этого хоста, без wildcard по
+                                      поддоменам.
+                                    </SettingsHintAnchor>
+                                  </div>
                                 </div>
                                 <span className="chip chip--success">{allowlistEntries.length}</span>
                               </div>
 
                               <div className="allowlist-composer">
+                                <div className="allowlist-composer__head">
+                                  <span className="allowlist-composer__label">
+                                    Что разрешить
+                                  </span>
+                                  <SettingsHintAnchor
+                                    hintKey="linkAllowlistMode"
+                                    openHintKey={openHintKey}
+                                    onToggleHint={toggleHint}
+                                    label="Пояснение по режиму разрешения ссылки"
+                                  >
+                                    {domainInputMode === 'DOMAIN'
+                                      ? 'Разрешит весь хост, например `example.com`.'
+                                      : 'Разрешит только один конкретный URL, включая путь и параметры.'}
+                                  </SettingsHintAnchor>
+                                </div>
                                 <SegmentedControl
                                   value={domainInputMode}
                                   options={ALLOWLIST_MATCH_OPTIONS}
@@ -4236,11 +4273,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   }}
                                   className="allowlist-composer__mode"
                                 />
-                                <p className="allowlist-composer__hint">
-                                  {domainInputMode === 'DOMAIN'
-                                    ? 'Разрешит весь хост, например `example.com`.'
-                                    : 'Разрешит только один конкретный URL, включая путь и параметры.'}
-                                </p>
                                 <div className="allowlist-add-row">
                                   <input
                                     type="text"
