@@ -2592,7 +2592,67 @@ describe('AdminService.listChannels', () => {
 
     expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
     expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
-    expect(chatContextCache.activateManagedEntitiesRefreshBackoff).toHaveBeenCalledWith(60);
+    expect(chatContextCache.activateManagedEntitiesRefreshBackoff).toHaveBeenCalledWith(
+      'admin-1',
+      'channel',
+      60,
+    );
+  });
+
+  it('rechecks stale denied admin cache during explicit chat refresh', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      createdAt: new Date('2026-03-02T10:00:00.000Z'),
+      entityType: 'CHAT',
+    });
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'chat-1',
+          title: 'Команда MAX',
+          lastEventTime: 300,
+          entityType: 'chat',
+          link: null,
+        },
+      ]),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+
+    const chatContextCache = createChatContextCacheMock({
+      getAdminAccess: jest.fn().mockResolvedValue('user_denied'),
+    });
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.listChats(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { refresh: true },
+      ),
+    ).resolves.toEqual([
+      {
+        id: 'chat-1',
+        title: 'Команда MAX',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'chat',
+        link: null,
+        channelOverview: null,
+      },
+    ]);
+
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
   });
 
   it('re-runs remote discovery on repeated explicit refreshes even during success cooldown', async () => {
@@ -2744,6 +2804,95 @@ describe('AdminService.listChannels', () => {
 
     expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
     expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not let one user backoff block another user refresh', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      createdAt: new Date('2026-03-02T10:00:00.000Z'),
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findMany.mockResolvedValue([]);
+
+    const scopedBackoff = new Set<string>();
+    const chatContextCache = createChatContextCacheMock({
+      isManagedEntitiesRefreshBackoffActive: jest
+        .fn()
+        .mockImplementation(async (userId: string, entityType: string) =>
+          scopedBackoff.has(`${userId}:${entityType}`),
+        ),
+      activateManagedEntitiesRefreshBackoff: jest
+        .fn()
+        .mockImplementation(async (userId: string, entityType: string) => {
+          scopedBackoff.add(`${userId}:${entityType}`);
+        }),
+    });
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'channel-1',
+          title: 'Новости MAX',
+          lastEventTime: 200,
+          entityType: 'channel',
+          link: 'https://max.ru/news',
+        },
+      ]),
+      getChatAdminIds: jest
+        .fn()
+        .mockRejectedValueOnce(new Error('MAX API global rate limit exceeded'))
+        .mockResolvedValue(['admin-2']),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.listChannels(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { refresh: true },
+      ),
+    ).resolves.toEqual([]);
+
+    await expect(
+      service.listChannels(
+        {
+          userId: 'admin-2',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { refresh: true },
+      ),
+    ).resolves.toEqual([
+      {
+        id: 'channel-1',
+        title: 'Новости MAX',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'channel',
+        link: 'https://max.ru/news',
+        channelOverview: {
+          enabledScenariosCount: 1,
+          commentsEnabled: true,
+          postSuggestionsEnabled: false,
+          commentsModerationEnabled: false,
+        },
+      },
+    ]);
+
+    expect(maxClient.listBotChats).toHaveBeenCalledTimes(2);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -285,15 +285,17 @@ describe('ChatContextCacheService', () => {
       service.isManagedEntitiesRefreshCooldownActive('user-1', 'channel'),
     ).resolves.toBe(true);
 
-    await service.activateManagedEntitiesRefreshBackoff(60);
+    await service.activateManagedEntitiesRefreshBackoff('user-1', 'channel', 60);
     expect(redisInstance.set).toHaveBeenCalledWith(
-      ChatContextCacheService.managedEntitiesRefreshBackoffKey(),
+      ChatContextCacheService.managedEntitiesRefreshBackoffKey('user-1', 'channel'),
       '1',
       'EX',
       60,
     );
 
     redisInstance.get.mockResolvedValueOnce('1');
-    await expect(service.isManagedEntitiesRefreshBackoffActive()).resolves.toBe(true);
+    await expect(service.isManagedEntitiesRefreshBackoffActive('user-1', 'channel')).resolves.toBe(
+      true,
+    );
   });
 });

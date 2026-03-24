@@ -54,8 +54,11 @@ export class ChatContextCacheService implements OnModuleDestroy {
     return `chat:managed-refresh-cooldown:v1:${entityType}:${userId}`;
   }
 
-  static managedEntitiesRefreshBackoffKey(): string {
-    return 'chat:managed-refresh-backoff:v1';
+  static managedEntitiesRefreshBackoffKey(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+  ): string {
+    return `chat:managed-refresh-backoff:v1:${entityType}:${userId}`;
   }
 
   async getChatContext(chatId: string, chatTitle?: string | null): Promise<ChatContext> {
@@ -185,14 +188,23 @@ export class ChatContextCacheService implements OnModuleDestroy {
     );
   }
 
-  async isManagedEntitiesRefreshBackoffActive(): Promise<boolean> {
-    const raw = await this.redis.get(ChatContextCacheService.managedEntitiesRefreshBackoffKey());
+  async isManagedEntitiesRefreshBackoffActive(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+  ): Promise<boolean> {
+    const raw = await this.redis.get(
+      ChatContextCacheService.managedEntitiesRefreshBackoffKey(userId, entityType),
+    );
     return typeof raw === 'string' && raw.length > 0;
   }
 
-  async activateManagedEntitiesRefreshBackoff(ttlSec: number): Promise<void> {
+  async activateManagedEntitiesRefreshBackoff(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+    ttlSec: number,
+  ): Promise<void> {
     await this.redis.set(
-      ChatContextCacheService.managedEntitiesRefreshBackoffKey(),
+      ChatContextCacheService.managedEntitiesRefreshBackoffKey(userId, entityType),
       '1',
       'EX',
       ttlSec,

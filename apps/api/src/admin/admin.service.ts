@@ -419,7 +419,7 @@ export class AdminService {
   private readonly adminAccessChecks = new Map<string, Promise<AdminAccessResolution>>();
   private readonly managedEntitiesDiscoveryChecks = new Map<string, Promise<ChatSummary[]>>();
   private readonly managedEntitiesRefreshCooldownUntilMs = new Map<string, number>();
-  private managedEntitiesRefreshBackoffUntilMs = 0;
+  private readonly managedEntitiesRefreshBackoffUntilMs = new Map<string, number>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -512,7 +512,11 @@ export class AdminService {
   ): Promise<ChatSummary[]> {
     const refreshCooldownKey = this.buildManagedEntitiesRefreshCooldownKey(user.userId, entityType);
     if (
-      !(await this.isManagedEntitiesRefreshBackoffActive()) &&
+      !(await this.isManagedEntitiesRefreshBackoffActive(
+        user.userId,
+        entityType,
+        refreshCooldownKey,
+      )) &&
       (!options.respectCooldown ||
         !(await this.isManagedEntitiesRefreshCooldownActive(
           user.userId,
@@ -558,7 +562,9 @@ export class AdminService {
         candidateChats,
         LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
         async (remoteChat) => {
-          const access = await this.resolveUserAndBotAdminAccess(remoteChat.chatId, user.userId);
+          const access = await this.resolveUserAndBotAdminAccess(remoteChat.chatId, user.userId, {
+            bypassNegativeCache: true,
+          });
           if (access.status === 'throttled') {
             throw new ManagedEntitiesRefreshThrottledError(access.error);
           }
@@ -606,7 +612,11 @@ export class AdminService {
     } catch (error: unknown) {
       if (this.isManagedEntitiesRefreshThrottledError(error) || this.isMaxApiThrottleError(error)) {
         const rootError = error instanceof ManagedEntitiesRefreshThrottledError ? error.cause : error;
-        const backoffMs = await this.activateManagedEntitiesRefreshBackoff();
+        const backoffMs = await this.activateManagedEntitiesRefreshBackoff(
+          user.userId,
+          entityType,
+          refreshCooldownKey,
+        );
         this.logger.warn(
           {
             entityType,
@@ -9061,6 +9071,7 @@ export class AdminService {
   private async resolveUserAndBotAdminAccess(
     chatId: string,
     userId: string,
+    options: { bypassNegativeCache?: boolean } = {},
   ): Promise<AdminAccessResolution> {
     const cached = (await this.chatContextCache.getAdminAccess?.(chatId, userId)) ?? null;
     if (cached === 'granted') {
@@ -9070,7 +9081,7 @@ export class AdminService {
       };
     }
 
-    if (cached === 'user_denied') {
+    if (cached === 'user_denied' && options.bypassNegativeCache !== true) {
       return {
         status: 'denied',
         source: 'cache',
@@ -9078,7 +9089,7 @@ export class AdminService {
       };
     }
 
-    if (cached === 'bot_denied') {
+    if (cached === 'bot_denied' && options.bypassNegativeCache !== true) {
       return {
         status: 'denied',
         source: 'cache',
@@ -9191,11 +9202,21 @@ export class AdminService {
     return error instanceof ManagedEntitiesRefreshThrottledError;
   }
 
-  private async isManagedEntitiesRefreshBackoffActive(): Promise<boolean> {
-    const memoryActive = Date.now() < this.managedEntitiesRefreshBackoffUntilMs;
+  private async isManagedEntitiesRefreshBackoffActive(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    key: string,
+  ): Promise<boolean> {
+    const untilMs = this.managedEntitiesRefreshBackoffUntilMs.get(key) ?? 0;
+    const memoryActive = untilMs > Date.now();
+    if (!memoryActive && untilMs > 0) {
+      this.managedEntitiesRefreshBackoffUntilMs.delete(key);
+    }
+
     try {
       return (
-        memoryActive || (await this.chatContextCache.isManagedEntitiesRefreshBackoffActive())
+        memoryActive ||
+        (await this.chatContextCache.isManagedEntitiesRefreshBackoffActive(userId, entityType))
       );
     } catch {
       return memoryActive;
@@ -9248,16 +9269,23 @@ export class AdminService {
     }
   }
 
-  private async activateManagedEntitiesRefreshBackoff(): Promise<number> {
+  private async activateManagedEntitiesRefreshBackoff(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    key: string,
+  ): Promise<number> {
     const now = Date.now();
-    this.managedEntitiesRefreshBackoffUntilMs = Math.max(
-      this.managedEntitiesRefreshBackoffUntilMs,
+    const untilMs = Math.max(
+      this.managedEntitiesRefreshBackoffUntilMs.get(key) ?? 0,
       now + MANAGED_ENTITIES_REFRESH_BACKOFF_MS,
     );
-    const backoffMs = this.managedEntitiesRefreshBackoffUntilMs - now;
+    this.managedEntitiesRefreshBackoffUntilMs.set(key, untilMs);
+    const backoffMs = untilMs - now;
 
     try {
       await this.chatContextCache.activateManagedEntitiesRefreshBackoff(
+        userId,
+        entityType,
         Math.max(1, Math.ceil(backoffMs / 1000)),
       );
     } catch {
@@ -9473,7 +9501,9 @@ export class AdminService {
       return null;
     }
 
-    const access = await this.resolveUserAndBotAdminAccess(user.chatId, user.userId);
+    const access = await this.resolveUserAndBotAdminAccess(user.chatId, user.userId, {
+      bypassNegativeCache: true,
+    });
     if (access.status !== 'granted') {
       return null;
     }
