@@ -513,6 +513,84 @@ async function publishSuggestDialogToken(
   return parsed?.token ?? '';
 }
 
+describe('AdminService getMe', () => {
+  it('returns init data profile when username is already present', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatMemberProfiles: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.getMe({
+        userId: 'admin-1',
+        username: 'designer',
+        displayName: 'Designer',
+        avatarUrl: 'https://cdn.max/avatar.png',
+        chatId: 'chat-1',
+      }),
+    ).resolves.toEqual({
+      userId: 'admin-1',
+      username: 'designer',
+      displayName: 'Designer',
+      avatarUrl: 'https://cdn.max/avatar.png',
+    });
+    expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
+  });
+
+  it('enriches current admin profile from MAX member data when init data misses username', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatMemberProfiles: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'admin-1',
+            {
+              userId: 'admin-1',
+              username: 'designer',
+              displayName: 'Designer Max',
+              avatarUrl: 'https://cdn.max/designer.png',
+            },
+          ],
+        ]),
+      ),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.getMe(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          avatarUrl: null,
+        },
+        { chatId: 'chat-1' },
+      ),
+    ).resolves.toEqual({
+      userId: 'admin-1',
+      username: 'designer',
+      displayName: 'Designer Max',
+      avatarUrl: 'https://cdn.max/designer.png',
+    });
+    expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
+      trafficClass: 'interactive',
+    });
+  });
+});
+
 describe('AdminService night mode settings normalization', () => {
   it('forces night bot message toggles off when night mode is disabled on update', async () => {
     const prisma = createPrismaMock();

@@ -2,6 +2,7 @@ import type { ChatSummary } from '@maxim/contracts';
 import { useQuery } from '@tanstack/react-query';
 import { useDeferredValue, useEffect, useId, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useParams } from 'react-router-dom';
 import { cn } from '../lib/cn';
 import { getChannels, getChats, getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
@@ -124,6 +125,18 @@ function formatLinkCount(count: number): string {
   return `${count} ссылок`;
 }
 
+function formatManagedLinkAvailability(linkCount: number, totalCount: number): string {
+  if (linkCount > 0) {
+    return formatLinkCount(linkCount);
+  }
+
+  if (totalCount > 0) {
+    return 'Нет публичных ссылок';
+  }
+
+  return 'Пока пусто';
+}
+
 function sortManagedLinkOptions(
   options: ManagedLinkOption[],
   currentValue: string,
@@ -174,6 +187,8 @@ export function ManagedLinkButtonFields({
   textPlaceholder = 'Открыть',
   textMaxLength = 32,
 }: ManagedLinkButtonFieldsProps) {
+  const { chatId: routeChatId } = useParams();
+  const contextChatId = routeChatId?.trim() ?? '';
   const sheetTitleId = useId();
   const [sheetOpen, setSheetOpen] = useState(false);
   const [sheetTab, setSheetTab] = useState<ManagedLinkPickerTab>('chat');
@@ -182,20 +197,20 @@ export function ManagedLinkButtonFields({
   const comparableUrlValue = useMemo(() => normalizeComparableUrl(urlValue), [urlValue]);
 
   const meQuery = useQuery({
-    queryKey: ['me', 'managed-link-picker'],
-    queryFn: () => getMe(api),
+    queryKey: ['me', 'managed-link-picker', contextChatId || null],
+    queryFn: () => getMe(api, { chatId: contextChatId || undefined }),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
   const chatsQuery = useQuery({
-    queryKey: ['chats', 'managed-link-picker'],
-    queryFn: () => getChats(api),
+    queryKey: ['chats', 'managed-link-picker', 'refresh'],
+    queryFn: () => getChats(api, { refresh: true }),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
   const channelsQuery = useQuery({
-    queryKey: ['channels', 'managed-link-picker'],
-    queryFn: () => getChannels(api),
+    queryKey: ['channels', 'managed-link-picker', 'refresh'],
+    queryFn: () => getChannels(api, { refresh: true }),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
@@ -210,6 +225,14 @@ export function ManagedLinkButtonFields({
   const channelOptions = useMemo(
     () => buildManagedLinkOptions(channelsQuery.data, 'channel', urlValue),
     [channelsQuery.data, urlValue],
+  );
+  const chatEntityCount = useMemo(
+    () => (chatsQuery.data ?? []).filter((entity) => entity.entityType === 'chat').length,
+    [chatsQuery.data],
+  );
+  const channelEntityCount = useMemo(
+    () => (channelsQuery.data ?? []).filter((entity) => entity.entityType === 'channel').length,
+    [channelsQuery.data],
   );
 
   const availableTabs = useMemo(() => {
@@ -339,7 +362,7 @@ export function ManagedLinkButtonFields({
         disabled={disabled || !profileUrl}
       >
         <strong>Профиль</strong>
-        <small>{profileUsername ? `@${profileUsername}` : 'Нужен username'}</small>
+        <small>{profileUsername ? `@${profileUsername}` : 'Нет публичного имени'}</small>
       </button>
 
       <button
@@ -349,7 +372,11 @@ export function ManagedLinkButtonFields({
         disabled={disabled || (!chatsQuery.isLoading && chatOptions.length === 0)}
       >
         <strong>Чаты</strong>
-        <small>{chatsQuery.isLoading ? 'Загрузка...' : formatLinkCount(chatOptions.length)}</small>
+        <small>
+          {chatsQuery.isLoading
+            ? 'Загрузка...'
+            : formatManagedLinkAvailability(chatOptions.length, chatEntityCount)}
+        </small>
       </button>
 
       <button
@@ -359,7 +386,11 @@ export function ManagedLinkButtonFields({
         disabled={disabled || (!channelsQuery.isLoading && channelOptions.length === 0)}
       >
         <strong>Каналы</strong>
-        <small>{channelsQuery.isLoading ? 'Загрузка...' : formatLinkCount(channelOptions.length)}</small>
+        <small>
+          {channelsQuery.isLoading
+            ? 'Загрузка...'
+            : formatManagedLinkAvailability(channelOptions.length, channelEntityCount)}
+        </small>
       </button>
     </div>
   );

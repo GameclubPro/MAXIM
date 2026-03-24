@@ -451,13 +451,48 @@ export class AdminService {
     this.ownBotUserId = this.normalizeOwnBotUserId(configService.get<string>('MAX_BOT_ID'));
   }
 
-  getMe(user: AuthUser): Me {
-    return {
+  async getMe(user: AuthUser, options: { chatId?: string } = {}): Promise<Me> {
+    const fallback: Me = {
       userId: user.userId,
-      username: user.username,
-      displayName: user.displayName,
+      username: this.readTrimmedString(user.username) ?? null,
+      displayName: this.readTrimmedString(user.displayName) ?? null,
       avatarUrl: this.readTrimmedString(user.avatarUrl) ?? null,
     };
+    const contextChatId =
+      this.readTrimmedString(options.chatId) ?? this.readTrimmedString(user.chatId);
+    const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
+
+    if (
+      !contextChatId ||
+      typeof loadProfiles !== 'function' ||
+      (fallback.username && fallback.displayName && fallback.avatarUrl)
+    ) {
+      return fallback;
+    }
+
+    try {
+      const profiles = await loadProfiles(contextChatId, [user.userId], {
+        trafficClass: 'interactive',
+      });
+      const profile = profiles.get(user.userId);
+
+      return {
+        userId: user.userId,
+        username: this.readTrimmedString(profile?.username) ?? fallback.username,
+        displayName: fallback.displayName ?? this.readTrimmedString(profile?.displayName) ?? null,
+        avatarUrl: fallback.avatarUrl ?? this.readTrimmedString(profile?.avatarUrl) ?? null,
+      };
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId: contextChatId,
+          userId: user.userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve current admin profile from MAX',
+      );
+      return fallback;
+    }
   }
 
   async listChats(user: AuthUser, options: { refresh?: boolean } = {}): Promise<ChatSummary[]> {

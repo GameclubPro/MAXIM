@@ -13,8 +13,8 @@ export class AdminController {
   ) {}
 
   @Get('me')
-  me(@CurrentUser() user: AuthUser) {
-    return this.adminService.getMe(user);
+  me(@CurrentUser() user: AuthUser, @Query('chatId') chatId: string | undefined) {
+    return this.adminService.getMe(user, { chatId });
   }
 
   @Get('chats')

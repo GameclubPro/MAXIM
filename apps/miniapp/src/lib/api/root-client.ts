@@ -71,8 +71,16 @@ function parseMe(value: unknown): Me {
   };
 }
 
-export async function getMe(api: ApiTransport): Promise<Me> {
-  const response = await api.request('/me');
+export async function getMe(
+  api: ApiTransport,
+  options: { chatId?: string } = {},
+): Promise<Me> {
+  const query = new URLSearchParams();
+  if (options.chatId?.trim()) {
+    query.set('chatId', options.chatId.trim());
+  }
+
+  const response = await api.request(`/me${query.size > 0 ? `?${query.toString()}` : ''}`);
   return parseMe(response);
 }
 
