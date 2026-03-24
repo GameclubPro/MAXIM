@@ -20,6 +20,7 @@ import {
   updateChatRulesRequestSchema,
   updateManagedPollRequestSchema,
   type ApplySectionToAllResponse,
+  type AllowlistMatchType,
   type ChatRules,
   type ChatSettings,
   type ChatSettingsScreenResponse,
@@ -262,10 +263,14 @@ export async function getDomainAllowlistDetails(
   return response.map((item: unknown) => domainAllowlistEntrySchema.parse(item));
 }
 
-export async function addDomain(api: ApiTransport, chatId: string, domain: string): Promise<void> {
+export async function addDomain(
+  api: ApiTransport,
+  chatId: string,
+  payload: { domain: string; matchType: AllowlistMatchType },
+): Promise<void> {
   await api.request(`/chats/${chatId}/domain-allowlist`, {
     method: 'POST',
-    body: JSON.stringify({ domain }),
+    body: JSON.stringify(payload),
   });
 }
 

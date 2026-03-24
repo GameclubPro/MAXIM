@@ -241,6 +241,18 @@ const ALLOWLIST_HOST_ALIASES = new Map<string, string>([
   ['instagram.com', 'instagram.com'],
   ['www.instagram.com', 'instagram.com'],
 ]);
+export const ALLOWLIST_DOMAIN_RULE_PREFIX = 'domain:';
+export const allowlistMatchTypeSchema = z.enum(['EXACT', 'DOMAIN']);
+export type AllowlistMatchType = z.infer<typeof allowlistMatchTypeSchema>;
+
+type ParsedAllowlistCandidate = {
+  protocol: 'http:' | 'https:';
+  hostname: string;
+  port: string;
+  pathname: string;
+  search: string;
+  hash: string;
+};
 
 function tryDecodeUriComponent(value: string): string | null {
   try {
@@ -284,7 +296,7 @@ function canonicalizeAllowlistHostname(hostname: string): string {
   return ALLOWLIST_HOST_ALIASES.get(normalized) ?? normalized;
 }
 
-export function normalizeAllowlistLink(value: string): string | null {
+function parseAllowlistCandidate(value: string): ParsedAllowlistCandidate | null {
   const raw = extractAllowlistUrlCandidate(value);
   if (!raw) {
     return null;
@@ -308,16 +320,103 @@ export function normalizeAllowlistLink(value: string): string | null {
     return null;
   }
 
+  return {
+    protocol,
+    hostname,
+    port: parsed.port,
+    pathname: parsed.pathname,
+    search: parsed.search,
+    hash: parsed.hash,
+  };
+}
+
+export function normalizeAllowlistLink(value: string): string | null {
+  const parsed = parseAllowlistCandidate(value);
+  if (!parsed) {
+    return null;
+  }
+
   const shouldKeepPort =
     parsed.port.length > 0 &&
     !(
-      (protocol === 'https:' && parsed.port === '443') ||
-      (protocol === 'http:' && parsed.port === '80')
+      (parsed.protocol === 'https:' && parsed.port === '443') ||
+      (parsed.protocol === 'http:' && parsed.port === '80')
     );
   const port = shouldKeepPort ? `:${parsed.port}` : '';
   const pathname = parsed.pathname === '/' ? '' : parsed.pathname;
 
-  return `${protocol}//${hostname}${port}${pathname}${parsed.search}${parsed.hash}`;
+  return `${parsed.protocol}//${parsed.hostname}${port}${pathname}${parsed.search}${parsed.hash}`;
+}
+
+export function normalizeAllowlistDomain(value: string): string | null {
+  const parsed = parseAllowlistCandidate(value);
+  if (!parsed) {
+    return null;
+  }
+
+  return parsed.hostname;
+}
+
+export function inferAllowlistMatchType(value: string): AllowlistMatchType | null {
+  const parsed = parseAllowlistCandidate(value);
+  if (!parsed) {
+    return null;
+  }
+
+  if (parsed.pathname !== '/' || parsed.search.length > 0 || parsed.hash.length > 0) {
+    return 'EXACT';
+  }
+
+  return 'DOMAIN';
+}
+
+export function normalizeStoredAllowlistEntry(
+  value: string,
+  matchType: AllowlistMatchType,
+): string | null {
+  if (matchType === 'DOMAIN') {
+    const normalizedDomain = normalizeAllowlistDomain(value);
+    return normalizedDomain ? `${ALLOWLIST_DOMAIN_RULE_PREFIX}${normalizedDomain}` : null;
+  }
+
+  return normalizeAllowlistLink(value);
+}
+
+export function parseStoredAllowlistEntry(value: string): {
+  domain: string;
+  normalizedValue: string;
+  matchType: AllowlistMatchType;
+} | null {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (trimmed.toLowerCase().startsWith(ALLOWLIST_DOMAIN_RULE_PREFIX)) {
+    const normalizedDomain = normalizeAllowlistDomain(
+      trimmed.slice(ALLOWLIST_DOMAIN_RULE_PREFIX.length),
+    );
+    if (!normalizedDomain) {
+      return null;
+    }
+
+    return {
+      domain: normalizedDomain,
+      normalizedValue: `${ALLOWLIST_DOMAIN_RULE_PREFIX}${normalizedDomain}`,
+      matchType: 'DOMAIN',
+    };
+  }
+
+  const normalizedLink = normalizeAllowlistLink(trimmed);
+  if (!normalizedLink) {
+    return null;
+  }
+
+  return {
+    domain: normalizedLink,
+    normalizedValue: normalizedLink,
+    matchType: 'EXACT',
+  };
 }
 
 function isValidAllowlistLink(value: string): boolean {
@@ -1476,18 +1575,36 @@ export const addAdminRequestSchema = z.object({
 });
 
 export const addDomainRequestSchema = z.object({
-  domain: z
-    .string()
-    .trim()
-    .min(3)
-    .max(2_048)
-    .refine((value) => isValidAllowlistLink(value), {
-      message: 'Укажите корректную ссылку (http/https).',
-    }),
+  domain: z.string().trim().min(3).max(2_048),
+  matchType: allowlistMatchTypeSchema.optional(),
+}).superRefine((value, ctx) => {
+  const normalized =
+    value.matchType === 'DOMAIN'
+      ? normalizeAllowlistDomain(value.domain)
+      : value.matchType === 'EXACT'
+        ? normalizeAllowlistLink(value.domain)
+        : normalizeAllowlistLink(value.domain) ?? normalizeAllowlistDomain(value.domain);
+
+  if (normalized) {
+    return;
+  }
+
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    message:
+      value.matchType === 'DOMAIN'
+        ? 'Укажите корректный домен.'
+        : value.matchType === 'EXACT'
+          ? 'Укажите корректную ссылку (http/https).'
+          : 'Укажите корректную ссылку или домен.',
+    path: ['domain'],
+  });
 });
 
 export const domainAllowlistEntrySchema = z.object({
   domain: z.string().trim().min(3).max(2_048),
+  normalizedValue: z.string().trim().min(3).max(2_048),
+  matchType: allowlistMatchTypeSchema,
   removeAfterAt: z.string().datetime().nullable(),
 });
 export type DomainAllowlistEntry = z.infer<typeof domainAllowlistEntrySchema>;

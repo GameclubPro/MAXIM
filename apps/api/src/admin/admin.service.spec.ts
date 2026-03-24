@@ -3222,6 +3222,8 @@ describe('AdminService settings screen endpoints', () => {
     jest.spyOn(service, 'getDomainAllowlistDetails').mockResolvedValue([
       {
         domain: 'https://example.com',
+        normalizedValue: 'https://example.com',
+        matchType: 'EXACT',
         removeAfterAt: null,
       },
     ]);
@@ -3248,6 +3250,8 @@ describe('AdminService settings screen endpoints', () => {
       domains: [
         {
           domain: 'https://example.com',
+          normalizedValue: 'https://example.com',
+          matchType: 'EXACT',
           removeAfterAt: null,
         },
       ],
@@ -4182,6 +4186,58 @@ describe('AdminService allowlist normalization', () => {
       create: {
         chatId: 'chat-1',
         domain: 'https://max.ru/join/s-ue_EUH76fg0xkakyGtIbD4dfKhHyPStoqI3oK-ObU',
+      },
+      update: {
+        removeAfterAt: null,
+      },
+    });
+  });
+
+  it('stores domain-wide rules separately from exact links', async () => {
+    const prisma = createPrismaMock();
+    prisma.domainAllowlist.findMany.mockResolvedValueOnce([
+      { domain: 'domain:docs.max.ru' },
+      { domain: 'https://max.ru/news' },
+    ]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await service.addDomain(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        domain: 'https://docs.max.ru/mini-apps/start',
+        matchType: 'DOMAIN',
+      },
+    );
+
+    expect(prisma.domainAllowlist.upsert).toHaveBeenCalledWith({
+      where: {
+        chatId_domain: {
+          chatId: 'chat-1',
+          domain: 'domain:docs.max.ru',
+        },
+      },
+      create: {
+        chatId: 'chat-1',
+        domain: 'domain:docs.max.ru',
       },
       update: {
         removeAfterAt: null,

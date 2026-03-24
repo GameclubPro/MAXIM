@@ -197,6 +197,27 @@ describe('RuleEngineService', () => {
     expect(result.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
   });
 
+  it('allows any path on an allowlisted domain rule', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const allowed = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'смотри https://docs.max.ru/mini-apps/start?from=chat',
+      settings: buildSettings(),
+      domainAllowlist: ['domain:docs.max.ru'],
+    });
+    const blocked = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: 'смотри https://sub.docs.max.ru/mini-apps/start',
+      settings: buildSettings(),
+      domainAllowlist: ['domain:docs.max.ru'],
+    });
+
+    expect(allowed.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+    expect(blocked.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
+  });
+
   it('treats vk.com and vk.ru as the same allowlisted link', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const result = await service.detect({

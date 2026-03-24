@@ -36,6 +36,7 @@ import {
   type ChatSettings,
   type ChatRules,
   type ChatSummary,
+  type AllowlistMatchType,
   type DomainAllowlistEntry,
   type Me,
   type ManagedBroadcastDetails,
@@ -637,10 +638,13 @@ export class ApiClient {
     return response.map((item: unknown) => domainAllowlistEntrySchema.parse(item));
   }
 
-  async addDomain(chatId: string, domain: string): Promise<void> {
+  async addDomain(
+    chatId: string,
+    payload: { domain: string; matchType: AllowlistMatchType },
+  ): Promise<void> {
     await this.request(`/chats/${chatId}/domain-allowlist`, {
       method: 'POST',
-      body: JSON.stringify({ domain }),
+      body: JSON.stringify(payload),
     });
   }
 

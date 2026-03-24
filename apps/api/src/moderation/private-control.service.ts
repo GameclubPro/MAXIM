@@ -85,7 +85,7 @@ type PendingInput =
     }
   | { kind: 'search_settings' }
   | { kind: 'add_domain' }
-  | { kind: 'schedule_domain'; domain: string }
+  | { kind: 'schedule_domain'; domain: string; domainLabel: string }
   | { kind: 'broadcast_content' }
   | { kind: 'broadcast_text' }
   | { kind: 'broadcast_button_url' }
@@ -2770,14 +2770,14 @@ export class PrivateControlService {
         await this.adminService.removeDomain(
           session.selectedChatId!,
           context.actor,
-          domains[index].domain,
+          domains[index].normalizedValue,
           'private_bot',
         );
 
         const view = await this.renderDomainsScreen(context, session);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
-          notification: `Удалён домен: ${domains[index].domain}`,
+          notification: `Удалено: ${this.formatAllowlistEntryLabel(domains[index])}`,
         });
         return;
       }
@@ -2795,7 +2795,8 @@ export class PrivateControlService {
 
         session.pendingInput = {
           kind: 'schedule_domain',
-          domain: domains[index].domain,
+          domain: domains[index].normalizedValue,
+          domainLabel: this.formatAllowlistEntryLabel(domains[index]),
         };
 
         const view = this.renderInputPrompt(session.pendingInput);
@@ -5756,12 +5757,12 @@ export class PrivateControlService {
     const pageInfo = this.paginate(domains, session.domainPage, PAGE_SIZE_DOMAINS);
     session.domainPage = pageInfo.page;
 
-    const lines: string[] = ['Разрешённые домены', ''];
+    const lines: string[] = ['Разрешённые ссылки и домены', ''];
 
     if (domains.length === 0) {
       lines.push('Список пока пуст.');
     } else {
-      lines.push(`Всего доменов: ${domains.length}`);
+      lines.push(`Всего правил: ${domains.length}`);
       lines.push('');
       lines.push(
         ...pageInfo.items.map((entry, index) => {
@@ -5769,13 +5770,13 @@ export class PrivateControlService {
           const schedule = entry.removeAfterAt
             ? `удалить: ${this.formatIsoDate(entry.removeAfterAt)}`
             : 'без автоудаления';
-          return `${idx}. ${entry.domain} (${schedule})`;
+          return `${idx}. ${this.formatAllowlistEntryLabel(entry)} (${schedule})`;
         }),
       );
     }
 
     lines.push('');
-    lines.push('Чтобы добавить домен, отправьте URL или домен.');
+    lines.push('Чтобы добавить правило, отправьте URL или домен.');
     lines.push('Чтобы задать автоудаление, введите ISO или `ДД.ММ.ГГГГ ЧЧ:ММ`.');
 
     const rows: MaxMessageButton[][] = [
@@ -5786,7 +5787,7 @@ export class PrivateControlService {
       const globalIndex = pageInfo.start + index + 1;
       rows.push([
         this.callbackButton(
-          `❌ ${this.compactText(entry.domain, 20)}`,
+          `❌ ${this.compactText(this.formatAllowlistEntryLabel(entry), 20)}`,
           this.cb('domain_remove', String(globalIndex)),
         ),
         this.callbackButton(
@@ -7448,11 +7449,12 @@ export class PrivateControlService {
       case 'add_domain':
         return {
           title: 'Добавить домен в разрешённые',
-          description: 'Введите ссылку или домен (например https://example.com или example.com).',
+          description:
+            'Введите точную ссылку или домен. Ссылка с путём сохранится как точная, домен без пути разрешит весь хост.',
         };
       case 'schedule_domain':
         return {
-          title: `Дата удаления для ${input.domain}`,
+          title: `Дата удаления для ${input.domainLabel}`,
           description:
             'Введите дату: ISO (2026-03-09T18:30:00+03:00) или ДД.ММ.ГГГГ ЧЧ:ММ. Чтобы убрать дату, отправьте `-`.',
         };
@@ -9954,6 +9956,10 @@ export class PrivateControlService {
       return {
         kind,
         domain: row.domain.trim(),
+        domainLabel:
+          typeof row.domainLabel === 'string' && row.domainLabel.trim()
+            ? row.domainLabel.trim()
+            : row.domain.trim(),
       };
     }
 
@@ -10257,6 +10263,10 @@ export class PrivateControlService {
     }
 
     return `${chunk.trimEnd()}...`;
+  }
+
+  private formatAllowlistEntryLabel(entry: { domain: string; matchType: 'EXACT' | 'DOMAIN' }): string {
+    return entry.matchType === 'DOMAIN' ? `${entry.domain} [домен]` : `${entry.domain} [ссылка]`;
   }
 
   private compactText(value: string, maxLength: number): string {

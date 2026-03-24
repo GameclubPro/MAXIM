@@ -63,14 +63,17 @@ import {
   type ManagedEntityHeader,
   type ResolveRequiredSubscriptionChannelResponse,
   managedPollSchema,
+  inferAllowlistMatchType,
   normalizeMessageLimitsBlockedWordCandidate,
+  normalizeStoredAllowlistEntry,
+  parseStoredAllowlistEntry,
   updateManagedPollRequestSchema,
   type ManagedPoll,
-  normalizeAllowlistLink,
   sendBroadcastRequestSchema,
   scheduleDomainRemovalRequestSchema,
   toggleChannelDialogReactionRequestSchema,
   toggleChannelDialogReactionResponseSchema,
+  type AllowlistMatchType,
   type BroadcastScheduleMode,
 } from '@maxim/contracts';
 import {
@@ -6769,12 +6772,20 @@ export class AdminService {
       throw new BadRequestException(parsed.error.format());
     }
 
-    const normalized = normalizeAllowlistLink(parsed.data.domain);
+    const matchType =
+      parsed.data.matchType ??
+      (source === 'private_bot' ? inferAllowlistMatchType(parsed.data.domain) : null) ??
+      'EXACT';
+    const normalized = normalizeStoredAllowlistEntry(parsed.data.domain, matchType);
     if (!normalized) {
       throw new BadRequestException('Invalid allowlist link');
     }
+    const normalizedEntry = parseStoredAllowlistEntry(normalized);
+    if (!normalizedEntry) {
+      throw new BadRequestException('Invalid allowlist link');
+    }
 
-    await this.upsertNormalizedAllowlistDomain(chatId, normalized);
+    await this.upsertNormalizedAllowlistDomain(chatId, normalizedEntry.normalizedValue);
 
     await this.prisma.auditLog.create({
       data: {
@@ -6782,7 +6793,9 @@ export class AdminService {
         actorUserId: user.userId,
         action: 'ADD_DOMAIN',
         payload: {
-          domain: normalized,
+          domain: normalizedEntry.domain,
+          matchType,
+          normalizedValue: normalizedEntry.normalizedValue,
           source,
         },
       },
@@ -6799,12 +6812,12 @@ export class AdminService {
     source: AdminActionSource = 'miniapp',
   ) {
     await this.assertChatAdmin(chatId, user.userId);
-    const normalized = normalizeAllowlistLink(this.decodePathParam(domain));
-    if (!normalized) {
+    const normalizedEntry = parseStoredAllowlistEntry(this.decodePathParam(domain));
+    if (!normalizedEntry) {
       throw new BadRequestException('Invalid allowlist link');
     }
 
-    const matchingDomains = await this.findStoredAllowlistDomains(chatId, normalized);
+    const matchingDomains = await this.findStoredAllowlistDomains(chatId, normalizedEntry);
     if (matchingDomains.length === 0) {
       throw new BadRequestException('Link not found in allowlist');
     }
@@ -6824,7 +6837,9 @@ export class AdminService {
         actorUserId: user.userId,
         action: 'REMOVE_DOMAIN',
         payload: {
-          domain: normalized,
+          domain: normalizedEntry.domain,
+          matchType: normalizedEntry.matchType,
+          normalizedValue: normalizedEntry.normalizedValue,
           source,
         },
       },
@@ -6842,8 +6857,8 @@ export class AdminService {
     source: AdminActionSource = 'miniapp',
   ) {
     await this.assertChatAdmin(chatId, user.userId);
-    const normalizedDomain = normalizeAllowlistLink(this.decodePathParam(domain));
-    if (!normalizedDomain) {
+    const normalizedEntry = parseStoredAllowlistEntry(this.decodePathParam(domain));
+    if (!normalizedEntry) {
       throw new BadRequestException('Invalid allowlist link');
     }
     const parsed = scheduleDomainRemovalRequestSchema.safeParse(body);
@@ -6866,7 +6881,7 @@ export class AdminService {
       removeAfterAt = scheduledAt;
     }
 
-    const matchingDomains = await this.findStoredAllowlistDomains(chatId, normalizedDomain);
+    const matchingDomains = await this.findStoredAllowlistDomains(chatId, normalizedEntry);
     if (matchingDomains.length === 0) {
       throw new BadRequestException('Link not found in allowlist');
     }
@@ -6889,7 +6904,9 @@ export class AdminService {
         actorUserId: user.userId,
         action: removeAfterAt ? 'SCHEDULE_DOMAIN_REMOVE' : 'CLEAR_DOMAIN_REMOVE_SCHEDULE',
         payload: {
-          domain: normalizedDomain,
+          domain: normalizedEntry.domain,
+          matchType: normalizedEntry.matchType,
+          normalizedValue: normalizedEntry.normalizedValue,
           removeAfterAt: removeAfterAt ? removeAfterAt.toISOString() : null,
           source,
         },
@@ -7477,7 +7494,7 @@ export class AdminService {
       .filter(
         (storedDomain) =>
           storedDomain !== normalizedDomain &&
-          normalizeAllowlistLink(storedDomain) === normalizedDomain,
+          parseStoredAllowlistEntry(storedDomain)?.normalizedValue === normalizedDomain,
       );
 
     await this.prisma.domainAllowlist.upsert({
@@ -7512,7 +7529,10 @@ export class AdminService {
 
   private async findStoredAllowlistDomains(
     chatId: string,
-    normalizedDomain: string,
+    targetEntry: {
+      normalizedValue: string;
+      matchType: AllowlistMatchType;
+    },
   ): Promise<string[]> {
     const rows = await this.prisma.domainAllowlist.findMany({
       where: {
@@ -7525,70 +7545,95 @@ export class AdminService {
 
     return rows
       .map((row: { domain: string }) => row.domain)
-      .filter((storedDomain) => normalizeAllowlistLink(storedDomain) === normalizedDomain);
+      .filter((storedDomain) => {
+        const parsed = parseStoredAllowlistEntry(storedDomain);
+        return (
+          parsed?.normalizedValue === targetEntry.normalizedValue &&
+          parsed.matchType === targetEntry.matchType
+        );
+      });
   }
 
   private async canonicalizeActiveAllowlistRows(
     chatId: string,
     rows: Array<{ domain: string; removeAfterAt: Date | null }>,
   ): Promise<DomainAllowlistEntry[]> {
-    const byDomain = new Map<string, Date | null>();
+    const byDomain = new Map<
+      string,
+      {
+        domain: string;
+        normalizedValue: string;
+        matchType: AllowlistMatchType;
+        removeAfterAt: Date | null;
+      }
+    >();
     const exactRows = new Map<string, Date | null>();
     const obsoleteDomains = new Set<string>();
 
     for (const row of rows) {
-      const normalizedDomain = normalizeAllowlistLink(row.domain);
-      if (!normalizedDomain) {
+      const normalizedEntry = parseStoredAllowlistEntry(row.domain);
+      if (!normalizedEntry) {
         obsoleteDomains.add(row.domain);
         continue;
       }
 
-      if (row.domain === normalizedDomain) {
-        exactRows.set(normalizedDomain, row.removeAfterAt);
+      if (row.domain === normalizedEntry.normalizedValue) {
+        exactRows.set(normalizedEntry.normalizedValue, row.removeAfterAt);
       } else {
         obsoleteDomains.add(row.domain);
       }
 
-      const current = byDomain.get(normalizedDomain);
+      const current = byDomain.get(normalizedEntry.normalizedValue);
       if (current === undefined) {
-        byDomain.set(normalizedDomain, row.removeAfterAt);
+        byDomain.set(normalizedEntry.normalizedValue, {
+          ...normalizedEntry,
+          removeAfterAt: row.removeAfterAt,
+        });
         continue;
       }
 
-      if (current === null || row.removeAfterAt === null) {
-        byDomain.set(normalizedDomain, null);
+      if (current.removeAfterAt === null || row.removeAfterAt === null) {
+        current.removeAfterAt = null;
         continue;
       }
 
-      if (row.removeAfterAt.getTime() < current.getTime()) {
-        byDomain.set(normalizedDomain, row.removeAfterAt);
+      if (row.removeAfterAt.getTime() < current.removeAfterAt.getTime()) {
+        current.removeAfterAt = row.removeAfterAt;
       }
     }
 
-    const normalizedRows = Array.from(byDomain.entries())
-      .sort(([leftDomain, leftRemoveAfter], [rightDomain, rightRemoveAfter]) => {
-        if (leftRemoveAfter === null && rightRemoveAfter !== null) {
+    const normalizedRows = Array.from(byDomain.values())
+      .sort((leftEntry, rightEntry) => {
+        if (leftEntry.removeAfterAt === null && rightEntry.removeAfterAt !== null) {
           return -1;
         }
-        if (leftRemoveAfter !== null && rightRemoveAfter === null) {
+        if (leftEntry.removeAfterAt !== null && rightEntry.removeAfterAt === null) {
           return 1;
         }
-        if (leftRemoveAfter !== null && rightRemoveAfter !== null) {
-          const byTime = leftRemoveAfter.getTime() - rightRemoveAfter.getTime();
+        if (leftEntry.removeAfterAt !== null && rightEntry.removeAfterAt !== null) {
+          const byTime =
+            leftEntry.removeAfterAt.getTime() - rightEntry.removeAfterAt.getTime();
           if (byTime !== 0) {
             return byTime;
           }
         }
 
-        return leftDomain.localeCompare(rightDomain);
+        const byDomain = leftEntry.domain.localeCompare(rightEntry.domain);
+        if (byDomain !== 0) {
+          return byDomain;
+        }
+
+        return leftEntry.matchType.localeCompare(rightEntry.matchType);
       })
-      .map(([domain, removeAfterAt]) => ({
-        domain,
-        removeAfterAt: removeAfterAt ? removeAfterAt.toISOString() : null,
+      .map((entry) => ({
+        domain: entry.domain,
+        normalizedValue: entry.normalizedValue,
+        matchType: entry.matchType,
+        removeAfterAt: entry.removeAfterAt ? entry.removeAfterAt.toISOString() : null,
       }));
 
     const domainsToUpsert = normalizedRows.filter((entry) => {
-      const existing = exactRows.get(entry.domain);
+      const existing = exactRows.get(entry.normalizedValue);
       return !this.isSameOptionalIsoDate(existing, entry.removeAfterAt);
     });
 
@@ -7602,12 +7647,12 @@ export class AdminService {
           where: {
             chatId_domain: {
               chatId,
-              domain: entry.domain,
+              domain: entry.normalizedValue,
             },
           },
           create: {
             chatId,
-            domain: entry.domain,
+            domain: entry.normalizedValue,
             removeAfterAt: entry.removeAfterAt ? new Date(entry.removeAfterAt) : null,
           },
           update: {

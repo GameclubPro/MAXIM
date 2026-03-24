@@ -4787,6 +4787,18 @@
   background: rgba(255, 255, 255, 0.74);
 }
 
+.allowlist-composer__mode .segmented-control__item {
+  flex: 1 1 0;
+  justify-content: center;
+}
+
+.allowlist-composer__hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
 .allowlist-add-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -4862,6 +4874,12 @@
   gap: 8px;
 }
 
+.allowlist-item__lead {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
 .allowlist-item__domain {
   display: block;
   overflow-wrap: anywhere;
@@ -4870,6 +4888,13 @@
   font-weight: 700;
   line-height: 1.4;
   color: var(--text-primary);
+}
+
+.allowlist-item__type {
+  color: var(--text-secondary);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
 }
 
 .allowlist-item__status {

@@ -12,9 +12,12 @@ import {
   getBotSpeechEditableTemplate,
   getBotSpeechSystemTemplate,
   hasBotSpeechEditableOverrides,
+  normalizeAllowlistDomain,
   normalizeAllowlistLink,
+  normalizeStoredAllowlistEntry,
   normalizeMessageLimitsBlockedWordCandidate,
   stepDeleteBotMessagesDelayMinutes,
+  type AllowlistMatchType,
   type BotSpeechEditableFieldKey,
   type BotSpeechStyle,
   type ChatRules,
@@ -882,6 +885,28 @@ function formatRemovalDateTime(value: string | null, timeZone?: string | null): 
   );
 }
 
+function formatAllowlistModeLabel(matchType: AllowlistMatchType): string {
+  return matchType === 'DOMAIN' ? 'Весь домен' : 'Точная ссылка';
+}
+
+function formatAllowlistMetaLabel(entry: DomainAllowlistEntry, scheduledAtLabel: string): string {
+  const targetLabel =
+    entry.matchType === 'DOMAIN'
+      ? 'Домен разрешен без срока удаления.'
+      : 'Ссылка разрешена без срока удаления.';
+
+  if (!scheduledAtLabel) {
+    return targetLabel;
+  }
+
+  return `Удаление: ${scheduledAtLabel}`;
+}
+
+const ALLOWLIST_MATCH_OPTIONS: Array<{ value: AllowlistMatchType; label: string }> = [
+  { value: 'EXACT', label: 'Точная ссылка' },
+  { value: 'DOMAIN', label: 'Весь домен' },
+];
+
 function formatCompactBroadcastDateTime(value: string | null, timeZone?: string | null): string {
   return formatDateTimeInTimeZone(
     value,
@@ -1446,6 +1471,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [, setRulesTextError] = useState('');
   const [, setRulesImageError] = useState('');
   const [domainInput, setDomainInput] = useState('');
+  const [domainInputMode, setDomainInputMode] = useState<AllowlistMatchType>('EXACT');
   const [domainInputError, setDomainInputError] = useState('');
   const [messageLimitsBlockedWordsInput, setMessageLimitsBlockedWordsInput] = useState('');
   const [scheduleDomain, setScheduleDomain] = useState<string | null>(null);
@@ -1832,7 +1858,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    const exists = (domainsQuery.data ?? []).some((item) => item.domain === scheduleDomain);
+    const exists = (domainsQuery.data ?? []).some(
+      (item) => item.normalizedValue === scheduleDomain,
+    );
     if (!exists) {
       setScheduleDomain(null);
       setScheduleError('');
@@ -2123,17 +2151,25 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   }, [hasPendingHeaderChanges, isApplyingSectionToAll, isHeaderSaving]);
 
   const addDomainMutation = useMutation({
-    mutationFn: (domain: string) => addDomain(api, chatId ?? '', domain),
-    onSuccess: () => {
+    mutationFn: (payload: { domain: string; matchType: AllowlistMatchType }) =>
+      addDomain(api, chatId ?? '', payload),
+    onSuccess: (_, payload) => {
       setDomainInput('');
       setDomainInputError('');
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
-      pushToast({ tone: 'success', title: 'Ссылка добавлена в разрешенные' });
+      pushToast({
+        tone: 'success',
+        title:
+          payload.matchType === 'DOMAIN'
+            ? 'Домен добавлен в разрешенные'
+            : 'Ссылка добавлена в разрешенные',
+      });
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось добавить ссылку',
+        title:
+          domainInputMode === 'DOMAIN' ? 'Не удалось добавить домен' : 'Не удалось добавить ссылку',
         description: formatApiError(error),
       });
     },
@@ -2145,12 +2181,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       setScheduleDomain(null);
       setScheduleError('');
       void queryClient.invalidateQueries({ queryKey: ['settings-screen', chatId] });
-      pushToast({ tone: 'success', title: 'Ссылка удалена из разрешенных' });
+      pushToast({ tone: 'success', title: 'Правило удалено из разрешенных' });
     },
     onError: (error) => {
       pushToast({
         tone: 'danger',
-        title: 'Не удалось удалить ссылку',
+        title: 'Не удалось удалить правило',
         description: formatApiError(error),
       });
     },
@@ -2166,8 +2202,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       if (payload.removeAfterAt) {
         pushToast({
           tone: 'success',
-          title: 'Удаление ссылки запланировано',
-          description: `Ссылка будет удалена ${formatRemovalDateTime(payload.removeAfterAt)}.`,
+          title: 'Удаление правила запланировано',
+          description: `Правило будет удалено ${formatRemovalDateTime(payload.removeAfterAt)}.`,
         });
         return;
       }
@@ -2892,26 +2928,41 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    const normalized = normalizeAllowlistLink(domainInput);
-    if (!normalized) {
-      setDomainInputError('Введите корректную ссылку (http/https).');
+    const normalizedDomain =
+      domainInputMode === 'DOMAIN' ? normalizeAllowlistDomain(domainInput) : null;
+    const normalizedLink =
+      domainInputMode === 'EXACT' ? normalizeAllowlistLink(domainInput) : null;
+    const normalizedValue = normalizeStoredAllowlistEntry(domainInput, domainInputMode);
+    const normalizedInput = normalizedDomain ?? normalizedLink;
+
+    if (!normalizedInput || !normalizedValue) {
+      setDomainInputError(
+        domainInputMode === 'DOMAIN'
+          ? 'Введите корректный домен.'
+          : 'Введите корректную ссылку (http/https).',
+      );
       return;
     }
 
-    const alreadyExists = (domainsQuery.data ?? []).some((item) => item.domain === normalized);
+    const alreadyExists = (domainsQuery.data ?? []).some(
+      (item) => item.normalizedValue === normalizedValue,
+    );
     if (alreadyExists) {
       setDomainInputError('');
       setDomainInput('');
-      pushToast({ title: 'Ссылка уже есть в списке' });
+      pushToast({ title: 'Такое правило уже есть в списке' });
       return;
     }
 
     setDomainInputError('');
-    addDomainMutation.mutate(normalized);
+    addDomainMutation.mutate({
+      domain: normalizedInput,
+      matchType: domainInputMode,
+    });
   }
 
   function toggleDomainScheduleEditor(entry: DomainAllowlistEntry) {
-    if (scheduleDomain === entry.domain) {
+    if (scheduleDomain === entry.normalizedValue) {
       setScheduleDomain(null);
       setScheduleError('');
       return;
@@ -2921,7 +2972,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setScheduleDate(initial.date);
     setScheduleTime(initial.time);
     setScheduleError('');
-    setScheduleDomain(entry.domain);
+    setScheduleDomain(entry.normalizedValue);
   }
 
   function submitDomainSchedule(domain: string) {
@@ -3283,7 +3334,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const linkPolicyError = fieldErrors.linkPolicy;
   const requiredSubscriptionChannelsError = fieldErrors.requiredSubscriptionChannelIds;
   const allowlistEntries: DomainAllowlistEntry[] = domainsQuery.data ?? [];
-  const allowlistDomains = allowlistEntries.map((entry) => entry.domain);
   const isDomainMutationPending =
     addDomainMutation.isPending ||
     removeDomainMutation.isPending ||
@@ -3395,12 +3445,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft?.linkPolicy === 'ALERT_ONLY'
       ? 'Ссылки не удаляются'
       : draft?.linkPolicy === 'ALLOWLIST_ONLY'
-        ? `Разрешено: ${allowlistDomains.length}`
+        ? `Разрешено: ${allowlistEntries.length}`
         : `${linkStagesEnabledCount}/4 ступени включено`;
   const allowlistCountLabel =
     allowlistEntries.length === 1
-      ? '1 ссылка'
-      : `${allowlistEntries.length} ${allowlistEntries.length < 5 ? 'ссылки' : 'ссылок'}`;
+      ? '1 правило'
+      : `${allowlistEntries.length} ${allowlistEntries.length < 5 ? 'правила' : 'правил'}`;
   const rulesPublishedAtLabel = formatRemovalDateTime(
     rulesDraft?.publishedAt ?? rulesQuery.data?.publishedAt ?? null,
   );
@@ -4149,20 +4199,35 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             >
                               <div className="allowlist-panel__head">
                                 <div className="allowlist-panel__title-block">
-                                  <span className="field__label">Разрешенные ссылки</span>
+                                  <span className="field__label">Разрешенные ссылки и домены</span>
                                   <p className="allowlist-panel__subtitle">
-                                    Только полная ссылка: протокол, домен и путь, без wildcard и
-                                    частичных совпадений.
+                                    Выберите точную ссылку или весь домен. Доменные правила
+                                    разрешают все пути только этого хоста, без wildcard по
+                                    поддоменам.
                                   </p>
                                 </div>
-                                <span className="chip chip--success">{allowlistDomains.length}</span>
+                                <span className="chip chip--success">{allowlistEntries.length}</span>
                               </div>
 
                               <div className="allowlist-composer">
+                                <SegmentedControl
+                                  value={domainInputMode}
+                                  options={ALLOWLIST_MATCH_OPTIONS}
+                                  onChange={(value) => {
+                                    setDomainInputMode(value);
+                                    setDomainInputError('');
+                                  }}
+                                  className="allowlist-composer__mode"
+                                />
+                                <p className="allowlist-composer__hint">
+                                  {domainInputMode === 'DOMAIN'
+                                    ? 'Разрешит весь хост, например `example.com`.'
+                                    : 'Разрешит только один конкретный URL, включая путь и параметры.'}
+                                </p>
                                 <div className="allowlist-add-row">
                                   <input
                                     type="text"
-                                    inputMode="url"
+                                    inputMode={domainInputMode === 'EXACT' ? 'url' : 'text'}
                                     value={domainInput}
                                     onChange={(event) => {
                                       setDomainInput(event.target.value);
@@ -4174,7 +4239,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         handleAddDomain();
                                       }
                                     }}
-                                    placeholder="https://example.com/path"
+                                    placeholder={
+                                      domainInputMode === 'DOMAIN'
+                                        ? 'example.com'
+                                        : 'https://example.com/path'
+                                    }
                                   />
                                   <button
                                     type="button"
@@ -4209,17 +4278,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       <small>{allowlistCountLabel}</small>
                                     </div>
 
-                                    <ul className="allowlist-list" aria-label="Разрешенные ссылки">
+                                    <ul
+                                      className="allowlist-list"
+                                      aria-label="Разрешенные ссылки и домены"
+                                    >
                                       {allowlistEntries.map((entry) => {
-                                        const isScheduleOpen = scheduleDomain === entry.domain;
+                                        const isScheduleOpen =
+                                          scheduleDomain === entry.normalizedValue;
                                         const scheduledAtLabel = formatRemovalDateTime(
                                           entry.removeAfterAt,
                                         );
-                                        const entryIdSuffix = encodeURIComponent(entry.domain);
+                                        const entryIdSuffix = encodeURIComponent(
+                                          entry.normalizedValue,
+                                        );
 
                                         return (
                                           <li
-                                            key={entry.domain}
+                                            key={entry.normalizedValue}
                                             className={cn(
                                               'allowlist-item',
                                               'allowlist-item--domain',
@@ -4227,12 +4302,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                           >
                                             <div className="allowlist-item__stack">
                                               <div className="allowlist-item__header">
-                                                <span
-                                                  className="allowlist-item__domain"
-                                                  title={entry.domain}
-                                                >
-                                                  {entry.domain}
-                                                </span>
+                                                <div className="allowlist-item__lead">
+                                                  <span
+                                                    className="allowlist-item__domain"
+                                                    title={entry.domain}
+                                                  >
+                                                    {entry.domain}
+                                                  </span>
+                                                  <small className="allowlist-item__type">
+                                                    {formatAllowlistModeLabel(entry.matchType)}
+                                                  </small>
+                                                </div>
                                                 <span
                                                   className={cn(
                                                     'chip',
@@ -4249,9 +4329,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                               </div>
 
                                               <small className="allowlist-item__meta">
-                                                {scheduledAtLabel
-                                                  ? `Удаление: ${scheduledAtLabel}`
-                                                  : 'Ссылка разрешена без срока удаления.'}
+                                                {formatAllowlistMetaLabel(
+                                                  entry,
+                                                  scheduledAtLabel,
+                                                )}
                                               </small>
 
                                               <div className="allowlist-item__actions">
@@ -4287,11 +4368,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                     'allowlist-item__action--remove',
                                                   )}
                                                   onClick={() =>
-                                                    removeDomainMutation.mutate(entry.domain)
+                                                    removeDomainMutation.mutate(
+                                                      entry.normalizedValue,
+                                                    )
                                                   }
                                                   disabled={isDomainMutationPending}
-                                                  aria-label={`Удалить ${entry.domain} из разрешенных ссылок`}
-                                                  title="Удалить ссылку"
+                                                  aria-label={`Удалить ${entry.domain} из разрешенных`}
+                                                  title="Удалить правило"
                                                 >
                                                   <TrashIcon />
                                                   <span>Удалить</span>
@@ -4353,7 +4436,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                       type="button"
                                                       className="button button--accent"
                                                       onClick={() =>
-                                                        submitDomainSchedule(entry.domain)
+                                                        submitDomainSchedule(
+                                                          entry.normalizedValue,
+                                                        )
                                                       }
                                                       disabled={isDomainMutationPending}
                                                     >
@@ -4366,7 +4451,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                         type="button"
                                                         className="button button--ghost"
                                                         onClick={() =>
-                                                          clearDomainSchedule(entry.domain)
+                                                          clearDomainSchedule(
+                                                            entry.normalizedValue,
+                                                          )
                                                         }
                                                         disabled={isDomainMutationPending}
                                                       >
@@ -4383,7 +4470,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     </ul>
                                   </div>
                                 ) : (
-                                  <p className="allowlist-empty">Список пуст. Добавьте первую ссылку.</p>
+                                  <p className="allowlist-empty">
+                                    Список пуст. Добавьте первое правило.
+                                  </p>
                                 )
                               ) : null}
                             </div>

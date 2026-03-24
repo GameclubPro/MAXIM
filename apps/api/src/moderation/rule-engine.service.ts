@@ -1,5 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import { normalizeAllowlistLink } from '@maxim/contracts';
+import {
+  normalizeAllowlistDomain,
+  normalizeAllowlistLink,
+  parseStoredAllowlistEntry,
+} from '@maxim/contracts';
 import { CommercialAdsSensitivity, LinkPolicy, type ChatSettings } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import {
@@ -71,6 +75,11 @@ type CommercialSignalState = {
   hasDealChannel: boolean;
   hasTransactional: boolean;
   hasStrongNegativeContext: boolean;
+};
+
+type AllowlistMatchers = {
+  exactLinks: Set<string>;
+  domains: Set<string>;
 };
 
 type TopicFilterDetection = {
@@ -681,11 +690,7 @@ export class RuleEngineService {
       return false;
     }
 
-    const normalizedAllowlist = new Set(
-      allowlist
-        .map((entry) => normalizeAllowlistLink(entry))
-        .filter((entry): entry is string => Boolean(entry)),
-    );
+    const matchers = this.buildAllowlistMatchers(allowlist);
 
     let checkedLinks = 0;
     for (const link of links) {
@@ -693,13 +698,12 @@ export class RuleEngineService {
         continue;
       }
 
-      const normalizedLink = normalizeAllowlistLink(link);
-      if (!normalizedLink) {
+      if (!this.resolveAllowlistMatch(link)) {
         continue;
       }
 
       checkedLinks += 1;
-      if (!normalizedAllowlist.has(normalizedLink)) {
+      if (!this.isAllowlistedLink(link, matchers)) {
         return false;
       }
     }
@@ -722,28 +726,80 @@ export class RuleEngineService {
       return 'Links are not allowed by policy';
     }
 
-    const normalizedAllowlist = new Set(
-      allowlist
-        .map((entry) => normalizeAllowlistLink(entry))
-        .filter((entry): entry is string => Boolean(entry)),
-    );
+    const matchers = this.buildAllowlistMatchers(allowlist);
 
     for (const link of links) {
       if (policy === LinkPolicy.ALLOWLIST_ONLY && !this.shouldCheckExactAllowlistLink(link)) {
         continue;
       }
 
-      const normalizedLink = normalizeAllowlistLink(link);
-      if (!normalizedLink) {
+      const linkMatch = this.resolveAllowlistMatch(link);
+      if (!linkMatch) {
         continue;
       }
 
-      if (!normalizedAllowlist.has(normalizedLink)) {
-        return `Link ${normalizedLink} is not in allowlist`;
+      if (!this.isAllowlistedLink(link, matchers, linkMatch)) {
+        return `Link ${linkMatch.normalizedLink} is not in allowlist`;
       }
     }
 
     return null;
+  }
+
+  private buildAllowlistMatchers(allowlist: string[]): AllowlistMatchers {
+    const exactLinks = new Set<string>();
+    const domains = new Set<string>();
+
+    for (const entry of allowlist) {
+      const parsed = parseStoredAllowlistEntry(entry);
+      if (!parsed) {
+        continue;
+      }
+
+      if (parsed.matchType === 'DOMAIN') {
+        domains.add(parsed.domain);
+        continue;
+      }
+
+      exactLinks.add(parsed.domain);
+    }
+
+    return { exactLinks, domains };
+  }
+
+  private resolveAllowlistMatch(
+    value: string,
+  ): { normalizedLink: string; normalizedDomain: string | null } | null {
+    const normalizedLink = normalizeAllowlistLink(value);
+    if (!normalizedLink) {
+      return null;
+    }
+
+    return {
+      normalizedLink,
+      normalizedDomain: normalizeAllowlistDomain(value),
+    };
+  }
+
+  private isAllowlistedLink(
+    value: string,
+    matchers: AllowlistMatchers,
+    resolvedMatch: { normalizedLink: string; normalizedDomain: string | null } | null = null,
+  ): boolean {
+    const match = resolvedMatch ?? this.resolveAllowlistMatch(value);
+    if (!match) {
+      return false;
+    }
+
+    if (matchers.exactLinks.has(match.normalizedLink)) {
+      return true;
+    }
+
+    if (match.normalizedDomain && matchers.domains.has(match.normalizedDomain)) {
+      return true;
+    }
+
+    return false;
   }
 
   private extractUrlsFromText(value: string): string[] {

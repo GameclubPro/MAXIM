@@ -881,10 +881,14 @@ function createInitialState(): PreviewState {
   const chatDomains = [
     domainAllowlistEntrySchema.parse({
       domain: 'https://maxim.play-team.ru',
+      normalizedValue: 'https://maxim.play-team.ru',
+      matchType: 'EXACT',
       removeAfterAt: null,
     }),
     domainAllowlistEntrySchema.parse({
-      domain: 'https://docs.max.ru',
+      domain: 'docs.max.ru',
+      normalizedValue: 'domain:docs.max.ru',
+      matchType: 'DOMAIN',
       removeAfterAt: addDays(now, 2).toISOString(),
     }),
   ];
@@ -2072,15 +2076,22 @@ async function handleChatRequest(
   }
 
   if (tail[0] === 'domain-allowlist' && tail.length === 1 && method === 'POST') {
-    const payload = parseJsonBody(init) as { domain?: string } | null;
+    const payload = parseJsonBody(init) as { domain?: string; matchType?: 'EXACT' | 'DOMAIN' } | null;
     const domain = payload?.domain?.trim();
+    const matchType = payload?.matchType === 'DOMAIN' ? 'DOMAIN' : 'EXACT';
     if (!domain) {
       throw new Error('Preview domain is required');
     }
 
-    if (!state.chatDomains.some((item) => item.domain === domain)) {
+    const normalizedValue = matchType === 'DOMAIN' ? `domain:${domain}` : domain;
+    if (!state.chatDomains.some((item) => item.normalizedValue === normalizedValue)) {
       state.chatDomains = [
-        domainAllowlistEntrySchema.parse({ domain, removeAfterAt: null }),
+        domainAllowlistEntrySchema.parse({
+          domain,
+          normalizedValue,
+          matchType,
+          removeAfterAt: null,
+        }),
         ...state.chatDomains,
       ];
     }
@@ -2089,7 +2100,7 @@ async function handleChatRequest(
 
   if (tail[0] === 'domain-allowlist' && tail[1] && tail.length === 2 && method === 'DELETE') {
     const domain = decodeURIComponent(tail[1]);
-    state.chatDomains = state.chatDomains.filter((item) => item.domain !== domain);
+    state.chatDomains = state.chatDomains.filter((item) => item.normalizedValue !== domain);
     return null;
   }
 
@@ -2102,7 +2113,7 @@ async function handleChatRequest(
     const domain = decodeURIComponent(tail[1]);
     const payload = parseJsonBody(init) as { removeAfterAt?: string | null } | null;
     state.chatDomains = state.chatDomains.map((item) =>
-      item.domain === domain
+      item.normalizedValue === domain
         ? domainAllowlistEntrySchema.parse({
             ...item,
             removeAfterAt: payload?.removeAfterAt ?? null,
