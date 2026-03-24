@@ -1653,21 +1653,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     refetchOnWindowFocus: false,
   });
   const meQuery = useQuery({
-    queryKey: ['me'],
-    queryFn: () => getMe(api),
+    queryKey: ['me', chatId ?? null],
+    queryFn: () => getMe(api, { chatId: chatId ?? undefined }),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
 
   const chatsQuery = useQuery({
-    queryKey: ['chats'],
-    queryFn: () => getChats(api),
+    queryKey: ['chats', 'managed-link-picker', 'refresh'],
+    queryFn: () => getChats(api, { refresh: true }),
     enabled: Boolean(chatId),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
   const channelsQuery = useQuery({
-    queryKey: ['channels', 'required-subscription'],
+    queryKey: ['channels', 'managed-link-picker', 'refresh'],
     queryFn: () => getChannels(api, { refresh: true }),
     enabled: Boolean(chatId),
     staleTime: 30_000,
