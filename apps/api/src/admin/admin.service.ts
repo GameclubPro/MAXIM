@@ -221,6 +221,10 @@ const MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === '
 const MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS =
   process.env.NODE_ENV === 'test' ? 0 : 180;
 const MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT = 100;
+const MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE = 120;
+const MANAGED_ENTITIES_REFRESH_CURSOR_DONE = -1;
+const MANAGED_ENTITIES_REFRESH_CURSOR_TTL_SEC = 60 * 60;
+const MANAGED_ENTITIES_REFRESH_CURSOR_DONE_TTL_SEC = 60;
 const MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS = 30_000;
 const MANAGED_ENTITIES_REFRESH_BACKOFF_MS = 60_000;
 const CHANNEL_DIALOG_MESSAGES_LIMIT = 80;
@@ -678,6 +682,20 @@ export class AdminService {
         entityType === 'all'
           ? remoteChats
           : remoteChats.filter((chat) => chat.entityType === entityType);
+      const storedCursor =
+        options.fullScan === true
+          ? ((await this.chatContextCache.getManagedEntitiesRefreshCursor?.(user.userId, entityType)) ??
+            0)
+          : null;
+      const fullScanAlreadyCompleted = storedCursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE;
+      const fullScanStartIndex =
+        options.fullScan === true && fullScanAlreadyCompleted !== true
+          ? Math.max(0, Math.min(storedCursor ?? 0, candidateChats.length))
+          : candidateChats.length;
+      const fullScanEndIndex =
+        options.fullScan === true
+          ? Math.min(candidateChats.length, fullScanStartIndex + MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE)
+          : 0;
       const mergedKnownChats = candidateChats.flatMap((remoteChat, remoteIndex) => {
         const cachedChat = cachedById.get(remoteChat.chatId);
         if (!cachedChat) {
@@ -700,12 +718,17 @@ export class AdminService {
       const uncachedCandidates = candidateChats.filter((remoteChat) => !cachedIds.has(remoteChat.chatId));
       const candidateSlice =
         options.fullScan === true
-          ? uncachedCandidates
+          ? fullScanAlreadyCompleted
+            ? []
+            : candidateChats.slice(fullScanStartIndex, fullScanEndIndex)
           : uncachedCandidates.slice(0, MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT);
       const resolvedChats = await this.mapWithConcurrencyLimit(
         candidateSlice,
         LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
         async (remoteChat) => {
+          if (cachedIds.has(remoteChat.chatId)) {
+            return null;
+          }
           if (adminCheckSpacingMs > 0) {
             await this.sleep(adminCheckSpacingMs);
           }
@@ -760,6 +783,24 @@ export class AdminService {
         remoteIndex: Number.MAX_SAFE_INTEGER,
       }));
       const mergedChats = [...mergedKnownChats, ...filtered, ...remainingCachedChats];
+
+      if (options.fullScan === true) {
+        if (fullScanAlreadyCompleted || fullScanEndIndex >= candidateChats.length) {
+          await this.chatContextCache.setManagedEntitiesRefreshCursor?.(
+            user.userId,
+            entityType,
+            MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
+            MANAGED_ENTITIES_REFRESH_CURSOR_DONE_TTL_SEC,
+          );
+        } else {
+          await this.chatContextCache.setManagedEntitiesRefreshCursor?.(
+            user.userId,
+            entityType,
+            fullScanEndIndex,
+            MANAGED_ENTITIES_REFRESH_CURSOR_TTL_SEC,
+          );
+        }
+      }
 
       await this.activateManagedEntitiesRefreshCooldown(user.userId, entityType, refreshCooldownKey);
 

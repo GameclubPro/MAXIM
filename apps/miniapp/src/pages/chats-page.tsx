@@ -24,6 +24,8 @@ import {
 
 type ManagedTab = 'chat' | 'channel';
 const LIST_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 15_000;
+const LIST_AUTO_REFRESH_DELAY_MS = 900;
+const LIST_AUTO_REFRESH_MAX_PASSES = 7;
 
 function getEntitiesKey(tab: ManagedTab): 'chats' | 'channels' {
   return tab === 'chat' ? 'chats' : 'channels';
@@ -47,6 +49,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   const requestIdRef = useRef(0);
   const lastRefreshAtRef = useRef(0);
   const awaitingReturnRefreshRef = useRef(false);
+  const autoRefreshPassesRef = useRef<Record<ManagedTab, number>>({ chat: 0, channel: 0 });
+  const autoRefreshTimerRef = useRef<number | null>(null);
   const explicitlyRefreshedTabsRef = useRef<Set<ManagedTab>>(new Set());
   const deferredQuery = useDeferredValue(query);
   const activeTab = normalizeEntityType(
@@ -184,7 +188,16 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }, [loadingState]);
 
   useEffect(() => {
+    if (autoRefreshTimerRef.current !== null) {
+      window.clearTimeout(autoRefreshTimerRef.current);
+      autoRefreshTimerRef.current = null;
+    }
+
     if (loadingState !== 'idle') {
+      return;
+    }
+
+    if (loadError) {
       return;
     }
 
@@ -192,13 +205,31 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    if (explicitlyRefreshedTabsRef.current.has(activeTab)) {
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
       return;
     }
 
-    explicitlyRefreshedTabsRef.current.add(activeTab);
-    handleRefresh();
-  }, [activeEntitiesKey, activeTab, entities, loadingState]);
+    if (autoRefreshPassesRef.current[activeTab] >= LIST_AUTO_REFRESH_MAX_PASSES) {
+      return;
+    }
+
+    const delayMs = explicitlyRefreshedTabsRef.current.has(activeTab) ? LIST_AUTO_REFRESH_DELAY_MS : 0;
+    const timeoutId = window.setTimeout(() => {
+      autoRefreshTimerRef.current = null;
+      explicitlyRefreshedTabsRef.current.add(activeTab);
+      autoRefreshPassesRef.current[activeTab] += 1;
+      handleRefresh();
+    }, delayMs);
+
+    autoRefreshTimerRef.current = timeoutId;
+
+    return () => {
+      window.clearTimeout(timeoutId);
+      if (autoRefreshTimerRef.current === timeoutId) {
+        autoRefreshTimerRef.current = null;
+      }
+    };
+  }, [activeEntitiesKey, activeTab, entities, loadError, loadingState]);
 
   useEffect(() => {
     const allEntities = [...(entities.chats ?? []), ...(entities.channels ?? [])];

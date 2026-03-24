@@ -448,6 +448,9 @@ function createChatContextCacheMock(overrides: Record<string, unknown> = {}) {
     activateManagedEntitiesRefreshCooldown: jest.fn().mockResolvedValue(undefined),
     isManagedEntitiesRefreshBackoffActive: jest.fn().mockResolvedValue(false),
     activateManagedEntitiesRefreshBackoff: jest.fn().mockResolvedValue(undefined),
+    getManagedEntitiesRefreshCursor: jest.fn().mockResolvedValue(null),
+    setManagedEntitiesRefreshCursor: jest.fn().mockResolvedValue(undefined),
+    clearManagedEntitiesRefreshCursor: jest.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }

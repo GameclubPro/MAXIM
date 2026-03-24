@@ -61,6 +61,13 @@ export class ChatContextCacheService implements OnModuleDestroy {
     return `chat:managed-refresh-backoff:v1:${entityType}:${userId}`;
   }
 
+  static managedEntitiesRefreshCursorKey(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+  ): string {
+    return `chat:managed-refresh-cursor:v1:${entityType}:${userId}`;
+  }
+
   async getChatContext(chatId: string, chatTitle?: string | null): Promise<ChatContext> {
     const key = ChatContextCacheService.cacheKey(chatId);
     const cached = await this.redis.get(key);
@@ -209,6 +216,42 @@ export class ChatContextCacheService implements OnModuleDestroy {
       'EX',
       ttlSec,
     );
+  }
+
+  async getManagedEntitiesRefreshCursor(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+  ): Promise<number | null> {
+    const raw = await this.redis.get(
+      ChatContextCacheService.managedEntitiesRefreshCursorKey(userId, entityType),
+    );
+    if (raw === null) {
+      return null;
+    }
+
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isSafeInteger(parsed) ? parsed : null;
+  }
+
+  async setManagedEntitiesRefreshCursor(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+    cursor: number,
+    ttlSec: number,
+  ): Promise<void> {
+    await this.redis.set(
+      ChatContextCacheService.managedEntitiesRefreshCursorKey(userId, entityType),
+      String(cursor),
+      'EX',
+      ttlSec,
+    );
+  }
+
+  async clearManagedEntitiesRefreshCursor(
+    userId: string,
+    entityType: ManagedEntityType | 'all',
+  ): Promise<void> {
+    await this.redis.del(ChatContextCacheService.managedEntitiesRefreshCursorKey(userId, entityType));
   }
 
   private async loadAndCache(chatId: string, chatTitle?: string | null): Promise<ChatContext> {
