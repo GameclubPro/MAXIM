@@ -216,7 +216,8 @@ const MANAGED_BROADCAST_LOCK_STALE_MS = 60_000;
 const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 30;
 const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
 const ONE_HOUR_MS = 60 * 60 * 1000;
-const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 5;
+const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 3;
+const MANAGED_ENTITIES_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 80;
 const MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT = 100;
 const MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS = 30_000;
 const MANAGED_ENTITIES_REFRESH_BACKOFF_MS = 60_000;
@@ -697,6 +698,9 @@ export class AdminService {
         candidateSlice,
         LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
         async (remoteChat) => {
+          if (MANAGED_ENTITIES_ADMIN_CHECK_SPACING_MS > 0) {
+            await this.sleep(MANAGED_ENTITIES_ADMIN_CHECK_SPACING_MS);
+          }
           const access = await this.resolveUserAndBotAdminAccess(remoteChat.chatId, user.userId, {
             bypassNegativeCache: true,
           });
