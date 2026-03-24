@@ -28,7 +28,7 @@ import {
   type ManagedEntityHeader,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, lazy, startTransition, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import botSpeechRobotImage from '../../../../bot.webp';
 import botSpeechFriendlyImage from '../../../../frendly.webp';
@@ -39,6 +39,7 @@ import {
   type BroadcastSchedulePlannerSelectionState,
 } from '../components/broadcast-schedule-planner';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
+import type { ManagedLinkButtonFieldsProps } from '../components/managed-link-button-fields';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { GlassCard } from '../components/ui/glass-card';
@@ -94,6 +95,8 @@ type BroadcastCountdownPresentation = {
 };
 type ManagedBroadcastCardTone = 'active' | 'warning' | 'danger' | 'muted';
 type MailingWorkspaceView = 'compose' | 'active';
+
+const LazyManagedLinkButtonFields = lazy(() => import('../components/managed-link-button-fields'));
 
 const AUTO_SAVE_DELAY_MS = 650;
 const BAN_DURATION_MIN_HOURS = 1;
@@ -209,6 +212,14 @@ function MaxMessageLengthSlider({ value, min, max, step, onCommit }: MaxMessageL
         <span>{max}</span>
       </div>
     </>
+  );
+}
+
+function ManagedLinkButtonFieldsSlot(props: ManagedLinkButtonFieldsProps) {
+  return (
+    <Suspense fallback={null}>
+      <LazyManagedLinkButtonFields {...props} />
+    </Suspense>
   );
 }
 
@@ -4849,53 +4860,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 )}
 
                                 {draft.linkBotButtonEnabled ? (
-                                  <div className="settings-button-fields">
-                                    <label
-                                      className={cn(
-                                        'field settings-url-field',
-                                        linkBotButtonUrlError && 'field--error',
-                                      )}
-                                    >
-                                      <span className="field__label">Ссылка кнопки</span>
-                                      <input
-                                        type="url"
-                                        inputMode="url"
-                                        value={draft.linkBotButtonUrl}
-                                        onChange={(event) =>
-                                          setFieldValue('linkBotButtonUrl', event.target.value)
-                                        }
-                                        placeholder="https://max.ru/channel/..."
-                                      />
-                                      {linkBotButtonUrlError ? (
-                                        <small className="field__hint">
-                                          {linkBotButtonUrlError}
-                                        </small>
-                                      ) : null}
-                                    </label>
-
-                                    <label
-                                      className={cn(
-                                        'field settings-text-field',
-                                        linkBotButtonTextError && 'field--error',
-                                      )}
-                                    >
-                                      <span className="field__label">Название кнопки</span>
-                                      <input
-                                        type="text"
-                                        maxLength={32}
-                                        value={draft.linkBotButtonText}
-                                        onChange={(event) =>
-                                          setFieldValue('linkBotButtonText', event.target.value)
-                                        }
-                                        placeholder="Открыть"
-                                      />
-                                      {linkBotButtonTextError ? (
-                                        <small className="field__hint">
-                                          {linkBotButtonTextError}
-                                        </small>
-                                      ) : null}
-                                    </label>
-                                  </div>
+                                  <ManagedLinkButtonFieldsSlot
+                                    api={api}
+                                    urlValue={draft.linkBotButtonUrl}
+                                    onUrlChange={(nextValue) =>
+                                      setFieldValue('linkBotButtonUrl', nextValue)
+                                    }
+                                    textValue={draft.linkBotButtonText}
+                                    onTextChange={(nextValue) =>
+                                      setFieldValue('linkBotButtonText', nextValue)
+                                    }
+                                    urlError={linkBotButtonUrlError}
+                                    textError={linkBotButtonTextError}
+                                    urlPlaceholder="https://max.ru/channel/..."
+                                    textPlaceholder="Открыть"
+                                  />
                                 ) : null}
 
                               </div>
@@ -5491,53 +5470,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               )}
 
                               {draft.greetingBotButtonEnabled ? (
-                                <div className="settings-button-fields">
-                                  <label
-                                    className={cn(
-                                      'field settings-url-field',
-                                      greetingBotButtonUrlError && 'field--error',
-                                    )}
-                                  >
-                                    <span className="field__label">Ссылка кнопки</span>
-                                    <input
-                                      type="url"
-                                      inputMode="url"
-                                      value={draft.greetingBotButtonUrl}
-                                      onChange={(event) =>
-                                        setFieldValue('greetingBotButtonUrl', event.target.value)
-                                      }
-                                      placeholder="https://max.ru/channel/rules"
-                                    />
-                                    {greetingBotButtonUrlError ? (
-                                      <small className="field__hint">
-                                        {greetingBotButtonUrlError}
-                                      </small>
-                                    ) : null}
-                                  </label>
-
-                                  <label
-                                    className={cn(
-                                      'field settings-text-field',
-                                      greetingBotButtonTextError && 'field--error',
-                                    )}
-                                  >
-                                    <span className="field__label">Название кнопки</span>
-                                    <input
-                                      type="text"
-                                      maxLength={32}
-                                      value={draft.greetingBotButtonText}
-                                      onChange={(event) =>
-                                        setFieldValue('greetingBotButtonText', event.target.value)
-                                      }
-                                      placeholder="Открыть"
-                                    />
-                                    {greetingBotButtonTextError ? (
-                                      <small className="field__hint">
-                                        {greetingBotButtonTextError}
-                                      </small>
-                                    ) : null}
-                                  </label>
-                                </div>
+                                <ManagedLinkButtonFieldsSlot
+                                  api={api}
+                                  urlValue={draft.greetingBotButtonUrl}
+                                  onUrlChange={(nextValue) =>
+                                    setFieldValue('greetingBotButtonUrl', nextValue)
+                                  }
+                                  textValue={draft.greetingBotButtonText}
+                                  onTextChange={(nextValue) =>
+                                    setFieldValue('greetingBotButtonText', nextValue)
+                                  }
+                                  urlError={greetingBotButtonUrlError}
+                                  textError={greetingBotButtonTextError}
+                                  urlPlaceholder="https://max.ru/channel/rules"
+                                  textPlaceholder="Открыть"
+                                />
                               ) : null}
 
                             </div>
@@ -6186,56 +6133,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               )}
 
                               {draft.textFiltersBotButtonEnabled ? (
-                                <div className="settings-button-fields">
-                                  <label
-                                    className={cn(
-                                      'field settings-url-field',
-                                      textFiltersBotButtonUrlError && 'field--error',
-                                    )}
-                                  >
-                                    <span className="field__label">Ссылка кнопки</span>
-                                    <input
-                                      type="url"
-                                      inputMode="url"
-                                      value={draft.textFiltersBotButtonUrl}
-                                      onChange={(event) =>
-                                        setFieldValue('textFiltersBotButtonUrl', event.target.value)
-                                      }
-                                      placeholder="https://max.ru/channel/rules"
-                                    />
-                                    {textFiltersBotButtonUrlError ? (
-                                      <small className="field__hint">
-                                        {textFiltersBotButtonUrlError}
-                                      </small>
-                                    ) : null}
-                                  </label>
-
-                                  <label
-                                    className={cn(
-                                      'field settings-text-field',
-                                      textFiltersBotButtonTextError && 'field--error',
-                                    )}
-                                  >
-                                    <span className="field__label">Название кнопки</span>
-                                    <input
-                                      type="text"
-                                      maxLength={32}
-                                      value={draft.textFiltersBotButtonText}
-                                      onChange={(event) =>
-                                        setFieldValue(
-                                          'textFiltersBotButtonText',
-                                          event.target.value,
-                                        )
-                                      }
-                                      placeholder="Правила чата"
-                                    />
-                                    {textFiltersBotButtonTextError ? (
-                                      <small className="field__hint">
-                                        {textFiltersBotButtonTextError}
-                                      </small>
-                                    ) : null}
-                                  </label>
-                                </div>
+                                <ManagedLinkButtonFieldsSlot
+                                  api={api}
+                                  urlValue={draft.textFiltersBotButtonUrl}
+                                  onUrlChange={(nextValue) =>
+                                    setFieldValue('textFiltersBotButtonUrl', nextValue)
+                                  }
+                                  textValue={draft.textFiltersBotButtonText}
+                                  onTextChange={(nextValue) =>
+                                    setFieldValue('textFiltersBotButtonText', nextValue)
+                                  }
+                                  urlError={textFiltersBotButtonUrlError}
+                                  textError={textFiltersBotButtonTextError}
+                                  urlPlaceholder="https://max.ru/channel/rules"
+                                  textPlaceholder="Правила чата"
+                                />
                               ) : null}
 
                             </div>
@@ -6423,61 +6335,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </div>
 
                             {draft.thematicFiltersBotButtonEnabled ? (
-                              <div className="settings-button-fields">
-                                <label
-                                  className={cn(
-                                    'field settings-url-field',
-                                    thematicBotButtonUrlError && 'field--error',
-                                  )}
-                                >
-                                  <span className="field__label">Ссылка кнопки</span>
-                                  <input
-                                    type="url"
-                                    inputMode="url"
-                                    value={draft.thematicFiltersBotButtonUrl}
-                                    onChange={(event) =>
-                                      setFieldValue(
-                                        'thematicFiltersBotButtonUrl',
-                                        event.target.value,
-                                      )
-                                    }
-                                    placeholder="https://max.ru/channel/..."
-                                  />
-                                  {thematicBotButtonUrlError ? (
-                                    <small className="field__hint">
-                                      {thematicBotButtonUrlError}
-                                    </small>
-                                  ) : null}
-                                </label>
-
-                                <label
-                                  className={cn(
-                                    'field settings-text-field',
-                                    thematicBotButtonTextError && 'field--error',
-                                  )}
-                                >
-                                  <span className="field__label">Название кнопки</span>
-                                  <input
-                                    type="text"
-                                    value={draft.thematicFiltersBotButtonText}
-                                    onChange={(event) =>
-                                      setFieldValue(
-                                        'thematicFiltersBotButtonText',
-                                        event.target.value,
-                                      )
-                                    }
-                                    placeholder="Открыть"
-                                    maxLength={32}
-                                  />
-                                  {thematicBotButtonTextError ? (
-                                    <small className="field__hint">
-                                      {thematicBotButtonTextError}
-                                    </small>
-                                  ) : hasThematicBotButtonError ? null : (
-                                    <small className="field__hint">До 32 символов.</small>
-                                  )}
-                                </label>
-                              </div>
+                              <ManagedLinkButtonFieldsSlot
+                                api={api}
+                                urlValue={draft.thematicFiltersBotButtonUrl}
+                                onUrlChange={(nextValue) =>
+                                  setFieldValue('thematicFiltersBotButtonUrl', nextValue)
+                                }
+                                textValue={draft.thematicFiltersBotButtonText}
+                                onTextChange={(nextValue) =>
+                                  setFieldValue('thematicFiltersBotButtonText', nextValue)
+                                }
+                                urlError={thematicBotButtonUrlError}
+                                textError={thematicBotButtonTextError}
+                                urlPlaceholder="https://max.ru/channel/..."
+                                textPlaceholder="Открыть"
+                              />
                             ) : null}
 
                             <div className="settings-native-toggle settings-native-toggle--nested">
@@ -6991,53 +6863,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           )}
 
                           {draft.duplicateBotButtonEnabled ? (
-                            <div className="settings-button-fields">
-                              <label
-                                className={cn(
-                                  'field settings-url-field',
-                                  duplicateBotButtonUrlError && 'field--error',
-                                )}
-                              >
-                                <span className="field__label">Ссылка кнопки</span>
-                                <input
-                                  type="url"
-                                  inputMode="url"
-                                  value={draft.duplicateBotButtonUrl}
-                                  onChange={(event) =>
-                                    setFieldValue('duplicateBotButtonUrl', event.target.value)
-                                  }
-                                  placeholder="https://max.ru/profile/..."
-                                />
-                                {duplicateBotButtonUrlError ? (
-                                  <small className="field__hint">
-                                    {duplicateBotButtonUrlError}
-                                  </small>
-                                ) : null}
-                              </label>
-
-                              <label
-                                className={cn(
-                                  'field settings-text-field',
-                                  duplicateBotButtonTextError && 'field--error',
-                                )}
-                              >
-                                <span className="field__label">Название кнопки</span>
-                                <input
-                                  type="text"
-                                  maxLength={32}
-                                  value={draft.duplicateBotButtonText}
-                                  onChange={(event) =>
-                                    setFieldValue('duplicateBotButtonText', event.target.value)
-                                  }
-                                  placeholder="Открыть"
-                                />
-                                {duplicateBotButtonTextError ? (
-                                  <small className="field__hint">
-                                    {duplicateBotButtonTextError}
-                                  </small>
-                                ) : null}
-                              </label>
-                            </div>
+                            <ManagedLinkButtonFieldsSlot
+                              api={api}
+                              urlValue={draft.duplicateBotButtonUrl}
+                              onUrlChange={(nextValue) =>
+                                setFieldValue('duplicateBotButtonUrl', nextValue)
+                              }
+                              textValue={draft.duplicateBotButtonText}
+                              onTextChange={(nextValue) =>
+                                setFieldValue('duplicateBotButtonText', nextValue)
+                              }
+                              urlError={duplicateBotButtonUrlError}
+                              textError={duplicateBotButtonTextError}
+                              urlPlaceholder="https://max.ru/profile/..."
+                              textPlaceholder="Открыть"
+                            />
                           ) : null}
 
                         </div>
@@ -7887,53 +7727,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           )}
 
                           {draft.messageLimitsBotButtonEnabled ? (
-                            <div className="settings-button-fields">
-                              <label
-                                className={cn(
-                                  'field settings-url-field',
-                                  messageLimitsBotButtonUrlError && 'field--error',
-                                )}
-                              >
-                                <span className="field__label">Ссылка кнопки</span>
-                                <input
-                                  type="url"
-                                  inputMode="url"
-                                  value={draft.messageLimitsBotButtonUrl}
-                                  onChange={(event) =>
-                                    setFieldValue('messageLimitsBotButtonUrl', event.target.value)
-                                  }
-                                  placeholder="https://max.ru/channel/..."
-                                />
-                                {messageLimitsBotButtonUrlError ? (
-                                  <small className="field__hint">
-                                    {messageLimitsBotButtonUrlError}
-                                  </small>
-                                ) : null}
-                              </label>
-
-                              <label
-                                className={cn(
-                                  'field settings-text-field',
-                                  messageLimitsBotButtonTextError && 'field--error',
-                                )}
-                              >
-                                <span className="field__label">Название кнопки</span>
-                                <input
-                                  type="text"
-                                  maxLength={32}
-                                  value={draft.messageLimitsBotButtonText}
-                                  onChange={(event) =>
-                                    setFieldValue('messageLimitsBotButtonText', event.target.value)
-                                  }
-                                  placeholder="Открыть"
-                                />
-                                {messageLimitsBotButtonTextError ? (
-                                  <small className="field__hint">
-                                    {messageLimitsBotButtonTextError}
-                                  </small>
-                                ) : null}
-                              </label>
-                            </div>
+                            <ManagedLinkButtonFieldsSlot
+                              api={api}
+                              urlValue={draft.messageLimitsBotButtonUrl}
+                              onUrlChange={(nextValue) =>
+                                setFieldValue('messageLimitsBotButtonUrl', nextValue)
+                              }
+                              textValue={draft.messageLimitsBotButtonText}
+                              onTextChange={(nextValue) =>
+                                setFieldValue('messageLimitsBotButtonText', nextValue)
+                              }
+                              urlError={messageLimitsBotButtonUrlError}
+                              textError={messageLimitsBotButtonTextError}
+                              urlPlaceholder="https://max.ru/channel/..."
+                              textPlaceholder="Открыть"
+                            />
                           ) : null}
 
                         </div>
@@ -8368,53 +8176,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               )}
 
                               {draft.nightModeBotButtonEnabled ? (
-                                <div className="settings-button-fields">
-                                  <label
-                                    className={cn(
-                                      'field settings-url-field',
-                                      nightBotButtonUrlError && 'field--error',
-                                    )}
-                                  >
-                                    <span className="field__label">Ссылка кнопки</span>
-                                    <input
-                                      type="url"
-                                      inputMode="url"
-                                      value={draft.nightModeBotButtonUrl}
-                                      onChange={(event) =>
-                                        setFieldValue('nightModeBotButtonUrl', event.target.value)
-                                      }
-                                      placeholder="https://max.ru/channel/..."
-                                    />
-                                    {nightBotButtonUrlError ? (
-                                      <small className="field__hint">
-                                        {nightBotButtonUrlError}
-                                      </small>
-                                    ) : null}
-                                  </label>
-
-                                  <label
-                                    className={cn(
-                                      'field settings-text-field',
-                                      nightBotButtonTextError && 'field--error',
-                                    )}
-                                  >
-                                    <span className="field__label">Название кнопки</span>
-                                    <input
-                                      type="text"
-                                      maxLength={32}
-                                      value={draft.nightModeBotButtonText}
-                                      onChange={(event) =>
-                                        setFieldValue('nightModeBotButtonText', event.target.value)
-                                      }
-                                      placeholder="Правила чата"
-                                    />
-                                    {nightBotButtonTextError ? (
-                                      <small className="field__hint">
-                                        {nightBotButtonTextError}
-                                      </small>
-                                    ) : null}
-                                  </label>
-                                </div>
+                                <ManagedLinkButtonFieldsSlot
+                                  api={api}
+                                  urlValue={draft.nightModeBotButtonUrl}
+                                  onUrlChange={(nextValue) =>
+                                    setFieldValue('nightModeBotButtonUrl', nextValue)
+                                  }
+                                  textValue={draft.nightModeBotButtonText}
+                                  onTextChange={(nextValue) =>
+                                    setFieldValue('nightModeBotButtonText', nextValue)
+                                  }
+                                  urlError={nightBotButtonUrlError}
+                                  textError={nightBotButtonTextError}
+                                  urlPlaceholder="https://max.ru/channel/..."
+                                  textPlaceholder="Правила чата"
+                                />
                               ) : null}
 
                             </div>
@@ -8829,59 +8605,30 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                                     {mailingButtonEnabled ? (
                                       <div className="mailing-option-card__body">
-                                        <label
-                                          className={cn(
-                                            'field settings-url-field',
-                                            mailingButtonUrlError && 'field--error',
-                                          )}
-                                        >
-                                          <span className="field__label">Ссылка</span>
-                                          <input
-                                            type="url"
-                                            inputMode="url"
-                                            value={mailingButtonUrl}
-                                            onChange={(event) => {
-                                              setMailingButtonUrl(event.target.value);
-                                              if (mailingButtonUrlError) {
-                                                setMailingButtonUrlError('');
-                                              }
-                                            }}
-                                            placeholder="https://max.ru/channel/..."
-                                            disabled={isMailingBusy}
-                                          />
-                                          {mailingButtonUrlError ? (
-                                            <small className="field__hint">
-                                              {mailingButtonUrlError}
-                                            </small>
-                                          ) : null}
-                                        </label>
-
-                                        <label
-                                          className={cn(
-                                            'field settings-text-field',
-                                            mailingButtonTextError && 'field--error',
-                                          )}
-                                        >
-                                          <span className="field__label">Текст</span>
-                                          <input
-                                            type="text"
-                                            maxLength={32}
-                                            value={mailingButtonText}
-                                            onChange={(event) => {
-                                              setMailingButtonText(event.target.value);
-                                              if (mailingButtonTextError) {
-                                                setMailingButtonTextError('');
-                                              }
-                                            }}
-                                            placeholder="Открыть"
-                                            disabled={isMailingBusy}
-                                          />
-                                          {mailingButtonTextError ? (
-                                            <small className="field__hint">
-                                              {mailingButtonTextError}
-                                            </small>
-                                          ) : null}
-                                        </label>
+                                        <ManagedLinkButtonFieldsSlot
+                                          api={api}
+                                          urlValue={mailingButtonUrl}
+                                          onUrlChange={(nextValue) => {
+                                            setMailingButtonUrl(nextValue);
+                                            if (mailingButtonUrlError) {
+                                              setMailingButtonUrlError('');
+                                            }
+                                          }}
+                                          textValue={mailingButtonText}
+                                          onTextChange={(nextValue) => {
+                                            setMailingButtonText(nextValue);
+                                            if (mailingButtonTextError) {
+                                              setMailingButtonTextError('');
+                                            }
+                                          }}
+                                          urlError={mailingButtonUrlError}
+                                          textError={mailingButtonTextError}
+                                          disabled={isMailingBusy}
+                                          urlLabel="Ссылка"
+                                          textLabel="Текст"
+                                          urlPlaceholder="https://max.ru/channel/..."
+                                          textPlaceholder="Открыть"
+                                        />
                                       </div>
                                     ) : null}
                                   </div>

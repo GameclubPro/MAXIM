@@ -7,6 +7,7 @@ import {
   type BroadcastSchedulePlannerSelectionState,
 } from '../components/broadcast-schedule-planner';
 import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
+import { ManagedLinkButtonFields } from '../components/managed-link-button-fields';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
 import { GlassCard } from '../components/ui/glass-card';
@@ -1501,57 +1502,29 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
                             {broadcastButtonEnabled ? (
                               <div className="mailing-option-card__body">
-                                <label
-                                  className={cn(
-                                    'field settings-url-field',
-                                    broadcastButtonUrlError && 'field--error',
-                                  )}
-                                >
-                                  <span className="field__label">Ссылка</span>
-                                  <input
-                                    type="url"
-                                    inputMode="url"
-                                    value={broadcastButtonUrl}
-                                    onChange={(event) => {
-                                      setBroadcastButtonUrl(event.target.value);
-                                      if (broadcastButtonUrlError) {
-                                        setBroadcastButtonUrlError('');
-                                      }
-                                    }}
-                                    placeholder="https://max.ru/channel/..."
-                                  />
-                                  {broadcastButtonUrlError ? (
-                                    <small className="field__hint">
-                                      {broadcastButtonUrlError}
-                                    </small>
-                                  ) : null}
-                                </label>
-
-                                <label
-                                  className={cn(
-                                    'field settings-text-field',
-                                    broadcastButtonTextError && 'field--error',
-                                  )}
-                                >
-                                  <span className="field__label">Текст</span>
-                                  <input
-                                    type="text"
-                                    maxLength={32}
-                                    value={broadcastButtonText}
-                                    onChange={(event) => {
-                                      setBroadcastButtonText(event.target.value);
-                                      if (broadcastButtonTextError) {
-                                        setBroadcastButtonTextError('');
-                                      }
-                                    }}
-                                    placeholder="Открыть"
-                                  />
-                                  {broadcastButtonTextError ? (
-                                    <small className="field__hint">
-                                      {broadcastButtonTextError}
-                                    </small>
-                                  ) : null}
-                                </label>
+                                <ManagedLinkButtonFields
+                                  api={api}
+                                  urlValue={broadcastButtonUrl}
+                                  onUrlChange={(nextValue) => {
+                                    setBroadcastButtonUrl(nextValue);
+                                    if (broadcastButtonUrlError) {
+                                      setBroadcastButtonUrlError('');
+                                    }
+                                  }}
+                                  textValue={broadcastButtonText}
+                                  onTextChange={(nextValue) => {
+                                    setBroadcastButtonText(nextValue);
+                                    if (broadcastButtonTextError) {
+                                      setBroadcastButtonTextError('');
+                                    }
+                                  }}
+                                  urlError={broadcastButtonUrlError}
+                                  textError={broadcastButtonTextError}
+                                  urlLabel="Ссылка"
+                                  textLabel="Текст"
+                                  urlPlaceholder="https://max.ru/channel/..."
+                                  textPlaceholder="Открыть"
+                                />
                               </div>
                             ) : null}
                           </div>

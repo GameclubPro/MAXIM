@@ -85,6 +85,64 @@ const scenarios = [
     },
   },
   {
+    name: 'chat-settings-links-button-picker',
+    path: '/chat/preview-chat/settings',
+    searchParams: {
+      focus: 'links',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(500);
+      await page.getByLabel('Включить объяснение для модерации ссылок').check();
+      await page.waitForTimeout(250);
+      const buttonToggle = page.getByLabel(
+        'Добавить кнопку в сообщение бота для модерации ссылок',
+      );
+      await buttonToggle.scrollIntoViewIfNeeded();
+      await buttonToggle.check();
+      await page.waitForTimeout(450);
+      const picker = page.locator('.managed-link-picker').first();
+      await picker.waitFor({ state: 'visible' });
+      await page.evaluate(() => {
+        document.querySelector('.managed-link-picker')?.scrollIntoView({
+          block: 'start',
+          behavior: 'instant',
+        });
+        window.scrollBy({ top: -84, behavior: 'instant' });
+      });
+      const quickAction = page
+        .locator('.managed-link-picker__quick-action')
+        .filter({ hasText: /Профиль/u })
+        .first();
+      await quickAction.click();
+      await page.waitForTimeout(350);
+    },
+  },
+  {
+    name: 'chat-settings-links-button-sheet',
+    path: '/chat/preview-chat/settings',
+    searchParams: {
+      focus: 'links',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(500);
+      await page.getByLabel('Включить объяснение для модерации ссылок').check();
+      await page.waitForTimeout(250);
+      const buttonToggle = page.getByLabel(
+        'Добавить кнопку в сообщение бота для модерации ссылок',
+      );
+      await buttonToggle.scrollIntoViewIfNeeded();
+      await buttonToggle.check();
+      await page.waitForTimeout(450);
+      const quickAction = page
+        .locator('.managed-link-picker__quick-action')
+        .filter({ hasText: /Каналы/u })
+        .first();
+      await quickAction.waitFor({ state: 'visible' });
+      await quickAction.click();
+      await page.waitForTimeout(350);
+    },
+  },
+  {
     name: 'chat-settings-giveaway',
     path: '/chat/preview-chat/settings',
     searchParams: {
@@ -332,6 +390,32 @@ const scenarios = [
       await page.waitForTimeout(150);
       await page.getByRole('button', { name: /Сохранить/u }).click();
       await page.waitForTimeout(300);
+    },
+  },
+  {
+    name: 'channel-settings-broadcast-button-picker',
+    path: '/channel/preview-channel/settings',
+    searchParams: {
+      focus: 'broadcast',
+      handoff: '1',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(1000);
+      const picker = page.locator('.managed-link-picker').first();
+      await picker.waitFor({ state: 'visible' });
+      await page.evaluate(() => {
+        document.querySelector('.managed-link-picker')?.scrollIntoView({
+          block: 'start',
+          behavior: 'instant',
+        });
+        window.scrollBy({ top: -84, behavior: 'instant' });
+      });
+      const quickAction = page
+        .locator('.managed-link-picker__quick-action')
+        .filter({ hasText: /Профиль/u })
+        .first();
+      await quickAction.click();
+      await page.waitForTimeout(350);
     },
   },
   {
