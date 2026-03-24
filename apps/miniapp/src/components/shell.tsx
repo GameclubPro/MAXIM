@@ -17,6 +17,7 @@ import {
   saveLastEntityType,
   type LastEntityType,
 } from '../lib/last-chat';
+import { useKeyboardOpen } from '../lib/use-keyboard-open';
 
 type ScreenInfo = {
   title: string;
@@ -169,7 +170,7 @@ export function Shell() {
     channel: readLastEntityId('channel'),
   }));
   const [lastEntityType, setLastEntityType] = useState<LastEntityType>(() => readLastEntityType());
-  const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
+  const isKeyboardOpen = useKeyboardOpen();
   const isChatsRoute = location.pathname === '/';
   const selectedRootEntityType = useMemo(
     () =>
@@ -263,48 +264,6 @@ export function Shell() {
     () => resolveScreenInfo(location.pathname, resolvedChatTitle || resolvedChatId),
     [location.pathname, resolvedChatId, resolvedChatTitle],
   );
-
-  useEffect(() => {
-    const viewport = window.visualViewport;
-    let baselineHeight = viewport?.height ?? window.innerHeight;
-    const keyboardThreshold = 120;
-
-    const hasEditableFocus = () => {
-      const activeElement = document.activeElement;
-      return (
-        activeElement instanceof HTMLInputElement ||
-        activeElement instanceof HTMLTextAreaElement ||
-        (activeElement instanceof HTMLElement && activeElement.isContentEditable)
-      );
-    };
-
-    const updateKeyboardState = () => {
-      const currentHeight = viewport?.height ?? window.innerHeight;
-      const isOpened = hasEditableFocus() && baselineHeight - currentHeight > keyboardThreshold;
-
-      if (!isOpened) {
-        baselineHeight = currentHeight;
-      }
-
-      setIsKeyboardOpen(isOpened);
-    };
-
-    updateKeyboardState();
-
-    viewport?.addEventListener('resize', updateKeyboardState);
-    window.addEventListener('resize', updateKeyboardState);
-    window.addEventListener('orientationchange', updateKeyboardState);
-    window.addEventListener('focusin', updateKeyboardState);
-    window.addEventListener('focusout', updateKeyboardState);
-
-    return () => {
-      viewport?.removeEventListener('resize', updateKeyboardState);
-      window.removeEventListener('resize', updateKeyboardState);
-      window.removeEventListener('orientationchange', updateKeyboardState);
-      window.removeEventListener('focusin', updateKeyboardState);
-      window.removeEventListener('focusout', updateKeyboardState);
-    };
-  }, []);
 
   useEffect(() => {
     const shouldShowNativeBack = !isChatsRoute;

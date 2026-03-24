@@ -3274,6 +3274,23 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setOpenHintKey((current) => (current === key ? null : key));
   }
 
+  function renderInlineHint(
+    hintKey: HintKey,
+    hintId: string,
+    text: string,
+    hidden = false,
+  ) {
+    if (hidden || openHintKey !== hintKey) {
+      return null;
+    }
+
+    return (
+      <p id={hintId} className="settings-native-toggle__hint settings-native-toggle__hint--inline">
+        {text}
+      </p>
+    );
+  }
+
   function toggleBotMessageEditor(key: BotMessageEditorKey) {
     setOpenBotEditorKey((current) => (current === key ? null : key));
   }
@@ -4749,6 +4766,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   </label>
                                 </div>
 
+                                {renderInlineHint(
+                                  'linkBotButton',
+                                  'link-bot-button-hint',
+                                  'Добавляет кнопку в сообщение бота. Подходит для ссылки на чат, канал или профиль.',
+                                  hasLinkBotButtonError,
+                                )}
+
                                 {draft.linkBotButtonEnabled ? (
                                   <div className="settings-button-fields">
                                     <label
@@ -4799,15 +4823,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   </div>
                                 ) : null}
 
-                                {!hasLinkBotButtonError && openHintKey === 'linkBotButton' ? (
-                                  <p
-                                    id="link-bot-button-hint"
-                                    className="settings-native-toggle__hint"
-                                  >
-                                    Добавляет кнопку в сообщение бота. Подходит для ссылки на чат,
-                                    канал или профиль.
-                                  </p>
-                                ) : null}
                               </div>
                             ) : null}
                           </>
@@ -5393,6 +5408,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 </label>
                               </div>
 
+                              {renderInlineHint(
+                                'greetingBotButton',
+                                'greeting-bot-button-hint',
+                                'Добавляет кнопку в приветствие, например на чат или канал.',
+                                hasGreetingBotButtonError,
+                              )}
+
                               {draft.greetingBotButtonEnabled ? (
                                 <div className="settings-button-fields">
                                   <label
@@ -5443,14 +5465,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 </div>
                               ) : null}
 
-                              {!hasGreetingBotButtonError && openHintKey === 'greetingBotButton' ? (
-                                <p
-                                  id="greeting-bot-button-hint"
-                                  className="settings-native-toggle__hint"
-                                >
-                                  Добавляет кнопку в приветствие, например на чат или канал.
-                                </p>
-                              ) : null}
                             </div>
                           ) : null}
                         </>
@@ -6089,6 +6103,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 </label>
                               </div>
 
+                              {renderInlineHint(
+                                'textFiltersBotButton',
+                                'text-filters-bot-button-hint',
+                                'Добавляет кнопку в сообщение бота о коммерческом нарушении.',
+                                hasTextFiltersBotButtonError,
+                              )}
+
                               {draft.textFiltersBotButtonEnabled ? (
                                 <div className="settings-button-fields">
                                   <label
@@ -6142,15 +6163,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 </div>
                               ) : null}
 
-                              {!hasTextFiltersBotButtonError &&
-                              openHintKey === 'textFiltersBotButton' ? (
-                                <p
-                                  id="text-filters-bot-button-hint"
-                                  className="settings-native-toggle__hint"
-                                >
-                                  Добавляет кнопку в сообщение бота о коммерческом нарушении.
-                                </p>
-                              ) : null}
                             </div>
                           ) : null}
                         </>
@@ -6896,6 +6908,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </label>
                           </div>
 
+                          {renderInlineHint(
+                            'duplicateBotButton',
+                            'duplicate-bot-button-hint',
+                            'Добавляет кнопку в сообщение бота. Можно отправить пользователя в нужный чат, канал или профиль.',
+                            hasDuplicateBotButtonError,
+                          )}
+
                           {draft.duplicateBotButtonEnabled ? (
                             <div className="settings-button-fields">
                               <label
@@ -6946,15 +6965,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </div>
                           ) : null}
 
-                          {!hasDuplicateBotButtonError && openHintKey === 'duplicateBotButton' ? (
-                            <p
-                              id="duplicate-bot-button-hint"
-                              className="settings-native-toggle__hint"
-                            >
-                              Добавляет кнопку в сообщение бота. Можно отправить пользователя в
-                              нужный чат, канал или профиль.
-                            </p>
-                          ) : null}
                         </div>
                       ) : null}
                     </div>
@@ -7794,6 +7804,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </label>
                           </div>
 
+                          {renderInlineHint(
+                            'messageLimitsBotButton',
+                            'message-limits-bot-button-hint',
+                            'Добавляет кнопку в сообщение бота с переходом на чат, канал или профиль.',
+                            hasMessageLimitsBotButtonError,
+                          )}
+
                           {draft.messageLimitsBotButtonEnabled ? (
                             <div className="settings-button-fields">
                               <label
@@ -7844,16 +7861,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </div>
                           ) : null}
 
-                          {!hasMessageLimitsBotButtonError &&
-                          openHintKey === 'messageLimitsBotButton' ? (
-                            <p
-                              id="message-limits-bot-button-hint"
-                              className="settings-native-toggle__hint"
-                            >
-                              Добавляет кнопку в сообщение бота с переходом на чат, канал или
-                              профиль.
-                            </p>
-                          ) : null}
                         </div>
                       ) : null}
                     </div>
@@ -8229,6 +8236,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 </label>
                               </div>
 
+                              {renderInlineHint(
+                                'nightBotButton',
+                                'night-bot-button-hint',
+                                'Добавляет кнопку в сообщение о закрытии чата на ночь.',
+                                hasNightBotButtonError,
+                              )}
+
                               {draft.nightModeBotButtonEnabled ? (
                                 <div className="settings-button-fields">
                                   <label
@@ -8279,14 +8293,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 </div>
                               ) : null}
 
-                              {!hasNightBotButtonError && openHintKey === 'nightBotButton' ? (
-                                <p
-                                  id="night-bot-button-hint"
-                                  className="settings-native-toggle__hint"
-                                >
-                                  Добавляет кнопку в сообщение о закрытии чата на ночь.
-                                </p>
-                              ) : null}
                             </div>
                           ) : null}
 

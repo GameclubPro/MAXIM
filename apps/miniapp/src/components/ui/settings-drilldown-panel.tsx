@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../../lib/cn';
+import { useKeyboardOpen } from '../../lib/use-keyboard-open';
 
 type SettingsDrilldownPanelProps = {
   id: string;
@@ -39,6 +40,7 @@ export function SettingsDrilldownPanel({
 }: SettingsDrilldownPanelProps) {
   const backdropRef = useRef<HTMLButtonElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const isKeyboardOpen = useKeyboardOpen(120, open);
 
   useEffect(() => {
     if (!open) {
@@ -137,7 +139,7 @@ export function SettingsDrilldownPanel({
 
         <div className="settings-drilldown__content">
           <div className="settings-drilldown__body">{children}</div>
-          {footer ? <div className="settings-drilldown__footer">{footer}</div> : null}
+          {footer && !isKeyboardOpen ? <div className="settings-drilldown__footer">{footer}</div> : null}
         </div>
       </section>
     </div>,

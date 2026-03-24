@@ -4521,6 +4521,7 @@
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
+  scroll-padding-bottom: 120px;
 }
 
 .settings-drilldown__footer {
@@ -5313,6 +5314,10 @@
   font-size: 0.76rem;
   line-height: 1.35;
   padding: 7px 9px;
+}
+
+.settings-native-toggle__hint--inline {
+  margin-top: 2px;
 }
 
 .settings-native-toggle__hint--danger {
