@@ -484,7 +484,10 @@ export class AdminService {
     const recentBotAdded = await this.bootstrapRecentBotAddedEntities(user, entityType);
 
     if (options.refresh !== true) {
-      const cached = await this.listChatsFromAllowlist(user.userId, entityType);
+      const cached = await this.revalidateCachedManagedEntities(
+        user,
+        await this.listChatsFromAllowlist(user.userId, entityType),
+      );
       const bootstrapped = await this.bootstrapCurrentChat(user, entityType);
       const initial = this.mergeManagedEntityGroups(
         bootstrapped ? [bootstrapped] : [],
@@ -509,7 +512,10 @@ export class AdminService {
       return discovered;
     }
 
-    const cached = await this.listChatsFromAllowlist(user.userId, entityType);
+    const cached = await this.revalidateCachedManagedEntities(
+      user,
+      await this.listChatsFromAllowlist(user.userId, entityType),
+    );
     const bootstrapped = await this.bootstrapCurrentChat(user, entityType);
     const fallback = this.mergeManagedEntityGroups(
       bootstrapped ? [bootstrapped] : [],
@@ -580,6 +586,13 @@ export class AdminService {
         continue;
       }
 
+      const access = await this.resolveUserAndBotAdminAccess(chatId, normalizedUserId, {
+        bypassNegativeCache: true,
+      });
+      if (access.status !== 'granted') {
+        continue;
+      }
+
       const existing = await this.prisma.chat.findUnique({
         where: { id: chatId },
         select: {
@@ -614,6 +627,33 @@ export class AdminService {
     }
 
     return bootstrapped;
+  }
+
+  private async revalidateCachedManagedEntities(
+    user: AuthUser,
+    chats: ChatSummary[],
+  ): Promise<ChatSummary[]> {
+    if (chats.length === 0) {
+      return chats;
+    }
+
+    const filtered: ChatSummary[] = [];
+    for (const chat of chats) {
+      const cachedAccess = (await this.chatContextCache.getAdminAccess?.(chat.id, user.userId)) ?? null;
+      if (cachedAccess !== 'user_denied' && cachedAccess !== 'bot_denied') {
+        filtered.push(chat);
+        continue;
+      }
+
+      const access = await this.resolveUserAndBotAdminAccess(chat.id, user.userId, {
+        bypassNegativeCache: true,
+      });
+      if (access.status === 'granted') {
+        filtered.push(chat);
+      }
+    }
+
+    return filtered;
   }
 
   private async discoverManagedEntities(

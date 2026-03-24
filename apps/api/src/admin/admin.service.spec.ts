@@ -3212,7 +3212,7 @@ describe('AdminService.listChats', () => {
 
     const maxClient = {
       listBotChats: jest.fn(),
-      getChatAdminIds: jest.fn(),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       getChatTitle: jest.fn().mockResolvedValue('Новый чат'),
     };
 
@@ -3251,6 +3251,7 @@ describe('AdminService.listChats', () => {
       },
     ]);
     expect(maxClient.listBotChats).not.toHaveBeenCalled();
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-2');
     expect(maxClient.getChatTitle).toHaveBeenCalledWith('chat-2');
     expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -3262,6 +3263,136 @@ describe('AdminService.listChats', () => {
         },
       }),
     );
+  });
+
+  it('does not bootstrap stale recent bot_added chats when MAX denies current admin access', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        chat_id: 'chat-2',
+        chat_title: 'Битый чат',
+        is_channel: 'false',
+      },
+    ]);
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([]),
+      getChatAdminIds: jest.fn().mockRejectedValue({
+        response: {
+          status: 403,
+          data: {
+            code: 'chat.denied',
+            message: 'Method is available only for chat administrator',
+          },
+        },
+      }),
+      getChatTitle: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+
+    await expect(
+      service.listChats({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([]);
+
+    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-2');
+    expect(prisma.chatAdminAllowlist.upsert).not.toHaveBeenCalled();
+  });
+
+  it('revalidates cached chats with stale negative admin cache on default load', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-1',
+          title: 'Актуальный чат',
+          createdAt: new Date('2026-03-02T10:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+      {
+        chat: {
+          id: 'chat-2',
+          title: 'Устаревший чат',
+          createdAt: new Date('2026-03-01T10:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+    prisma.$queryRaw.mockResolvedValue([]);
+
+    const chatContextCache = createChatContextCacheMock({
+      getAdminAccess: jest.fn().mockImplementation(async (chatId: string) => {
+        if (chatId === 'chat-2') {
+          return 'bot_denied';
+        }
+
+        return null;
+      }),
+    });
+    const maxClient = {
+      listBotChats: jest.fn(),
+      getChatAdminIds: jest.fn().mockRejectedValue({
+        response: {
+          status: 403,
+          data: {
+            code: 'chat.denied',
+            message: 'Method is available only for chat administrator',
+          },
+        },
+      }),
+      getChatTitle: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+
+    await expect(
+      service.listChats({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([
+      {
+        id: 'chat-1',
+        title: 'Актуальный чат',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'chat',
+        link: null,
+        channelOverview: null,
+      },
+    ]);
+
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-2');
+    expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-2',
+        userId: 'admin-1',
+      },
+    });
   });
 
   it('does not bootstrap a private direct dialog into managed chats', async () => {
