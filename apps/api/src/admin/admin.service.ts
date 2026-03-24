@@ -378,6 +378,8 @@ const CHANNEL_COMMENT_DUPLICATE_WINDOW_MS = 10 * 60 * 1000;
 const CHANNEL_COMMENT_MAX_CONSECUTIVE = 2;
 const CHANNEL_COMMENT_LINK_PATTERN = /((https?:\/\/)?([a-z0-9-]+\.)+[a-z]{2,})(\/\S*)?/giu;
 const PROFILE_MENTION_START_PREFIX = 'pmh-';
+const RECENT_BOT_ADDED_BOOTSTRAP_LIMIT = 20;
+const RECENT_BOT_ADDED_WEBHOOK_SCAN_LIMIT = 100;
 type ChannelDialogTokenPayload = {
   v: 1;
   d: string;
@@ -468,10 +470,16 @@ export class AdminService {
     entityType: ManagedEntityTypeFilter = 'all',
     options: { refresh?: boolean } = {},
   ): Promise<ChatSummary[]> {
+    const recentBotAdded = await this.bootstrapRecentBotAddedEntities(user, entityType);
+
     if (options.refresh !== true) {
       const cached = await this.listChatsFromAllowlist(user.userId, entityType);
       const bootstrapped = await this.bootstrapCurrentChat(user, entityType);
-      const initial = this.mergeBootstrappedManagedEntities(cached, bootstrapped);
+      const initial = this.mergeManagedEntityGroups(
+        bootstrapped ? [bootstrapped] : [],
+        recentBotAdded,
+        cached,
+      );
       if (initial.length > 0) {
         return this.attachChannelOverview(initial);
       }
@@ -487,23 +495,110 @@ export class AdminService {
     }
 
     const cached = await this.listChatsFromAllowlist(user.userId, entityType);
-    if (cached.length > 0) {
-      return this.attachChannelOverview(cached);
-    }
-
     const bootstrapped = await this.bootstrapCurrentChat(user, entityType);
-    return bootstrapped ? this.attachChannelOverview([bootstrapped]) : [];
+    const fallback = this.mergeManagedEntityGroups(
+      bootstrapped ? [bootstrapped] : [],
+      recentBotAdded,
+      cached,
+    );
+    return fallback.length > 0 ? this.attachChannelOverview(fallback) : [];
   }
 
-  private mergeBootstrappedManagedEntities(
-    cached: ChatSummary[],
-    bootstrapped: ChatSummary | null,
-  ): ChatSummary[] {
-    if (!bootstrapped) {
-      return cached;
+  private mergeManagedEntityGroups(...groups: readonly ChatSummary[][]): ChatSummary[] {
+    const merged: ChatSummary[] = [];
+    const seen = new Set<string>();
+
+    for (const group of groups) {
+      for (const chat of group) {
+        if (seen.has(chat.id)) {
+          continue;
+        }
+
+        seen.add(chat.id);
+        merged.push(chat);
+      }
     }
 
-    return [bootstrapped, ...cached.filter((chat) => chat.id !== bootstrapped.id)];
+    return merged;
+  }
+
+  private async bootstrapRecentBotAddedEntities(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+  ): Promise<ChatSummary[]> {
+    const normalizedUserId = user.userId.trim();
+    if (!normalizedUserId) {
+      return [];
+    }
+
+    const rows = await this.prisma.$queryRaw<
+      Array<{
+        chat_id: string | null;
+        chat_title: string | null;
+        is_channel: string | null;
+      }>
+    >`
+      SELECT
+        NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') AS chat_id,
+        NULLIF(BTRIM(normalized_payload->'message'->>'chatTitle'), '') AS chat_title,
+        NULLIF(BTRIM(normalized_payload->'raw'->>'is_channel'), '') AS is_channel
+      FROM webhook_events
+      WHERE normalized_payload->>'type' = 'bot_added'
+        AND NULLIF(BTRIM(normalized_payload->'message'->>'senderId'), '') = ${normalizedUserId}
+      ORDER BY created_at DESC
+      LIMIT ${RECENT_BOT_ADDED_WEBHOOK_SCAN_LIMIT}
+    `;
+    const safeRows = Array.isArray(rows) ? rows : [];
+
+    const bootstrapped: ChatSummary[] = [];
+    const seen = new Set<string>();
+
+    for (const row of safeRows) {
+      const chatId = this.readTrimmedString(row.chat_id);
+      if (!chatId || seen.has(chatId)) {
+        continue;
+      }
+      seen.add(chatId);
+
+      const hintedEntityType: ManagedEntityType = row.is_channel === 'true' ? 'channel' : 'chat';
+      if (entityType !== 'all' && hintedEntityType !== entityType) {
+        continue;
+      }
+
+      const existing = await this.prisma.chat.findUnique({
+        where: { id: chatId },
+        select: {
+          title: true,
+        },
+      });
+      const persistedChat = await this.upsertUserChatAccess(
+        chatId,
+        normalizedUserId,
+        this.readTrimmedString(row.chat_title) ?? existing?.title ?? null,
+        hintedEntityType,
+        { updateEntityType: true },
+      );
+
+      const chat: ChatSummary = {
+        id: persistedChat.id,
+        title: persistedChat.title,
+        createdAt: persistedChat.createdAt.toISOString(),
+        entityType: this.fromPrismaEntityType(persistedChat.entityType),
+        link: null,
+        channelOverview: null,
+      };
+
+      if (this.isFallbackTitle(chat.id, chat.title)) {
+        await this.refreshChatTitle(chat);
+      }
+
+      bootstrapped.push(chat);
+      if (bootstrapped.length >= RECENT_BOT_ADDED_BOOTSTRAP_LIMIT) {
+        break;
+      }
+    }
+
+    return bootstrapped;
   }
 
   private async discoverManagedEntities(
