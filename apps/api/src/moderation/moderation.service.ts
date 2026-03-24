@@ -242,7 +242,6 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly ownBotUserIdVariants: Set<string>;
   private nightModeAnnounceTimer: NodeJS.Timeout | null = null;
   private nightModeAnnounceInFlight = false;
-  private nightModePausedLogAtMs = 0;
   private channelAutoPostTimer: NodeJS.Timeout | null = null;
   private channelAutoPostInFlight = false;
   private channelAutoPostBackoffUntilMs = 0;
@@ -8771,28 +8770,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private async shouldPauseBackgroundWork(
     task: 'night-mode-announcements' | 'channel-auto-post-buttons',
   ): Promise<boolean> {
+    if (task === 'night-mode-announcements') {
+      return false;
+    }
+
     const mode = await this.resolveSystemModeSnapshot();
     if (mode.mode !== 'degrade') {
       return false;
     }
 
     const now = Date.now();
-    if (task === 'night-mode-announcements') {
-      if (now - this.nightModePausedLogAtMs >= BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS) {
-        this.nightModePausedLogAtMs = now;
-        this.logger.log(
-          {
-            task,
-            mode: mode.mode,
-            source: mode.source,
-            reason: mode.reason,
-          },
-          'Paused moderation background work because the system is degraded',
-        );
-      }
-      return true;
-    }
-
     if (now - this.channelAutoPostPausedLogAtMs >= BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS) {
       this.channelAutoPostPausedLogAtMs = now;
       this.logger.log(
