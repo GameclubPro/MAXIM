@@ -2970,7 +2970,7 @@ describe('AdminService admin access validation', () => {
     const chatContextCache = createChatContextCacheMock();
     let resolveAdminIds!: (value: string[]) => void;
     const maxClient = {
-      getChatEditableAdminIds: jest.fn().mockImplementation(
+      getChatAdminIds: jest.fn().mockImplementation(
         () =>
           new Promise<string[]>((resolve) => {
             resolveAdminIds = resolve;
@@ -2992,10 +2992,29 @@ describe('AdminService admin access validation', () => {
 
     await Promise.resolve();
 
-    expect(maxClient.getChatEditableAdminIds).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
 
     resolveAdminIds(['admin-1']);
     await expect(Promise.all(pending)).resolves.toEqual([undefined, undefined, undefined]);
+  });
+
+  it('validates base admin access via the full MAX admin list', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatEditableAdminIds: jest.fn().mockResolvedValue([]),
+    };
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(service.assertChatAdmin('chat-1', user.userId, 'chat')).resolves.toBeUndefined();
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
+    expect(maxClient.getChatEditableAdminIds).not.toHaveBeenCalled();
   });
 
   it('falls back to persisted allowlist on transient MAX admin check failures', async () => {
@@ -3003,7 +3022,7 @@ describe('AdminService admin access validation', () => {
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([{ chatId: 'chat-1' }]);
     const chatContextCache = createChatContextCacheMock();
     const maxClient = {
-      getChatEditableAdminIds: jest.fn().mockRejectedValue(
+      getChatAdminIds: jest.fn().mockRejectedValue(
         Object.assign(new Error('timeout of 5000ms exceeded'), {
           code: 'ECONNABORTED',
         }),
@@ -3025,7 +3044,7 @@ describe('AdminService admin access validation', () => {
     const prisma = createPrismaMock();
     const chatContextCache = createChatContextCacheMock();
     const maxClient = {
-      getChatEditableAdminIds: jest.fn().mockRejectedValue(
+      getChatAdminIds: jest.fn().mockRejectedValue(
         Object.assign(new Error('timeout of 5000ms exceeded'), {
           code: 'ECONNABORTED',
         }),
@@ -3056,7 +3075,7 @@ describe('AdminService admin access validation', () => {
         }),
     });
     const maxClient = {
-      getChatEditableAdminIds: jest.fn().mockRejectedValue({
+      getChatAdminIds: jest.fn().mockRejectedValue({
         response: {
           status: 403,
           data: {
@@ -3086,7 +3105,7 @@ describe('AdminService admin access validation', () => {
         userId: 'admin-1',
       },
     });
-    expect(maxClient.getChatEditableAdminIds).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -9007,13 +9007,7 @@ export class AdminService {
     userId: string,
   ): Promise<AdminAccessResolution> {
     try {
-      const maxClientWithEditAccess = this.maxClient as MaxClientService & {
-        getChatEditableAdminIds?: (chatId: string) => Promise<string[]>;
-      };
-      const adminIds =
-        typeof maxClientWithEditAccess.getChatEditableAdminIds === 'function'
-          ? await maxClientWithEditAccess.getChatEditableAdminIds(chatId)
-          : await this.maxClient.getChatAdminIds(chatId);
+      const adminIds = await this.maxClient.getChatAdminIds(chatId);
       const hasAccess = adminIds.includes(userId);
       const cacheState: ChatAdminAccessState = hasAccess ? 'granted' : 'user_denied';
       await this.chatContextCache.setAdminAccess?.(chatId, userId, cacheState);
