@@ -2452,6 +2452,10 @@ export class AdminService {
       SETTINGS_SECTION_KEYS[parsed.data.section],
     );
 
+    if (parsed.data.section === 'links') {
+      await this.syncDomainAllowlistToChats(sourceChatId, result.appliedChatIds);
+    }
+
     return applySectionToAllResponseSchema.parse({
       section: parsed.data.section,
       ...result,
@@ -7476,6 +7480,55 @@ export class AdminService {
       return decodeURIComponent(value);
     } catch {
       return value;
+    }
+  }
+
+  private async syncDomainAllowlistToChats(
+    sourceChatId: string,
+    targetChatIds: readonly string[],
+  ): Promise<void> {
+    const rows = await this.prisma.domainAllowlist.findMany({
+      where: this.activeDomainWhere(sourceChatId),
+      orderBy: [{ removeAfterAt: 'asc' }, { domain: 'asc' }],
+      select: {
+        domain: true,
+        removeAfterAt: true,
+      },
+    });
+    const sourceEntries = await this.canonicalizeActiveAllowlistRows(sourceChatId, rows);
+
+    for (const chatId of targetChatIds) {
+      if (chatId === sourceChatId) {
+        continue;
+      }
+
+      await this.prisma.$transaction([
+        this.prisma.domainAllowlist.deleteMany({
+          where: {
+            chatId,
+          },
+        }),
+        ...sourceEntries.map((entry) =>
+          this.prisma.domainAllowlist.upsert({
+            where: {
+              chatId_domain: {
+                chatId,
+                domain: entry.normalizedValue,
+              },
+            },
+            create: {
+              chatId,
+              domain: entry.normalizedValue,
+              removeAfterAt: entry.removeAfterAt ? new Date(entry.removeAfterAt) : null,
+            },
+            update: {
+              removeAfterAt: entry.removeAfterAt ? new Date(entry.removeAfterAt) : null,
+            },
+          }),
+        ),
+      ]);
+
+      await this.chatContextCache.invalidate(chatId);
     }
   }
 

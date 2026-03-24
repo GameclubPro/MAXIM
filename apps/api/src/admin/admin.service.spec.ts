@@ -3304,6 +3304,95 @@ describe('AdminService settings screen endpoints', () => {
       appliedChatIds: ['chat-1', 'chat-2'],
     });
   });
+
+  it('syncs allowlist entries when applying links section to all chats', async () => {
+    const prisma = createPrismaMock();
+    const chatContextCache = createChatContextCacheMock();
+    prisma.domainAllowlist.findMany.mockResolvedValueOnce([
+      {
+        domain: 'domain:max.ru',
+        removeAfterAt: null,
+      },
+      {
+        domain: 'https://max.ru/join/srAq1j6jwW-enxSWrppR16_AC_NZpAA3oy-gyVPgGCsl',
+        removeAfterAt: new Date('2026-03-31T09:00:00.000Z'),
+      },
+    ]);
+
+    const service = new AdminService(
+      prisma as never,
+      {
+        getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      } as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    jest.spyOn(service, 'getSettings').mockResolvedValue(
+      chatSettingsSchema.parse({
+        linkPolicy: 'ALLOWLIST_ONLY',
+      }),
+    );
+    jest.spyOn(service, 'listChats').mockResolvedValue([
+      {
+        id: 'chat-2',
+        title: 'Регион 2',
+        entityType: 'chat',
+        createdAt: '2026-03-02T00:00:00.000Z',
+        link: null,
+        channelOverview: null,
+      },
+    ]);
+
+    await service.applySettingsSectionToAllChats(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { section: 'links' },
+    );
+
+    expect(prisma.domainAllowlist.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-2',
+      },
+    });
+    expect(prisma.domainAllowlist.upsert).toHaveBeenCalledWith({
+      where: {
+        chatId_domain: {
+          chatId: 'chat-2',
+          domain: 'domain:max.ru',
+        },
+      },
+      create: {
+        chatId: 'chat-2',
+        domain: 'domain:max.ru',
+        removeAfterAt: null,
+      },
+      update: {
+        removeAfterAt: null,
+      },
+    });
+    expect(prisma.domainAllowlist.upsert).toHaveBeenCalledWith({
+      where: {
+        chatId_domain: {
+          chatId: 'chat-2',
+          domain: 'https://max.ru/join/srAq1j6jwW-enxSWrppR16_AC_NZpAA3oy-gyVPgGCsl',
+        },
+      },
+      create: {
+        chatId: 'chat-2',
+        domain: 'https://max.ru/join/srAq1j6jwW-enxSWrppR16_AC_NZpAA3oy-gyVPgGCsl',
+        removeAfterAt: new Date('2026-03-31T09:00:00.000Z'),
+      },
+      update: {
+        removeAfterAt: new Date('2026-03-31T09:00:00.000Z'),
+      },
+    });
+  });
 });
 
 describe('AdminService admin access validation', () => {
