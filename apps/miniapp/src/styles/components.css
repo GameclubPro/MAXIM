@@ -4784,14 +4784,13 @@
 
 .allowlist-composer {
   display: grid;
-  gap: 12px;
-  padding: 12px;
-  border-radius: 20px;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 18px;
   border: 1px solid rgba(62, 96, 127, 0.14);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(245, 250, 255, 0.82)),
     rgba(255, 255, 255, 0.78);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
 }
 
 .allowlist-composer__head {
@@ -4809,53 +4808,30 @@
 .allowlist-composer__mode .segmented-control__item {
   flex: 1 1 0;
   justify-content: center;
-}
-
-.allowlist-composer__entry {
-  display: grid;
-  gap: 10px;
-  padding: 12px;
-  border-radius: 18px;
-  border: 1px solid rgba(62, 96, 127, 0.12);
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(244, 249, 255, 0.9)),
-    rgba(255, 255, 255, 0.9);
-}
-
-.allowlist-composer__entry-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.allowlist-composer__entry-label {
-  font-size: 0.86rem;
-  font-weight: 700;
-  color: var(--text-primary);
+  min-height: 42px;
+  padding: 9px 12px;
 }
 
 .allowlist-add-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: stretch;
-  gap: 10px;
+  gap: 8px;
 }
 
 .allowlist-add-row input {
-  min-height: 52px;
-  height: 52px;
+  min-height: 48px;
+  height: 48px;
   width: 100%;
-  border-radius: 18px;
-  border: 1.5px solid rgba(62, 96, 127, 0.16);
+  border-radius: 16px;
+  border: 1.5px solid rgba(62, 96, 127, 0.15);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(246, 250, 255, 0.94)),
     rgba(255, 255, 255, 0.96);
-  padding: 0 16px;
-  font-size: 1rem;
-  font-weight: 600;
+  padding: 0 14px;
+  font-size: 0.96rem;
+  font-weight: 500;
   color: var(--text-primary);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.84);
 }
 
 .allowlist-add-row input::placeholder {
@@ -4870,29 +4846,35 @@
 }
 
 .allowlist-add-row__button {
-  width: 100%;
+  min-width: 108px;
   min-height: 48px;
+  white-space: nowrap;
 }
 
 .allowlist-composer__examples {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  scrollbar-width: none;
+}
+
+.allowlist-composer__examples::-webkit-scrollbar {
+  display: none;
 }
 
 .allowlist-composer__example {
-  min-height: 38px;
-  border-radius: 14px;
+  min-height: 34px;
+  border-radius: 999px;
   border: 1px solid rgba(62, 96, 127, 0.14);
   background: rgba(255, 255, 255, 0.74);
-  padding: 8px 12px;
+  padding: 0 12px;
   color: var(--text-secondary);
-  font-size: 0.76rem;
+  font-size: 0.72rem;
   font-weight: 600;
-  text-align: left;
+  text-align: center;
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  flex: 0 0 auto;
   transition:
     border-color 0.2s ease,
     background-color 0.2s ease,
@@ -5238,27 +5220,25 @@
 @media (max-width: 390px) {
   .allowlist-composer {
     gap: 10px;
-    padding: 10px;
+    padding: 9px;
   }
 
-  .allowlist-composer__head,
-  .allowlist-composer__entry-head {
+  .allowlist-composer__head {
     align-items: flex-start;
   }
 
-  .allowlist-composer__entry {
-    padding: 10px;
-  }
-
-  .allowlist-composer__examples {
+  .allowlist-add-row {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .allowlist-add-row__button {
+    width: 100%;
+    min-width: 0;
+  }
+
   .allowlist-add-row input {
-    min-height: 50px;
-    height: 50px;
-    padding: 0 14px;
-    font-size: 0.96rem;
+    min-height: 46px;
+    height: 46px;
   }
 }
 
