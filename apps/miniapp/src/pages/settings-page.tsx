@@ -1582,14 +1582,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       ...(focusSection === 'links'
         ? { links: true }
         : focusSection === 'rules'
-        ? { rules: true }
-        : focusSection === 'comments'
-          ? { comments: true }
-          : focusSection === 'giveaway'
-            ? { giveaway: true }
-            : focusSection === 'requiredSubscription'
-              ? { requiredSubscription: true }
-              : { mailing: true }),
+          ? { rules: true }
+          : focusSection === 'comments'
+            ? { comments: true }
+            : focusSection === 'giveaway'
+              ? { giveaway: true }
+              : focusSection === 'requiredSubscription'
+                ? { requiredSubscription: true }
+                : { mailing: true }),
     });
   }, [focusSection]);
 
@@ -2949,8 +2949,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     const normalizedDomain =
       domainInputMode === 'DOMAIN' ? normalizeAllowlistDomain(domainInput) : null;
-    const normalizedLink =
-      domainInputMode === 'EXACT' ? normalizeAllowlistLink(domainInput) : null;
+    const normalizedLink = domainInputMode === 'EXACT' ? normalizeAllowlistLink(domainInput) : null;
     const normalizedValue = normalizeStoredAllowlistEntry(domainInput, domainInputMode);
     const normalizedInput = normalizedDomain ?? normalizedLink;
 
@@ -3293,12 +3292,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setOpenHintKey((current) => (current === key ? null : key));
   }
 
-  function renderInlineHint(
-    hintKey: HintKey,
-    hintId: string,
-    text: string,
-    hidden = false,
-  ) {
+  function renderInlineHint(hintKey: HintKey, hintId: string, text: string, hidden = false) {
     if (hidden || openHintKey !== hintKey) {
       return null;
     }
@@ -4227,9 +4221,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   onClick={() => setFieldValue('linkPolicy', option.value)}
                                 >
                                   <span className="policy-card__content">
-                                    <span className="policy-card__eyebrow">
-                                      {option.eyebrow}
-                                    </span>
+                                    <span className="policy-card__eyebrow">{option.eyebrow}</span>
                                     <span className="policy-card__text">
                                       <span className="policy-card__title">{option.label}</span>
                                       <small className="policy-card__description">
@@ -4274,14 +4266,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     </SettingsHintAnchor>
                                   </div>
                                 </div>
-                                <span className="chip chip--success">{allowlistEntries.length}</span>
+                                <span className="chip chip--success">
+                                  {allowlistEntries.length}
+                                </span>
                               </div>
 
                               <div className="allowlist-composer">
                                 <div className="allowlist-composer__head">
-                                  <span className="allowlist-composer__label">
-                                    Что разрешить
-                                  </span>
+                                  <span className="allowlist-composer__label">Что разрешить</span>
                                   <SettingsHintAnchor
                                     hintKey="linkAllowlistMode"
                                     openHintKey={openHintKey}
@@ -4425,17 +4417,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                       : 'chip--success',
                                                   )}
                                                 >
-                                                  {scheduledAtLabel
-                                                    ? 'По таймеру'
-                                                    : 'Без таймера'}
+                                                  {scheduledAtLabel ? 'По таймеру' : 'Без таймера'}
                                                 </span>
                                               </div>
 
                                               <small className="allowlist-item__meta">
-                                                {formatAllowlistMetaLabel(
-                                                  entry,
-                                                  scheduledAtLabel,
-                                                )}
+                                                {formatAllowlistMetaLabel(entry, scheduledAtLabel)}
                                               </small>
 
                                               <div className="allowlist-item__actions">
@@ -4448,9 +4435,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                   )}
                                                   aria-label={`Запланировать удаление ${entry.domain}`}
                                                   title="Запланировать удаление"
-                                                  onClick={() =>
-                                                    toggleDomainScheduleEditor(entry)
-                                                  }
+                                                  onClick={() => toggleDomainScheduleEditor(entry)}
                                                   disabled={isDomainMutationPending}
                                                 >
                                                   <CalendarIcon />
@@ -4539,9 +4524,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                       type="button"
                                                       className="button button--accent"
                                                       onClick={() =>
-                                                        submitDomainSchedule(
-                                                          entry.normalizedValue,
-                                                        )
+                                                        submitDomainSchedule(entry.normalizedValue)
                                                       }
                                                       disabled={isDomainMutationPending}
                                                     >
@@ -4554,9 +4537,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                         type="button"
                                                         className="button button--ghost"
                                                         onClick={() =>
-                                                          clearDomainSchedule(
-                                                            entry.normalizedValue,
-                                                          )
+                                                          clearDomainSchedule(entry.normalizedValue)
                                                         }
                                                         disabled={isDomainMutationPending}
                                                       >
@@ -4862,6 +4843,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 {draft.linkBotButtonEnabled ? (
                                   <ManagedLinkButtonFieldsSlot
                                     api={api}
+                                    profilePresetMode="user"
                                     urlValue={draft.linkBotButtonUrl}
                                     onUrlChange={(nextValue) =>
                                       setFieldValue('linkBotButtonUrl', nextValue)
@@ -4876,7 +4858,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     textPlaceholder="Открыть"
                                   />
                                 ) : null}
-
                               </div>
                             ) : null}
                           </>
@@ -5472,6 +5453,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               {draft.greetingBotButtonEnabled ? (
                                 <ManagedLinkButtonFieldsSlot
                                   api={api}
+                                  profilePresetMode="user"
                                   urlValue={draft.greetingBotButtonUrl}
                                   onUrlChange={(nextValue) =>
                                     setFieldValue('greetingBotButtonUrl', nextValue)
@@ -5486,7 +5468,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   textPlaceholder="Открыть"
                                 />
                               ) : null}
-
                             </div>
                           ) : null}
                         </>
@@ -6135,6 +6116,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               {draft.textFiltersBotButtonEnabled ? (
                                 <ManagedLinkButtonFieldsSlot
                                   api={api}
+                                  profilePresetMode="user"
                                   urlValue={draft.textFiltersBotButtonUrl}
                                   onUrlChange={(nextValue) =>
                                     setFieldValue('textFiltersBotButtonUrl', nextValue)
@@ -6149,7 +6131,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   textPlaceholder="Правила чата"
                                 />
                               ) : null}
-
                             </div>
                           ) : null}
                         </>
@@ -6337,6 +6318,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             {draft.thematicFiltersBotButtonEnabled ? (
                               <ManagedLinkButtonFieldsSlot
                                 api={api}
+                                profilePresetMode="user"
                                 urlValue={draft.thematicFiltersBotButtonUrl}
                                 onUrlChange={(nextValue) =>
                                   setFieldValue('thematicFiltersBotButtonUrl', nextValue)
@@ -6865,6 +6847,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           {draft.duplicateBotButtonEnabled ? (
                             <ManagedLinkButtonFieldsSlot
                               api={api}
+                              profilePresetMode="user"
                               urlValue={draft.duplicateBotButtonUrl}
                               onUrlChange={(nextValue) =>
                                 setFieldValue('duplicateBotButtonUrl', nextValue)
@@ -6879,7 +6862,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               textPlaceholder="Открыть"
                             />
                           ) : null}
-
                         </div>
                       ) : null}
                     </div>
@@ -7729,6 +7711,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           {draft.messageLimitsBotButtonEnabled ? (
                             <ManagedLinkButtonFieldsSlot
                               api={api}
+                              profilePresetMode="user"
                               urlValue={draft.messageLimitsBotButtonUrl}
                               onUrlChange={(nextValue) =>
                                 setFieldValue('messageLimitsBotButtonUrl', nextValue)
@@ -7743,7 +7726,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               textPlaceholder="Открыть"
                             />
                           ) : null}
-
                         </div>
                       ) : null}
                     </div>
@@ -8080,9 +8062,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             >
                               <div className="settings-native-toggle__row">
                                 <div className="settings-native-toggle__title-wrap">
-                                  <span className="settings-native-toggle__title">
-                                    Комментарии
-                                  </span>
+                                  <span className="settings-native-toggle__title">Комментарии</span>
                                   <div className="settings-native-toggle__title-actions">
                                     <SettingsHintAnchor
                                       hintKey="nightComments"
@@ -8192,7 +8172,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   textPlaceholder="Правила чата"
                                 />
                               ) : null}
-
                             </div>
                           ) : null}
 

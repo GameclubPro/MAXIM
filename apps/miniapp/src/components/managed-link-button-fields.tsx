@@ -1,4 +1,8 @@
-import type { ChatSummary } from '@maxim/contracts';
+import {
+  BOT_BUTTON_USER_PROFILE_URL_PLACEHOLDER,
+  isBotButtonUserProfileUrlPlaceholder,
+  type ChatSummary,
+} from '@maxim/contracts';
 import { useQuery } from '@tanstack/react-query';
 import { useDeferredValue, useEffect, useId, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -24,6 +28,7 @@ export type ManagedLinkButtonFieldsProps = {
   urlPlaceholder?: string;
   textPlaceholder?: string;
   textMaxLength?: number;
+  profilePresetMode?: 'self' | 'user';
 };
 
 type ManagedLinkOption = {
@@ -173,6 +178,7 @@ export function ManagedLinkButtonFields({
   urlPlaceholder = 'https://max.ru/channel/...',
   textPlaceholder = 'Открыть',
   textMaxLength = 32,
+  profilePresetMode = 'self',
 }: ManagedLinkButtonFieldsProps) {
   const sheetTitleId = useId();
   const [sheetOpen, setSheetOpen] = useState(false);
@@ -180,6 +186,8 @@ export function ManagedLinkButtonFields({
   const [searchValue, setSearchValue] = useState('');
   const deferredSearchValue = useDeferredValue(searchValue);
   const comparableUrlValue = useMemo(() => normalizeComparableUrl(urlValue), [urlValue]);
+  const usesDynamicUserProfile = profilePresetMode === 'user';
+  const isUserProfilePlaceholderSelected = isBotButtonUserProfileUrlPlaceholder(urlValue);
 
   const meQuery = useQuery({
     queryKey: ['me', 'managed-link-picker'],
@@ -203,6 +211,9 @@ export function ManagedLinkButtonFields({
   const profileUsername = meQuery.data?.username?.trim() ?? '';
   const profileDisplayName = meQuery.data?.displayName?.trim() || `@${profileUsername}`;
   const profileUrl = profileUsername ? buildProfileUrl(profileUsername) : '';
+  const profilePresetUrl = usesDynamicUserProfile
+    ? BOT_BUTTON_USER_PROFILE_URL_PLACEHOLDER
+    : profileUrl;
   const chatOptions = useMemo(
     () => buildManagedLinkOptions(chatsQuery.data, 'chat', urlValue),
     [chatsQuery.data, urlValue],
@@ -259,6 +270,16 @@ export function ManagedLinkButtonFields({
   }, [channelOptions, chatOptions, comparableUrlValue]);
 
   const selectedManagedLink = useMemo<SelectedManagedLink | null>(() => {
+    if (usesDynamicUserProfile && isUserProfilePlaceholderSelected) {
+      return {
+        kind: 'profile',
+        label: 'Профиль пользователя',
+        title: 'Подставится автоматически',
+        subtitle: 'Если у пользователя есть username',
+        tab: null,
+      };
+    }
+
     if (profileUrl && normalizeComparableUrl(profileUrl) === comparableUrlValue) {
       return {
         kind: 'profile',
@@ -292,22 +313,34 @@ export function ManagedLinkButtonFields({
     return null;
   }, [
     comparableUrlValue,
+    isUserProfilePlaceholderSelected,
     profileDisplayName,
     profileUrl,
     profileUsername,
     selectedEntity,
     urlValue,
+    usesDynamicUserProfile,
   ]);
 
   const hasEntityLinks = chatOptions.length > 0 || channelOptions.length > 0;
   const isSheetLoading =
-    (sheetTab === 'chat' && chatsQuery.isLoading) || (sheetTab === 'channel' && channelsQuery.isLoading);
+    (sheetTab === 'chat' && chatsQuery.isLoading) ||
+    (sheetTab === 'channel' && channelsQuery.isLoading);
   const sheetError = sheetTab === 'chat' ? chatsQuery.error : channelsQuery.error;
-  const isProfileActive = Boolean(
-    profileUrl && normalizeComparableUrl(profileUrl) === comparableUrlValue,
-  );
+  const isProfileActive = usesDynamicUserProfile
+    ? isUserProfilePlaceholderSelected
+    : Boolean(profileUrl && normalizeComparableUrl(profileUrl) === comparableUrlValue);
   const isChatActive = selectedEntity?.entityType === 'chat';
   const isChannelActive = selectedEntity?.entityType === 'channel';
+  const profilePresetCaption = usesDynamicUserProfile
+    ? 'пользователя'
+    : profileUsername
+      ? `@${profileUsername}`
+      : 'Нужен username';
+  const displayedUrlValue = isUserProfilePlaceholderSelected ? '' : urlValue;
+  const effectiveUrlPlaceholder = isUserProfilePlaceholderSelected
+    ? 'Подставится автоматически'
+    : urlPlaceholder;
 
   function maybeAutofillButtonText(nextValue: string) {
     const normalizedCurrentValue = textValue.trim().toLowerCase();
@@ -335,11 +368,11 @@ export function ManagedLinkButtonFields({
       <button
         type="button"
         className={cn('managed-link-picker__quick-action', isProfileActive && 'is-active')}
-        onClick={() => applyPreset(profileUrl, 'Профиль')}
-        disabled={disabled || !profileUrl}
+        onClick={() => applyPreset(profilePresetUrl, 'Профиль')}
+        disabled={disabled || (!usesDynamicUserProfile && !profileUrl)}
       >
         <strong>Профиль</strong>
-        <small>{profileUsername ? `@${profileUsername}` : 'Нужен username'}</small>
+        <small>{profilePresetCaption}</small>
       </button>
 
       <button
@@ -359,7 +392,9 @@ export function ManagedLinkButtonFields({
         disabled={disabled || (!channelsQuery.isLoading && channelOptions.length === 0)}
       >
         <strong>Каналы</strong>
-        <small>{channelsQuery.isLoading ? 'Загрузка...' : formatLinkCount(channelOptions.length)}</small>
+        <small>
+          {channelsQuery.isLoading ? 'Загрузка...' : formatLinkCount(channelOptions.length)}
+        </small>
       </button>
     </div>
   );
@@ -373,7 +408,9 @@ export function ManagedLinkButtonFields({
           {selectedManagedLink ? (
             <div className="managed-link-picker__selection">
               <div className="managed-link-picker__selection-copy">
-                <span className="managed-giveaway__badge is-muted">{selectedManagedLink.label}</span>
+                <span className="managed-giveaway__badge is-muted">
+                  {selectedManagedLink.label}
+                </span>
                 <strong>{selectedManagedLink.title}</strong>
                 <small>{selectedManagedLink.subtitle}</small>
               </div>
@@ -396,16 +433,18 @@ export function ManagedLinkButtonFields({
             <input
               type="url"
               inputMode="url"
-              value={urlValue}
+              value={displayedUrlValue}
               onChange={(event) => onUrlChange(event.target.value)}
-              placeholder={urlPlaceholder}
+              placeholder={effectiveUrlPlaceholder}
               disabled={disabled}
             />
             {urlError ? (
               <small className="field__hint">{urlError}</small>
             ) : (
               <small className="field__hint">
-                Можно выбрать вариант сверху или вставить свою ссылку max.ru.
+                {usesDynamicUserProfile && isUserProfilePlaceholderSelected
+                  ? 'Бот подставит профиль пользователя автоматически, если у него есть username.'
+                  : 'Можно выбрать вариант сверху или вставить свою ссылку max.ru.'}
               </small>
             )}
           </label>
@@ -524,7 +563,10 @@ export function ManagedLinkButtonFields({
                           <button
                             key={`${option.entityType}-${option.id}`}
                             type="button"
-                            className={cn('managed-giveaway-modal__option', selected && 'is-selected')}
+                            className={cn(
+                              'managed-giveaway-modal__option',
+                              selected && 'is-selected',
+                            )}
                             aria-pressed={selected}
                             onClick={() =>
                               applyPreset(

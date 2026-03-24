@@ -83,6 +83,7 @@ export const DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES = Object.freeze([
   DELETE_BOT_MESSAGES_DELAY_MIN_MINUTES,
   ...Array.from({ length: DELETE_BOT_MESSAGES_DELAY_MAX_MINUTES }, (_, index) => index + 1),
 ]);
+export const BOT_BUTTON_USER_PROFILE_URL_PLACEHOLDER = 'https://max.ru/__maxim__/user-profile';
 
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
 const duplicateMaxCountSchema = z.number().int().min(2).max(20);
@@ -228,6 +229,10 @@ function isValidBotButtonUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+export function isBotButtonUserProfileUrlPlaceholder(value: string): boolean {
+  return value.trim() === BOT_BUTTON_USER_PROFILE_URL_PLACEHOLDER;
 }
 
 const ALLOWLIST_URL_CANDIDATE_PATTERN =
@@ -1575,32 +1580,34 @@ export const addAdminRequestSchema = z.object({
   userId: z.string(),
 });
 
-export const addDomainRequestSchema = z.object({
-  domain: z.string().trim().min(3).max(2_048),
-  matchType: allowlistMatchTypeSchema.optional(),
-}).superRefine((value, ctx) => {
-  const normalized =
-    value.matchType === 'DOMAIN'
-      ? normalizeAllowlistDomain(value.domain)
-      : value.matchType === 'EXACT'
-        ? normalizeAllowlistLink(value.domain)
-        : normalizeAllowlistLink(value.domain) ?? normalizeAllowlistDomain(value.domain);
-
-  if (normalized) {
-    return;
-  }
-
-  ctx.addIssue({
-    code: z.ZodIssueCode.custom,
-    message:
+export const addDomainRequestSchema = z
+  .object({
+    domain: z.string().trim().min(3).max(2_048),
+    matchType: allowlistMatchTypeSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    const normalized =
       value.matchType === 'DOMAIN'
-        ? 'Укажите корректный домен.'
+        ? normalizeAllowlistDomain(value.domain)
         : value.matchType === 'EXACT'
-          ? 'Укажите корректную ссылку (http/https).'
-          : 'Укажите корректную ссылку или домен.',
-    path: ['domain'],
+          ? normalizeAllowlistLink(value.domain)
+          : (normalizeAllowlistLink(value.domain) ?? normalizeAllowlistDomain(value.domain));
+
+    if (normalized) {
+      return;
+    }
+
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        value.matchType === 'DOMAIN'
+          ? 'Укажите корректный домен.'
+          : value.matchType === 'EXACT'
+            ? 'Укажите корректную ссылку (http/https).'
+            : 'Укажите корректную ссылку или домен.',
+      path: ['domain'],
+    });
   });
-});
 
 export const domainAllowlistEntrySchema = z.object({
   domain: z.string().trim().min(3).max(2_048),

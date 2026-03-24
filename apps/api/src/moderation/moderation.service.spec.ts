@@ -1,4 +1,4 @@
-import type { MaxUpdate } from '@maxim/contracts';
+import { BOT_BUTTON_USER_PROFILE_URL_PLACEHOLDER, type MaxUpdate } from '@maxim/contracts';
 import { SanctionAction } from '@prisma/client';
 import { ModerationService } from './moderation.service';
 
@@ -6969,6 +6969,159 @@ describe('ModerationService', () => {
     );
   });
 
+  it('resolves dynamic user profile button for link explanation', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            linkBotMessageEnabled: true,
+            linkBotButtonEnabled: true,
+            linkBotButtonUrl: BOT_BUTTON_USER_PROFILE_URL_PLACEHOLDER,
+            linkBotButtonText: 'Профиль',
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Link detected' }],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+      getChatMemberProfiles: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'user-1',
+            {
+              userId: 'user-1',
+              username: 'aleksey',
+              displayName: 'Алексей',
+              avatarUrl: null,
+            },
+          ],
+        ]),
+      ),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['user-1']);
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      majorExplanation('Алексей', 'снято с линии', 'в этом чате ссылки не проходят, без ссылок'),
+      {
+        button: {
+          text: 'Профиль',
+          url: 'https://max.ru/aleksey',
+        },
+        textFormat: 'markdown',
+      },
+    );
+  });
+
+  it('skips dynamic user profile button when target user has no username', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            linkBotMessageEnabled: true,
+            linkBotButtonEnabled: true,
+            linkBotButtonUrl: BOT_BUTTON_USER_PROFILE_URL_PLACEHOLDER,
+            linkBotButtonText: 'Профиль',
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [{ ruleCode: 'LINK_BLOCKED', score: 0.9, reason: 'Link detected' }],
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+      getChatMemberProfiles: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'user-1',
+            {
+              userId: 'user-1',
+              username: null,
+              displayName: 'Алексей',
+              avatarUrl: null,
+            },
+          ],
+        ]),
+      ),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      majorExplanation('Алексей', 'снято с линии', 'в этом чате ссылки не проходят, без ссылок'),
+      {
+        textFormat: 'markdown',
+      },
+    );
+  });
+
   it('does not send repeated link explanation when warning stage is disabled', async () => {
     const prisma = {
       chat: {
@@ -9096,7 +9249,9 @@ describe('ModerationService', () => {
 
       await service.handleUpdate(createUpdate());
 
-      expect(maxClient.hasChatMember).toHaveBeenCalledWith('channel-1', 'user-1');
+      expect(maxClient.hasChatMember).toHaveBeenCalledWith('channel-1', 'user-1', {
+        trafficClass: 'critical',
+      });
       expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
       expect(maxClient.deleteMessage).not.toHaveBeenCalled();
       expect(maxClient.sendMessage).not.toHaveBeenCalled();
