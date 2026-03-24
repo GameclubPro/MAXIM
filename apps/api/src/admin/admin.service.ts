@@ -469,20 +469,55 @@ export class AdminService {
     if (options.refresh !== true) {
       const cached = await this.listChatsFromAllowlist(user.userId, entityType);
       const bootstrapped = await this.bootstrapCurrentChat(user, entityType);
-      const initial = bootstrapped
-        ? [bootstrapped, ...cached.filter((chat) => chat.id !== bootstrapped.id)]
-        : cached;
+      const initial = this.mergeBootstrappedManagedEntities(cached, bootstrapped);
       if (initial.length > 0) {
         return this.attachChannelOverview(initial);
       }
 
-      return [];
+      return this.discoverManagedEntities(user, entityType, { respectCooldown: true });
     }
 
+    const discovered = await this.discoverManagedEntities(user, entityType, {
+      respectCooldown: false,
+    });
+    if (discovered.length > 0) {
+      return discovered;
+    }
+
+    const cached = await this.listChatsFromAllowlist(user.userId, entityType);
+    if (cached.length > 0) {
+      return this.attachChannelOverview(cached);
+    }
+
+    const bootstrapped = await this.bootstrapCurrentChat(user, entityType);
+    return bootstrapped ? this.attachChannelOverview([bootstrapped]) : [];
+  }
+
+  private mergeBootstrappedManagedEntities(
+    cached: ChatSummary[],
+    bootstrapped: ChatSummary | null,
+  ): ChatSummary[] {
+    if (!bootstrapped) {
+      return cached;
+    }
+
+    return [bootstrapped, ...cached.filter((chat) => chat.id !== bootstrapped.id)];
+  }
+
+  private async discoverManagedEntities(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter,
+    options: { respectCooldown: boolean },
+  ): Promise<ChatSummary[]> {
     const refreshCooldownKey = this.buildManagedEntitiesRefreshCooldownKey(user.userId, entityType);
     if (
       !(await this.isManagedEntitiesRefreshBackoffActive()) &&
-      !(await this.isManagedEntitiesRefreshCooldownActive(user.userId, entityType, refreshCooldownKey))
+      (!options.respectCooldown ||
+        !(await this.isManagedEntitiesRefreshCooldownActive(
+          user.userId,
+          entityType,
+          refreshCooldownKey,
+        )))
     ) {
       try {
         const remoteChats = await this.maxClient.listBotChats();
@@ -571,13 +606,7 @@ export class AdminService {
       }
     }
 
-    const cached = await this.listChatsFromAllowlist(user.userId, entityType);
-    if (cached.length > 0) {
-      return this.attachChannelOverview(cached);
-    }
-
-    const bootstrapped = await this.bootstrapCurrentChat(user, entityType);
-    return bootstrapped ? this.attachChannelOverview([bootstrapped]) : [];
+    return [];
   }
 
   async getChannelStats(

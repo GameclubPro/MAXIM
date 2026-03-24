@@ -2361,6 +2361,85 @@ describe('AdminService.listChannels', () => {
     expect(maxClient.listBotChats).not.toHaveBeenCalled();
   });
 
+  it('auto-discovers channels on default load when allowlist cache is empty', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-24T00:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    const cachedChannel = {
+      chat: {
+        id: 'channel-1',
+        title: 'Новости MAX',
+        createdAt: new Date('2026-03-02T10:00:00.000Z'),
+        entityType: 'CHANNEL',
+      },
+    };
+    let allowlistRows: typeof cachedChannel[] = [];
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      createdAt: new Date('2026-03-02T10:00:00.000Z'),
+      entityType: 'CHANNEL',
+    });
+    prisma.chatAdminAllowlist.findMany.mockImplementation(async () => allowlistRows);
+    prisma.chatAdminAllowlist.upsert.mockImplementation(async () => {
+      allowlistRows = [cachedChannel];
+      return undefined;
+    });
+    prisma.channelSettings.findMany.mockResolvedValue([]);
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'channel-1',
+          title: 'Новости MAX',
+          lastEventTime: 200,
+          entityType: 'channel',
+          link: 'https://max.ru/news',
+        },
+      ]),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+
+    const chatContextCache = createChatContextCacheMock();
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.listChannels({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([
+      {
+        id: 'channel-1',
+        title: 'Новости MAX',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'channel',
+        link: 'https://max.ru/news',
+        channelOverview: {
+          enabledScenariosCount: 1,
+          commentsEnabled: true,
+          postSuggestionsEnabled: false,
+          commentsModerationEnabled: false,
+        },
+      },
+    ]);
+
+    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
+    expect(chatContextCache.activateManagedEntitiesRefreshCooldown).toHaveBeenCalledWith(
+      'admin-1',
+      'channel',
+      30,
+    );
+  });
+
   it('falls back to cached channels and backs off refresh after MAX API throttling', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockImplementation(async (args?: { where?: unknown }) => {
@@ -2449,7 +2528,7 @@ describe('AdminService.listChannels', () => {
     expect(chatContextCache.activateManagedEntitiesRefreshBackoff).toHaveBeenCalledWith(60);
   });
 
-  it('reuses cached channels during successful refresh cooldown before hitting MAX API again', async () => {
+  it('re-runs remote discovery on repeated explicit refreshes even during success cooldown', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-24T00:00:00.000Z'));
 
     const prisma = createPrismaMock();
@@ -2519,20 +2598,13 @@ describe('AdminService.listChannels', () => {
       expect.arrayContaining([expect.objectContaining({ id: 'channel-1' })]),
     );
 
-    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
+    expect(maxClient.listBotChats).toHaveBeenCalledTimes(2);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(2);
     expect(chatContextCache.activateManagedEntitiesRefreshCooldown).toHaveBeenCalledWith(
       'admin-1',
       'channel',
       30,
     );
-
-    jest.advanceTimersByTime(30_001);
-
-    await expect(service.listChannels(user, { refresh: true })).resolves.toEqual(
-      expect.arrayContaining([expect.objectContaining({ id: 'channel-1' })]),
-    );
-
-    expect(maxClient.listBotChats).toHaveBeenCalledTimes(2);
   });
 });
 

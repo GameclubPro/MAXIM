@@ -23,6 +23,7 @@ import {
 } from './lazy-pages';
 
 type ManagedTab = 'chat' | 'channel';
+const LIST_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 15_000;
 
 export function ChatsPage({ api }: { api: ApiTransport }) {
   const [searchParams] = useSearchParams();
@@ -37,6 +38,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   );
   const [loadError, setLoadError] = useState<Error | null>(null);
   const requestIdRef = useRef(0);
+  const lastRefreshAtRef = useRef(0);
   const deferredQuery = useDeferredValue(query);
   const activeTab = normalizeEntityType(
     searchParams.get('view'),
@@ -105,10 +107,39 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   }, [activeEntities, deferredQuery]);
 
   function handleRefresh() {
+    lastRefreshAtRef.current = Date.now();
     startTransition(() => {
       setRefreshNonce((current) => current + 1);
     });
   }
+
+  useEffect(() => {
+    const refreshAfterReturn = () => {
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        return;
+      }
+      if (loadingState === 'loading' || loadingState === 'refreshing') {
+        return;
+      }
+
+      const now = Date.now();
+      if (now - lastRefreshAtRef.current < LIST_VISIBILITY_REFRESH_MIN_INTERVAL_MS) {
+        return;
+      }
+
+      handleRefresh();
+    };
+
+    window.addEventListener('focus', refreshAfterReturn);
+    window.addEventListener('pageshow', refreshAfterReturn);
+    document.addEventListener('visibilitychange', refreshAfterReturn);
+
+    return () => {
+      window.removeEventListener('focus', refreshAfterReturn);
+      window.removeEventListener('pageshow', refreshAfterReturn);
+      document.removeEventListener('visibilitychange', refreshAfterReturn);
+    };
+  }, [loadingState]);
 
   useEffect(() => {
     if (!entities) {
