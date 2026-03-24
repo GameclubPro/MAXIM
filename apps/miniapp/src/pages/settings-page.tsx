@@ -3474,6 +3474,26 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     allowlistEntries.length === 1
       ? '1 правило'
       : `${allowlistEntries.length} ${allowlistEntries.length < 5 ? 'правила' : 'правил'}`;
+  const allowlistComposerLabel =
+    domainInputMode === 'DOMAIN' ? 'Домен целиком' : 'Точная ссылка';
+  const allowlistComposerChipLabel =
+    domainInputMode === 'DOMAIN' ? 'Весь хост' : 'Один URL';
+  const allowlistComposerExamples =
+    domainInputMode === 'DOMAIN'
+      ? [
+          { label: 'example.com', value: 'example.com' },
+          { label: 'docs.max.ru', value: 'docs.max.ru' },
+        ]
+      : [
+          {
+            label: 'https://example.com/path',
+            value: 'https://example.com/path',
+          },
+          {
+            label: 'https://docs.max.ru/',
+            value: 'https://docs.max.ru/',
+          },
+        ];
   const rulesPublishedAtLabel = formatRemovalDateTime(
     rulesDraft?.publishedAt ?? rulesQuery.data?.publishedAt ?? null,
   );
@@ -4273,35 +4293,77 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   }}
                                   className="allowlist-composer__mode"
                                 />
-                                <div className="allowlist-add-row">
-                                  <input
-                                    type="text"
-                                    inputMode={domainInputMode === 'EXACT' ? 'url' : 'text'}
-                                    value={domainInput}
-                                    onChange={(event) => {
-                                      setDomainInput(event.target.value);
-                                      setDomainInputError('');
-                                    }}
-                                    onKeyDown={(event) => {
-                                      if (event.key === 'Enter') {
-                                        event.preventDefault();
-                                        handleAddDomain();
+                                <div className="allowlist-composer__entry">
+                                  <div className="allowlist-composer__entry-head">
+                                    <span className="allowlist-composer__entry-label">
+                                      {allowlistComposerLabel}
+                                    </span>
+                                    <span
+                                      className={cn(
+                                        'chip',
+                                        domainInputMode === 'DOMAIN'
+                                          ? 'chip--success'
+                                          : 'chip--warning',
+                                      )}
+                                    >
+                                      {allowlistComposerChipLabel}
+                                    </span>
+                                  </div>
+
+                                  <div className="allowlist-add-row">
+                                    <input
+                                      type="text"
+                                      inputMode={domainInputMode === 'EXACT' ? 'url' : 'text'}
+                                      value={domainInput}
+                                      autoCapitalize="none"
+                                      autoCorrect="off"
+                                      spellCheck={false}
+                                      enterKeyHint="done"
+                                      onChange={(event) => {
+                                        setDomainInput(event.target.value);
+                                        setDomainInputError('');
+                                      }}
+                                      onKeyDown={(event) => {
+                                        if (event.key === 'Enter') {
+                                          event.preventDefault();
+                                          handleAddDomain();
+                                        }
+                                      }}
+                                      placeholder={
+                                        domainInputMode === 'DOMAIN'
+                                          ? 'example.com'
+                                          : 'https://example.com/path'
                                       }
-                                    }}
-                                    placeholder={
-                                      domainInputMode === 'DOMAIN'
-                                        ? 'example.com'
-                                        : 'https://example.com/path'
-                                    }
-                                  />
-                                  <button
-                                    type="button"
-                                    className="button button--accent allowlist-add-row__button"
-                                    onClick={handleAddDomain}
-                                    disabled={isDomainMutationPending}
-                                  >
-                                    {addDomainMutation.isPending ? 'Добавляем...' : 'Добавить'}
-                                  </button>
+                                    />
+
+                                    <div
+                                      className="allowlist-composer__examples"
+                                      aria-label="Быстрые примеры"
+                                    >
+                                      {allowlistComposerExamples.map((example) => (
+                                        <button
+                                          key={example.value}
+                                          type="button"
+                                          className="allowlist-composer__example"
+                                          onClick={() => {
+                                            setDomainInput(example.value);
+                                            setDomainInputError('');
+                                          }}
+                                        >
+                                          {example.label}
+                                        </button>
+                                      ))}
+                                    </div>
+
+                                    <button
+                                      type="button"
+                                      className="button button--accent allowlist-add-row__button"
+                                      onClick={handleAddDomain}
+                                      disabled={isDomainMutationPending}
+                                    >
+                                      {addDomainMutation.isPending ? 'Добавляем...' : 'Добавить'}
+                                    </button>
+                                  </div>
                                 </div>
                               </div>
 
