@@ -668,7 +668,7 @@ export class AdminService {
     options: { fullScan: boolean },
   ): Promise<ChatSummary[]> {
     try {
-      const discoveryTrafficClass = options.fullScan ? 'background' : 'interactive';
+      const discoveryTrafficClass = 'interactive';
       const adminCheckSpacingMs = options.fullScan
         ? MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS
         : MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS;

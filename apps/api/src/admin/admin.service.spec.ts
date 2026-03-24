@@ -2371,7 +2371,7 @@ describe('AdminService.listChannels', () => {
 
     expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
     expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('channel-1', {
-      trafficClass: 'background',
+      trafficClass: 'interactive',
     });
   });
 
@@ -2521,7 +2521,7 @@ describe('AdminService.listChannels', () => {
 
     expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
     expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('channel-2', {
-      trafficClass: 'background',
+      trafficClass: 'interactive',
     });
   });
 
@@ -2750,7 +2750,7 @@ describe('AdminService.listChannels', () => {
     ]);
 
     expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1', {
-      trafficClass: 'background',
+      trafficClass: 'interactive',
     });
   });
 
@@ -2842,7 +2842,7 @@ describe('AdminService.listChannels', () => {
     ]);
 
     expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-101', {
-      trafficClass: 'background',
+      trafficClass: 'interactive',
     });
   });
 
