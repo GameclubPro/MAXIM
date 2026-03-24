@@ -192,12 +192,17 @@ function createSettings(overrides: Record<string, unknown> = {}) {
     thematicFiltersBotButtonUrl: '',
     thematicFiltersBotButtonText: 'Открыть',
     thematicFiltersRulesButtonEnabled: false,
+    commentsEnabled: false,
+    commentsAdminsEnabled: true,
+    commentsAllEnabled: false,
+    commentsChatBroadcastsEnabled: false,
     nightModeEnabled: false,
     nightModeStartTimeMinutes: 23 * 60,
     nightModeEndTimeMinutes: 8 * 60,
     nightModeTimezone: 'Europe/Moscow',
     nightModeBotMessageEnabled: false,
     nightModeBotMessageText: '',
+    nightModeCommentsEnabled: false,
     nightModeOpenMessageEnabled: true,
     nightModeOpenMessageText: '',
     nightModeBotButtonEnabled: false,
@@ -4142,6 +4147,88 @@ describe('ModerationService', () => {
         action: SanctionAction.DELETE_MESSAGE,
       }),
     });
+  });
+
+  it('adds a comments button to the night mode notice when enabled for the chat', async () => {
+    const nowParts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Europe/Moscow',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date());
+    const currentHour = Number(nowParts.find((item) => item.type === 'hour')?.value ?? '0');
+    const currentMinute = Number(nowParts.find((item) => item.type === 'minute')?.value ?? '0');
+    const currentMinutes = currentHour * 60 + currentMinute;
+    const startMinutes = (currentMinutes + 23 * 60) % (24 * 60);
+    const endMinutes = (currentMinutes + 60) % (24 * 60);
+
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            nightModeEnabled: true,
+            nightModeStartTimeMinutes: startMinutes,
+            nightModeEndTimeMinutes: endMinutes,
+            nightModeTimezone: 'Europe/Moscow',
+            nightModeBotMessageEnabled: true,
+            nightModeBotMessageText: '',
+            commentsEnabled: true,
+            nightModeCommentsEnabled: true,
+          }),
+          domains: [],
+          admins: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(maxClient.sendMessage).toHaveBeenCalledWith(
+      'chat-1',
+      expect.stringContaining('Ночной режим, граждане'),
+      expect.objectContaining({
+        buttons: [
+          [
+            expect.objectContaining({
+              text: expect.stringContaining('💬 Комментарии'),
+            }),
+          ],
+        ],
+      }),
+    );
   });
 
   it('deletes messages during manual group close silently', async () => {

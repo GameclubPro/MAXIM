@@ -261,6 +261,7 @@ type HintKey =
   | 'nightModeEnabled'
   | 'nightForceClose'
   | 'nightBotMessage'
+  | 'nightComments'
   | 'nightOpenMessage'
   | 'nightBotButton'
   | 'requiredSubscriptionEnabled'
@@ -444,6 +445,7 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'nightModeTimezone',
     'nightModeBotMessageEnabled',
     'nightModeBotMessageText',
+    'nightModeCommentsEnabled',
     'nightModeOpenMessageEnabled',
     'nightModeOpenMessageText',
     'nightModeBotButtonEnabled',
@@ -8005,6 +8007,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   setFieldValue('nightModeBotMessageEnabled', true);
                                 } else {
                                   setFieldValue('nightModeBotMessageEnabled', false);
+                                  setFieldValue('nightModeCommentsEnabled', false);
                                   setFieldValue('nightModeBotButtonEnabled', false);
                                   setFieldValue('nightModeRulesButtonEnabled', false);
                                   clearFieldError('nightModeBotButtonUrl');
@@ -8145,6 +8148,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     const enabled = event.target.checked;
                                     setFieldValue('nightModeBotMessageEnabled', enabled);
                                     if (!enabled) {
+                                      setFieldValue('nightModeCommentsEnabled', false);
                                       setFieldValue('nightModeBotButtonEnabled', false);
                                       setFieldValue('nightModeRulesButtonEnabled', false);
                                       clearFieldError('nightModeBotButtonUrl');
@@ -8258,6 +8262,53 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               />
                             ) : null}
                           </div>
+
+                          {draft.nightModeBotMessageEnabled ? (
+                            <div
+                              className={cn(
+                                'settings-native-toggle',
+                                'settings-native-toggle--nested',
+                              )}
+                            >
+                              <div className="settings-native-toggle__row">
+                                <div className="settings-native-toggle__title-wrap">
+                                  <span className="settings-native-toggle__title">
+                                    Комментарии
+                                  </span>
+                                  <div className="settings-native-toggle__title-actions">
+                                    <SettingsHintAnchor
+                                      hintKey="nightComments"
+                                      openHintKey={openHintKey}
+                                      onToggleHint={toggleHint}
+                                      label="Как работают комментарии под ночным сообщением"
+                                    >
+                                      Добавляет кнопку комментариев под сообщением о закрытии
+                                      группы. Работает, если в чате включён блок «Комментарии».
+                                    </SettingsHintAnchor>
+                                  </div>
+                                </div>
+
+                                <label
+                                  className="settings-native-switch"
+                                  aria-label="Добавить комментарии под сообщением ночного режима"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={draft.nightModeCommentsEnabled}
+                                    onChange={(event) =>
+                                      setFieldValue(
+                                        'nightModeCommentsEnabled',
+                                        event.target.checked,
+                                      )
+                                    }
+                                  />
+                                  <span className="toggle-switch" aria-hidden>
+                                    <span className="toggle-switch__thumb" />
+                                  </span>
+                                </label>
+                              </div>
+                            </div>
+                          ) : null}
 
                           {draft.nightModeBotMessageEnabled ? (
                             <div

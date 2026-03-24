@@ -611,6 +611,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         botSpeechStyle: settings.botSpeechStyle,
         nightModeBotMessageEnabled: settings.nightModeBotMessageEnabled,
         nightModeBotMessageText: settings.nightModeBotMessageText,
+        commentsEnabled: settings.commentsEnabled,
+        nightModeCommentsEnabled: settings.nightModeCommentsEnabled,
         nightModeBotButtonEnabled: settings.nightModeBotButtonEnabled,
         nightModeBotButtonUrl: settings.nightModeBotButtonUrl,
         nightModeBotButtonText: settings.nightModeBotButtonText,
@@ -5012,6 +5014,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           nightModeTimezone: true,
           nightModeBotMessageEnabled: true,
           nightModeBotMessageText: true,
+          commentsEnabled: true,
+          nightModeCommentsEnabled: true,
           nightModeOpenMessageEnabled: true,
           nightModeOpenMessageText: true,
           nightModeBotButtonEnabled: true,
@@ -5040,6 +5044,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               timezone,
               botSpeechStyle: settings.botSpeechStyle,
               nightModeBotMessageText: settings.nightModeBotMessageText,
+              commentsEnabled: settings.commentsEnabled,
+              nightModeCommentsEnabled: settings.nightModeCommentsEnabled,
               nightModeBotButtonEnabled: settings.nightModeBotButtonEnabled,
               nightModeBotButtonUrl: settings.nightModeBotButtonUrl,
               nightModeBotButtonText: settings.nightModeBotButtonText,
@@ -5171,6 +5177,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     botSpeechStyle: BotSpeechStyle | null;
     nightModeBotMessageEnabled: boolean;
     nightModeBotMessageText: string;
+    commentsEnabled: boolean;
+    nightModeCommentsEnabled: boolean;
     nightModeBotButtonEnabled: boolean;
     nightModeBotButtonUrl: string;
     nightModeBotButtonText: string;
@@ -5190,6 +5198,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       botSpeechStyle,
       nightModeBotMessageEnabled,
       nightModeBotMessageText,
+      commentsEnabled,
+      nightModeCommentsEnabled,
       nightModeBotButtonEnabled,
       nightModeBotButtonUrl,
       nightModeBotButtonText,
@@ -5212,6 +5222,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           timezone,
           botSpeechStyle,
           nightModeBotMessageText,
+          commentsEnabled,
+          nightModeCommentsEnabled,
           nightModeBotButtonEnabled,
           nightModeBotButtonUrl,
           nightModeBotButtonText,
@@ -6944,6 +6956,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     timezone: string;
     botSpeechStyle: BotSpeechStyle | null;
     nightModeBotMessageText: string;
+    commentsEnabled: boolean;
+    nightModeCommentsEnabled: boolean;
     nightModeBotButtonEnabled: boolean;
     nightModeBotButtonUrl: string;
     nightModeBotButtonText: string;
@@ -6976,15 +6990,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       params.nightModeBotMessageText,
       params.botSpeechStyle,
     );
-    const nightModeMessageOptions = this.buildBotMessageOptions(
-      params.chatId,
-      params.nightModeBotButtonEnabled,
-      params.nightModeBotButtonUrl,
-      params.nightModeBotButtonText,
-      params.nightModeRulesButtonEnabled ?? false,
-      params.rulesPublishedUrl ?? null,
-      params.rulesPublishedMessageId ?? null,
-    );
+    const nightModeMessageOptions = this.buildNightModeClosedNoticeOptions(params);
     const noticeMessageId = await this.sendScheduledBotMessage({
       chatId: params.chatId,
       text: messageText,
@@ -7078,6 +7084,68 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         night_status: nightStatus,
       },
     });
+  }
+
+  private buildNightModeClosedNoticeOptions(params: {
+    chatId: string;
+    commentsEnabled: boolean;
+    nightModeCommentsEnabled: boolean;
+    nightModeBotButtonEnabled: boolean;
+    nightModeBotButtonUrl: string;
+    nightModeBotButtonText: string;
+    nightModeRulesButtonEnabled?: boolean;
+    rulesPublishedUrl?: string | null;
+    rulesPublishedMessageId?: string | null;
+  }): MaxSendMessageOptions | null {
+    const baseOptions = this.buildBotMessageOptions(
+      params.chatId,
+      params.nightModeBotButtonEnabled,
+      params.nightModeBotButtonUrl,
+      params.nightModeBotButtonText,
+      params.nightModeRulesButtonEnabled ?? false,
+      params.rulesPublishedUrl ?? null,
+      params.rulesPublishedMessageId ?? null,
+    );
+    const commentsButton = this.buildNightModeCommentsButton(
+      params.chatId,
+      params.commentsEnabled,
+      params.nightModeCommentsEnabled,
+    );
+
+    if (!commentsButton) {
+      return baseOptions;
+    }
+
+    const buttons: MaxMessageButton[][] = [[commentsButton]];
+    if (baseOptions?.buttons?.length) {
+      buttons.push(...baseOptions.buttons);
+    } else if (baseOptions?.button) {
+      buttons.push([baseOptions.button]);
+    }
+
+    return {
+      buttons,
+      ...(baseOptions?.messageLink ? { messageLink: baseOptions.messageLink } : {}),
+      ...(baseOptions?.textFormat ? { textFormat: baseOptions.textFormat } : {}),
+      ...(baseOptions?.debugContext ? { debugContext: baseOptions.debugContext } : {}),
+    };
+  }
+
+  private buildNightModeCommentsButton(
+    chatId: string,
+    commentsEnabled: boolean,
+    nightModeCommentsEnabled: boolean,
+  ): MaxMessageButton | null {
+    if (!commentsEnabled || !nightModeCommentsEnabled) {
+      return null;
+    }
+
+    return this.buildChatDialogButton(
+      chatId,
+      'comments',
+      randomUUID(),
+      formatCommentsButtonText('💬 Комментарии', 0),
+    );
   }
 
   private buildNightModeOpenedNotice(

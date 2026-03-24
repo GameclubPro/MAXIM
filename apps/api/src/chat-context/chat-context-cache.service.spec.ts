@@ -98,6 +98,7 @@ function buildSettings(chatId: string): ChatSettings {
     nightModeTimezone: 'Europe/Moscow',
     nightModeBotMessageEnabled: false,
     nightModeBotMessageText: '',
+    nightModeCommentsEnabled: false,
     nightModeOpenMessageEnabled: true,
     nightModeOpenMessageText: '',
     nightModeBotButtonEnabled: false,

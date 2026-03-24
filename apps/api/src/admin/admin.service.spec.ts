@@ -541,6 +541,7 @@ describe('AdminService night mode settings normalization', () => {
       {
         nightModeEnabled: false,
         nightModeBotMessageEnabled: true,
+        nightModeCommentsEnabled: true,
         nightModeBotButtonEnabled: true,
         nightModeBotButtonUrl: 'https://max.ru/channel/rules',
         nightModeBotButtonText: 'Правила',
@@ -550,6 +551,7 @@ describe('AdminService night mode settings normalization', () => {
 
     expect(result.nightModeEnabled).toBe(false);
     expect(result.nightModeBotMessageEnabled).toBe(false);
+    expect(result.nightModeCommentsEnabled).toBe(false);
     expect(result.nightModeBotButtonEnabled).toBe(false);
     expect(result.nightModeRulesButtonEnabled).toBe(false);
     expect(prisma.chat.upsert).toHaveBeenCalledWith(
@@ -560,12 +562,14 @@ describe('AdminService night mode settings normalization', () => {
               update: expect.objectContaining({
                 nightModeEnabled: false,
                 nightModeBotMessageEnabled: false,
+                nightModeCommentsEnabled: false,
                 nightModeBotButtonEnabled: false,
                 nightModeRulesButtonEnabled: false,
               }),
               create: expect.objectContaining({
                 nightModeEnabled: false,
                 nightModeBotMessageEnabled: false,
+                nightModeCommentsEnabled: false,
                 nightModeBotButtonEnabled: false,
                 nightModeRulesButtonEnabled: false,
               }),
@@ -585,6 +589,7 @@ describe('AdminService night mode settings normalization', () => {
       settings: {
         nightModeEnabled: false,
         nightModeBotMessageEnabled: true,
+        nightModeCommentsEnabled: true,
         nightModeBotButtonEnabled: true,
         nightModeBotButtonUrl: 'https://max.ru/channel/rules',
         nightModeBotButtonText: 'Правила',
@@ -615,6 +620,7 @@ describe('AdminService night mode settings normalization', () => {
 
     expect(result.nightModeEnabled).toBe(false);
     expect(result.nightModeBotMessageEnabled).toBe(false);
+    expect(result.nightModeCommentsEnabled).toBe(false);
     expect(result.nightModeBotButtonEnabled).toBe(false);
     expect(result.nightModeRulesButtonEnabled).toBe(false);
     expect(prisma.chatSettings.update).toHaveBeenCalledWith(
@@ -622,6 +628,7 @@ describe('AdminService night mode settings normalization', () => {
         where: { chatId: 'chat-1' },
         data: {
           nightModeBotMessageEnabled: false,
+          nightModeCommentsEnabled: false,
           nightModeBotButtonEnabled: false,
           nightModeRulesButtonEnabled: false,
         },

@@ -97,6 +97,7 @@ function buildSettings(overrides: Partial<ChatSettings> = {}): ChatSettings {
     nightModeTimezone: 'Europe/Moscow',
     nightModeBotMessageEnabled: false,
     nightModeBotMessageText: '',
+    nightModeCommentsEnabled: false,
     nightModeOpenMessageEnabled: true,
     nightModeOpenMessageText: '',
     nightModeBotButtonEnabled: false,

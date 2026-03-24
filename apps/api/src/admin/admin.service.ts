@@ -346,6 +346,7 @@ const SETTINGS_SECTION_KEYS = {
     'nightModeTimezone',
     'nightModeBotMessageEnabled',
     'nightModeBotMessageText',
+    'nightModeCommentsEnabled',
     'nightModeBotButtonEnabled',
     'nightModeBotButtonUrl',
     'nightModeBotButtonText',
@@ -2844,12 +2845,14 @@ export class AdminService {
       normalized = {
         ...normalized,
         nightModeBotMessageEnabled: false,
+        nightModeCommentsEnabled: false,
         nightModeBotButtonEnabled: false,
         nightModeRulesButtonEnabled: false,
       };
     } else if (!normalized.nightModeBotMessageEnabled) {
       normalized = {
         ...normalized,
+        nightModeCommentsEnabled: false,
         nightModeBotButtonEnabled: false,
         nightModeRulesButtonEnabled: false,
       };
@@ -2933,6 +2936,7 @@ export class AdminService {
     current: Pick<
       ChatSettings,
       | 'nightModeBotMessageEnabled'
+      | 'nightModeCommentsEnabled'
       | 'nightModeBotButtonEnabled'
       | 'nightModeRulesButtonEnabled'
       | 'nightModeForceCloseEnabled'
@@ -2941,6 +2945,7 @@ export class AdminService {
     normalized: Pick<
       ChatSettings,
       | 'nightModeBotMessageEnabled'
+      | 'nightModeCommentsEnabled'
       | 'nightModeBotButtonEnabled'
       | 'nightModeRulesButtonEnabled'
       | 'nightModeForceCloseEnabled'
@@ -2950,6 +2955,7 @@ export class AdminService {
     Pick<
       ChatSettings,
       | 'nightModeBotMessageEnabled'
+      | 'nightModeCommentsEnabled'
       | 'nightModeBotButtonEnabled'
       | 'nightModeRulesButtonEnabled'
       | 'nightModeForceCloseEnabled'
@@ -2960,6 +2966,7 @@ export class AdminService {
       Pick<
         ChatSettings,
         | 'nightModeBotMessageEnabled'
+        | 'nightModeCommentsEnabled'
         | 'nightModeBotButtonEnabled'
         | 'nightModeRulesButtonEnabled'
         | 'nightModeForceCloseEnabled'
@@ -2969,6 +2976,9 @@ export class AdminService {
 
     if (current.nightModeBotMessageEnabled !== normalized.nightModeBotMessageEnabled) {
       changes.nightModeBotMessageEnabled = normalized.nightModeBotMessageEnabled;
+    }
+    if (current.nightModeCommentsEnabled !== normalized.nightModeCommentsEnabled) {
+      changes.nightModeCommentsEnabled = normalized.nightModeCommentsEnabled;
     }
     if (current.nightModeBotButtonEnabled !== normalized.nightModeBotButtonEnabled) {
       changes.nightModeBotButtonEnabled = normalized.nightModeBotButtonEnabled;

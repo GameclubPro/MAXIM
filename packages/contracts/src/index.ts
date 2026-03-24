@@ -554,6 +554,7 @@ export const chatSettingsSchema = z
     nightModeTimezone: z.string().trim().min(1).max(64).default('Europe/Moscow'),
     nightModeBotMessageEnabled: z.boolean().default(false),
     nightModeBotMessageText: botMessageTextSchema,
+    nightModeCommentsEnabled: z.boolean().default(false),
     nightModeOpenMessageEnabled: z.boolean().default(true),
     nightModeOpenMessageText: botMessageTextSchema,
     nightModeBotButtonEnabled: z.boolean().default(false),
