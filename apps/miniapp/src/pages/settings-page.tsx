@@ -1522,6 +1522,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   useEffect(() => {
     if (
+      focusSection !== 'links' &&
       focusSection !== 'rules' &&
       focusSection !== 'comments' &&
       focusSection !== 'giveaway' &&
@@ -1533,7 +1534,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     setExpandedSections({
       ...INITIAL_EXPANDED_SECTIONS,
-      ...(focusSection === 'rules'
+      ...(focusSection === 'links'
+        ? { links: true }
+        : focusSection === 'rules'
         ? { rules: true }
         : focusSection === 'comments'
           ? { comments: true }
@@ -3394,6 +3397,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       : draft?.linkPolicy === 'ALLOWLIST_ONLY'
         ? `Разрешено: ${allowlistDomains.length}`
         : `${linkStagesEnabledCount}/4 ступени включено`;
+  const allowlistCountLabel =
+    allowlistEntries.length === 1
+      ? '1 ссылка'
+      : `${allowlistEntries.length} ${allowlistEntries.length < 5 ? 'ссылки' : 'ссылок'}`;
   const rulesPublishedAtLabel = formatRemovalDateTime(
     rulesDraft?.publishedAt ?? rulesQuery.data?.publishedAt ?? null,
   );
@@ -4132,26 +4139,26 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         </div>
 
                         {isAllowlistMode ? (
-                          <div className="allowlist-drawer">
-                            <div className="allowlist-drawer__inner">
-                              <div
-                                className={cn(
-                                  'field',
-                                  'allowlist-panel',
-                                  domainInputError && 'allowlist-panel--error',
-                                )}
-                              >
-                                <div className="allowlist-panel__handle" aria-hidden />
-
-                                <div className="allowlist-panel__head">
+                          <div className="allowlist-workspace">
+                            <div
+                              className={cn(
+                                'field',
+                                'allowlist-panel',
+                                domainInputError && 'allowlist-panel--error',
+                              )}
+                            >
+                              <div className="allowlist-panel__head">
+                                <div className="allowlist-panel__title-block">
                                   <span className="field__label">Разрешенные ссылки</span>
-                                  <span className="chip">{allowlistDomains.length}</span>
+                                  <p className="allowlist-panel__subtitle">
+                                    Только полная ссылка: протокол, домен и путь, без wildcard и
+                                    частичных совпадений.
+                                  </p>
                                 </div>
+                                <span className="chip chip--success">{allowlistDomains.length}</span>
+                              </div>
 
-                                <p className="allowlist-panel__subtitle">
-                                  Добавьте точную ссылку. Разрешается только полное совпадение.
-                                </p>
-
+                              <div className="allowlist-composer">
                                 <div className="allowlist-add-row">
                                   <input
                                     type="text"
@@ -4178,23 +4185,30 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     {addDomainMutation.isPending ? 'Добавляем...' : 'Добавить'}
                                   </button>
                                 </div>
+                              </div>
 
-                                {domainInputError ? (
-                                  <small className="field__hint">{domainInputError}</small>
-                                ) : null}
+                              {domainInputError ? (
+                                <small className="field__hint">{domainInputError}</small>
+                              ) : null}
 
-                                {domainsQuery.isLoading ? (
-                                  <p className="allowlist-empty">Загрузка списка...</p>
-                                ) : null}
+                              {domainsQuery.isLoading ? (
+                                <p className="allowlist-empty">Загрузка списка...</p>
+                              ) : null}
 
-                                {domainsQuery.error ? (
-                                  <p className="allowlist-empty allowlist-empty--error">
-                                    Ошибка: {formatApiError(domainsQuery.error)}
-                                  </p>
-                                ) : null}
+                              {domainsQuery.error ? (
+                                <p className="allowlist-empty allowlist-empty--error">
+                                  Ошибка: {formatApiError(domainsQuery.error)}
+                                </p>
+                              ) : null}
 
-                                {!domainsQuery.isLoading && !domainsQuery.error ? (
-                                  allowlistEntries.length > 0 ? (
+                              {!domainsQuery.isLoading && !domainsQuery.error ? (
+                                allowlistEntries.length > 0 ? (
+                                  <div className="allowlist-results">
+                                    <div className="allowlist-results__head">
+                                      <span className="allowlist-results__title">В списке</span>
+                                      <small>{allowlistCountLabel}</small>
+                                    </div>
+
                                     <ul className="allowlist-list" aria-label="Разрешенные ссылки">
                                       {allowlistEntries.map((entry) => {
                                         const isScheduleOpen = scheduleDomain === entry.domain;
@@ -4212,51 +4226,76 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                             )}
                                           >
                                             <div className="allowlist-item__stack">
-                                              <div className="allowlist-item__top-row">
-                                                <div className="allowlist-item__title-wrap">
-                                                  <span
-                                                    className="allowlist-item__domain"
-                                                    title={entry.domain}
-                                                  >
-                                                    {entry.domain}
-                                                  </span>
-                                                  {scheduledAtLabel ? (
-                                                    <small className="allowlist-item__meta">
-                                                      Удаление: {scheduledAtLabel}
-                                                    </small>
-                                                  ) : null}
-                                                </div>
+                                              <div className="allowlist-item__header">
+                                                <span
+                                                  className="allowlist-item__domain"
+                                                  title={entry.domain}
+                                                >
+                                                  {entry.domain}
+                                                </span>
+                                                <span
+                                                  className={cn(
+                                                    'chip',
+                                                    'allowlist-item__status',
+                                                    scheduledAtLabel
+                                                      ? 'chip--warning'
+                                                      : 'chip--success',
+                                                  )}
+                                                >
+                                                  {scheduledAtLabel
+                                                    ? 'По таймеру'
+                                                    : 'Без таймера'}
+                                                </span>
+                                              </div>
 
-                                                <div className="allowlist-item__actions">
-                                                  <button
-                                                    type="button"
-                                                    className="allowlist-item__remove"
-                                                    onClick={() =>
-                                                      removeDomainMutation.mutate(entry.domain)
-                                                    }
-                                                    disabled={isDomainMutationPending}
-                                                    aria-label={`Удалить ${entry.domain} из разрешенных ссылок`}
-                                                    title="Удалить ссылку"
-                                                  >
-                                                    <TrashIcon />
-                                                    <span>Удалить</span>
-                                                  </button>
-                                                  <button
-                                                    type="button"
-                                                    className={cn(
-                                                      'allowlist-item__schedule',
-                                                      isScheduleOpen && 'is-open',
-                                                    )}
-                                                    aria-label={`Запланировать удаление ${entry.domain}`}
-                                                    title="Запланировать удаление"
-                                                    onClick={() =>
-                                                      toggleDomainScheduleEditor(entry)
-                                                    }
-                                                    disabled={isDomainMutationPending}
-                                                  >
-                                                    <CalendarIcon />
-                                                  </button>
-                                                </div>
+                                              <small className="allowlist-item__meta">
+                                                {scheduledAtLabel
+                                                  ? `Удаление: ${scheduledAtLabel}`
+                                                  : 'Ссылка разрешена без срока удаления.'}
+                                              </small>
+
+                                              <div className="allowlist-item__actions">
+                                                <button
+                                                  type="button"
+                                                  className={cn(
+                                                    'allowlist-item__action',
+                                                    'allowlist-item__action--schedule',
+                                                    isScheduleOpen && 'is-open',
+                                                  )}
+                                                  aria-label={`Запланировать удаление ${entry.domain}`}
+                                                  title="Запланировать удаление"
+                                                  onClick={() =>
+                                                    toggleDomainScheduleEditor(entry)
+                                                  }
+                                                  disabled={isDomainMutationPending}
+                                                >
+                                                  <CalendarIcon />
+                                                  <span>
+                                                    {scheduledAtLabel
+                                                      ? isScheduleOpen
+                                                        ? 'Свернуть таймер'
+                                                        : 'Изменить таймер'
+                                                      : isScheduleOpen
+                                                        ? 'Свернуть таймер'
+                                                        : 'Поставить таймер'}
+                                                  </span>
+                                                </button>
+                                                <button
+                                                  type="button"
+                                                  className={cn(
+                                                    'allowlist-item__action',
+                                                    'allowlist-item__action--remove',
+                                                  )}
+                                                  onClick={() =>
+                                                    removeDomainMutation.mutate(entry.domain)
+                                                  }
+                                                  disabled={isDomainMutationPending}
+                                                  aria-label={`Удалить ${entry.domain} из разрешенных ссылок`}
+                                                  title="Удалить ссылку"
+                                                >
+                                                  <TrashIcon />
+                                                  <span>Удалить</span>
+                                                </button>
                                               </div>
 
                                               {isScheduleOpen ? (
@@ -4342,11 +4381,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         );
                                       })}
                                     </ul>
-                                  ) : (
-                                    <p className="allowlist-empty">Список пуст</p>
-                                  )
-                                ) : null}
-                              </div>
+                                  </div>
+                                ) : (
+                                  <p className="allowlist-empty">Список пуст. Добавьте первую ссылку.</p>
+                                )
+                              ) : null}
                             </div>
                           </div>
                         ) : null}

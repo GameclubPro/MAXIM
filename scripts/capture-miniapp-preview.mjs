@@ -63,6 +63,28 @@ const scenarios = [
     path: '/chat/preview-chat/settings',
   },
   {
+    name: 'chat-settings-links',
+    path: '/chat/preview-chat/settings',
+    searchParams: {
+      focus: 'links',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(500);
+    },
+  },
+  {
+    name: 'chat-settings-links-timer',
+    path: '/chat/preview-chat/settings',
+    searchParams: {
+      focus: 'links',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(500);
+      await page.locator('.allowlist-item__action--schedule').first().click();
+      await page.waitForTimeout(300);
+    },
+  },
+  {
     name: 'chat-settings-giveaway',
     path: '/chat/preview-chat/settings',
     searchParams: {
