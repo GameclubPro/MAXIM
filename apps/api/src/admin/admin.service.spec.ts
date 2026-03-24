@@ -3395,6 +3395,162 @@ describe('AdminService.listChats', () => {
     });
   });
 
+  it('removes cached private direct dialogs from allowlist on default load', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: '152517912',
+          title: 'Chat 152517912',
+          createdAt: new Date('2026-02-28T01:20:52.139Z'),
+          entityType: 'CHAT',
+        },
+      },
+      {
+        chat: {
+          id: 'chat-1',
+          title: 'Рабочий чат',
+          createdAt: new Date('2026-03-02T10:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+    prisma.$queryRaw.mockResolvedValue([]);
+
+    const maxClient = {
+      listBotChats: jest.fn(),
+      getChatAdminIds: jest.fn(),
+      getChatTitle: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+
+    await expect(
+      service.listChats({
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      }),
+    ).resolves.toEqual([
+      {
+        id: 'chat-1',
+        title: 'Рабочий чат',
+        createdAt: '2026-03-02T10:00:00.000Z',
+        entityType: 'chat',
+        link: null,
+        channelOverview: null,
+      },
+    ]);
+
+    expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
+      where: {
+        userId: 'admin-1',
+        chatId: {
+          in: ['152517912'],
+        },
+      },
+    });
+    expect(maxClient.listBotChats).not.toHaveBeenCalled();
+    expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
+  });
+
+  it('ignores private direct dialogs returned by remote discovery', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+    prisma.$queryRaw.mockResolvedValue([]);
+    prisma.chat.upsert.mockImplementation(
+      async ({
+        where,
+        create,
+        update,
+      }: {
+        where: { id: string };
+        create: { title?: string; entityType?: string };
+        update: { title?: string; entityType?: string };
+      }) => ({
+        id: where.id,
+        title: update.title ?? create.title ?? where.id,
+        entityType: update.entityType ?? create.entityType ?? 'CHAT',
+        createdAt: new Date('2026-03-03T10:00:00.000Z'),
+      }),
+    );
+
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: '152517912',
+          title: 'Личка с ботом',
+          lastEventTime: 2,
+          entityType: 'chat',
+          link: null,
+        },
+        {
+          chatId: 'chat-1',
+          title: 'Рабочий чат',
+          lastEventTime: 1,
+          entityType: 'chat',
+          link: null,
+        },
+      ]),
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatTitle: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    jest.spyOn(service as any, 'bootstrapCurrentChat').mockResolvedValue(null);
+
+    await expect(
+      service.listChats(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { refresh: true },
+      ),
+    ).resolves.toEqual([
+      {
+        id: 'chat-1',
+        title: 'Рабочий чат',
+        createdAt: '2026-03-03T10:00:00.000Z',
+        entityType: 'chat',
+        link: null,
+        channelOverview: null,
+      },
+    ]);
+
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1', {
+      trafficClass: 'interactive',
+    });
+    expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledTimes(1);
+    expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          chatId_userId: {
+            chatId: 'chat-1',
+            userId: 'admin-1',
+          },
+        },
+      }),
+    );
+  });
+
   it('does not bootstrap a private direct dialog into managed chats', async () => {
     const prisma = createPrismaMock();
     prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);

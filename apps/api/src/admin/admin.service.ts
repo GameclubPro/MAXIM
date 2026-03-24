@@ -585,6 +585,10 @@ export class AdminService {
       if (entityType !== 'all' && hintedEntityType !== entityType) {
         continue;
       }
+      if (this.isUnsupportedManagedChat(chatId, hintedEntityType)) {
+        await this.prunePersistedChatAccess(chatId, normalizedUserId);
+        continue;
+      }
 
       const access = await this.resolveUserAndBotAdminAccess(chatId, normalizedUserId, {
         bypassNegativeCache: true,
@@ -723,6 +727,9 @@ export class AdminService {
         entityType === 'all'
           ? remoteChats
           : remoteChats.filter((chat) => chat.entityType === entityType);
+      const supportedCandidateChats = candidateChats.filter(
+        (chat) => !this.isUnsupportedManagedChat(chat.chatId, chat.entityType),
+      );
       const storedCursor =
         options.fullScan === true
           ? ((await this.chatContextCache.getManagedEntitiesRefreshCursor?.(user.userId, entityType)) ??
@@ -731,13 +738,16 @@ export class AdminService {
       const fullScanAlreadyCompleted = storedCursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE;
       const fullScanStartIndex =
         options.fullScan === true && fullScanAlreadyCompleted !== true
-          ? Math.max(0, Math.min(storedCursor ?? 0, candidateChats.length))
-          : candidateChats.length;
+          ? Math.max(0, Math.min(storedCursor ?? 0, supportedCandidateChats.length))
+          : supportedCandidateChats.length;
       const fullScanEndIndex =
         options.fullScan === true
-          ? Math.min(candidateChats.length, fullScanStartIndex + MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE)
+          ? Math.min(
+              supportedCandidateChats.length,
+              fullScanStartIndex + MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE,
+            )
           : 0;
-      const mergedKnownChats = candidateChats.flatMap((remoteChat, remoteIndex) => {
+      const mergedKnownChats = supportedCandidateChats.flatMap((remoteChat, remoteIndex) => {
         const cachedChat = cachedById.get(remoteChat.chatId);
         if (!cachedChat) {
           return [];
@@ -756,12 +766,14 @@ export class AdminService {
           },
         ];
       });
-      const uncachedCandidates = candidateChats.filter((remoteChat) => !cachedIds.has(remoteChat.chatId));
+      const uncachedCandidates = supportedCandidateChats.filter(
+        (remoteChat) => !cachedIds.has(remoteChat.chatId),
+      );
       const candidateSlice =
         options.fullScan === true
           ? fullScanAlreadyCompleted
             ? []
-            : candidateChats.slice(fullScanStartIndex, fullScanEndIndex)
+            : supportedCandidateChats.slice(fullScanStartIndex, fullScanEndIndex)
           : uncachedCandidates.slice(0, MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT);
       const resolvedChats = await this.mapWithConcurrencyLimit(
         candidateSlice,
@@ -809,7 +821,7 @@ export class AdminService {
           return {
             chat,
             lastEventTime: remoteChat.lastEventTime ?? 0,
-            remoteIndex: candidateChats.findIndex((chat) => chat.chatId === remoteChat.chatId),
+            remoteIndex: supportedCandidateChats.findIndex((chat) => chat.chatId === remoteChat.chatId),
           };
         },
       );
@@ -826,7 +838,7 @@ export class AdminService {
       const mergedChats = [...mergedKnownChats, ...filtered, ...remainingCachedChats];
 
       if (options.fullScan === true) {
-        if (fullScanAlreadyCompleted || fullScanEndIndex >= candidateChats.length) {
+        if (fullScanAlreadyCompleted || fullScanEndIndex >= supportedCandidateChats.length) {
           await this.chatContextCache.setManagedEntitiesRefreshCursor?.(
             user.userId,
             entityType,
@@ -9729,7 +9741,7 @@ export class AdminService {
       },
     });
 
-    return rows.map(
+    const chats = rows.map(
       (row: {
         chat: { id: string; title: string; createdAt: Date; entityType: ChatEntityType };
       }) => ({
@@ -9741,6 +9753,22 @@ export class AdminService {
         channelOverview: null,
       }),
     );
+
+    const unsupportedChatIds = chats
+      .filter((chat) => this.isUnsupportedManagedChat(chat.id, chat.entityType))
+      .map((chat) => chat.id);
+    if (unsupportedChatIds.length > 0) {
+      await this.prisma.chatAdminAllowlist.deleteMany({
+        where: {
+          userId,
+          chatId: {
+            in: unsupportedChatIds,
+          },
+        },
+      });
+    }
+
+    return chats.filter((chat) => !this.isUnsupportedManagedChat(chat.id, chat.entityType));
   }
 
   private async attachChannelOverview(chats: ChatSummary[]): Promise<ChatSummary[]> {
@@ -9895,6 +9923,10 @@ export class AdminService {
   private isPrivateDirectChat(chatId: string): boolean {
     const numericChatId = this.parseChatIdAsBigInt(chatId);
     return numericChatId !== null && numericChatId > 0n;
+  }
+
+  private isUnsupportedManagedChat(chatId: string, entityType: ManagedEntityType): boolean {
+    return entityType === 'chat' && this.isPrivateDirectChat(chatId);
   }
 
   private parseChatIdAsBigInt(chatId: string): bigint | null {
