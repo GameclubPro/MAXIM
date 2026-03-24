@@ -2367,7 +2367,9 @@ describe('AdminService.listChannels', () => {
     ]);
 
     expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('channel-1');
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('channel-1', {
+      trafficClass: 'background',
+    });
   });
 
   it('uses allowlist cache by default and skips remote MAX discovery', async () => {
@@ -2515,7 +2517,9 @@ describe('AdminService.listChannels', () => {
     ]);
 
     expect(maxClient.getChatAdminIds).toHaveBeenCalledTimes(1);
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('channel-2');
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('channel-2', {
+      trafficClass: 'background',
+    });
   });
 
   it('auto-discovers channels on default load when allowlist cache is empty', async () => {
@@ -2742,7 +2746,9 @@ describe('AdminService.listChannels', () => {
       },
     ]);
 
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1');
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-1', {
+      trafficClass: 'background',
+    });
   });
 
   it('scans beyond the uncached chat delta limit during explicit refresh', async () => {
@@ -2832,7 +2838,9 @@ describe('AdminService.listChannels', () => {
       },
     ]);
 
-    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-101');
+    expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-101', {
+      trafficClass: 'background',
+    });
   });
 
   it('re-runs remote discovery on repeated explicit refreshes even during success cooldown', async () => {

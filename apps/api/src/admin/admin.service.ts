@@ -217,7 +217,9 @@ const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 30;
 const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 3;
-const MANAGED_ENTITIES_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 80;
+const MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 80;
+const MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS =
+  process.env.NODE_ENV === 'test' ? 0 : 180;
 const MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT = 100;
 const MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS = 30_000;
 const MANAGED_ENTITIES_REFRESH_BACKOFF_MS = 60_000;
@@ -662,7 +664,13 @@ export class AdminService {
     options: { fullScan: boolean },
   ): Promise<ChatSummary[]> {
     try {
-      const remoteChats = await this.maxClient.listBotChats();
+      const discoveryTrafficClass = options.fullScan ? 'background' : 'interactive';
+      const adminCheckSpacingMs = options.fullScan
+        ? MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS
+        : MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS;
+      const remoteChats = await this.maxClient.listBotChats({
+        trafficClass: discoveryTrafficClass,
+      });
       const cachedChats = await this.listChatsFromAllowlist(user.userId, entityType);
       const cachedIds = new Set(cachedChats.map((chat) => chat.id));
       const cachedById = new Map(cachedChats.map((chat) => [chat.id, chat]));
@@ -698,11 +706,12 @@ export class AdminService {
         candidateSlice,
         LIST_CHATS_ADMIN_CHECK_CONCURRENCY,
         async (remoteChat) => {
-          if (MANAGED_ENTITIES_ADMIN_CHECK_SPACING_MS > 0) {
-            await this.sleep(MANAGED_ENTITIES_ADMIN_CHECK_SPACING_MS);
+          if (adminCheckSpacingMs > 0) {
+            await this.sleep(adminCheckSpacingMs);
           }
           const access = await this.resolveUserAndBotAdminAccess(remoteChat.chatId, user.userId, {
             bypassNegativeCache: true,
+            trafficClass: discoveryTrafficClass,
           });
           if (access.status === 'throttled') {
             throw new ManagedEntitiesRefreshThrottledError(access.error);
@@ -9263,9 +9272,15 @@ export class AdminService {
   private async loadRemoteAdminAccess(
     chatId: string,
     userId: string,
+    options: { trafficClass?: 'critical' | 'interactive' | 'background' } = {},
   ): Promise<AdminAccessResolution> {
     try {
-      const adminIds = await this.maxClient.getChatAdminIds(chatId);
+      const adminIds =
+        options.trafficClass === undefined
+          ? await this.maxClient.getChatAdminIds(chatId)
+          : await this.maxClient.getChatAdminIds(chatId, {
+              trafficClass: options.trafficClass,
+            });
       const hasAccess = adminIds.includes(userId);
       const cacheState: ChatAdminAccessState = hasAccess ? 'granted' : 'user_denied';
       await this.chatContextCache.setAdminAccess?.(chatId, userId, cacheState);
@@ -9319,7 +9334,10 @@ export class AdminService {
   private async resolveUserAndBotAdminAccess(
     chatId: string,
     userId: string,
-    options: { bypassNegativeCache?: boolean } = {},
+    options: {
+      bypassNegativeCache?: boolean;
+      trafficClass?: 'critical' | 'interactive' | 'background';
+    } = {},
   ): Promise<AdminAccessResolution> {
     const cached = (await this.chatContextCache.getAdminAccess?.(chatId, userId)) ?? null;
     if (cached === 'granted') {
@@ -9351,7 +9369,9 @@ export class AdminService {
       return this.withAllowlistFallback(chatId, userId, inFlight);
     }
 
-    const pending = this.loadRemoteAdminAccess(chatId, userId);
+    const pending = this.loadRemoteAdminAccess(chatId, userId, {
+      trafficClass: options.trafficClass,
+    });
     this.adminAccessChecks.set(key, pending);
 
     try {
