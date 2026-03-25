@@ -1,8 +1,9 @@
 import type {
   LogsDashboardRange,
-  LogsDashboardResponse,
+  LogsDashboardViolation,
   ManualModerationAction,
   ManualModerationActionRequest,
+  ModerationFeedFilter,
   MembershipActivityItem,
   MembershipActivityPage,
 } from '@maxim/contracts';
@@ -20,6 +21,7 @@ import { useToast } from '../components/ui/toast';
 import {
   applyManualModerationAction,
   getChatActivityFeed,
+  getChatModerationFeed,
   getLogsDashboard,
   handoffChatMemberProfile,
   handoffChatMemberProfileKeepalive,
@@ -31,11 +33,12 @@ import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { openMaxBotLinkAndClose } from '../lib/max-bridge';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useMembershipActivityFeed } from '../lib/use-membership-activity-feed';
+import { useModerationFeed } from '../lib/use-moderation-feed';
 
-type ViolationAction = LogsDashboardResponse['violations'][number]['action'];
-type ViolationItem = LogsDashboardResponse['violations'][number];
+type ViolationAction = LogsDashboardViolation['action'];
+type ViolationItem = LogsDashboardViolation;
 type DisplayAction = Exclude<ViolationAction, 'NONE'> | 'UNBAN';
-type EventsFilter = 'ALL' | DisplayAction;
+type EventsFilter = ModerationFeedFilter;
 type EventsSection = 'activity' | 'moderation';
 
 const BAN_DURATION_MIN_HOURS = 1;
@@ -219,7 +222,7 @@ function resolveDisplayAction(violation: ViolationItem): DisplayAction {
   return violation.action === 'NONE' ? 'DELETE_MESSAGE' : violation.action;
 }
 
-function resolveViolationBlurb(violation: LogsDashboardResponse['violations'][number]): string {
+function resolveViolationBlurb(violation: ViolationItem): string {
   if (violation.ruleCode === 'MANUAL_UNBAN') {
     return 'Модератор снял блокировку вручную';
   }
@@ -608,6 +611,12 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     initialPage: dashboard?.activityFeed ?? EMPTY_ACTIVITY_PAGE,
     loadPage: (query) => getChatActivityFeed(api, chatId ?? '', query),
   });
+  const moderationFeed = useModerationFeed({
+    enabled: Boolean(chatId),
+    range,
+    filter: eventsFilter,
+    loadPage: (query) => getChatModerationFeed(api, chatId ?? '', query),
+  });
   const profileHandoffMutation = useMutation({
     mutationFn: ({ userId, displayName }: { userId: string; displayName: string }) =>
       handoffChatMemberProfile(api, chatId ?? '', userId, { displayName }),
@@ -662,19 +671,10 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     setExpandedViolationId(null);
   }, [eventsFilter, range, section]);
 
-  const filteredViolations = useMemo(() => {
-    if (!dashboard) {
-      return [];
-    }
-
-    if (eventsFilter === 'ALL') {
-      return dashboard.violations;
-    }
-
-    return dashboard.violations.filter(
-      (violation) => resolveDisplayAction(violation) === eventsFilter,
-    );
-  }, [dashboard, eventsFilter]);
+  const selectedFilterCount = useMemo(
+    () => filterOptions.find((option) => option.value === eventsFilter)?.count ?? 0,
+    [eventsFilter, filterOptions],
+  );
 
   const hardMeasures = dashboard
     ? dashboard.violationsSummary.kick + dashboard.violationsSummary.ban
@@ -1011,7 +1011,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
           ) : null}
 
-          {dashboard.violations.length === 0 ? (
+          {dashboard.violationsSummary.total === 0 ? (
             <GlassCard className="events-inline-state">
               <StatusState
                 tone="neutral"
@@ -1021,7 +1021,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
           ) : null}
 
-          {dashboard.violations.length > 0 && filteredViolations.length === 0 ? (
+          {dashboard.violationsSummary.total > 0 && selectedFilterCount === 0 ? (
             <GlassCard className="events-inline-state">
               <StatusState
                 tone="neutral"
@@ -1031,133 +1031,180 @@ export function EventsPage({ api }: { api: ApiTransport }) {
             </GlassCard>
           ) : null}
 
-          {filteredViolations.length > 0 ? (
-            <section className="events-feed" aria-label="Список нарушений">
-              {filteredViolations.map((violation, index) => {
-                const displayAction = resolveDisplayAction(violation);
-                const isExpanded = expandedViolationId === violation.id;
-                const displayName = resolveOffenderName(violation);
-                const avatarUrl = resolveOffenderAvatarUrl(violation);
-                const profileHandoffUrl = violation.profileHandoffUrl?.trim() ?? '';
-                const profileUrl = violation.profileUrl?.trim() ?? '';
-                const canOpenProfile = violation.userId.trim().length > 0;
-                const toggleExpanded = () =>
-                  setExpandedViolationId((current) =>
-                    current === violation.id ? null : violation.id,
-                  );
-
-                return (
-                  <article
-                    key={violation.id}
-                    className={`event-feed-item event-feed-item--${actionToneMap[displayAction]} ${
-                      isExpanded ? 'is-expanded' : ''
-                    } stagger-in`}
-                    style={{ animationDelay: `${Math.min(index, 8) * 35}ms` }}
+          {selectedFilterCount > 0 && moderationFeed.error ? (
+            <GlassCard className="events-inline-state">
+              <StatusState
+                tone="warning"
+                title="Не удалось загрузить список"
+                description={moderationFeed.error}
+                action={
+                  <button
+                    type="button"
+                    className="button button--ghost"
+                    onClick={() => void moderationFeed.retry()}
                   >
-                    <div
-                      className="event-feed-item__trigger"
-                      role="button"
-                      tabIndex={0}
-                      onClick={(event) => {
-                        if ((event.target as HTMLElement | null)?.closest('a')) {
-                          return;
-                        }
-                        toggleExpanded();
-                      }}
-                      onKeyDown={(event) => handleExpandableCardKeyDown(event, toggleExpanded)}
-                      aria-expanded={isExpanded}
+                    Повторить
+                  </button>
+                }
+              />
+            </GlassCard>
+          ) : null}
+
+          {selectedFilterCount > 0 &&
+          moderationFeed.isReloading &&
+          moderationFeed.items.length === 0 ? (
+            <GlassCard className="events-inline-state">
+              <StatusState
+                tone="neutral"
+                title="Загружаем список"
+                description="Подтягиваем все записи по выбранному фильтру."
+              />
+            </GlassCard>
+          ) : null}
+
+          {moderationFeed.items.length > 0 ? (
+            <>
+              <section className="events-feed" aria-label="Список нарушений">
+                {moderationFeed.items.map((violation, index) => {
+                  const displayAction = resolveDisplayAction(violation);
+                  const isExpanded = expandedViolationId === violation.id;
+                  const displayName = resolveOffenderName(violation);
+                  const avatarUrl = resolveOffenderAvatarUrl(violation);
+                  const profileHandoffUrl = violation.profileHandoffUrl?.trim() ?? '';
+                  const profileUrl = violation.profileUrl?.trim() ?? '';
+                  const canOpenProfile = violation.userId.trim().length > 0;
+                  const toggleExpanded = () =>
+                    setExpandedViolationId((current) =>
+                      current === violation.id ? null : violation.id,
+                    );
+
+                  return (
+                    <article
+                      key={violation.id}
+                      className={`event-feed-item event-feed-item--${actionToneMap[displayAction]} ${
+                        isExpanded ? 'is-expanded' : ''
+                      } stagger-in`}
+                      style={{ animationDelay: `${Math.min(index, 8) * 35}ms` }}
                     >
-                      {canOpenProfile ? (
-                        <a
-                          href={profileHandoffUrl || profileUrl || '#'}
-                          className="event-feed-item__avatar-link"
-                          aria-label={`Открыть профиль ${displayName} в MAX`}
-                          onClick={(event) =>
-                            handleProfileLinkClick(event, () =>
-                              activateProfile(violation.userId, displayName, profileHandoffUrl),
-                            )
+                      <div
+                        className="event-feed-item__trigger"
+                        role="button"
+                        tabIndex={0}
+                        onClick={(event) => {
+                          if ((event.target as HTMLElement | null)?.closest('a')) {
+                            return;
                           }
-                        >
+                          toggleExpanded();
+                        }}
+                        onKeyDown={(event) => handleExpandableCardKeyDown(event, toggleExpanded)}
+                        aria-expanded={isExpanded}
+                      >
+                        {canOpenProfile ? (
+                          <a
+                            href={profileHandoffUrl || profileUrl || '#'}
+                            className="event-feed-item__avatar-link"
+                            aria-label={`Открыть профиль ${displayName} в MAX`}
+                            onClick={(event) =>
+                              handleProfileLinkClick(event, () =>
+                                activateProfile(violation.userId, displayName, profileHandoffUrl),
+                              )
+                            }
+                          >
+                            <PersonAvatar
+                              avatarUrl={avatarUrl}
+                              fallback={resolveOffenderInitial(displayName)}
+                              className="event-feed-item__avatar"
+                            />
+                          </a>
+                        ) : (
                           <PersonAvatar
                             avatarUrl={avatarUrl}
                             fallback={resolveOffenderInitial(displayName)}
                             className="event-feed-item__avatar"
                           />
-                        </a>
-                      ) : (
-                        <PersonAvatar
-                          avatarUrl={avatarUrl}
-                          fallback={resolveOffenderInitial(displayName)}
-                          className="event-feed-item__avatar"
-                        />
-                      )}
+                        )}
 
-                      <div className="event-feed-item__body">
-                        <div className="event-feed-item__headline">
-                          <div className="event-feed-item__identity">
-                            {canOpenProfile ? (
-                              <a
-                                href={profileHandoffUrl || profileUrl || '#'}
-                                className="event-feed-item__name-link"
-                                onClick={(event) =>
-                                  handleProfileLinkClick(event, () =>
-                                    activateProfile(
-                                      violation.userId,
-                                      displayName,
-                                      profileHandoffUrl,
-                                    ),
-                                  )
-                                }
-                              >
-                                {displayName}
-                              </a>
-                            ) : (
-                              <strong>{displayName}</strong>
-                            )}
-                            <div className="event-feed-item__stamp">
-                              <span
-                                className={`event-feed-item__action event-feed-item__action--${actionToneMap[displayAction]}`}
-                              >
-                                {actionLabelMap[displayAction]}
-                              </span>
-                              <time dateTime={violation.createdAt}>
-                                {formatViolationDate(violation.createdAt)}
-                              </time>
+                        <div className="event-feed-item__body">
+                          <div className="event-feed-item__headline">
+                            <div className="event-feed-item__identity">
+                              {canOpenProfile ? (
+                                <a
+                                  href={profileHandoffUrl || profileUrl || '#'}
+                                  className="event-feed-item__name-link"
+                                  onClick={(event) =>
+                                    handleProfileLinkClick(event, () =>
+                                      activateProfile(
+                                        violation.userId,
+                                        displayName,
+                                        profileHandoffUrl,
+                                      ),
+                                    )
+                                  }
+                                >
+                                  {displayName}
+                                </a>
+                              ) : (
+                                <strong>{displayName}</strong>
+                              )}
+                              <div className="event-feed-item__stamp">
+                                <span
+                                  className={`event-feed-item__action event-feed-item__action--${actionToneMap[displayAction]}`}
+                                >
+                                  {actionLabelMap[displayAction]}
+                                </span>
+                                <time dateTime={violation.createdAt}>
+                                  {formatViolationDate(violation.createdAt)}
+                                </time>
+                              </div>
                             </div>
+
+                            <span className="event-feed-item__toggle" aria-hidden="true">
+                              {isExpanded ? '−' : '+'}
+                            </span>
                           </div>
 
-                          <span className="event-feed-item__toggle" aria-hidden="true">
-                            {isExpanded ? '−' : '+'}
-                          </span>
+                          <p className="event-feed-item__summary">
+                            {resolveViolationBlurb(violation)}
+                          </p>
                         </div>
-
-                        <p className="event-feed-item__summary">
-                          {resolveViolationBlurb(violation)}
-                        </p>
                       </div>
-                    </div>
 
-                    {isExpanded ? (
-                      <div className="event-feed-item__details">
-                        {violation.maskedExcerpt ? (
-                          <div className="event-feed-item__excerpt">
-                            <span>Фрагмент сообщения</span>
-                            <p>{violation.maskedExcerpt}</p>
-                          </div>
-                        ) : null}
+                      {isExpanded ? (
+                        <div className="event-feed-item__details">
+                          {violation.maskedExcerpt ? (
+                            <div className="event-feed-item__excerpt">
+                              <span>Фрагмент сообщения</span>
+                              <p>{violation.maskedExcerpt}</p>
+                            </div>
+                          ) : null}
 
-                        <ViolationModerationControls
-                          api={api}
-                          chatId={chatId}
-                          violation={violation}
-                          onApplied={() => void dashboardQuery.refetch()}
-                        />
-                      </div>
-                    ) : null}
-                  </article>
-                );
-              })}
-            </section>
+                          <ViolationModerationControls
+                            api={api}
+                            chatId={chatId}
+                            violation={violation}
+                            onApplied={() => {
+                              void dashboardQuery.refetch();
+                              void moderationFeed.retry();
+                            }}
+                          />
+                        </div>
+                      ) : null}
+                    </article>
+                  );
+                })}
+              </section>
+
+              {moderationFeed.hasMore ? (
+                <button
+                  type="button"
+                  className="button button--ghost membership-feed__load-more"
+                  onClick={() => void moderationFeed.loadMore()}
+                  disabled={moderationFeed.isLoadingMore || moderationFeed.isReloading}
+                >
+                  {moderationFeed.isLoadingMore ? 'Загружаем...' : 'Показать ещё'}
+                </button>
+              ) : null}
+            </>
           ) : null}
         </>
       ) : null}

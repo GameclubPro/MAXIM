@@ -120,6 +120,15 @@ export class AdminController {
     return this.adminService.getChatActivityFeed(chatId, user, query);
   }
 
+  @Get('chats/:chatId/moderation-feed')
+  getChatModerationFeed(
+    @Param('chatId') chatId: string,
+    @CurrentUser() user: AuthUser,
+    @Query() query: unknown,
+  ) {
+    return this.adminService.getChatModerationFeed(chatId, user, query);
+  }
+
   @Put('chats/:chatId/rules')
   updateRules(
     @Param('chatId') chatId: string,

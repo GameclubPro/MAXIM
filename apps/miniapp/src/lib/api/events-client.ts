@@ -3,6 +3,8 @@ import {
   logsDashboardResponseSchema,
   manualModerationActionRequestSchema,
   manualModerationActionResultSchema,
+  moderationFeedPageSchema,
+  moderationFeedQuerySchema,
   membershipActivityPageSchema,
   membershipActivityQuerySchema,
   profileMentionHandoffRequestSchema,
@@ -11,6 +13,8 @@ import {
   type LogsDashboardResponse,
   type ManualModerationActionRequest,
   type ManualModerationActionResult,
+  type ModerationFeedPage,
+  type ModerationFeedQuery,
   type MembershipActivityPage,
   type MembershipActivityQuery,
   type BroadcastHandoffResponse,
@@ -46,10 +50,28 @@ export async function getChatActivityFeed(
     params.set('cursor', validatedQuery.cursor);
   }
 
-  const response = await api.request(
-    `/chats/${chatId}/activity-feed?${params.toString()}`,
-  );
+  const response = await api.request(`/chats/${chatId}/activity-feed?${params.toString()}`);
   return membershipActivityPageSchema.parse(response);
+}
+
+export async function getChatModerationFeed(
+  api: ApiTransport,
+  chatId: string,
+  query: Partial<ModerationFeedQuery> = {},
+): Promise<ModerationFeedPage> {
+  const validatedQuery = moderationFeedQuerySchema.parse(query);
+  const params = new URLSearchParams({
+    range: validatedQuery.range,
+    filter: validatedQuery.filter,
+    limit: String(validatedQuery.limit),
+  });
+
+  if (validatedQuery.cursor) {
+    params.set('cursor', validatedQuery.cursor);
+  }
+
+  const response = await api.request(`/chats/${chatId}/moderation-feed?${params.toString()}`);
+  return moderationFeedPageSchema.parse(response);
 }
 
 export async function applyManualModerationAction(

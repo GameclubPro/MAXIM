@@ -2079,6 +2079,212 @@ describe('AdminService.getChatActivityFeed', () => {
   });
 });
 
+describe('AdminService.getChatModerationFeed', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('paginates filtered moderation events and preserves enriched user profiles', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-02T12:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    prisma.moderationEvent.findMany
+      .mockResolvedValueOnce([
+        {
+          id: 'evt-ban-3',
+          action: 'BAN',
+          ruleCode: 'MANUAL_BAN',
+          userId: 'user-3',
+          createdAt: new Date('2026-03-02T11:00:00.000Z'),
+          maskedExcerpt: null,
+          metadata: { banDurationHours: 24 },
+        },
+        {
+          id: 'evt-ban-2',
+          action: 'BAN',
+          ruleCode: 'LINK_BLOCKED',
+          userId: 'user-2',
+          createdAt: new Date('2026-03-02T10:30:00.000Z'),
+          maskedExcerpt: '***',
+          metadata: null,
+        },
+        {
+          id: 'evt-ban-1',
+          action: 'BAN',
+          ruleCode: 'DUPLICATE_BAN',
+          userId: 'user-1',
+          createdAt: new Date('2026-03-02T09:00:00.000Z'),
+          maskedExcerpt: null,
+          metadata: { duplicateCount: 4 },
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 'evt-ban-1',
+          action: 'BAN',
+          ruleCode: 'DUPLICATE_BAN',
+          userId: 'user-1',
+          createdAt: new Date('2026-03-02T09:00:00.000Z'),
+          maskedExcerpt: null,
+          metadata: { duplicateCount: 4 },
+        },
+      ]);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([
+        { user_id: 'user-3', sender_name: 'Анна' },
+        { user_id: 'user-2', sender_name: 'Мария' },
+      ])
+      .mockResolvedValueOnce([{ user_id: 'user-1', sender_name: 'Игорь' }]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatMemberProfiles: jest
+        .fn()
+        .mockResolvedValueOnce(
+          new Map([
+            [
+              'user-3',
+              {
+                userId: 'user-3',
+                displayName: 'Анна',
+                username: 'anna',
+                avatarUrl: 'https://cdn.max.ru/u/3/avatar-full.jpg',
+              },
+            ],
+            [
+              'user-2',
+              {
+                userId: 'user-2',
+                displayName: 'Мария',
+                username: 'maria',
+                avatarUrl: 'https://cdn.max.ru/u/2/avatar-full.jpg',
+              },
+            ],
+          ]),
+        )
+        .mockResolvedValueOnce(
+          new Map([
+            [
+              'user-1',
+              {
+                userId: 'user-1',
+                displayName: 'Игорь',
+                username: null,
+                avatarUrl: 'https://cdn.max.ru/u/1/avatar-full.jpg',
+              },
+            ],
+          ]),
+        ),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const firstPage = await service.getChatModerationFeed(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { range: '7d', filter: 'BAN', limit: 2 },
+    );
+
+    expect(firstPage.items).toEqual([
+      {
+        id: 'evt-ban-3',
+        action: 'BAN',
+        ruleCode: 'MANUAL_BAN',
+        userId: 'user-3',
+        userDisplayName: 'Анна',
+        avatarUrl: 'https://cdn.max.ru/u/3/avatar-full.jpg',
+        profileUrl: 'https://max.ru/anna',
+        profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
+        createdAt: '2026-03-02T11:00:00.000Z',
+        maskedExcerpt: null,
+        metadata: { banDurationHours: 24 },
+      },
+      {
+        id: 'evt-ban-2',
+        action: 'BAN',
+        ruleCode: 'LINK_BLOCKED',
+        userId: 'user-2',
+        userDisplayName: 'Мария',
+        avatarUrl: 'https://cdn.max.ru/u/2/avatar-full.jpg',
+        profileUrl: 'https://max.ru/maria',
+        profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
+        createdAt: '2026-03-02T10:30:00.000Z',
+        maskedExcerpt: '***',
+        metadata: null,
+      },
+    ]);
+    expect(firstPage.hasMore).toBe(true);
+    expect(firstPage.nextCursor).toEqual(expect.any(String));
+
+    const secondPage = await service.getChatModerationFeed(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { range: '7d', filter: 'BAN', limit: 2, cursor: firstPage.nextCursor ?? undefined },
+    );
+
+    expect(secondPage).toEqual({
+      items: [
+        {
+          id: 'evt-ban-1',
+          action: 'BAN',
+          ruleCode: 'DUPLICATE_BAN',
+          userId: 'user-1',
+          userDisplayName: 'Игорь',
+          avatarUrl: 'https://cdn.max.ru/u/1/avatar-full.jpg',
+          profileUrl: null,
+          profileHandoffUrl: expect.stringContaining('https://max.ru/777000_bot?start=pmh-'),
+          createdAt: '2026-03-02T09:00:00.000Z',
+          maskedExcerpt: null,
+          metadata: { duplicateCount: 4 },
+        },
+      ],
+      hasMore: false,
+      nextCursor: null,
+    });
+
+    const firstCall = prisma.moderationEvent.findMany.mock.calls[0]?.[0];
+    expect(firstCall.where).toEqual(
+      expect.objectContaining({
+        chatId: 'chat-1',
+        action: 'BAN',
+      }),
+    );
+    expect(firstCall.orderBy).toEqual([{ createdAt: 'desc' }, { id: 'desc' }]);
+
+    const secondCall = prisma.moderationEvent.findMany.mock.calls[1]?.[0];
+    expect(secondCall.where.AND).toHaveLength(2);
+    expect(secondCall.where.AND[1]).toEqual(
+      expect.objectContaining({
+        OR: expect.arrayContaining([
+          expect.objectContaining({ createdAt: expect.objectContaining({ lt: expect.any(Date) }) }),
+          expect.objectContaining({
+            createdAt: expect.any(Date),
+            id: expect.objectContaining({ lt: 'evt-ban-2' }),
+          }),
+        ]),
+      }),
+    );
+  });
+});
+
 describe('AdminService.applyManualModerationAction', () => {
   afterEach(() => {
     jest.useRealTimers();

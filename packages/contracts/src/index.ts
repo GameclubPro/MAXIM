@@ -1382,6 +1382,24 @@ export const logsDashboardQuerySchema = z.object({
 });
 export type LogsDashboardQuery = z.infer<typeof logsDashboardQuerySchema>;
 
+export const moderationFeedFilterSchema = z.enum([
+  'ALL',
+  'WARN',
+  'DELETE_MESSAGE',
+  'KICK',
+  'BAN',
+  'UNBAN',
+]);
+export type ModerationFeedFilter = z.infer<typeof moderationFeedFilterSchema>;
+
+export const moderationFeedQuerySchema = z.object({
+  range: logsDashboardRangeSchema.default('7d'),
+  filter: moderationFeedFilterSchema.default('ALL'),
+  limit: z.coerce.number().int().min(1).max(100).default(50),
+  cursor: z.string().trim().min(1).optional(),
+});
+export type ModerationFeedQuery = z.infer<typeof moderationFeedQuerySchema>;
+
 export const membershipActivityRangeSchema = logsDashboardRangeSchema;
 export type MembershipActivityRange = z.infer<typeof membershipActivityRangeSchema>;
 
@@ -1521,6 +1539,13 @@ export const logsDashboardViolationSchema = z.object({
   metadata: z.record(z.unknown()).nullable().optional(),
 });
 export type LogsDashboardViolation = z.infer<typeof logsDashboardViolationSchema>;
+
+export const moderationFeedPageSchema = z.object({
+  items: z.array(logsDashboardViolationSchema),
+  hasMore: z.boolean(),
+  nextCursor: z.string().nullable(),
+});
+export type ModerationFeedPage = z.infer<typeof moderationFeedPageSchema>;
 
 export const logsDashboardResponseSchema = z.object({
   chat: z.object({

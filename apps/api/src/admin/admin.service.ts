@@ -18,6 +18,8 @@ import {
   logsDashboardResponseSchema,
   manualModerationActionRequestSchema,
   manualModerationActionResultSchema,
+  moderationFeedPageSchema,
+  moderationFeedQuerySchema,
   membershipActivityPageSchema,
   membershipActivityQuerySchema,
   publishChatRulesResultSchema,
@@ -46,11 +48,15 @@ import {
   chatSettingsSchema,
   type ChannelSettingsScreenResponse,
   type DomainAllowlistEntry,
+  type LogsDashboardViolation,
   type LogsDashboardRange,
   type LogsDashboardResponse,
   type ManagedEntityType,
   type ManualModerationActionResult,
   type Me,
+  type ModerationFeedFilter,
+  type ModerationFeedPage,
+  type ModerationFeedQuery,
   type ModerationEvent,
   publishChannelEngagementRequestSchema,
   publishChannelEngagementResultSchema,
@@ -169,6 +175,21 @@ type ResolvedUserProfile = {
   avatarUrl: string | null;
   profileUrl: string | null;
   profileHandoffUrl: string | null;
+};
+
+type ModerationFeedCursor = {
+  createdAt: Date;
+  id: string;
+};
+
+type ModerationViolationRow = {
+  id: string;
+  action: SanctionAction;
+  ruleCode: string;
+  userId: string;
+  createdAt: Date;
+  maskedExcerpt: string | null;
+  metadata: Prisma.JsonValue | null;
 };
 
 type PreparedManagedBroadcastRequest = {
@@ -6602,21 +6623,7 @@ export class AdminService {
         AND created_at <= ${now}
     `;
 
-    const violationsWhere: Prisma.ModerationEventWhereInput = {
-      chatId,
-      createdAt: { gte: from, lte: now },
-      OR: [
-        {
-          action: {
-            in: ['WARN', 'DELETE_MESSAGE', 'KICK', 'BAN'],
-          },
-        },
-        {
-          action: SanctionAction.NONE,
-          ruleCode: 'MANUAL_UNBAN',
-        },
-      ],
-    };
+    const violationsWhere = this.buildModerationFeedWhere(chatId, from, now, 'ALL');
 
     const [
       warnCount,
@@ -6670,7 +6677,7 @@ export class AdminService {
       }),
       this.prisma.moderationEvent.findMany({
         where: violationsWhere,
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
         take: LOGS_DASHBOARD_VIOLATIONS_LIMIT,
       }),
     ]);
@@ -6718,26 +6725,9 @@ export class AdminService {
         affectedUsers: affectedUsers.length,
         total: warnCount + deleteMessageCount + kickCount + banCount + unbanCount,
       },
-      violations: violationRows.map((row) => {
-        const userProfile = userProfiles.get(row.userId);
-
-        return {
-          id: row.id,
-          action: row.action,
-          ruleCode: row.ruleCode,
-          userId: row.userId,
-          userDisplayName: userProfile?.displayName ?? null,
-          avatarUrl: userProfile?.avatarUrl ?? null,
-          profileUrl: userProfile?.profileUrl ?? null,
-          profileHandoffUrl: userProfile?.profileHandoffUrl ?? null,
-          createdAt: row.createdAt.toISOString(),
-          maskedExcerpt: row.maskedExcerpt,
-          metadata:
-            row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
-              ? (row.metadata as Record<string, unknown>)
-              : null,
-        };
-      }),
+      violations: violationRows.map((row) =>
+        this.mapModerationViolationRow(row as ModerationViolationRow, userProfiles),
+      ),
       activityFeed,
     };
 
@@ -6760,6 +6750,24 @@ export class AdminService {
     const now = new Date();
     const from = this.resolveLogsDashboardFrom(parsed.data.range, now);
     return this.getMembershipActivityFeedPage(chatId, from, now, parsed.data, 'chat');
+  }
+
+  async getChatModerationFeed(
+    chatId: string,
+    user: AuthUser,
+    query: unknown,
+  ): Promise<ModerationFeedPage> {
+    await this.assertChatAdmin(chatId, user.userId, 'chat');
+    await this.ensureEntityType(chatId, user.userId, 'chat');
+
+    const parsed = moderationFeedQuerySchema.safeParse(query);
+    if (!parsed.success) {
+      throw new BadRequestException(parsed.error.format());
+    }
+
+    const now = new Date();
+    const from = this.resolveLogsDashboardFrom(parsed.data.range, now);
+    return this.getModerationFeedPage(chatId, from, now, parsed.data, 'chat');
   }
 
   async applyManualModerationAction(
@@ -7609,6 +7617,163 @@ export class AdminService {
     }
 
     return new Date(toTimestamp - 7 * 24 * 60 * 60 * 1000);
+  }
+
+  private buildModerationFeedWhere(
+    chatId: string,
+    from: Date,
+    to: Date,
+    filter: ModerationFeedFilter,
+  ): Prisma.ModerationEventWhereInput {
+    const baseWhere: Prisma.ModerationEventWhereInput = {
+      chatId,
+      createdAt: { gte: from, lte: to },
+    };
+
+    if (filter === 'ALL') {
+      return {
+        ...baseWhere,
+        OR: [
+          {
+            action: {
+              in: ['WARN', 'DELETE_MESSAGE', 'KICK', 'BAN'],
+            },
+          },
+          {
+            action: SanctionAction.NONE,
+            ruleCode: 'MANUAL_UNBAN',
+          },
+        ],
+      };
+    }
+
+    if (filter === 'UNBAN') {
+      return {
+        ...baseWhere,
+        action: SanctionAction.NONE,
+        ruleCode: 'MANUAL_UNBAN',
+      };
+    }
+
+    return {
+      ...baseWhere,
+      action: filter,
+    };
+  }
+
+  private mapModerationViolationRow(
+    row: ModerationViolationRow,
+    userProfiles: Map<string, ResolvedUserProfile>,
+  ): LogsDashboardViolation {
+    const userProfile = userProfiles.get(row.userId);
+
+    return {
+      id: row.id,
+      action: row.action,
+      ruleCode: row.ruleCode,
+      userId: row.userId,
+      userDisplayName: userProfile?.displayName ?? null,
+      avatarUrl: userProfile?.avatarUrl ?? null,
+      profileUrl: userProfile?.profileUrl ?? null,
+      profileHandoffUrl: userProfile?.profileHandoffUrl ?? null,
+      createdAt: row.createdAt.toISOString(),
+      maskedExcerpt: row.maskedExcerpt,
+      metadata:
+        row.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata)
+          ? (row.metadata as Record<string, unknown>)
+          : null,
+    };
+  }
+
+  private encodeModerationFeedCursor(value: ModerationFeedCursor): string {
+    return Buffer.from(
+      JSON.stringify({
+        createdAt: value.createdAt.toISOString(),
+        id: value.id,
+      }),
+      'utf8',
+    ).toString('base64url');
+  }
+
+  private decodeModerationFeedCursor(cursor: string | undefined): ModerationFeedCursor | null {
+    const normalizedCursor = cursor?.trim() ?? '';
+    if (!normalizedCursor) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(
+        Buffer.from(normalizedCursor, 'base64url').toString('utf8'),
+      ) as Record<string, unknown>;
+      const createdAtIso = typeof parsed.createdAt === 'string' ? parsed.createdAt.trim() : '';
+      const id = typeof parsed.id === 'string' ? parsed.id.trim() : '';
+      const createdAt = new Date(createdAtIso);
+
+      if (!id || !createdAtIso || !Number.isFinite(createdAt.getTime())) {
+        return null;
+      }
+
+      return {
+        createdAt,
+        id,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async getModerationFeedPage(
+    chatId: string,
+    from: Date,
+    to: Date,
+    query: ModerationFeedQuery,
+    entityType: ManagedEntityType = 'chat',
+  ): Promise<ModerationFeedPage> {
+    const limit = Math.max(1, Math.min(100, query.limit));
+    const cursor = this.decodeModerationFeedCursor(query.cursor);
+    const baseWhere = this.buildModerationFeedWhere(chatId, from, to, query.filter);
+    const rows = await this.prisma.moderationEvent.findMany({
+      where: cursor
+        ? {
+            AND: [
+              baseWhere,
+              {
+                OR: [
+                  { createdAt: { lt: cursor.createdAt } },
+                  {
+                    createdAt: cursor.createdAt,
+                    id: { lt: cursor.id },
+                  },
+                ],
+              },
+            ],
+          }
+        : baseWhere,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
+    });
+
+    const pageRows = rows.slice(0, limit);
+    const userProfiles = await this.resolveUserProfiles(
+      chatId,
+      entityType,
+      pageRows.map((row) => row.userId),
+    );
+    const lastRow = pageRows.at(-1);
+
+    return moderationFeedPageSchema.parse({
+      items: pageRows.map((row) =>
+        this.mapModerationViolationRow(row as ModerationViolationRow, userProfiles),
+      ),
+      hasMore: rows.length > limit,
+      nextCursor:
+        rows.length > limit && lastRow
+          ? this.encodeModerationFeedCursor({
+              createdAt: lastRow.createdAt,
+              id: lastRow.id,
+            })
+          : null,
+    });
   }
 
   private resolveChannelStatsFrom(range: ChannelStatsRange, to: Date): Date {

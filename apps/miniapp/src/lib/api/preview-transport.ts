@@ -21,6 +21,7 @@ import {
   managedGiveawayPublicSchema,
   managedPollSchema,
   manualModerationActionResultSchema,
+  moderationFeedPageSchema,
   membershipActivityPageSchema,
   publishChannelEngagementResultSchema,
   publishChatRulesResultSchema,
@@ -53,6 +54,8 @@ import {
   type ManualModerationActionRequest,
   type ManualModerationActionResult,
   type Me,
+  type ModerationFeedFilter,
+  type ModerationFeedPage,
   type MembershipActivityFilter,
   type MembershipActivityItem,
   type MembershipActivityPage,
@@ -173,6 +176,52 @@ function filterActivityItems(
     }
 
     return true;
+  });
+}
+
+function matchesModerationFeedFilter(
+  item: LogsDashboardResponse['violations'][number],
+  filter: ModerationFeedFilter,
+): boolean {
+  if (filter === 'ALL') {
+    return true;
+  }
+
+  if (filter === 'UNBAN') {
+    return item.ruleCode === 'MANUAL_UNBAN';
+  }
+
+  return item.action === filter;
+}
+
+function buildModerationFeedPage(
+  items: LogsDashboardResponse['violations'],
+  {
+    range,
+    filter = 'ALL',
+    limit = 50,
+    cursor,
+  }: {
+    range: LogsDashboardRange;
+    filter?: ModerationFeedFilter;
+    limit?: number;
+    cursor?: string | null;
+  },
+  now: Date,
+): ModerationFeedPage {
+  const filtered = items.filter(
+    (item) =>
+      isWithinRange(item.createdAt, range, now) && matchesModerationFeedFilter(item, filter),
+  );
+  const offset = cursor ? Number.parseInt(cursor, 10) : 0;
+  const safeOffset = Number.isFinite(offset) && offset > 0 ? offset : 0;
+  const pageItems = filtered.slice(safeOffset, safeOffset + limit);
+  const nextOffset = safeOffset + pageItems.length;
+
+  return moderationFeedPageSchema.parse({
+    items: pageItems,
+    hasMore: nextOffset < filtered.length,
+    nextCursor: nextOffset < filtered.length ? String(nextOffset) : null,
   });
 }
 
@@ -2312,6 +2361,21 @@ async function handleChatRequest(
   if (tail[0] === 'logs-dashboard' && method === 'GET') {
     const range = (url.searchParams.get('range') as LogsDashboardRange | null) ?? '7d';
     return cloneJson(buildLogsDashboard(state, chatId, range));
+  }
+
+  if (tail[0] === 'moderation-feed' && method === 'GET') {
+    return cloneJson(
+      buildModerationFeedPage(
+        state.chatViolations,
+        {
+          range: (url.searchParams.get('range') as LogsDashboardRange | null) ?? '7d',
+          filter: (url.searchParams.get('filter') as ModerationFeedFilter | null) ?? 'ALL',
+          limit: Number.parseInt(url.searchParams.get('limit') ?? '50', 10),
+          cursor: url.searchParams.get('cursor'),
+        },
+        new Date(),
+      ),
+    );
   }
 
   if (tail[0] === 'activity-feed' && method === 'GET') {
