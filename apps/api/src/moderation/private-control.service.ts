@@ -145,6 +145,17 @@ type PrivatePollDraft = {
   options: string[];
 };
 
+type PrivateSuggestionDraft = {
+  chatId: string;
+  token: string;
+  text: string;
+  imageBase64: string;
+  imageMimeType: string;
+  imageFileName: string;
+  sourceMessageId: string | null;
+  previewMessageId: string | null;
+};
+
 type PrivateScreen =
   | 'chat_select'
   | 'home'
@@ -197,6 +208,7 @@ type PrivateSession = {
   pendingMassAction: PendingMassAction | null;
   broadcastDraft: PrivateBroadcastDraft;
   pollDraft: PrivatePollDraft;
+  suggestionDraft: PrivateSuggestionDraft | null;
 };
 
 type PrivateContext = {
@@ -1114,6 +1126,7 @@ export class PrivateControlService {
         chatId: channelSuggestionPayload.chatId,
         token: channelSuggestionPayload.token,
       };
+      session.suggestionDraft = null;
       session.pendingMassAction = null;
       session.managedGiveawayId = null;
       session.section = null;
@@ -1319,6 +1332,7 @@ export class PrivateControlService {
       chatId: params.chatId,
       token: params.token,
     };
+    session.suggestionDraft = null;
     session.pendingMassAction = null;
     session.managedGiveawayId = null;
     session.section = null;
@@ -1952,6 +1966,129 @@ export class PrivateControlService {
     return normalized.length > 0 ? normalized : null;
   }
 
+  private async processChannelSuggestionEditCallback(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<void> {
+    const draft = session.suggestionDraft;
+    if (!draft) {
+      const view = this.renderChannelSuggestionCancelledView();
+      await this.respond(context, session, view, {
+        callbackId: context.callbackId,
+        notification: 'Черновик не найден',
+      });
+      return;
+    }
+
+    await this.clearChannelSuggestionPreviewButtons(context.chatId, draft.previewMessageId);
+    draft.previewMessageId = null;
+    session.pendingInput = {
+      kind: 'channel_suggestion',
+      chatId: draft.chatId,
+      token: draft.token,
+    };
+
+    const view = this.renderInputPrompt(session.pendingInput);
+    await this.respond(context, session, view, {
+      callbackId: context.callbackId,
+      notification: 'Пришлите новую версию',
+    });
+  }
+
+  private async processChannelSuggestionSendCallback(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<void> {
+    const draft = session.suggestionDraft;
+    if (!draft) {
+      const view = this.renderChannelSuggestionCancelledView();
+      await this.respond(context, session, view, {
+        callbackId: context.callbackId,
+        notification: 'Черновик уже закрыт',
+      });
+      return;
+    }
+
+    await this.clearChannelSuggestionPreviewButtons(context.chatId, draft.previewMessageId);
+    draft.previewMessageId = null;
+
+    let result: Awaited<ReturnType<AdminService['createChannelSuggestionFromBot']>>;
+    try {
+      result = await this.adminService.createChannelSuggestionFromBot(draft.chatId, context.actor, {
+        token: draft.token,
+        text: draft.text,
+        ...(draft.imageBase64
+          ? {
+              imageBase64: draft.imageBase64,
+              imageMimeType: draft.imageMimeType || null,
+              imageFileName: draft.imageFileName || null,
+            }
+          : {}),
+      });
+    } catch (error: unknown) {
+      await this.sendChannelSuggestionDraftPreview(context, session);
+      throw error;
+    }
+
+    this.clearChannelSuggestionDraft(session);
+
+    const view = result.delivered
+      ? this.renderChannelSuggestionSubmittedView()
+      : this.renderChannelSuggestionQueuedView();
+    await this.respond(context, session, view, {
+      callbackId: context.callbackId,
+      notification: result.delivered ? 'Отправлено админам' : 'Поставлено в очередь',
+    });
+  }
+
+  private async processChannelSuggestionReviewCallback(
+    context: PrivateContext,
+    session: PrivateSession,
+    action: 'publish' | 'cancel',
+    args: string[],
+  ): Promise<void> {
+    const suggestionId = args[0]?.trim() ?? '';
+    if (!suggestionId) {
+      throw new BadRequestException('Не удалось определить предложку.');
+    }
+
+    const result = await this.adminService.reviewChannelSuggestionByAdmin(
+      suggestionId,
+      context.actor,
+      action,
+    );
+    const viewText =
+      result.reviewStatus === 'published'
+        ? [
+            this.markdownTitle('Предложка опубликована'),
+            '',
+            ...(result.publishedUrl ? [result.publishedUrl, ''] : []),
+            'Кнопки на админских сообщениях обновлены.',
+          ].join('\n')
+        : [
+            this.markdownTitle('Предложка отменена'),
+            '',
+            'Кнопки на админских сообщениях обновлены.',
+          ].join('\n');
+
+    await this.respond(
+      context,
+      session,
+      { text: viewText },
+      {
+        callbackId: context.callbackId,
+        notification:
+          result.status === 'already_reviewed'
+            ? result.reviewStatus === 'published'
+              ? 'Уже опубликовано'
+              : 'Уже отменено'
+            : result.reviewStatus === 'published'
+              ? 'Пост опубликован'
+              : 'Предложка отменена',
+      },
+    );
+  }
+
   private async processCallback(context: PrivateContext): Promise<void> {
     const callback = this.parseCallbackAction(context.callbackPayload);
     const session = await this.loadSession(context.actor.userId);
@@ -1996,6 +2133,26 @@ export class PrivateControlService {
         callbackId: context.callbackId,
         notification: 'Подтверждение больше не нужно',
       });
+      return;
+    }
+
+    if (callback.action === 'suggestion_edit') {
+      await this.processChannelSuggestionEditCallback(context, session);
+      return;
+    }
+
+    if (callback.action === 'suggestion_send') {
+      await this.processChannelSuggestionSendCallback(context, session);
+      return;
+    }
+
+    if (callback.action === 'suggestion_review_publish') {
+      await this.processChannelSuggestionReviewCallback(context, session, 'publish', callback.args);
+      return;
+    }
+
+    if (callback.action === 'suggestion_review_cancel') {
+      await this.processChannelSuggestionReviewCallback(context, session, 'cancel', callback.args);
       return;
     }
 
@@ -3726,6 +3883,14 @@ export class PrivateControlService {
         const canceledInput = session.pendingInput;
         session.pendingInput = null;
         if (canceledInput?.kind === 'channel_suggestion') {
+          if (session.suggestionDraft) {
+            await this.sendChannelSuggestionDraftPreview(context, session);
+            if (context.callbackId) {
+              await this.answerCallbackQuiet(context.callbackId, 'Черновик сохранён');
+            }
+            return;
+          }
+
           const view = this.renderChannelSuggestionCancelledView();
           await this.respond(context, session, view, {
             callbackId: context.callbackId,
@@ -4134,29 +4299,18 @@ export class PrivateControlService {
         const downloadedImage = imageSourceAttachment
           ? await this.downloadImageSourceAttachment(imageSourceAttachment, 'channel-suggestion')
           : null;
-        const result = await this.adminService.createChannelSuggestionFromBot(
-          pendingInput.chatId,
-          context.actor,
-          {
-            token: pendingInput.token,
-            text: rawText,
-            ...(downloadedImage
-              ? {
-                  imageBase64: downloadedImage.base64,
-                  imageMimeType: downloadedImage.mimeType,
-                  imageFileName: downloadedImage.fileName,
-                }
-              : {}),
-          },
-        );
-
-        const view = result.delivered
-          ? this.renderChannelSuggestionSubmittedView()
-          : this.renderChannelSuggestionQueuedView();
-        await this.respond(context, session, view, {
-          callbackId: null,
-          notification: null,
-        });
+        session.pendingInput = null;
+        session.suggestionDraft = {
+          chatId: pendingInput.chatId,
+          token: pendingInput.token,
+          text: rawText,
+          imageBase64: downloadedImage?.base64 ?? '',
+          imageMimeType: downloadedImage?.mimeType ?? '',
+          imageFileName: downloadedImage?.fileName ?? '',
+          sourceMessageId: context.update.message?.messageId ?? null,
+          previewMessageId: null,
+        };
+        await this.sendChannelSuggestionDraftPreview(context, session);
         return;
       }
 
@@ -7317,12 +7471,58 @@ export class PrivateControlService {
     };
   }
 
+  private renderChannelSuggestionPreviewFallbackView(): PrivateView {
+    return {
+      text: [
+        this.markdownTitle('Черновик предложки'),
+        '',
+        'Не удалось отрисовать копию сообщения, но черновик сохранён.',
+        'Можно отправить его админам, отредактировать или вернуться в канал.',
+      ].join('\n'),
+    };
+  }
+
   private buildChannelSuggestionButtons(): MaxMessageButton[][] {
     return [
       [
         this.callbackButton('Отмена', this.cb('input_cancel'), 'negative'),
       ],
     ];
+  }
+
+  private async buildChannelSuggestionPreviewButtons(chatId: string): Promise<MaxMessageButton[][]> {
+    const buttons: MaxMessageButton[][] = [
+      [
+        this.callbackButton('✏️ Редактировать', this.cb('suggestion_edit')),
+        this.callbackButton('📨 Отправить', this.cb('suggestion_send'), 'positive'),
+      ],
+    ];
+    const returnButton = await this.buildChannelSuggestionReturnButton(chatId);
+    buttons.push([returnButton]);
+    return buttons;
+  }
+
+  private async buildChannelSuggestionReturnButton(chatId: string): Promise<MaxMessageButton> {
+    try {
+      const target = await this.adminService.getPublicChannelSuggestionTarget(chatId);
+      if (target.link) {
+        return {
+          type: 'link',
+          text: '↩️ Вернуться в канал',
+          url: target.link,
+        };
+      }
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve channel suggestion return button target',
+      );
+    }
+
+    return this.callbackButton('↩️ Вернуться в канал', this.cb('input_cancel'));
   }
 
   private async getChannelSuggestionRequirementsText(chatId: string): Promise<string> {
@@ -7351,6 +7551,97 @@ export class PrivateControlService {
       '',
       'Фото без текста тоже подойдёт.',
     ].join('\n');
+  }
+
+  private clearChannelSuggestionDraft(session: PrivateSession): void {
+    session.suggestionDraft = null;
+  }
+
+  private async clearChannelSuggestionPreviewButtons(
+    chatId: string,
+    previewMessageId: string | null,
+  ): Promise<void> {
+    if (!previewMessageId) {
+      return;
+    }
+
+    try {
+      await this.maxClient.editMessageInlineKeyboard(chatId, previewMessageId, null, {
+        buttons: [],
+      });
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          previewMessageId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to clear channel suggestion preview buttons',
+      );
+    }
+  }
+
+  private async sendChannelSuggestionDraftPreview(
+    context: PrivateContext,
+    session: PrivateSession,
+  ): Promise<void> {
+    const draft = session.suggestionDraft;
+    if (!draft) {
+      throw new BadRequestException('Черновик предложки не найден.');
+    }
+
+    const previousPreviewMessageId = draft.previewMessageId;
+    draft.previewMessageId = null;
+    await this.clearChannelSuggestionPreviewButtons(context.chatId, previousPreviewMessageId);
+
+    const buttons = await this.buildChannelSuggestionPreviewButtons(draft.chatId);
+
+    try {
+      if (!draft.sourceMessageId) {
+        throw new Error('Channel suggestion draft source message id is missing');
+      }
+
+      const published = await this.maxClient.sendMessageCopyWithInlineKeyboard(
+        context.chatId,
+        draft.sourceMessageId,
+        null,
+        this.withDebugContext(
+          {
+            buttons,
+          },
+          session,
+          'suggest_preview',
+        ),
+      );
+      draft.previewMessageId = published.messageId;
+      await this.saveSession(context.actor.userId, session);
+      return;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          userId: context.actor.userId,
+          chatId: draft.chatId,
+          sourceMessageId: draft.sourceMessageId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to send channel suggestion preview copy',
+      );
+    }
+
+    const fallbackView = this.renderChannelSuggestionPreviewFallbackView();
+    await this.saveSession(context.actor.userId, session);
+    await this.sendImmediate(
+      context.chatId,
+      this.limitMessageText(fallbackView.text),
+      this.withDebugContext(
+        {
+          buttons,
+          textFormat: this.shouldUseMarkdown(fallbackView.text) ? 'markdown' : undefined,
+        },
+        session,
+        'suggest_preview_fallback',
+      ),
+    );
   }
 
   private renderMassActionConfirmation(pendingMassAction: PendingMassAction): PrivateView {
@@ -9811,6 +10102,7 @@ export class PrivateControlService {
         ...DEFAULT_POLL_DRAFT,
         options: [...DEFAULT_POLL_DRAFT.options],
       },
+      suggestionDraft: null,
     };
   }
 
@@ -9891,6 +10183,7 @@ export class PrivateControlService {
       pendingMassAction: this.normalizePendingMassAction(row.pendingMassAction),
       broadcastDraft: this.normalizeBroadcastDraft(row.broadcastDraft),
       pollDraft: this.normalizePollDraft(row.pollDraft),
+      suggestionDraft: this.normalizeSuggestionDraft(row.suggestionDraft),
     };
   }
 
@@ -10149,6 +10442,37 @@ export class PrivateControlService {
     return {
       question,
       options: safeOptions,
+    };
+  }
+
+  private normalizeSuggestionDraft(raw: unknown): PrivateSuggestionDraft | null {
+    if (!raw || typeof raw !== 'object') {
+      return null;
+    }
+
+    const row = raw as Partial<PrivateSuggestionDraft>;
+    const chatId = typeof row.chatId === 'string' ? row.chatId.trim() : '';
+    const token = typeof row.token === 'string' ? row.token.trim() : '';
+
+    if (!chatId || !token) {
+      return null;
+    }
+
+    return {
+      chatId,
+      token,
+      text: typeof row.text === 'string' ? row.text : '',
+      imageBase64: typeof row.imageBase64 === 'string' ? row.imageBase64 : '',
+      imageMimeType: typeof row.imageMimeType === 'string' ? row.imageMimeType : '',
+      imageFileName: typeof row.imageFileName === 'string' ? row.imageFileName : '',
+      sourceMessageId:
+        typeof row.sourceMessageId === 'string' && row.sourceMessageId.trim().length > 0
+          ? row.sourceMessageId.trim()
+          : null,
+      previewMessageId:
+        typeof row.previewMessageId === 'string' && row.previewMessageId.trim().length > 0
+          ? row.previewMessageId.trim()
+          : null,
     };
   }
 

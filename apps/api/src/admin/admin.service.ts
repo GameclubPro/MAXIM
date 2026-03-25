@@ -235,6 +235,7 @@ const CHAT_DIALOG_ACTION_AUTO_ATTACH = 'AUTO_ATTACH_CHAT_COMMENTS';
 const MANAGED_POLL_ACTION_UPDATE = 'UPDATE_MANAGED_POLL';
 const MANAGED_POLL_ACTION_PUBLISH = 'PUBLISH_MANAGED_POLL';
 const MANAGED_POLL_ACTION_CLOSE = 'CLOSE_MANAGED_POLL';
+const PRIVATE_CONTROL_CALLBACK_PREFIX = 'pc2';
 const CHANNEL_DIALOG_START_PARAM_PREFIX = 'cd-';
 const CHANNEL_SUGGESTION_START_PARAM_PREFIX = 'cds-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
@@ -438,6 +439,14 @@ type ChannelSuggestionFromBotPayload = {
   imageBase64: string | null;
   imageMimeType: string | null;
   imageFileName: string | null;
+};
+
+type ChannelSuggestionReviewAction = 'publish' | 'cancel';
+
+type ChannelSuggestionAdminDelivery = {
+  adminUserId: string;
+  privateChatId: string;
+  messageId: string;
 };
 
 type ProfileMentionStartPayload = {
@@ -2123,52 +2132,150 @@ export class AdminService {
   async createChannelSuggestionFromBot(chatId: string, user: AuthUser, body: unknown) {
     const parsed = this.parseChannelSuggestionFromBotPayload(body);
     const threadId = this.resolveChannelDialogThreadId(chatId, 'suggest', parsed.token);
-    const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
-    const authorAvatarUrl = this.readTrimmedString(user.avatarUrl);
     const channelSettings = await this.getPublicChannelSettings(chatId);
 
     if (!channelSettings.postSuggestionsEnabled && !threadId) {
       throw new BadRequestException('Предложить пост для этого канала сейчас нельзя.');
     }
 
-    const delivery = await this.deliverSuggestionToAdminPrivate(chatId, user, {
+    const created = await this.createChannelSuggestionAuditLog({
+      chatId,
+      user,
+      threadId,
+      source: 'private_bot',
       text: parsed.text,
       imageBase64: parsed.imageBase64,
       imageMimeType: parsed.imageMimeType,
       imageFileName: parsed.imageFileName,
     });
 
-    await this.prisma.auditLog.create({
-      data: {
-        chatId,
-        actorUserId: user.userId,
-        action: CHANNEL_DIALOG_ACTION_SUGGEST,
-        payload: {
-          type: 'suggest',
-          threadId,
-          text: parsed.text,
-          authorDisplayName: authorDisplayName ?? null,
-          authorAvatarUrl: authorAvatarUrl ?? null,
-          delivered: delivery.delivered,
-          deliveredToUserId: delivery.deliveredToUserId,
-          source: 'private_bot',
-          hasImage: Boolean(parsed.imageBase64),
-          imageMimeType: parsed.imageMimeType,
-          imageFileName: parsed.imageFileName,
-        },
-      },
-    });
-
     return {
       ok: true,
-      delivered: delivery.delivered,
-      deliveredToUserId: delivery.deliveredToUserId,
+      delivered: created.delivered,
+      deliveredToUserId: created.deliveredToUserId,
     } as const;
   }
 
   async getPublicChannelSuggestionIntroText(chatId: string): Promise<string | null> {
     const channelSettings = await this.getPublicChannelSettings(chatId);
     return this.resolveChannelDialogIntroText(channelSettings, 'suggest');
+  }
+
+  async getPublicChannelSuggestionTarget(
+    chatId: string,
+  ): Promise<{ title: string; link: string | null }> {
+    await this.getPublicChannelSettings(chatId);
+
+    const persistedChat = await this.prisma.chat.findUnique({
+      where: { id: chatId },
+      select: {
+        title: true,
+      },
+    });
+
+    try {
+      const snapshot = await this.maxClient.getChatSnapshot(chatId);
+      return {
+        title: snapshot.title?.trim() || persistedChat?.title?.trim() || chatId,
+        link: this.readTrimmedString(snapshot.link),
+      };
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve public channel suggestion target',
+      );
+      return {
+        title: persistedChat?.title?.trim() || chatId,
+        link: null,
+      };
+    }
+  }
+
+  async reviewChannelSuggestionByAdmin(
+    suggestionId: string,
+    user: AuthUser,
+    action: ChannelSuggestionReviewAction,
+  ): Promise<{
+    status: 'reviewed' | 'already_reviewed';
+    reviewStatus: 'published' | 'cancelled';
+    publishedUrl: string | null;
+  }> {
+    const normalizedSuggestionId = suggestionId.trim();
+    if (!normalizedSuggestionId) {
+      throw new BadRequestException('Предложка не найдена.');
+    }
+
+    const row = await this.prisma.auditLog.findFirst({
+      where: {
+        id: normalizedSuggestionId,
+        action: CHANNEL_DIALOG_ACTION_SUGGEST,
+      },
+      select: {
+        id: true,
+        chatId: true,
+        actorUserId: true,
+        payload: true,
+      },
+    });
+
+    if (!row) {
+      throw new BadRequestException('Предложка не найдена.');
+    }
+
+    await this.assertChatAdmin(row.chatId, user.userId, 'channel');
+    await this.ensureEntityType(row.chatId, user.userId, 'channel');
+
+    const payload = this.readObjectPayload(row.payload);
+    if (this.readLowerString(payload.type) !== 'suggest') {
+      throw new BadRequestException('Предложка не найдена.');
+    }
+    const currentReviewStatus = this.readLowerString(payload.reviewStatus);
+    if (currentReviewStatus === 'published' || currentReviewStatus === 'cancelled') {
+      return {
+        status: 'already_reviewed',
+        reviewStatus: currentReviewStatus,
+        publishedUrl: this.readTrimmedString(payload.publishedUrl),
+      };
+    }
+
+    const published =
+      action === 'publish'
+        ? await this.publishStoredChannelSuggestion(row.chatId, payload)
+        : { messageId: null, url: null };
+    const reviewerLabel = user.displayName?.trim() || user.username?.trim() || user.userId;
+    const reviewStatus = action === 'publish' ? 'published' : 'cancelled';
+    const updatedPayload = {
+      ...payload,
+      reviewStatus,
+      reviewedAt: new Date().toISOString(),
+      reviewedByUserId: user.userId,
+      reviewedByDisplayName: reviewerLabel,
+      publishedMessageId: published.messageId,
+      publishedUrl: published.url,
+    } as Prisma.InputJsonValue;
+
+    await this.prisma.auditLog.update({
+      where: {
+        id: row.id,
+      },
+      data: {
+        payload: updatedPayload,
+      },
+    });
+
+    await this.syncChannelSuggestionAdminReviewMessages(
+      row.chatId,
+      updatedPayload as Record<string, unknown>,
+    );
+
+    return {
+      status: 'reviewed',
+      reviewStatus,
+      publishedUrl: published.url,
+    };
   }
 
   parseChannelSuggestionStartPayload(
@@ -2263,22 +2370,25 @@ export class AdminService {
       });
     }
 
-    let delivered = true;
-    let deliveredToUserId: string | null = null;
     if (dialogType === 'suggest') {
-      const delivery = await this.deliverSuggestionToAdminPrivate(chatId, user, {
+      const created = await this.createChannelSuggestionAuditLog({
+        chatId,
+        user,
+        threadId,
+        source,
         text,
       });
-      delivered = delivery.delivered;
-      deliveredToUserId = delivery.deliveredToUserId;
+      return createChannelDialogMessageResponseSchema.parse({
+        ok: true,
+        message: this.mapChannelDialogAuditLog(created.row, 'suggest', user.userId),
+      });
     }
 
     const created = await this.prisma.auditLog.create({
       data: {
         chatId,
         actorUserId: user.userId,
-        action:
-          dialogType === 'comments' ? CHANNEL_DIALOG_ACTION_COMMENT : CHANNEL_DIALOG_ACTION_SUGGEST,
+        action: CHANNEL_DIALOG_ACTION_COMMENT,
         payload: {
           type: dialogType,
           threadId,
@@ -2294,8 +2404,6 @@ export class AdminService {
                 },
               }
             : {}),
-          delivered,
-          deliveredToUserId,
           source,
         },
       },
@@ -2307,21 +2415,12 @@ export class AdminService {
       text,
       authorUserId: user.userId,
       authorDisplayName: authorDisplayName ?? null,
-      isAdmin:
-        dialogType === 'comments'
-          ? (await this.readDialogAdminUserIds(chatId)).has(user.userId)
-          : false,
+      isAdmin: (await this.readDialogAdminUserIds(chatId)).has(user.userId),
       avatarUrl: authorAvatarUrl ?? null,
       createdAt: created.createdAt.toISOString(),
       replyToMessageId: replyTo?.messageId ?? null,
       replyTo: replyTo ?? null,
       reactionGroups: [],
-      ...(dialogType === 'suggest'
-        ? {
-            delivered,
-            deliveredToUserId,
-          }
-        : {}),
     };
 
     if (dialogType === 'comments' && threadId) {
@@ -9074,7 +9173,92 @@ export class AdminService {
     }
   }
 
-  private async deliverSuggestionToAdminPrivate(
+  private async createChannelSuggestionAuditLog(params: {
+    chatId: string;
+    user: AuthUser;
+    threadId: string | null;
+    source: ChannelDialogMessageSource;
+    text: string;
+    imageBase64?: string | null;
+    imageMimeType?: string | null;
+    imageFileName?: string | null;
+  }): Promise<{
+    row: { id: string; actorUserId: string; payload: Prisma.JsonValue; createdAt: Date };
+    delivered: boolean;
+    deliveredToUserId: string | null;
+  }> {
+    const authorDisplayName =
+      params.user.displayName?.trim() ? params.user.displayName.trim() : params.user.username;
+    const authorAvatarUrl = this.readTrimmedString(params.user.avatarUrl);
+    const created = await this.prisma.auditLog.create({
+      data: {
+        chatId: params.chatId,
+        actorUserId: params.user.userId,
+        action: CHANNEL_DIALOG_ACTION_SUGGEST,
+        payload: {
+          type: 'suggest',
+          threadId: params.threadId,
+          text: params.text,
+          actorUserId: params.user.userId,
+          authorDisplayName: authorDisplayName ?? null,
+          authorAvatarUrl: authorAvatarUrl ?? null,
+          delivered: false,
+          deliveredToUserId: null,
+          deliveredToUserIds: [],
+          deliveries: [],
+          source: params.source,
+          reviewStatus: 'pending',
+          hasImage: Boolean(params.imageBase64),
+          imageBase64: params.imageBase64 ?? null,
+          imageMimeType: params.imageMimeType ?? null,
+          imageFileName: params.imageFileName ?? null,
+        },
+      },
+      select: {
+        id: true,
+        actorUserId: true,
+        payload: true,
+        createdAt: true,
+      },
+    });
+
+    const delivery = await this.deliverSuggestionToAdminPrivates(created.id, params.chatId, params.user, {
+      text: params.text,
+      imageBase64: params.imageBase64,
+      imageMimeType: params.imageMimeType,
+      imageFileName: params.imageFileName,
+    });
+    const createdPayload = this.readObjectPayload(created.payload);
+    const updated = await this.prisma.auditLog.update({
+      where: {
+        id: created.id,
+      },
+      data: {
+        payload: {
+          ...createdPayload,
+          delivered: delivery.delivered,
+          deliveredToUserId: delivery.deliveredToUserId,
+          deliveredToUserIds: delivery.deliveredToUserIds,
+          deliveries: delivery.deliveries,
+        } as Prisma.InputJsonValue,
+      },
+      select: {
+        id: true,
+        actorUserId: true,
+        payload: true,
+        createdAt: true,
+      },
+    });
+
+    return {
+      row: updated,
+      delivered: delivery.delivered,
+      deliveredToUserId: delivery.deliveredToUserId,
+    };
+  }
+
+  private async deliverSuggestionToAdminPrivates(
+    suggestionId: string,
     chatId: string,
     user: AuthUser,
     suggestion: {
@@ -9083,7 +9267,12 @@ export class AdminService {
       imageMimeType?: string | null;
       imageFileName?: string | null;
     },
-  ): Promise<{ delivered: boolean; deliveredToUserId: string | null }> {
+  ): Promise<{
+    delivered: boolean;
+    deliveredToUserId: string | null;
+    deliveredToUserIds: string[];
+    deliveries: ChannelSuggestionAdminDelivery[];
+  }> {
     const adminIds = Array.from(
       new Set(
         (await this.maxClient.getChatAdminIds(chatId)).filter(
@@ -9093,20 +9282,28 @@ export class AdminService {
     );
 
     if (adminIds.length === 0) {
-      return { delivered: false, deliveredToUserId: null };
+      return {
+        delivered: false,
+        deliveredToUserId: null,
+        deliveredToUserIds: [],
+        deliveries: [],
+      };
     }
 
     const channelTitle = await this.resolveChannelTitle(chatId);
     const actorName = user.displayName?.trim() || user.username?.trim() || `user:${user.userId}`;
-    const normalizedText = suggestion.text.trim();
-    const message = [
-      'Новая предложка поста',
-      '',
-      `Канал: ${channelTitle}`,
-      `Отправитель: ${actorName} (${user.userId})`,
-      ...(normalizedText ? ['', normalizedText] : []),
-    ].join('\n');
     const uploadedImagePayload = await this.uploadChannelSuggestionImage(suggestion);
+    const buttons = this.buildChannelSuggestionAdminReviewButtons(suggestionId);
+    const message = this.buildChannelSuggestionAdminMessage({
+      status: 'pending',
+      channelTitle,
+      actorName,
+      actorUserId: user.userId,
+      text: suggestion.text,
+      reviewedBy: null,
+      publishedUrl: null,
+    });
+    const deliveries: ChannelSuggestionAdminDelivery[] = [];
 
     for (const adminUserId of adminIds) {
       const privateChatId = await this.findLatestPrivateChatIdForUser(adminUserId);
@@ -9115,16 +9312,23 @@ export class AdminService {
       }
 
       try {
-        await this.maxClient.sendMessage(
+        const published = await this.maxClient.sendMessageImmediateWithId(
           privateChatId,
           message,
-          uploadedImagePayload ? { imagePayload: uploadedImagePayload } : undefined,
-          { immediate: true },
+          {
+            ...(uploadedImagePayload ? { imagePayload: uploadedImagePayload } : {}),
+            buttons,
+          },
         );
-        return { delivered: true, deliveredToUserId: adminUserId };
+        deliveries.push({
+          adminUserId,
+          privateChatId,
+          messageId: published.messageId,
+        });
       } catch (error: unknown) {
         this.logger.warn(
           {
+            suggestionId,
             chatId,
             adminUserId,
             privateChatId,
@@ -9135,7 +9339,186 @@ export class AdminService {
       }
     }
 
-    return { delivered: false, deliveredToUserId: null };
+    return {
+      delivered: deliveries.length > 0,
+      deliveredToUserId: deliveries[0]?.adminUserId ?? null,
+      deliveredToUserIds: deliveries.map((entry) => entry.adminUserId),
+      deliveries,
+    };
+  }
+
+  private buildChannelSuggestionAdminReviewButtons(
+    suggestionId: string,
+  ): MaxMessageButton[][] {
+    return [
+      [
+        {
+          type: 'callback',
+          text: '📰 Опубликовать',
+          payload: this.buildPrivateControlCallbackPayload('suggestion_review_publish', suggestionId),
+          intent: 'positive',
+        },
+        {
+          type: 'callback',
+          text: '⛔ Отменить',
+          payload: this.buildPrivateControlCallbackPayload('suggestion_review_cancel', suggestionId),
+          intent: 'negative',
+        },
+      ],
+    ];
+  }
+
+  private buildPrivateControlCallbackPayload(action: string, ...args: string[]): string {
+    const normalizedArgs = args.map((arg) => arg.trim()).filter((arg) => arg.length > 0);
+    return [PRIVATE_CONTROL_CALLBACK_PREFIX, action, ...normalizedArgs].join('|');
+  }
+
+  private buildChannelSuggestionAdminMessage(params: {
+    status: 'pending' | 'published' | 'cancelled';
+    channelTitle: string;
+    actorName: string;
+    actorUserId: string;
+    text: string;
+    reviewedBy: string | null;
+    publishedUrl: string | null;
+  }): string {
+    const normalizedText = params.text.trim();
+    const title =
+      params.status === 'published'
+        ? 'Предложка опубликована'
+        : params.status === 'cancelled'
+          ? 'Предложка отменена'
+          : 'Новая предложка поста';
+
+    return [
+      title,
+      '',
+      `Канал: ${params.channelTitle}`,
+      `Отправитель: ${params.actorName} (${params.actorUserId})`,
+      ...(params.reviewedBy ? [`Решение: ${params.reviewedBy}`] : []),
+      ...(params.publishedUrl ? [params.publishedUrl] : []),
+      ...(normalizedText ? ['', normalizedText] : []),
+    ].join('\n');
+  }
+
+  private async publishStoredChannelSuggestion(
+    chatId: string,
+    payload: Record<string, unknown>,
+  ): Promise<{ messageId: string | null; url: string | null }> {
+    const text = this.readTrimmedString(payload.text) ?? '';
+    const imageBase64 = this.readTrimmedString(payload.imageBase64);
+    const imageMimeType = this.readTrimmedString(payload.imageMimeType);
+    const imageFileName = this.readTrimmedString(payload.imageFileName);
+
+    if (!text && !imageBase64) {
+      throw new BadRequestException('В предложке нет текста или фото для публикации.');
+    }
+
+    if (!imageBase64) {
+      const published = await this.maxClient.sendMessageImmediateWithResolvedLink(chatId, text);
+      return {
+        messageId: published.messageId,
+        url: published.url,
+      };
+    }
+
+    const uploadedImagePayload = await this.uploadChannelSuggestionImage({
+      imageBase64,
+      imageMimeType,
+      imageFileName,
+    });
+    if (!uploadedImagePayload) {
+      throw new BadRequestException('Не удалось подготовить фото предложки для публикации.');
+    }
+
+    const published = await this.maxClient.sendCustomMessageImmediateWithResolvedLink(chatId, {
+      ...(text ? { text } : {}),
+      attachments: [
+        {
+          type: 'image',
+          payload: uploadedImagePayload,
+        },
+      ],
+    });
+
+    return {
+      messageId: published.messageId,
+      url: published.url,
+    };
+  }
+
+  private async syncChannelSuggestionAdminReviewMessages(
+    chatId: string,
+    payload: Record<string, unknown>,
+  ): Promise<void> {
+    const deliveries = this.readChannelSuggestionDeliveries(payload.deliveries);
+    if (deliveries.length === 0) {
+      return;
+    }
+
+    const channelTitle = await this.resolveChannelTitle(chatId);
+    const actorUserId = this.readTrimmedString(payload.actorUserId) ?? '';
+    const actorName =
+      this.readTrimmedString(payload.authorDisplayName) || actorUserId || 'Пользователь';
+    const reviewedBy = this.readTrimmedString(payload.reviewedByDisplayName);
+    const reviewStatus =
+      this.readLowerString(payload.reviewStatus) === 'published' ? 'published' : 'cancelled';
+    const message = this.buildChannelSuggestionAdminMessage({
+      status: reviewStatus,
+      channelTitle,
+      actorName,
+      actorUserId,
+      text: this.readTrimmedString(payload.text) ?? '',
+      reviewedBy,
+      publishedUrl: this.readTrimmedString(payload.publishedUrl),
+    });
+
+    for (const delivery of deliveries) {
+      try {
+        await this.maxClient.editMessageInlineKeyboard(delivery.privateChatId, delivery.messageId, message, {
+          buttons: [],
+        });
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId,
+            adminUserId: delivery.adminUserId,
+            privateChatId: delivery.privateChatId,
+            messageId: delivery.messageId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to sync reviewed suggestion message in admin private chat',
+        );
+      }
+    }
+  }
+
+  private readChannelSuggestionDeliveries(value: unknown): ChannelSuggestionAdminDelivery[] {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+
+    return value
+      .map((item) => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) {
+          return null;
+        }
+
+        const row = item as Record<string, unknown>;
+        const adminUserId = this.readTrimmedString(row.adminUserId);
+        const privateChatId = this.readTrimmedString(row.privateChatId);
+        const messageId = this.readTrimmedString(row.messageId);
+        if (!adminUserId || !privateChatId || !messageId) {
+          return null;
+        }
+
+        return {
+          adminUserId,
+          privateChatId,
+          messageId,
+        };
+      })
+      .filter((entry): entry is ChannelSuggestionAdminDelivery => entry !== null);
   }
 
   private parseChannelSuggestionFromBotPayload(body: unknown): ChannelSuggestionFromBotPayload {

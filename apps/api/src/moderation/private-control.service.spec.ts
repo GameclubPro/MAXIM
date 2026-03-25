@@ -282,12 +282,21 @@ function createPrivateImageFileUpdate(): MaxUpdate {
   return createPrivateFileUpdate();
 }
 
-function createPrivateCallbackUpdate(payload: string): MaxUpdate {
+function createPrivateCallbackUpdate(
+  payload: string,
+  options: {
+    userId?: string;
+    displayName?: string;
+    messageId?: string;
+  } = {},
+): MaxUpdate {
+  const userId = options.userId ?? 'user-1';
+  const displayName = options.displayName ?? 'Тестовый пользователь';
   return {
     updateId: `upd-cb-${Date.now()}`,
     type: 'message_callback',
     message: {
-      messageId: `msg-cb-${Date.now()}`,
+      messageId: options.messageId ?? `msg-cb-${Date.now()}`,
       chatId: '152517912',
       senderId: '613002203036',
       senderName: 'Майор Максимов',
@@ -300,8 +309,8 @@ function createPrivateCallbackUpdate(payload: string): MaxUpdate {
         callback_id: 'callback-1',
         payload,
         user: {
-          user_id: 'user-1',
-          name: 'Тестовый пользователь',
+          user_id: userId,
+          name: displayName,
         },
       },
       message: {
@@ -501,8 +510,12 @@ function createHarness(
 
   const maxClient = {
     sendMessage: jest.fn().mockResolvedValue(undefined),
+    sendMessageCopyWithInlineKeyboard: jest
+      .fn()
+      .mockResolvedValue({ messageId: 'msg-preview-1', url: null }),
     sendCustomMessageImmediate: jest.fn().mockResolvedValue({ message_id: 'msg-custom-1' }),
     uploadImage: jest.fn().mockResolvedValue({ token: 'upload-token-1' }),
+    editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
     answerCallback: jest.fn().mockResolvedValue(undefined),
     getChatMemberProfiles: jest.fn().mockResolvedValue(new Map()),
   };
@@ -625,6 +638,10 @@ function createHarness(
     getPublicChannelSuggestionIntroText: jest
       .fn()
       .mockResolvedValue((overrides.channelSettings ?? defaultChannelSettings).postSuggestionsText),
+    getPublicChannelSuggestionTarget: jest.fn().mockResolvedValue({
+      title: channels[0].title,
+      link: 'https://max.ru/channels/testovyj-kanal',
+    }),
     updateChannelSettings: jest
       .fn()
       .mockResolvedValue(overrides.channelSettings ?? defaultChannelSettings),
@@ -632,6 +649,11 @@ function createHarness(
       ok: true,
       delivered: true,
       deliveredToUserId: 'admin-1',
+    }),
+    reviewChannelSuggestionByAdmin: jest.fn().mockResolvedValue({
+      status: 'reviewed',
+      reviewStatus: 'published',
+      publishedUrl: 'https://max.ru/chats/channel-1/message/777',
     }),
     parseChannelSuggestionStartPayload: jest.fn((payload: string | null) => {
       if (!payload?.startsWith('cds-')) {
@@ -883,6 +905,11 @@ function getLastButtons(maxClient: { sendMessage: jest.Mock; answerCallback: jes
 
   const callbackButtons = maxClient.answerCallback.mock.calls.at(-1)?.[2]?.options?.buttons;
   return (callbackButtons ?? []) as Array<Array<unknown>>;
+}
+
+function getLastCopiedButtons(maxClient: { sendMessageCopyWithInlineKeyboard: jest.Mock }) {
+  return (maxClient.sendMessageCopyWithInlineKeyboard.mock.calls.at(-1)?.[3]?.buttons ??
+    []) as Array<Array<unknown>>;
 }
 
 function getLastSendOptions(maxClient: { sendMessage: jest.Mock }) {
@@ -1818,7 +1845,7 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).toContain('Рассылка отправлена без ошибок.');
   });
 
-  it('prompts for post content and accepts channel suggestions from a bot deep link', async () => {
+  it('builds a preview copy with edit, send and return buttons for channel suggestions', async () => {
     const { service, adminService, maxClient, channels } = createHarness({
       channelSettings: {
         ...defaultChannelSettings,
@@ -1844,6 +1871,24 @@ describe('PrivateControlService', () => {
 
     await service.handleUpdate(createPrivateTextUpdate('Текст для публикации'));
 
+    expect(adminService.createChannelSuggestionFromBot).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledWith(
+      '152517912',
+      expect.stringContaining('msg-'),
+      null,
+      expect.objectContaining({
+        buttons: expect.any(Array),
+      }),
+    );
+    const previewButtons = getLastCopiedButtons(maxClient)
+      .flat()
+      .map((button) => String((button as { text?: string }).text ?? ''));
+    expect(previewButtons).toContain('✏️ Редактировать');
+    expect(previewButtons).toContain('📨 Отправить');
+    expect(previewButtons).toContain('↩️ Вернуться в канал');
+
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|suggestion_send'));
+
     expect(adminService.createChannelSuggestionFromBot).toHaveBeenCalledWith(
       channels[0].id,
       expect.objectContaining({ userId: 'user-1' }),
@@ -1852,11 +1897,11 @@ describe('PrivateControlService', () => {
         text: 'Текст для публикации',
       },
     );
-    expect(getLastSentText(maxClient)).toContain('Материал отправлен');
-    expect(getLastSentText(maxClient)).toContain('Бот переслал его админу канала на проверку.');
+    expect(getLastEditedText(maxClient)).toContain('Материал отправлен');
+    expect(getLastEditedText(maxClient)).toContain('Бот переслал его админу канала на проверку.');
   });
 
-  it('accepts a photo-only suggestion in the bot flow', async () => {
+  it('accepts a photo-only suggestion in the bot flow after explicit send', async () => {
     const { service, adminService, maxClient, channels } = createHarness();
     const startPayload = encodeChannelSuggestionStartPayload(channels[0].id, 'cdt-suggest-token-2');
     const imageMock = mockImageFetch();
@@ -1864,6 +1909,7 @@ describe('PrivateControlService', () => {
     try {
       await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
       await service.handleUpdate(createPrivatePhotoUpdate());
+      await service.handleUpdate(createPrivateCallbackUpdate('pc2|suggestion_send'));
     } finally {
       imageMock.restore();
     }
@@ -1879,7 +1925,37 @@ describe('PrivateControlService', () => {
         imageFileName: expect.stringContaining('channel-suggestion'),
       }),
     );
-    expect(getLastSentText(maxClient)).toContain('Материал отправлен');
+    expect(getLastEditedText(maxClient)).toContain('Материал отправлен');
+  });
+
+  it('routes admin review callbacks to publish or cancel the suggestion', async () => {
+    const { service, adminService, maxClient } = createHarness({
+      adminService: {
+        reviewChannelSuggestionByAdmin: jest.fn().mockResolvedValue({
+          status: 'reviewed',
+          reviewStatus: 'published',
+          publishedUrl: 'https://max.ru/chats/channel-1/message/999',
+        }),
+      },
+    });
+
+    await service.handleUpdate(
+      createPrivateCallbackUpdate('pc2|suggestion_review_publish|suggestion-42', {
+        userId: 'admin-1',
+        displayName: 'Главный редактор',
+      }),
+    );
+
+    expect(adminService.reviewChannelSuggestionByAdmin).toHaveBeenCalledWith(
+      'suggestion-42',
+      expect.objectContaining({
+        userId: 'admin-1',
+        displayName: 'Главный редактор',
+      }),
+      'publish',
+    );
+    expect(getLastEditedText(maxClient)).toContain('Предложка опубликована');
+    expect(getLastEditedText(maxClient)).toContain('https://max.ru/chats/channel-1/message/999');
   });
 
   it('shows only channel discussion status on the handoff broadcast screen without footer links', async () => {
