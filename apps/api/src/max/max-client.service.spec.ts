@@ -345,7 +345,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
-  it('uses fallback text when reposting a forwarded message with empty MAX body text', async () => {
+  it('uses fallback text and linked attachments when reposting a forwarded message', async () => {
     const httpService = {
       request: jest
         .fn()
@@ -364,6 +364,12 @@ describe('MaxClientService inline keyboard guardrails', () => {
                     type: 'forward',
                     message: {
                       text: 'Пересланный пост',
+                      attachments: [
+                        {
+                          type: 'image',
+                          payload: { token: 'upload-token-forward-1' },
+                        },
+                      ],
                     },
                   },
                 },
@@ -408,6 +414,10 @@ describe('MaxClientService inline keyboard guardrails', () => {
         data: {
           text: 'Пересланный пост',
           attachments: [
+            {
+              type: 'image',
+              payload: { token: 'upload-token-forward-1' },
+            },
             {
               type: 'inline_keyboard',
               payload: {

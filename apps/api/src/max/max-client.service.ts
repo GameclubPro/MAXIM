@@ -2260,7 +2260,18 @@ export class MaxClientService implements OnModuleDestroy {
     message: Record<string, unknown> | null,
   ): Record<string, unknown>[] {
     const body = this.asRecord(message?.body);
-    const attachments = Array.isArray(body?.attachments) ? body.attachments : [];
+    const link = this.asRecord(message?.link);
+    const linkedMessage = this.asRecord(link?.message);
+    const bodyAttachments = Array.isArray(body?.attachments) ? body.attachments : [];
+    const linkedAttachments = Array.isArray(linkedMessage?.attachments)
+      ? linkedMessage.attachments
+      : [];
+    const attachments =
+      bodyAttachments.length > 0 ||
+      this.readLowerString(link?.type) !== 'forward' ||
+      linkedAttachments.length === 0
+        ? bodyAttachments
+        : linkedAttachments;
     return attachments
       .map((attachment) => this.normalizeEditableAttachment(attachment))
       .filter((attachment): attachment is Record<string, unknown> => attachment !== null);
