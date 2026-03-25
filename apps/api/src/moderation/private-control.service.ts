@@ -1039,7 +1039,7 @@ export class PrivateControlService {
               typeof error.message === 'string' &&
               error.message.trim().length > 0
             ? error.message
-          : 'Что-то пошло не так. Попробуйте ещё раз через несколько секунд.';
+            : 'Что-то пошло не так. Попробуйте ещё раз через несколько секунд.';
       const session = await this.loadSessionForDiagnostics(context.actor.userId);
       const badRequestResponse = error instanceof BadRequestException ? error.getResponse() : null;
 
@@ -2033,11 +2033,36 @@ export class PrivateControlService {
     this.clearChannelSuggestionDraft(session);
 
     const view = result.delivered
-      ? this.renderChannelSuggestionSubmittedView()
-      : this.renderChannelSuggestionQueuedView();
+      ? await this.renderChannelSuggestionSubmittedView(draft.chatId, draft.token)
+      : await this.renderChannelSuggestionQueuedView(draft.chatId, draft.token);
     await this.respond(context, session, view, {
       callbackId: context.callbackId,
       notification: result.delivered ? 'Отправлено админам' : 'Поставлено в очередь',
+    });
+  }
+
+  private async processChannelSuggestionAgainCallback(
+    context: PrivateContext,
+    session: PrivateSession,
+    args: string[],
+  ): Promise<void> {
+    const chatId = args[0]?.trim() ?? '';
+    const token = args[1]?.trim() ?? '';
+    if (!chatId || !token) {
+      throw new BadRequestException('Не удалось открыть новую предложку.');
+    }
+
+    session.pendingInput = {
+      kind: 'channel_suggestion',
+      chatId,
+      token,
+    };
+    session.suggestionDraft = null;
+
+    const view = await this.renderChannelSuggestionIntroView(chatId);
+    await this.respond(context, session, view, {
+      callbackId: context.callbackId,
+      notification: 'Жду новый вариант',
     });
   }
 
@@ -2060,15 +2085,15 @@ export class PrivateControlService {
     const viewText =
       result.reviewStatus === 'published'
         ? [
-            this.markdownTitle('Предложка опубликована'),
+            this.markdownTitle('✅ Предложка опубликована'),
             '',
             ...(result.publishedUrl ? [result.publishedUrl, ''] : []),
-            'Кнопки на админских сообщениях обновлены.',
+            'Карточки в личке админов обновлены.',
           ].join('\n')
         : [
-            this.markdownTitle('Предложка отменена'),
+            this.markdownTitle('✖️ Предложка отклонена'),
             '',
-            'Кнопки на админских сообщениях обновлены.',
+            'Карточки в личке админов обновлены.',
           ].join('\n');
 
     await this.respond(
@@ -2143,6 +2168,11 @@ export class PrivateControlService {
 
     if (callback.action === 'suggestion_send') {
       await this.processChannelSuggestionSendCallback(context, session);
+      return;
+    }
+
+    if (callback.action === 'suggestion_again') {
+      await this.processChannelSuggestionAgainCallback(context, session, callback.args);
       return;
     }
 
@@ -7417,11 +7447,11 @@ export class PrivateControlService {
 
     return {
       text: [
-        this.markdownTitle('Требования для предложки'),
+        this.markdownTitle('📰 Предложка'),
         '',
         requirementsText,
         '',
-        'После этого пришлите следующим сообщением текст, фото или фото с подписью.',
+        'Следующим сообщением пришлите текст, фото или фото с подписью.',
       ].join('\n'),
       options: {
         buttons: this.buildChannelSuggestionButtons(),
@@ -7429,34 +7459,40 @@ export class PrivateControlService {
     };
   }
 
-  private renderChannelSuggestionSubmittedView(): PrivateView {
+  private async renderChannelSuggestionSubmittedView(
+    chatId: string,
+    token: string,
+  ): Promise<PrivateView> {
     return {
       text: [
-        this.markdownTitle('Материал отправлен'),
+        this.markdownTitle('✅ Материал отправлен'),
         '',
-        'Бот переслал его админу канала на проверку.',
-        'Если материал подойдёт, его опубликуют в канале.',
+        'Бот передал материал редакторам канала на проверку.',
+        'Если всё подойдёт, пост опубликуют в канале без лишних шагов.',
         '',
-        'Можете сразу прислать ещё один вариант.',
+        'Можно сразу отправить ещё один вариант или вернуться в канал.',
       ].join('\n'),
       options: {
-        buttons: this.buildChannelSuggestionButtons(),
+        buttons: await this.buildChannelSuggestionCompletionButtons(chatId, token),
       },
     };
   }
 
-  private renderChannelSuggestionQueuedView(): PrivateView {
+  private async renderChannelSuggestionQueuedView(
+    chatId: string,
+    token: string,
+  ): Promise<PrivateView> {
     return {
       text: [
-        this.markdownTitle('Материал сохранён'),
+        this.markdownTitle('⏳ Материал сохранён'),
         '',
-        'Материал записал, но сейчас не удалось сразу доставить его админу канала.',
+        'Сейчас не удалось сразу доставить материал редакторам канала.',
         'Он всё равно останется в очереди на проверку.',
         '',
-        'Можно сразу отправить ещё один вариант.',
+        'Можно отправить ещё один вариант или вернуться в канал.',
       ].join('\n'),
       options: {
-        buttons: this.buildChannelSuggestionButtons(),
+        buttons: await this.buildChannelSuggestionCompletionButtons(chatId, token),
       },
     };
   }
@@ -7464,7 +7500,7 @@ export class PrivateControlService {
   private renderChannelSuggestionCancelledView(): PrivateView {
     return {
       text: [
-        this.markdownTitle('Предложка закрыта'),
+        this.markdownTitle('✖️ Предложка закрыта'),
         '',
         'Если захотите отправить материал позже, снова нажмите кнопку под постом.',
       ].join('\n'),
@@ -7474,7 +7510,7 @@ export class PrivateControlService {
   private renderChannelSuggestionPreviewFallbackView(): PrivateView {
     return {
       text: [
-        this.markdownTitle('Черновик предложки'),
+        this.markdownTitle('🗂 Черновик предложки'),
         '',
         'Не удалось отрисовать копию сообщения, но черновик сохранён.',
         'Можно отправить его админам, отредактировать или вернуться в канал.',
@@ -7483,23 +7519,31 @@ export class PrivateControlService {
   }
 
   private buildChannelSuggestionButtons(): MaxMessageButton[][] {
-    return [
-      [
-        this.callbackButton('Отмена', this.cb('input_cancel'), 'negative'),
-      ],
-    ];
+    return [[this.callbackButton('✖️ Закрыть', this.cb('input_cancel'), 'negative')]];
   }
 
-  private async buildChannelSuggestionPreviewButtons(chatId: string): Promise<MaxMessageButton[][]> {
+  private async buildChannelSuggestionPreviewButtons(
+    chatId: string,
+  ): Promise<MaxMessageButton[][]> {
     const buttons: MaxMessageButton[][] = [
       [
-        this.callbackButton('✏️ Редактировать', this.cb('suggestion_edit')),
+        this.callbackButton('✏️ Исправить', this.cb('suggestion_edit')),
         this.callbackButton('📨 Отправить', this.cb('suggestion_send'), 'positive'),
       ],
     ];
     const returnButton = await this.buildChannelSuggestionReturnButton(chatId);
     buttons.push([returnButton]);
     return buttons;
+  }
+
+  private async buildChannelSuggestionCompletionButtons(
+    chatId: string,
+    token: string,
+  ): Promise<MaxMessageButton[][]> {
+    return [
+      [this.callbackButton('📰 Предложить ещё', this.cb('suggestion_again', chatId, token))],
+      [await this.buildChannelSuggestionReturnButton(chatId)],
+    ];
   }
 
   private async buildChannelSuggestionReturnButton(chatId: string): Promise<MaxMessageButton> {
@@ -10583,7 +10627,10 @@ export class PrivateControlService {
     return `${chunk.trimEnd()}...`;
   }
 
-  private formatAllowlistEntryLabel(entry: { domain: string; matchType: 'EXACT' | 'DOMAIN' }): string {
+  private formatAllowlistEntryLabel(entry: {
+    domain: string;
+    matchType: 'EXACT' | 'DOMAIN';
+  }): string {
     return entry.matchType === 'DOMAIN' ? `${entry.domain} [домен]` : `${entry.domain} [ссылка]`;
   }
 

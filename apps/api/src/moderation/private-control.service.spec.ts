@@ -1856,17 +1856,17 @@ describe('PrivateControlService', () => {
 
     await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
 
-    expect(getLastSentText(maxClient)).toContain('Требования для предложки');
+    expect(getLastSentText(maxClient)).toContain('📰 Предложка');
     expect(getLastSentText(maxClient)).toContain(
       'Пришлите готовый текст, город и ссылку на источник.',
     );
     expect(getLastSentText(maxClient)).toContain(
-      'После этого пришлите следующим сообщением текст, фото или фото с подписью.',
+      'Следующим сообщением пришлите текст, фото или фото с подписью.',
     );
     const introButtons = getLastButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(introButtons).toContain('Отмена');
+    expect(introButtons).toContain('✖️ Закрыть');
     expect(introButtons).toHaveLength(1);
 
     await service.handleUpdate(createPrivateTextUpdate('Текст для публикации'));
@@ -1883,7 +1883,7 @@ describe('PrivateControlService', () => {
     const previewButtons = getLastCopiedButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(previewButtons).toContain('✏️ Редактировать');
+    expect(previewButtons).toContain('✏️ Исправить');
     expect(previewButtons).toContain('📨 Отправить');
     expect(previewButtons).toContain('↩️ Вернуться в канал');
 
@@ -1897,8 +1897,21 @@ describe('PrivateControlService', () => {
         text: 'Текст для публикации',
       },
     );
-    expect(getLastEditedText(maxClient)).toContain('Материал отправлен');
-    expect(getLastEditedText(maxClient)).toContain('Бот переслал его админу канала на проверку.');
+    expect(getLastEditedText(maxClient)).toContain('✅ Материал отправлен');
+    expect(getLastEditedText(maxClient)).toContain(
+      'Бот передал материал редакторам канала на проверку.',
+    );
+    const completionButtons = getLastEditedButtons(maxClient)
+      .flat()
+      .map((button) => String((button as { text?: string }).text ?? ''));
+    expect(completionButtons).toContain('📰 Предложить ещё');
+    expect(completionButtons).toContain('↩️ Вернуться в канал');
+
+    await service.handleUpdate(
+      createPrivateCallbackUpdate(`pc2|suggestion_again|${channels[0].id}|cdt-suggest-token-1`),
+    );
+
+    expect(getLastEditedText(maxClient)).toContain('📰 Предложка');
   });
 
   it('accepts a photo-only suggestion in the bot flow after explicit send', async () => {
@@ -1925,7 +1938,7 @@ describe('PrivateControlService', () => {
         imageFileName: expect.stringContaining('channel-suggestion'),
       }),
     );
-    expect(getLastEditedText(maxClient)).toContain('Материал отправлен');
+    expect(getLastEditedText(maxClient)).toContain('✅ Материал отправлен');
   });
 
   it('routes admin review callbacks to publish or cancel the suggestion', async () => {

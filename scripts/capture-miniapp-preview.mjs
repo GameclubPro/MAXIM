@@ -353,6 +353,14 @@ const scenarios = [
     },
   },
   {
+    name: 'channel-settings-post-suggestions',
+    path: '/channel/preview-channel/settings',
+    beforeShot: async (page) => {
+      await page.getByRole('button', { name: /Предложка/u }).click();
+      await page.waitForTimeout(300);
+    },
+  },
+  {
     name: 'channel-settings-broadcast',
     path: '/channel/preview-channel/settings',
     searchParams: {

@@ -56,6 +56,7 @@ type ChannelSettingsHintKey =
 
 const MIN_BROADCAST_CYCLE_HOURS = 1;
 const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
+const CHANNEL_SUGGESTION_DAILY_LIMIT_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
 const INITIAL_EXPANDED_CHANNEL_SECTIONS: Record<ChannelSettingsSectionKey, boolean> = {
   comments: false,
   postSuggestions: false,
@@ -358,6 +359,10 @@ function normalizeChannelSettingsDraft(
     autoPostButtonsMode,
     engagementMessageText:
       draft.engagementMessageText.trim() || 'Есть идея или обратная связь? Нажмите кнопку ниже.',
+    postSuggestionsDailyLimit: Math.max(
+      1,
+      Math.min(10, Math.trunc(draft.postSuggestionsDailyLimit || 10)),
+    ),
     postSuggestionsButtonText: draft.postSuggestionsButtonText.trim() || 'Предложить пост',
     postSuggestionsButtonUrl:
       draft.postSuggestionsButtonEnabled && resolvedChannelLink
@@ -866,10 +871,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     normalizedBroadcastText.length > 0 ||
     broadcastImageEnabled ||
     broadcastButtonEnabled;
-  const broadcastHeaderSummary = [
-    broadcastSlotsSummary,
-    broadcastContentReady ? 'готово' : null,
-  ]
+  const broadcastHeaderSummary = [broadcastSlotsSummary, broadcastContentReady ? 'готово' : null]
     .filter(Boolean)
     .join(' · ');
   const commentsCardSummary = !draft.commentsEnabled
@@ -883,7 +885,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
       ? 'Модер'
       : 'Вкл';
   const postSuggestionsCardSummary = draft.postSuggestionsEnabled
-    ? 'авто-кнопка под новыми постами'
+    ? `авто-кнопка · лимит ${draft.postSuggestionsDailyLimit}/24ч`
     : 'ручная публикация кнопки';
   const postSuggestionsCardStatus = draft.postSuggestionsEnabled ? 'Авто' : 'Ручн';
   const broadcastCardStatus =
@@ -897,9 +899,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
           onClick={handleSendChannelBroadcast}
           disabled={handoffBroadcastMutation.isPending}
         >
-          {handoffBroadcastMutation.isPending
-            ? 'Передаём в бота...'
-            : 'Открыть бота'}
+          {handoffBroadcastMutation.isPending ? 'Передаём в бота...' : 'Открыть бота'}
         </button>
       </div>
     </>
@@ -1245,6 +1245,28 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                       onChange={(event) => patchDraft('postSuggestionsText', event.target.value)}
                       placeholder="Опишите, что пользователь должен прислать боту после нажатия кнопки."
                     />
+                  </label>
+
+                  <label className="field">
+                    <span>Максимум предложек от одного подписчика</span>
+                    <div className="field__number-wrap">
+                      <select
+                        value={String(draft.postSuggestionsDailyLimit)}
+                        onChange={(event) =>
+                          patchDraft('postSuggestionsDailyLimit', Number(event.target.value))
+                        }
+                      >
+                        {CHANNEL_SUGGESTION_DAILY_LIMIT_OPTIONS.map((value) => (
+                          <option key={value} value={value}>
+                            {value}
+                          </option>
+                        ))}
+                      </select>
+                      <small>/ 24ч</small>
+                    </div>
+                    <span className="field__hint">
+                      Считается отдельно для каждого подписчика и канала за последние 24 часа.
+                    </span>
                   </label>
                 </div>
               </div>

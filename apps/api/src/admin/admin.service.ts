@@ -224,6 +224,7 @@ const MANAGED_BROADCAST_LOCK_STALE_MS = 60_000;
 const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 30;
 const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
 const ONE_HOUR_MS = 60 * 60 * 1000;
+const TWENTY_FOUR_HOURS_MS = 24 * ONE_HOUR_MS;
 const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 1;
 const MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 120;
 const MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 180;
@@ -2228,6 +2229,8 @@ export class AdminService {
       throw new BadRequestException('Предложить пост для этого канала сейчас нельзя.');
     }
 
+    await this.assertChannelSuggestionDailyLimit(chatId, user.userId, channelSettings);
+
     const created = await this.createChannelSuggestionAuditLog({
       chatId,
       user,
@@ -2497,6 +2500,10 @@ export class AdminService {
 
     if (dialogType === 'suggest' && !text && !imageBase64) {
       throw new BadRequestException('Введите текст или добавьте фото.');
+    }
+
+    if (dialogType === 'suggest') {
+      await this.assertChannelSuggestionDailyLimit(chatId, user.userId, channelSettings);
     }
 
     if (dialogType === 'comments' && channelSettings.commentsModerationEnabled) {
@@ -9439,6 +9446,30 @@ export class AdminService {
     };
   }
 
+  private async assertChannelSuggestionDailyLimit(
+    chatId: string,
+    userId: string,
+    settings: Pick<ChannelSettings, 'postSuggestionsDailyLimit'>,
+  ): Promise<void> {
+    const limit = Math.max(1, Math.min(10, Math.trunc(settings.postSuggestionsDailyLimit)));
+    const recentSuggestionsCount = await this.prisma.auditLog.count({
+      where: {
+        chatId,
+        actorUserId: userId,
+        action: CHANNEL_DIALOG_ACTION_SUGGEST,
+        createdAt: {
+          gte: new Date(Date.now() - TWENTY_FOUR_HOURS_MS),
+        },
+      },
+    });
+
+    if (recentSuggestionsCount >= limit) {
+      throw new BadRequestException(
+        `Лимит предложек для этого канала исчерпан: ${limit} за последние 24 часа. Попробуйте позже.`,
+      );
+    }
+  }
+
   private async deliverSuggestionToAdminPrivates(
     suggestionId: string,
     chatId: string,
@@ -9559,7 +9590,7 @@ export class AdminService {
       [
         {
           type: 'callback',
-          text: '📰 Опубликовать',
+          text: '📰 В публикацию',
           payload: this.buildPrivateControlCallbackPayload(
             'suggestion_review_publish',
             suggestionId,
@@ -9568,7 +9599,7 @@ export class AdminService {
         },
         {
           type: 'callback',
-          text: '⛔ Отменить',
+          text: '✖️ Отклонить',
           payload: this.buildPrivateControlCallbackPayload(
             'suggestion_review_cancel',
             suggestionId,
@@ -9596,10 +9627,10 @@ export class AdminService {
     const normalizedText = params.text.trim();
     const title =
       params.status === 'published'
-        ? 'Предложка опубликована'
+        ? '✅ Предложка опубликована'
         : params.status === 'cancelled'
-          ? 'Предложка отменена'
-          : 'Новая предложка поста';
+          ? '✖️ Предложка отклонена'
+          : '📰 Новая предложка';
     const normalizedActorUserId = params.actorUserId.trim();
     const senderLine = normalizedActorUserId
       ? `[${this.escapeMarkdown(params.actorName)}](max://user/${encodeURIComponent(normalizedActorUserId)})`
@@ -9613,10 +9644,10 @@ export class AdminService {
       ...(normalizedActorUserId
         ? [`MAX ID: \`${this.escapeMarkdown(normalizedActorUserId)}\``]
         : []),
-      ...(params.reviewedBy ? [`Решение: ${this.escapeMarkdown(params.reviewedBy)}`] : []),
+      ...(params.reviewedBy ? [`Решение принял: ${this.escapeMarkdown(params.reviewedBy)}`] : []),
       ...(params.publishedUrl ? [params.publishedUrl] : []),
       '',
-      '────────',
+      '━━━━━━━━━━━━',
       this.markdownTitle('Контент публикации'),
       ...(normalizedText
         ? [this.escapeMarkdown(normalizedText)]

@@ -8489,6 +8489,58 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
+  it('rejects a suggestion when the per-user daily limit is reached', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue({
+      postSuggestionsEnabled: true,
+      postSuggestionsDailyLimit: 2,
+    });
+    prisma.auditLog.count.mockResolvedValue(2);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-8', url: null }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const suggestToken = await publishSuggestDialogToken(service, maxClient);
+
+    await expect(
+      service.createChannelDialogMessage(
+        'channel-1',
+        {
+          userId: 'user-1',
+          username: 'user1',
+          displayName: 'Пользователь',
+          chatTitle: null,
+        },
+        'suggest',
+        {
+          token: suggestToken,
+          text: 'Ещё одна идея',
+        },
+      ),
+    ).rejects.toThrow('Лимит предложек для этого канала исчерпан: 2 за последние 24 часа.');
+
+    expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
+  });
+
   it('delivers bot-submitted suggestions with photo to admins as an image message', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
@@ -8565,8 +8617,8 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         textFormat: 'markdown',
         buttons: [
           [
-            expect.objectContaining({ text: '📰 Опубликовать', type: 'callback' }),
-            expect.objectContaining({ text: '⛔ Отменить', type: 'callback' }),
+            expect.objectContaining({ text: '📰 В публикацию', type: 'callback' }),
+            expect.objectContaining({ text: '✖️ Отклонить', type: 'callback' }),
           ],
         ],
       }),

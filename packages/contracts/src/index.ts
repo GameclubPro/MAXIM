@@ -962,6 +962,7 @@ export const channelSettingsSchema = z
     autoPostButtonsMode: channelAutoPostButtonsModeSchema.default('OFF'),
     postSuggestionsEnabled: z.boolean().default(false),
     postSuggestionsText: botMessageTextSchema,
+    postSuggestionsDailyLimit: z.number().int().min(1).max(10).default(10),
     engagementMessageText: botMessageTextSchema.default(
       'Есть идея или обратная связь? Нажмите кнопку ниже.',
     ),
