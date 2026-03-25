@@ -169,6 +169,7 @@ export type AdminActionSource = 'miniapp' | 'private_bot' | 'private_command' | 
 
 type ManualMemberModerationAction = 'KICK' | 'BAN';
 type ManualBanExecutionMode = 'MAX_BLOCK' | 'MAX_REMOVE_ONLY';
+type ManualUnbanExecutionMode = 'MAX_UNBLOCK' | 'ACTIVE_BAN_RELEASE';
 
 type ResolvedUserProfile = {
   displayName: string | null;
@@ -6805,6 +6806,8 @@ export class AdminService {
         throw new BadRequestException(resolvedMessage || 'Не удалось удалить участника из чата.');
       }
 
+      await this.deleteAdminGlobalSpammerExemption(user.userId, targetUserId);
+
       await this.recordManualModerationAction({
         chatId,
         targetUserId,
@@ -6878,6 +6881,8 @@ export class AdminService {
         throw new BadRequestException(resolvedMessage || 'Не удалось применить временный бан.');
       }
 
+      await this.deleteAdminGlobalSpammerExemption(user.userId, targetUserId);
+
       await this.recordManualModerationAction({
         chatId,
         targetUserId,
@@ -6916,12 +6921,21 @@ export class AdminService {
 
     await this.maxClient.cancelScheduledUnban(chatId, targetUserId);
 
-    try {
-      await this.maxClient.unbanMember(chatId, targetUserId, { immediate: true });
-    } catch (error: unknown) {
-      const maxApiMessage = this.extractMaxApiErrorMessage(error);
-      throw new BadRequestException(maxApiMessage || 'Не удалось вернуть участника в чат.');
+    let unbanMode = await this.resolveManualUnbanExecutionMode(chatId, targetUserId);
+    if (unbanMode !== 'ACTIVE_BAN_RELEASE') {
+      try {
+        await this.maxClient.unbanMember(chatId, targetUserId, { immediate: true });
+      } catch (error: unknown) {
+        const maxApiMessage = this.extractMaxApiErrorMessage(error);
+        if (this.isAlreadyPresentMemberAddError(maxApiMessage)) {
+          unbanMode = 'ACTIVE_BAN_RELEASE';
+        } else {
+          throw new BadRequestException(maxApiMessage || 'Не удалось вернуть участника в чат.');
+        }
+      }
     }
+
+    await this.upsertAdminGlobalSpammerExemption(user.userId, targetUserId, chatId);
 
     await this.recordManualModerationAction({
       chatId,
@@ -6933,11 +6947,12 @@ export class AdminService {
       metadata: {
         ...metadataBase,
         reason: 'Ручной разбан участника через miniapp',
-        mode: 'MAX_UNBLOCK',
+        mode: unbanMode,
       },
       auditPayload: {
         userId: targetUserId,
         source,
+        mode: unbanMode,
       },
     });
 
@@ -6947,7 +6962,10 @@ export class AdminService {
       userId: targetUserId,
       banDurationHours: null,
       unbanScheduledAt: null,
-      message: 'Участник возвращён в чат и разблокирован.',
+      message:
+        unbanMode === 'ACTIVE_BAN_RELEASE'
+          ? 'Бан снят. Участник уже состоит в чате, повторное добавление не потребовалось.'
+          : 'Участник возвращён в чат и разблокирован.',
     });
   }
 
@@ -6984,6 +7002,8 @@ export class AdminService {
       );
       throw new BadRequestException(resolvedMessage || 'Не удалось применить системный бан.');
     }
+
+    await this.deleteAdminGlobalSpammerExemption(user.userId, targetUserId);
 
     await this.recordManualModerationAction({
       chatId,
@@ -7145,6 +7165,42 @@ export class AdminService {
     return 'MAX_BLOCK';
   }
 
+  private async resolveManualUnbanExecutionMode(
+    chatId: string,
+    targetUserId: string,
+  ): Promise<ManualUnbanExecutionMode> {
+    const maxClientWithMemberAccess = this.maxClient as MaxClientService & {
+      getChatMemberAccess?: (chatId: string, userId: string) => Promise<MaxChatMemberAccess | null>;
+    };
+    if (typeof maxClientWithMemberAccess.getChatMemberAccess !== 'function') {
+      return 'MAX_UNBLOCK';
+    }
+
+    try {
+      const targetAccess = await maxClientWithMemberAccess.getChatMemberAccess(chatId, targetUserId);
+      return targetAccess ? 'ACTIVE_BAN_RELEASE' : 'MAX_UNBLOCK';
+    } catch (error: unknown) {
+      this.logger.debug(
+        {
+          chatId,
+          userId: targetUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve target member state before manual unban',
+      );
+      return 'MAX_UNBLOCK';
+    }
+  }
+
+  private isAlreadyPresentMemberAddError(message: string): boolean {
+    const normalized = message.trim().toLowerCase();
+    return (
+      (normalized.includes('already') &&
+        (normalized.includes('member') || normalized.includes('participant'))) ||
+      normalized.includes('уже состоит')
+    );
+  }
+
   private async resolveManualMemberModerationErrorMessage(
     chatId: string,
     targetUserId: string,
@@ -7220,6 +7276,59 @@ export class AdminService {
       normalized === 'delete_members' ||
       normalized === 'can_delete_members'
     );
+  }
+
+  private normalizeStoredModerationUserId(value: string): string | null {
+    const normalized = value.trim().toLowerCase();
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private async upsertAdminGlobalSpammerExemption(
+    adminUserId: string,
+    targetUserId: string,
+    sourceChatId: string,
+  ): Promise<void> {
+    const normalizedAdminUserId = this.normalizeStoredModerationUserId(adminUserId);
+    const normalizedTargetUserId = this.normalizeStoredModerationUserId(targetUserId);
+    if (!normalizedAdminUserId || !normalizedTargetUserId) {
+      return;
+    }
+
+    await this.prisma.adminGlobalSpammerExemption.upsert({
+      where: {
+        adminUserId_userId: {
+          adminUserId: normalizedAdminUserId,
+          userId: normalizedTargetUserId,
+        },
+      },
+      create: {
+        adminUserId: normalizedAdminUserId,
+        userId: normalizedTargetUserId,
+        sourceChatId,
+      },
+      update: {
+        sourceChatId,
+        reason: 'MANUAL_UNBAN',
+      },
+    });
+  }
+
+  private async deleteAdminGlobalSpammerExemption(
+    adminUserId: string,
+    targetUserId: string,
+  ): Promise<void> {
+    const normalizedAdminUserId = this.normalizeStoredModerationUserId(adminUserId);
+    const normalizedTargetUserId = this.normalizeStoredModerationUserId(targetUserId);
+    if (!normalizedAdminUserId || !normalizedTargetUserId) {
+      return;
+    }
+
+    await this.prisma.adminGlobalSpammerExemption.deleteMany({
+      where: {
+        adminUserId: normalizedAdminUserId,
+        userId: normalizedTargetUserId,
+      },
+    });
   }
 
   private async recordManualModerationAction(params: {

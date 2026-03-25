@@ -98,6 +98,11 @@ function createPrismaMock() {
       findMany: jest.fn().mockResolvedValue([]),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
     },
+    adminGlobalSpammerExemption: {
+      upsert: jest.fn().mockResolvedValue(undefined),
+      findMany: jest.fn().mockResolvedValue([]),
+      deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
     domainAllowlist: {
       findMany: jest.fn().mockResolvedValue([]),
       upsert: jest.fn().mockResolvedValue(undefined),
@@ -2322,6 +2327,12 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(maxClient.cancelScheduledUnban.mock.invocationCallOrder[0]).toBeLessThan(
       maxClient.kickMember.mock.invocationCallOrder[0],
     );
+    expect(prisma.adminGlobalSpammerExemption.deleteMany).toHaveBeenCalledWith({
+      where: {
+        adminUserId: 'admin-1',
+        userId: 'user-2',
+      },
+    });
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -2394,6 +2405,12 @@ describe('AdminService.applyManualModerationAction', () => {
     expect(maxClient.cancelScheduledUnban.mock.invocationCallOrder[0]).toBeLessThan(
       maxClient.unbanMember.mock.invocationCallOrder[0],
     );
+    expect(prisma.adminGlobalSpammerExemption.deleteMany).toHaveBeenCalledWith({
+      where: {
+        adminUserId: 'admin-1',
+        userId: 'user-3',
+      },
+    });
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -2649,6 +2666,23 @@ describe('AdminService.applyManualModerationAction', () => {
 
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-4');
     expect(maxClient.unbanMember).toHaveBeenCalledWith('chat-1', 'user-4', { immediate: true });
+    expect(prisma.adminGlobalSpammerExemption.upsert).toHaveBeenCalledWith({
+      where: {
+        adminUserId_userId: {
+          adminUserId: 'admin-1',
+          userId: 'user-4',
+        },
+      },
+      create: {
+        adminUserId: 'admin-1',
+        userId: 'user-4',
+        sourceChatId: 'chat-1',
+      },
+      update: {
+        sourceChatId: 'chat-1',
+        reason: 'MANUAL_UNBAN',
+      },
+    });
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -2677,6 +2711,77 @@ describe('AdminService.applyManualModerationAction', () => {
       banDurationHours: null,
       unbanScheduledAt: null,
       message: 'Участник возвращён в чат и разблокирован.',
+    });
+  });
+
+  it('releases active ban without re-adding a member who is already in chat', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-4',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      unbanMember: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.applyManualModerationAction(
+      'chat-1',
+      'user-4',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      { action: 'UNBAN' },
+    );
+
+    expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-4');
+    expect(maxClient.unbanMember).not.toHaveBeenCalled();
+    expect(prisma.adminGlobalSpammerExemption.upsert).toHaveBeenCalledWith({
+      where: {
+        adminUserId_userId: {
+          adminUserId: 'admin-1',
+          userId: 'user-4',
+        },
+      },
+      create: {
+        adminUserId: 'admin-1',
+        userId: 'user-4',
+        sourceChatId: 'chat-1',
+      },
+      update: {
+        sourceChatId: 'chat-1',
+        reason: 'MANUAL_UNBAN',
+      },
+    });
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            mode: 'ACTIVE_BAN_RELEASE',
+          }),
+        }),
+      }),
+    );
+    expect(result).toEqual({
+      ok: true,
+      action: 'UNBAN',
+      userId: 'user-4',
+      banDurationHours: null,
+      unbanScheduledAt: null,
+      message: 'Бан снят. Участник уже состоит в чате, повторное добавление не потребовалось.',
     });
   });
 });
@@ -2725,6 +2830,12 @@ describe('AdminService.applyManualSystemBan', () => {
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-3');
     expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-3', { immediate: true });
     expect(maxClient.unbanMember).not.toHaveBeenCalled();
+    expect(prisma.adminGlobalSpammerExemption.deleteMany).toHaveBeenCalledWith({
+      where: {
+        adminUserId: 'admin-1',
+        userId: 'user-3',
+      },
+    });
     expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({

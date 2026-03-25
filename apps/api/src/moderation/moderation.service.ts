@@ -450,6 +450,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (settings.deleteSpammersEnabled) {
         const kickedUserIds = await this.handleServiceKnownSpammerMembersEvent({
           chatId,
+          adminUserIds: chat.adminUserIds,
           messageId,
           text,
           update,
@@ -559,6 +560,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const mediaFlags = this.detectMediaFlags(update);
+    const globalSpammerExemptUserIds = settings.deleteSpammersEnabled
+      ? await this.resolveGlobalSpammerExemptUserIds([senderId], chat.adminUserIds)
+      : new Set<string>();
+    const isGlobalSpammerExempt = globalSpammerExemptUserIds.has(senderId);
     const globalSpammerTracking = await this.trackAndRegisterGlobalSpammer({
       chatId,
       userId: senderId,
@@ -566,12 +571,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       messageId,
       text,
       deleteSpammersEnabled: settings.deleteSpammersEnabled,
+      exemptFromEnforcement: isGlobalSpammerExempt,
     });
     if (globalSpammerTracking.handled) {
       return;
     }
 
-    if (settings.deleteSpammersEnabled && !globalSpammerTracking.skipKnownSpammerCheck) {
+    if (
+      settings.deleteSpammersEnabled &&
+      !globalSpammerTracking.skipKnownSpammerCheck &&
+      !isGlobalSpammerExempt
+    ) {
       const handled = await this.handleKnownSpammerSenderMessage({
         chatId,
         userId: senderId,
@@ -3257,7 +3267,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return 1;
     }
 
-    const since = new Date(Date.now() - LINK_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000);
+    const since = await this.resolveViolationResetSince(
+      chatId,
+      userId,
+      LINK_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000,
+    );
     const count = await violationModel.count({
       where: {
         chatId,
@@ -3289,8 +3303,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return 1;
     }
 
-    const since = new Date(
-      Date.now() - REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000,
+    const since = await this.resolveViolationResetSince(
+      chatId,
+      userId,
+      REQUIRED_SUBSCRIPTION_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000,
     );
     const count = await violationModel.count({
       where: {
@@ -3324,7 +3340,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return 1;
     }
 
-    const since = new Date(Date.now() - TEXT_FILTER_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000);
+    const since = await this.resolveViolationResetSince(
+      chatId,
+      userId,
+      TEXT_FILTER_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000,
+    );
     const ruleCodeFilter =
       ruleCode === 'PROFANITY' || ruleCode === 'COMMERCIAL_AD'
         ? ruleCode
@@ -3361,7 +3381,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return 1;
     }
 
-    const since = new Date(Date.now() - TOPIC_FILTER_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000);
+    const since = await this.resolveViolationResetSince(
+      chatId,
+      userId,
+      TOPIC_FILTER_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000,
+    );
     const count = await violationModel.count({
       where: {
         chatId,
@@ -3394,7 +3418,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return 1;
     }
 
-    const since = new Date(Date.now() - MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000);
+    const since = await this.resolveViolationResetSince(
+      chatId,
+      userId,
+      MESSAGE_LIMITS_ESCALATION_WINDOW_HOURS * 60 * 60 * 1000,
+    );
     const count = await violationModel.count({
       where: {
         chatId,
@@ -3405,6 +3433,36 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
 
     return Number.isInteger(count) && count > 0 ? count : 1;
+  }
+
+  private async resolveViolationResetSince(
+    chatId: string,
+    userId: string,
+    windowMs: number,
+  ): Promise<Date> {
+    const baseSince = new Date(Date.now() - windowMs);
+    const latestManualUnban = await this.prisma.moderationEvent.findFirst({
+      where: {
+        chatId,
+        userId,
+        ruleCode: 'MANUAL_UNBAN',
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+      select: {
+        createdAt: true,
+      },
+    });
+
+    if (
+      latestManualUnban?.createdAt &&
+      latestManualUnban.createdAt.getTime() > baseSince.getTime()
+    ) {
+      return latestManualUnban.createdAt;
+    }
+
+    return baseSince;
   }
 
   private async getActiveBan(
@@ -4478,11 +4536,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private async handleServiceKnownSpammerMembersEvent(params: {
     chatId: string;
+    adminUserIds: string[];
     messageId: string;
     text: string;
     update: MaxUpdate;
   }): Promise<string[]> {
-    const { chatId, messageId, text, update } = params;
+    const { chatId, adminUserIds, messageId, text, update } = params;
     const serviceMemberUserIds = this.extractServiceMemberUserIds(update);
     if (serviceMemberUserIds.length === 0) {
       return [];
@@ -4502,7 +4561,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return [];
     }
 
+    const exemptUserIds = await this.resolveGlobalSpammerExemptUserIds(
+      rows.map((row) => row.userId),
+      adminUserIds,
+    );
+
     for (const row of rows) {
+      if (exemptUserIds.has(row.userId)) {
+        continue;
+      }
       await this.kickAndLogKnownSpammerEvent({
         chatId,
         userId: row.userId,
@@ -4512,7 +4579,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
     }
 
-    return rows.map((row) => row.userId);
+    return rows
+      .map((row) => row.userId)
+      .filter((userId) => !exemptUserIds.has(userId));
   }
 
   private async kickAndLogKnownSpammerEvent(params: {
@@ -4561,6 +4630,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     messageId: string;
     text: string;
     deleteSpammersEnabled: boolean;
+    exemptFromEnforcement: boolean;
   }): Promise<GlobalSpammerTrackingResult> {
     const baseResult: GlobalSpammerTrackingResult = {
       handled: false,
@@ -4570,7 +4640,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return baseResult;
     }
 
-    const { chatId, userId, userLabel, messageId, text, deleteSpammersEnabled } = params;
+    const { chatId, userId, userLabel, messageId, text, deleteSpammersEnabled, exemptFromEnforcement } =
+      params;
 
     try {
       const uniqueChatsState = await this.redisCounter.addToSetWithTtl(
@@ -4593,7 +4664,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             windowSec: GLOBAL_SPAMMER_WINDOW_SEC,
           },
         });
-        if (deleteSpammersEnabled) {
+        if (deleteSpammersEnabled && !exemptFromEnforcement) {
           await this.deleteAndKickDetectedGlobalSpammer({
             chatId,
             userId,
@@ -4946,6 +5017,90 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private buildGreetingAutoDisabledRedisKey(chatId: string): string {
     return `greeting-disabled:v1:${chatId}`;
+  }
+
+  private async resolveGlobalSpammerExemptUserIds(
+    userIds: readonly string[],
+    adminUserIds: readonly string[] | undefined,
+  ): Promise<Set<string>> {
+    if (!Array.isArray(adminUserIds) || adminUserIds.length === 0 || userIds.length === 0) {
+      return new Set<string>();
+    }
+
+    const adminUserVariants = new Set<string>();
+    for (const adminUserId of adminUserIds) {
+      for (const variant of this.buildUserIdVariants(adminUserId)) {
+        adminUserVariants.add(variant);
+      }
+    }
+    if (adminUserVariants.size === 0) {
+      return new Set<string>();
+    }
+
+    const userIdVariants = new Set<string>();
+    const variantToUserIds = new Map<string, Set<string>>();
+    for (const rawUserId of userIds) {
+      const normalizedUserId = rawUserId.trim();
+      if (!normalizedUserId) {
+        continue;
+      }
+
+      for (const variant of this.buildUserIdVariants(normalizedUserId)) {
+        userIdVariants.add(variant);
+        const matchingUserIds = variantToUserIds.get(variant) ?? new Set<string>();
+        matchingUserIds.add(normalizedUserId);
+        variantToUserIds.set(variant, matchingUserIds);
+      }
+    }
+
+    if (userIdVariants.size === 0) {
+      return new Set<string>();
+    }
+
+    const prismaWithAdminGlobalSpammerExemption = this.prisma as unknown as {
+      adminGlobalSpammerExemption?: {
+        findMany?: (args: {
+          where: {
+            adminUserId: { in: string[] };
+            userId: { in: string[] };
+          };
+          select: { userId: true };
+        }) => Promise<Array<{ userId: string }>>;
+      };
+    };
+    const adminGlobalSpammerExemptionModel =
+      prismaWithAdminGlobalSpammerExemption.adminGlobalSpammerExemption ?? {};
+    if (typeof adminGlobalSpammerExemptionModel.findMany !== 'function') {
+      return new Set<string>();
+    }
+
+    const rows = await adminGlobalSpammerExemptionModel.findMany({
+      where: {
+        adminUserId: {
+          in: [...adminUserVariants],
+        },
+        userId: {
+          in: [...userIdVariants],
+        },
+      },
+      select: {
+        userId: true,
+      },
+    });
+
+    const exemptUserIds = new Set<string>();
+    for (const row of rows) {
+      const matchingUserIds = variantToUserIds.get(row.userId);
+      if (!matchingUserIds) {
+        continue;
+      }
+
+      for (const matchingUserId of matchingUserIds) {
+        exemptUserIds.add(matchingUserId);
+      }
+    }
+
+    return exemptUserIds;
   }
 
   private async isUserKnownGlobalSpammer(userId: string): Promise<boolean> {

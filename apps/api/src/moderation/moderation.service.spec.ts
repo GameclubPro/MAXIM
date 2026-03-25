@@ -1888,6 +1888,124 @@ describe('ModerationService', () => {
     });
   });
 
+  it('does not auto-kick on fifth unique chat when the sender is exempted by a chat admin', async () => {
+    const nowIso = new Date().toISOString();
+    const createSpamUpdate = (chatId: string, messageId: string, text: string): MaxUpdate => ({
+      updateId: `upd-${chatId}-${messageId}`,
+      type: 'message_created',
+      message: {
+        messageId,
+        chatId,
+        senderId: 'user-spam-1',
+        senderName: 'Спамер',
+        text,
+        createdAt: nowIso,
+      },
+      raw: {
+        message: {
+          sender: {
+            id: 'user-spam-1',
+            type: 'user',
+          },
+          body: {
+            text,
+          },
+        },
+      },
+    });
+
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockImplementation(({ where }: { where: { id: string } }) =>
+          Promise.resolve({
+            id: where.id,
+            title: `Chat ${where.id}`,
+            settings: createSettings({ deleteSpammersEnabled: true }),
+            domains: [],
+            admins: [{ userId: 'owner-1' }],
+          }),
+        ),
+      },
+      adminGlobalSpammerExemption: {
+        findMany: jest.fn().mockResolvedValue([{ userId: 'user-spam-1' }]),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+      globalSpammer: {
+        upsert: jest.fn(),
+        findUnique: jest.fn().mockResolvedValue(null),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({ violations: [] }),
+      hasCommercialSpamMarkers: jest.fn().mockReturnValue(false),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const redisCounter = {
+      addToSetWithTtl: jest
+        .fn()
+        .mockResolvedValueOnce({ added: true, size: 1 })
+        .mockResolvedValueOnce({ added: true, size: 2 })
+        .mockResolvedValueOnce({ added: true, size: 3 })
+        .mockResolvedValueOnce({ added: true, size: 4 })
+        .mockResolvedValueOnce({ added: true, size: 5 }),
+      incrementWithTtl: jest.fn().mockResolvedValue(1),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      {
+        get: jest.fn().mockReturnValue('bot-1'),
+      } as never,
+      redisCounter as never,
+    );
+
+    await service.handleUpdate(createSpamUpdate('chat-1', 'msg-1', 'Текст 1'));
+    await service.handleUpdate(createSpamUpdate('chat-2', 'msg-2', 'Текст 2'));
+    await service.handleUpdate(createSpamUpdate('chat-3', 'msg-3', 'Текст 3'));
+    await service.handleUpdate(createSpamUpdate('chat-4', 'msg-4', 'Текст 4'));
+    await service.handleUpdate(createSpamUpdate('chat-5', 'msg-5', 'Текст 5'));
+
+    expect(maxClient.sendMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(prisma.globalSpammer.upsert).toHaveBeenCalledWith({
+      where: { userId: 'user-spam-1' },
+      create: expect.objectContaining({
+        userId: 'user-spam-1',
+        lastReason: 'HIGH_FANOUT_5_CHATS_2M',
+        lastChatId: 'chat-5',
+      }),
+      update: expect.objectContaining({
+        lastReason: 'HIGH_FANOUT_5_CHATS_2M',
+        lastChatId: 'chat-5',
+      }),
+    });
+  });
+
   it('adds user to global spammer registry on fifth unique chat without warning or kick when toggle is disabled', async () => {
     const nowIso = new Date().toISOString();
     const createSpamUpdate = (chatId: string, messageId: string, text: string): MaxUpdate => ({
@@ -3801,6 +3919,64 @@ describe('ModerationService', () => {
     });
   });
 
+  it('does not auto-kick an exempted globally blacklisted sender', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ deleteSpammersEnabled: true }),
+          domains: [],
+          admins: [{ userId: 'owner-1' }],
+        }),
+      },
+      adminGlobalSpammerExemption: {
+        findMany: jest.fn().mockResolvedValue([{ userId: 'user-1' }]),
+      },
+      globalSpammer: {
+        findUnique: jest.fn().mockResolvedValue({ userId: 'user-1' }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({ violations: [] }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
+    expect(maxClient.deleteMessage).not.toHaveBeenCalled();
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
   it('kicks globally blacklisted user on service join event when toggle is enabled', async () => {
     const prisma = {
       chat: {
@@ -3864,6 +4040,62 @@ describe('ModerationService', () => {
         action: SanctionAction.KICK,
       }),
     });
+  });
+
+  it('does not auto-kick an exempted globally blacklisted user on service join event', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({ deleteSpammersEnabled: true }),
+          domains: [],
+          admins: [{ userId: 'owner-1' }],
+        }),
+      },
+      adminGlobalSpammerExemption: {
+        findMany: jest.fn().mockResolvedValue([{ userId: 'user-black-2' }]),
+      },
+      globalSpammer: {
+        findMany: jest.fn().mockResolvedValue([{ userId: 'user-black-2' }]),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createServiceUserJoinedUpdate());
+
+    expect(maxClient.kickMember).not.toHaveBeenCalled();
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
   it('deletes messages silently while 6h active ban is in effect', async () => {
@@ -3983,6 +4215,42 @@ describe('ModerationService', () => {
     expect(ruleEngine.detect).toHaveBeenCalledTimes(1);
     expect(maxClient.deleteMessage).not.toHaveBeenCalled();
     expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
+  it('resets link escalation window after a later manual unban', async () => {
+    const prisma = {
+      violation: {
+        count: jest.fn().mockResolvedValue(1),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue({
+          createdAt: new Date('2026-03-25T10:00:00.000Z'),
+        }),
+      },
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      {} as never,
+      {} as never,
+      {} as never,
+    );
+
+    const result = await (service as unknown as {
+      countRecentLinkViolations: (chatId: string, userId: string) => Promise<number>;
+    }).countRecentLinkViolations('chat-1', 'user-1');
+
+    expect(result).toBe(1);
+    expect(prisma.violation.count).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+        userId: 'user-1',
+        ruleCode: 'LINK_BLOCKED',
+        createdAt: {
+          gte: new Date('2026-03-25T10:00:00.000Z'),
+        },
+      },
+    });
   });
 
   it('honors manual ban durations above 36 hours from moderation metadata', async () => {

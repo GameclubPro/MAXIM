@@ -383,6 +383,19 @@ model DomainAllowlist {
   @@map("domain_allowlist")
 }
 
+model AdminGlobalSpammerExemption {
+  adminUserId  String   @map("admin_user_id")
+  userId       String   @map("user_id")
+  sourceChatId String?  @map("source_chat_id")
+  reason       String   @default("MANUAL_UNBAN") @map("reason")
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@id([adminUserId, userId])
+  @@index([userId], map: "admin_global_spammer_exemptions_user_id_idx")
+  @@map("admin_global_spammer_exemptions")
+}
+
 model GlobalSpammer {
   userId         String   @id @map("user_id")
   firstDetectedAt DateTime @default(now()) @map("first_detected_at")
