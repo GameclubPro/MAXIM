@@ -5825,6 +5825,53 @@ describe('AdminService.sendBroadcast', () => {
     jest.useRealTimers();
   });
 
+  it('falls back to cached allowlist when mass broadcast scan is throttled', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-2',
+          title: 'Чат 2',
+          createdAt: new Date('2026-03-01T00:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    jest
+      .spyOn(
+        service as unknown as {
+          listManagedEntitiesDetailed: (...args: unknown[]) => Promise<unknown>;
+        },
+        'listManagedEntitiesDetailed',
+      )
+      .mockRejectedValueOnce(new Error('MAX API global rate limit exceeded'));
+
+    const result = await service.listChatsForMassBroadcast({
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(result).toEqual([
+      {
+        id: 'chat-2',
+        title: 'Чат 2',
+        createdAt: '2026-03-01T00:00:00.000Z',
+        entityType: 'chat',
+        link: null,
+        channelOverview: null,
+      },
+    ]);
+  });
+
   it('keeps draining due managed broadcasts until the current backlog is exhausted', async () => {
     const prisma = createPrismaMock();
     prisma.managedBroadcast.findMany
@@ -6083,6 +6130,74 @@ describe('AdminService.sendBroadcast', () => {
         }),
       }),
     );
+  });
+
+  it('retries managed broadcast sends after transient MAX API throttling', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    wireManagedBroadcastDeliveryStore(prisma);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockResolvedValueOnce({ messageId: 'mid-chat-1', url: null })
+        .mockRejectedValueOnce(new Error('MAX API global rate limit exceeded'))
+        .mockResolvedValueOnce({ messageId: 'mid-chat-2', url: null }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+    jest.spyOn(service, 'listChatsForMassBroadcast').mockResolvedValue([
+      {
+        id: 'chat-2',
+        title: 'Чат 2',
+        createdAt: '2026-03-01T00:00:00.000Z',
+        entityType: 'chat',
+        link: null,
+        channelOverview: null,
+      },
+    ]);
+
+    const sendPromise = service.sendBroadcast(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: 'Напоминание',
+        textFormat: 'plain',
+        applyToAllChats: true,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      },
+    );
+
+    await jest.runAllTimersAsync();
+    const result = await sendPromise;
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(3);
+    expect(result.sentChats).toBe(2);
+    expect(result.failedChats).toBe(0);
   });
 
   it('retries failed deliveries and completes the broadcast', async () => {

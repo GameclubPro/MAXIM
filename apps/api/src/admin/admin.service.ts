@@ -240,6 +240,7 @@ const BROADCAST_IMAGE_MAX_BYTES = 3_000_000;
 const BROADCAST_MIN_DELAY_MS = 30_000;
 const BROADCAST_MAX_DELAY_MS = 31 * 24 * 60 * 60 * 1000;
 const BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS = [1_500, 3_000, 6_000];
+const BROADCAST_THROTTLE_RETRY_DELAYS_MS = [1_000, 2_000, 4_000];
 const BROADCAST_CALENDAR_SLOT_MINUTES = 30;
 const MANAGED_BROADCAST_DUE_BATCH_SIZE = 10;
 const MANAGED_BROADCAST_DUE_MAX_PASSES = 100;
@@ -736,13 +737,37 @@ export class AdminService {
     }
 
     const collected = new Map<string, ChatSummary>();
+    const cached = await this.revalidateCachedManagedEntities(
+      user,
+      await this.listChatsFromAllowlist(user.userId, entityType),
+    );
+    for (const item of cached) {
+      collected.set(item.id, item);
+    }
     let refreshState: ManagedEntitiesRefreshState | null = null;
 
     for (let pass = 0; pass < MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES; pass += 1) {
-      const result = await this.listManagedEntitiesDetailed(user, entityType, {
-        refresh: true,
-        includeRefreshState: true,
-      });
+      let result: ManagedEntitiesListResult;
+      try {
+        result = await this.listManagedEntitiesDetailed(user, entityType, {
+          refresh: true,
+          includeRefreshState: true,
+        });
+      } catch (error: unknown) {
+        if (collected.size > 0 && this.isMaxApiThrottleError(error)) {
+          this.logger.warn(
+            {
+              entityType,
+              userId: user.userId,
+              cachedItems: collected.size,
+              err: error instanceof Error ? error.message : String(error),
+            },
+            'Managed entities mass action scan hit MAX API throttle; using cached allowlist fallback',
+          );
+          break;
+        }
+        throw error;
+      }
       for (const item of result.items) {
         collected.set(item.id, item);
       }
@@ -5762,7 +5787,11 @@ export class AdminService {
       | undefined,
   ): Promise<string> {
     let lastError: unknown = null;
-    const attempts = options?.imagePayload ? BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length + 1 : 1;
+    const attempts =
+      Math.max(
+        options?.imagePayload ? BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length : 0,
+        BROADCAST_THROTTLE_RETRY_DELAYS_MS.length,
+      ) + 1;
 
     for (let attempt = 1; attempt <= attempts; attempt += 1) {
       try {
@@ -5770,15 +5799,11 @@ export class AdminService {
         return published.messageId;
       } catch (error: unknown) {
         lastError = error;
-        if (
-          !options?.imagePayload ||
-          !this.isAttachmentNotReadyError(error) ||
-          attempt >= attempts
-        ) {
+        const retryDelayMs = this.resolveManagedBroadcastSendRetryDelayMs(error, attempt, options);
+        if (retryDelayMs === null) {
           throw error;
         }
-        const delayMs = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS[attempt - 1] ?? 1_500;
-        await this.sleep(delayMs);
+        await this.sleep(retryDelayMs);
       }
     }
 
@@ -5815,6 +5840,24 @@ export class AdminService {
     if (lastError) {
       throw lastError;
     }
+  }
+
+  private resolveManagedBroadcastSendRetryDelayMs(
+    error: unknown,
+    attempt: number,
+    options:
+      | Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'imagePayload' | 'textFormat'>
+      | undefined,
+  ): number | null {
+    if (options?.imagePayload && this.isAttachmentNotReadyError(error)) {
+      return BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS[attempt - 1] ?? null;
+    }
+
+    if (this.isMaxApiThrottleError(error)) {
+      return BROADCAST_THROTTLE_RETRY_DELAYS_MS[attempt - 1] ?? null;
+    }
+
+    return null;
   }
 
   private isAttachmentNotReadyError(error: unknown): boolean {
