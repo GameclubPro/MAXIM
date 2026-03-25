@@ -144,14 +144,7 @@ export function SettingsDrilldownPanel({
         <div className="settings-drilldown__content">
           <div className="settings-drilldown__body">{children}</div>
           {shouldRenderFooter ? (
-            <div
-              className={cn(
-                'settings-drilldown__footer',
-                isKeyboardOpen && 'settings-drilldown__footer--keyboard-open',
-              )}
-            >
-              {footer}
-            </div>
+            <div className="settings-drilldown__footer">{footer}</div>
           ) : null}
         </div>
       </section>

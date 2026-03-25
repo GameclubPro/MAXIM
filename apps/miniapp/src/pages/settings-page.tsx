@@ -75,6 +75,7 @@ import type {
   SendBroadcastPayload,
   UpdateChatRulesPayload,
 } from '../lib/api/shared-types';
+import { useKeyboardOpen } from '../lib/use-keyboard-open';
 import {
   resolveBroadcastScheduleTimezone,
   sortAndUniqueBroadcastSlots,
@@ -1559,6 +1560,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const [pendingSpeechStyle, setPendingSpeechStyle] = useState<BotSpeechStyle | null>(null);
   const [expandedSections, setExpandedSections] =
     useState<Record<SettingsSectionKey, boolean>>(INITIAL_EXPANDED_SECTIONS);
+  const isLinksKeyboardOpen = useKeyboardOpen(120, expandedSections.links);
   const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
 
   const routeChatTitle = getRouteChatTitle(location.state);
@@ -3975,7 +3977,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   function renderSectionSaveFooter(
     section: ApplySectionKey,
     options?: {
-      note?: string;
+      note?: string | null;
       saveLabel?: string;
       applyToAllLabel?: string;
       emphasize?: 'save' | 'apply';
@@ -3989,16 +3991,17 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     const applyToAllButtonClassName =
       emphasize === 'save' ? 'button button--ghost' : 'button button--accent';
     const footerNote =
-      options?.note ??
-      (areChatsSyncing
-        ? 'Синхронизируем список чатов. Массовое применение станет доступно после завершения.'
-        : canApplyToAllChats
-          ? 'Сохраняется только текущий блок. При необходимости его можно сразу применить во все чаты.'
-          : 'Пока доступен только текущий чат. Для массового применения нужен хотя бы ещё один чат.');
+      options?.note !== undefined
+        ? options.note
+        : areChatsSyncing
+          ? 'Синхронизируем список чатов. Массовое применение станет доступно после завершения.'
+          : canApplyToAllChats
+            ? 'Сохраняется только текущий блок. При необходимости его можно сразу применить во все чаты.'
+            : 'Пока доступен только текущий чат. Для массового применения нужен хотя бы ещё один чат.';
 
     return (
       <>
-        <p className="settings-drilldown__footer-note">{footerNote}</p>
+        {footerNote ? <p className="settings-drilldown__footer-note">{footerNote}</p> : null}
         <div className="settings-drilldown__footer-actions">
           <button
             type="button"
@@ -4214,7 +4217,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 title="Ссылки"
                 summary={linksHeaderSummary}
                 onClose={() => toggleSection('links')}
-                footer={renderSectionSaveFooter('links')}
+                footer={renderSectionSaveFooter('links', {
+                  note: isLinksKeyboardOpen ? null : undefined,
+                })}
                 keepFooterVisibleWhenKeyboardOpen
               >
                 <div
