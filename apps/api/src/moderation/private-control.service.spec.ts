@@ -1535,7 +1535,12 @@ describe('PrivateControlService', () => {
         textFormat: 'html',
       }),
     );
+    expect(getLastSentText(maxClient)).toContain('<strong>Рассылка</strong>');
+    expect(getLastSentText(maxClient)).toContain('<strong>Контент:</strong>');
     expect(getLastSentText(maxClient)).toContain('<strong>Важный</strong>');
+    expect(getLastSentText(maxClient)).toContain(
+      '<strong>Дальше:</strong> Пришлите новый текст или фото.',
+    );
     expect(getLastSentText(maxClient)).not.toContain('**Важный**');
 
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
@@ -1550,6 +1555,21 @@ describe('PrivateControlService', () => {
       }),
       'private_bot',
     );
+  });
+
+  it('renders broadcast preview with separate chat, content, status and next-step blocks', async () => {
+    const { service, maxClient, chats } = createHarness();
+
+    await service.handleUpdate(createPrivateCallbackUpdate(`pc2|chat_select|${chats[0].id}`));
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
+    await service.handleUpdate(createPrivateTextUpdate('Промо блок'));
+
+    expect(getLastUiText(maxClient)).toContain('Рассылка');
+    expect(getLastUiText(maxClient)).toContain(`Чат: ${chats[0].title}`);
+    expect(getLastUiText(maxClient)).toContain('Контент:');
+    expect(getLastUiText(maxClient)).toContain('Промо блок');
+    expect(getLastUiText(maxClient)).toContain('Статус: Контент сохранён.');
+    expect(getLastUiText(maxClient)).toContain('Дальше: Пришлите новый текст или фото.');
   });
 
   it('renders giveaway content preview without raw markdown markers in private bot', async () => {

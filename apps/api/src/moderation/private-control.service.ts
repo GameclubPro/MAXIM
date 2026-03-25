@@ -6154,15 +6154,17 @@ export class PrivateControlService {
         ? 'Пришлите текст или фото.'
         : 'Пришлите новый текст или фото.';
     const textPayload = usesMarkdown
-      ? this.buildHtmlPreviewText({
+      ? this.buildBroadcastHtmlPreviewText({
           entityLead,
           contentText: hasText ? draft.text : null,
+          hasImage: draft.imageEnabled,
           promptText,
           notice,
         })
-      : this.buildPlainPreviewText({
+      : this.buildBroadcastPlainPreviewText({
           entityLead,
           contentText: hasText ? draft.text : null,
+          hasImage: draft.imageEnabled,
           promptText,
           notice,
         });
@@ -6450,6 +6452,75 @@ export class PrivateControlService {
     previewText: string,
   ): MaxSendMessageOptions['textFormat'] | undefined {
     return this.shouldUseMarkdown(previewText) ? 'markdown' : undefined;
+  }
+
+  private buildBroadcastPlainPreviewText(payload: {
+    entityLead: string | null;
+    contentText: string | null;
+    hasImage: boolean;
+    promptText: string | null;
+    notice: string | null;
+  }): { text: string; textFormat?: MaxSendMessageOptions['textFormat'] } {
+    const lines: string[] = ['Рассылка'];
+
+    if (payload.entityLead) {
+      lines.push('', payload.entityLead);
+    }
+
+    if (payload.contentText || payload.hasImage) {
+      lines.push('', 'Контент:');
+      lines.push(payload.contentText ?? 'Фото без текста.');
+    }
+
+    if (payload.notice) {
+      lines.push('', `Статус: ${payload.notice}`);
+    }
+
+    if (payload.promptText) {
+      lines.push('', `Дальше: ${payload.promptText}`);
+    }
+
+    return { text: lines.join('\n') };
+  }
+
+  private buildBroadcastHtmlPreviewText(payload: {
+    entityLead: string | null;
+    contentText: string | null;
+    hasImage: boolean;
+    promptText: string | null;
+    notice: string | null;
+  }): { text: string; textFormat: MaxSendMessageOptions['textFormat'] } {
+    const blocks: string[] = ['<p><strong>Рассылка</strong></p>'];
+
+    if (payload.entityLead) {
+      blocks.push(`<p>${this.escapeHtml(payload.entityLead)}</p>`);
+    }
+
+    if (payload.contentText || payload.hasImage) {
+      blocks.push('<p><strong>Контент:</strong></p>');
+      if (payload.contentText) {
+        blocks.push(
+          renderSupportedMarkdownAsHtml(payload.contentText, {
+            linkMode: 'underline',
+          }),
+        );
+      } else {
+        blocks.push('<p>Фото без текста.</p>');
+      }
+    }
+
+    if (payload.notice) {
+      blocks.push(`<p><strong>Статус:</strong> ${this.escapeHtml(payload.notice)}</p>`);
+    }
+
+    if (payload.promptText) {
+      blocks.push(`<p><strong>Дальше:</strong> ${this.escapeHtml(payload.promptText)}</p>`);
+    }
+
+    return {
+      text: blocks.join(''),
+      textFormat: 'html',
+    };
   }
 
   private buildPlainPreviewText(payload: {
