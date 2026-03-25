@@ -1701,7 +1701,7 @@ export class AdminService {
 
     let published: { messageId: string; url: string | null };
     try {
-      published = await this.publishRulesMessageWithRetry(chatId, messageText, {
+      published = await this.publishMessageWithRetry(chatId, messageText, {
         textFormat: 'markdown',
         ...(imagePayload ? { imagePayload } : {}),
       });
@@ -2333,7 +2333,15 @@ export class AdminService {
     const published =
       action === 'publish'
         ? await this.publishStoredChannelSuggestion(row.chatId, payload)
-        : { messageId: null, url: null };
+        : {
+            messageId: null,
+            url: null,
+            threadId: null,
+            includeCommentsButton: false,
+            includeSuggestButton: false,
+            suggestButtonText: null,
+            autoPostButtonsMode: 'OFF' as ChannelSettings['autoPostButtonsMode'],
+          };
     const reviewerLabel = user.displayName?.trim() || user.username?.trim() || user.userId;
     const reviewStatus = action === 'publish' ? 'published' : 'cancelled';
     const updatedPayload = {
@@ -2354,6 +2362,32 @@ export class AdminService {
         payload: updatedPayload,
       },
     });
+
+    if (
+      action === 'publish' &&
+      published.messageId &&
+      published.threadId &&
+      (published.includeCommentsButton || published.includeSuggestButton)
+    ) {
+      await this.prisma.auditLog.create({
+        data: {
+          chatId: row.chatId,
+          actorUserId: user.userId,
+          action: CHANNEL_DIALOG_ACTION_AUTO_ATTACH,
+          payload: {
+            messageId: published.messageId,
+            threadId: published.threadId,
+            includeCommentsButton: published.includeCommentsButton,
+            includeSuggestButton: published.includeSuggestButton,
+            autoPostButtonsMode: published.autoPostButtonsMode,
+            source: 'suggestion_review',
+            ...(published.suggestButtonText
+              ? { suggestButtonText: published.suggestButtonText }
+              : {}),
+          },
+        },
+      });
+    }
 
     await this.syncChannelSuggestionAdminReviewMessages(
       row.chatId,
@@ -5956,10 +5990,10 @@ export class AdminService {
     return 'chat-rules.jpg';
   }
 
-  private async publishRulesMessageWithRetry(
+  private async publishMessageWithRetry(
     chatId: string,
     text: string,
-    options: Pick<MaxSendMessageOptions, 'imagePayload' | 'textFormat'> | undefined,
+    options: Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'textFormat'> | undefined,
   ): Promise<{ messageId: string; url: string | null }> {
     let lastError: unknown = null;
     const attempts = BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS.length + 1;
@@ -5985,7 +6019,7 @@ export class AdminService {
       throw lastError;
     }
 
-    throw new Error('Rules publish failed without error details');
+    throw new Error('Message publish failed without error details');
   }
 
   private normalizeChatRulesDraft(value: UpdateChatRulesRequest): UpdateChatRulesRequest {
@@ -9526,21 +9560,42 @@ export class AdminService {
   private async publishStoredChannelSuggestion(
     chatId: string,
     payload: Record<string, unknown>,
-  ): Promise<{ messageId: string | null; url: string | null }> {
+  ): Promise<{
+    messageId: string | null;
+    url: string | null;
+    threadId: string | null;
+    includeCommentsButton: boolean;
+    includeSuggestButton: boolean;
+    suggestButtonText: string | null;
+    autoPostButtonsMode: ChannelSettings['autoPostButtonsMode'];
+  }> {
     const text = this.readTrimmedString(payload.text) ?? '';
     const imageBase64 = this.readTrimmedString(payload.imageBase64);
     const imageMimeType = this.readTrimmedString(payload.imageMimeType);
     const imageFileName = this.readTrimmedString(payload.imageFileName);
+    const buttonContext = await this.buildPublishedChannelSuggestionButtonContext(chatId, payload);
 
     if (!text && !imageBase64) {
       throw new BadRequestException('В предложке нет текста или фото для публикации.');
     }
 
+    const messageOptions =
+      buttonContext.buttons.length > 0 || imageBase64
+        ? {
+            ...(buttonContext.buttons.length > 0 ? { buttons: buttonContext.buttons } : {}),
+          }
+        : undefined;
+
     if (!imageBase64) {
-      const published = await this.maxClient.sendMessageImmediateWithResolvedLink(chatId, text);
+      const published = await this.publishMessageWithRetry(chatId, text, messageOptions);
       return {
         messageId: published.messageId,
         url: published.url,
+        threadId: buttonContext.threadId,
+        includeCommentsButton: buttonContext.includeCommentsButton,
+        includeSuggestButton: buttonContext.includeSuggestButton,
+        suggestButtonText: buttonContext.suggestButtonText,
+        autoPostButtonsMode: buttonContext.autoPostButtonsMode,
       };
     }
 
@@ -9553,19 +9608,77 @@ export class AdminService {
       throw new BadRequestException('Не удалось подготовить фото предложки для публикации.');
     }
 
-    const published = await this.maxClient.sendCustomMessageImmediateWithResolvedLink(chatId, {
-      ...(text ? { text } : {}),
-      attachments: [
-        {
-          type: 'image',
-          payload: uploadedImagePayload,
-        },
-      ],
+    const published = await this.publishMessageWithRetry(chatId, text || ' ', {
+      ...(messageOptions ?? {}),
+      imagePayload: uploadedImagePayload,
     });
 
     return {
       messageId: published.messageId,
       url: published.url,
+      threadId: buttonContext.threadId,
+      includeCommentsButton: buttonContext.includeCommentsButton,
+      includeSuggestButton: buttonContext.includeSuggestButton,
+      suggestButtonText: buttonContext.suggestButtonText,
+      autoPostButtonsMode: buttonContext.autoPostButtonsMode,
+    };
+  }
+
+  private async buildPublishedChannelSuggestionButtonContext(
+    chatId: string,
+    payload: Record<string, unknown>,
+  ): Promise<{
+    buttons: MaxMessageButton[][];
+    threadId: string | null;
+    includeCommentsButton: boolean;
+    includeSuggestButton: boolean;
+    suggestButtonText: string | null;
+    autoPostButtonsMode: ChannelSettings['autoPostButtonsMode'];
+  }> {
+    const settings = await this.getPublicChannelSettings(chatId);
+    const includeCommentsButton = settings.commentsEnabled;
+    const includeSuggestButton = settings.postSuggestionsEnabled;
+    const autoPostButtonsMode = this.normalizeChannelAutoPostButtonsMode(settings);
+
+    if (!includeCommentsButton && !includeSuggestButton) {
+      return {
+        buttons: [],
+        threadId: null,
+        includeCommentsButton,
+        includeSuggestButton,
+        suggestButtonText: null,
+        autoPostButtonsMode,
+      };
+    }
+
+    const threadId = this.readTrimmedString(payload.threadId) ?? randomUUID();
+    const suggestButtonText = settings.postSuggestionsButtonText.trim() || '📰 Предложить пост';
+    const buttons: MaxMessageButton[][] = [];
+
+    if (includeCommentsButton) {
+      buttons.push([
+        this.buildChannelDialogButton(
+          chatId,
+          'comments',
+          threadId,
+          formatCommentsButtonText('💬 Комментарии', 0),
+        ),
+      ]);
+    }
+
+    if (includeSuggestButton) {
+      buttons.push([
+        this.buildChannelDialogButton(chatId, 'suggest', threadId, suggestButtonText),
+      ]);
+    }
+
+    return {
+      buttons,
+      threadId,
+      includeCommentsButton,
+      includeSuggestButton,
+      suggestButtonText: includeSuggestButton ? suggestButtonText : null,
+      autoPostButtonsMode,
     };
   }
 

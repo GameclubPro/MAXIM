@@ -8628,6 +8628,13 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       title: 'Новости MAX',
       entityType: 'CHANNEL',
     });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+        postSuggestionsEnabled: true,
+        postSuggestionsButtonText: '📰 Предложить пост',
+      }),
+    );
     prisma.auditLog.findFirst.mockResolvedValue({
       id: 'suggestion-review-1',
       chatId: 'channel-1',
@@ -8637,6 +8644,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         actorUserId: 'user-1',
         authorDisplayName: 'Пользователь',
         text: 'Готовый пост для канала',
+        threadId: '11111111-1111-4111-8111-111111111111',
         reviewStatus: 'pending',
         deliveries: [
           {
@@ -8698,6 +8706,24 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'channel-1',
       'Готовый пост для канала',
+      expect.objectContaining({
+        buttons: [
+          [
+            expect.objectContaining({
+              text: '💬 Комментарии · 0',
+              type: 'link',
+              url: expect.stringContaining('startapp='),
+            }),
+          ],
+          [
+            expect.objectContaining({
+              text: '📰 Предложить пост',
+              type: 'link',
+              url: expect.stringContaining('start=cds-channel-1.'),
+            }),
+          ],
+        ],
+      }),
     );
     expect(prisma.auditLog.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -8713,11 +8739,152 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         }),
       }),
     );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          chatId: 'channel-1',
+          actorUserId: 'admin-1',
+          action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+          payload: expect.objectContaining({
+            messageId: 'mid-channel-post-1',
+            threadId: '11111111-1111-4111-8111-111111111111',
+            includeCommentsButton: true,
+            includeSuggestButton: true,
+            source: 'suggestion_review',
+            suggestButtonText: '📰 Предложить пост',
+          }),
+        }),
+      }),
+    );
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       '555001',
       'mid-admin-review-1',
       expect.stringContaining('Предложка опубликована'),
       { buttons: [] },
+    );
+  });
+
+  it('publishes a reviewed photo suggestion with engagement buttons', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+        postSuggestionsEnabled: true,
+        postSuggestionsButtonText: 'Предложить пост',
+      }),
+    );
+    prisma.auditLog.findFirst.mockResolvedValue({
+      id: 'suggestion-review-photo-1',
+      chatId: 'channel-1',
+      actorUserId: 'user-9',
+      payload: {
+        type: 'suggest',
+        actorUserId: 'user-9',
+        authorDisplayName: 'Фотограф',
+        text: 'Фото с подписью',
+        threadId: '22222222-2222-4222-8222-222222222222',
+        reviewStatus: 'pending',
+        imageBase64:
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
+        imageMimeType: 'image/png',
+        imageFileName: 'suggestion.png',
+        deliveries: [
+          {
+            adminUserId: 'admin-1',
+            privateChatId: '555001',
+            messageId: 'mid-admin-review-photo-1',
+          },
+        ],
+      },
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getChatSnapshot: jest.fn().mockResolvedValue({
+        chatId: 'channel-1',
+        title: 'Новости MAX',
+        participantsCount: 1200,
+        status: 'active',
+        isPublic: true,
+        link: 'https://max.ru/channels/news-max',
+        lastEventAt: '2026-03-10T12:00:00.000Z',
+        entityType: 'channel',
+      }),
+      uploadImage: jest.fn().mockResolvedValue({ token: 'uploaded-photo-1' }),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'mid-channel-photo-post-1',
+        url: 'https://max.ru/chats/channel-1/message/101',
+      }),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.reviewChannelSuggestionByAdmin(
+      'suggestion-review-photo-1',
+      {
+        userId: 'admin-1',
+        username: 'chief',
+        displayName: 'Главный редактор',
+        chatTitle: null,
+      },
+      'publish',
+    );
+
+    expect(result).toEqual({
+      status: 'reviewed',
+      reviewStatus: 'published',
+      publishedUrl: 'https://max.ru/chats/channel-1/message/101',
+    });
+    expect(maxClient.uploadImage).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      'suggestion.png',
+      'image/png',
+    );
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'channel-1',
+      'Фото с подписью',
+      expect.objectContaining({
+        imagePayload: { token: 'uploaded-photo-1' },
+        buttons: [
+          [
+            expect.objectContaining({
+              text: '💬 Комментарии · 0',
+            }),
+          ],
+          [
+            expect.objectContaining({
+              text: 'Предложить пост',
+            }),
+          ],
+        ],
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          action: 'AUTO_ATTACH_CHANNEL_ENGAGEMENT',
+          payload: expect.objectContaining({
+            messageId: 'mid-channel-photo-post-1',
+            threadId: '22222222-2222-4222-8222-222222222222',
+            includeCommentsButton: true,
+            includeSuggestButton: true,
+          }),
+        }),
+      }),
     );
   });
 
