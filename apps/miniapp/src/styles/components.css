@@ -5519,14 +5519,6 @@
   box-shadow: none;
 }
 
-.managed-link-picker__note {
-  margin: 0;
-  padding: 0 2px;
-  font-size: 0.72rem;
-  line-height: 1.45;
-  color: var(--text-secondary);
-}
-
 .managed-link-picker__selection {
   border-radius: 18px;
   border: 1px solid rgba(11, 132, 255, 0.16);

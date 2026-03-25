@@ -420,7 +420,7 @@ export function ManagedLinkButtonFields({
           {quickActions}
 
           {!profileUrl ? (
-            <p className="managed-link-picker__note" role="note">
+            <p className="field__hint" role="note">
               {profileUnavailableHint}
             </p>
           ) : null}
