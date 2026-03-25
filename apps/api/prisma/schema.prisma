@@ -140,15 +140,6 @@ model Chat {
   @@map("chats")
 }
 
-model AdminProfilePreference {
-  userId     String   @id @map("user_id")
-  profileUrl String   @map("profile_url")
-  createdAt  DateTime @default(now()) @map("created_at")
-  updatedAt  DateTime @updatedAt @map("updated_at")
-
-  @@map("admin_profile_preferences")
-}
-
 model ChatSettings {
   id                               String                   @id @default(cuid())
   chatId                           String                   @unique @map("chat_id")

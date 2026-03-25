@@ -1660,14 +1660,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   });
 
   const chatsQuery = useQuery({
-    queryKey: ['chats', 'managed-link-picker', 'refresh'],
+    queryKey: ['chats', 'settings', 'refresh'],
     queryFn: () => getChats(api, { refresh: true }),
     enabled: Boolean(chatId),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
   const channelsQuery = useQuery({
-    queryKey: ['channels', 'managed-link-picker', 'refresh'],
+    queryKey: ['channels', 'settings', 'refresh'],
     queryFn: () => getChannels(api, { refresh: true }),
     enabled: Boolean(chatId),
     staleTime: 30_000,

@@ -2612,25 +2612,6 @@ export function createPreviewApiTransport(): ApiTransport {
         return cloneJson(state.me);
       }
 
-      if (url.pathname === '/me/profile-link' && method === 'PUT') {
-        const payload = parseJsonBody(init);
-        if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
-          throw new Error('Preview profile link payload is invalid.');
-        }
-
-        const row = payload as Record<string, unknown>;
-        if (typeof row.profileUrl !== 'string') {
-          throw new Error('Preview profile link payload is invalid.');
-        }
-        state.me.profileUrl = row.profileUrl;
-        return cloneJson(state.me);
-      }
-
-      if (url.pathname === '/me/profile-link' && method === 'DELETE') {
-        state.me.profileUrl = state.me.username ? buildPreviewProfileUrl(state.me.username) : null;
-        return cloneJson(state.me);
-      }
-
       if (url.pathname === '/chats' && method === 'GET') {
         return cloneJson(state.chats);
       }

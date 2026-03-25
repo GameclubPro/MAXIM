@@ -88,15 +88,6 @@ export async function getMe(
   return parseMe(response);
 }
 
-export async function updateMyProfileLink(api: ApiTransport, profileUrl: string): Promise<Me> {
-  const requestBody = { profileUrl: profileUrl.trim() };
-  const response = await api.request('/me/profile-link', {
-    method: 'PUT',
-    body: JSON.stringify(requestBody),
-  });
-  return parseMe(response);
-}
-
 export async function getChats(
   api: ApiTransport,
   options: { refresh?: boolean } = {},

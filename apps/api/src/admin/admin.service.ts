@@ -23,7 +23,6 @@ import {
   publishChatRulesResultSchema,
   resolveRequiredSubscriptionChannelRequestSchema,
   resolveRequiredSubscriptionChannelResponseSchema,
-  updateMyProfileLinkRequestSchema,
   type ChannelDialogMessage,
   type ChannelDialogReactionGroup,
   type ChannelDialogReplyPreview,
@@ -482,14 +481,12 @@ export class AdminService {
     user: AuthUser,
     options: { chatId?: string; entityType?: ManagedEntityType } = {},
   ): Promise<Me> {
-    const manualProfileUrl = await this.getStoredAdminProfileUrl(user.userId);
     const fallback: Me = {
       userId: user.userId,
       username: this.readTrimmedString(user.username) ?? null,
       displayName: this.readTrimmedString(user.displayName) ?? null,
       avatarUrl: this.readTrimmedString(user.avatarUrl) ?? null,
       profileUrl:
-        manualProfileUrl ??
         this.normalizeMaxProfileUrl(this.readTrimmedString(user.profileUrl) ?? null) ??
         this.buildUserProfileUrl(this.readTrimmedString(user.username) ?? null),
     };
@@ -515,7 +512,6 @@ export class AdminService {
         fallback.displayName ?? this.readTrimmedString(profile?.displayName) ?? null;
       const avatarUrl = fallback.avatarUrl ?? this.readTrimmedString(profile?.avatarUrl) ?? null;
       const profileUrl =
-        manualProfileUrl ??
         this.normalizeMaxProfileUrl(this.readTrimmedString(profile?.profileUrl) ?? null) ??
         fallback.profileUrl ??
         this.buildUserProfileUrl(username);
@@ -538,39 +534,6 @@ export class AdminService {
       );
       return fallback;
     }
-  }
-
-  async updateMyProfileLink(user: AuthUser, body: unknown): Promise<Me> {
-    const parsed = updateMyProfileLinkRequestSchema.safeParse(body);
-    if (!parsed.success) {
-      throw new BadRequestException(parsed.error.format());
-    }
-
-    const profileUrl = this.normalizeMaxProfileUrl(parsed.data.profileUrl);
-    if (!profileUrl) {
-      throw new BadRequestException('Укажите корректную ссылку профиля MAX на домене max.ru.');
-    }
-
-    await this.prisma.adminProfilePreference.upsert({
-      where: { userId: user.userId },
-      create: {
-        userId: user.userId,
-        profileUrl,
-      },
-      update: {
-        profileUrl,
-      },
-    });
-
-    return this.getMe(user);
-  }
-
-  async clearMyProfileLink(user: AuthUser): Promise<Me> {
-    await this.prisma.adminProfilePreference.deleteMany({
-      where: { userId: user.userId },
-    });
-
-    return this.getMe(user);
   }
 
   async listChats(user: AuthUser, options: { refresh?: boolean } = {}): Promise<ChatSummary[]> {
@@ -7898,20 +7861,6 @@ export class AdminService {
     } catch {
       return null;
     }
-  }
-
-  private async getStoredAdminProfileUrl(userId: string): Promise<string | null> {
-    const normalizedUserId = userId.trim();
-    if (!normalizedUserId) {
-      return null;
-    }
-
-    const preference = await this.prisma.adminProfilePreference.findUnique({
-      where: { userId: normalizedUserId },
-      select: { profileUrl: true },
-    });
-
-    return this.normalizeMaxProfileUrl(this.readTrimmedString(preference?.profileUrl) ?? null);
   }
 
   private extractLegacyMaxUserId(url: string | null | undefined): string | null {
