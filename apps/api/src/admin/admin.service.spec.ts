@@ -786,50 +786,6 @@ describe('AdminService night mode settings normalization', () => {
     );
   });
 
-  it('rejects night mode update when bot lacks delete permission', async () => {
-    const prisma = createPrismaMock();
-    const maxClient = {
-      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
-        userId: 'bot-1',
-        isAdmin: true,
-        isOwner: false,
-        permissions: ['add_remove_members', 'pin_message'],
-      }),
-    };
-    const chatContextCache = {
-      invalidate: jest.fn().mockResolvedValue(undefined),
-    };
-
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      chatContextCache as never,
-      createConfigMock() as never,
-    );
-
-    await expect(
-      service.updateSettings(
-        'chat-1',
-        {
-          userId: 'admin-1',
-          username: null,
-          displayName: null,
-          chatTitle: null,
-        },
-        {
-          nightModeEnabled: true,
-          nightModeBotMessageEnabled: false,
-        },
-      ),
-    ).rejects.toThrow(
-      'У бота нет права MAX delete_messages/delete, поэтому он не сможет удалять сообщения в ночном режиме и при закрытии группы.',
-    );
-
-    expect(prisma.auditLog.create).not.toHaveBeenCalled();
-    expect(chatContextCache.invalidate).not.toHaveBeenCalled();
-  });
-
   it('rejects legacy profile handoff button urls on update', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -4589,65 +4545,6 @@ describe('AdminService settings screen endpoints', () => {
       updatedChats: 2,
       appliedChatIds: ['chat-1', 'chat-2'],
     });
-  });
-
-  it('rejects apply-to-all for night settings when bot lacks delete permission in a target chat', async () => {
-    const prisma = createPrismaMock();
-    const maxClient = {
-      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
-      getCurrentChatMemberAccess: jest
-        .fn()
-        .mockResolvedValueOnce({
-          userId: 'bot-1',
-          isAdmin: true,
-          isOwner: false,
-          permissions: ['delete_messages'],
-        })
-        .mockResolvedValueOnce({
-          userId: 'bot-1',
-          isAdmin: true,
-          isOwner: false,
-          permissions: ['pin_message'],
-        }),
-    };
-
-    const service = new AdminService(
-      prisma as never,
-      maxClient as never,
-      createChatContextCacheMock() as never,
-      createConfigMock() as never,
-    );
-
-    jest.spyOn(service, 'listChats').mockResolvedValue([
-      {
-        id: 'chat-2',
-        title: 'Chat 2',
-        entityType: 'chat',
-        link: null,
-        createdAt: '2026-03-02T00:00:00.000Z',
-        channelOverview: null,
-      },
-    ]);
-
-    await expect(
-      service.applySettingsToAllChats(
-        'chat-1',
-        {
-          userId: 'admin-1',
-          username: null,
-          displayName: null,
-          chatTitle: null,
-        },
-        chatSettingsSchema.parse({
-          nightModeEnabled: true,
-          nightModeBotMessageEnabled: false,
-        }),
-      ),
-    ).rejects.toThrow(
-      'У бота нет права MAX delete_messages/delete, поэтому он не сможет удалять сообщения в ночном режиме и при закрытии группы.',
-    );
-
-    expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
   it('syncs allowlist entries when applying links section to all chats', async () => {

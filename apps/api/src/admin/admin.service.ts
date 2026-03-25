@@ -431,7 +431,6 @@ const SETTINGS_SECTION_KEYS = {
   ],
 } as const satisfies Record<string, readonly (keyof ChatSettings)[]>;
 const REQUIRED_SUBSCRIPTION_SETTING_KEYS = SETTINGS_SECTION_KEYS.requiredSubscription;
-const NIGHT_MODE_SETTING_KEYS = SETTINGS_SECTION_KEYS.night;
 const CHANNEL_STATS_POST_ACTIONS = [
   CHANNEL_DIALOG_ACTION_PUBLISH,
   CHANNEL_DIALOG_ACTION_AUTO_ATTACH,
@@ -1570,9 +1569,6 @@ export class AdminService {
       chatId,
     );
     await this.assertRequiredSubscriptionSettings(normalizedSettings);
-    if (this.requiresDeleteMessagesPermission(normalizedSettings)) {
-      await this.assertBotCanDeleteMessages(chatId);
-    }
 
     await this.prisma.chat.upsert({
       where: { id: chatId },
@@ -2864,17 +2860,6 @@ export class AdminService {
       );
     if (shouldValidateRequiredSubscription) {
       await this.assertRequiredSubscriptionSettings(normalizedSettings);
-    }
-    const shouldValidateDeleteMessages =
-      this.requiresDeleteMessagesPermission(normalizedSettings) &&
-      (filteredSettingKeys.length === 0 ||
-        filteredSettingKeys.some((key) =>
-          NIGHT_MODE_SETTING_KEYS.includes(key as (typeof NIGHT_MODE_SETTING_KEYS)[number]),
-        ));
-    if (shouldValidateDeleteMessages) {
-      for (const chatId of appliedChatIds) {
-        await this.assertBotCanDeleteMessages(chatId);
-      }
     }
 
     for (const chatId of appliedChatIds) {
@@ -7106,46 +7091,6 @@ export class AdminService {
     }
   }
 
-  private async assertBotCanDeleteMessages(chatId: string): Promise<void> {
-    const maxClientWithAccess = this.maxClient as MaxClientService & {
-      getCurrentChatMemberAccess?: (chatId: string) => Promise<MaxChatMemberAccess>;
-    };
-    if (typeof maxClientWithAccess.getCurrentChatMemberAccess !== 'function') {
-      return;
-    }
-
-    let botAccess: MaxChatMemberAccess;
-    try {
-      botAccess = await maxClientWithAccess.getCurrentChatMemberAccess(chatId);
-    } catch (error: unknown) {
-      if (this.isBotAdminLookupDeniedError(error)) {
-        throw new ForbiddenException(
-          'Бот больше не состоит в этом чате MAX или не является его администратором.',
-        );
-      }
-      throw error;
-    }
-
-    if (botAccess.isOwner) {
-      return;
-    }
-
-    if (!botAccess.isAdmin) {
-      throw new ForbiddenException(
-        'Бот должен быть администратором этого чата MAX, чтобы удалять сообщения в ночном режиме и при закрытии группы.',
-      );
-    }
-
-    if (
-      botAccess.permissions.length > 0 &&
-      !botAccess.permissions.some((permission) => this.isDeleteMessagesPermission(permission))
-    ) {
-      throw new ForbiddenException(
-        'У бота нет права MAX delete_messages/delete, поэтому он не сможет удалять сообщения в ночном режиме и при закрытии группы.',
-      );
-    }
-  }
-
   private async assertTargetUserCanBeModerated(
     chatId: string,
     targetUserId: string,
@@ -7275,28 +7220,6 @@ export class AdminService {
       normalized === 'delete_members' ||
       normalized === 'can_delete_members'
     );
-  }
-
-  private isDeleteMessagesPermission(permission: string): boolean {
-    const normalized = permission
-      .trim()
-      .toLowerCase()
-      .replace(/[-\s]+/gu, '_');
-    return (
-      normalized === 'delete' ||
-      normalized === 'delete_messages' ||
-      normalized === 'can_delete_messages' ||
-      normalized === 'remove_messages' ||
-      normalized === 'can_remove_messages' ||
-      normalized === 'manage_messages' ||
-      normalized === 'can_manage_messages'
-    );
-  }
-
-  private requiresDeleteMessagesPermission(
-    settings: Pick<ChatSettings, 'nightModeEnabled' | 'nightModeForceCloseEnabled'>,
-  ): boolean {
-    return settings.nightModeEnabled || settings.nightModeForceCloseEnabled;
   }
 
   private async recordManualModerationAction(params: {
