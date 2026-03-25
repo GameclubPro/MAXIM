@@ -8259,20 +8259,43 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    let deliveryMode: 'edit_message' | 'reply_message' | 'replace_with_bot_message' =
+      'edit_message';
+    let replacementMessageId: string | null = null;
+    let originalDeleted = false;
+
     try {
       if (linkType === 'forward') {
-        await this.maxClient.sendMessageReplyWithInlineKeyboard(
-          chatId,
-          messageId,
-          CHANNEL_FORWARD_REPLY_TEXT,
-          {
-            buttons,
-            debugContext: {
-              screen: 'channel-auto-post',
-              action: source === 'poll' ? 'scan-attach-buttons-reply' : 'attach-buttons-reply',
-            },
+        const sent = await this.maxClient.sendMessageCopyWithInlineKeyboard(chatId, messageId, text, {
+          buttons,
+          debugContext: {
+            screen: 'channel-auto-post',
+            action:
+              source === 'poll'
+                ? 'scan-replace-forward-with-bot-copy'
+                : 'replace-forward-with-bot-copy',
           },
-        );
+        });
+        replacementMessageId = sent.messageId;
+        deliveryMode = 'replace_with_bot_message';
+
+        try {
+          await this.maxClient.deleteMessage(chatId, messageId, {
+            immediate: true,
+          });
+          originalDeleted = true;
+        } catch (deleteError: unknown) {
+          this.logger.warn(
+            {
+              chatId,
+              messageId,
+              status: this.extractStatusCode(deleteError),
+              error: deleteError instanceof Error ? deleteError.message : 'Unknown error',
+              replacementMessageId,
+            },
+            'Failed to delete original forwarded channel post after bot copy publish',
+          );
+        }
       } else {
         await this.maxClient.editMessageInlineKeyboard(chatId, messageId, text, {
           buttons,
@@ -8292,11 +8315,33 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             status,
             error: error instanceof Error ? error.message : 'Unknown error',
           },
-          'Failed to auto-attach channel post buttons; skipping retry',
+          linkType === 'forward'
+            ? 'Failed to replace forwarded channel post with bot copy; falling back to reply'
+            : 'Failed to auto-attach channel post buttons; skipping retry',
         );
-        return;
+        if (linkType !== 'forward') {
+          return;
+        }
+
+        await this.maxClient.sendMessageReplyWithInlineKeyboard(
+          chatId,
+          messageId,
+          CHANNEL_FORWARD_REPLY_TEXT,
+          {
+            buttons,
+            debugContext: {
+              screen: 'channel-auto-post',
+              action:
+                source === 'poll'
+                  ? 'scan-attach-buttons-reply-fallback'
+                  : 'attach-buttons-reply-fallback',
+            },
+          },
+        );
+        deliveryMode = 'reply_message';
+      } else {
+        throw error;
       }
-      throw error;
     }
 
     await this.prisma.auditLog.create({
@@ -8312,8 +8357,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           autoPostButtonsMode: this.deriveChannelAutoPostButtonsMode(
             managedChannel.channelSettings,
           ),
-          deliveryMode: linkType === 'forward' ? 'reply_message' : 'edit_message',
+          deliveryMode,
           linkType,
+          replacementMessageId,
+          originalDeleted,
           source,
         },
       },

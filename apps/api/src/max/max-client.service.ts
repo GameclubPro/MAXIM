@@ -2033,8 +2033,14 @@ export class MaxClientService implements OnModuleDestroy {
     fallbackTextFormat: MaxTextFormat | null = null,
   ): { text: string | null; textFormat: MaxTextFormat | null } {
     const body = this.asRecord(message?.body);
+    const link = this.asRecord(message?.link);
     const sourceText = typeof body?.text === 'string' ? body.text : null;
-    const text = sourceText ?? fallbackText;
+    const preferFallbackText =
+      sourceText === '' &&
+      typeof fallbackText === 'string' &&
+      fallbackText.length > 0 &&
+      this.readLowerString(link?.type) === 'forward';
+    const text = preferFallbackText ? fallbackText : sourceText ?? fallbackText;
 
     if (fallbackTextFormat && typeof fallbackText === 'string') {
       return {

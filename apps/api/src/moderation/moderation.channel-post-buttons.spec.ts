@@ -311,8 +311,12 @@ describe('ModerationService channel auto post buttons', () => {
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      sendMessageCopyWithInlineKeyboard: jest.fn().mockResolvedValue({
+        messageId: 'mid-forward-copy-1',
+        url: 'https://max.ru/chats/channel-1/message/1001',
+      }),
       sendMessageReplyWithInlineKeyboard: jest.fn().mockResolvedValue(undefined),
-      deleteMessage: jest.fn(),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
       sendMessage: jest.fn(),
       kickMember: jest.fn(),
       banMember: jest.fn(),
@@ -336,10 +340,11 @@ describe('ModerationService channel auto post buttons', () => {
     await service.handleUpdate(createForwardedChannelPostUpdateWithoutSender());
 
     expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
-    expect(maxClient.sendMessageReplyWithInlineKeyboard).toHaveBeenCalledWith(
+    expect(maxClient.sendMessageReplyWithInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledWith(
       'channel-1',
       'mid-channel-forward-no-sender-1',
-      'Действия к посту',
+      'Пересланный пост',
       expect.objectContaining({
         buttons: [
           [expect.objectContaining({ text: '💬 Комментарии · 0' })],
@@ -347,12 +352,17 @@ describe('ModerationService channel auto post buttons', () => {
         ],
       }),
     );
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('channel-1', 'mid-channel-forward-no-sender-1', {
+      immediate: true,
+    });
     expect(prisma.auditLog.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           payload: expect.objectContaining({
-            deliveryMode: 'reply_message',
+            deliveryMode: 'replace_with_bot_message',
             linkType: 'forward',
+            replacementMessageId: 'mid-forward-copy-1',
+            originalDeleted: true,
           }),
         }),
       }),
@@ -956,9 +966,13 @@ describe('ModerationService channel auto post buttons', () => {
         },
       ]),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      sendMessageCopyWithInlineKeyboard: jest.fn().mockResolvedValue({
+        messageId: 'mid-polled-forward-copy-1',
+        url: 'https://max.ru/chats/channel-1/message/1002',
+      }),
       sendMessageReplyWithInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       getChatAdminIds: jest.fn(),
-      deleteMessage: jest.fn(),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
       sendMessage: jest.fn(),
       kickMember: jest.fn(),
       banMember: jest.fn(),
@@ -982,10 +996,11 @@ describe('ModerationService channel auto post buttons', () => {
     await (service as any).processChannelAutoPostButtons();
 
     expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
-    expect(maxClient.sendMessageReplyWithInlineKeyboard).toHaveBeenCalledWith(
+    expect(maxClient.sendMessageReplyWithInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageCopyWithInlineKeyboard).toHaveBeenCalledWith(
       'channel-1',
       'mid-polled-forward-1',
-      'Действия к посту',
+      'Пересланный пост',
       expect.objectContaining({
         buttons: [
           [
@@ -997,6 +1012,9 @@ describe('ModerationService channel auto post buttons', () => {
         ],
       }),
     );
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('channel-1', 'mid-polled-forward-1', {
+      immediate: true,
+    });
   });
 
   it('backs off channel polling after MAX API rate limit errors', async () => {

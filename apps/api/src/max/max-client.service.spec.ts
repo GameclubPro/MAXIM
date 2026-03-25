@@ -345,6 +345,91 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('uses fallback text when reposting a forwarded message with empty MAX body text', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    mid: 'mid-forward-source-1',
+                    text: '',
+                    attachments: [],
+                  },
+                  link: {
+                    type: 'forward',
+                    message: {
+                      text: 'Пересланный пост',
+                    },
+                  },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              mid: 'mid-forward-copy-1',
+              url: 'https://max.ru/chats/chat-1/message/790',
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.sendMessageCopyWithInlineKeyboard(
+      'chat-1',
+      'mid-forward-source-1',
+      'Пересланный пост',
+      {
+        button: {
+          text: '💬 Комментарии',
+          url: 'https://maxim.play-team.ru/app/',
+        },
+      },
+    );
+
+    expect(result).toEqual({
+      messageId: 'mid-forward-copy-1',
+      url: 'https://max.ru/chats/chat-1/message/790',
+    });
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api.max.ru/messages',
+        params: { chat_id: 'chat-1' },
+        data: {
+          text: 'Пересланный пост',
+          attachments: [
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [
+                  [
+                    {
+                      type: 'link',
+                      text: '💬 Комментарии',
+                      url: 'https://maxim.play-team.ru/app/',
+                    },
+                  ],
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('preserves MAX body markup when editing inline keyboard on an existing message', async () => {
     const httpService = {
       request: jest
