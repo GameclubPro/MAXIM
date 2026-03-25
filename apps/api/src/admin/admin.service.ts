@@ -3928,88 +3928,76 @@ export class AdminService {
     const isCalendarPlanComplete =
       schedulePlan.scheduleMode === 'calendar' && schedulePlan.upcomingSlots.length === 0;
 
-    try {
-      await this.prisma.$transaction([
-        this.prisma.managedBroadcast.update({
-          where: { id: existing.id },
-          data: {
-            actorUserId: user.userId,
-            text: request.payload.text.trim(),
-            textFormat: request.payload.textFormat,
-            applyToAllChats: request.payload.applyToAllChats,
-            targetChatIds: request.targetChatIds as Prisma.InputJsonValue,
-            buttonEnabled: request.payload.buttonEnabled,
-            buttonUrl: request.payload.buttonEnabled
-              ? this.normalizeLegacyProfileButtonUrl(request.payload.buttonUrl)
-              : '',
-            buttonText: request.payload.buttonEnabled
-              ? request.payload.buttonText.trim() || 'Открыть'
-              : 'Открыть',
-            imageEnabled: request.payload.imageEnabled,
-            imageBase64: request.payload.imageEnabled ? request.payload.imageBase64 : '',
-            imageMimeType: request.payload.imageEnabled ? request.payload.imageMimeType : '',
-            imageFileName: request.payload.imageEnabled ? request.payload.imageFileName : '',
-            scheduleMode: schedulePlan.scheduleMode,
-            scheduleTimezone: schedulePlan.scheduleTimezone,
-            nextSendAt: schedulePlan.nextSendAt,
-            cycleEnabled: schedulePlan.cycleEnabled,
-            cycleEveryHours: schedulePlan.cycleEveryHours,
-            cycleCount: schedulePlan.cycleCount,
-            sentCount: schedulePlan.sentCount,
-            status: isCalendarPlanComplete
-              ? PrismaManagedBroadcastStatus.COMPLETED
-              : PrismaManagedBroadcastStatus.ACTIVE,
-            lastError: null,
-            lockedAt: null,
-          },
-        }),
-        this.prisma.managedBroadcastDelivery.deleteMany({
-          where: {
-            broadcastId: existing.id,
-            occurrenceIndex: { gte: currentOccurrence },
-            status: { not: PrismaManagedBroadcastDeliveryStatus.SENT },
-          },
-        }),
-        this.prisma.managedBroadcastOccurrence.deleteMany({
-          where: {
-            broadcastId: existing.id,
-            occurrenceIndex: { gte: currentOccurrence },
-          },
-        }),
-        ...(schedulePlan.sentCount < schedulePlan.cycleCount
-          ? [
-              this.prisma.managedBroadcastDelivery.createMany({
-                data: this.buildManagedBroadcastDeliveryRows(
-                  existing.id,
-                  request.targetChatIds,
-                  nextOccurrenceIndex,
-                  schedulePlan.cycleCount,
-                ),
-              }),
-            ]
-          : []),
-        ...(schedulePlan.scheduleMode === 'calendar' && schedulePlan.upcomingSlots.length > 0
-          ? [
-              this.prisma.managedBroadcastOccurrence.createMany({
-                data: this.buildManagedBroadcastOccurrenceRows(
-                  existing.id,
-                  sourceChatId,
-                  this.mapManagedEntityTypeToChatEntityType(entityType),
-                  nextOccurrenceIndex,
-                  schedulePlan.upcomingSlots,
-                ),
-              }),
-            ]
-          : []),
-      ]);
-    } catch (error: unknown) {
-      if (this.isManagedBroadcastSlotConflictError(error)) {
-        throw new BadRequestException(
-          'Некоторые слоты уже заняты другой рассылкой. Обновите календарь.',
-        );
+    await this.prisma.$transaction(async (tx) => {
+      await tx.managedBroadcast.update({
+        where: { id: existing.id },
+        data: {
+          actorUserId: user.userId,
+          text: request.payload.text.trim(),
+          textFormat: request.payload.textFormat,
+          applyToAllChats: request.payload.applyToAllChats,
+          targetChatIds: request.targetChatIds as Prisma.InputJsonValue,
+          buttonEnabled: request.payload.buttonEnabled,
+          buttonUrl: request.payload.buttonEnabled
+            ? this.normalizeLegacyProfileButtonUrl(request.payload.buttonUrl)
+            : '',
+          buttonText: request.payload.buttonEnabled
+            ? request.payload.buttonText.trim() || 'Открыть'
+            : 'Открыть',
+          imageEnabled: request.payload.imageEnabled,
+          imageBase64: request.payload.imageEnabled ? request.payload.imageBase64 : '',
+          imageMimeType: request.payload.imageEnabled ? request.payload.imageMimeType : '',
+          imageFileName: request.payload.imageEnabled ? request.payload.imageFileName : '',
+          scheduleMode: schedulePlan.scheduleMode,
+          scheduleTimezone: schedulePlan.scheduleTimezone,
+          nextSendAt: schedulePlan.nextSendAt,
+          cycleEnabled: schedulePlan.cycleEnabled,
+          cycleEveryHours: schedulePlan.cycleEveryHours,
+          cycleCount: schedulePlan.cycleCount,
+          sentCount: schedulePlan.sentCount,
+          status: isCalendarPlanComplete
+            ? PrismaManagedBroadcastStatus.COMPLETED
+            : PrismaManagedBroadcastStatus.ACTIVE,
+          lastError: null,
+          lockedAt: null,
+        },
+      });
+      await tx.managedBroadcastDelivery.deleteMany({
+        where: {
+          broadcastId: existing.id,
+          occurrenceIndex: { gte: currentOccurrence },
+          status: { not: PrismaManagedBroadcastDeliveryStatus.SENT },
+        },
+      });
+      await tx.managedBroadcastOccurrence.deleteMany({
+        where: {
+          broadcastId: existing.id,
+          occurrenceIndex: { gte: currentOccurrence },
+        },
+      });
+
+      if (schedulePlan.sentCount < schedulePlan.cycleCount) {
+        await tx.managedBroadcastDelivery.createMany({
+          data: this.buildManagedBroadcastDeliveryRows(
+            existing.id,
+            request.targetChatIds,
+            nextOccurrenceIndex,
+            schedulePlan.cycleCount,
+          ),
+        });
       }
-      throw error;
-    }
+
+      if (schedulePlan.scheduleMode === 'calendar' && schedulePlan.upcomingSlots.length > 0) {
+        await this.createManagedBroadcastOccurrencesWithOverwrite(tx, {
+          broadcastId: existing.id,
+          sourceChatId,
+          entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
+          fromOccurrenceIndex: nextOccurrenceIndex,
+          slots: schedulePlan.upcomingSlots,
+          excludeBroadcastId: existing.id,
+        });
+      }
+    });
 
     const updated = await this.prisma.managedBroadcast.findUnique({
       where: { id: existing.id },
@@ -4525,75 +4513,64 @@ export class AdminService {
     const isCalendarPlanComplete =
       schedulePlan.scheduleMode === 'calendar' && schedulePlan.upcomingSlots.length === 0;
 
-    const created = await this.prisma.managedBroadcast.create({
-      data: {
-        sourceChatId,
-        entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
-        actorUserId: user.userId,
-        text: request.payload.text.trim(),
-        textFormat: request.payload.textFormat,
-        applyToAllChats: request.payload.applyToAllChats,
-        targetChatIds: request.targetChatIds as Prisma.InputJsonValue,
-        buttonEnabled: request.payload.buttonEnabled,
-        buttonUrl: request.payload.buttonEnabled
-          ? this.normalizeLegacyProfileButtonUrl(request.payload.buttonUrl)
-          : '',
-        buttonText: request.payload.buttonEnabled
-          ? request.payload.buttonText.trim() || 'Открыть'
-          : 'Открыть',
-        imageEnabled: request.payload.imageEnabled,
-        imageBase64: request.payload.imageEnabled ? request.payload.imageBase64 : '',
-        imageMimeType: request.payload.imageEnabled ? request.payload.imageMimeType : '',
-        imageFileName: request.payload.imageEnabled ? request.payload.imageFileName : '',
-        scheduleMode: schedulePlan.scheduleMode,
-        scheduleTimezone: schedulePlan.scheduleTimezone,
-        nextSendAt: schedulePlan.nextSendAt,
-        cycleEnabled: schedulePlan.cycleEnabled,
-        cycleEveryHours: schedulePlan.cycleEveryHours,
-        cycleCount: schedulePlan.cycleCount,
-        sentCount: schedulePlan.sentCount,
-        status: isCalendarPlanComplete
-          ? PrismaManagedBroadcastStatus.COMPLETED
-          : PrismaManagedBroadcastStatus.ACTIVE,
-      },
-    });
-    try {
-      await this.prisma.$transaction([
-        ...(schedulePlan.sentCount < schedulePlan.cycleCount
-          ? [
-              this.prisma.managedBroadcastDelivery.createMany({
-                data: this.buildManagedBroadcastDeliveryRows(
-                  created.id,
-                  request.targetChatIds,
-                  nextOccurrenceIndex,
-                  schedulePlan.cycleCount,
-                ),
-              }),
-            ]
-          : []),
-        ...(schedulePlan.scheduleMode === 'calendar' && schedulePlan.upcomingSlots.length > 0
-          ? [
-              this.prisma.managedBroadcastOccurrence.createMany({
-                data: this.buildManagedBroadcastOccurrenceRows(
-                  created.id,
-                  sourceChatId,
-                  this.mapManagedEntityTypeToChatEntityType(entityType),
-                  nextOccurrenceIndex,
-                  schedulePlan.upcomingSlots,
-                ),
-              }),
-            ]
-          : []),
-      ]);
-    } catch (error: unknown) {
-      await this.safeDeleteManagedBroadcast(created.id);
-      if (this.isManagedBroadcastSlotConflictError(error)) {
-        throw new BadRequestException(
-          'Некоторые слоты уже заняты другой рассылкой. Обновите календарь.',
-        );
+    const created = await this.prisma.$transaction(async (tx) => {
+      const createdBroadcast = await tx.managedBroadcast.create({
+        data: {
+          sourceChatId,
+          entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
+          actorUserId: user.userId,
+          text: request.payload.text.trim(),
+          textFormat: request.payload.textFormat,
+          applyToAllChats: request.payload.applyToAllChats,
+          targetChatIds: request.targetChatIds as Prisma.InputJsonValue,
+          buttonEnabled: request.payload.buttonEnabled,
+          buttonUrl: request.payload.buttonEnabled
+            ? this.normalizeLegacyProfileButtonUrl(request.payload.buttonUrl)
+            : '',
+          buttonText: request.payload.buttonEnabled
+            ? request.payload.buttonText.trim() || 'Открыть'
+            : 'Открыть',
+          imageEnabled: request.payload.imageEnabled,
+          imageBase64: request.payload.imageEnabled ? request.payload.imageBase64 : '',
+          imageMimeType: request.payload.imageEnabled ? request.payload.imageMimeType : '',
+          imageFileName: request.payload.imageEnabled ? request.payload.imageFileName : '',
+          scheduleMode: schedulePlan.scheduleMode,
+          scheduleTimezone: schedulePlan.scheduleTimezone,
+          nextSendAt: schedulePlan.nextSendAt,
+          cycleEnabled: schedulePlan.cycleEnabled,
+          cycleEveryHours: schedulePlan.cycleEveryHours,
+          cycleCount: schedulePlan.cycleCount,
+          sentCount: schedulePlan.sentCount,
+          status: isCalendarPlanComplete
+            ? PrismaManagedBroadcastStatus.COMPLETED
+            : PrismaManagedBroadcastStatus.ACTIVE,
+        },
+      });
+
+      if (schedulePlan.sentCount < schedulePlan.cycleCount) {
+        await tx.managedBroadcastDelivery.createMany({
+          data: this.buildManagedBroadcastDeliveryRows(
+            createdBroadcast.id,
+            request.targetChatIds,
+            nextOccurrenceIndex,
+            schedulePlan.cycleCount,
+          ),
+        });
       }
-      throw error;
-    }
+
+      if (schedulePlan.scheduleMode === 'calendar' && schedulePlan.upcomingSlots.length > 0) {
+        await this.createManagedBroadcastOccurrencesWithOverwrite(tx, {
+          broadcastId: createdBroadcast.id,
+          sourceChatId,
+          entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
+          fromOccurrenceIndex: nextOccurrenceIndex,
+          slots: schedulePlan.upcomingSlots,
+          excludeBroadcastId: createdBroadcast.id,
+        });
+      }
+
+      return createdBroadcast;
+    });
 
     let occurrence: BroadcastOccurrenceResult = {
       status: isCalendarPlanComplete
@@ -5159,30 +5136,6 @@ export class AdminService {
       upcomingSlots.push(parsed);
     }
 
-    const conflicts = await this.prisma.managedBroadcastOccurrence.findMany({
-      where: {
-        sourceChatId: options.sourceChatId,
-        entityType: options.entityType,
-        scheduledAt: {
-          in: upcomingSlots,
-        },
-        ...(options.excludeBroadcastId ? { broadcastId: { not: options.excludeBroadcastId } } : {}),
-      },
-      select: {
-        scheduledAt: true,
-      },
-      orderBy: [{ scheduledAt: 'asc' }],
-    });
-    if (conflicts.length > 0) {
-      const preview = conflicts
-        .slice(0, 3)
-        .map((item) => item.scheduledAt.toISOString())
-        .join(', ');
-      throw new BadRequestException(
-        `Некоторые слоты уже заняты другой рассылкой: ${preview}${conflicts.length > 3 ? '…' : ''}`,
-      );
-    }
-
     return {
       upcomingSlots,
       sentCount: Math.max(options.sentCount, pastTodayCount),
@@ -5220,6 +5173,191 @@ export class AdminService {
       scheduledAt,
       status: PrismaManagedBroadcastStatus.ACTIVE,
     }));
+  }
+
+  private async createManagedBroadcastOccurrencesWithOverwrite(
+    tx: Prisma.TransactionClient,
+    options: {
+      broadcastId: string;
+      sourceChatId: string;
+      entityType: ChatEntityType;
+      fromOccurrenceIndex: number;
+      slots: Date[];
+      excludeBroadcastId: string | null;
+    },
+  ): Promise<void> {
+    if (options.slots.length === 0) {
+      return;
+    }
+
+    const rows = this.buildManagedBroadcastOccurrenceRows(
+      options.broadcastId,
+      options.sourceChatId,
+      options.entityType,
+      options.fromOccurrenceIndex,
+      options.slots,
+    );
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await this.overwriteManagedBroadcastCalendarSlots(tx, {
+        sourceChatId: options.sourceChatId,
+        entityType: options.entityType,
+        slots: options.slots,
+        excludeBroadcastId: options.excludeBroadcastId,
+      });
+
+      try {
+        await tx.managedBroadcastOccurrence.createMany({
+          data: rows,
+        });
+        return;
+      } catch (error: unknown) {
+        if (!this.isManagedBroadcastSlotConflictError(error) || attempt > 0) {
+          throw error;
+        }
+      }
+    }
+  }
+
+  private async overwriteManagedBroadcastCalendarSlots(
+    tx: Prisma.TransactionClient,
+    options: {
+      sourceChatId: string;
+      entityType: ChatEntityType;
+      slots: Date[];
+      excludeBroadcastId: string | null;
+    },
+  ): Promise<void> {
+    if (options.slots.length === 0) {
+      return;
+    }
+
+    const conflicts = await tx.managedBroadcastOccurrence.findMany({
+      where: {
+        sourceChatId: options.sourceChatId,
+        entityType: options.entityType,
+        scheduledAt: {
+          in: options.slots,
+        },
+        ...(options.excludeBroadcastId
+          ? { broadcastId: { not: options.excludeBroadcastId } }
+          : {}),
+      },
+      select: {
+        broadcastId: true,
+        scheduledAt: true,
+      },
+      orderBy: [{ broadcastId: 'asc' }, { scheduledAt: 'asc' }],
+    });
+    if (conflicts.length === 0) {
+      return;
+    }
+
+    const overwrittenSlotsByBroadcastId = new Map<string, Set<number>>();
+    for (const conflict of conflicts) {
+      const current = overwrittenSlotsByBroadcastId.get(conflict.broadcastId) ?? new Set<number>();
+      current.add(conflict.scheduledAt.getTime());
+      overwrittenSlotsByBroadcastId.set(conflict.broadcastId, current);
+    }
+
+    const affectedRows = await tx.managedBroadcast.findMany({
+      where: {
+        id: {
+          in: [...overwrittenSlotsByBroadcastId.keys()],
+        },
+      },
+      orderBy: [{ createdAt: 'asc' }],
+    });
+
+    for (const row of affectedRows) {
+      await this.rebuildManagedBroadcastCalendarSlotsAfterOverwrite(
+        tx,
+        row,
+        overwrittenSlotsByBroadcastId.get(row.id) ?? new Set<number>(),
+      );
+    }
+  }
+
+  private async rebuildManagedBroadcastCalendarSlotsAfterOverwrite(
+    tx: Prisma.TransactionClient,
+    row: PersistedManagedBroadcast,
+    overwrittenSlotsMs: ReadonlySet<number>,
+  ): Promise<void> {
+    if (
+      overwrittenSlotsMs.size === 0 ||
+      this.normalizeBroadcastScheduleMode(row.scheduleMode) !== 'calendar'
+    ) {
+      return;
+    }
+
+    const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(row);
+    const scheduledOccurrences = await tx.managedBroadcastOccurrence.findMany({
+      where: {
+        broadcastId: row.id,
+        occurrenceIndex: { gte: currentOccurrence },
+      },
+      orderBy: [{ occurrenceIndex: 'asc' }],
+    });
+    if (scheduledOccurrences.length === 0) {
+      return;
+    }
+
+    const remainingSlots = scheduledOccurrences
+      .filter((occurrence) => !overwrittenSlotsMs.has(occurrence.scheduledAt.getTime()))
+      .map((occurrence) => occurrence.scheduledAt);
+    if (remainingSlots.length === scheduledOccurrences.length) {
+      return;
+    }
+
+    await tx.managedBroadcastDelivery.deleteMany({
+      where: {
+        broadcastId: row.id,
+        occurrenceIndex: { gte: currentOccurrence },
+      },
+    });
+    await tx.managedBroadcastOccurrence.deleteMany({
+      where: {
+        broadcastId: row.id,
+        occurrenceIndex: { gte: currentOccurrence },
+      },
+    });
+
+    const nextSendAt = remainingSlots[0] ?? null;
+    const nextCycleCount = row.sentCount + remainingSlots.length;
+    await tx.managedBroadcast.update({
+      where: { id: row.id },
+      data: {
+        nextSendAt,
+        cycleCount: nextCycleCount,
+        status: nextSendAt
+          ? PrismaManagedBroadcastStatus.ACTIVE
+          : PrismaManagedBroadcastStatus.COMPLETED,
+        lastError: null,
+        lockedAt: null,
+      },
+    });
+
+    if (remainingSlots.length === 0) {
+      return;
+    }
+
+    await tx.managedBroadcastDelivery.createMany({
+      data: this.buildManagedBroadcastDeliveryRows(
+        row.id,
+        this.parseManagedBroadcastTargetChatIds(row.targetChatIds),
+        currentOccurrence,
+        nextCycleCount,
+      ),
+    });
+    await tx.managedBroadcastOccurrence.createMany({
+      data: this.buildManagedBroadcastOccurrenceRows(
+        row.id,
+        row.sourceChatId,
+        row.entityType,
+        currentOccurrence,
+        remainingSlots,
+      ),
+    });
   }
 
   private async getManagedBroadcastOccurrenceAtIndex(
