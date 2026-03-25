@@ -689,7 +689,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         item.ruleCode === 'PHOTO_RATE_LIMIT' ||
         item.ruleCode === 'STICKER_RATE_LIMIT',
     );
-    if (!hasBlockingDeleteViolation && detection.duplicateDecision) {
+    const latestManualUnbanAt =
+      detection.duplicateDecision || detection.duplicateHit
+        ? await this.resolveLatestManualUnbanCreatedAt(chatId, senderId)
+        : null;
+    const duplicateDecisionSuppressed =
+      detection.duplicateDecision && latestManualUnbanAt
+        ? this.isWithinWindowFromDate(latestManualUnbanAt, detection.duplicateDecision.windowSec)
+        : false;
+    if (!hasBlockingDeleteViolation && detection.duplicateDecision && !duplicateDecisionSuppressed) {
       await this.handleDuplicateDecision({
         chatId,
         userId: senderId,
@@ -714,7 +722,11 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
-    if (!hasBlockingDeleteViolation && detection.duplicateHit) {
+    const duplicateHitSuppressed =
+      detection.duplicateHit && latestManualUnbanAt
+        ? this.isWithinWindowFromDate(latestManualUnbanAt, detection.duplicateHit.windowSec)
+        : false;
+    if (!hasBlockingDeleteViolation && detection.duplicateHit && !duplicateHitSuppressed) {
       await this.handleDuplicateHit({
         chatId,
         userId: senderId,
@@ -3441,6 +3453,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     windowMs: number,
   ): Promise<Date> {
     const baseSince = new Date(Date.now() - windowMs);
+    const latestManualUnban = await this.resolveLatestManualUnbanCreatedAt(chatId, userId);
+
+    if (latestManualUnban && latestManualUnban.getTime() > baseSince.getTime()) {
+      return latestManualUnban;
+    }
+
+    return baseSince;
+  }
+
+  private async resolveLatestManualUnbanCreatedAt(
+    chatId: string,
+    userId: string,
+  ): Promise<Date | null> {
     const latestManualUnban = await this.prisma.moderationEvent.findFirst({
       where: {
         chatId,
@@ -3455,14 +3480,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       },
     });
 
-    if (
-      latestManualUnban?.createdAt &&
-      latestManualUnban.createdAt.getTime() > baseSince.getTime()
-    ) {
-      return latestManualUnban.createdAt;
+    return latestManualUnban?.createdAt ?? null;
+  }
+
+  private isWithinWindowFromDate(createdAt: Date, windowSec: number): boolean {
+    if (!Number.isFinite(windowSec) || windowSec <= 0) {
+      return false;
     }
 
-    return baseSince;
+    return createdAt.getTime() + windowSec * 1000 > Date.now();
   }
 
   private async getActiveBan(
