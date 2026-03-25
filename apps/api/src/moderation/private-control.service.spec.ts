@@ -2073,6 +2073,82 @@ describe('PrivateControlService', () => {
     );
   });
 
+  it('preserves bot broadcast content across repeated miniapp handoff for the same chat', async () => {
+    const { service, adminService, maxClient, chats } = createHarness();
+    const actor = {
+      userId: 'user-1',
+      username: null,
+      displayName: 'Тестовый пользователь',
+      chatId: chats[0].id,
+      chatTitle: chats[0].title,
+    };
+
+    await service.handoffBroadcastFromMiniapp(
+      chats[0].id,
+      actor,
+      {
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        scheduleMode: 'calendar',
+        scheduleTimezone: 'Europe/Moscow',
+        scheduledSlots: ['2026-03-20T12:00:00.000Z', '2026-03-21T12:00:00.000Z'],
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 24,
+        cycleCount: 2,
+      },
+      'chat',
+    );
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate());
+    await service.handleUpdate(createPrivateTextUpdate('Контент из лички бота'));
+
+    await service.handoffBroadcastFromMiniapp(
+      chats[0].id,
+      actor,
+      {
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        scheduleMode: 'calendar',
+        scheduleTimezone: 'Europe/Moscow',
+        scheduledSlots: ['2026-03-22T12:00:00.000Z', '2026-03-23T12:00:00.000Z'],
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 24,
+        cycleCount: 2,
+      },
+      'chat',
+    );
+
+    await service.handleBotStarted(createBotStartedPrivateUpdate());
+
+    expect(getLastSentText(maxClient)).toContain('Контент из лички бота');
+    const buttonTexts = getLastButtons(maxClient)
+      .flat()
+      .map((button) => String((button as { text?: string }).text ?? ''));
+    expect(buttonTexts).toContain('Опубликовать');
+
+    await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_send'));
+
+    expect(adminService.sendBroadcast).toHaveBeenCalledWith(
+      chats[0].id,
+      expect.objectContaining({ userId: 'user-1' }),
+      expect.objectContaining({
+        text: 'Контент из лички бота',
+        scheduleMode: 'calendar',
+        scheduleTimezone: 'Europe/Moscow',
+        scheduledSlots: ['2026-03-22T12:00:00.000Z', '2026-03-23T12:00:00.000Z'],
+        cycleEnabled: false,
+        cycleCount: 2,
+      }),
+      'private_bot',
+    );
+  });
+
   it('allows adding photo after text on the broadcast screen without extra button press', async () => {
     const { service, adminService, chats } = createHarness();
     const actor = {

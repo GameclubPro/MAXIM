@@ -1206,6 +1206,13 @@ export class PrivateControlService {
     }
 
     const session = await this.loadSession(user.userId);
+    const hasMatchingDraft =
+      session.selectedChatId === sourceChatId && session.selectedEntityType === entityType;
+    const preservedDraft = hasMatchingDraft
+      ? this.normalizeBroadcastDraft(session.broadcastDraft)
+      : DEFAULT_BROADCAST_DRAFT;
+    const hasPreservedContent =
+      preservedDraft.text.trim().length > 0 || preservedDraft.imageEnabled;
     session.selectedChatId = sourceChatId;
     session.selectedEntityType = entityType;
     session.managedGiveawayId = null;
@@ -1217,11 +1224,17 @@ export class PrivateControlService {
     session.searchQuery = null;
     session.broadcastView = 'advanced';
     session.pendingMassAction = null;
-    session.pendingInput = { kind: 'broadcast_content' };
+    session.pendingInput = hasPreservedContent ? null : { kind: 'broadcast_content' };
     const scheduleMode: BroadcastScheduleMode =
       parsed.data.scheduleMode === 'calendar' ? 'calendar' : 'legacy';
     session.broadcastDraft = {
       ...DEFAULT_BROADCAST_DRAFT,
+      text: preservedDraft.text,
+      textFormat: preservedDraft.textFormat,
+      imageEnabled: preservedDraft.imageEnabled,
+      imageBase64: preservedDraft.imageBase64,
+      imageMimeType: preservedDraft.imageMimeType,
+      imageFileName: preservedDraft.imageFileName,
       applyToAllChats: entityType === 'channel' ? false : parsed.data.applyToAllChats,
       buttonEnabled: parsed.data.buttonEnabled,
       buttonUrl: parsed.data.buttonEnabled ? parsed.data.buttonUrl.trim() : '',
