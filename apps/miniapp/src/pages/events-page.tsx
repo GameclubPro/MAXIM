@@ -276,13 +276,25 @@ function resolveApplyActionLabel(action: ManualModerationAction, banDurationHour
   return `Забанить на ${banDurationHours}ч`;
 }
 
-function resolveConfirmMessage(action: ManualModerationAction, banDurationHours: number): string {
+function resolveConfirmMessage(
+  action: ManualModerationAction,
+  banDurationHours: number,
+  violation?: ViolationItem,
+): string {
   if (action === 'KICK') {
     return 'Удалить участника из чата?';
   }
 
   if (action === 'UNBAN') {
-    return 'Снять бан и вернуть участника в чат?';
+    if (violation && isBanActiveFromViolation(violation)) {
+      return 'Снять бан и вернуть участника в чат?';
+    }
+
+    if (violation?.ruleCode === 'GLOBAL_SPAMMER_KICK') {
+      return 'Вернуть участника в чат и снять удаление по базе спаммеров?';
+    }
+
+    return 'Вернуть участника в чат?';
   }
 
   return `Забанить участника на ${banDurationHours}ч с авторазбаном?`;
@@ -329,6 +341,14 @@ function isBanActiveFromViolation(violation: ViolationItem): boolean {
   return createdAtMs + banDurationHours * 60 * 60 * 1000 > now;
 }
 
+function canRestoreMembershipFromViolation(violation: ViolationItem): boolean {
+  return isBanActiveFromViolation(violation) || violation.action === 'KICK';
+}
+
+function resolveRestoreMembershipLabel(violation: ViolationItem): string {
+  return isBanActiveFromViolation(violation) ? 'Разбан' : 'Вернуть';
+}
+
 function normalizeActionErrorMessage(error: unknown): string {
   const fallback = 'Не удалось выполнить действие. Проверьте права бота и повторите.';
   if (!(error instanceof Error)) {
@@ -369,7 +389,7 @@ function ViolationModerationControls({
   violation: ViolationItem;
   onApplied: () => void;
 }) {
-  const canUnban = isBanActiveFromViolation(violation);
+  const canUnban = canRestoreMembershipFromViolation(violation);
   const [banDurationHours, setBanDurationHours] = useState(6);
   const [banExpanded, setBanExpanded] = useState(false);
   const [status, setStatus] = useState<{ tone: 'success' | 'danger'; text: string } | null>(null);
@@ -393,7 +413,7 @@ function ViolationModerationControls({
     const normalizedHours =
       action === 'BAN' ? clampBanDurationHours(hours ?? banDurationHours) : null;
     const confirmed = window.confirm(
-      resolveConfirmMessage(action, normalizedHours ?? banDurationHours),
+      resolveConfirmMessage(action, normalizedHours ?? banDurationHours, violation),
     );
     if (!confirmed) {
       return;
@@ -439,7 +459,7 @@ function ViolationModerationControls({
             disabled={applyMutation.isPending}
             onClick={() => confirmAndApply('UNBAN')}
           >
-            Разбан
+            {resolveRestoreMembershipLabel(violation)}
           </button>
         ) : null}
       </div>
