@@ -173,6 +173,7 @@ const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
 const CHANNEL_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHANNEL_ENGAGEMENT';
 const CHAT_DIALOG_AUTO_ATTACH_ACTION = 'AUTO_ATTACH_CHAT_COMMENTS';
 const CHAT_COMMENTS_REPLY_TEXT = 'Открыть комментарии';
+const CHANNEL_FORWARD_REPLY_TEXT = 'Действия к посту';
 const GLOBAL_SPAMMER_WINDOW_SEC = 2 * 60;
 const GLOBAL_SPAMMER_REDIS_TTL_SEC = GLOBAL_SPAMMER_WINDOW_SEC + 5;
 const GLOBAL_SPAMMER_WARN_MIN_CHATS = 4;
@@ -8260,13 +8261,18 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     try {
       if (linkType === 'forward') {
-        await this.maxClient.sendMessageReplyWithInlineKeyboard(chatId, messageId, {
-          buttons,
-          debugContext: {
-            screen: 'channel-auto-post',
-            action: source === 'poll' ? 'scan-attach-buttons-reply' : 'attach-buttons-reply',
+        await this.maxClient.sendMessageReplyWithInlineKeyboard(
+          chatId,
+          messageId,
+          CHANNEL_FORWARD_REPLY_TEXT,
+          {
+            buttons,
+            debugContext: {
+              screen: 'channel-auto-post',
+              action: source === 'poll' ? 'scan-attach-buttons-reply' : 'attach-buttons-reply',
+            },
           },
-        });
+        );
       } else {
         await this.maxClient.editMessageInlineKeyboard(chatId, messageId, text, {
           buttons,

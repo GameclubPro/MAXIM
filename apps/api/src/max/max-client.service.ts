@@ -558,6 +558,7 @@ export class MaxClientService implements OnModuleDestroy {
   async sendMessageReplyWithInlineKeyboard(
     chatId: string,
     messageId: string,
+    text: string,
     options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext'>,
   ) {
     const attachments = this.buildMessageAttachments(options);
@@ -575,6 +576,7 @@ export class MaxClientService implements OnModuleDestroy {
           chat_id: chatId,
         },
         data: {
+          text,
           link: messageLink,
           attachments,
         },

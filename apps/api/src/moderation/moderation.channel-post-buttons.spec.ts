@@ -339,6 +339,7 @@ describe('ModerationService channel auto post buttons', () => {
     expect(maxClient.sendMessageReplyWithInlineKeyboard).toHaveBeenCalledWith(
       'channel-1',
       'mid-channel-forward-no-sender-1',
+      'Действия к посту',
       expect.objectContaining({
         buttons: [
           [expect.objectContaining({ text: '💬 Комментарии · 0' })],
@@ -984,6 +985,7 @@ describe('ModerationService channel auto post buttons', () => {
     expect(maxClient.sendMessageReplyWithInlineKeyboard).toHaveBeenCalledWith(
       'channel-1',
       'mid-polled-forward-1',
+      'Действия к посту',
       expect.objectContaining({
         buttons: [
           [
