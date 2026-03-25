@@ -745,8 +745,11 @@ export class AdminService {
       collected.set(item.id, item);
     }
     let refreshState: ManagedEntitiesRefreshState | null = null;
+    let previousCursor: number | null | undefined = undefined;
+    let attemptedPasses = 0;
 
     for (let pass = 0; pass < MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES; pass += 1) {
+      attemptedPasses = pass + 1;
       let result: ManagedEntitiesListResult;
       try {
         result = await this.listManagedEntitiesDetailed(user, entityType, {
@@ -776,6 +779,11 @@ export class AdminService {
       if (!refreshState || refreshState.complete || refreshState.backoffActive) {
         break;
       }
+      if (refreshState.cursor === null || refreshState.cursor === previousCursor) {
+        break;
+      }
+
+      previousCursor = refreshState.cursor;
     }
 
     if (refreshState && !refreshState.complete && !refreshState.backoffActive) {
@@ -784,7 +792,7 @@ export class AdminService {
           entityType,
           userId: user.userId,
           cursor: refreshState.cursor,
-          passes: MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES,
+          passes: attemptedPasses,
         },
         'Managed entities mass action scan stopped before completion',
       );
@@ -2909,7 +2917,7 @@ export class AdminService {
     }
     const normalizedSettings = this.normalizeChatSettings(parsed.data, undefined, sourceChatId);
 
-    const availableChats = await this.listChats(user);
+    const availableChats = await this.listChatsForMassBroadcast(user);
     const appliedChatIds = Array.from(
       new Set([sourceChatId, ...availableChats.map((chat) => chat.id)]),
     );

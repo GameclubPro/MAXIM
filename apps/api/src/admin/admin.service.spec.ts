@@ -1705,6 +1705,50 @@ describe('AdminService required subscription settings', () => {
       }),
     );
   });
+
+  it('uses the full mass-action scan when applying settings to all chats', async () => {
+    const prisma = createPrismaMock();
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const settings = chatSettingsSchema.parse({
+      greetingEnabled: true,
+      greetingBotMessageEnabled: true,
+      greetingBotMessageText: 'Привет!',
+    });
+
+    jest.spyOn(service, 'assertChatAdmin').mockResolvedValue(undefined);
+    jest
+      .spyOn(
+        service as unknown as {
+          ensureEntityType: (...args: unknown[]) => Promise<void>;
+        },
+        'ensureEntityType',
+      )
+      .mockResolvedValue(undefined);
+    const massScanSpy = jest.spyOn(service, 'listChatsForMassBroadcast').mockResolvedValue([
+      {
+        id: 'chat-2',
+        title: 'Регион 2',
+        createdAt: '2026-03-02T00:00:00.000Z',
+        entityType: 'chat',
+        link: null,
+        channelOverview: null,
+      },
+    ]);
+
+    const result = await service.applySettingsToAllChats('chat-1', actor, settings);
+
+    expect(massScanSpy).toHaveBeenCalledWith(actor);
+    expect(result).toEqual({
+      sourceChatId: 'chat-1',
+      updatedChats: 2,
+      appliedChatIds: ['chat-1', 'chat-2'],
+    });
+  });
 });
 
 describe('AdminService managed polls', () => {
@@ -4873,7 +4917,7 @@ describe('AdminService settings screen endpoints', () => {
         linkPolicy: 'ALLOWLIST_ONLY',
       }),
     );
-    jest.spyOn(service, 'listChats').mockResolvedValue([
+    jest.spyOn(service, 'listChatsForMassBroadcast').mockResolvedValue([
       {
         id: 'chat-2',
         title: 'Регион 2',
@@ -6047,6 +6091,61 @@ describe('AdminService.sendBroadcast', () => {
       chatTitle: null,
     });
 
+    expect(result).toEqual([
+      {
+        id: 'chat-2',
+        title: 'Чат 2',
+        createdAt: '2026-03-01T00:00:00.000Z',
+        entityType: 'chat',
+        link: null,
+        channelOverview: null,
+      },
+    ]);
+  });
+
+  it('stops the mass chat scan when refresh cursor makes no progress', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'chat-2',
+          title: 'Чат 2',
+          createdAt: new Date('2026-03-01T00:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+    const discoverySpy = jest
+      .spyOn(
+        service as unknown as {
+          listManagedEntitiesDetailed: (...args: unknown[]) => Promise<unknown>;
+        },
+        'listManagedEntitiesDetailed',
+      )
+      .mockResolvedValue({
+        items: [],
+        refresh: {
+          complete: false,
+          cursor: null,
+          backoffActive: false,
+        },
+      });
+
+    const result = await service.listChatsForMassBroadcast({
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(discoverySpy).toHaveBeenCalledTimes(1);
     expect(result).toEqual([
       {
         id: 'chat-2',

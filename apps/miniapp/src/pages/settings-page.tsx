@@ -137,6 +137,7 @@ const MAX_BROADCAST_CYCLE_HOURS = 14 * 24;
 const THEMATIC_FILTERS_OWNER_USER_ID = '98315271';
 const MAX_CHAT_RULES_TEXT_LENGTH = 2_000;
 const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
+const MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 15_000;
 
 type MaxMessageLengthSliderProps = {
   value: ChatSettings['maxMessageLength'];
@@ -1478,6 +1479,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const { isCompact: isHeaderCompact, isHidden: isHeaderHidden } = useAutoHideHeader();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const [managedEntitiesReloadNonce, setManagedEntitiesReloadNonce] = useState(0);
   const [draft, setDraft] = useState<ChatSettings | null>(null);
   const [rulesDraft, setRulesDraft] = useState<ChatRules | null>(null);
   const [, setRulesAutoFillEnabled] = useState(false);
@@ -1556,6 +1558,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     useState<Record<SettingsSectionKey, boolean>>(INITIAL_EXPANDED_SECTIONS);
   const isLinksKeyboardOpen = useKeyboardOpen(120, expandedSections.links);
   const appliedBroadcastHandoffSignatureRef = useRef<string | null>(null);
+  const managedEntitiesLastRefreshAtRef = useRef(0);
+  const managedEntitiesAwaitingReturnRefreshRef = useRef(false);
 
   const routeChatTitle = getRouteChatTitle(location.state);
   const searchParams = new URLSearchParams(location.search);
@@ -1660,18 +1664,89 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     api,
     entityType: 'chat',
     enabled: Boolean(chatId),
+    reloadNonce: managedEntitiesReloadNonce,
   });
   const channelsList = useManagedEntitiesSync({
     api,
     entityType: 'channel',
     enabled: Boolean(chatId),
+    reloadNonce: managedEntitiesReloadNonce,
   });
+  useEffect(() => {
+    const markRefreshOnReturn = () => {
+      managedEntitiesAwaitingReturnRefreshRef.current = true;
+    };
+
+    const refreshAfterReturn = () => {
+      if (!managedEntitiesAwaitingReturnRefreshRef.current) {
+        return;
+      }
+      if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
+        return;
+      }
+      if (
+        chatsList.isLoading ||
+        chatsList.isRefreshing ||
+        channelsList.isLoading ||
+        channelsList.isRefreshing
+      ) {
+        return;
+      }
+
+      const now = Date.now();
+      if (
+        now - managedEntitiesLastRefreshAtRef.current <
+        MANAGED_ENTITIES_VISIBILITY_REFRESH_MIN_INTERVAL_MS
+      ) {
+        return;
+      }
+
+      managedEntitiesAwaitingReturnRefreshRef.current = false;
+      managedEntitiesLastRefreshAtRef.current = now;
+      startTransition(() => {
+        setManagedEntitiesReloadNonce((current) => current + 1);
+      });
+    };
+
+    const handleVisibilityChange = () => {
+      if (typeof document === 'undefined') {
+        return;
+      }
+
+      if (document.visibilityState === 'hidden') {
+        markRefreshOnReturn();
+        return;
+      }
+
+      refreshAfterReturn();
+    };
+
+    window.addEventListener('blur', markRefreshOnReturn);
+    window.addEventListener('focus', refreshAfterReturn);
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+    }
+
+    return () => {
+      window.removeEventListener('blur', markRefreshOnReturn);
+      window.removeEventListener('focus', refreshAfterReturn);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', handleVisibilityChange);
+      }
+    };
+  }, [
+    channelsList.isLoading,
+    channelsList.isRefreshing,
+    chatsList.isLoading,
+    chatsList.isRefreshing,
+  ]);
   const chatsQuery = {
     data: chatsList.data,
     isLoading: chatsList.isLoading,
     error: chatsList.error,
     isSuccess: chatsList.data !== null && chatsList.error === null,
     isSyncComplete: chatsList.isSyncComplete,
+    isBackoffActive: chatsList.isBackoffActive,
     isSyncing: chatsList.isRefreshing,
     phase: chatsList.phase,
   };
@@ -1681,6 +1756,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     error: channelsList.error,
     isSuccess: channelsList.data !== null && channelsList.error === null,
     isSyncComplete: channelsList.isSyncComplete,
+    isBackoffActive: channelsList.isBackoffActive,
     isSyncing: channelsList.isRefreshing,
     phase: channelsList.phase,
   };
@@ -3630,7 +3706,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     extraEnabledCount > 0 ? `${extraEnabledCount} опции включено` : 'Выключено';
   const chatsCount = chatsQuery.data?.length ?? 0;
   const areChatsSyncing = chatsQuery.phase === 'loading' || chatsQuery.phase === 'syncing';
-  const chatListsReady = chatsQuery.isSyncComplete;
+  const chatListsReady = chatsQuery.isSyncComplete || chatsQuery.isBackoffActive;
   const canApplyToAllChats = chatListsReady && chatsCount > 1;
   const canApplyMailingToAllChats = chatsCount > 1 || !chatListsReady;
   const managedBroadcasts = managedBroadcastsQuery.data ?? [];
@@ -3918,8 +3994,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     if (!canApplyToAllChats) {
       pushToast({
-        title: 'Нет других чатов для применения',
-        description: 'Откройте миниапп в другом чате, чтобы добавить его в список.',
+        title: chatsQuery.isBackoffActive
+          ? 'Список чатов временно ограничен'
+          : 'Нет других чатов для применения',
+        description: chatsQuery.isBackoffActive
+          ? 'MAX временно ограничил синхронизацию списка. Повторите попытку чуть позже.'
+          : 'Откройте миниапп в другом чате, чтобы добавить его в список.',
       });
       return;
     }
@@ -3988,6 +4068,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         ? options.note
         : areChatsSyncing
           ? 'Синхронизируем список чатов. Массовое применение станет доступно после завершения.'
+          : chatsQuery.isBackoffActive
+            ? canApplyToAllChats
+              ? 'MAX временно ограничил синхронизацию. Применение доступно для уже найденных чатов.'
+              : 'MAX временно ограничил синхронизацию списка чатов. Повторите попытку чуть позже.'
           : canApplyToAllChats
             ? 'Сохраняется только текущий блок. При необходимости его можно сразу применить во все чаты.'
             : 'Пока доступен только текущий чат. Для массового применения нужен хотя бы ещё один чат.';
