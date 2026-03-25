@@ -389,6 +389,26 @@ function createServiceBotJoinedUpdate(): MaxUpdate {
   };
 }
 
+function createBotAddedUpdate(chatId = 'chat-1'): MaxUpdate {
+  return {
+    updateId: 'upd-bot-added-1',
+    type: 'bot_added',
+    message: {
+      messageId: 'bot_added:upd-bot-added-1',
+      chatId,
+      senderId: 'admin-1',
+      senderName: 'Админ',
+      text: '',
+      createdAt: new Date().toISOString(),
+    },
+    raw: {
+      update_type: 'bot_added',
+      chat_id: chatId,
+      timestamp: Date.now(),
+    },
+  };
+}
+
 function createServiceUserJoinedUpdate(): MaxUpdate {
   return {
     updateId: 'upd-service-user-join-1',
@@ -2402,6 +2422,50 @@ describe('ModerationService', () => {
         action: SanctionAction.KICK,
       }),
     });
+  });
+
+  it('auto-leaves chats from join denylist on bot_added update', async () => {
+    const prisma = {
+      chatAdminAllowlist: {
+        deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {};
+    const maxClient = {
+      leaveCurrentChat: jest.fn().mockResolvedValue(undefined),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+    const configService = {
+      get: jest.fn((key: string) =>
+        key === 'MAX_JOIN_DENY_CHAT_IDS' ? 'chat-1,chat-2' : undefined,
+      ),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      chatContextCache as never,
+      undefined,
+      configService as never,
+    );
+
+    await service.handleUpdate(createBotAddedUpdate());
+
+    expect(maxClient.leaveCurrentChat).toHaveBeenCalledWith('chat-1');
+    expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
+      where: {
+        chatId: 'chat-1',
+      },
+    });
+    expect(chatContextCache.invalidate).toHaveBeenCalledWith('chat-1');
+    expect(ruleEngine.detect).not.toHaveBeenCalled();
   });
 
   it('kicks bots immediately from service join events when toggle is enabled', async () => {

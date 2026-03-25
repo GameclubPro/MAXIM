@@ -827,6 +827,19 @@ export class MaxClientService implements OnModuleDestroy {
     );
   }
 
+  async leaveCurrentChat(chatId: string): Promise<void> {
+    try {
+      await this.executeMutation(chatId, async () => {
+        await this.request('delete', `/chats/${chatId}/members/me`);
+      });
+    } catch (error: unknown) {
+      if (this.isAlreadyOutsideChatError(error)) {
+        return;
+      }
+      throw error;
+    }
+  }
+
   async cancelScheduledUnban(chatId: string, userId: string) {
     const jobId = this.buildScheduledMemberActionJobId('UNBAN_MEMBER', chatId, userId);
     if (!jobId) {
@@ -2679,6 +2692,53 @@ export class MaxClientService implements OnModuleDestroy {
       payload,
       message,
     );
+  }
+
+  private isAlreadyOutsideChatError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    const message = this.extractErrorMessage(error);
+    const code = this.extractErrorCode(error);
+
+    if (
+      error instanceof MaxApiRequestRejectedError &&
+      status === DEFAULT_SUCCESS_FALSE_STATUS &&
+      message.includes('not active chat member')
+    ) {
+      return true;
+    }
+
+    if (code === 'chat.denied' || code === 'chat.not.found') {
+      return true;
+    }
+
+    if (status !== 403 && status !== 404) {
+      return false;
+    }
+
+    return (
+      message.includes('not a chat member') ||
+      message.includes('not active chat member') ||
+      message.includes('not found')
+    );
+  }
+
+  private extractErrorCode(error: unknown): string | null {
+    const value = (error as { response?: { data?: { code?: unknown } } })?.response?.data?.code;
+    return typeof value === 'string' && value.trim().length > 0 ? value.trim().toLowerCase() : null;
+  }
+
+  private extractErrorMessage(error: unknown): string {
+    const responseMessage = (error as { response?: { data?: { message?: unknown } } })?.response
+      ?.data?.message;
+    if (typeof responseMessage === 'string' && responseMessage.trim().length > 0) {
+      return responseMessage.trim().toLowerCase();
+    }
+
+    if (error instanceof Error && error.message.trim().length > 0) {
+      return error.message.trim().toLowerCase();
+    }
+
+    return String(error).trim().toLowerCase();
   }
 
   private isChatAdminMemberRow(row: Record<string, unknown>): boolean {

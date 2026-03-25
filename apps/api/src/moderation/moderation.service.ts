@@ -250,6 +250,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private channelAutoPostBackoffUntilMs = 0;
   private channelAutoPostPausedLogAtMs = 0;
   private readonly appBaseUrl: string | null;
+  private readonly blockedJoinChatIds: Set<string>;
   private readonly explicitBotContactId: string | null;
   private readonly maxBotToken: string | null;
 
@@ -269,6 +270,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     this.ownBotUserId = this.normalizeOwnBotUserId(configService?.get<string>('MAX_BOT_ID'));
     this.ownBotUserIdVariants = this.buildBotIdVariants(this.ownBotUserId);
     this.appBaseUrl = this.normalizeAppBaseUrl(configService?.get<string>('APP_BASE_URL'));
+    this.blockedJoinChatIds = this.parseChatIdSet(
+      configService?.get<string>('MAX_JOIN_DENY_CHAT_IDS'),
+    );
     this.explicitBotContactId = this.normalizeBotContactId(
       configService?.get<string>('MAX_BOT_CONTACT_ID'),
     );
@@ -359,6 +363,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const { chatId, chatTitle, senderId, senderName, text, createdAt, messageId } = update.message;
     if (this.isBotStartedUpdate(update)) {
       await this.handleBotStartedInstruction(update, chatId);
+      return;
+    }
+
+    if (await this.handleBlockedBotJoin(update, chatId)) {
       return;
     }
 
@@ -5845,6 +5853,33 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return normalizedType === 'user_removed' || normalizedType === 'bot_removed';
   }
 
+  private isBotAddedUpdate(update: MaxUpdate): boolean {
+    return this.readLowerString(update.type) === 'bot_added';
+  }
+
+  private async handleBlockedBotJoin(update: MaxUpdate, chatId: string): Promise<boolean> {
+    if (!this.isBotAddedUpdate(update) || !this.blockedJoinChatIds.has(chatId)) {
+      return false;
+    }
+
+    await this.maxClient.leaveCurrentChat(chatId);
+    await this.prisma.chatAdminAllowlist.deleteMany({
+      where: {
+        chatId,
+      },
+    });
+    await this.chatContextCache?.invalidate(chatId);
+
+    this.logger.warn(
+      {
+        chatId,
+        updateId: update.updateId,
+      },
+      'Bot left chat from join denylist after bot_added event',
+    );
+    return true;
+  }
+
   private async handleBotStartedInstruction(update: MaxUpdate, chatId: string) {
     if (!this.shouldSendBotStartedInstruction(update, chatId)) {
       return;
@@ -8721,6 +8756,19 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
     const normalized = value.trim();
     return normalized.length > 0 ? normalized : null;
+  }
+
+  private parseChatIdSet(value: string | undefined): Set<string> {
+    if (typeof value !== 'string') {
+      return new Set();
+    }
+
+    return new Set(
+      value
+        .split(/[,\s;]+/u)
+        .map((item) => item.trim())
+        .filter((item) => item.length > 0),
+    );
   }
 
   private isOwnBotSender(userId: string): boolean {
