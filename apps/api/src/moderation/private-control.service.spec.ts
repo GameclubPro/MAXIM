@@ -622,6 +622,9 @@ function createHarness(
     getChannelSettings: jest
       .fn()
       .mockResolvedValue(overrides.channelSettings ?? defaultChannelSettings),
+    getPublicChannelSuggestionIntroText: jest
+      .fn()
+      .mockResolvedValue((overrides.channelSettings ?? defaultChannelSettings).postSuggestionsText),
     updateChannelSettings: jest
       .fn()
       .mockResolvedValue(overrides.channelSettings ?? defaultChannelSettings),
@@ -1816,23 +1819,28 @@ describe('PrivateControlService', () => {
   });
 
   it('prompts for post content and accepts channel suggestions from a bot deep link', async () => {
-    const { service, adminService, maxClient, channels } = createHarness();
+    const { service, adminService, maxClient, channels } = createHarness({
+      channelSettings: {
+        ...defaultChannelSettings,
+        postSuggestionsText: 'Пришлите готовый текст, город и ссылку на источник.',
+      },
+    });
     const startPayload = encodeChannelSuggestionStartPayload(channels[0].id, 'cdt-suggest-token-1');
 
     await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
 
-    expect(getLastSentText(maxClient)).toContain('Контент для поста');
+    expect(getLastSentText(maxClient)).toContain('Требования для предложки');
     expect(getLastSentText(maxClient)).toContain(
-      'Пришлите следующим сообщением текст, фото или фото с подписью.',
+      'Пришлите готовый текст, город и ссылку на источник.',
     );
     expect(getLastSentText(maxClient)).toContain(
-      'После этого бот сразу отправит материал админу канала на проверку.',
+      'После этого пришлите следующим сообщением текст, фото или фото с подписью.',
     );
     const introButtons = getLastButtons(maxClient)
       .flat()
       .map((button) => String((button as { text?: string }).text ?? ''));
-    expect(introButtons).toContain('Что отправить');
     expect(introButtons).toContain('Отмена');
+    expect(introButtons).toHaveLength(1);
 
     await service.handleUpdate(createPrivateTextUpdate('Текст для публикации'));
 

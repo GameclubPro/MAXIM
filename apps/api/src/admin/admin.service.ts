@@ -2166,6 +2166,11 @@ export class AdminService {
     } as const;
   }
 
+  async getPublicChannelSuggestionIntroText(chatId: string): Promise<string | null> {
+    const channelSettings = await this.getPublicChannelSettings(chatId);
+    return this.resolveChannelDialogIntroText(channelSettings, 'suggest');
+  }
+
   parseChannelSuggestionStartPayload(
     startPayload: string | null,
   ): { chatId: string; token: string } | null {

@@ -20,7 +20,6 @@ import {
   getChannelSettingsScreen,
   getChannelBroadcastHandoffState,
   handoffChannelBroadcast,
-  publishChannelEngagement,
   updateChannelSettings,
 } from '../lib/api/channel-settings-client';
 import type { ApiTransport } from '../lib/api/transport';
@@ -49,8 +48,6 @@ type ChannelSettingsHintKey =
   | 'commentsAntiSpamEnabled'
   | 'commentsLimitTwoInRowEnabled'
   | 'postSuggestionsEnabled'
-  | 'engagementMessageText'
-  | 'publishEngagement'
   | 'broadcastStudio'
   | 'broadcastText'
   | 'broadcastImage'
@@ -103,13 +100,6 @@ function sanitizeAutoPostButtonsMode(
   suggestEnabled: boolean,
 ): ChannelAutoPostButtonsMode {
   return buildAutoPostButtonsMode(commentsEnabled, suggestEnabled);
-}
-
-function resolveManualPublishButtons(settings: ChannelSettings) {
-  return {
-    includeCommentsButton: settings.commentsEnabled,
-    includeSuggestButton: true,
-  };
 }
 
 function isHttpUrl(value: string): boolean {
@@ -768,48 +758,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     },
   });
 
-  const publishMutation = useMutation({
-    mutationFn: async () => {
-      if (!chatId) {
-        throw new Error('Канал не выбран.');
-      }
-
-      const payload = latestNormalizedDraftRef.current;
-      if (!payload) {
-        throw new Error('Нет данных для публикации.');
-      }
-
-      const { includeCommentsButton, includeSuggestButton } = resolveManualPublishButtons(payload);
-      return publishChannelEngagement(api, chatId, {
-        text:
-          payload.engagementMessageText.trim() ||
-          'Есть идея или обратная связь? Нажмите кнопку ниже.',
-        commentsButtonText: '💬 Комментарии',
-        suggestButtonText: payload.postSuggestionsButtonText.trim() || '📰 Предложить пост',
-        includeCommentsButton,
-        includeSuggestButton,
-      });
-    },
-    onSuccess: (result) => {
-      pushToast({
-        tone: 'success',
-        title: result.updatedExisting ? 'Пост обновлен' : 'Пост опубликован',
-        description: result.updatedExisting
-          ? 'Текст и кнопки обновлены в уже опубликованном сообщении.'
-          : 'Сообщение с кнопками отправлено в канал.',
-      });
-      maxNotify('success');
-    },
-    onError: (error) => {
-      pushToast({
-        tone: 'danger',
-        title: 'Ошибка публикации',
-        description: normalizeApiError(error),
-      });
-      maxNotify('error');
-    },
-  });
-
   useHintPopoverAutoPosition(openHintKey !== null);
 
   if (!chatId) {
@@ -885,20 +833,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const showHeaderStatus = headerStatusTone !== 'saved';
   const compactHeaderStatusLabel =
     headerStatusTone === 'error' ? 'Ошибка' : headerStatusTone === 'saving' ? 'Сохр.' : 'Черн.';
-  const publishButtons = resolveManualPublishButtons(
-    normalizedDraft ?? normalizeChannelSettingsDraft(draft, resolvedChannelLink),
-  );
-  const canPublishEngagement =
-    publishButtons.includeCommentsButton || publishButtons.includeSuggestButton;
-  const publishHint = !canPublishEngagement
-    ? 'Включите хотя бы один сценарий.'
-    : draft.postSuggestionsEnabled
-      ? publishButtons.includeCommentsButton
-        ? 'Опубликуем кнопки «Комментарии» и «Предложить пост».'
-        : 'Опубликуем кнопку «Предложить пост».'
-      : publishButtons.includeCommentsButton
-        ? 'Кнопки будут только в этом посте.'
-        : 'Кнопка будет только в этом посте.';
   const broadcastHasButton = broadcastButtonEnabled && Boolean(broadcastButtonText.trim());
   const broadcastSlotsLabel = formatChannelCountLabel(
     broadcastScheduledSlots.length,
@@ -1291,26 +1225,6 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
                 <div className="channel-settings-stack">
                   <label className="field">
-                    <div className="channel-settings-field-label">
-                      <span>Текст публикации</span>
-                      <ChannelSettingsHintAnchor
-                        hintKey="engagementMessageText"
-                        openHintKey={openHintKey}
-                        onToggleHint={toggleHint}
-                        label="Пояснение для текста публикации"
-                      >
-                        Текст поста перед кнопками.
-                      </ChannelSettingsHintAnchor>
-                    </div>
-                    <textarea
-                      rows={3}
-                      value={draft.engagementMessageText}
-                      onChange={(event) => patchDraft('engagementMessageText', event.target.value)}
-                      placeholder="Есть идея или обратная связь? Нажмите кнопку ниже."
-                    />
-                  </label>
-
-                  <label className="field">
                     <span>Название кнопки</span>
                     <input
                       type="text"
@@ -1324,38 +1238,14 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
                   </label>
 
                   <label className="field">
-                    <span>Текст</span>
+                    <span>Требования для предложки</span>
                     <textarea
-                      rows={3}
+                      rows={4}
                       value={draft.postSuggestionsText}
                       onChange={(event) => patchDraft('postSuggestionsText', event.target.value)}
-                      placeholder="Коротко объясните, что отправлять."
+                      placeholder="Опишите, что пользователь должен прислать боту после нажатия кнопки."
                     />
                   </label>
-
-                  <div className="channel-settings-inline-fields">
-                    <label className="field">
-                      <div className="channel-settings-field-label">
-                        <span>Пост с кнопками</span>
-                        <ChannelSettingsHintAnchor
-                          hintKey="publishEngagement"
-                          openHintKey={openHintKey}
-                          onToggleHint={toggleHint}
-                          label="Пояснение для поста с кнопками"
-                        >
-                          {publishHint}
-                        </ChannelSettingsHintAnchor>
-                      </div>
-                    </label>
-                    <button
-                      type="button"
-                      className="button button--accent"
-                      onClick={() => publishMutation.mutate()}
-                      disabled={!canPublishEngagement || publishMutation.isPending}
-                    >
-                      {publishMutation.isPending ? 'Публикуем…' : 'Опубликовать или обновить'}
-                    </button>
-                  </div>
                 </div>
               </div>
             ) : null}

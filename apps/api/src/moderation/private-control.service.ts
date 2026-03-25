@@ -459,8 +459,7 @@ const CHANNEL_SECTION_FIELDS: Record<
 > = {
   post_suggestions: [
     { key: 'postSuggestionsEnabled', label: 'Подсказка «Предложить пост»', type: 'boolean' },
-    { key: 'engagementMessageText', label: 'Текст публикации', type: 'text' },
-    { key: 'postSuggestionsText', label: 'Текст для участников', type: 'text' },
+    { key: 'postSuggestionsText', label: 'Требования для участников', type: 'text' },
     { key: 'postSuggestionsButtonEnabled', label: 'Показывать кнопку перехода', type: 'boolean' },
     { key: 'postSuggestionsButtonText', label: 'Название кнопки', type: 'text' },
     { key: 'postSuggestionsButtonUrl', label: 'Ссылка кнопки (из MAX)', type: 'url' },
@@ -1121,7 +1120,7 @@ export class PrivateControlService {
       session.channelSection = null;
       session.searchQuery = null;
       session.lastScreenStack = [];
-      const view = this.renderChannelSuggestionIntroView();
+      const view = await this.renderChannelSuggestionIntroView(channelSuggestionPayload.chatId);
       await this.respond(context, session, view, {
         callbackId: null,
         notification: null,
@@ -1329,7 +1328,7 @@ export class PrivateControlService {
 
     await this.saveSession(params.userId, session);
 
-    const view = this.renderChannelSuggestionIntroView();
+    const view = await this.renderChannelSuggestionIntroView(params.chatId);
     const text = this.limitMessageText(view.text);
     const compactOptions = this.compactButtonLayout(view.options);
     const inferredTextFormat =
@@ -2016,7 +2015,6 @@ export class PrivateControlService {
       session.pendingInput &&
       session.pendingInput.kind !== 'broadcast_content' &&
       session.pendingInput.kind !== 'giveaway_content' &&
-      !(session.pendingInput.kind === 'channel_suggestion' && callback.action === 'suggest_help') &&
       callback.action !== 'input_cancel'
     ) {
       const view = this.renderInputPrompt(session.pendingInput);
@@ -2113,19 +2111,6 @@ export class PrivateControlService {
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Открываю помощь',
-        });
-        return;
-      }
-
-      case 'suggest_help': {
-        if (session.pendingInput?.kind !== 'channel_suggestion') {
-          throw new BadRequestException('Подсказка доступна только внутри предложки.');
-        }
-
-        const view = this.renderChannelSuggestionHelpView();
-        await this.respond(context, session, view, {
-          callbackId: context.callbackId,
-          notification: 'Подсказка открыта',
         });
         return;
       }
@@ -7273,14 +7258,16 @@ export class PrivateControlService {
     };
   }
 
-  private renderChannelSuggestionIntroView(): PrivateView {
+  private async renderChannelSuggestionIntroView(chatId: string): Promise<PrivateView> {
+    const requirementsText = await this.getChannelSuggestionRequirementsText(chatId);
+
     return {
       text: [
-        this.markdownTitle('Контент для поста'),
+        this.markdownTitle('Требования для предложки'),
         '',
-        'Пришлите следующим сообщением текст, фото или фото с подписью.',
-        'После этого бот сразу отправит материал админу канала на проверку.',
-        'Если нужен ориентир, нажмите «Что отправить».',
+        requirementsText,
+        '',
+        'После этого пришлите следующим сообщением текст, фото или фото с подписью.',
       ].join('\n'),
       options: {
         buttons: this.buildChannelSuggestionButtons(),
@@ -7320,23 +7307,6 @@ export class PrivateControlService {
     };
   }
 
-  private renderChannelSuggestionHelpView(): PrivateView {
-    return {
-      text: [
-        this.markdownTitle('Что лучше прислать'),
-        '',
-        '1. Готовый текст поста или короткий черновик.',
-        '2. Фото, если оно важно для публикации.',
-        '3. Ссылку и 1-2 строки контекста, если нужен источник.',
-        '',
-        'Фото без текста тоже подойдёт.',
-      ].join('\n'),
-      options: {
-        buttons: this.buildChannelSuggestionButtons(),
-      },
-    };
-  }
-
   private renderChannelSuggestionCancelledView(): PrivateView {
     return {
       text: [
@@ -7350,10 +7320,37 @@ export class PrivateControlService {
   private buildChannelSuggestionButtons(): MaxMessageButton[][] {
     return [
       [
-        this.callbackButton('Что отправить', this.cb('suggest_help')),
         this.callbackButton('Отмена', this.cb('input_cancel'), 'negative'),
       ],
     ];
+  }
+
+  private async getChannelSuggestionRequirementsText(chatId: string): Promise<string> {
+    const fallback = this.buildDefaultChannelSuggestionRequirementsText();
+
+    try {
+      const introText = await this.adminService.getPublicChannelSuggestionIntroText(chatId);
+      return introText?.trim() || fallback;
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to load channel suggestion requirements text',
+      );
+      return fallback;
+    }
+  }
+
+  private buildDefaultChannelSuggestionRequirementsText(): string {
+    return [
+      '1. Готовый текст поста или короткий черновик.',
+      '2. Фото, если оно важно для публикации.',
+      '3. Ссылку и 1-2 строки контекста, если нужен источник.',
+      '',
+      'Фото без текста тоже подойдёт.',
+    ].join('\n');
   }
 
   private renderMassActionConfirmation(pendingMassAction: PendingMassAction): PrivateView {
@@ -7503,9 +7500,9 @@ export class PrivateControlService {
         };
       case 'channel_suggestion':
         return {
-          title: 'Контент для поста',
+          title: 'Требования для предложки',
           description:
-            'Пришлите следующим сообщением текст, фото или фото с подписью. После этого бот отправит материал админу канала. Для деталей нажмите «Что отправить», для выхода используйте `Отмена`.',
+            'Сначала прочитайте требования, затем пришлите следующим сообщением текст, фото или фото с подписью. Для выхода используйте `Отмена`.',
         };
       case 'giveaway_title':
         return {
