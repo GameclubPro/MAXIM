@@ -8158,8 +8158,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     senderId: string | null;
   } | null {
     const body = this.asRecord(message.body);
-    const messageIdCandidate = body?.mid;
-    const timestampCandidate = message.timestamp;
+    const link = this.asRecord(message.link);
+    const linkedMessage = this.asRecord(link?.message);
+    const messageIdCandidate =
+      body?.mid ??
+      body?.seq ??
+      message.message_id ??
+      message.messageId ??
+      message.mid ??
+      message.seq ??
+      message.id;
+    const timestampCandidate = message.timestamp ?? message.created_at ?? message.createdAt;
     if (
       (typeof messageIdCandidate !== 'string' && typeof messageIdCandidate !== 'number') ||
       (typeof timestampCandidate !== 'number' && typeof timestampCandidate !== 'string')
@@ -8181,7 +8190,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     return {
       messageId: String(messageIdCandidate),
-      text: typeof body?.text === 'string' && body.text.trim() ? body.text : null,
+      text: (() => {
+        const candidates = [body?.text, message.text, message.caption, linkedMessage?.text];
+        for (const candidate of candidates) {
+          if (typeof candidate === 'string' && candidate.trim()) {
+            return candidate.trim();
+          }
+        }
+        return null;
+      })(),
       timestampMs,
       hasInlineKeyboard,
       senderId: (() => {

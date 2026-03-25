@@ -359,6 +359,35 @@ describe('WebhookParser', () => {
     expect(parsed.message?.text).toContain('https://web.telegram.org/');
   });
 
+  it('keeps forwarded channel posts when MAX sends message id outside body', () => {
+    const parsed = parser.parse({
+      update_type: 'message_created',
+      timestamp: 1772249118580,
+      message: {
+        id: 'mid-forward-channel-1',
+        sender: {
+          user_id: 195714583,
+        },
+        recipient: {
+          chat_id: -71527833503751,
+          chat_type: 'channel',
+        },
+        body: null,
+        link: {
+          type: 'forward',
+          message: {
+            text: 'Пересланный пост из другого канала',
+          },
+        },
+      },
+    });
+
+    expect(parsed.message?.messageId).toBe('mid-forward-channel-1');
+    expect(parsed.message?.chatId).toBe('-71527833503751');
+    expect(parsed.message?.senderId).toBe('195714583');
+    expect(parsed.message?.text).toContain('Пересланный пост из другого канала');
+  });
+
   it('keeps service join message when sender id is missing', () => {
     const parsed = parser.parse({
       update_type: 'message_created',

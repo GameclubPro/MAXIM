@@ -224,21 +224,31 @@ export class WebhookParser {
 
     const body = this.asRecord(message.body);
     const data = this.asRecord(message.data);
+    const content = this.asRecord(message.content);
 
     const candidates = [
       message.messageId,
       message.message_id,
+      message.mid,
+      message.seq,
       message.id,
       body?.mid,
       body?.seq,
       body?.message_id,
       body?.messageId,
       body?.id,
+      content?.mid,
+      content?.seq,
+      content?.message_id,
+      content?.messageId,
+      content?.id,
       data?.message_id,
       data?.messageId,
       data?.id,
       payload.message_id,
       payload.messageId,
+      payload.mid,
+      payload.seq,
     ];
 
     for (const value of candidates) {
