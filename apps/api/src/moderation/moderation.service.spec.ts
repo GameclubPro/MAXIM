@@ -4890,6 +4890,101 @@ describe('ModerationService', () => {
     });
   });
 
+  it('includes the rules button in scheduled night closed notice when enabled', async () => {
+    let noticeCreated = false;
+    const nowParts = new Intl.DateTimeFormat('en-GB', {
+      timeZone: 'Europe/Moscow',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date());
+    const currentHour = Number(nowParts.find((item) => item.type === 'hour')?.value ?? '0');
+    const currentMinute = Number(nowParts.find((item) => item.type === 'minute')?.value ?? '0');
+    const startMinutes = currentHour * 60 + currentMinute;
+    const endMinutes = (startMinutes + 60) % (24 * 60);
+
+    const prisma = {
+      chatSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'chat-1',
+            botSpeechStyle: null,
+            nightModeStartTimeMinutes: startMinutes,
+            nightModeEndTimeMinutes: endMinutes,
+            nightModeTimezone: 'Europe/Moscow',
+            nightModeBotMessageEnabled: true,
+            nightModeBotMessageText: '',
+            commentsEnabled: false,
+            nightModeCommentsEnabled: false,
+            nightModeOpenMessageEnabled: true,
+            nightModeOpenMessageText: '',
+            nightModeBotButtonEnabled: false,
+            nightModeBotButtonUrl: '',
+            nightModeBotButtonText: 'Открыть',
+            nightModeRulesButtonEnabled: true,
+          },
+        ]),
+      },
+      chatRules: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'chat-1',
+            publishedUrl: 'https://max.ru/chats/chat-1/message/999',
+            publishedMessageId: '999',
+          },
+        ]),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockImplementation((query: { where?: Record<string, unknown> }) => {
+          if (query.where?.ruleCode === 'NIGHT_MODE_NOTICE') {
+            return Promise.resolve(noticeCreated ? { id: 'evt-night-notice-1' } : null);
+          }
+
+          return Promise.resolve(null);
+        }),
+        create: jest.fn().mockImplementation((payload: { data: { ruleCode?: string } }) => {
+          if (payload.data.ruleCode === 'NIGHT_MODE_NOTICE') {
+            noticeCreated = true;
+          }
+          return Promise.resolve(payload);
+        }),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const maxClient = {
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+
+    await (
+      service as unknown as { processNightModeAnnouncements: () => Promise<void> }
+    ).processNightModeAnnouncements();
+
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      expect.stringContaining('Ночной режим, граждане'),
+      {
+        button: {
+          text: 'Правила',
+          url: 'https://max.ru/chats/chat-1/message/999',
+        },
+        textFormat: 'markdown',
+      },
+    );
+  });
+
   it('prefers immediate night notice send with message id over resolved link lookup', async () => {
     const nowParts = new Intl.DateTimeFormat('en-GB', {
       timeZone: 'Europe/Moscow',
@@ -5244,6 +5339,136 @@ describe('ModerationService', () => {
     ).processNightModeAnnouncements();
 
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
+      'chat-1',
+      expect.stringContaining('Доброе утро, граждане'),
+      expect.objectContaining({
+        textFormat: 'markdown',
+      }),
+    );
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'msg-night-close-1');
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        chatId: 'chat-1',
+        ruleCode: 'NIGHT_MODE_OPEN_NOTICE',
+        action: SanctionAction.NONE,
+        metadata: expect.objectContaining({
+          closedNoticeDeleted: true,
+          closedNoticeMessageId: 'msg-night-close-1',
+          noticeMessageId: 'msg-night-open-1',
+        }),
+      }),
+    });
+  });
+
+  it('sends scheduled night open notice after missing the exact end minute when session was observed', async () => {
+    let currentMinutes = 10 * 60 + 30;
+    let closedNoticeCreated = false;
+    let openNoticeCreated = false;
+
+    const prisma = {
+      chatSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'chat-1',
+            botSpeechStyle: null,
+            nightModeStartTimeMinutes: 10 * 60,
+            nightModeEndTimeMinutes: 11 * 60,
+            nightModeTimezone: 'Europe/Moscow',
+            nightModeBotMessageEnabled: true,
+            nightModeBotMessageText: '',
+            commentsEnabled: false,
+            nightModeCommentsEnabled: false,
+            nightModeOpenMessageEnabled: true,
+            nightModeOpenMessageText: '',
+            nightModeBotButtonEnabled: false,
+            nightModeBotButtonUrl: '',
+            nightModeBotButtonText: 'Открыть',
+            nightModeRulesButtonEnabled: false,
+          },
+        ]),
+      },
+      moderationEvent: {
+        findFirst: jest
+          .fn()
+          .mockImplementation(
+            (query: { where?: Record<string, unknown>; select?: Record<string, unknown> }) => {
+              if (query.where?.ruleCode === 'NIGHT_MODE_OPEN_NOTICE') {
+                return Promise.resolve(openNoticeCreated ? { id: 'evt-night-open-1' } : null);
+              }
+
+              if (query.where?.ruleCode === 'NIGHT_MODE_NOTICE') {
+                return Promise.resolve(
+                  closedNoticeCreated
+                    ? {
+                        id: 'evt-night-close-1',
+                        metadata: {
+                          noticeMessageId: 'msg-night-close-1',
+                        },
+                      }
+                    : null,
+                );
+              }
+
+              return Promise.resolve(null);
+            },
+          ),
+        create: jest.fn().mockImplementation((payload: { data: { ruleCode?: string } }) => {
+          if (payload.data.ruleCode === 'NIGHT_MODE_NOTICE') {
+            closedNoticeCreated = true;
+          }
+          if (payload.data.ruleCode === 'NIGHT_MODE_OPEN_NOTICE') {
+            openNoticeCreated = true;
+          }
+          return Promise.resolve(payload);
+        }),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const maxClient = {
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockResolvedValueOnce({
+          messageId: 'msg-night-close-1',
+          url: null,
+        })
+        .mockResolvedValueOnce({
+          messageId: 'msg-night-open-1',
+          url: null,
+        }),
+      deleteMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+    (
+      service as unknown as {
+        getCurrentMinutesInTimeZone: (timeZone: string) => number | null;
+      }
+    ).getCurrentMinutesInTimeZone = jest.fn(() => currentMinutes);
+
+    await (
+      service as unknown as { processNightModeAnnouncements: () => Promise<void> }
+    ).processNightModeAnnouncements();
+
+    currentMinutes = 11 * 60 + 7;
+
+    await (
+      service as unknown as { processNightModeAnnouncements: () => Promise<void> }
+    ).processNightModeAnnouncements();
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(2);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenNthCalledWith(
+      2,
       'chat-1',
       expect.stringContaining('Доброе утро, граждане'),
       expect.objectContaining({

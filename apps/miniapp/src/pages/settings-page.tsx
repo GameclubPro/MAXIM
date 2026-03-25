@@ -87,6 +87,12 @@ import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
 import { useManagedEntitiesSync } from '../lib/use-managed-entities-sync';
+import {
+  NIGHT_SECTION_SETTING_KEYS,
+  applyNightModeBotMessageEnabledChange,
+  applyNightModeEnabledChange,
+  mergeNightSectionSettings,
+} from './settings-page-state';
 
 type FieldErrors = Partial<Record<keyof ChatSettings, string>>;
 type ManagedBroadcastListItem = ChatSettingsScreenResponse['managedBroadcasts'][number];
@@ -452,23 +458,7 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'banDurationHours',
   ],
   night: [
-    'nightModeEnabled',
-    'nightModeStartTimeMinutes',
-    'nightModeEndTimeMinutes',
-    'nightModeTimezone',
-    'nightModeBotMessageEnabled',
-    'nightModeBotMessageText',
-    'nightModeCommentsEnabled',
-    'nightModeOpenMessageEnabled',
-    'nightModeOpenMessageText',
-    'nightModeBotButtonEnabled',
-    'nightModeBotButtonUrl',
-    'nightModeBotButtonText',
-    'nightModeForceCloseEnabled',
-    'nightModeForceCloseForever',
-    'nightModeForceCloseHours',
-    'nightModeForceCloseDays',
-    'nightModeForceCloseUntil',
+    ...NIGHT_SECTION_SETTING_KEYS,
   ],
   requiredSubscription: [
     'requiredSubscriptionEnabled',
@@ -1174,6 +1164,10 @@ function mergeSectionSettings(
   sourceSettings: ChatSettings,
   section: ApplySectionKey,
 ): ChatSettings {
+  if (section === 'night') {
+    return mergeNightSectionSettings(targetSettings, sourceSettings);
+  }
+
   const nextSettings = { ...targetSettings } as ChatSettings;
   const nextRecord = nextSettings as Record<keyof ChatSettings, unknown>;
   const sourceRecord = sourceSettings as Record<keyof ChatSettings, unknown>;
@@ -7819,14 +7813,15 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               checked={draft.nightModeEnabled}
                               onChange={(event) => {
                                 const enabled = event.target.checked;
-                                setFieldValue('nightModeEnabled', enabled);
-                                if (enabled) {
-                                  setFieldValue('nightModeBotMessageEnabled', true);
-                                } else {
-                                  setFieldValue('nightModeBotMessageEnabled', false);
-                                  setFieldValue('nightModeCommentsEnabled', false);
-                                  setFieldValue('nightModeBotButtonEnabled', false);
-                                  setFieldValue('nightModeRulesButtonEnabled', false);
+                                setDraft((current) =>
+                                  current ? applyNightModeEnabledChange(current, enabled) : current,
+                                );
+                                clearFieldError('nightModeEnabled');
+                                if (!enabled) {
+                                  clearFieldError('nightModeBotMessageEnabled');
+                                  clearFieldError('nightModeCommentsEnabled');
+                                  clearFieldError('nightModeBotButtonEnabled');
+                                  clearFieldError('nightModeRulesButtonEnabled');
                                   clearFieldError('nightModeBotButtonUrl');
                                   clearFieldError('nightModeBotButtonText');
                                 }
@@ -7963,11 +7958,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   checked={draft.nightModeBotMessageEnabled}
                                   onChange={(event) => {
                                     const enabled = event.target.checked;
-                                    setFieldValue('nightModeBotMessageEnabled', enabled);
+                                    setDraft((current) =>
+                                      current
+                                        ? applyNightModeBotMessageEnabledChange(current, enabled)
+                                        : current,
+                                    );
+                                    clearFieldError('nightModeBotMessageEnabled');
                                     if (!enabled) {
-                                      setFieldValue('nightModeCommentsEnabled', false);
-                                      setFieldValue('nightModeBotButtonEnabled', false);
-                                      setFieldValue('nightModeRulesButtonEnabled', false);
+                                      clearFieldError('nightModeCommentsEnabled');
+                                      clearFieldError('nightModeBotButtonEnabled');
+                                      clearFieldError('nightModeRulesButtonEnabled');
                                       clearFieldError('nightModeBotButtonUrl');
                                       clearFieldError('nightModeBotButtonText');
                                     }
@@ -8199,6 +8199,49 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   textPlaceholder="Правила чата"
                                 />
                               ) : null}
+                            </div>
+                          ) : null}
+
+                          {draft.nightModeBotMessageEnabled ? (
+                            <div
+                              className={cn(
+                                'settings-native-toggle',
+                                'settings-native-toggle--nested',
+                              )}
+                            >
+                              <div className="settings-native-toggle__row">
+                                <div className="settings-native-toggle__title-wrap">
+                                  <span className="settings-native-toggle__title">
+                                    Кнопка «Правила»
+                                  </span>
+                                </div>
+
+                                <label
+                                  className="settings-native-switch"
+                                  aria-label="Добавить кнопку Правила в сообщение ночного режима"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={draft.nightModeRulesButtonEnabled}
+                                    onChange={(event) =>
+                                      setFieldValue(
+                                        'nightModeRulesButtonEnabled',
+                                        event.target.checked,
+                                      )
+                                    }
+                                  />
+                                  <span className="toggle-switch" aria-hidden>
+                                    <span className="toggle-switch__thumb" />
+                                  </span>
+                                </label>
+                              </div>
+
+                              <p className="settings-native-toggle__hint">
+                                Кнопка использует опубликованные правила из блока «Правила».
+                                {hasPublishedRules
+                                  ? ' Сейчас публикация найдена.'
+                                  : ' Сейчас публикации нет, поэтому кнопка пока не появится.'}
+                              </p>
                             </div>
                           ) : null}
 

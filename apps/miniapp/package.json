@@ -8,7 +8,8 @@
     "build": "tsc -p tsconfig.json --noEmit && vite build && node scripts/check-budgets.mjs",
     "budget": "node scripts/check-budgets.mjs",
     "preview": "vite preview",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test ./test/*.test.ts"
   },
   "dependencies": {
     "@maxim/contracts": "0.1.0",

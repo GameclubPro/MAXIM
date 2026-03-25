@@ -121,6 +121,7 @@ const REQUIRED_SUBSCRIPTION_NOTICE_COOLDOWN_SEC = 15 * 60;
 const REQUIRED_SUBSCRIPTION_RULE_CODE = 'REQUIRED_SUBSCRIPTION';
 const NIGHT_MODE_NOTICE_LOCK_TTL_MS = 2 * 60 * 1_000;
 const NIGHT_MODE_NOTICE_MARKER_TTL_SEC = 2 * 24 * 60 * 60;
+const NIGHT_MODE_SESSION_MARKER_TTL_SEC = 2 * 24 * 60 * 60;
 const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
 const CHAT_ADMIN_CACHE_TTL_SEC = Math.ceil(CHAT_ADMIN_CACHE_TTL_MS / 1_000);
 const BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS = 60_000;
@@ -243,6 +244,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly ownBotUserId: string | null;
   private readonly ownBotUserIdVariants: Set<string>;
   private readonly nightModeNoticeMemoryLocks = new Map<string, string>();
+  private readonly nightModeSessionMemoryMarkers = new Map<string, number>();
   private nightModeAnnounceTimer: NodeJS.Timeout | null = null;
   private nightModeAnnounceInFlight = false;
   private channelAutoPostTimer: NodeJS.Timeout | null = null;
@@ -5213,19 +5215,36 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           nightModeBotButtonEnabled: true,
           nightModeBotButtonUrl: true,
           nightModeBotButtonText: true,
+          nightModeRulesButtonEnabled: true,
         },
       });
+      const rulesButtonReferences = await this.loadRulesButtonReferenceMap(
+        nightModeChats.map((settings) => settings.chatId),
+      );
 
       for (const settings of nightModeChats) {
         const startMinutes = this.normalizeDayMinutes(settings.nightModeStartTimeMinutes, 23 * 60);
         const endMinutes = this.normalizeDayMinutes(settings.nightModeEndTimeMinutes, 8 * 60);
         const timezone = this.normalizeNightModeTimezone(settings.nightModeTimezone);
+        const rulesButtonReference = rulesButtonReferences.get(settings.chatId) ?? null;
         const nightModeActiveNow = this.isNightModeActiveNow({
           nightModeEnabled: true,
           nightModeStartTimeMinutes: startMinutes,
           nightModeEndTimeMinutes: endMinutes,
           nightModeTimezone: timezone,
         });
+        const activeSessionKey = this.buildNightModeSessionKey(
+          startMinutes,
+          endMinutes,
+          timezone,
+          'current',
+        );
+
+        if (nightModeActiveNow) {
+          await this.writeNightModeSessionMarker(
+            this.buildNightModeSessionMarkerKey(settings.chatId, activeSessionKey),
+          );
+        }
 
         if (settings.nightModeBotMessageEnabled && nightModeActiveNow) {
           try {
@@ -5241,6 +5260,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               nightModeBotButtonEnabled: settings.nightModeBotButtonEnabled,
               nightModeBotButtonUrl: settings.nightModeBotButtonUrl,
               nightModeBotButtonText: settings.nightModeBotButtonText,
+              nightModeRulesButtonEnabled: settings.nightModeRulesButtonEnabled,
+              rulesPublishedUrl: rulesButtonReference?.publishedUrl ?? null,
+              rulesPublishedMessageId: rulesButtonReference?.publishedMessageId ?? null,
               reason: 'Night mode notice sent by schedule',
             });
           } catch (error: unknown) {
@@ -5254,22 +5276,40 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           }
         }
 
-        if (startMinutes === endMinutes || !this.isNightModeEndMomentNow(endMinutes, timezone)) {
-          continue;
-        }
-
-        const reopenSessionKey = this.buildNightModeSessionKey(
+        const reopenSessionKey = this.resolveNightModeReopenSessionKey({
           startMinutes,
           endMinutes,
           timezone,
-          'end',
+          nightModeActiveNow,
+        });
+        if (!reopenSessionKey) {
+          continue;
+        }
+
+        const reopenSessionObserved = await this.readNightModeSessionMarker(
+          this.buildNightModeSessionMarkerKey(settings.chatId, reopenSessionKey),
         );
+        if (!reopenSessionObserved && !settings.nightModeBotMessageEnabled) {
+          continue;
+        }
+
         const reopenAlreadyProcessed = await this.wasNightModeScheduledNoticeProcessed(
           settings.chatId,
           reopenSessionKey,
           NIGHT_MODE_OPEN_NOTICE_RULE_CODE,
         );
         if (reopenAlreadyProcessed) {
+          continue;
+        }
+
+        if (
+          !reopenSessionObserved &&
+          !(await this.wasNightModeScheduledNoticeProcessed(
+            settings.chatId,
+            reopenSessionKey,
+            NIGHT_MODE_NOTICE_RULE_CODE,
+          ))
+        ) {
           continue;
         }
 
@@ -5335,6 +5375,13 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               },
             },
           });
+          await this.writeNightModeNoticeMarker(
+            this.buildNightModeNoticeMarkerKey(
+              settings.chatId,
+              reopenSessionKey,
+              NIGHT_MODE_OPEN_NOTICE_RULE_CODE,
+            ),
+          );
         } catch (error: unknown) {
           this.logger.warn(
             {
@@ -5402,6 +5449,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     const startMinutes = this.normalizeDayMinutes(nightModeStartTimeMinutes, 23 * 60);
     const endMinutes = this.normalizeDayMinutes(nightModeEndTimeMinutes, 8 * 60);
     const timezone = this.normalizeNightModeTimezone(nightModeTimezone);
+    await this.writeNightModeSessionMarker(
+      this.buildNightModeSessionMarkerKey(
+        chatId,
+        this.buildNightModeSessionKey(startMinutes, endMinutes, timezone, 'current'),
+      ),
+    );
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
 
@@ -7125,6 +7178,46 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `${timezone}|${startMinutes}-${endMinutes}|${dateKey}`;
   }
 
+  private resolveNightModeReopenSessionKey(params: {
+    startMinutes: number;
+    endMinutes: number;
+    timezone: string;
+    nightModeActiveNow: boolean;
+  }): string | null {
+    if (params.nightModeActiveNow || params.startMinutes === params.endMinutes) {
+      return null;
+    }
+
+    const currentMinutes = this.getCurrentMinutesInTimeZone(params.timezone);
+    if (currentMinutes === null) {
+      return null;
+    }
+
+    if (params.startMinutes < params.endMinutes) {
+      if (currentMinutes < params.endMinutes) {
+        return null;
+      }
+
+      return this.buildNightModeSessionKey(
+        params.startMinutes,
+        params.endMinutes,
+        params.timezone,
+        'end',
+      );
+    }
+
+    if (currentMinutes < params.endMinutes || currentMinutes >= params.startMinutes) {
+      return null;
+    }
+
+    return this.buildNightModeSessionKey(
+      params.startMinutes,
+      params.endMinutes,
+      params.timezone,
+      'end',
+    );
+  }
+
   private formatDateKeyInTimeZone(date: Date, timeZone: string): string {
     try {
       const parts = new Intl.DateTimeFormat('en-GB', {
@@ -7351,6 +7444,61 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     ruleCode: string,
   ): string {
     return `night-notice-sent:v1:${ruleCode}:${chatId}:${nightSessionKey}`;
+  }
+
+  private buildNightModeSessionMarkerKey(chatId: string, nightSessionKey: string): string {
+    return `night-session-seen:v1:${chatId}:${nightSessionKey}`;
+  }
+
+  private async readNightModeSessionMarker(key: string): Promise<boolean> {
+    const getString = (this.redisCounter as Partial<RedisCounterService> | undefined)?.getString;
+    if (getString && this.redisCounter) {
+      try {
+        return (await getString.call(this.redisCounter, key)) === '1';
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            key,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to read night mode session marker from redis',
+        );
+      }
+    }
+
+    const expiresAt = this.nightModeSessionMemoryMarkers.get(key);
+    if (!expiresAt) {
+      return false;
+    }
+    if (expiresAt <= Date.now()) {
+      this.nightModeSessionMemoryMarkers.delete(key);
+      return false;
+    }
+
+    return true;
+  }
+
+  private async writeNightModeSessionMarker(key: string): Promise<void> {
+    const expiresAt = Date.now() + NIGHT_MODE_SESSION_MARKER_TTL_SEC * 1_000;
+    this.nightModeSessionMemoryMarkers.set(key, expiresAt);
+
+    const setStringWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
+      ?.setStringWithTtl;
+    if (!setStringWithTtl || !this.redisCounter) {
+      return;
+    }
+
+    try {
+      await setStringWithTtl.call(this.redisCounter, key, '1', NIGHT_MODE_SESSION_MARKER_TTL_SEC);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          key,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to write night mode session marker to redis',
+      );
+    }
   }
 
   private async readNightModeNoticeMarker(key: string): Promise<boolean> {
@@ -8802,7 +8950,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           row.publishedUrl ?? null,
           row.publishedMessageId ?? null,
         );
-        if (!resolvedUrl) {
+        const publishedMessageId = row.publishedMessageId ?? null;
+        if (!resolvedUrl && !publishedMessageId) {
           return null;
         }
 
@@ -8810,7 +8959,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           row.chatId,
           {
             publishedUrl: resolvedUrl,
-            publishedMessageId: row.publishedMessageId ?? null,
+            publishedMessageId,
           },
         ] as const;
       }),
