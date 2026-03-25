@@ -555,6 +555,33 @@ export class MaxClientService implements OnModuleDestroy {
     });
   }
 
+  async sendMessageReplyWithInlineKeyboard(
+    chatId: string,
+    messageId: string,
+    options?: Pick<MaxSendMessageOptions, 'button' | 'buttons' | 'debugContext'>,
+  ) {
+    const attachments = this.buildMessageAttachments(options);
+    const messageLink = this.buildMessageLinkData({
+      type: 'reply',
+      mid: messageId,
+    });
+    if (attachments.length === 0 || !messageLink) {
+      return;
+    }
+
+    await this.executeMutation(chatId, async () => {
+      await this.request('post', '/messages', {
+        params: {
+          chat_id: chatId,
+        },
+        data: {
+          link: messageLink,
+          attachments,
+        },
+      });
+    });
+  }
+
   async listMessages(
     chatId: string,
     countOrOptions:

@@ -542,6 +542,61 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('sends attachment-only reply messages with inline keyboard', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            success: true,
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await service.sendMessageReplyWithInlineKeyboard('chat-1', 'mid-source-1', {
+      button: {
+        text: 'Открыть',
+        url: 'https://maxim.play-team.ru/app/',
+      },
+    });
+
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api.max.ru/messages',
+        params: {
+          chat_id: 'chat-1',
+        },
+        data: {
+          link: {
+            type: 'reply',
+            mid: 'mid-source-1',
+          },
+          attachments: [
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [
+                  [
+                    {
+                      type: 'link',
+                      text: 'Открыть',
+                      url: 'https://maxim.play-team.ru/app/',
+                    },
+                  ],
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('publishes message and resolves post link via follow-up message fetch', async () => {
     const httpService = {
       request: jest

@@ -56,6 +56,40 @@ function createChannelPostUpdateWithoutSender(): MaxUpdate {
   };
 }
 
+function createForwardedChannelPostUpdateWithoutSender(): MaxUpdate {
+  return {
+    updateId: 'upd-channel-forward-no-sender-1',
+    type: 'message_created',
+    message: {
+      messageId: 'mid-channel-forward-no-sender-1',
+      chatId: 'channel-1',
+      senderId: '',
+      senderName: '',
+      text: 'Пересланный пост',
+      createdAt: new Date('2026-03-06T15:10:00.000Z').toISOString(),
+    },
+    raw: {
+      message: {
+        recipient: {
+          chat_id: 'channel-1',
+          chat_type: 'channel',
+        },
+        timestamp: 1772810100000,
+        body: {
+          mid: 'mid-channel-forward-no-sender-1',
+          text: '',
+        },
+        link: {
+          type: 'forward',
+          message: {
+            text: 'Пересланный пост',
+          },
+        },
+      },
+    },
+  };
+}
+
 function createConfigMock() {
   return {
     get: jest.fn((key: string) => {
@@ -243,6 +277,83 @@ describe('ModerationService channel auto post buttons', () => {
             }),
           ],
         ],
+      }),
+    );
+  });
+
+  it('falls back to a bot reply with buttons for forwarded channel posts', async () => {
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'channel-1',
+          title: 'Ищу модель | Ростов',
+          entityType: 'CHANNEL',
+          channelSettings: {
+            autoPostButtonsMode: 'BOTH',
+            postSuggestionsEnabled: true,
+            postSuggestionsButtonText: 'Предложить пост',
+            commentsEnabled: true,
+          },
+          admins: [],
+        }),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      sendMessageReplyWithInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = createAdminServiceMock();
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createForwardedChannelPostUpdateWithoutSender());
+
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageReplyWithInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-forward-no-sender-1',
+      expect.objectContaining({
+        buttons: [
+          [expect.objectContaining({ text: '💬 Комментарии · 0' })],
+          [expect.objectContaining({ text: 'Предложить пост' })],
+        ],
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            deliveryMode: 'reply_message',
+            linkType: 'forward',
+          }),
+        }),
       }),
     );
   });
@@ -844,6 +955,7 @@ describe('ModerationService channel auto post buttons', () => {
         },
       ]),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      sendMessageReplyWithInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       getChatAdminIds: jest.fn(),
       deleteMessage: jest.fn(),
       sendMessage: jest.fn(),
@@ -868,10 +980,10 @@ describe('ModerationService channel auto post buttons', () => {
 
     await (service as any).processChannelAutoPostButtons();
 
-    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageReplyWithInlineKeyboard).toHaveBeenCalledWith(
       'channel-1',
       'mid-polled-forward-1',
-      'Пересланный пост',
       expect.objectContaining({
         buttons: [
           [

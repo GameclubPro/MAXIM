@@ -8039,6 +8039,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       chatId,
       messageId,
       text: typeof text === 'string' && text.trim() ? text : null,
+      linkType: this.extractChannelMessageLinkType(update),
       managedChannel,
       source: 'webhook',
       senderId,
@@ -8143,6 +8144,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         chatId: managedChannel.channelSettings.chatId,
         messageId: normalized.messageId,
         text: normalized.text,
+        linkType: normalized.linkType,
         managedChannel,
         source: 'poll',
         senderId: null,
@@ -8153,6 +8155,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private parseChannelListedMessage(message: Record<string, unknown>): {
     messageId: string;
     text: string | null;
+    linkType: string | null;
     timestampMs: number;
     hasInlineKeyboard: boolean;
     senderId: string | null;
@@ -8199,6 +8202,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         }
         return null;
       })(),
+      linkType: this.readLowerString(link?.type),
       timestampMs,
       hasInlineKeyboard,
       senderId: (() => {
@@ -8212,11 +8216,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     chatId: string;
     messageId: string;
     text: string | null;
+    linkType: string | null;
     managedChannel: ManagedChannelContext;
     source: 'webhook' | 'poll';
     senderId: string | null;
   }): Promise<void> {
-    const { chatId, messageId, text, managedChannel, source, senderId } = params;
+    const { chatId, messageId, text, linkType, managedChannel, source, senderId } = params;
     const { includeCommentsButton, includeSuggestButton } = this.resolveChannelAutoPostButtons(
       managedChannel.channelSettings,
     );
@@ -8254,13 +8259,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
-      await this.maxClient.editMessageInlineKeyboard(chatId, messageId, text, {
-        buttons,
-        debugContext: {
-          screen: 'channel-auto-post',
-          action: source === 'poll' ? 'scan-attach-buttons' : 'attach-buttons',
-        },
-      });
+      if (linkType === 'forward') {
+        await this.maxClient.sendMessageReplyWithInlineKeyboard(chatId, messageId, {
+          buttons,
+          debugContext: {
+            screen: 'channel-auto-post',
+            action: source === 'poll' ? 'scan-attach-buttons-reply' : 'attach-buttons-reply',
+          },
+        });
+      } else {
+        await this.maxClient.editMessageInlineKeyboard(chatId, messageId, text, {
+          buttons,
+          debugContext: {
+            screen: 'channel-auto-post',
+            action: source === 'poll' ? 'scan-attach-buttons' : 'attach-buttons',
+          },
+        });
+      }
     } catch (error: unknown) {
       const status = this.extractStatusCode(error);
       if (status && status < 500 && status !== 429) {
@@ -8291,6 +8306,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           autoPostButtonsMode: this.deriveChannelAutoPostButtonsMode(
             managedChannel.channelSettings,
           ),
+          deliveryMode: linkType === 'forward' ? 'reply_message' : 'edit_message',
+          linkType,
           source,
         },
       },
@@ -8383,6 +8400,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     ];
 
     return candidates.some((candidate) => this.readLowerString(candidate) === 'channel');
+  }
+
+  private extractChannelMessageLinkType(update: MaxUpdate): string | null {
+    const raw = this.asRecord(update.raw);
+    if (!raw) {
+      return null;
+    }
+
+    const message = this.extractRawMessageNode(raw) ?? raw;
+    const link = this.asRecord(message.link);
+    return this.readLowerString(link?.type);
   }
 
   private resolveChannelAutoPostButtons(
