@@ -47,6 +47,7 @@ const SLOT_GROUPS: SlotGroup[] = [
   { label: 'День', start: 12 * 60, end: 18 * 60 },
   { label: 'Вечер', start: 18 * 60, end: 24 * 60 },
 ];
+const PLANNER_NOW_REFRESH_MS = 5_000;
 
 function addDays(value: Date, days: number): Date {
   return new Date(value.getTime() + days * 24 * 60 * 60 * 1_000);
@@ -171,6 +172,7 @@ export function BroadcastSchedulePlanner({
   onSelectionStateChange,
 }: BroadcastSchedulePlannerProps) {
   const [anchorNow] = useState(() => new Date());
+  const [liveNowMs, setLiveNowMs] = useState(() => Date.now());
   const normalizedValue = sortAndUniqueBroadcastSlots(value);
   const scheduledDayKeys = sortDayKeys(
     normalizedValue.map((slot) => getBroadcastScheduleDayKey(slot)),
@@ -193,7 +195,8 @@ export function BroadcastSchedulePlanner({
   const occupiedSet = new Set(sortAndUniqueBroadcastSlots(occupiedSlots));
   const selectedSet = new Set(normalizedValue);
   const pickedDaySet = new Set(pickedDayKeys);
-  const minimumTime = anchorNow.getTime() + 30_000;
+  const minimumTime = liveNowMs + 30_000;
+  const liveTodayKey = getBroadcastScheduleDayKey(new Date(liveNowMs));
   const activeDaySlots = getSelectedDaySlots(activeDayKey, normalizedValue);
   const pickedDayLabel = formatCountLabel(pickedDayKeys.length, 'день', 'дня', 'дней');
   const pickedDaySummary = formatDaySummary(pickedDayKeys);
@@ -214,6 +217,16 @@ export function BroadcastSchedulePlanner({
       onSelectionStateChange?.(nextState);
     },
   );
+
+  useEffect(() => {
+    const timerId = window.setInterval(() => {
+      setLiveNowMs(Date.now());
+    }, PLANNER_NOW_REFRESH_MS);
+
+    return () => {
+      window.clearInterval(timerId);
+    };
+  }, []);
 
   useEffect(() => {
     if (pickedDayKeys.length > 0) {
@@ -300,7 +313,7 @@ export function BroadcastSchedulePlanner({
   function isSlotUnavailable(dayKey: string, minutes: number): boolean {
     const slotIso = buildBroadcastScheduleSlotIso(dayKey, minutes);
     if (new Date(slotIso).getTime() < minimumTime) {
-      return false;
+      return true;
     }
 
     return occupiedSet.has(slotIso) && !selectedSet.has(slotIso);
@@ -473,7 +486,7 @@ export function BroadcastSchedulePlanner({
               const isBeforeWindow = startOfDay(cell).getTime() < windowStart.getTime();
               const isAfterWindow = startOfDay(cell).getTime() > windowEnd.getTime();
               const isDisabled = disabled || isBeforeWindow || isAfterWindow;
-              const isToday = dayKey === getBroadcastScheduleDayKey(anchorNow);
+              const isToday = dayKey === liveTodayKey;
               const isActive = dayKey === activeDayKey;
               const isPicked = pickedDaySet.has(dayKey);
               const dayIndicatorCount =
@@ -753,7 +766,10 @@ export function BroadcastSchedulePlanner({
                   ) : null}
 
                   {!applyToAllPickedDays && activeDaySlots.length > 0 ? (
-                    <div className="broadcast-planner__selected-strip" aria-label="Выбранные слоты дня">
+                    <div
+                      className="broadcast-planner__selected-strip"
+                      aria-label="Выбранные слоты дня"
+                    >
                       {activeDaySlots.map((slot) => (
                         <span key={slot} className="broadcast-planner__selected-chip">
                           {formatBroadcastScheduleSlot(slot).split(', ').pop()}
@@ -779,8 +795,7 @@ export function BroadcastSchedulePlanner({
                           const isMixed =
                             selectedCountForTargets > 0 &&
                             selectedCountForTargets < targetDayKeys.length;
-                          const hasConflict =
-                            conflictTargetCount > 0 && !isSelected && !isMixed;
+                          const hasConflict = conflictTargetCount > 0 && !isSelected && !isMixed;
 
                           return (
                             <button

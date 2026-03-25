@@ -242,6 +242,7 @@ const BROADCAST_MAX_DELAY_MS = 31 * 24 * 60 * 60 * 1000;
 const BROADCAST_IMAGE_SEND_RETRY_DELAYS_MS = [1_500, 3_000, 6_000];
 const BROADCAST_CALENDAR_SLOT_MINUTES = 30;
 const MANAGED_BROADCAST_DUE_BATCH_SIZE = 10;
+const MANAGED_BROADCAST_DUE_MAX_PASSES = 100;
 const MANAGED_BROADCAST_LOCK_STALE_MS = 60_000;
 const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 30;
 const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
@@ -3744,24 +3745,34 @@ export class AdminService {
   }
 
   async processDueManagedBroadcasts(reason: 'startup' | 'scheduled'): Promise<void> {
-    const now = new Date();
-    const staleLockBefore = new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS);
-    const dueRows = await this.prisma.managedBroadcast.findMany({
-      where: {
-        status: PrismaManagedBroadcastStatus.ACTIVE,
-        nextSendAt: { lte: now },
-        OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
-      },
-      orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }],
-      take: MANAGED_BROADCAST_DUE_BATCH_SIZE,
-      select: { id: true },
-    });
+    for (let pass = 0; pass < MANAGED_BROADCAST_DUE_MAX_PASSES; pass += 1) {
+      const now = new Date();
+      const staleLockBefore = new Date(now.getTime() - MANAGED_BROADCAST_LOCK_STALE_MS);
+      const dueRows = await this.prisma.managedBroadcast.findMany({
+        where: {
+          status: PrismaManagedBroadcastStatus.ACTIVE,
+          nextSendAt: { lte: now },
+          OR: [{ lockedAt: null }, { lockedAt: { lt: staleLockBefore } }],
+        },
+        orderBy: [{ nextSendAt: 'asc' }, { createdAt: 'asc' }],
+        take: MANAGED_BROADCAST_DUE_BATCH_SIZE,
+        select: { id: true },
+      });
 
-    for (const row of dueRows) {
-      await this.processManagedBroadcastOccurrence(row.id, reason, staleLockBefore, [
-        PrismaManagedBroadcastStatus.ACTIVE,
-      ]);
+      if (dueRows.length === 0) {
+        return;
+      }
+
+      for (const row of dueRows) {
+        await this.processManagedBroadcastOccurrence(row.id, reason, staleLockBefore, [
+          PrismaManagedBroadcastStatus.ACTIVE,
+        ]);
+      }
     }
+
+    this.logger.warn(
+      `Managed broadcast due backlog was not fully drained after ${MANAGED_BROADCAST_DUE_MAX_PASSES} passes.`,
+    );
   }
 
   private async listManagedBroadcastsForEntity(
@@ -5105,7 +5116,7 @@ export class AdminService {
       }
 
       const delayMs = parsed.getTime() - now.getTime();
-      if (delayMs < BROADCAST_MIN_DELAY_MS) {
+      if (delayMs < 0) {
         if (this.getDateKeyInTimeZone(parsed, options.scheduleTimezone) !== todayKey) {
           throw new BadRequestException(
             'Прошедшие слоты можно оставлять только в пределах сегодняшнего дня.',
@@ -5113,6 +5124,9 @@ export class AdminService {
         }
         pastTodayCount += 1;
         continue;
+      }
+      if (delayMs < BROADCAST_MIN_DELAY_MS) {
+        throw new BadRequestException('Ближайший слот должен быть минимум через 30 секунд.');
       }
       if (delayMs > BROADCAST_MAX_DELAY_MS) {
         throw new BadRequestException('Планирование календаря доступно максимум на 31 день.');

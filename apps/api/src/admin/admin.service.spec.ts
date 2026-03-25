@@ -5825,6 +5825,35 @@ describe('AdminService.sendBroadcast', () => {
     jest.useRealTimers();
   });
 
+  it('keeps draining due managed broadcasts until the current backlog is exhausted', async () => {
+    const prisma = createPrismaMock();
+    prisma.managedBroadcast.findMany
+      .mockResolvedValueOnce([{ id: 'broadcast-1' }])
+      .mockResolvedValueOnce([{ id: 'broadcast-1' }])
+      .mockResolvedValueOnce([]);
+
+    const service = new AdminService(
+      prisma as never,
+      {} as never,
+      { invalidate: jest.fn() } as never,
+      createConfigMock() as never,
+    );
+    const processSpy = jest
+      .spyOn(service as any, 'processManagedBroadcastOccurrence')
+      .mockResolvedValue(undefined);
+
+    await service.processDueManagedBroadcasts('scheduled');
+
+    expect(prisma.managedBroadcast.findMany).toHaveBeenCalledTimes(3);
+    expect(processSpy).toHaveBeenCalledTimes(2);
+    expect(processSpy).toHaveBeenNthCalledWith(1, 'broadcast-1', 'scheduled', expect.any(Date), [
+      'ACTIVE',
+    ]);
+    expect(processSpy).toHaveBeenNthCalledWith(2, 'broadcast-1', 'scheduled', expect.any(Date), [
+      'ACTIVE',
+    ]);
+  });
+
   it('stores future chat broadcast in managed schedules', async () => {
     jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
 
@@ -7341,6 +7370,60 @@ describe('AdminService.sendChannelBroadcast', () => {
     );
     expect(result.scheduledSlots).toEqual(['2026-03-18T20:00:00.000Z']);
     expect(result.scheduledOccurrences).toBe(1);
+  });
+
+  it('rejects calendar slots that are less than 30 seconds away', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-18T18:29:40.000Z'));
+
+    const prisma = createPrismaMock();
+    wireManagedBroadcastDeliveryStore(prisma);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.sendBroadcast(
+        'chat-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        {
+          text: 'Слишком близкий слот',
+          textFormat: 'plain',
+          applyToAllChats: false,
+          buttonEnabled: false,
+          buttonUrl: '',
+          buttonText: 'Открыть',
+          imageEnabled: false,
+          imageBase64: '',
+          imageMimeType: '',
+          imageFileName: '',
+          scheduleMode: 'calendar',
+          scheduleTimezone: 'Europe/Moscow',
+          scheduledSlots: ['2026-03-18T18:30:00.000Z'],
+          sendAt: null,
+          cycleEnabled: false,
+          cycleEveryHours: 1,
+          cycleCount: 1,
+        },
+      ),
+    ).rejects.toThrow('Ближайший слот должен быть минимум через 30 секунд.');
+
+    expect(prisma.managedBroadcast.create).not.toHaveBeenCalled();
   });
 
   it('completes a calendar broadcast immediately when all selected slots for today are already past', async () => {

@@ -4405,7 +4405,10 @@ export class PrivateControlService {
       }
 
       case 'broadcast_send_at': {
-        session.broadcastDraft.sendAt = this.parseBroadcastSendAt(rawText);
+        session.broadcastDraft.sendAt = this.parseBroadcastSendAt(
+          rawText,
+          session.broadcastDraft.scheduleTimezone,
+        );
         session.pendingInput = null;
         session.screen = 'broadcast';
         const view = await this.renderBroadcastScreen(context, session);
@@ -7932,23 +7935,34 @@ export class PrivateControlService {
     return parsed.toISOString();
   }
 
-  private parseBroadcastSendAt(rawText: string): string | null {
+  private parseBroadcastSendAt(rawText: string, timeZone?: string | null): string | null {
     if (!rawText || rawText === '-') {
       return null;
     }
 
-    const parsed = this.parseDateInput(rawText);
+    const parsed = this.parseDateInput(rawText, timeZone);
     return parsed.toISOString();
   }
 
-  private parseDateInput(rawText: string): Date {
+  private parseDateInput(rawText: string, timeZone?: string | null): Date {
     const trimmed = rawText.trim();
 
     const dotDateMatch = /^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2})$/.exec(trimmed);
     if (dotDateMatch) {
       const [, dd, mm, yyyy, hh, min] = dotDateMatch;
-      const parsed = new Date(`${yyyy}-${mm}-${dd}T${hh}:${min}:00+03:00`);
-      if (!Number.isNaN(parsed.getTime())) {
+      const parsed = timeZone?.trim()
+        ? this.parseDateTimeInTimeZone(
+            {
+              year: Number.parseInt(yyyy, 10),
+              month: Number.parseInt(mm, 10),
+              day: Number.parseInt(dd, 10),
+              hour: Number.parseInt(hh, 10),
+              minute: Number.parseInt(min, 10),
+            },
+            timeZone.trim(),
+          )
+        : new Date(`${yyyy}-${mm}-${dd}T${hh}:${min}:00+03:00`);
+      if (parsed && !Number.isNaN(parsed.getTime())) {
         return parsed;
       }
     }
@@ -7959,6 +7973,113 @@ export class PrivateControlService {
     }
 
     return iso;
+  }
+
+  private parseDateTimeInTimeZone(
+    value: {
+      year: number;
+      month: number;
+      day: number;
+      hour: number;
+      minute: number;
+    },
+    timeZone: string,
+  ): Date | null {
+    const targetUtc = Date.UTC(
+      value.year,
+      value.month - 1,
+      value.day,
+      value.hour,
+      value.minute,
+      0,
+      0,
+    );
+    let candidate = new Date(targetUtc);
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const parts = this.getDateTimePartsInTimeZone(candidate, timeZone);
+      if (!parts) {
+        return null;
+      }
+
+      const partsUtc = Date.UTC(
+        parts.year,
+        parts.month - 1,
+        parts.day,
+        parts.hour,
+        parts.minute,
+        0,
+        0,
+      );
+      const diffMs = targetUtc - partsUtc;
+      if (diffMs === 0) {
+        return candidate;
+      }
+
+      candidate = new Date(candidate.getTime() + diffMs);
+    }
+
+    const resolved = this.getDateTimePartsInTimeZone(candidate, timeZone);
+    if (
+      !resolved ||
+      resolved.year !== value.year ||
+      resolved.month !== value.month ||
+      resolved.day !== value.day ||
+      resolved.hour !== value.hour ||
+      resolved.minute !== value.minute
+    ) {
+      return null;
+    }
+
+    return candidate;
+  }
+
+  private getDateTimePartsInTimeZone(
+    value: Date,
+    timeZone: string,
+  ): {
+    year: number;
+    month: number;
+    day: number;
+    hour: number;
+    minute: number;
+  } | null {
+    try {
+      const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23',
+      }).formatToParts(value);
+      const year = Number(parts.find((item) => item.type === 'year')?.value ?? '');
+      const month = Number(parts.find((item) => item.type === 'month')?.value ?? '');
+      const day = Number(parts.find((item) => item.type === 'day')?.value ?? '');
+      const hour = Number(parts.find((item) => item.type === 'hour')?.value ?? '');
+      const minute = Number(parts.find((item) => item.type === 'minute')?.value ?? '');
+
+      if (
+        !Number.isInteger(year) ||
+        !Number.isInteger(month) ||
+        !Number.isInteger(day) ||
+        !Number.isInteger(hour) ||
+        !Number.isInteger(minute)
+      ) {
+        return null;
+      }
+
+      return {
+        year,
+        month,
+        day,
+        hour,
+        minute,
+      };
+    } catch {
+      return null;
+    }
   }
 
   private parseIntInput(rawText: string, min: number, max: number): number {

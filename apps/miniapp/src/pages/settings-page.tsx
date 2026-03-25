@@ -3264,7 +3264,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     if (editingManagedBroadcast) {
       const payload: SendBroadcastPayload = {
         text: normalizedText,
-        textFormat: 'markdown',
+        textFormat: editingManagedBroadcast.textFormat,
         ...handoffPayload,
         imageEnabled: mailingImageEnabled,
         imageBase64: mailingImageEnabled ? mailingImageBase64 : '',
