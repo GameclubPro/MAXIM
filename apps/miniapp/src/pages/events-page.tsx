@@ -325,6 +325,16 @@ function isBanActiveFromViolation(violation: ViolationItem): boolean {
     return false;
   }
 
+  if (
+    violation.ruleCode === 'MANUAL_BAN' &&
+    metadata &&
+    !('banDurationHours' in metadata) &&
+    !('banExpiresAt' in metadata) &&
+    !('unbanScheduledAt' in metadata)
+  ) {
+    return true;
+  }
+
   const createdAtMs = new Date(violation.createdAt).getTime();
   if (!Number.isFinite(createdAtMs)) {
     return false;
