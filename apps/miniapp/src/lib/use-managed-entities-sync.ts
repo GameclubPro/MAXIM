@@ -57,11 +57,13 @@ export function useManagedEntitiesSync({
   entityType,
   enabled = true,
   reloadNonce = 0,
+  resumeOnVisibilityReturn = false,
 }: {
   api: ApiTransport;
   entityType: ManagedEntityKind;
   enabled?: boolean;
   reloadNonce?: number;
+  resumeOnVisibilityReturn?: boolean;
 }): ManagedEntitiesSyncResult {
   const [state, setState] = useState<ManagedEntitiesSyncState>({
     data: null,
@@ -69,7 +71,40 @@ export function useManagedEntitiesSync({
     refreshState: null,
     phase: 'loading',
   });
+  const [visibilityResumeNonce, setVisibilityResumeNonce] = useState(0);
   const latestDataRef = useRef<ChatSummary[] | null>(null);
+
+  useEffect(() => {
+    if (!enabled || !resumeOnVisibilityReturn || typeof document === 'undefined') {
+      return;
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') {
+        return;
+      }
+      if (state.phase !== 'idle' || state.data === null) {
+        return;
+      }
+      if (state.refreshState?.complete || state.refreshState?.backoffActive) {
+        return;
+      }
+
+      setVisibilityResumeNonce((current) => current + 1);
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [
+    enabled,
+    resumeOnVisibilityReturn,
+    state.data,
+    state.phase,
+    state.refreshState?.backoffActive,
+    state.refreshState?.complete,
+  ]);
 
   useEffect(() => {
     if (!enabled) {
@@ -168,7 +203,7 @@ export function useManagedEntitiesSync({
     return () => {
       cancelled = true;
     };
-  }, [api, enabled, entityType, reloadNonce]);
+  }, [api, enabled, entityType, reloadNonce, visibilityResumeNonce]);
 
   return {
     ...state,
