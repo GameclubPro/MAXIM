@@ -13,8 +13,15 @@ export class AdminController {
   ) {}
 
   @Get('me')
-  me(@CurrentUser() user: AuthUser, @Query('chatId') chatId: string | undefined) {
-    return this.adminService.getMe(user, { chatId });
+  me(
+    @CurrentUser() user: AuthUser,
+    @Query('chatId') chatId: string | undefined,
+    @Query('entityType') entityType: string | undefined,
+  ) {
+    return this.adminService.getMe(user, {
+      chatId,
+      entityType: entityType === 'channel' ? 'channel' : entityType === 'chat' ? 'chat' : undefined,
+    });
   }
 
   @Get('chats')

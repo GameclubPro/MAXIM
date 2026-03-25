@@ -1213,6 +1213,7 @@ function createInitialState(): PreviewState {
       username: 'designer',
       displayName: 'Алексей',
       avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
+      profileUrl: buildPreviewProfileUrl('designer'),
     },
     chats: [
       {

@@ -781,28 +781,6 @@ function isValidHttpUrl(value: string): boolean {
   }
 }
 
-function isValidManagedButtonUrl(value: string): boolean {
-  const normalized = value.trim();
-  if (!normalized) {
-    return false;
-  }
-
-  try {
-    const parsed = new URL(normalized);
-    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-      return true;
-    }
-
-    return (
-      parsed.protocol === 'max:' &&
-      parsed.hostname.trim().toLowerCase() === 'user' &&
-      parsed.pathname.replace(/^\/+/u, '').trim().length > 0
-    );
-  } catch {
-    return false;
-  }
-}
-
 function clampBroadcastCycleHours(value: number): number {
   if (!Number.isFinite(value)) {
     return MIN_BROADCAST_CYCLE_HOURS;
@@ -1676,7 +1654,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   });
   const meQuery = useQuery({
     queryKey: ['me', chatId ?? null],
-    queryFn: () => getMe(api, { chatId: chatId ?? undefined }),
+    queryFn: () => getMe(api, { chatId: chatId ?? undefined, entityType: 'chat' }),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
@@ -3170,8 +3148,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     const normalizedButtonText = mailingButtonText.trim();
 
     if (mailingButtonEnabled) {
-      if (!isValidManagedButtonUrl(normalizedButtonUrl)) {
-        setMailingButtonUrlError('Укажите корректную ссылку (http/https или max://user/...).');
+      if (!isValidHttpUrl(normalizedButtonUrl)) {
+        setMailingButtonUrlError('Укажите корректную ссылку (http/https).');
         hasError = true;
       } else {
         setMailingButtonUrlError('');
@@ -3746,7 +3724,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mailingButtonEnabled;
   const mailingButtonDraftValid =
     !mailingButtonEnabled ||
-    (isValidManagedButtonUrl(normalizedMailingButtonUrl) &&
+    (isValidHttpUrl(normalizedMailingButtonUrl) &&
       normalizedMailingButtonText.length > 0 &&
       normalizedMailingButtonText.length <= 32);
   const mailingPlannerPending =

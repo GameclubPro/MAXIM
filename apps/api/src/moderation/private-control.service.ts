@@ -7424,8 +7424,7 @@ export class PrivateControlService {
       if (input.type === 'url') {
         return {
           title: label,
-          description:
-            'Введите ссылку (http/https или max://user/...). Чтобы очистить значение, отправьте `-`.',
+          description: 'Введите ссылку (http/https). Чтобы очистить значение, отправьте `-`.',
         };
       }
 

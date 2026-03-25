@@ -13,6 +13,7 @@ type ManagedLinkPickerTab = 'chat' | 'channel';
 
 export type ManagedLinkButtonFieldsProps = {
   api: ApiTransport;
+  contextEntityType?: ManagedLinkPickerTab;
   urlValue: string;
   onUrlChange: (value: string) => void;
   textValue: string;
@@ -71,10 +72,6 @@ const DEFAULT_BUTTON_TEXT_AUTOFILL_VALUES = new Set([
   'открыть чат',
   'открыть канал',
 ]);
-
-function buildProfileUrl(username: string): string {
-  return `https://max.ru/${encodeURIComponent(username)}`;
-}
 
 function buildProfileIdUrl(userId: string): string {
   return `max://user/${encodeURIComponent(userId)}`;
@@ -188,6 +185,7 @@ function buildManagedLinkOptions(
 
 export function ManagedLinkButtonFields({
   api,
+  contextEntityType = 'chat',
   urlValue,
   onUrlChange,
   textValue,
@@ -211,8 +209,9 @@ export function ManagedLinkButtonFields({
   const comparableUrlValue = useMemo(() => normalizeComparableUrl(urlValue), [urlValue]);
 
   const meQuery = useQuery({
-    queryKey: ['me', 'managed-link-picker', contextChatId || null],
-    queryFn: () => getMe(api, { chatId: contextChatId || undefined }),
+    queryKey: ['me', 'managed-link-picker', contextEntityType, contextChatId || null],
+    queryFn: () =>
+      getMe(api, { chatId: contextChatId || undefined, entityType: contextEntityType }),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });
@@ -239,11 +238,8 @@ export function ManagedLinkButtonFields({
   const profileDisplayName =
     meQuery.data?.displayName?.trim() ||
     (profileUsername ? `@${profileUsername}` : profileUserId ? 'Профиль по ID' : 'Профиль');
-  const profileUrl = profileUsername
-    ? buildProfileUrl(profileUsername)
-    : profileUserId
-      ? buildProfileIdUrl(profileUserId)
-      : '';
+  const profileUrl = meQuery.data?.profileUrl?.trim() ?? '';
+  const legacyProfileIdUrl = profileUserId ? buildProfileIdUrl(profileUserId) : '';
   const chatOptions = useMemo(
     () => buildManagedLinkOptions(chatsQuery.data, 'chat', urlValue),
     [chatsQuery.data, urlValue],
@@ -287,6 +283,19 @@ export function ManagedLinkButtonFields({
       setSearchValue('');
     }
   }, [sheetOpen]);
+
+  useEffect(() => {
+    if (!legacyProfileIdUrl || !profileUrl) {
+      return;
+    }
+
+    if (
+      normalizeComparableUrl(urlValue) === normalizeComparableUrl(legacyProfileIdUrl) &&
+      normalizeComparableUrl(urlValue) !== normalizeComparableUrl(profileUrl)
+    ) {
+      onUrlChange(profileUrl);
+    }
+  }, [legacyProfileIdUrl, onUrlChange, profileUrl, urlValue]);
 
   const activeOptions = sheetTab === 'channel' ? channelOptions : chatOptions;
   const filteredOptions = useMemo(() => {
@@ -344,7 +353,6 @@ export function ManagedLinkButtonFields({
     profileDisplayName,
     profileSubtitle,
     profileUrl,
-    profileUsername,
     selectedEntity,
     urlValue,
   ]);
@@ -463,7 +471,7 @@ export function ManagedLinkButtonFields({
               <small className="field__hint">{urlError}</small>
             ) : (
               <small className="field__hint">
-                Можно выбрать вариант сверху или вставить свою ссылку max.ru или max://user/...
+                Можно выбрать вариант сверху или вставить свою ссылку max.ru.
               </small>
             )}
           </label>

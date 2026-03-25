@@ -241,6 +241,18 @@ const CHANNEL_SUGGESTION_START_PARAM_PREFIX = 'cds-';
 const CHANNEL_DIALOG_TOKEN_PREFIX = 'cdt-';
 const DEFAULT_CHAT_SETTINGS = chatSettingsSchema.parse({});
 const DEFAULT_CHANNEL_SETTINGS = channelSettingsSchema.parse({});
+const CHAT_SETTINGS_BUTTON_URL_KEYS = [
+  'linkBotButtonUrl',
+  'greetingBotButtonUrl',
+  'textFiltersBotButtonUrl',
+  'thematicFiltersBotButtonUrl',
+  'duplicateBotButtonUrl',
+  'messageLimitsBotButtonUrl',
+  'nightModeBotButtonUrl',
+] as const satisfies readonly (keyof ChatSettings)[];
+const CHANNEL_SETTINGS_BUTTON_URL_KEYS = [
+  'postSuggestionsButtonUrl',
+] as const satisfies readonly (keyof ChannelSettings)[];
 const SETTINGS_SECTION_KEYS = {
   links: [
     'linkPolicy',
@@ -451,21 +463,26 @@ export class AdminService {
     this.ownBotUserId = this.normalizeOwnBotUserId(configService.get<string>('MAX_BOT_ID'));
   }
 
-  async getMe(user: AuthUser, options: { chatId?: string } = {}): Promise<Me> {
+  async getMe(
+    user: AuthUser,
+    options: { chatId?: string; entityType?: ManagedEntityType } = {},
+  ): Promise<Me> {
     const fallback: Me = {
       userId: user.userId,
       username: this.readTrimmedString(user.username) ?? null,
       displayName: this.readTrimmedString(user.displayName) ?? null,
       avatarUrl: this.readTrimmedString(user.avatarUrl) ?? null,
+      profileUrl: this.buildUserProfileUrl(this.readTrimmedString(user.username) ?? null),
     };
     const contextChatId =
       this.readTrimmedString(options.chatId) ?? this.readTrimmedString(user.chatId);
+    const contextEntityType = options.entityType === 'channel' ? 'channel' : 'chat';
     const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
 
     if (
       !contextChatId ||
       typeof loadProfiles !== 'function' ||
-      (fallback.username && fallback.displayName && fallback.avatarUrl)
+      (fallback.username && fallback.displayName && fallback.avatarUrl && fallback.profileUrl)
     ) {
       return fallback;
     }
@@ -475,12 +492,20 @@ export class AdminService {
         trafficClass: 'interactive',
       });
       const profile = profiles.get(user.userId);
+      const username = this.readTrimmedString(profile?.username) ?? fallback.username;
+      const displayName =
+        fallback.displayName ?? this.readTrimmedString(profile?.displayName) ?? null;
+      const avatarUrl = fallback.avatarUrl ?? this.readTrimmedString(profile?.avatarUrl) ?? null;
+      const profileUrl =
+        this.buildUserProfileUrl(username) ??
+        this.buildProfileMentionHandoffUrl(contextChatId, contextEntityType, user.userId, displayName);
 
       return {
         userId: user.userId,
-        username: this.readTrimmedString(profile?.username) ?? fallback.username,
-        displayName: fallback.displayName ?? this.readTrimmedString(profile?.displayName) ?? null,
-        avatarUrl: fallback.avatarUrl ?? this.readTrimmedString(profile?.avatarUrl) ?? null,
+        username,
+        displayName,
+        avatarUrl,
+        profileUrl,
       };
     } catch (error: unknown) {
       this.logger.warn(
@@ -1284,7 +1309,7 @@ export class AdminService {
 
     const parsed = chatSettingsSchema.safeParse(chat.settings);
     if (parsed.success) {
-      const normalizedSettings = this.normalizeChatSettings(parsed.data);
+      const normalizedSettings = this.normalizeChatSettings(parsed.data, undefined, chatId);
       const normalizationChanges = this.getChatSettingsNormalizationChanges(
         parsed.data,
         normalizedSettings,
@@ -1384,13 +1409,17 @@ export class AdminService {
         nightModeForceCloseUntil: true,
       },
     });
-    const normalizedSettings = this.normalizeChatSettings(parsed.data, {
-      nightModeForceCloseEnabled: currentSettings?.nightModeForceCloseEnabled ?? false,
-      nightModeForceCloseForever: currentSettings?.nightModeForceCloseForever ?? false,
-      nightModeForceCloseHours: currentSettings?.nightModeForceCloseHours ?? 0,
-      nightModeForceCloseDays: currentSettings?.nightModeForceCloseDays ?? 0,
-      nightModeForceCloseUntil: currentSettings?.nightModeForceCloseUntil ?? '',
-    });
+    const normalizedSettings = this.normalizeChatSettings(
+      parsed.data,
+      {
+        nightModeForceCloseEnabled: currentSettings?.nightModeForceCloseEnabled ?? false,
+        nightModeForceCloseForever: currentSettings?.nightModeForceCloseForever ?? false,
+        nightModeForceCloseHours: currentSettings?.nightModeForceCloseHours ?? 0,
+        nightModeForceCloseDays: currentSettings?.nightModeForceCloseDays ?? 0,
+        nightModeForceCloseUntil: currentSettings?.nightModeForceCloseUntil ?? '',
+      },
+      chatId,
+    );
     await this.assertRequiredSubscriptionSettings(normalizedSettings);
 
     await this.prisma.chat.upsert({
@@ -1741,7 +1770,7 @@ export class AdminService {
 
     const parsed = channelSettingsSchema.safeParse(chat.channelSettings);
     if (parsed.success) {
-      const normalized = this.normalizeChannelSettings(parsed.data);
+      const normalized = this.normalizeChannelSettings(parsed.data, chatId);
       if (this.hasChannelSettingsNormalizationChanges(parsed.data, normalized)) {
         await this.prisma.channelSettings.update({
           where: { chatId },
@@ -1804,7 +1833,7 @@ export class AdminService {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
-    const normalizedSettings = this.normalizeChannelSettings(parsed.data);
+    const normalizedSettings = this.normalizeChannelSettings(parsed.data, chatId);
 
     await this.prisma.chat.upsert({
       where: { id: chatId },
@@ -2483,7 +2512,7 @@ export class AdminService {
     if (!parsed.success) {
       throw new BadRequestException(parsed.error.format());
     }
-    const normalizedSettings = this.normalizeChatSettings(parsed.data);
+    const normalizedSettings = this.normalizeChatSettings(parsed.data, undefined, sourceChatId);
 
     const availableChats = await this.listChats(user);
     const appliedChatIds = Array.from(
@@ -2625,11 +2654,14 @@ export class AdminService {
       | 'nightModeForceCloseDays'
       | 'nightModeForceCloseUntil'
     > | null,
+    chatId?: string,
   ): ChatSettings {
-    return this.normalizeNightModeSettings(
+    const normalized = this.normalizeNightModeSettings(
       this.normalizeMessageLimitsBlockedWords(this.normalizeRequiredSubscriptionSettings(settings)),
       currentState,
     );
+
+    return chatId ? this.normalizeChatSettingsButtonUrls(chatId, normalized) : normalized;
   }
 
   private normalizeRequiredSubscriptionSettings(settings: ChatSettings): ChatSettings {
@@ -2660,6 +2692,45 @@ export class AdminService {
       ...settings,
       messageLimitsBlockedWords,
     };
+  }
+
+  private normalizeChatSettingsButtonUrls(chatId: string, settings: ChatSettings): ChatSettings {
+    let normalizedSettings = settings;
+
+    for (const key of CHAT_SETTINGS_BUTTON_URL_KEYS) {
+      const normalizedUrl = this.normalizeLegacyProfileButtonUrl(settings[key], chatId, 'chat');
+      if (normalizedUrl !== normalizedSettings[key]) {
+        normalizedSettings = {
+          ...normalizedSettings,
+          [key]: normalizedUrl,
+        };
+      }
+    }
+
+    return normalizedSettings;
+  }
+
+  private normalizeChannelSettingsButtonUrls(
+    chatId: string,
+    settings: ChannelSettings,
+  ): ChannelSettings {
+    let normalizedSettings = settings;
+
+    for (const key of CHANNEL_SETTINGS_BUTTON_URL_KEYS) {
+      const normalizedUrl = this.normalizeLegacyProfileButtonUrl(
+        settings[key],
+        chatId,
+        'channel',
+      );
+      if (normalizedUrl !== normalizedSettings[key]) {
+        normalizedSettings = {
+          ...normalizedSettings,
+          [key]: normalizedUrl,
+        };
+      }
+    }
+
+    return normalizedSettings;
   }
 
   private async resolveRequiredSubscriptionChannelHeaders(
@@ -3022,6 +3093,13 @@ export class AdminService {
   private getChatSettingsNormalizationChanges(
     current: Pick<
       ChatSettings,
+      | 'linkBotButtonUrl'
+      | 'greetingBotButtonUrl'
+      | 'textFiltersBotButtonUrl'
+      | 'thematicFiltersBotButtonUrl'
+      | 'duplicateBotButtonUrl'
+      | 'messageLimitsBotButtonUrl'
+      | 'nightModeBotButtonUrl'
       | 'nightModeBotMessageEnabled'
       | 'nightModeCommentsEnabled'
       | 'nightModeBotButtonEnabled'
@@ -3031,6 +3109,13 @@ export class AdminService {
     >,
     normalized: Pick<
       ChatSettings,
+      | 'linkBotButtonUrl'
+      | 'greetingBotButtonUrl'
+      | 'textFiltersBotButtonUrl'
+      | 'thematicFiltersBotButtonUrl'
+      | 'duplicateBotButtonUrl'
+      | 'messageLimitsBotButtonUrl'
+      | 'nightModeBotButtonUrl'
       | 'nightModeBotMessageEnabled'
       | 'nightModeCommentsEnabled'
       | 'nightModeBotButtonEnabled'
@@ -3041,6 +3126,13 @@ export class AdminService {
   ): Partial<
     Pick<
       ChatSettings,
+      | 'linkBotButtonUrl'
+      | 'greetingBotButtonUrl'
+      | 'textFiltersBotButtonUrl'
+      | 'thematicFiltersBotButtonUrl'
+      | 'duplicateBotButtonUrl'
+      | 'messageLimitsBotButtonUrl'
+      | 'nightModeBotButtonUrl'
       | 'nightModeBotMessageEnabled'
       | 'nightModeCommentsEnabled'
       | 'nightModeBotButtonEnabled'
@@ -3052,6 +3144,13 @@ export class AdminService {
     const changes: Partial<
       Pick<
         ChatSettings,
+        | 'linkBotButtonUrl'
+        | 'greetingBotButtonUrl'
+        | 'textFiltersBotButtonUrl'
+        | 'thematicFiltersBotButtonUrl'
+        | 'duplicateBotButtonUrl'
+        | 'messageLimitsBotButtonUrl'
+        | 'nightModeBotButtonUrl'
         | 'nightModeBotMessageEnabled'
         | 'nightModeCommentsEnabled'
         | 'nightModeBotButtonEnabled'
@@ -3060,6 +3159,12 @@ export class AdminService {
         | 'nightModeForceCloseUntil'
       >
     > = {};
+
+    for (const key of CHAT_SETTINGS_BUTTON_URL_KEYS) {
+      if (current[key] !== normalized[key]) {
+        changes[key] = normalized[key];
+      }
+    }
 
     if (current.nightModeBotMessageEnabled !== normalized.nightModeBotMessageEnabled) {
       changes.nightModeBotMessageEnabled = normalized.nightModeBotMessageEnabled;
@@ -3347,7 +3452,13 @@ export class AdminService {
             applyToAllChats: request.payload.applyToAllChats,
             targetChatIds: request.targetChatIds as Prisma.InputJsonValue,
             buttonEnabled: request.payload.buttonEnabled,
-            buttonUrl: request.payload.buttonEnabled ? request.payload.buttonUrl.trim() : '',
+            buttonUrl: request.payload.buttonEnabled
+              ? this.normalizeLegacyProfileButtonUrl(
+                  request.payload.buttonUrl,
+                  sourceChatId,
+                  entityType,
+                )
+              : '',
             buttonText: request.payload.buttonEnabled
               ? request.payload.buttonText.trim() || 'Открыть'
               : 'Открыть',
@@ -3941,7 +4052,9 @@ export class AdminService {
         applyToAllChats: request.payload.applyToAllChats,
         targetChatIds: request.targetChatIds as Prisma.InputJsonValue,
         buttonEnabled: request.payload.buttonEnabled,
-        buttonUrl: request.payload.buttonEnabled ? request.payload.buttonUrl.trim() : '',
+        buttonUrl: request.payload.buttonEnabled
+          ? this.normalizeLegacyProfileButtonUrl(request.payload.buttonUrl, sourceChatId, entityType)
+          : '',
         buttonText: request.payload.buttonEnabled
           ? request.payload.buttonText.trim() || 'Открыть'
           : 'Открыть',
@@ -4147,7 +4260,13 @@ export class AdminService {
           textFormat: this.normalizeBroadcastTextFormat(row.textFormat),
           applyToAllChats: row.applyToAllChats,
           buttonEnabled: row.buttonEnabled,
-          buttonUrl: row.buttonUrl,
+          buttonUrl: row.buttonEnabled
+            ? this.normalizeLegacyProfileButtonUrl(
+                row.buttonUrl,
+                row.sourceChatId,
+                this.fromPrismaEntityType(row.entityType),
+              )
+            : '',
           buttonText: row.buttonText,
           imageEnabled: row.imageEnabled,
           imageBase64: row.imageBase64,
@@ -5154,7 +5273,13 @@ export class AdminService {
       applyToAllChats: row.applyToAllChats,
       targetChatIds,
       buttonEnabled: row.buttonEnabled,
-      buttonUrl: row.buttonUrl,
+      buttonUrl: row.buttonEnabled
+        ? this.normalizeLegacyProfileButtonUrl(
+            row.buttonUrl,
+            row.sourceChatId,
+            this.fromPrismaEntityType(row.entityType),
+          )
+        : '',
       buttonText: row.buttonText,
       imageEnabled: row.imageEnabled,
       imageBase64: row.imageBase64,
@@ -5387,11 +5512,16 @@ export class AdminService {
     const rows: MaxMessageButton[][] = [];
 
     if (options.includeCustomButton) {
+      const normalizedCustomButtonUrl = this.normalizeLegacyProfileButtonUrl(
+        options.customButtonUrl,
+        chatId,
+        entityType,
+      );
       rows.push([
         {
           type: 'link',
           text: options.customButtonText,
-          url: options.customButtonUrl,
+          url: normalizedCustomButtonUrl,
         },
       ]);
     }
@@ -7610,6 +7740,40 @@ export class AdminService {
     return `https://max.ru/${encodeURIComponent(normalizedUsername)}`;
   }
 
+  private extractLegacyMaxUserId(url: string | null | undefined): string | null {
+    if (typeof url !== 'string') {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(url.trim());
+      if (parsed.protocol !== 'max:' || parsed.hostname.trim().toLowerCase() !== 'user') {
+        return null;
+      }
+
+      const userId = decodeURIComponent(parsed.pathname.replace(/^\/+/u, '').trim());
+      return userId || null;
+    } catch {
+      return null;
+    }
+  }
+
+  private normalizeLegacyProfileButtonUrl(
+    url: string | null | undefined,
+    chatId: string,
+    entityType: ManagedEntityType,
+  ): string {
+    const normalizedUrl = typeof url === 'string' ? url.trim() : '';
+    const legacyUserId = this.extractLegacyMaxUserId(normalizedUrl);
+    if (!legacyUserId) {
+      return normalizedUrl;
+    }
+
+    return (
+      this.buildProfileMentionHandoffUrl(chatId, entityType, legacyUserId, null) ?? normalizedUrl
+    );
+  }
+
   private buildProfileMentionHandoffUrl(
     chatId: string,
     entityType: ManagedEntityType,
@@ -7921,14 +8085,18 @@ export class AdminService {
     }
 
     const parsed = channelSettingsSchema.safeParse(settings);
-    return parsed.success ? this.normalizeChannelSettings(parsed.data) : DEFAULT_CHANNEL_SETTINGS;
+    return parsed.success ? this.normalizeChannelSettings(parsed.data, chatId) : DEFAULT_CHANNEL_SETTINGS;
   }
 
-  private normalizeChannelSettings(settings: ChannelSettings): ChannelSettings {
-    return {
+  private normalizeChannelSettings(settings: ChannelSettings, chatId?: string): ChannelSettings {
+    const normalizedSettings = {
       ...settings,
       autoPostButtonsMode: this.normalizeChannelAutoPostButtonsMode(settings),
     };
+
+    return chatId
+      ? this.normalizeChannelSettingsButtonUrls(chatId, normalizedSettings)
+      : normalizedSettings;
   }
 
   private async getPublicChatCommentSettings(
@@ -7957,7 +8125,7 @@ export class AdminService {
 
     const parsed = chatSettingsSchema.safeParse(settings);
     const normalized = parsed.success
-      ? this.normalizeChatSettings(parsed.data)
+      ? this.normalizeChatSettings(parsed.data, undefined, chatId)
       : DEFAULT_CHAT_SETTINGS;
     return {
       commentsEnabled: normalized.commentsEnabled,
@@ -7997,10 +8165,13 @@ export class AdminService {
   }
 
   private hasChannelSettingsNormalizationChanges(
-    current: Pick<ChannelSettings, 'autoPostButtonsMode'>,
-    normalized: Pick<ChannelSettings, 'autoPostButtonsMode'>,
+    current: Pick<ChannelSettings, 'autoPostButtonsMode' | 'postSuggestionsButtonUrl'>,
+    normalized: Pick<ChannelSettings, 'autoPostButtonsMode' | 'postSuggestionsButtonUrl'>,
   ): boolean {
-    return current.autoPostButtonsMode !== normalized.autoPostButtonsMode;
+    return (
+      current.autoPostButtonsMode !== normalized.autoPostButtonsMode ||
+      current.postSuggestionsButtonUrl !== normalized.postSuggestionsButtonUrl
+    );
   }
 
   private async assertChannelCommentAllowed(params: {
