@@ -1353,6 +1353,11 @@ export const meSchema = z.object({
 });
 export type Me = z.infer<typeof meSchema>;
 
+export const updateMyProfileLinkRequestSchema = z.object({
+  profileUrl: z.string().trim().url(),
+});
+export type UpdateMyProfileLinkRequest = z.infer<typeof updateMyProfileLinkRequestSchema>;
+
 export const dateRangeQuerySchema = z.object({
   from: z.string().datetime().optional(),
   to: z.string().datetime().optional(),

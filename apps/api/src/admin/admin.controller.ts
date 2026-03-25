@@ -24,6 +24,16 @@ export class AdminController {
     });
   }
 
+  @Put('me/profile-link')
+  updateMyProfileLink(@CurrentUser() user: AuthUser, @Body() body: unknown) {
+    return this.adminService.updateMyProfileLink(user, body);
+  }
+
+  @Delete('me/profile-link')
+  clearMyProfileLink(@CurrentUser() user: AuthUser) {
+    return this.adminService.clearMyProfileLink(user);
+  }
+
   @Get('chats')
   getChats(@CurrentUser() user: AuthUser, @Query('refresh') refresh: string | undefined) {
     return this.adminService.listChats(user, { refresh: refresh === '1' });

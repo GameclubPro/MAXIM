@@ -51,6 +51,7 @@ function createPrismaMock() {
     updatedAt: new Date('2026-03-01T00:00:00.000Z'),
   };
   let managedBroadcastState: Record<string, unknown> | null = { ...defaultManagedBroadcast };
+  let adminProfilePreferenceState: Record<string, unknown> | null = null;
 
   return {
     chat: {
@@ -97,6 +98,33 @@ function createPrismaMock() {
       upsert: jest.fn().mockResolvedValue(undefined),
       findMany: jest.fn().mockResolvedValue([]),
       deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
+    },
+    adminProfilePreference: {
+      findUnique: jest.fn().mockImplementation(async () => adminProfilePreferenceState),
+      upsert: jest
+        .fn()
+        .mockImplementation(
+          async ({
+            create,
+            update,
+          }: {
+            create: Record<string, unknown>;
+            update: Record<string, unknown>;
+          }) => {
+            adminProfilePreferenceState = {
+              userId: String(create.userId ?? 'admin-1'),
+              profileUrl: String(update.profileUrl ?? create.profileUrl ?? ''),
+              createdAt: new Date('2026-03-01T00:00:00.000Z'),
+              updatedAt: new Date('2026-03-01T00:00:00.000Z'),
+            };
+            return adminProfilePreferenceState;
+          },
+        ),
+      deleteMany: jest.fn().mockImplementation(async () => {
+        const count = adminProfilePreferenceState ? 1 : 0;
+        adminProfilePreferenceState = null;
+        return { count };
+      }),
     },
     domainAllowlist: {
       findMany: jest.fn().mockResolvedValue([]),
@@ -592,6 +620,42 @@ describe('AdminService getMe', () => {
     });
   });
 
+  it('prefers stored manual profile url over MAX-derived links', async () => {
+    const prisma = createPrismaMock();
+    prisma.adminProfilePreference.findUnique.mockResolvedValue({
+      userId: 'admin-1',
+      profileUrl: 'https://max.ru/u/manual-profile',
+    });
+    const maxClient = {
+      getChatMemberProfiles: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.getMe({
+        userId: 'admin-1',
+        username: 'designer',
+        displayName: 'Designer',
+        avatarUrl: 'https://cdn.max/avatar.png',
+        profileUrl: 'https://max.ru/designer',
+        chatId: 'chat-1',
+      }),
+    ).resolves.toEqual({
+      userId: 'admin-1',
+      username: 'designer',
+      displayName: 'Designer',
+      avatarUrl: 'https://cdn.max/avatar.png',
+      profileUrl: 'https://max.ru/u/manual-profile',
+    });
+    expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
+  });
+
   it('keeps direct MAX profile url when init data already has it without username', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -715,6 +779,118 @@ describe('AdminService getMe', () => {
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
+    });
+  });
+
+  it('saves admin profile url and returns updated me payload', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatMemberProfiles: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.updateMyProfileLink(
+        {
+          userId: 'admin-1',
+          username: 'designer',
+          displayName: 'Designer',
+          avatarUrl: 'https://cdn.max/avatar.png',
+        },
+        { profileUrl: 'https://max.ru/u/f9LHodD0cOLDeW4Qn-r3CvJ6NeXA2IfWxWaphFrDIJB0cQDkdTehEAe4HI8' },
+      ),
+    ).resolves.toEqual({
+      userId: 'admin-1',
+      username: 'designer',
+      displayName: 'Designer',
+      avatarUrl: 'https://cdn.max/avatar.png',
+      profileUrl: 'https://max.ru/u/f9LHodD0cOLDeW4Qn-r3CvJ6NeXA2IfWxWaphFrDIJB0cQDkdTehEAe4HI8',
+    });
+
+    expect(prisma.adminProfilePreference.upsert).toHaveBeenCalledWith({
+      where: { userId: 'admin-1' },
+      create: {
+        userId: 'admin-1',
+        profileUrl: 'https://max.ru/u/f9LHodD0cOLDeW4Qn-r3CvJ6NeXA2IfWxWaphFrDIJB0cQDkdTehEAe4HI8',
+      },
+      update: {
+        profileUrl: 'https://max.ru/u/f9LHodD0cOLDeW4Qn-r3CvJ6NeXA2IfWxWaphFrDIJB0cQDkdTehEAe4HI8',
+      },
+    });
+  });
+
+  it('rejects non-MAX profile urls for manual profile save', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatMemberProfiles: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.updateMyProfileLink(
+        {
+          userId: 'admin-1',
+          username: 'designer',
+          displayName: 'Designer',
+          avatarUrl: 'https://cdn.max/avatar.png',
+        },
+        { profileUrl: 'https://example.com/designer' },
+      ),
+    ).rejects.toThrow('Укажите корректную ссылку профиля MAX на домене max.ru.');
+  });
+
+  it('clears stored admin profile url', async () => {
+    const prisma = createPrismaMock();
+    await prisma.adminProfilePreference.upsert({
+      where: { userId: 'admin-1' },
+      create: {
+        userId: 'admin-1',
+        profileUrl: 'https://max.ru/u/manual-profile',
+      },
+      update: {
+        profileUrl: 'https://max.ru/u/manual-profile',
+      },
+    });
+    const maxClient = {
+      getChatMemberProfiles: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.clearMyProfileLink({
+        userId: 'admin-1',
+        username: 'designer',
+        displayName: 'Designer',
+        avatarUrl: 'https://cdn.max/avatar.png',
+      }),
+    ).resolves.toEqual({
+      userId: 'admin-1',
+      username: 'designer',
+      displayName: 'Designer',
+      avatarUrl: 'https://cdn.max/avatar.png',
+      profileUrl: 'https://max.ru/designer',
+    });
+
+    expect(prisma.adminProfilePreference.deleteMany).toHaveBeenCalledWith({
+      where: { userId: 'admin-1' },
     });
   });
 });

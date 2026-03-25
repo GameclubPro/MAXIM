@@ -1,12 +1,13 @@
 import type { ChatSummary } from '@maxim/contracts';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useDeferredValue, useEffect, useId, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useParams } from 'react-router-dom';
 import { cn } from '../lib/cn';
-import { getChannels, getChats, getMe } from '../lib/api/root-client';
+import { getChannels, getChats, getMe, updateMyProfileLink } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { maxSelectionChanged } from '../lib/max-bridge';
+import { useToast } from './ui/toast';
 import { SegmentedControl } from './ui/segmented-control';
 
 type ManagedLinkPickerTab = 'chat' | 'channel';
@@ -114,6 +115,30 @@ function formatUrlPreview(value: string): string {
   }
 }
 
+function normalizeMaxProfileUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return '';
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return '';
+    }
+
+    const hostname = parsed.hostname.toLowerCase();
+    if (hostname !== 'max.ru' && hostname !== 'www.max.ru') {
+      return '';
+    }
+
+    parsed.hash = '';
+    return parsed.toString();
+  } catch {
+    return '';
+  }
+}
+
 function formatLinkCount(count: number): string {
   const absCount = Math.abs(count) % 100;
   const lastDigit = absCount % 10;
@@ -196,6 +221,8 @@ export function ManagedLinkButtonFields({
   textPlaceholder = 'Открыть',
   textMaxLength = 32,
 }: ManagedLinkButtonFieldsProps) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToast();
   const { chatId: routeChatId } = useParams();
   const contextChatId = routeChatId?.trim() ?? '';
   const sheetTitleId = useId();
@@ -250,6 +277,8 @@ export function ManagedLinkButtonFields({
   const profileDisplayName =
     meQuery.data?.displayName?.trim() ||
     (profileUsername ? `@${profileUsername}` : profileUrl ? 'Публичный профиль' : 'Профиль');
+  const profileCandidateUrl = useMemo(() => normalizeMaxProfileUrl(urlValue), [urlValue]);
+  const canSaveProfileCandidate = Boolean(profileCandidateUrl) && !urlError;
   const chatOptions = useMemo(
     () => buildManagedLinkOptions(chatsQuery.data, 'chat', urlValue),
     [chatsQuery.data, urlValue],
@@ -362,8 +391,32 @@ export function ManagedLinkButtonFields({
   const isProfileActive = Boolean(
     profileUrl && normalizeComparableUrl(profileUrl) === comparableUrlValue,
   );
+  const isProfileCandidateCurrent = Boolean(
+    profileCandidateUrl &&
+      profileUrl &&
+      normalizeComparableUrl(profileCandidateUrl) === normalizeComparableUrl(profileUrl),
+  );
   const isChatActive = selectedEntity?.entityType === 'chat';
   const isChannelActive = selectedEntity?.entityType === 'channel';
+  const saveProfileMutation = useMutation({
+    mutationFn: () => updateMyProfileLink(api, profileCandidateUrl),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ['me'] });
+      pushToast({
+        tone: 'success',
+        title: 'Профиль сохранён',
+        description:
+          'Эта ссылка сохранена у нас и теперь будет подставляться в быстрый пресет «Мой профиль MAX».',
+      });
+    },
+    onError: (error: unknown) => {
+      pushToast({
+        tone: 'danger',
+        title: 'Не удалось сохранить профиль',
+        description: error instanceof Error ? error.message : 'Попробуйте ещё раз.',
+      });
+    },
+  });
 
   function maybeAutofillButtonText(nextValue: string) {
     const normalizedCurrentValue = textValue.trim().toLowerCase();
@@ -483,6 +536,27 @@ export function ManagedLinkButtonFields({
               </small>
             )}
           </label>
+
+          {canSaveProfileCandidate ? (
+            <div className="settings-button-fields">
+              <button
+                type="button"
+                className="button button--accent"
+                style={{ width: '100%' }}
+                onClick={() => saveProfileMutation.mutate()}
+                disabled={disabled || saveProfileMutation.isPending}
+              >
+                {saveProfileMutation.isPending
+                  ? 'Сохраняем профиль...'
+                  : 'Сохранить как мой профиль MAX'}
+              </button>
+              <small className="field__hint">
+                {isProfileCandidateCurrent
+                  ? 'Можно сохранить эту ссылку явно у нас, чтобы быстрый пресет не зависел от того, что вернёт MAX.'
+                  : 'Сохраняем текущую ссылку у нас, и быстрый пресет «Мой профиль MAX» будет подставлять её автоматически.'}
+              </small>
+            </div>
+          ) : null}
 
           <label className={cn('field settings-text-field', textError && 'field--error')}>
             <span className="field__label">{textLabel}</span>
