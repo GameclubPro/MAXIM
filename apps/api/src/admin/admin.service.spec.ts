@@ -8559,9 +8559,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
     expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
       '555001',
-      expect.stringContaining('Новая предложка поста'),
+      expect.stringContaining('[Пользователь](max://user/user-1)'),
       expect.objectContaining({
         imagePayload: { token: 'upload-suggest-1' },
+        textFormat: 'markdown',
         buttons: [
           [
             expect.objectContaining({ text: '📰 Опубликовать', type: 'callback' }),
@@ -8697,8 +8698,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledTimes(1);
     expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
       '98315271',
-      expect.stringContaining('Новая предложка поста'),
-      expect.any(Object),
+      expect.stringContaining('[Пользователь](max://user/user-1)'),
+      expect.objectContaining({
+        textFormat: 'markdown',
+      }),
     );
     expect(prisma.auditLog.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -8855,8 +8858,8 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
       '555001',
       'mid-admin-review-1',
-      expect.stringContaining('Предложка опубликована'),
-      { buttons: [] },
+      expect.stringContaining('**Контент публикации**'),
+      { buttons: [], textFormat: 'markdown' },
     );
   });
 

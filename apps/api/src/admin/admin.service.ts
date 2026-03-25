@@ -9500,10 +9500,12 @@ export class AdminService {
           ? await this.maxClient.sendMessageImmediateWithId(privateChatId, message, {
               ...(uploadedImagePayload ? { imagePayload: uploadedImagePayload } : {}),
               buttons,
+              textFormat: 'markdown',
             })
           : await this.maxClient.sendMessageImmediateToUser(adminUserId, message, {
               ...(uploadedImagePayload ? { imagePayload: uploadedImagePayload } : {}),
               buttons,
+              textFormat: 'markdown',
             });
 
         deliveredAdminUserIds.push(adminUserId);
@@ -9598,15 +9600,27 @@ export class AdminService {
         : params.status === 'cancelled'
           ? 'Предложка отменена'
           : 'Новая предложка поста';
+    const normalizedActorUserId = params.actorUserId.trim();
+    const senderLine = normalizedActorUserId
+      ? `[${this.escapeMarkdown(params.actorName)}](max://user/${encodeURIComponent(normalizedActorUserId)})`
+      : this.escapeMarkdown(params.actorName);
 
     return [
-      title,
+      this.markdownTitle(title),
       '',
-      `Канал: ${params.channelTitle}`,
-      `Отправитель: ${params.actorName} (${params.actorUserId})`,
-      ...(params.reviewedBy ? [`Решение: ${params.reviewedBy}`] : []),
+      `Канал: ${this.escapeMarkdown(params.channelTitle)}`,
+      `Отправитель: ${senderLine}`,
+      ...(normalizedActorUserId
+        ? [`MAX ID: \`${this.escapeMarkdown(normalizedActorUserId)}\``]
+        : []),
+      ...(params.reviewedBy ? [`Решение: ${this.escapeMarkdown(params.reviewedBy)}`] : []),
       ...(params.publishedUrl ? [params.publishedUrl] : []),
-      ...(normalizedText ? ['', normalizedText] : []),
+      '',
+      '────────',
+      this.markdownTitle('Контент публикации'),
+      ...(normalizedText
+        ? [this.escapeMarkdown(normalizedText)]
+        : ['_Фото без подписи. Смотрите вложение выше._']),
     ].join('\n');
   }
 
@@ -9767,6 +9781,7 @@ export class AdminService {
           message,
           {
             buttons: [],
+            textFormat: 'markdown',
           },
         );
       } catch (error: unknown) {
@@ -9810,6 +9825,14 @@ export class AdminService {
         };
       })
       .filter((entry): entry is ChannelSuggestionAdminDelivery => entry !== null);
+  }
+
+  private markdownTitle(title: string): string {
+    return `**${this.escapeMarkdown(title)}**`;
+  }
+
+  private escapeMarkdown(value: string): string {
+    return value.replace(/([\\_*[\]()`])/g, '\\$1');
   }
 
   private parseChannelSuggestionFromBotPayload(body: unknown): ChannelSuggestionFromBotPayload {
