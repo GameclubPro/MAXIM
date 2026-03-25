@@ -8320,6 +8320,104 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
+  it('accepts a photo-only suggestion from the mini app and returns pending review metadata', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue({
+      postSuggestionsEnabled: false,
+    });
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        recipient_chat_id: '555001',
+      },
+    ]);
+    prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+      id: 'suggestion-image-only-1',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-25T09:10:00.000Z'),
+    });
+    prisma.auditLog.update.mockResolvedValue({
+      id: 'suggestion-image-only-1',
+      actorUserId: 'user-1',
+      payload: {
+        type: 'suggest',
+        text: '',
+        delivered: true,
+        deliveredToUserId: 'admin-1',
+        reviewStatus: 'pending',
+        hasImage: true,
+        imageFileName: 'suggestion.webp',
+        source: 'miniapp_dialog',
+      },
+      createdAt: new Date('2026-03-25T09:10:00.000Z'),
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-6', url: null }),
+      uploadImage: jest.fn().mockResolvedValue({ token: 'upload-suggest-miniapp-1' }),
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-suggestion-admin-2', url: null }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const suggestToken = await publishSuggestDialogToken(service, maxClient);
+
+    const result = await service.createChannelDialogMessage(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      'suggest',
+      {
+        token: suggestToken,
+        text: '',
+        imageBase64:
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4////fwAJ+wP9KobjigAAAABJRU5ErkJggg==',
+        imageMimeType: 'image/png',
+        imageFileName: 'suggestion.webp',
+      },
+    );
+
+    expect(maxClient.uploadImage).toHaveBeenCalledWith(
+      expect.any(Buffer),
+      'suggestion.webp',
+      'image/png',
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      message: {
+        id: 'suggestion-image-only-1',
+        type: 'suggest',
+        text: '',
+        delivered: true,
+        reviewStatus: 'pending',
+        hasImage: true,
+        imageFileName: 'suggestion.webp',
+      },
+    });
+  });
+
   it('marks bot-submitted suggestions with private_bot source', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
@@ -8668,12 +8766,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         lastEventAt: '2026-03-10T12:00:00.000Z',
         entityType: 'channel',
       }),
-      sendMessageImmediateWithResolvedLink: jest
-        .fn()
-        .mockResolvedValue({
-          messageId: 'mid-channel-post-1',
-          url: 'https://max.ru/chats/channel-1/message/100',
-        }),
+      sendMessageImmediateWithResolvedLink: jest.fn().mockResolvedValue({
+        messageId: 'mid-channel-post-1',
+        url: 'https://max.ru/chats/channel-1/message/100',
+      }),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
     };
     const chatContextCache = {
@@ -8949,6 +9045,74 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       updatedExisting: true,
       publishedAt: '2026-03-10T12:00:00.000Z',
     });
+  });
+
+  it('rejects empty text and photo uploads in channel comments', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue(
+      channelSettingsSchema.parse({
+        commentsEnabled: true,
+      }),
+    );
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-9', url: null }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const commentsToken = await publishCommentsDialogToken(service, maxClient);
+
+    await expect(
+      service.createChannelDialogMessage(
+        'channel-1',
+        {
+          userId: 'user-1',
+          username: 'user1',
+          displayName: 'Пользователь',
+          chatTitle: null,
+        },
+        'comments',
+        {
+          token: commentsToken,
+          text: '   ',
+        },
+      ),
+    ).rejects.toThrow('Введите текст комментария.');
+
+    await expect(
+      service.createChannelDialogMessage(
+        'channel-1',
+        {
+          userId: 'user-1',
+          username: 'user1',
+          displayName: 'Пользователь',
+          chatTitle: null,
+        },
+        'comments',
+        {
+          token: commentsToken,
+          text: 'Комментарий',
+          imageBase64: 'abc',
+          imageMimeType: 'image/png',
+          imageFileName: 'comment.png',
+        },
+      ),
+    ).rejects.toThrow('Фото доступно только в предложке.');
   });
 
   it('rejects channel comments with links when moderation blocks links', async () => {

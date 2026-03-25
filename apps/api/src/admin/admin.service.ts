@@ -26,6 +26,7 @@ import {
   type ChannelDialogMessage,
   type ChannelDialogReactionGroup,
   type ChannelDialogReplyPreview,
+  type ChannelDialogSuggestionReviewStatus,
   type ChannelDialogType,
   type ChannelStatsBucket,
   type ChannelStatsRange,
@@ -2464,6 +2465,9 @@ export class AdminService {
 
     const threadId = this.resolveChannelDialogThreadId(chatId, dialogType, parsed.data.token);
     const text = parsed.data.text.trim();
+    const imageBase64 = parsed.data.imageBase64.trim();
+    const imageMimeType = parsed.data.imageMimeType.trim();
+    const imageFileName = parsed.data.imageFileName.trim();
     const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
     const authorAvatarUrl = this.readTrimmedString(user.avatarUrl);
     const replyTo = await this.resolveDialogReplyPreview({
@@ -2479,8 +2483,20 @@ export class AdminService {
       throw new BadRequestException('Комментарии для этого канала сейчас закрыты.');
     }
 
+    if (dialogType === 'comments' && imageBase64) {
+      throw new BadRequestException('Фото доступно только в предложке.');
+    }
+
+    if (dialogType === 'comments' && !text) {
+      throw new BadRequestException('Введите текст комментария.');
+    }
+
     if (dialogType === 'suggest' && !channelSettings.postSuggestionsEnabled && !threadId) {
       throw new BadRequestException('Предложить пост для этого канала сейчас нельзя.');
+    }
+
+    if (dialogType === 'suggest' && !text && !imageBase64) {
+      throw new BadRequestException('Введите текст или добавьте фото.');
     }
 
     if (dialogType === 'comments' && channelSettings.commentsModerationEnabled) {
@@ -2500,6 +2516,9 @@ export class AdminService {
         threadId,
         source,
         text,
+        imageBase64: imageBase64 || null,
+        imageMimeType: imageMimeType || null,
+        imageFileName: imageFileName || null,
       });
       return createChannelDialogMessageResponseSchema.parse({
         ok: true,
@@ -2628,6 +2647,7 @@ export class AdminService {
 
     const threadId = this.resolveChatDialogThreadId(chatId, dialogType, parsed.data.token);
     const text = parsed.data.text.trim();
+    const imageBase64 = parsed.data.imageBase64.trim();
     const authorDisplayName = user.displayName?.trim() ? user.displayName.trim() : user.username;
     const authorAvatarUrl = this.readTrimmedString(user.avatarUrl);
     const replyTo = await this.resolveDialogReplyPreview({
@@ -2641,6 +2661,14 @@ export class AdminService {
 
     if (!chatSettings.commentsEnabled) {
       throw new BadRequestException('Комментарии для этого чата сейчас закрыты.');
+    }
+
+    if (imageBase64) {
+      throw new BadRequestException('Фото доступно только в предложке.');
+    }
+
+    if (!text) {
+      throw new BadRequestException('Введите текст комментария.');
     }
 
     const created = await this.prisma.auditLog.create({
@@ -8676,6 +8704,11 @@ export class AdminService {
     const replyTo = this.readDialogReplyPreview(payload.replyTo);
     const delivered = payload.delivered === true;
     const deliveredToUserId = this.readTrimmedString(payload.deliveredToUserId);
+    const reviewStatus = this.readChannelDialogSuggestionReviewStatus(payload.reviewStatus);
+    const publishedUrl = this.readTrimmedString(payload.publishedUrl);
+    const hasImage =
+      payload.hasImage === true || Boolean(this.readTrimmedString(payload.imageBase64));
+    const imageFileName = this.readTrimmedString(payload.imageFileName);
 
     return {
       id: row.id,
@@ -8689,8 +8722,28 @@ export class AdminService {
       replyToMessageId: replyTo?.messageId ?? null,
       replyTo: replyTo ?? null,
       reactionGroups: this.readDialogReactionGroups(payload.reactions, currentUserId),
-      ...(type === 'suggest' ? { delivered, deliveredToUserId: deliveredToUserId ?? null } : {}),
+      ...(type === 'suggest'
+        ? {
+            delivered,
+            deliveredToUserId: deliveredToUserId ?? null,
+            reviewStatus: reviewStatus ?? 'pending',
+            publishedUrl: publishedUrl ?? null,
+            hasImage,
+            imageFileName: imageFileName ?? null,
+          }
+        : {}),
     };
+  }
+
+  private readChannelDialogSuggestionReviewStatus(
+    value: unknown,
+  ): ChannelDialogSuggestionReviewStatus | null {
+    const normalized = this.readLowerString(value);
+    if (normalized === 'pending' || normalized === 'published' || normalized === 'cancelled') {
+      return normalized;
+    }
+
+    return null;
   }
 
   private async resolveDialogReplyPreview(params: {
@@ -9667,9 +9720,7 @@ export class AdminService {
     }
 
     if (includeSuggestButton) {
-      buttons.push([
-        this.buildChannelDialogButton(chatId, 'suggest', threadId, suggestButtonText),
-      ]);
+      buttons.push([this.buildChannelDialogButton(chatId, 'suggest', threadId, suggestButtonText)]);
     }
 
     return {

@@ -12,6 +12,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ChangeEvent as ReactChangeEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
@@ -38,6 +39,7 @@ import {
   PREVIEW_CHAT_ID,
   PREVIEW_CHAT_TITLE,
 } from '../lib/design-preview';
+import { prepareBroadcastImage } from '../lib/broadcast-image';
 import { readChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId, type LastEntityType } from '../lib/last-chat';
 import { maxImpact, maxSelectionChanged } from '../lib/max-bridge';
@@ -135,7 +137,9 @@ function summarizeReplyText(value: string, maxLength = 96): string {
   return `${normalized.slice(0, maxLength - 1).trimEnd()}…`;
 }
 
-function resolveMessageWidthTone(message: ChannelDialogMessage): 'is-wide' | 'is-medium' | 'is-compact' {
+function resolveMessageWidthTone(
+  message: ChannelDialogMessage,
+): 'is-wide' | 'is-medium' | 'is-compact' {
   if (message.replyTo) {
     return 'is-wide';
   }
@@ -152,7 +156,274 @@ function resolveMessageWidthTone(message: ChannelDialogMessage): 'is-wide' | 'is
   return 'is-medium';
 }
 
-function buildSwipeReplyStyle(preview: SwipeReplyPreview | null, messageId: string): CSSProperties | undefined {
+function resolveSuggestionStatus(message: ChannelDialogMessage): SuggestionStatusPresentation {
+  if (message.reviewStatus === 'published') {
+    return {
+      badge: 'Опубликовано',
+      headline: 'Пост вышел в канале',
+      note: 'Редактор взял предложку в публикацию.',
+      tone: 'published',
+    };
+  }
+
+  if (message.reviewStatus === 'cancelled') {
+    return {
+      badge: 'Отклонено',
+      headline: 'Идея не ушла в публикацию',
+      note: 'Можно доработать и отправить заново.',
+      tone: 'cancelled',
+    };
+  }
+
+  if (message.delivered === false) {
+    return {
+      badge: 'Сохраняем',
+      headline: 'Пробуем доставить редактору',
+      note: 'Сообщение сохранено и остаётся в очереди отправки.',
+      tone: 'pending',
+    };
+  }
+
+  return {
+    badge: 'На проверке',
+    headline: 'Редактор получил предложку',
+    note: 'Эту карточку видят только админы канала.',
+    tone: 'pending',
+  };
+}
+
+function resolveSuggestionText(message: ChannelDialogMessage): string {
+  const normalized = message.text.trim();
+  return normalized || 'Предложение отправлено только с фото.';
+}
+
+function resolveSuggestionAttachmentLabel(message: ChannelDialogMessage): string {
+  const fileName = message.imageFileName?.trim();
+  return fileName ? `Фото · ${fileName}` : 'Фото приложено';
+}
+
+const SUGGEST_INTRO_STYLE: CSSProperties = {
+  display: 'grid',
+  gap: '8px',
+  padding: '14px 14px 16px',
+  borderRadius: '22px',
+  borderColor: 'rgba(255, 233, 217, 0.96)',
+  background: 'rgba(255, 249, 244, 0.96)',
+  boxShadow: '0 16px 34px rgba(181, 99, 47, 0.08)',
+};
+
+const SUGGEST_INTRO_EYEBROW_STYLE: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  width: 'fit-content',
+  minHeight: '28px',
+  padding: '0 11px',
+  borderRadius: '999px',
+  background: 'rgba(255, 122, 61, 0.12)',
+  color: 'rgba(163, 74, 20, 0.9)',
+  fontSize: '0.69rem',
+  fontWeight: 900,
+  letterSpacing: '0.04em',
+  textTransform: 'uppercase',
+};
+
+const SUGGEST_INTRO_TITLE_STYLE: CSSProperties = {
+  fontSize: '0.98rem',
+  lineHeight: '1.16',
+  letterSpacing: '-0.02em',
+  color: 'rgba(41, 28, 18, 0.92)',
+};
+
+const SUGGEST_BADGES_ROW_STYLE: CSSProperties = {
+  display: 'flex',
+  flexWrap: 'wrap',
+  gap: '8px',
+};
+
+const SUGGEST_BADGE_STYLE: CSSProperties = {
+  minHeight: '26px',
+  padding: '0 10px',
+  borderRadius: '999px',
+  background: 'rgba(255, 255, 255, 0.78)',
+  color: 'rgba(88, 57, 32, 0.78)',
+  display: 'inline-flex',
+  alignItems: 'center',
+  fontSize: '0.7rem',
+  fontWeight: 800,
+};
+
+const SUGGEST_CARD_STYLE: CSSProperties = {
+  display: 'grid',
+  gap: '10px',
+  minWidth: 0,
+  padding: '14px',
+  borderRadius: '22px',
+  border: '1px solid rgba(255, 236, 224, 0.98)',
+  background: 'rgba(255, 250, 246, 0.98)',
+  boxShadow: '0 14px 30px rgba(181, 99, 47, 0.08)',
+};
+
+const SUGGEST_CARD_HEAD_STYLE: CSSProperties = {
+  display: 'grid',
+  gap: '8px',
+};
+
+const SUGGEST_CARD_ROW_STYLE: CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  justifyContent: 'space-between',
+  gap: '10px',
+  flexWrap: 'wrap',
+};
+
+const SUGGEST_CARD_EYEBROW_STYLE: CSSProperties = {
+  color: 'rgba(120, 74, 43, 0.72)',
+  fontSize: '0.72rem',
+  fontWeight: 800,
+  letterSpacing: '0.02em',
+  textTransform: 'uppercase',
+};
+
+const SUGGEST_CARD_TIME_STYLE: CSSProperties = {
+  minHeight: '28px',
+  padding: '0 10px',
+  borderRadius: '999px',
+  background: 'rgba(255, 255, 255, 0.84)',
+  color: 'rgba(104, 77, 58, 0.66)',
+  display: 'inline-flex',
+  alignItems: 'center',
+  fontSize: '0.72rem',
+  fontWeight: 800,
+};
+
+const SUGGEST_CARD_TITLE_STYLE: CSSProperties = {
+  fontSize: '0.96rem',
+  lineHeight: '1.2',
+  color: 'rgba(35, 28, 23, 0.92)',
+};
+
+const SUGGEST_CARD_TEXT_STYLE: CSSProperties = {
+  margin: 0,
+  color: 'rgba(33, 27, 24, 0.88)',
+  lineHeight: '1.46',
+  whiteSpace: 'pre-wrap',
+};
+
+const SUGGEST_CARD_MUTED_TEXT_STYLE: CSSProperties = {
+  color: 'rgba(94, 70, 54, 0.64)',
+  fontStyle: 'italic',
+};
+
+const SUGGEST_CARD_ATTACHMENT_STYLE: CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: '8px',
+  width: 'fit-content',
+  maxWidth: '100%',
+  minHeight: '36px',
+  padding: '0 12px',
+  borderRadius: '16px',
+  border: '1px solid rgba(236, 194, 162, 0.66)',
+  background: 'rgba(255, 248, 242, 0.88)',
+  color: 'rgba(96, 64, 43, 0.8)',
+  fontSize: '0.78rem',
+  fontWeight: 700,
+};
+
+const SUGGEST_CARD_ATTACHMENT_BADGE_STYLE: CSSProperties = {
+  minHeight: '24px',
+  padding: '0 8px',
+  borderRadius: '999px',
+  background: 'rgba(255, 122, 61, 0.12)',
+  color: 'rgba(163, 74, 20, 0.9)',
+  display: 'inline-flex',
+  alignItems: 'center',
+  fontSize: '0.68rem',
+  fontWeight: 900,
+  letterSpacing: '0.03em',
+  textTransform: 'uppercase',
+};
+
+const SUGGEST_CARD_NOTE_STYLE: CSSProperties = {
+  color: 'rgba(94, 70, 54, 0.7)',
+  fontSize: '0.74rem',
+  lineHeight: '1.34',
+};
+
+const SUGGEST_CARD_LINK_STYLE: CSSProperties = {
+  minHeight: '34px',
+  padding: '0 14px',
+  borderRadius: '999px',
+  background: 'color-mix(in srgb, var(--dialog-accent) 16%, white)',
+  color: 'color-mix(in srgb, var(--dialog-accent) 76%, black)',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  textDecoration: 'none',
+  fontSize: '0.76rem',
+  fontWeight: 900,
+  letterSpacing: '0.01em',
+};
+
+const SUGGEST_EMPTY_STYLE: CSSProperties = {
+  display: 'grid',
+  gap: '6px',
+  textAlign: 'left',
+  padding: '18px',
+};
+
+const SUGGEST_EMPTY_TITLE_STYLE: CSSProperties = {
+  color: 'rgba(35, 28, 23, 0.9)',
+  fontSize: '0.96rem',
+};
+
+const SUGGEST_EMPTY_COPY_STYLE: CSSProperties = {
+  margin: 0,
+  color: 'rgba(94, 70, 54, 0.72)',
+  fontSize: '0.84rem',
+  lineHeight: '1.45',
+  fontWeight: 500,
+};
+
+function buildSuggestionStatusStyle(tone: SuggestionStatusPresentation['tone']): CSSProperties {
+  const baseStyle: CSSProperties = {
+    minHeight: '30px',
+    padding: '0 11px',
+    borderRadius: '999px',
+    display: 'inline-flex',
+    alignItems: 'center',
+    fontSize: '0.74rem',
+    fontWeight: 900,
+    letterSpacing: '0.01em',
+  };
+
+  if (tone === 'published') {
+    return {
+      ...baseStyle,
+      color: '#127456',
+      background: 'rgba(31, 169, 126, 0.14)',
+    };
+  }
+
+  if (tone === 'cancelled') {
+    return {
+      ...baseStyle,
+      color: '#9a3448',
+      background: 'rgba(214, 91, 120, 0.14)',
+    };
+  }
+
+  return {
+    ...baseStyle,
+    color: '#9a5a14',
+    background: 'rgba(240, 164, 43, 0.15)',
+  };
+}
+
+function buildSwipeReplyStyle(
+  preview: SwipeReplyPreview | null,
+  messageId: string,
+): CSSProperties | undefined {
   if (!preview || preview.messageId !== messageId) {
     return undefined;
   }
@@ -170,15 +441,13 @@ function buildAdminBubbleStyle(isAdmin: boolean, isOwnMessage: boolean): CSSProp
 
   if (isOwnMessage) {
     return {
-      background:
-        'linear-gradient(160deg, rgba(255, 231, 182, 0.96), rgba(255, 244, 220, 0.95))',
+      background: 'linear-gradient(160deg, rgba(255, 231, 182, 0.96), rgba(255, 244, 220, 0.95))',
       borderColor: 'rgba(225, 176, 82, 0.36)',
     };
   }
 
   return {
-    background:
-      'linear-gradient(180deg, rgba(255, 249, 237, 0.98), rgba(255, 243, 214, 0.96))',
+    background: 'linear-gradient(180deg, rgba(255, 249, 237, 0.98), rgba(255, 243, 214, 0.96))',
     borderColor: 'rgba(224, 180, 96, 0.34)',
   };
 }
@@ -210,7 +479,9 @@ function resolveNextUnreadMessageId(
     return currentLastMessageId ?? messages[messages.length - 1]?.id ?? null;
   }
 
-  const previousMessageIndex = messages.findIndex((message) => message.id === previousLastMessageId);
+  const previousMessageIndex = messages.findIndex(
+    (message) => message.id === previousLastMessageId,
+  );
   if (previousMessageIndex < 0) {
     return currentLastMessageId ?? messages[messages.length - 1]?.id ?? null;
   }
@@ -379,18 +650,8 @@ function SendArrowIcon() {
 function CloseIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
-      <path
-        d="M5.5 5.5L14.5 14.5"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
-      <path
-        d="M14.5 5.5L5.5 14.5"
-        stroke="currentColor"
-        strokeWidth="1.8"
-        strokeLinecap="round"
-      />
+      <path d="M5.5 5.5L14.5 14.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+      <path d="M14.5 5.5L5.5 14.5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
     </svg>
   );
 }
@@ -412,18 +673,8 @@ function BackIcon() {
 function PlusIcon() {
   return (
     <svg viewBox="0 0 20 20" fill="none" aria-hidden focusable="false">
-      <path
-        d="M10 4.5V15.5"
-        stroke="currentColor"
-        strokeWidth="1.9"
-        strokeLinecap="round"
-      />
-      <path
-        d="M4.5 10H15.5"
-        stroke="currentColor"
-        strokeWidth="1.9"
-        strokeLinecap="round"
-      />
+      <path d="M10 4.5V15.5" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
+      <path d="M4.5 10H15.5" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" />
     </svg>
   );
 }
@@ -477,11 +728,25 @@ type SwipeReplyGesture = {
   armed: boolean;
 };
 
+type SuggestionDraftImage = {
+  base64: string;
+  mimeType: string;
+  fileName: string;
+  previewUrl: string;
+};
+
+type SuggestionStatusPresentation = {
+  badge: string;
+  headline: string;
+  note: string;
+  tone: 'pending' | 'published' | 'cancelled';
+};
+
 function buildViewModel(dialogType: ChannelDialogType): DialogViewModel {
   if (dialogType === 'suggest') {
     return {
-      title: 'Предложить новость',
-      placeholder: 'Идея поста',
+      title: 'Предложить пост',
+      placeholder: 'Текст идеи или подпись к фото',
     };
   }
 
@@ -524,6 +789,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const dialogType = resolveDialogType(mode);
   const entityType = resolveDialogEntityType(location.pathname);
   const [draft, setDraft] = useState('');
+  const [suggestionImage, setSuggestionImage] = useState<SuggestionDraftImage | null>(null);
+  const [isPreparingSuggestionImage, setIsPreparingSuggestionImage] = useState(false);
   const [activeMessageId, setActiveMessageId] = useState<string | null>(null);
   const [replyToMessageId, setReplyToMessageId] = useState<string | null>(null);
   const [isReactionPickerExpanded, setIsReactionPickerExpanded] = useState(false);
@@ -536,6 +803,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     null,
   );
   const composeFieldRef = useRef<HTMLTextAreaElement | null>(null);
+  const suggestionImageInputRef = useRef<HTMLInputElement | null>(null);
   const screenRef = useRef<HTMLDivElement | null>(null);
   const scrollViewportRef = useRef<HTMLElement | null>(null);
   const reactionPopoverRef = useRef<HTMLDivElement | null>(null);
@@ -569,6 +837,15 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     }
   }, [chatId, entityType]);
 
+  useEffect(() => {
+    const previewUrl = suggestionImage?.previewUrl;
+    return () => {
+      if (previewUrl) {
+        URL.revokeObjectURL(previewUrl);
+      }
+    };
+  }, [suggestionImage?.previewUrl]);
+
   const dialogQuery = useQuery({
     queryKey: dialogQueryKey,
     queryFn: () =>
@@ -576,7 +853,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         ? getChannelDialog(api, chatId, dialogType, token)
         : getChatDialog(api, chatId, dialogType, token),
     enabled: Boolean(chatId && token),
-    refetchInterval: dialogType === 'comments' ? 8_000 : false,
+    refetchInterval: dialogType === 'comments' ? 8_000 : dialogType === 'suggest' ? 15_000 : false,
   });
 
   const messages = dialogQuery.data?.messages ?? [];
@@ -592,6 +869,8 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   );
   const draftLength = draft.trim().length;
   const showComposeMeta = dialogType === 'suggest' || draftLength > 0 || Boolean(replyTarget);
+  const canSubmitMessage =
+    dialogType === 'suggest' ? Boolean(draftLength || suggestionImage) : draftLength > 0;
   const activeMessageIsOwn = activeMessage
     ? meQuery.data?.userId === activeMessage.authorUserId
     : false;
@@ -761,7 +1040,15 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     setIsNearBottom(nearBottom);
 
     if (previousMessageId !== lastMessageId) {
-      if (shouldStickToBottom) {
+      if (dialogType === 'suggest' && previousMessageId === null) {
+        setFirstUnreadMessageId(null);
+        requestAnimationFrame(() => {
+          viewport.scrollTo({
+            top: 0,
+            behavior: 'auto',
+          });
+        });
+      } else if (shouldStickToBottom) {
         setFirstUnreadMessageId(null);
         requestAnimationFrame(() => {
           viewport.scrollTo({
@@ -795,7 +1082,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       setReactionPopoverLayout(null);
     }
 
-    if (swipeReplyPreview && !messages.some((message) => message.id === swipeReplyPreview.messageId)) {
+    if (
+      swipeReplyPreview &&
+      !messages.some((message) => message.id === swipeReplyPreview.messageId)
+    ) {
       swipeReplyGestureRef.current = null;
       setSwipeReplyPreview(null);
     }
@@ -913,7 +1203,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       const unclampedLeft = activeMessageIsOwn
         ? bubbleRect.right - screenRect.left - availableWidth
         : bubbleRect.left - screenRect.left;
-      const nextLeft = Math.max(12, Math.min(unclampedLeft, screenRect.width - availableWidth - 12));
+      const nextLeft = Math.max(
+        12,
+        Math.min(unclampedLeft, screenRect.width - availableWidth - 12),
+      );
 
       setReactionPopoverLayout((current) => {
         if (
@@ -975,16 +1268,22 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
       const viewportRect = viewport.getBoundingClientRect();
       const activeBubbleRect = activeBubble.getBoundingClientRect();
-      const composeSurface = document.querySelector<HTMLElement>('.channel-dialog-compose__surface');
+      const composeSurface = document.querySelector<HTMLElement>(
+        '.channel-dialog-compose__surface',
+      );
       const header = document.querySelector<HTMLElement>('.channel-dialog-comments-header');
       const composeHeight = composeSurface?.getBoundingClientRect().height ?? 0;
       const headerHeight = header?.getBoundingClientRect().height ?? 0;
       const popoverHeight = reactionPopoverRef.current?.getBoundingClientRect().height ?? 0;
       const desiredTopInset =
         14 +
-        (reactionPopoverLayout?.placement === 'above' ? headerHeight + popoverHeight + 10 : headerHeight);
+        (reactionPopoverLayout?.placement === 'above'
+          ? headerHeight + popoverHeight + 10
+          : headerHeight);
       const desiredBottomInset =
-        composeHeight + 20 + (reactionPopoverLayout?.placement === 'below' ? popoverHeight + 10 : 0);
+        composeHeight +
+        20 +
+        (reactionPopoverLayout?.placement === 'below' ? popoverHeight + 10 : 0);
 
       const topOffset = activeBubbleRect.top - viewportRect.top;
       const bottomOffset = viewportRect.bottom - activeBubbleRect.bottom;
@@ -1015,16 +1314,23 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   }, [activeMessageId, reactionPopoverLayout]);
 
   const sendMutation = useMutation({
-    mutationFn: (text: string) =>
+    mutationFn: (payload: { text: string; image: SuggestionDraftImage | null }) =>
       entityType === 'channel'
         ? createChannelDialogMessage(api, chatId, dialogType, {
             token,
-            text,
+            text: payload.text,
             replyToMessageId,
+            ...(payload.image
+              ? {
+                  imageBase64: payload.image.base64,
+                  imageMimeType: payload.image.mimeType,
+                  imageFileName: payload.image.fileName,
+                }
+              : {}),
           })
         : createChatDialogMessage(api, chatId, dialogType, {
             token,
-            text,
+            text: payload.text,
             replyToMessageId,
           }),
     onSuccess: (result) => {
@@ -1037,11 +1343,15 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
         description:
           dialogType === 'suggest'
             ? result.message.delivered
-              ? 'Идея отправлена админу.'
-              : 'Идея сохранена.'
+              ? 'Идея ушла в очередь редактора.'
+              : 'Идея сохранена и будет отправлена позже.'
             : 'Комментарий отправлен.',
       });
       setDraft('');
+      setSuggestionImage(null);
+      if (suggestionImageInputRef.current) {
+        suggestionImageInputRef.current.value = '';
+      }
       setReplyToMessageId(null);
       dismissMessageActions();
       if (dialogType === 'comments') {
@@ -1084,7 +1394,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
           }),
     onMutate: async ({ messageId, emoji }) => {
       await queryClient.cancelQueries({ queryKey: dialogQueryKey });
-      const previousDialog = queryClient.getQueryData<ChannelDialogResponse | undefined>(dialogQueryKey);
+      const previousDialog = queryClient.getQueryData<ChannelDialogResponse | undefined>(
+        dialogQueryKey,
+      );
       queryClient.setQueryData<ChannelDialogResponse | undefined>(dialogQueryKey, (current) =>
         toggleDialogReactionLocally(current, messageId, emoji),
       );
@@ -1284,14 +1596,15 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     openMessageActions(messageId);
   };
 
-  const handleBubbleKeyDown = (messageId: string) => (event: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== 'Enter' && event.key !== ' ') {
-      return;
-    }
+  const handleBubbleKeyDown =
+    (messageId: string) => (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (event.key !== 'Enter' && event.key !== ' ') {
+        return;
+      }
 
-    event.preventDefault();
-    openMessageActions(messageId);
-  };
+      event.preventDefault();
+      openMessageActions(messageId);
+    };
 
   const handleBubbleContextMenu =
     (messageId: string) => (event: ReactMouseEvent<HTMLDivElement>) => {
@@ -1347,7 +1660,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
     const viewportRect = viewport.getBoundingClientRect();
     const targetRect = targetMessage.getBoundingClientRect();
-    const composeSurface = screenRef.current?.querySelector<HTMLElement>('.channel-dialog-compose__surface');
+    const composeSurface = screenRef.current?.querySelector<HTMLElement>(
+      '.channel-dialog-compose__surface',
+    );
     const composeHeight = composeSurface?.getBoundingClientRect().height ?? 0;
     const topInset = introText ? 72 : 18;
     const bottomInset = composeHeight + 22;
@@ -1357,7 +1672,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
       (targetRect.top - viewportRect.top) -
       topInset -
       Math.max(0, (availableHeight - targetRect.height) / 2);
-    const nextTop = Math.max(0, Math.min(desiredTop, viewport.scrollHeight - viewport.clientHeight));
+    const nextTop = Math.max(
+      0,
+      Math.min(desiredTop, viewport.scrollHeight - viewport.clientHeight),
+    );
 
     viewport.scrollTo({
       top: nextTop,
@@ -1402,14 +1720,13 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     });
   };
 
-  const handleJumpToSource =
-    (messageId: string) => (event: ReactMouseEvent<HTMLButtonElement>) => {
-      event.preventDefault();
-      event.stopPropagation();
-      maxImpact('light');
-      dismissMessageActions();
-      scrollToMessage(messageId);
-    };
+  const handleJumpToSource = (messageId: string) => (event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    maxImpact('light');
+    dismissMessageActions();
+    scrollToMessage(messageId);
+  };
 
   const handleComposeReplySourceJump = () => {
     if (!replyTarget) {
@@ -1420,13 +1737,57 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
     scrollToMessage(replyTarget.id);
   };
 
-  const onSubmit = () => {
-    const text = draft.trim();
-    if (!text || sendMutation.isPending || !chatId || !token) {
+  const clearSuggestionImage = () => {
+    setSuggestionImage(null);
+    if (suggestionImageInputRef.current) {
+      suggestionImageInputRef.current.value = '';
+    }
+  };
+
+  const handleSuggestionImageChange = async (event: ReactChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
       return;
     }
 
-    sendMutation.mutate(text);
+    setIsPreparingSuggestionImage(true);
+    try {
+      const prepared = await prepareBroadcastImage(file);
+      maxImpact('light');
+      setSuggestionImage({
+        base64: prepared.base64,
+        mimeType: prepared.mimeType,
+        fileName: prepared.fileName,
+        previewUrl: URL.createObjectURL(file),
+      });
+    } catch (error) {
+      event.target.value = '';
+      pushToast({
+        tone: 'danger',
+        title: 'Фото не добавлено',
+        description: normalizeApiError(error),
+      });
+    } finally {
+      setIsPreparingSuggestionImage(false);
+    }
+  };
+
+  const onSubmit = () => {
+    const text = draft.trim();
+    if (
+      sendMutation.isPending ||
+      isPreparingSuggestionImage ||
+      !chatId ||
+      !token ||
+      (dialogType === 'suggest' ? !text && !suggestionImage : !text)
+    ) {
+      return;
+    }
+
+    sendMutation.mutate({
+      text,
+      image: dialogType === 'suggest' ? suggestionImage : null,
+    });
   };
 
   if (!chatId) {
@@ -1546,19 +1907,79 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
           {!dialogQuery.isLoading && !dialogQuery.error ? (
             <div className="channel-dialog-message-list">
-              {introText && dialogType !== 'comments' ? (
-                <div
-                  className={cn(
-                    'channel-dialog-intro',
-                    isBodyScrolled && 'is-collapsed',
-                  )}
-                >
-                  <p>{introText}</p>
+              {dialogType === 'suggest' ? (
+                <div className="channel-dialog-intro" style={SUGGEST_INTRO_STYLE}>
+                  <span style={SUGGEST_INTRO_EYEBROW_STYLE}>Тихая предложка</span>
+                  <strong style={SUGGEST_INTRO_TITLE_STYLE}>
+                    Идея уйдёт в редакцию, а не в общий чат
+                  </strong>
+                  <p>
+                    {introText ||
+                      'Напишите короткий текст, приложите фото и отслеживайте статус прямо на этой странице.'}
+                  </p>
+                  <div style={SUGGEST_BADGES_ROW_STYLE} aria-hidden>
+                    <span style={SUGGEST_BADGE_STYLE}>Видят только админы</span>
+                    <span style={SUGGEST_BADGE_STYLE}>Можно приложить фото</span>
+                  </div>
                 </div>
               ) : null}
 
               {messages.length ? (
                 messages.map((message, index) => {
+                  if (dialogType === 'suggest') {
+                    const suggestionStatus = resolveSuggestionStatus(message);
+                    return (
+                      <article key={message.id} style={SUGGEST_CARD_STYLE}>
+                        <div style={SUGGEST_CARD_HEAD_STYLE}>
+                          <div style={SUGGEST_CARD_ROW_STYLE}>
+                            <span style={SUGGEST_CARD_EYEBROW_STYLE}>Ваше предложение</span>
+                            <time dateTime={message.createdAt} style={SUGGEST_CARD_TIME_STYLE}>
+                              {formatMessageTime(message.createdAt)}
+                            </time>
+                          </div>
+                          <div style={SUGGEST_CARD_ROW_STYLE}>
+                            <strong style={SUGGEST_CARD_TITLE_STYLE}>
+                              {suggestionStatus.headline}
+                            </strong>
+                            <span style={buildSuggestionStatusStyle(suggestionStatus.tone)}>
+                              {suggestionStatus.badge}
+                            </span>
+                          </div>
+                        </div>
+
+                        <p
+                          style={{
+                            ...SUGGEST_CARD_TEXT_STYLE,
+                            ...(message.text.trim() ? {} : SUGGEST_CARD_MUTED_TEXT_STYLE),
+                          }}
+                        >
+                          {resolveSuggestionText(message)}
+                        </p>
+
+                        {message.hasImage ? (
+                          <div style={SUGGEST_CARD_ATTACHMENT_STYLE}>
+                            <span style={SUGGEST_CARD_ATTACHMENT_BADGE_STYLE}>Фото</span>
+                            <span>{resolveSuggestionAttachmentLabel(message)}</span>
+                          </div>
+                        ) : null}
+
+                        <div style={SUGGEST_CARD_ROW_STYLE}>
+                          <span style={SUGGEST_CARD_NOTE_STYLE}>{suggestionStatus.note}</span>
+                          {message.publishedUrl ? (
+                            <a
+                              href={message.publishedUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              style={SUGGEST_CARD_LINK_STYLE}
+                            >
+                              Открыть пост
+                            </a>
+                          ) : null}
+                        </div>
+                      </article>
+                    );
+                  }
+
                   const isOwnMessage = meQuery.data?.userId === message.authorUserId;
                   const isAdminMessage = message.isAdmin === true;
                   const groupedWithPrevious = isGroupedWithPrevious(messages, index);
@@ -1646,9 +2067,15 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                               )}
                               data-message-bubble-id={message.id}
                               style={buildAdminBubbleStyle(isAdminMessage, isOwnMessage)}
-                              onClick={dialogType === 'comments' ? handleBubbleClick(message.id) : undefined}
+                              onClick={
+                                dialogType === 'comments'
+                                  ? handleBubbleClick(message.id)
+                                  : undefined
+                              }
                               onKeyDown={
-                                dialogType === 'comments' ? handleBubbleKeyDown(message.id) : undefined
+                                dialogType === 'comments'
+                                  ? handleBubbleKeyDown(message.id)
+                                  : undefined
                               }
                               onPointerDown={
                                 dialogType === 'comments'
@@ -1661,13 +2088,17 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                                   : undefined
                               }
                               onPointerUp={
-                                dialogType === 'comments' ? handleBubblePointerUp(message) : undefined
+                                dialogType === 'comments'
+                                  ? handleBubblePointerUp(message)
+                                  : undefined
                               }
                               onPointerCancel={
                                 dialogType === 'comments' ? handleBubblePointerCancel : undefined
                               }
                               onContextMenu={
-                                dialogType === 'comments' ? handleBubbleContextMenu(message.id) : undefined
+                                dialogType === 'comments'
+                                  ? handleBubbleContextMenu(message.id)
+                                  : undefined
                               }
                               role={dialogType === 'comments' ? 'button' : undefined}
                               tabIndex={dialogType === 'comments' ? 0 : undefined}
@@ -1695,31 +2126,22 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                                     onClick={handleJumpToSource(replySourceMessageId)}
                                     aria-label="Перейти к исходному комментарию"
                                   >
-                                    <span>{message.replyTo.authorDisplayName || 'Комментарий'}</span>
+                                    <span>
+                                      {message.replyTo.authorDisplayName || 'Комментарий'}
+                                    </span>
                                     <p>{summarizeReplyText(message.replyTo.text)}</p>
                                   </button>
                                 ) : (
                                   <div className="channel-dialog-message__reply">
-                                    <span>{message.replyTo.authorDisplayName || 'Комментарий'}</span>
+                                    <span>
+                                      {message.replyTo.authorDisplayName || 'Комментарий'}
+                                    </span>
                                     <p>{summarizeReplyText(message.replyTo.text)}</p>
                                   </div>
                                 )
                               ) : null}
 
                               <p>{message.text}</p>
-
-                              {dialogType === 'suggest' ? (
-                                <div className="channel-dialog-message__footer">
-                                  <span
-                                    className={cn(
-                                      'channel-dialog-delivery',
-                                      message.delivered ? 'is-delivered' : 'is-pending',
-                                    )}
-                                  >
-                                    {message.delivered ? 'доставлено' : 'в очереди'}
-                                  </span>
-                                </div>
-                              ) : null}
                             </div>
 
                             {dialogType === 'comments' && message.reactionGroups.length > 0 ? (
@@ -1753,13 +2175,32 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   );
                 })
               ) : (
-                <div className="channel-dialog-empty">Пока пусто</div>
+                <div
+                  className="channel-dialog-empty"
+                  style={dialogType === 'suggest' ? SUGGEST_EMPTY_STYLE : undefined}
+                >
+                  {dialogType === 'suggest' ? (
+                    <>
+                      <strong style={SUGGEST_EMPTY_TITLE_STYLE}>
+                        Пока нет отправленных предложек
+                      </strong>
+                      <p style={SUGGEST_EMPTY_COPY_STYLE}>
+                        Добавьте тему, подпись или фото, чтобы отправить первую идею редактору.
+                      </p>
+                    </>
+                  ) : (
+                    'Пока пусто'
+                  )}
+                </div>
               )}
             </div>
           ) : null}
         </section>
 
-        <section className="channel-dialog-compose">
+        <section
+          className="channel-dialog-compose"
+          style={dialogType === 'suggest' ? { background: 'none' } : undefined}
+        >
           {showJumpToLatest ? (
             <button
               type="button"
@@ -1804,12 +2245,51 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   dialogType !== 'suggest' && 'channel-dialog-compose__meta--solo',
                 )}
               >
-                {dialogType === 'suggest' ? <span>Только для админов</span> : null}
+                {dialogType === 'suggest' ? <span>Увидят только админы канала</span> : null}
                 <span>{draftLength}/2000</span>
               </div>
             ) : null}
 
+            {dialogType === 'suggest' && suggestionImage ? (
+              <div className="channel-dialog-compose__attachment">
+                <div className="channel-dialog-compose__attachment-preview">
+                  <img src={suggestionImage.previewUrl} alt="" />
+                </div>
+                <div className="channel-dialog-compose__attachment-copy">
+                  <strong>Фото приложено</strong>
+                  <span>{suggestionImage.fileName}</span>
+                </div>
+                <button
+                  type="button"
+                  className="channel-dialog-compose__attachment-dismiss"
+                  onClick={clearSuggestionImage}
+                  aria-label="Убрать фото"
+                >
+                  <CloseIcon />
+                </button>
+              </div>
+            ) : null}
+
             <div className="channel-dialog-compose__row">
+              {dialogType === 'suggest' ? (
+                <label
+                  className={cn(
+                    'channel-dialog-compose__attach',
+                    (suggestionImage || isPreparingSuggestionImage) && 'is-active',
+                  )}
+                >
+                  <input
+                    ref={suggestionImageInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleSuggestionImageChange}
+                    disabled={sendMutation.isPending || isPreparingSuggestionImage}
+                  />
+                  <PlusIcon />
+                  <span>{isPreparingSuggestionImage ? '...' : 'Фото'}</span>
+                </label>
+              ) : null}
+
               <label className="channel-dialog-compose__field">
                 <textarea
                   ref={composeFieldRef}
@@ -1826,7 +2306,9 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                   type="button"
                   className="channel-dialog-submit"
                   onClick={onSubmit}
-                  disabled={!draft.trim() || sendMutation.isPending}
+                  disabled={
+                    !canSubmitMessage || sendMutation.isPending || isPreparingSuggestionImage
+                  }
                   aria-label={sendMutation.isPending ? 'Отправка' : 'Отправить'}
                 >
                   {sendMutation.isPending ? (
@@ -1952,7 +2434,6 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
                       })}
                     </div>
                   ) : null}
-
                 </div>
               </div>
             </div>,

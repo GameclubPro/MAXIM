@@ -119,6 +119,10 @@ export type BroadcastHandoffPayload = {
 export type CreateChannelDialogMessagePayload = {
   token: string;
   text: string;
+  replyToMessageId?: string | null;
+  imageBase64?: string;
+  imageMimeType?: string;
+  imageFileName?: string;
 };
 
 export type UpdateChatRulesPayload = Pick<

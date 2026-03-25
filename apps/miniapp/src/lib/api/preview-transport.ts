@@ -524,6 +524,10 @@ function buildPreviewDialogMessage(payload: {
   reactionGroups?: ChannelDialogMessage['reactionGroups'];
   delivered?: boolean;
   deliveredToUserId?: string | null;
+  reviewStatus?: ChannelDialogMessage['reviewStatus'];
+  publishedUrl?: string | null;
+  hasImage?: boolean;
+  imageFileName?: string | null;
 }): ChannelDialogMessage {
   return channelDialogMessageSchema.parse({
     id: payload.id,
@@ -543,6 +547,10 @@ function buildPreviewDialogMessage(payload: {
     ...(payload.deliveredToUserId !== undefined
       ? { deliveredToUserId: payload.deliveredToUserId }
       : {}),
+    ...(payload.reviewStatus !== undefined ? { reviewStatus: payload.reviewStatus } : {}),
+    ...(payload.publishedUrl !== undefined ? { publishedUrl: payload.publishedUrl } : {}),
+    ...(payload.hasImage !== undefined ? { hasImage: payload.hasImage } : {}),
+    ...(payload.imageFileName !== undefined ? { imageFileName: payload.imageFileName } : {}),
   });
 }
 
@@ -1160,7 +1168,7 @@ function createInitialState(): PreviewState {
     },
     suggest: {
       introText:
-        'Идеи для постов приходят тихо: участник пишет, админы получают сообщение в очередь.',
+        'Идеи для постов приходят тихо: участник отправляет карточку, редактор видит её в своей очереди.',
       messages: [
         buildPreviewDialogMessage({
           id: 'chat-suggest-1',
@@ -1172,6 +1180,22 @@ function createInitialState(): PreviewState {
           createdAt: addHours(now, -7.2).toISOString(),
           delivered: true,
           deliveredToUserId: 'preview-admin-2',
+          reviewStatus: 'pending',
+        }),
+        buildPreviewDialogMessage({
+          id: 'chat-suggest-2',
+          type: 'suggest',
+          text: '',
+          authorUserId: 'preview-admin',
+          authorDisplayName: 'Алексей',
+          avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
+          createdAt: addHours(now, -2.9).toISOString(),
+          delivered: true,
+          deliveredToUserId: 'preview-admin-2',
+          reviewStatus: 'published',
+          publishedUrl: 'https://max.ru/chats/preview-chat/message/220',
+          hasImage: true,
+          imageFileName: 'containers.webp',
         }),
       ],
     },
@@ -1203,7 +1227,8 @@ function createInitialState(): PreviewState {
       ],
     },
     suggest: {
-      introText: 'Предложение поста сразу уходит редактору канала и не шумит в основном чате.',
+      introText:
+        'Предложение поста сразу уходит редактору канала: можно приложить фото и потом отследить статус прямо здесь.',
       messages: [
         buildPreviewDialogMessage({
           id: 'channel-suggest-1',
@@ -1215,6 +1240,46 @@ function createInitialState(): PreviewState {
           createdAt: addHours(now, -6.4).toISOString(),
           delivered: true,
           deliveredToUserId: 'preview-admin-2',
+          reviewStatus: 'pending',
+        }),
+        buildPreviewDialogMessage({
+          id: 'channel-suggest-2',
+          type: 'suggest',
+          text: 'Сделайте пост про вечерний маркет у набережной, люди всё ещё спрашивают время работы.',
+          authorUserId: 'preview-admin',
+          authorDisplayName: 'Алексей',
+          avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
+          createdAt: addHours(now, -3.1).toISOString(),
+          delivered: true,
+          deliveredToUserId: 'preview-admin-2',
+          reviewStatus: 'published',
+          publishedUrl: 'https://max.ru/chats/preview-channel/message/318',
+        }),
+        buildPreviewDialogMessage({
+          id: 'channel-suggest-3',
+          type: 'suggest',
+          text: '',
+          authorUserId: 'preview-admin',
+          authorDisplayName: 'Алексей',
+          avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
+          createdAt: addHours(now, -1.4).toISOString(),
+          delivered: false,
+          deliveredToUserId: null,
+          reviewStatus: 'pending',
+          hasImage: true,
+          imageFileName: 'market-evening.webp',
+        }),
+        buildPreviewDialogMessage({
+          id: 'channel-suggest-4',
+          type: 'suggest',
+          text: 'Можно собрать подборку новых кофеен у метро, но без цен это сейчас сыровато.',
+          authorUserId: 'preview-admin',
+          authorDisplayName: 'Алексей',
+          avatarUrl: buildPreviewAvatarDataUrl('Алексей', '#7db8ff', '#4d89ff'),
+          createdAt: addHours(now, -0.8).toISOString(),
+          delivered: true,
+          deliveredToUserId: 'preview-admin-2',
+          reviewStatus: 'cancelled',
         }),
       ],
     },
@@ -1873,6 +1938,9 @@ async function handleChatRequest(
           ? {
               delivered: true,
               deliveredToUserId: 'preview-admin-2',
+              reviewStatus: 'pending',
+              hasImage: Boolean(payload.imageBase64),
+              imageFileName: payload.imageFileName || null,
             }
           : {}),
       });
@@ -2329,6 +2397,9 @@ async function handleChannelRequest(
           ? {
               delivered: true,
               deliveredToUserId: 'preview-admin-2',
+              reviewStatus: 'pending',
+              hasImage: Boolean(payload.imageBase64),
+              imageFileName: payload.imageFileName || null,
             }
           : {}),
       });

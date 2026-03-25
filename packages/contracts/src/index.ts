@@ -1993,11 +1993,27 @@ export const publishChannelEngagementResultSchema = z.object({
 });
 export type PublishChannelEngagementResult = z.infer<typeof publishChannelEngagementResultSchema>;
 
-export const createChannelDialogMessageRequestSchema = z.object({
-  token: z.string().trim().min(16).max(256),
-  text: z.string().trim().min(1).max(2_000),
-  replyToMessageId: z.string().trim().min(1).max(191).nullable().optional(),
-});
+export const createChannelDialogMessageRequestSchema = z
+  .object({
+    token: z.string().trim().min(16).max(256),
+    text: z.string().trim().max(2_000).default(''),
+    replyToMessageId: z.string().trim().min(1).max(191).nullable().optional(),
+    imageBase64: z.string().trim().max(4_000_000).default(''),
+    imageMimeType: z.string().trim().max(128).default(''),
+    imageFileName: z.string().trim().max(128).default(''),
+  })
+  .superRefine((value, ctx) => {
+    if (
+      value.imageBase64 &&
+      (!value.imageMimeType.trim() || !value.imageMimeType.toLowerCase().startsWith('image/'))
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['imageMimeType'],
+        message: 'Неверный формат фото.',
+      });
+    }
+  });
 export type CreateChannelDialogMessageRequest = z.infer<
   typeof createChannelDialogMessageRequestSchema
 >;
@@ -2016,6 +2032,15 @@ export const channelDialogReplyPreviewSchema = z.object({
 });
 export type ChannelDialogReplyPreview = z.infer<typeof channelDialogReplyPreviewSchema>;
 
+export const channelDialogSuggestionReviewStatusSchema = z.enum([
+  'pending',
+  'published',
+  'cancelled',
+]);
+export type ChannelDialogSuggestionReviewStatus = z.infer<
+  typeof channelDialogSuggestionReviewStatusSchema
+>;
+
 export const channelDialogMessageSchema = z.object({
   id: z.string(),
   type: channelDialogTypeSchema,
@@ -2030,6 +2055,10 @@ export const channelDialogMessageSchema = z.object({
   reactionGroups: z.array(channelDialogReactionGroupSchema).default([]),
   delivered: z.boolean().optional(),
   deliveredToUserId: z.string().nullable().optional(),
+  reviewStatus: channelDialogSuggestionReviewStatusSchema.optional(),
+  publishedUrl: z.string().trim().max(2_048).nullable().optional(),
+  hasImage: z.boolean().optional(),
+  imageFileName: z.string().trim().max(128).nullable().optional(),
 });
 export type ChannelDialogMessage = z.infer<typeof channelDialogMessageSchema>;
 

@@ -94,9 +94,7 @@ const scenarios = [
       await page.waitForTimeout(500);
       await page.getByLabel('Включить объяснение для модерации ссылок').check();
       await page.waitForTimeout(250);
-      const buttonToggle = page.getByLabel(
-        'Добавить кнопку в сообщение бота для модерации ссылок',
-      );
+      const buttonToggle = page.getByLabel('Добавить кнопку в сообщение бота для модерации ссылок');
       await buttonToggle.scrollIntoViewIfNeeded();
       await buttonToggle.check();
       await page.waitForTimeout(450);
@@ -127,9 +125,7 @@ const scenarios = [
       await page.waitForTimeout(500);
       await page.getByLabel('Включить объяснение для модерации ссылок').check();
       await page.waitForTimeout(250);
-      const buttonToggle = page.getByLabel(
-        'Добавить кнопку в сообщение бота для модерации ссылок',
-      );
+      const buttonToggle = page.getByLabel('Добавить кнопку в сообщение бота для модерации ссылок');
       await buttonToggle.scrollIntoViewIfNeeded();
       await buttonToggle.check();
       await page.waitForTimeout(450);
@@ -257,6 +253,16 @@ const scenarios = [
     },
   },
   {
+    name: 'channel-dialog-suggest',
+    path: '/channel/preview-channel/dialog/suggest',
+    searchParams: {
+      token: 'preview-suggest-token-0001',
+    },
+    beforeShot: async (page) => {
+      await page.waitForTimeout(500);
+    },
+  },
+  {
     name: 'chat-settings-comments',
     path: '/chat/preview-chat/settings',
     searchParams: {
@@ -296,7 +302,9 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(1000);
-      await page.getByRole('button', { name: /(?:Настроить время|Выбрать количество|Выбрать время)/u }).click();
+      await page
+        .getByRole('button', { name: /(?:Настроить время|Выбрать количество|Выбрать время)/u })
+        .click();
       await page.waitForTimeout(300);
     },
   },
@@ -309,7 +317,9 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(1000);
-      await page.getByRole('button', { name: /(?:Настроить время|Выбрать количество|Выбрать время)/u }).click();
+      await page
+        .getByRole('button', { name: /(?:Настроить время|Выбрать количество|Выбрать время)/u })
+        .click();
       await page.waitForTimeout(300);
     },
   },
@@ -322,7 +332,9 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(1000);
-      await page.getByRole('button', { name: /(?:Настроить время|Выбрать количество|Выбрать время)/u }).click();
+      await page
+        .getByRole('button', { name: /(?:Настроить время|Выбрать количество|Выбрать время)/u })
+        .click();
       await page.waitForTimeout(150);
       await page.getByRole('button', { name: /Сохранить/u }).click();
       await page.waitForTimeout(300);
@@ -360,7 +372,9 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(1000);
-      await page.getByRole('button', { name: /(?:Настроить время|Выбрать количество|Выбрать время)/u }).click();
+      await page
+        .getByRole('button', { name: /(?:Настроить время|Выбрать количество|Выбрать время)/u })
+        .click();
       await page.waitForTimeout(300);
     },
   },
@@ -373,7 +387,9 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(1000);
-      await page.getByRole('button', { name: /(?:Настроить время|Выбрать количество|Выбрать время)/u }).click();
+      await page
+        .getByRole('button', { name: /(?:Настроить время|Выбрать количество|Выбрать время)/u })
+        .click();
       await page.waitForTimeout(300);
     },
   },
@@ -386,7 +402,9 @@ const scenarios = [
     },
     beforeShot: async (page) => {
       await page.waitForTimeout(1000);
-      await page.getByRole('button', { name: /(?:Настроить время|Выбрать количество|Выбрать время)/u }).click();
+      await page
+        .getByRole('button', { name: /(?:Настроить время|Выбрать количество|Выбрать время)/u })
+        .click();
       await page.waitForTimeout(150);
       await page.getByRole('button', { name: /Сохранить/u }).click();
       await page.waitForTimeout(300);
