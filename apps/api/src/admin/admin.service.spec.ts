@@ -3093,6 +3093,255 @@ describe('AdminService.listChannels', () => {
     );
   });
 
+  it('returns refresh cursor metadata for a partial managed channels scan', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        chat: {
+          id: 'channel-1',
+          title: 'Кэш канала',
+          createdAt: new Date('2026-03-02T10:00:00.000Z'),
+          entityType: 'CHANNEL',
+        },
+      },
+    ]);
+    prisma.channelSettings.findMany.mockResolvedValue([]);
+
+    let storedCursor: number | null = null;
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntitiesRefreshCursor: jest.fn().mockImplementation(async () => storedCursor),
+      setManagedEntitiesRefreshCursor: jest
+        .fn()
+        .mockImplementation(async (_userId: string, _entityType: string, cursor: number) => {
+          storedCursor = cursor;
+        }),
+    });
+    const remoteChannels = Array.from({ length: 121 }, (_, index) => ({
+      chatId: `channel-${index + 1}`,
+      title: `Канал ${index + 1}`,
+      lastEventTime: 200 - index,
+      entityType: 'channel' as const,
+      link: `https://max.ru/channel-${index + 1}`,
+    }));
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue(remoteChannels),
+      getChatAdminIds: jest.fn().mockResolvedValue([]),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.listChannelsWithRefreshState(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { refresh: true },
+      ),
+    ).resolves.toEqual({
+      items: [
+        {
+          id: 'channel-1',
+          title: 'Канал 1',
+          createdAt: '2026-03-02T10:00:00.000Z',
+          entityType: 'channel',
+          link: 'https://max.ru/channel-1',
+          channelOverview: {
+            enabledScenariosCount: 1,
+            commentsEnabled: true,
+            postSuggestionsEnabled: false,
+            commentsModerationEnabled: false,
+          },
+        },
+      ],
+      refresh: {
+        complete: false,
+        cursor: 120,
+        backoffActive: false,
+      },
+    });
+
+    expect(chatContextCache.setManagedEntitiesRefreshCursor).toHaveBeenCalledWith(
+      'admin-1',
+      'channel',
+      120,
+      3600,
+    );
+  });
+
+  it('marks managed channels refresh complete on the final scan window', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([]);
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'channel-121',
+      title: 'Финальный канал',
+      createdAt: new Date('2026-03-03T10:00:00.000Z'),
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findMany.mockResolvedValue([]);
+
+    let storedCursor: number | null = 120;
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntitiesRefreshCursor: jest.fn().mockImplementation(async () => storedCursor),
+      setManagedEntitiesRefreshCursor: jest
+        .fn()
+        .mockImplementation(async (_userId: string, _entityType: string, cursor: number) => {
+          storedCursor = cursor;
+        }),
+    });
+    const remoteChannels = Array.from({ length: 121 }, (_, index) => ({
+      chatId: `channel-${index + 1}`,
+      title: index === 120 ? 'Финальный канал' : `Канал ${index + 1}`,
+      lastEventTime: 300 - index,
+      entityType: 'channel' as const,
+      link: `https://max.ru/channel-${index + 1}`,
+    }));
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue(remoteChannels),
+      getChatAdminIds: jest
+        .fn()
+        .mockImplementation(async (chatId: string) =>
+          chatId === 'channel-121' ? ['admin-1'] : [],
+        ),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.listChannelsWithRefreshState(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { refresh: true },
+      ),
+    ).resolves.toEqual({
+      items: [
+        {
+          id: 'channel-121',
+          title: 'Финальный канал',
+          createdAt: '2026-03-03T10:00:00.000Z',
+          entityType: 'channel',
+          link: 'https://max.ru/channel-121',
+          channelOverview: {
+            enabledScenariosCount: 1,
+            commentsEnabled: true,
+            postSuggestionsEnabled: false,
+            commentsModerationEnabled: false,
+          },
+        },
+      ],
+      refresh: {
+        complete: true,
+        cursor: -1,
+        backoffActive: false,
+      },
+    });
+
+    expect(chatContextCache.setManagedEntitiesRefreshCursor).toHaveBeenCalledWith(
+      'admin-1',
+      'channel',
+      -1,
+      60,
+    );
+  });
+
+  it('returns refresh backoff metadata when managed channels sync is throttled', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockImplementation(async (args?: { where?: unknown }) => {
+      const where = args?.where as { chatId?: string } | undefined;
+      if (where?.chatId === 'remote-channel-1') {
+        return [];
+      }
+
+      return [
+        {
+          chat: {
+            id: 'cached-channel-1',
+            title: 'Кэш канала',
+            createdAt: new Date('2026-03-02T10:00:00.000Z'),
+            entityType: 'CHANNEL',
+          },
+        },
+      ];
+    });
+    prisma.channelSettings.findMany.mockResolvedValue([]);
+
+    const chatContextCache = createChatContextCacheMock();
+    const maxClient = {
+      listBotChats: jest.fn().mockResolvedValue([
+        {
+          chatId: 'remote-channel-1',
+          title: 'Новый канал',
+          lastEventTime: 100,
+          entityType: 'channel',
+          link: 'https://max.ru/remote-channel-1',
+        },
+      ]),
+      getChatAdminIds: jest.fn().mockRejectedValue(new Error('MAX API global rate limit exceeded')),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.listChannelsWithRefreshState(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        { refresh: true },
+      ),
+    ).resolves.toEqual({
+      items: [
+        {
+          id: 'cached-channel-1',
+          title: 'Кэш канала',
+          createdAt: '2026-03-02T10:00:00.000Z',
+          entityType: 'channel',
+          link: null,
+          channelOverview: {
+            enabledScenariosCount: 1,
+            commentsEnabled: true,
+            postSuggestionsEnabled: false,
+            commentsModerationEnabled: false,
+          },
+        },
+      ],
+      refresh: {
+        complete: false,
+        cursor: null,
+        backoffActive: true,
+      },
+    });
+
+    expect(chatContextCache.activateManagedEntitiesRefreshBackoff).toHaveBeenCalledWith(
+      'admin-1',
+      'channel',
+      60,
+    );
+  });
+
   it('rechecks stale denied admin cache during explicit chat refresh', async () => {
     const prisma = createPrismaMock();
     prisma.chat.upsert.mockResolvedValue({
@@ -8413,7 +8662,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
       }),
       sendMessageImmediateWithResolvedLink: jest
         .fn()
-        .mockResolvedValue({ messageId: 'mid-channel-post-1', url: 'https://max.ru/chats/channel-1/message/100' }),
+        .mockResolvedValue({
+          messageId: 'mid-channel-post-1',
+          url: 'https://max.ru/chats/channel-1/message/100',
+        }),
       editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
     };
     const chatContextCache = {

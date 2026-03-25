@@ -5,7 +5,6 @@ import grantBotAdminRightsImage from '../assets/onboarding/grant-bot-admin-right
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
-import { getChannels, getChats } from '../lib/api/root-client';
 import { describeApiError } from '../lib/api-error';
 import type { ApiTransport } from '../lib/api/transport';
 import { saveChatTitle, saveChatTitles } from '../lib/chat-titles';
@@ -15,6 +14,7 @@ import {
   saveLastEntityId,
   saveLastEntityType,
 } from '../lib/last-chat';
+import { useManagedEntitiesSync } from '../lib/use-managed-entities-sync';
 import {
   preloadChannelSettingsPage,
   preloadChannelStatsPage,
@@ -24,8 +24,6 @@ import {
 
 type ManagedTab = 'chat' | 'channel';
 const LIST_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 15_000;
-const LIST_AUTO_REFRESH_DELAY_MS = 900;
-const LIST_AUTO_REFRESH_MAX_PASSES = 7;
 
 function getEntitiesKey(tab: ManagedTab): 'chats' | 'channels' {
   return tab === 'chat' ? 'chats' : 'channels';
@@ -34,84 +32,48 @@ function getEntitiesKey(tab: ManagedTab): 'chats' | 'channels' {
 export function ChatsPage({ api }: { api: ApiTransport }) {
   const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
-  const [refreshNonce, setRefreshNonce] = useState(0);
-  const [entities, setEntities] = useState<{
-    chats: Awaited<ReturnType<typeof getChats>> | null;
-    channels: Awaited<ReturnType<typeof getChannels>> | null;
-  }>({
-    chats: null,
-    channels: null,
+  const [refreshNonceByTab, setRefreshNonceByTab] = useState<Record<ManagedTab, number>>({
+    chat: 0,
+    channel: 0,
   });
-  const [loadingState, setLoadingState] = useState<'idle' | 'loading' | 'refreshing' | 'error'>(
-    'loading',
-  );
-  const [loadError, setLoadError] = useState<Error | null>(null);
-  const requestIdRef = useRef(0);
   const lastRefreshAtRef = useRef(0);
   const awaitingReturnRefreshRef = useRef(false);
-  const autoRefreshPassesRef = useRef<Record<ManagedTab, number>>({ chat: 0, channel: 0 });
-  const autoRefreshTimerRef = useRef<number | null>(null);
-  const explicitlyRefreshedTabsRef = useRef<Set<ManagedTab>>(new Set());
   const deferredQuery = useDeferredValue(query);
   const activeTab = normalizeEntityType(
     searchParams.get('view'),
     readLastEntityType(),
   ) as ManagedTab;
   const activeEntitiesKey = getEntitiesKey(activeTab);
-
-  useEffect(() => {
-    let cancelled = false;
-    const requestId = requestIdRef.current + 1;
-    requestIdRef.current = requestId;
-    const refresh = refreshNonce > 0;
-    const hasEntities = entities[activeEntitiesKey] !== null;
-
-    if (refresh) {
-      explicitlyRefreshedTabsRef.current.add(activeTab);
-    }
-
-    setLoadingState(hasEntities ? 'refreshing' : 'loading');
-    setLoadError(null);
-
-    const loadEntities =
-      activeTab === 'chat' ? getChats(api, { refresh }) : getChannels(api, { refresh });
-
-    void loadEntities
-      .then((nextEntities) => {
-        if (cancelled || requestId !== requestIdRef.current) {
-          return;
-        }
-
-        setEntities((current) => ({
-          ...current,
-          [activeEntitiesKey]: nextEntities,
-        }));
-        setLoadingState('idle');
-      })
-      .catch((error: unknown) => {
-        if (cancelled || requestId !== requestIdRef.current) {
-          return;
-        }
-
-        setLoadError(error instanceof Error ? error : new Error('Не удалось загрузить список.'));
-        setLoadingState(hasEntities ? 'idle' : 'error');
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [activeEntitiesKey, activeTab, api, refreshNonce]);
+  const chatsState = useManagedEntitiesSync({
+    api,
+    entityType: 'chat',
+    enabled: activeTab === 'chat',
+    reloadNonce: refreshNonceByTab.chat,
+  });
+  const channelsState = useManagedEntitiesSync({
+    api,
+    entityType: 'channel',
+    enabled: activeTab === 'channel',
+    reloadNonce: refreshNonceByTab.channel,
+  });
 
   const activeEntities = useMemo(() => {
-    return entities[activeEntitiesKey];
-  }, [activeEntitiesKey, entities]);
+    return activeEntitiesKey === 'chats' ? chatsState.data : channelsState.data;
+  }, [activeEntitiesKey, channelsState.data, chatsState.data]);
 
-  const isLoading = loadingState === 'loading' && activeEntities === null;
-  const isFetching = loadingState === 'refreshing';
-  const queryError = activeEntities === null && loadingState === 'error' ? loadError : null;
+  const activeEntitiesState = activeTab === 'chat' ? chatsState : channelsState;
+  const isLoading = activeEntitiesState.isLoading;
+  const isFetching = activeEntitiesState.isRefreshing;
+  const queryError = activeEntitiesState.error;
+  const isSyncSettled = activeEntitiesState.isSyncComplete || activeEntitiesState.isBackoffActive;
+  const isSyncPending = !isLoading && !queryError && !isSyncSettled;
 
   const isNoEntitiesForTab =
-    !isLoading && !queryError && Array.isArray(activeEntities) && activeEntities.length === 0;
+    !isLoading &&
+    !queryError &&
+    isSyncSettled &&
+    Array.isArray(activeEntities) &&
+    activeEntities.length === 0;
 
   const filteredEntities = useMemo(() => {
     if (!Array.isArray(activeEntities)) {
@@ -134,7 +96,10 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     lastRefreshAtRef.current = Date.now();
     awaitingReturnRefreshRef.current = false;
     startTransition(() => {
-      setRefreshNonce((current) => current + 1);
+      setRefreshNonceByTab((current) => ({
+        ...current,
+        [activeTab]: current[activeTab] + 1,
+      }));
     });
   }
 
@@ -150,7 +115,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
         return;
       }
-      if (loadingState === 'loading' || loadingState === 'refreshing') {
+      if (activeEntitiesState.isLoading || activeEntitiesState.isRefreshing) {
         return;
       }
 
@@ -185,60 +150,16 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
       window.removeEventListener('pageshow', refreshAfterReturn);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [loadingState]);
+  }, [activeEntitiesState.isLoading, activeEntitiesState.isRefreshing]);
 
   useEffect(() => {
-    if (autoRefreshTimerRef.current !== null) {
-      window.clearTimeout(autoRefreshTimerRef.current);
-      autoRefreshTimerRef.current = null;
-    }
-
-    if (loadingState !== 'idle') {
-      return;
-    }
-
-    if (loadError) {
-      return;
-    }
-
-    if (entities[activeEntitiesKey] === null) {
-      return;
-    }
-
-    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') {
-      return;
-    }
-
-    if (autoRefreshPassesRef.current[activeTab] >= LIST_AUTO_REFRESH_MAX_PASSES) {
-      return;
-    }
-
-    const delayMs = explicitlyRefreshedTabsRef.current.has(activeTab) ? LIST_AUTO_REFRESH_DELAY_MS : 0;
-    const timeoutId = window.setTimeout(() => {
-      autoRefreshTimerRef.current = null;
-      explicitlyRefreshedTabsRef.current.add(activeTab);
-      autoRefreshPassesRef.current[activeTab] += 1;
-      handleRefresh();
-    }, delayMs);
-
-    autoRefreshTimerRef.current = timeoutId;
-
-    return () => {
-      window.clearTimeout(timeoutId);
-      if (autoRefreshTimerRef.current === timeoutId) {
-        autoRefreshTimerRef.current = null;
-      }
-    };
-  }, [activeEntitiesKey, activeTab, entities, loadError, loadingState]);
-
-  useEffect(() => {
-    const allEntities = [...(entities.chats ?? []), ...(entities.channels ?? [])];
+    const allEntities = [...(chatsState.data ?? []), ...(channelsState.data ?? [])];
     if (allEntities.length === 0) {
       return;
     }
 
     saveChatTitles(allEntities);
-  }, [entities]);
+  }, [channelsState.data, chatsState.data]);
 
   useEffect(() => {
     saveLastEntityType(activeTab);
@@ -333,6 +254,16 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                 Повторить
               </button>
             }
+          />
+        </GlassCard>
+      ) : null}
+
+      {isSyncPending && Array.isArray(activeEntities) && activeEntities.length === 0 ? (
+        <GlassCard>
+          <StatusState
+            tone="neutral"
+            title={`Синхронизируем ${tabLabel.toLowerCase()}`}
+            description="Проверяем права администратора и обновляем список из MAX."
           />
         </GlassCard>
       ) : null}
@@ -432,7 +363,12 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
         </GlassCard>
       ) : null}
 
-      {!isLoading && !queryError && !isNoEntitiesForTab && filteredEntities.length === 0 ? (
+      {!isLoading &&
+      !queryError &&
+      !isNoEntitiesForTab &&
+      Array.isArray(activeEntities) &&
+      activeEntities.length > 0 &&
+      filteredEntities.length === 0 ? (
         <GlassCard>
           <StatusState
             tone="neutral"

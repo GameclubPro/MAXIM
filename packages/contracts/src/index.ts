@@ -1308,6 +1308,19 @@ export const chatSummarySchema = z.object({
 });
 export type ChatSummary = z.infer<typeof chatSummarySchema>;
 
+export const managedEntitiesRefreshStateSchema = z.object({
+  complete: z.boolean(),
+  cursor: z.number().int().nullable(),
+  backoffActive: z.boolean(),
+});
+export type ManagedEntitiesRefreshState = z.infer<typeof managedEntitiesRefreshStateSchema>;
+
+export const managedEntitiesListResponseSchema = z.object({
+  items: z.array(chatSummarySchema),
+  refresh: managedEntitiesRefreshStateSchema,
+});
+export type ManagedEntitiesListResponse = z.infer<typeof managedEntitiesListResponseSchema>;
+
 export const managedEntityHeaderSchema = z.object({
   id: z.string(),
   title: z.string(),

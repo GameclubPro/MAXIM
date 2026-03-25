@@ -1,5 +1,10 @@
-import type { ChatSummary, Me } from '@maxim/contracts';
+import type { ChatSummary, ManagedEntitiesListResponse, Me } from '@maxim/contracts';
 import type { ApiTransport } from './transport';
+
+type ManagedEntitiesFetchOptions = {
+  refresh?: boolean;
+  includeRefreshState?: boolean;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -72,6 +77,47 @@ function parseMe(value: unknown): Me {
   };
 }
 
+function parseManagedEntitiesListResponse(value: unknown): ManagedEntitiesListResponse {
+  if (!isRecord(value) || !Array.isArray(value.items) || !isRecord(value.refresh)) {
+    throw new Error('Invalid managed entities response');
+  }
+
+  const { refresh } = value;
+  if (
+    typeof refresh.complete !== 'boolean' ||
+    typeof refresh.backoffActive !== 'boolean' ||
+    (refresh.cursor !== null &&
+      (typeof refresh.cursor !== 'number' || !Number.isInteger(refresh.cursor)))
+  ) {
+    throw new Error('Invalid managed entities refresh state');
+  }
+
+  return {
+    items: value.items.map((item) => parseChatSummary(item)),
+    refresh: {
+      complete: refresh.complete,
+      cursor: refresh.cursor,
+      backoffActive: refresh.backoffActive,
+    },
+  };
+}
+
+function buildManagedEntitiesPath(
+  entityType: 'chat' | 'channel',
+  options: ManagedEntitiesFetchOptions,
+): string {
+  const query = new URLSearchParams();
+  if (options.refresh) {
+    query.set('refresh', '1');
+  }
+  if (options.includeRefreshState) {
+    query.set('includeRefreshState', '1');
+  }
+
+  const basePath = entityType === 'chat' ? '/chats' : '/channels';
+  return query.size > 0 ? `${basePath}?${query.toString()}` : basePath;
+}
+
 export async function getMe(
   api: ApiTransport,
   options: { chatId?: string; entityType?: 'chat' | 'channel' } = {},
@@ -88,26 +134,44 @@ export async function getMe(
   return parseMe(response);
 }
 
+export async function getChats(api: ApiTransport): Promise<ChatSummary[]>;
 export async function getChats(
   api: ApiTransport,
-  options: { refresh?: boolean } = {},
-): Promise<ChatSummary[]> {
-  const response = await api.request(`/chats${options.refresh ? '?refresh=1' : ''}`);
+  options: ManagedEntitiesFetchOptions & { includeRefreshState: true },
+): Promise<ManagedEntitiesListResponse>;
+export async function getChats(
+  api: ApiTransport,
+  options?: ManagedEntitiesFetchOptions,
+): Promise<ChatSummary[] | ManagedEntitiesListResponse> {
+  const response = await api.request(buildManagedEntitiesPath('chat', options ?? {}));
+  if (options?.includeRefreshState) {
+    return parseManagedEntitiesListResponse(response);
+  }
+
   if (!Array.isArray(response)) {
     throw new Error('Invalid chats response');
   }
 
-  return response.map(parseChatSummary);
+  return response.map((item) => parseChatSummary(item));
 }
 
+export async function getChannels(api: ApiTransport): Promise<ChatSummary[]>;
 export async function getChannels(
   api: ApiTransport,
-  options: { refresh?: boolean } = {},
-): Promise<ChatSummary[]> {
-  const response = await api.request(`/channels${options.refresh ? '?refresh=1' : ''}`);
+  options: ManagedEntitiesFetchOptions & { includeRefreshState: true },
+): Promise<ManagedEntitiesListResponse>;
+export async function getChannels(
+  api: ApiTransport,
+  options?: ManagedEntitiesFetchOptions,
+): Promise<ChatSummary[] | ManagedEntitiesListResponse> {
+  const response = await api.request(buildManagedEntitiesPath('channel', options ?? {}));
+  if (options?.includeRefreshState) {
+    return parseManagedEntitiesListResponse(response);
+  }
+
   if (!Array.isArray(response)) {
     throw new Error('Invalid channels response');
   }
 
-  return response.map(parseChatSummary);
+  return response.map((item) => parseChatSummary(item));
 }

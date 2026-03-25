@@ -68,7 +68,7 @@ import {
   updateRules,
   updateSettings,
 } from '../lib/api/chat-settings-client';
-import { getChannels, getChats, getMe } from '../lib/api/root-client';
+import { getMe } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import type {
   BroadcastHandoffPayload,
@@ -85,6 +85,7 @@ import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { useHintPopoverAutoPosition } from '../lib/hint-popover';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
 import { useAutoHideHeader } from '../lib/use-auto-hide-header';
+import { useManagedEntitiesSync } from '../lib/use-managed-entities-sync';
 
 type FieldErrors = Partial<Record<keyof ChatSettings, string>>;
 type ManagedBroadcastListItem = ChatSettingsScreenResponse['managedBroadcasts'][number];
@@ -1582,14 +1583,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       ...(focusSection === 'links'
         ? { links: true }
         : focusSection === 'rules'
-        ? { rules: true }
-        : focusSection === 'comments'
-          ? { comments: true }
-          : focusSection === 'giveaway'
-            ? { giveaway: true }
-            : focusSection === 'requiredSubscription'
-              ? { requiredSubscription: true }
-              : { mailing: true }),
+          ? { rules: true }
+          : focusSection === 'comments'
+            ? { comments: true }
+            : focusSection === 'giveaway'
+              ? { giveaway: true }
+              : focusSection === 'requiredSubscription'
+                ? { requiredSubscription: true }
+                : { mailing: true }),
     });
   }, [focusSection]);
 
@@ -1659,20 +1660,34 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     refetchOnWindowFocus: false,
   });
 
-  const chatsQuery = useQuery({
-    queryKey: ['chats', 'settings', 'refresh'],
-    queryFn: () => getChats(api, { refresh: true }),
+  const chatsList = useManagedEntitiesSync({
+    api,
+    entityType: 'chat',
     enabled: Boolean(chatId),
-    staleTime: 30_000,
-    refetchOnWindowFocus: false,
   });
-  const channelsQuery = useQuery({
-    queryKey: ['channels', 'settings', 'refresh'],
-    queryFn: () => getChannels(api, { refresh: true }),
+  const channelsList = useManagedEntitiesSync({
+    api,
+    entityType: 'channel',
     enabled: Boolean(chatId),
-    staleTime: 30_000,
-    refetchOnWindowFocus: false,
   });
+  const chatsQuery = {
+    data: chatsList.data,
+    isLoading: chatsList.isLoading,
+    error: chatsList.error,
+    isSuccess: chatsList.data !== null && chatsList.error === null,
+    isSyncComplete: chatsList.isSyncComplete,
+    isSyncing: chatsList.isRefreshing,
+    phase: chatsList.phase,
+  };
+  const channelsQuery = {
+    data: channelsList.data,
+    isLoading: channelsList.isLoading,
+    error: channelsList.error,
+    isSuccess: channelsList.data !== null && channelsList.error === null,
+    isSyncComplete: channelsList.isSyncComplete,
+    isSyncing: channelsList.isRefreshing,
+    phase: channelsList.phase,
+  };
   const settingsQuery = {
     data: settingsScreenQuery.data?.settings,
     isLoading: settingsScreenQuery.isLoading,
@@ -1744,7 +1759,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       );
   }, [availableRequiredSubscriptionChannelById, draft?.requiredSubscriptionChannelIds]);
   const staleRequiredSubscriptionChannelIds = useMemo(() => {
-    if (!channelsQuery.isSuccess) {
+    if (!channelsQuery.isSyncComplete) {
       return [];
     }
 
@@ -1753,7 +1768,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     );
   }, [
     availableRequiredSubscriptionChannelById,
-    channelsQuery.isSuccess,
+    channelsQuery.isSyncComplete,
     draft?.requiredSubscriptionChannelIds,
   ]);
   const availableRequiredSubscriptionChannelChoices = useMemo(() => {
@@ -2413,7 +2428,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     mutationFn: (broadcastId: string) => getManagedBroadcast(api, chatId ?? '', broadcastId),
     onSuccess: (broadcast) => {
       setEditingManagedBroadcast(broadcast);
-      setMailingApplyToAllChats(broadcast.applyToAllChats && canApplyToAllChats);
+      setMailingApplyToAllChats(broadcast.applyToAllChats);
       setMailingText(broadcast.text);
       setMailingBotHasContent(false);
       setMailingButtonEnabled(broadcast.buttonEnabled);
@@ -2949,8 +2964,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
     const normalizedDomain =
       domainInputMode === 'DOMAIN' ? normalizeAllowlistDomain(domainInput) : null;
-    const normalizedLink =
-      domainInputMode === 'EXACT' ? normalizeAllowlistLink(domainInput) : null;
+    const normalizedLink = domainInputMode === 'EXACT' ? normalizeAllowlistLink(domainInput) : null;
     const normalizedValue = normalizeStoredAllowlistEntry(domainInput, domainInputMode);
     const normalizedInput = normalizedDomain ?? normalizedLink;
 
@@ -3175,7 +3189,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     const scheduledSlots = sortAndUniqueBroadcastSlots(mailingScheduledSlots);
 
     return {
-      applyToAllChats: mailingApplyToAllChats && canApplyToAllChats,
+      applyToAllChats: mailingApplyToAllChats,
       buttonEnabled: mailingButtonEnabled,
       buttonUrl: normalizedButtonUrl,
       buttonText: normalizedButtonText || 'Открыть',
@@ -3293,12 +3307,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setOpenHintKey((current) => (current === key ? null : key));
   }
 
-  function renderInlineHint(
-    hintKey: HintKey,
-    hintId: string,
-    text: string,
-    hidden = false,
-  ) {
+  function renderInlineHint(hintKey: HintKey, hintId: string, text: string, hidden = false) {
     if (hidden || openHintKey !== hintKey) {
       return null;
     }
@@ -3599,10 +3608,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft?.requiredSubscriptionBanEnabled,
     draft?.requiredSubscriptionKickEnabled,
   ].filter(Boolean).length;
+  const areChannelsSyncing = channelsQuery.phase === 'loading' || channelsQuery.phase === 'syncing';
   const requiredSubscriptionHeaderSummary = draft?.requiredSubscriptionEnabled
-    ? requiredSubscriptionStaleCount > 0
-      ? `Нужно исправить: ${requiredSubscriptionStaleCount} недоступен`
-      : `${formatRequiredSubscriptionCount(requiredSubscriptionSelectedCount)} · ${requiredSubscriptionStagesEnabledCount}/4 ступени`
+    ? areChannelsSyncing
+      ? 'Синхронизируем каналы...'
+      : requiredSubscriptionStaleCount > 0
+        ? `Нужно исправить: ${requiredSubscriptionStaleCount} недоступен`
+        : `${formatRequiredSubscriptionCount(requiredSubscriptionSelectedCount)} · ${requiredSubscriptionStagesEnabledCount}/4 ступени`
     : 'Выключено';
   const profanityFilterHeaderSummary = draft?.russianProfanityFilterEnabled
     ? `${profanityStagesEnabledCount}/4 ступени включено`
@@ -3621,7 +3633,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const extraHeaderSummary =
     extraEnabledCount > 0 ? `${extraEnabledCount} опции включено` : 'Выключено';
   const chatsCount = chatsQuery.data?.length ?? 0;
-  const canApplyToAllChats = chatsCount > 1;
+  const areChatsSyncing = chatsQuery.phase === 'loading' || chatsQuery.phase === 'syncing';
+  const chatListsReady = chatsQuery.isSyncComplete;
+  const canApplyToAllChats = chatListsReady && chatsCount > 1;
   const managedBroadcasts = managedBroadcastsQuery.data ?? [];
   const orderedManagedBroadcasts = useMemo(() => {
     const priority = (item: ManagedBroadcastListItem): number => {
@@ -3693,10 +3707,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const commentsCardSummary = !draft?.commentsEnabled
     ? 'обсуждение выключено'
     : commentsTargetSummary || 'не выбрано, где бот публикует кнопку';
-  const mailingTargetLabel =
-    mailingApplyToAllChats && canApplyToAllChats ? `Во все чаты (${chatsCount})` : 'Текущий чат';
-  const mailingHeaderTargetLabel =
-    mailingApplyToAllChats && canApplyToAllChats ? 'Все чаты' : 'Текущий чат';
+  const mailingTargetLabel = areChatsSyncing
+    ? 'Синхронизируем чаты...'
+    : mailingApplyToAllChats
+      ? `Во все чаты (${chatsCount})`
+      : 'Текущий чат';
+  const mailingHeaderTargetLabel = areChatsSyncing
+    ? 'Синхронизация'
+    : mailingApplyToAllChats
+      ? 'Все чаты'
+      : 'Текущий чат';
   const mailingSlotsLabel = formatRussianCountLabel(
     mailingScheduledSlots.length,
     'слот',
@@ -3970,9 +3990,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       emphasize === 'save' ? 'button button--ghost' : 'button button--accent';
     const footerNote =
       options?.note ??
-      (canApplyToAllChats
-        ? 'Сохраняется только текущий блок. При необходимости его можно сразу применить во все чаты.'
-        : 'Пока доступен только текущий чат. Для массового применения нужен хотя бы ещё один чат.');
+      (areChatsSyncing
+        ? 'Синхронизируем список чатов. Массовое применение станет доступно после завершения.'
+        : canApplyToAllChats
+          ? 'Сохраняется только текущий блок. При необходимости его можно сразу применить во все чаты.'
+          : 'Пока доступен только текущий чат. Для массового применения нужен хотя бы ещё один чат.');
 
     return (
       <>
@@ -4227,9 +4249,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   onClick={() => setFieldValue('linkPolicy', option.value)}
                                 >
                                   <span className="policy-card__content">
-                                    <span className="policy-card__eyebrow">
-                                      {option.eyebrow}
-                                    </span>
+                                    <span className="policy-card__eyebrow">{option.eyebrow}</span>
                                     <span className="policy-card__text">
                                       <span className="policy-card__title">{option.label}</span>
                                       <small className="policy-card__description">
@@ -4274,14 +4294,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     </SettingsHintAnchor>
                                   </div>
                                 </div>
-                                <span className="chip chip--success">{allowlistEntries.length}</span>
+                                <span className="chip chip--success">
+                                  {allowlistEntries.length}
+                                </span>
                               </div>
 
                               <div className="allowlist-composer">
                                 <div className="allowlist-composer__head">
-                                  <span className="allowlist-composer__label">
-                                    Что разрешить
-                                  </span>
+                                  <span className="allowlist-composer__label">Что разрешить</span>
                                   <SettingsHintAnchor
                                     hintKey="linkAllowlistMode"
                                     openHintKey={openHintKey}
@@ -4425,17 +4445,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                       : 'chip--success',
                                                   )}
                                                 >
-                                                  {scheduledAtLabel
-                                                    ? 'По таймеру'
-                                                    : 'Без таймера'}
+                                                  {scheduledAtLabel ? 'По таймеру' : 'Без таймера'}
                                                 </span>
                                               </div>
 
                                               <small className="allowlist-item__meta">
-                                                {formatAllowlistMetaLabel(
-                                                  entry,
-                                                  scheduledAtLabel,
-                                                )}
+                                                {formatAllowlistMetaLabel(entry, scheduledAtLabel)}
                                               </small>
 
                                               <div className="allowlist-item__actions">
@@ -4448,9 +4463,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                   )}
                                                   aria-label={`Запланировать удаление ${entry.domain}`}
                                                   title="Запланировать удаление"
-                                                  onClick={() =>
-                                                    toggleDomainScheduleEditor(entry)
-                                                  }
+                                                  onClick={() => toggleDomainScheduleEditor(entry)}
                                                   disabled={isDomainMutationPending}
                                                 >
                                                   <CalendarIcon />
@@ -4539,9 +4552,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                       type="button"
                                                       className="button button--accent"
                                                       onClick={() =>
-                                                        submitDomainSchedule(
-                                                          entry.normalizedValue,
-                                                        )
+                                                        submitDomainSchedule(entry.normalizedValue)
                                                       }
                                                       disabled={isDomainMutationPending}
                                                     >
@@ -4554,9 +4565,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                                         type="button"
                                                         className="button button--ghost"
                                                         onClick={() =>
-                                                          clearDomainSchedule(
-                                                            entry.normalizedValue,
-                                                          )
+                                                          clearDomainSchedule(entry.normalizedValue)
                                                         }
                                                         disabled={isDomainMutationPending}
                                                       >
@@ -4876,7 +4885,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     textPlaceholder="Открыть"
                                   />
                                 ) : null}
-
                               </div>
                             ) : null}
                           </>
@@ -5486,7 +5494,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   textPlaceholder="Открыть"
                                 />
                               ) : null}
-
                             </div>
                           ) : null}
                         </>
@@ -6149,7 +6156,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   textPlaceholder="Правила чата"
                                 />
                               ) : null}
-
                             </div>
                           ) : null}
                         </>
@@ -6879,7 +6885,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               textPlaceholder="Открыть"
                             />
                           ) : null}
-
                         </div>
                       ) : null}
                     </div>
@@ -7743,7 +7748,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               textPlaceholder="Открыть"
                             />
                           ) : null}
-
                         </div>
                       ) : null}
                     </div>
@@ -8080,9 +8084,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             >
                               <div className="settings-native-toggle__row">
                                 <div className="settings-native-toggle__title-wrap">
-                                  <span className="settings-native-toggle__title">
-                                    Комментарии
-                                  </span>
+                                  <span className="settings-native-toggle__title">Комментарии</span>
                                   <div className="settings-native-toggle__title-actions">
                                     <SettingsHintAnchor
                                       hintKey="nightComments"
@@ -8192,7 +8194,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   textPlaceholder="Правила чата"
                                 />
                               ) : null}
-
                             </div>
                           ) : null}
 
@@ -8493,7 +8494,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 >
                                   <div className="mailing-target-card__row">
                                     <span className="mailing-target-card__title">
-                                      {canApplyToAllChats ? 'Все чаты' : 'Только этот чат'}
+                                      {areChatsSyncing
+                                        ? 'Синхронизируем чаты'
+                                        : canApplyToAllChats
+                                          ? 'Все чаты'
+                                          : 'Только этот чат'}
                                     </span>
 
                                     <label
@@ -8502,11 +8507,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     >
                                       <input
                                         type="checkbox"
-                                        checked={mailingApplyToAllChats && canApplyToAllChats}
+                                        checked={mailingApplyToAllChats}
                                         onChange={(event) =>
                                           setMailingApplyToAllChats(event.target.checked)
                                         }
-                                        disabled={!canApplyToAllChats || isMailingBusy}
+                                        disabled={
+                                          areChatsSyncing || !canApplyToAllChats || isMailingBusy
+                                        }
                                       />
                                       <span className="toggle-switch" aria-hidden>
                                         <span className="toggle-switch__thumb" />
@@ -8991,9 +8998,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 summary={requiredSubscriptionHeaderSummary}
                 onClose={() => toggleSection('requiredSubscription')}
                 footer={renderSectionSaveFooter('requiredSubscription', {
-                  note: canApplyToAllChats
-                    ? 'Сначала сохраните в этом чате.'
-                    : 'Сначала сохраните здесь.',
+                  note: areChatsSyncing
+                    ? 'Сначала дождитесь синхронизации списка чатов.'
+                    : canApplyToAllChats
+                      ? 'Сначала сохраните в этом чате.'
+                      : 'Сначала сохраните здесь.',
                   applyToAllLabel: 'Применить во всех чатах',
                   emphasize: 'save',
                 })}
@@ -9155,12 +9164,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                         <div className="managed-giveaway__channel-picker">
                           {channelsQuery.isLoading ? <span>Загружаем ваши каналы...</span> : null}
+                          {!channelsQuery.isLoading && channelsQuery.isSyncing ? (
+                            <span>Синхронизируем список каналов...</span>
+                          ) : null}
                           {channelsQuery.error ? (
                             <span>
                               Ошибка загрузки каналов: {formatApiError(channelsQuery.error)}
                             </span>
                           ) : null}
                           {!channelsQuery.isLoading &&
+                          !channelsQuery.isSyncing &&
                           !channelsQuery.error &&
                           availableRequiredSubscriptionChannelChoices.length === 0 ? (
                             <span>

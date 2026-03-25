@@ -25,7 +25,15 @@ export class AdminController {
   }
 
   @Get('chats')
-  getChats(@CurrentUser() user: AuthUser, @Query('refresh') refresh: string | undefined) {
+  getChats(
+    @CurrentUser() user: AuthUser,
+    @Query('refresh') refresh: string | undefined,
+    @Query('includeRefreshState') includeRefreshState: string | undefined,
+  ) {
+    if (includeRefreshState === '1') {
+      return this.adminService.listChatsWithRefreshState(user, { refresh: refresh === '1' });
+    }
+
     return this.adminService.listChats(user, { refresh: refresh === '1' });
   }
 
@@ -35,7 +43,15 @@ export class AdminController {
   }
 
   @Get('channels')
-  getChannels(@CurrentUser() user: AuthUser, @Query('refresh') refresh: string | undefined) {
+  getChannels(
+    @CurrentUser() user: AuthUser,
+    @Query('refresh') refresh: string | undefined,
+    @Query('includeRefreshState') includeRefreshState: string | undefined,
+  ) {
+    if (includeRefreshState === '1') {
+      return this.adminService.listChannelsWithRefreshState(user, { refresh: refresh === '1' });
+    }
+
     return this.adminService.listChannels(user, { refresh: refresh === '1' });
   }
 

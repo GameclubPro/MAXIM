@@ -15,6 +15,7 @@ import {
   domainAllowlistEntrySchema,
   logsDashboardResponseSchema,
   managedBroadcastDetailsSchema,
+  managedEntitiesListResponseSchema,
   managedGiveawayDetailsSchema,
   managedGiveawayParticipantStateSchema,
   managedGiveawayPublicSchema,
@@ -43,6 +44,7 @@ import {
   type LogsDashboardRange,
   type LogsDashboardResponse,
   type ManagedBroadcastDetails,
+  type ManagedEntitiesListResponse,
   type ManagedGiveawayDetails,
   type ManagedGiveawayParticipantState,
   type ManagedGiveawayPublic,
@@ -230,6 +232,17 @@ function buildBroadcastSummary(details: ManagedBroadcastDetails) {
     updatedAt: details.updatedAt,
     lastError: details.lastError,
   };
+}
+
+function buildPreviewManagedEntitiesResponse(items: ChatSummary[]): ManagedEntitiesListResponse {
+  return managedEntitiesListResponseSchema.parse({
+    items,
+    refresh: {
+      complete: true,
+      cursor: -1,
+      backoffActive: false,
+    },
+  });
 }
 
 function buildBroadcastHandoffState(details: ManagedBroadcastDetails): BroadcastHandoffState {
@@ -2077,7 +2090,10 @@ async function handleChatRequest(
   }
 
   if (tail[0] === 'domain-allowlist' && tail.length === 1 && method === 'POST') {
-    const payload = parseJsonBody(init) as { domain?: string; matchType?: 'EXACT' | 'DOMAIN' } | null;
+    const payload = parseJsonBody(init) as {
+      domain?: string;
+      matchType?: 'EXACT' | 'DOMAIN';
+    } | null;
     const domain = payload?.domain?.trim();
     const matchType = payload?.matchType === 'DOMAIN' ? 'DOMAIN' : 'EXACT';
     if (!domain) {
@@ -2613,10 +2629,16 @@ export function createPreviewApiTransport(): ApiTransport {
       }
 
       if (url.pathname === '/chats' && method === 'GET') {
+        if (url.searchParams.get('includeRefreshState') === '1') {
+          return cloneJson(buildPreviewManagedEntitiesResponse(state.chats));
+        }
         return cloneJson(state.chats);
       }
 
       if (url.pathname === '/channels' && method === 'GET') {
+        if (url.searchParams.get('includeRefreshState') === '1') {
+          return cloneJson(buildPreviewManagedEntitiesResponse(state.channels));
+        }
         return cloneJson(state.channels);
       }
 

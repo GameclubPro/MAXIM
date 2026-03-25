@@ -57,6 +57,8 @@ import {
   updateChatRulesRequestSchema,
   type PublishChatRulesResult,
   type BroadcastTextFormat,
+  type ManagedEntitiesListResponse,
+  type ManagedEntitiesRefreshState,
   type SendBroadcastRequest,
   type SendBroadcastResult,
   type ChatSummary,
@@ -131,6 +133,11 @@ type ApplySettingsToAllChatsResult = {
 };
 
 type ManagedEntityTypeFilter = ManagedEntityType | 'all';
+
+type ManagedEntitiesListResult = {
+  items: ChatSummary[];
+  refresh: ManagedEntitiesRefreshState | null;
+};
 
 type AdminAccessResolution =
   | {
@@ -466,7 +473,10 @@ export class AdminService {
   private readonly ownBotUserId: string | null;
   private readonly maxBotToken: string;
   private readonly adminAccessChecks = new Map<string, Promise<AdminAccessResolution>>();
-  private readonly managedEntitiesDiscoveryChecks = new Map<string, Promise<ChatSummary[]>>();
+  private readonly managedEntitiesDiscoveryChecks = new Map<
+    string,
+    Promise<ManagedEntitiesListResult>
+  >();
   private readonly managedEntitiesRefreshCooldownUntilMs = new Map<string, number>();
   private readonly managedEntitiesRefreshBackoffUntilMs = new Map<string, number>();
 
@@ -546,11 +556,50 @@ export class AdminService {
   }
 
   async listChats(user: AuthUser, options: { refresh?: boolean } = {}): Promise<ChatSummary[]> {
-    return this.listManagedEntities(user, 'chat', options);
+    const result = await this.listManagedEntitiesDetailed(user, 'chat', options);
+    return result.items;
   }
 
   async listChannels(user: AuthUser, options: { refresh?: boolean } = {}): Promise<ChatSummary[]> {
-    return this.listManagedEntities(user, 'channel', options);
+    const result = await this.listManagedEntitiesDetailed(user, 'channel', options);
+    return result.items;
+  }
+
+  async listChatsWithRefreshState(
+    user: AuthUser,
+    options: { refresh?: boolean } = {},
+  ): Promise<ManagedEntitiesListResponse> {
+    const result = await this.listManagedEntitiesDetailed(user, 'chat', {
+      ...options,
+      includeRefreshState: true,
+    });
+    return {
+      items: result.items,
+      refresh: result.refresh ?? this.createManagedEntitiesRefreshState(null, false),
+    };
+  }
+
+  async listChannelsWithRefreshState(
+    user: AuthUser,
+    options: { refresh?: boolean } = {},
+  ): Promise<ManagedEntitiesListResponse> {
+    const result = await this.listManagedEntitiesDetailed(user, 'channel', {
+      ...options,
+      includeRefreshState: true,
+    });
+    return {
+      items: result.items,
+      refresh: result.refresh ?? this.createManagedEntitiesRefreshState(null, false),
+    };
+  }
+
+  async listManagedEntities(
+    user: AuthUser,
+    entityType: ManagedEntityTypeFilter = 'all',
+    options: { refresh?: boolean } = {},
+  ): Promise<ChatSummary[]> {
+    const result = await this.listManagedEntitiesDetailed(user, entityType, options);
+    return result.items;
   }
 
   async getChatHeader(chatId: string, user: AuthUser): Promise<ManagedEntityHeader> {
@@ -561,11 +610,11 @@ export class AdminService {
     return this.getManagedEntityHeader(chatId, user, 'channel');
   }
 
-  async listManagedEntities(
+  private async listManagedEntitiesDetailed(
     user: AuthUser,
     entityType: ManagedEntityTypeFilter = 'all',
-    options: { refresh?: boolean } = {},
-  ): Promise<ChatSummary[]> {
+    options: { refresh?: boolean; includeRefreshState?: boolean } = {},
+  ): Promise<ManagedEntitiesListResult> {
     const recentBotAdded = await this.bootstrapRecentBotAddedEntities(user, entityType);
 
     if (options.refresh !== true) {
@@ -580,20 +629,28 @@ export class AdminService {
         cached,
       );
       if (initial.length > 0) {
-        return this.attachChannelOverview(initial);
+        return {
+          items: await this.attachChannelOverview(initial),
+          refresh:
+            options.includeRefreshState === true
+              ? await this.readManagedEntitiesRefreshState(user.userId, entityType)
+              : null,
+        };
       }
 
       return this.discoverManagedEntities(user, entityType, {
         respectCooldown: true,
         fullScan: false,
+        includeRefreshState: options.includeRefreshState === true,
       });
     }
 
     const discovered = await this.discoverManagedEntities(user, entityType, {
       respectCooldown: false,
       fullScan: true,
+      includeRefreshState: options.includeRefreshState === true,
     });
-    if (discovered.length > 0) {
+    if (discovered.items.length > 0) {
       return discovered;
     }
 
@@ -607,7 +664,10 @@ export class AdminService {
       recentBotAdded,
       cached,
     );
-    return fallback.length > 0 ? this.attachChannelOverview(fallback) : [];
+    return {
+      items: fallback.length > 0 ? await this.attachChannelOverview(fallback) : [],
+      refresh: discovered.refresh,
+    };
   }
 
   private mergeManagedEntityGroups(...groups: readonly ChatSummary[][]): ChatSummary[] {
@@ -749,28 +809,30 @@ export class AdminService {
   private async discoverManagedEntities(
     user: AuthUser,
     entityType: ManagedEntityTypeFilter,
-    options: { respectCooldown: boolean; fullScan: boolean },
-  ): Promise<ChatSummary[]> {
+    options: { respectCooldown: boolean; fullScan: boolean; includeRefreshState?: boolean },
+  ): Promise<ManagedEntitiesListResult> {
     const refreshCooldownKey = this.buildManagedEntitiesRefreshCooldownKey(user.userId, entityType);
-    if (
-      !(await this.isManagedEntitiesRefreshBackoffActive(
+    const backoffActive = await this.isManagedEntitiesRefreshBackoffActive(
+      user.userId,
+      entityType,
+      refreshCooldownKey,
+    );
+    const cooldownActive =
+      options.respectCooldown &&
+      (await this.isManagedEntitiesRefreshCooldownActive(
         user.userId,
         entityType,
         refreshCooldownKey,
-      )) &&
-      (!options.respectCooldown ||
-        !(await this.isManagedEntitiesRefreshCooldownActive(
-          user.userId,
-          entityType,
-          refreshCooldownKey,
-        )))
-    ) {
+      ));
+
+    if (!backoffActive && !cooldownActive) {
       const discoveryKey = `${user.userId}:${entityType}:${options.fullScan ? 'full' : 'delta'}`;
       const inFlight = this.managedEntitiesDiscoveryChecks.get(discoveryKey);
       const pending =
         inFlight ??
         this.runManagedEntitiesDiscovery(user, entityType, refreshCooldownKey, {
           fullScan: options.fullScan,
+          includeRefreshState: options.includeRefreshState === true,
         });
 
       if (!inFlight) {
@@ -778,10 +840,7 @@ export class AdminService {
       }
 
       try {
-        const discovered = await pending;
-        if (discovered.length > 0) {
-          return this.attachChannelOverview(discovered);
-        }
+        return await pending;
       } finally {
         if (!inFlight) {
           this.managedEntitiesDiscoveryChecks.delete(discoveryKey);
@@ -789,15 +848,23 @@ export class AdminService {
       }
     }
 
-    return [];
+    return {
+      items: [],
+      refresh:
+        options.includeRefreshState === true
+          ? await this.readManagedEntitiesRefreshState(user.userId, entityType, {
+              backoffActiveOverride: backoffActive,
+            })
+          : null,
+    };
   }
 
   private async runManagedEntitiesDiscovery(
     user: AuthUser,
     entityType: ManagedEntityTypeFilter,
     refreshCooldownKey: string,
-    options: { fullScan: boolean },
-  ): Promise<ChatSummary[]> {
+    options: { fullScan: boolean; includeRefreshState?: boolean },
+  ): Promise<ManagedEntitiesListResult> {
     try {
       const discoveryTrafficClass = 'interactive';
       const adminCheckSpacingMs = options.fullScan
@@ -926,9 +993,11 @@ export class AdminService {
         remoteIndex: Number.MAX_SAFE_INTEGER,
       }));
       const mergedChats = [...mergedKnownChats, ...filtered, ...remainingCachedChats];
+      let nextCursor: number | null = null;
 
       if (options.fullScan === true) {
         if (fullScanAlreadyCompleted || fullScanEndIndex >= supportedCandidateChats.length) {
+          nextCursor = MANAGED_ENTITIES_REFRESH_CURSOR_DONE;
           await this.chatContextCache.setManagedEntitiesRefreshCursor?.(
             user.userId,
             entityType,
@@ -936,6 +1005,7 @@ export class AdminService {
             MANAGED_ENTITIES_REFRESH_CURSOR_DONE_TTL_SEC,
           );
         } else {
+          nextCursor = fullScanEndIndex;
           await this.chatContextCache.setManagedEntitiesRefreshCursor?.(
             user.userId,
             entityType,
@@ -958,7 +1028,16 @@ export class AdminService {
 
         return b.lastEventTime - a.lastEventTime;
       });
-      return mergedChats.map((item) => item.chat);
+      const items = await this.attachChannelOverview(mergedChats.map((item) => item.chat));
+      return {
+        items,
+        refresh:
+          options.includeRefreshState === true
+            ? options.fullScan === true
+              ? this.createManagedEntitiesRefreshState(nextCursor, false)
+              : await this.readManagedEntitiesRefreshState(user.userId, entityType)
+            : null,
+      };
     } catch (error: unknown) {
       if (this.isManagedEntitiesRefreshThrottledError(error) || this.isMaxApiThrottleError(error)) {
         const rootError =
@@ -984,7 +1063,17 @@ export class AdminService {
         );
       }
 
-      return [];
+      return {
+        items: [],
+        refresh:
+          options.includeRefreshState === true
+            ? await this.readManagedEntitiesRefreshState(user.userId, entityType, {
+                backoffActiveOverride:
+                  this.isManagedEntitiesRefreshThrottledError(error) ||
+                  this.isMaxApiThrottleError(error),
+              })
+            : null,
+      };
     }
   }
 
@@ -9187,8 +9276,9 @@ export class AdminService {
     delivered: boolean;
     deliveredToUserId: string | null;
   }> {
-    const authorDisplayName =
-      params.user.displayName?.trim() ? params.user.displayName.trim() : params.user.username;
+    const authorDisplayName = params.user.displayName?.trim()
+      ? params.user.displayName.trim()
+      : params.user.username;
     const authorAvatarUrl = this.readTrimmedString(params.user.avatarUrl);
     const created = await this.prisma.auditLog.create({
       data: {
@@ -9222,12 +9312,17 @@ export class AdminService {
       },
     });
 
-    const delivery = await this.deliverSuggestionToAdminPrivates(created.id, params.chatId, params.user, {
-      text: params.text,
-      imageBase64: params.imageBase64,
-      imageMimeType: params.imageMimeType,
-      imageFileName: params.imageFileName,
-    });
+    const delivery = await this.deliverSuggestionToAdminPrivates(
+      created.id,
+      params.chatId,
+      params.user,
+      {
+        text: params.text,
+        imageBase64: params.imageBase64,
+        imageMimeType: params.imageMimeType,
+        imageFileName: params.imageFileName,
+      },
+    );
     const createdPayload = this.readObjectPayload(created.payload);
     const updated = await this.prisma.auditLog.update({
       where: {
@@ -9370,21 +9465,25 @@ export class AdminService {
     };
   }
 
-  private buildChannelSuggestionAdminReviewButtons(
-    suggestionId: string,
-  ): MaxMessageButton[][] {
+  private buildChannelSuggestionAdminReviewButtons(suggestionId: string): MaxMessageButton[][] {
     return [
       [
         {
           type: 'callback',
           text: '📰 Опубликовать',
-          payload: this.buildPrivateControlCallbackPayload('suggestion_review_publish', suggestionId),
+          payload: this.buildPrivateControlCallbackPayload(
+            'suggestion_review_publish',
+            suggestionId,
+          ),
           intent: 'positive',
         },
         {
           type: 'callback',
           text: '⛔ Отменить',
-          payload: this.buildPrivateControlCallbackPayload('suggestion_review_cancel', suggestionId),
+          payload: this.buildPrivateControlCallbackPayload(
+            'suggestion_review_cancel',
+            suggestionId,
+          ),
           intent: 'negative',
         },
       ],
@@ -9498,9 +9597,14 @@ export class AdminService {
 
     for (const delivery of deliveries) {
       try {
-        await this.maxClient.editMessageInlineKeyboard(delivery.privateChatId, delivery.messageId, message, {
-          buttons: [],
-        });
+        await this.maxClient.editMessageInlineKeyboard(
+          delivery.privateChatId,
+          delivery.messageId,
+          message,
+          {
+            buttons: [],
+          },
+        );
       } catch (error: unknown) {
         this.logger.warn(
           {
@@ -10482,6 +10586,44 @@ export class AdminService {
     }
 
     return backoffMs;
+  }
+
+  private createManagedEntitiesRefreshState(
+    cursor: number | null,
+    backoffActive: boolean,
+  ): ManagedEntitiesRefreshState {
+    return {
+      complete: cursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE,
+      cursor,
+      backoffActive,
+    };
+  }
+
+  private async readManagedEntitiesRefreshState(
+    userId: string,
+    entityType: ManagedEntityTypeFilter,
+    options: { backoffActiveOverride?: boolean; cursorOverride?: number | null } = {},
+  ): Promise<ManagedEntitiesRefreshState> {
+    let cursor = options.cursorOverride;
+    if (cursor === undefined) {
+      try {
+        cursor =
+          (await this.chatContextCache.getManagedEntitiesRefreshCursor?.(userId, entityType)) ??
+          null;
+      } catch {
+        cursor = null;
+      }
+    }
+
+    const backoffActive =
+      options.backoffActiveOverride ??
+      (await this.isManagedEntitiesRefreshBackoffActive(
+        userId,
+        entityType,
+        this.buildManagedEntitiesRefreshCooldownKey(userId, entityType),
+      ));
+
+    return this.createManagedEntitiesRefreshState(cursor, backoffActive);
   }
 
   private async hasPersistedChatAccess(chatId: string, userId: string): Promise<boolean> {
