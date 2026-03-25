@@ -8238,6 +8238,133 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
   });
 
+  it('skips bot numeric admin id from chat members/me when MAX_BOT_CONTACT_ID is not configured', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.findUnique.mockResolvedValue({
+      id: 'channel-1',
+      title: 'Новости MAX',
+      entityType: 'CHANNEL',
+    });
+    prisma.channelSettings.findUnique.mockResolvedValue({
+      postSuggestionsEnabled: false,
+    });
+    prisma.$queryRaw.mockResolvedValue([
+      {
+        recipient_chat_id: '555001',
+      },
+    ]);
+    prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
+      id: 'suggestion-bot-filter-1',
+      actorUserId: 'user-1',
+      payload: {},
+      createdAt: new Date('2026-03-25T06:30:00.000Z'),
+    });
+    prisma.auditLog.update.mockResolvedValue({
+      id: 'suggestion-bot-filter-1',
+      actorUserId: 'user-1',
+      payload: {
+        type: 'suggest',
+        text: 'Предложка',
+        delivered: true,
+        deliveredToUserId: '98315271',
+        source: 'private_bot',
+      },
+      createdAt: new Date('2026-03-25T06:30:00.000Z'),
+    });
+
+    const tokenPublisherClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-channel-engagement-bot-filter', url: null }),
+    };
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['214634783', '98315271']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: '214634783',
+        isAdmin: true,
+        isOwner: false,
+        permissions: [],
+      }),
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockResolvedValue({ messageId: 'mid-suggestion-human-admin-1', url: null }),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+    const config = {
+      getOrThrow: jest.fn((key: string) => {
+        if (key === 'MAX_BOT_TOKEN') {
+          return 'test-max-bot-token';
+        }
+        throw new Error(`Missing key: ${key}`);
+      }),
+      get: jest.fn((key: string) => {
+        if (key === 'APP_BASE_URL') {
+          return 'https://maxim.play-team.ru';
+        }
+        if (key === 'MAX_BOT_ID') {
+          return 'id613002203036_4_bot';
+        }
+        if (key === 'MAX_BOT_CONTACT_ID') {
+          return null;
+        }
+        return null;
+      }),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      config as never,
+    );
+
+    const tokenPublisher = new AdminService(
+      prisma as never,
+      tokenPublisherClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const suggestToken = await publishSuggestDialogToken(tokenPublisher, tokenPublisherClient);
+
+    await service.createChannelSuggestionFromBot(
+      'channel-1',
+      {
+        userId: 'user-1',
+        username: 'user1',
+        displayName: 'Пользователь',
+        chatTitle: null,
+      },
+      {
+        token: suggestToken,
+        text: 'Предложка',
+      },
+    );
+
+    expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith('channel-1', {
+      trafficClass: 'interactive',
+    });
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
+      '555001',
+      expect.stringContaining('Новая предложка поста'),
+      expect.any(Object),
+    );
+    expect(prisma.auditLog.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            deliveredToUserId: '98315271',
+            deliveredToUserIds: ['98315271'],
+          }),
+        }),
+      }),
+    );
+  });
+
   it('publishes a reviewed suggestion and removes admin review buttons', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({

@@ -9273,10 +9273,14 @@ export class AdminService {
     deliveredToUserIds: string[];
     deliveries: ChannelSuggestionAdminDelivery[];
   }> {
+    const currentBotUserId = await this.resolveCurrentBotUserId(chatId);
     const adminIds = Array.from(
       new Set(
         (await this.maxClient.getChatAdminIds(chatId)).filter(
-          (id) => id.trim().length > 0 && !this.isOwnBotUserId(id),
+          (id) =>
+            id.trim().length > 0 &&
+            !this.isOwnBotUserId(id) &&
+            (!currentBotUserId || id.trim() !== currentBotUserId),
         ),
       ),
     );
@@ -10098,16 +10102,38 @@ export class AdminService {
   }
 
   private isOwnBotUserId(userId: string): boolean {
-    if (!this.ownBotUserId) {
-      return false;
-    }
-
     const normalized = userId.trim();
     if (!normalized) {
       return false;
     }
 
+    if (this.explicitBotContactId && normalized === this.explicitBotContactId) {
+      return true;
+    }
+
+    if (!this.ownBotUserId) {
+      return false;
+    }
+
     return normalized === this.ownBotUserId || normalized === this.ownBotUserId.split('_')[0];
+  }
+
+  private async resolveCurrentBotUserId(chatId: string): Promise<string | null> {
+    try {
+      const access = await this.maxClient.getCurrentChatMemberAccess(chatId, {
+        trafficClass: 'interactive',
+      });
+      return this.readTrimmedString(access.userId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve current bot user id for chat admin filtering',
+      );
+      return null;
+    }
   }
 
   private async mapWithConcurrencyLimit<T, R>(
