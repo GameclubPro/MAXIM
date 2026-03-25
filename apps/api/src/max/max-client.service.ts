@@ -68,6 +68,7 @@ export type MaxApiTrafficClass = 'critical' | 'interactive' | 'background';
 export type MaxPublishedMessage = {
   messageId: string;
   url: string | null;
+  chatId?: string | null;
 };
 
 type MaxMessageMarkup = {
@@ -361,9 +362,11 @@ export class MaxClientService implements OnModuleDestroy {
       throw new Error('MAX send response is missing message id');
     }
 
+    const resolvedChatId = this.extractChatIdFromSendResponse(sendResponse);
     return {
       messageId,
       url: this.parseChatLink(sendResponse),
+      ...(resolvedChatId ? { chatId: resolvedChatId } : {}),
     };
   }
 
@@ -393,9 +396,11 @@ export class MaxClientService implements OnModuleDestroy {
       throw new Error('MAX send response is missing message id');
     }
 
+    const resolvedChatId = this.extractChatIdFromSendResponse(sendResponse);
     return {
       messageId,
       url: this.parseChatLink(sendResponse),
+      ...(resolvedChatId ? { chatId: resolvedChatId } : {}),
     };
   }
 
@@ -404,19 +409,25 @@ export class MaxClientService implements OnModuleDestroy {
     text: string,
     options?: MaxSendMessageOptions,
   ): Promise<MaxPublishedMessage> {
-    const { messageId, url: directUrl } = await this.sendMessageImmediateWithId(
+    const { messageId, url: directUrl, chatId: resolvedChatId } =
+      await this.sendMessageImmediateWithId(
       chatId,
       text,
       options,
-    );
+      );
     if (directUrl) {
-      return { messageId, url: directUrl };
+      return {
+        messageId,
+        url: directUrl,
+        ...(resolvedChatId ? { chatId: resolvedChatId } : {}),
+      };
     }
 
     const resolvedUrl = await this.resolveMessageLink(messageId);
     return {
       messageId,
       url: resolvedUrl ?? null,
+      ...(resolvedChatId ? { chatId: resolvedChatId } : {}),
     };
   }
 
@@ -463,14 +474,20 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     const directUrl = this.parseChatLink(sendResponse);
+    const resolvedChatId = this.extractChatIdFromSendResponse(sendResponse);
     if (directUrl) {
-      return { messageId, url: directUrl };
+      return {
+        messageId,
+        url: directUrl,
+        ...(resolvedChatId ? { chatId: resolvedChatId } : {}),
+      };
     }
 
     const resolvedUrl = await this.resolveMessageLink(messageId);
     return {
       messageId,
       url: resolvedUrl ?? null,
+      ...(resolvedChatId ? { chatId: resolvedChatId } : {}),
     };
   }
 
@@ -2539,6 +2556,51 @@ export class MaxClientService implements OnModuleDestroy {
         if (value && (typeof value === 'object' || Array.isArray(value))) {
           queue.push({ node: value, depth: depth + 1 });
         }
+      }
+    }
+
+    return null;
+  }
+
+  private extractChatIdFromSendResponse(payload: unknown): string | null {
+    const queue: Array<{ node: unknown; depth: number }> = [{ node: payload, depth: 0 }];
+    const visited = new Set<unknown>();
+
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (!current || current.depth > 4) {
+        continue;
+      }
+
+      const { node, depth } = current;
+      if (!node || typeof node !== 'object') {
+        continue;
+      }
+
+      if (visited.has(node)) {
+        continue;
+      }
+      visited.add(node);
+
+      if (Array.isArray(node)) {
+        for (const item of node) {
+          queue.push({ node: item, depth: depth + 1 });
+        }
+        continue;
+      }
+
+      const row = node as Record<string, unknown>;
+      const recipient = this.asRecord(row.recipient);
+      const chatIdValue = recipient?.chat_id ?? recipient?.chatId ?? row.chat_id ?? row.chatId;
+      if (typeof chatIdValue === 'number' || typeof chatIdValue === 'string') {
+        const normalized = String(chatIdValue).trim();
+        if (normalized) {
+          return normalized;
+        }
+      }
+
+      for (const value of Object.values(row)) {
+        queue.push({ node: value, depth: depth + 1 });
       }
     }
 

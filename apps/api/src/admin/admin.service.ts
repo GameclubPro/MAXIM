@@ -9308,22 +9308,41 @@ export class AdminService {
       publishedUrl: null,
     });
     const deliveries: ChannelSuggestionAdminDelivery[] = [];
+    const deliveredAdminUserIds: string[] = [];
 
     for (const adminUserId of adminIds) {
-      const privateChatId = await this.findLatestPrivateChatIdForUser(adminUserId);
-      if (!privateChatId) {
-        continue;
-      }
-
+      let privateChatId: string | null = null;
       try {
-        const published = await this.maxClient.sendMessageImmediateWithId(
-          privateChatId,
-          message,
-          {
-            ...(uploadedImagePayload ? { imagePayload: uploadedImagePayload } : {}),
-            buttons,
-          },
-        );
+        privateChatId = await this.findLatestPrivateChatIdForUser(adminUserId);
+        const published = privateChatId
+          ? await this.maxClient.sendMessageImmediateWithId(privateChatId, message, {
+              ...(uploadedImagePayload ? { imagePayload: uploadedImagePayload } : {}),
+              buttons,
+            })
+          : await this.maxClient.sendMessageImmediateToUser(adminUserId, message, {
+              ...(uploadedImagePayload ? { imagePayload: uploadedImagePayload } : {}),
+              buttons,
+            });
+
+        deliveredAdminUserIds.push(adminUserId);
+        privateChatId =
+          privateChatId ??
+          this.readTrimmedString(published.chatId) ??
+          (await this.findLatestPrivateChatIdForUser(adminUserId));
+
+        if (!privateChatId) {
+          this.logger.warn(
+            {
+              chatId,
+              adminUserId,
+              suggestionId,
+              messageId: published.messageId,
+            },
+            'Delivered suggestion to admin user but could not resolve private chat id',
+          );
+          continue;
+        }
+
         deliveries.push({
           adminUserId,
           privateChatId,
@@ -9344,9 +9363,9 @@ export class AdminService {
     }
 
     return {
-      delivered: deliveries.length > 0,
-      deliveredToUserId: deliveries[0]?.adminUserId ?? null,
-      deliveredToUserIds: deliveries.map((entry) => entry.adminUserId),
+      delivered: deliveredAdminUserIds.length > 0,
+      deliveredToUserId: deliveredAdminUserIds[0] ?? null,
+      deliveredToUserIds: deliveredAdminUserIds,
       deliveries,
     };
   }

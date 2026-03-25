@@ -199,6 +199,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
           status: 200,
           data: {
             mid: 'mid-private-1',
+            recipient: {
+              chat_id: '165176099',
+            },
           },
         }),
       ),
@@ -210,6 +213,7 @@ describe('MaxClientService inline keyboard guardrails', () => {
     expect(result).toEqual({
       messageId: 'mid-private-1',
       url: null,
+      chatId: '165176099',
     });
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({

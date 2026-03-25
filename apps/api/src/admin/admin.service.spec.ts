@@ -8248,11 +8248,7 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     prisma.channelSettings.findUnique.mockResolvedValue({
       postSuggestionsEnabled: false,
     });
-    prisma.$queryRaw.mockResolvedValue([
-      {
-        recipient_chat_id: '555001',
-      },
-    ]);
+    prisma.$queryRaw.mockResolvedValue([]);
     prisma.auditLog.create.mockResolvedValueOnce(undefined).mockResolvedValueOnce({
       id: 'suggestion-bot-filter-1',
       actorUserId: 'user-1',
@@ -8286,9 +8282,12 @@ describe('AdminService.publishChannelEngagementMessage', () => {
         isOwner: false,
         permissions: [],
       }),
-      sendMessageImmediateWithId: jest
-        .fn()
-        .mockResolvedValue({ messageId: 'mid-suggestion-human-admin-1', url: null }),
+      sendMessageImmediateWithId: jest.fn(),
+      sendMessageImmediateToUser: jest.fn().mockResolvedValue({
+        messageId: 'mid-suggestion-human-admin-1',
+        url: null,
+        chatId: '165176099',
+      }),
     };
     const chatContextCache = {
       invalidate: jest.fn(),
@@ -8347,9 +8346,10 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     expect(maxClient.getCurrentChatMemberAccess).toHaveBeenCalledWith('channel-1', {
       trafficClass: 'interactive',
     });
-    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
-    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledWith(
-      '555001',
+    expect(maxClient.sendMessageImmediateWithId).not.toHaveBeenCalled();
+    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateToUser).toHaveBeenCalledWith(
+      '98315271',
       expect.stringContaining('Новая предложка поста'),
       expect.any(Object),
     );
@@ -8359,6 +8359,13 @@ describe('AdminService.publishChannelEngagementMessage', () => {
           payload: expect.objectContaining({
             deliveredToUserId: '98315271',
             deliveredToUserIds: ['98315271'],
+            deliveries: [
+              expect.objectContaining({
+                adminUserId: '98315271',
+                privateChatId: '165176099',
+                messageId: 'mid-suggestion-human-admin-1',
+              }),
+            ],
           }),
         }),
       }),
