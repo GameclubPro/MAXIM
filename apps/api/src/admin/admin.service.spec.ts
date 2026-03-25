@@ -591,7 +591,7 @@ describe('AdminService getMe', () => {
       trafficClass: 'interactive',
     });
   });
-  it('builds bot handoff profile url when username is unavailable', async () => {
+  it('keeps profile url empty when username is unavailable', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatMemberProfiles: jest.fn().mockResolvedValue(
@@ -631,7 +631,7 @@ describe('AdminService getMe', () => {
       username: null,
       displayName: 'Designer Max',
       avatarUrl: 'https://cdn.max/designer.png',
-      profileUrl: expect.stringMatching(/^https:\/\/max\.ru\/777000_bot\?start=pmh-/u),
+      profileUrl: null,
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',
@@ -640,7 +640,6 @@ describe('AdminService getMe', () => {
 });
 
 describe('AdminService night mode settings normalization', () => {
-
   it('forces night bot message toggles off when night mode is disabled on update', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -701,6 +700,55 @@ describe('AdminService night mode settings normalization', () => {
                 nightModeRulesButtonEnabled: false,
               }),
             },
+          },
+        },
+      }),
+    );
+  });
+
+  it('drops legacy profile handoff button urls on update', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.updateSettings(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        greetingEnabled: true,
+        greetingBotMessageEnabled: true,
+        greetingBotButtonEnabled: true,
+        greetingBotButtonUrl: 'https://max.ru/777000_bot?start=pmh-legacy',
+        greetingBotButtonText: 'Профиль',
+      },
+    );
+
+    expect(result.greetingBotButtonUrl).toBe('');
+    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: {
+          settings: {
+            upsert: expect.objectContaining({
+              update: expect.objectContaining({
+                greetingBotButtonUrl: '',
+              }),
+            }),
           },
         },
       }),

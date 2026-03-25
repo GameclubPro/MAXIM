@@ -77,6 +77,25 @@ function buildProfileIdUrl(userId: string): string {
   return `max://user/${encodeURIComponent(userId)}`;
 }
 
+function isLegacyProfileHandoffUrl(value: string): boolean {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    const hostname = parsed.hostname.trim().toLowerCase();
+    if (hostname !== 'max.ru' && hostname !== 'www.max.ru') {
+      return false;
+    }
+
+    return (parsed.searchParams.get('start')?.trim() ?? '').startsWith('pmh-');
+  } catch {
+    return false;
+  }
+}
+
 function normalizeComparableUrl(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -230,16 +249,16 @@ export function ManagedLinkButtonFields({
 
   const profileUsername = meQuery.data?.username?.trim() ?? '';
   const profileUserId = meQuery.data?.userId?.trim() ?? '';
-  const profileSubtitle = profileUsername
-    ? `@${profileUsername}`
-    : profileUserId
-      ? `ID ${profileUserId}`
-      : 'Профиль недоступен';
+  const profileSubtitle = profileUsername ? `@${profileUsername}` : 'Нет публичной ссылки';
   const profileDisplayName =
-    meQuery.data?.displayName?.trim() ||
-    (profileUsername ? `@${profileUsername}` : profileUserId ? 'Профиль по ID' : 'Профиль');
+    meQuery.data?.displayName?.trim() || (profileUsername ? `@${profileUsername}` : 'Профиль');
   const profileUrl = meQuery.data?.profileUrl?.trim() ?? '';
   const legacyProfileIdUrl = profileUserId ? buildProfileIdUrl(profileUserId) : '';
+  const hasLegacyProfileUrl = Boolean(
+    (legacyProfileIdUrl &&
+      normalizeComparableUrl(urlValue) === normalizeComparableUrl(legacyProfileIdUrl)) ||
+      isLegacyProfileHandoffUrl(urlValue),
+  );
   const chatOptions = useMemo(
     () => buildManagedLinkOptions(chatsQuery.data, 'chat', urlValue),
     [chatsQuery.data, urlValue],
@@ -285,17 +304,19 @@ export function ManagedLinkButtonFields({
   }, [sheetOpen]);
 
   useEffect(() => {
-    if (!legacyProfileIdUrl || !profileUrl) {
+    if (!hasLegacyProfileUrl) {
       return;
     }
 
-    if (
-      normalizeComparableUrl(urlValue) === normalizeComparableUrl(legacyProfileIdUrl) &&
-      normalizeComparableUrl(urlValue) !== normalizeComparableUrl(profileUrl)
-    ) {
+    if (profileUrl && normalizeComparableUrl(urlValue) !== normalizeComparableUrl(profileUrl)) {
       onUrlChange(profileUrl);
+      return;
     }
-  }, [legacyProfileIdUrl, onUrlChange, profileUrl, urlValue]);
+
+    if (!profileUrl && urlValue.trim()) {
+      onUrlChange('');
+    }
+  }, [hasLegacyProfileUrl, onUrlChange, profileUrl, urlValue]);
 
   const activeOptions = sheetTab === 'channel' ? channelOptions : chatOptions;
   const filteredOptions = useMemo(() => {

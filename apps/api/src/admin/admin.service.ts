@@ -476,7 +476,6 @@ export class AdminService {
     };
     const contextChatId =
       this.readTrimmedString(options.chatId) ?? this.readTrimmedString(user.chatId);
-    const contextEntityType = options.entityType === 'channel' ? 'channel' : 'chat';
     const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
 
     if (
@@ -496,9 +495,7 @@ export class AdminService {
       const displayName =
         fallback.displayName ?? this.readTrimmedString(profile?.displayName) ?? null;
       const avatarUrl = fallback.avatarUrl ?? this.readTrimmedString(profile?.avatarUrl) ?? null;
-      const profileUrl =
-        this.buildUserProfileUrl(username) ??
-        this.buildProfileMentionHandoffUrl(contextChatId, contextEntityType, user.userId, displayName);
+      const profileUrl = this.buildUserProfileUrl(username);
 
       return {
         userId: user.userId,
@@ -2698,7 +2695,7 @@ export class AdminService {
     let normalizedSettings = settings;
 
     for (const key of CHAT_SETTINGS_BUTTON_URL_KEYS) {
-      const normalizedUrl = this.normalizeLegacyProfileButtonUrl(settings[key], chatId, 'chat');
+      const normalizedUrl = this.normalizeLegacyProfileButtonUrl(settings[key]);
       if (normalizedUrl !== normalizedSettings[key]) {
         normalizedSettings = {
           ...normalizedSettings,
@@ -2717,11 +2714,7 @@ export class AdminService {
     let normalizedSettings = settings;
 
     for (const key of CHANNEL_SETTINGS_BUTTON_URL_KEYS) {
-      const normalizedUrl = this.normalizeLegacyProfileButtonUrl(
-        settings[key],
-        chatId,
-        'channel',
-      );
+      const normalizedUrl = this.normalizeLegacyProfileButtonUrl(settings[key]);
       if (normalizedUrl !== normalizedSettings[key]) {
         normalizedSettings = {
           ...normalizedSettings,
@@ -3453,11 +3446,7 @@ export class AdminService {
             targetChatIds: request.targetChatIds as Prisma.InputJsonValue,
             buttonEnabled: request.payload.buttonEnabled,
             buttonUrl: request.payload.buttonEnabled
-              ? this.normalizeLegacyProfileButtonUrl(
-                  request.payload.buttonUrl,
-                  sourceChatId,
-                  entityType,
-                )
+              ? this.normalizeLegacyProfileButtonUrl(request.payload.buttonUrl)
               : '',
             buttonText: request.payload.buttonEnabled
               ? request.payload.buttonText.trim() || 'Открыть'
@@ -4053,7 +4042,7 @@ export class AdminService {
         targetChatIds: request.targetChatIds as Prisma.InputJsonValue,
         buttonEnabled: request.payload.buttonEnabled,
         buttonUrl: request.payload.buttonEnabled
-          ? this.normalizeLegacyProfileButtonUrl(request.payload.buttonUrl, sourceChatId, entityType)
+          ? this.normalizeLegacyProfileButtonUrl(request.payload.buttonUrl)
           : '',
         buttonText: request.payload.buttonEnabled
           ? request.payload.buttonText.trim() || 'Открыть'
@@ -4261,11 +4250,7 @@ export class AdminService {
           applyToAllChats: row.applyToAllChats,
           buttonEnabled: row.buttonEnabled,
           buttonUrl: row.buttonEnabled
-            ? this.normalizeLegacyProfileButtonUrl(
-                row.buttonUrl,
-                row.sourceChatId,
-                this.fromPrismaEntityType(row.entityType),
-              )
+            ? this.normalizeLegacyProfileButtonUrl(row.buttonUrl)
             : '',
           buttonText: row.buttonText,
           imageEnabled: row.imageEnabled,
@@ -5274,11 +5259,7 @@ export class AdminService {
       targetChatIds,
       buttonEnabled: row.buttonEnabled,
       buttonUrl: row.buttonEnabled
-        ? this.normalizeLegacyProfileButtonUrl(
-            row.buttonUrl,
-            row.sourceChatId,
-            this.fromPrismaEntityType(row.entityType),
-          )
+        ? this.normalizeLegacyProfileButtonUrl(row.buttonUrl)
         : '',
       buttonText: row.buttonText,
       imageEnabled: row.imageEnabled,
@@ -5512,11 +5493,7 @@ export class AdminService {
     const rows: MaxMessageButton[][] = [];
 
     if (options.includeCustomButton) {
-      const normalizedCustomButtonUrl = this.normalizeLegacyProfileButtonUrl(
-        options.customButtonUrl,
-        chatId,
-        entityType,
-      );
+      const normalizedCustomButtonUrl = this.normalizeLegacyProfileButtonUrl(options.customButtonUrl);
       rows.push([
         {
           type: 'link',
@@ -7758,20 +7735,32 @@ export class AdminService {
     }
   }
 
-  private normalizeLegacyProfileButtonUrl(
-    url: string | null | undefined,
-    chatId: string,
-    entityType: ManagedEntityType,
-  ): string {
-    const normalizedUrl = typeof url === 'string' ? url.trim() : '';
-    const legacyUserId = this.extractLegacyMaxUserId(normalizedUrl);
-    if (!legacyUserId) {
-      return normalizedUrl;
+  private isLegacyProfileHandoffUrl(url: string | null | undefined): boolean {
+    if (typeof url !== 'string') {
+      return false;
     }
 
-    return (
-      this.buildProfileMentionHandoffUrl(chatId, entityType, legacyUserId, null) ?? normalizedUrl
-    );
+    try {
+      const parsed = new URL(url.trim());
+      const hostname = parsed.hostname.trim().toLowerCase();
+      if (hostname !== 'max.ru' && hostname !== 'www.max.ru') {
+        return false;
+      }
+
+      const startPayload = parsed.searchParams.get('start')?.trim() ?? '';
+      return startPayload.startsWith(PROFILE_MENTION_START_PREFIX);
+    } catch {
+      return false;
+    }
+  }
+
+  private normalizeLegacyProfileButtonUrl(url: string | null | undefined): string {
+    const normalizedUrl = typeof url === 'string' ? url.trim() : '';
+    if (this.extractLegacyMaxUserId(normalizedUrl) || this.isLegacyProfileHandoffUrl(normalizedUrl)) {
+      return '';
+    }
+
+    return normalizedUrl;
   }
 
   private buildProfileMentionHandoffUrl(
