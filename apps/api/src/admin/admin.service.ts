@@ -1834,6 +1834,25 @@ export class AdminService {
     return fallback;
   }
 
+  async getChannelSuggestionButtonSettings(
+    chatId: string,
+  ): Promise<
+    Pick<
+      ChannelSettings,
+      'postSuggestionsButtonEnabled' | 'postSuggestionsButtonText' | 'postSuggestionsButtonUrl'
+    >
+  > {
+    const settings = await this.getPublicChannelSettings(chatId);
+
+    return {
+      postSuggestionsButtonEnabled: settings.postSuggestionsButtonEnabled,
+      postSuggestionsButtonText: settings.postSuggestionsButtonText.trim() || 'Открыть',
+      postSuggestionsButtonUrl: settings.postSuggestionsButtonEnabled
+        ? settings.postSuggestionsButtonUrl.trim()
+        : '',
+    };
+  }
+
   async getChannelSettingsScreen(
     chatId: string,
     user: AuthUser,

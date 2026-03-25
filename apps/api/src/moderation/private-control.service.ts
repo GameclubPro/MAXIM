@@ -1121,7 +1121,7 @@ export class PrivateControlService {
       session.channelSection = null;
       session.searchQuery = null;
       session.lastScreenStack = [];
-      const view = this.renderChannelSuggestionIntroView();
+      const view = await this.renderChannelSuggestionIntroView(channelSuggestionPayload.chatId);
       await this.respond(context, session, view, {
         callbackId: null,
         notification: null,
@@ -1329,7 +1329,7 @@ export class PrivateControlService {
 
     await this.saveSession(params.userId, session);
 
-    const view = this.renderChannelSuggestionIntroView();
+    const view = await this.renderChannelSuggestionIntroView(params.chatId);
     const text = this.limitMessageText(view.text);
     const compactOptions = this.compactButtonLayout(view.options);
     const inferredTextFormat =
@@ -2122,7 +2122,7 @@ export class PrivateControlService {
           throw new BadRequestException('Подсказка доступна только внутри предложки.');
         }
 
-        const view = this.renderChannelSuggestionHelpView();
+        const view = await this.renderChannelSuggestionHelpView(session.pendingInput.chatId);
         await this.respond(context, session, view, {
           callbackId: context.callbackId,
           notification: 'Подсказка открыта',
@@ -3744,7 +3744,7 @@ export class PrivateControlService {
         const canceledInput = session.pendingInput;
         session.pendingInput = null;
         if (canceledInput?.kind === 'channel_suggestion') {
-          const view = this.renderChannelSuggestionCancelledView();
+          const view = await this.renderChannelSuggestionCancelledView(canceledInput.chatId);
           await this.respond(context, session, view, {
             callbackId: context.callbackId,
             notification: 'Предложка закрыта',
@@ -3875,7 +3875,7 @@ export class PrivateControlService {
       session.pendingInput = null;
 
       if (pendingInput.kind === 'channel_suggestion') {
-        const view = this.renderChannelSuggestionCancelledView();
+        const view = await this.renderChannelSuggestionCancelledView(pendingInput.chatId);
         await this.respond(context, session, view, {
           callbackId: null,
           notification: null,
@@ -4169,8 +4169,8 @@ export class PrivateControlService {
         );
 
         const view = result.delivered
-          ? this.renderChannelSuggestionSubmittedView()
-          : this.renderChannelSuggestionQueuedView();
+          ? await this.renderChannelSuggestionSubmittedView(pendingInput.chatId)
+          : await this.renderChannelSuggestionQueuedView(pendingInput.chatId);
         await this.respond(context, session, view, {
           callbackId: null,
           notification: null,
@@ -7276,7 +7276,9 @@ export class PrivateControlService {
     };
   }
 
-  private renderChannelSuggestionIntroView(): PrivateView {
+  private async renderChannelSuggestionIntroView(chatId: string): Promise<PrivateView> {
+    const buttons = await this.buildChannelSuggestionButtons(chatId);
+
     return {
       text: [
         this.markdownTitle('Контент для поста'),
@@ -7285,13 +7287,19 @@ export class PrivateControlService {
         'После этого бот сразу отправит материал админу канала на проверку.',
         'Если нужен ориентир, нажмите «Что отправить».',
       ].join('\n'),
-      options: {
-        buttons: this.buildChannelSuggestionButtons(),
-      },
+      ...(buttons.length > 0
+        ? {
+            options: {
+              buttons,
+            },
+          }
+        : {}),
     };
   }
 
-  private renderChannelSuggestionSubmittedView(): PrivateView {
+  private async renderChannelSuggestionSubmittedView(chatId: string): Promise<PrivateView> {
+    const buttons = await this.buildChannelSuggestionButtons(chatId);
+
     return {
       text: [
         this.markdownTitle('Материал отправлен'),
@@ -7301,13 +7309,19 @@ export class PrivateControlService {
         '',
         'Можете сразу прислать ещё один вариант.',
       ].join('\n'),
-      options: {
-        buttons: this.buildChannelSuggestionButtons(),
-      },
+      ...(buttons.length > 0
+        ? {
+            options: {
+              buttons,
+            },
+          }
+        : {}),
     };
   }
 
-  private renderChannelSuggestionQueuedView(): PrivateView {
+  private async renderChannelSuggestionQueuedView(chatId: string): Promise<PrivateView> {
+    const buttons = await this.buildChannelSuggestionButtons(chatId);
+
     return {
       text: [
         this.markdownTitle('Материал сохранён'),
@@ -7317,13 +7331,19 @@ export class PrivateControlService {
         '',
         'Можно сразу отправить ещё один вариант.',
       ].join('\n'),
-      options: {
-        buttons: this.buildChannelSuggestionButtons(),
-      },
+      ...(buttons.length > 0
+        ? {
+            options: {
+              buttons,
+            },
+          }
+        : {}),
     };
   }
 
-  private renderChannelSuggestionHelpView(): PrivateView {
+  private async renderChannelSuggestionHelpView(chatId: string): Promise<PrivateView> {
+    const buttons = await this.buildChannelSuggestionButtons(chatId);
+
     return {
       text: [
         this.markdownTitle('Что лучше прислать'),
@@ -7334,29 +7354,75 @@ export class PrivateControlService {
         '',
         'Фото без текста тоже подойдёт.',
       ].join('\n'),
-      options: {
-        buttons: this.buildChannelSuggestionButtons(),
-      },
+      ...(buttons.length > 0
+        ? {
+            options: {
+              buttons,
+            },
+          }
+        : {}),
     };
   }
 
-  private renderChannelSuggestionCancelledView(): PrivateView {
+  private async renderChannelSuggestionCancelledView(chatId: string): Promise<PrivateView> {
+    const buttons = await this.buildChannelSuggestionButtons(chatId, {
+      includePromptActions: false,
+    });
+
     return {
       text: [
         this.markdownTitle('Предложка закрыта'),
         '',
         'Если захотите отправить материал позже, снова нажмите кнопку под постом.',
       ].join('\n'),
+      ...(buttons.length > 0
+        ? {
+            options: {
+              buttons,
+            },
+          }
+        : {}),
     };
   }
 
-  private buildChannelSuggestionButtons(): MaxMessageButton[][] {
-    return [
-      [
+  private async buildChannelSuggestionButtons(
+    chatId: string,
+    config?: { includePromptActions?: boolean },
+  ): Promise<MaxMessageButton[][]> {
+    const rows: MaxMessageButton[][] = [];
+    const transitionButton = await this.buildChannelSuggestionTransitionButton(chatId);
+    if (transitionButton) {
+      rows.push([transitionButton]);
+    }
+
+    if (config?.includePromptActions !== false) {
+      rows.push([
         this.callbackButton('Что отправить', this.cb('suggest_help')),
         this.callbackButton('Отмена', this.cb('input_cancel'), 'negative'),
-      ],
-    ];
+      ]);
+    }
+
+    return rows;
+  }
+
+  private async buildChannelSuggestionTransitionButton(
+    chatId: string,
+  ): Promise<MaxMessageButton | null> {
+    const settings = await this.adminService.getChannelSuggestionButtonSettings(chatId);
+    if (!settings.postSuggestionsButtonEnabled) {
+      return null;
+    }
+
+    const url = settings.postSuggestionsButtonUrl.trim();
+    if (!url) {
+      return null;
+    }
+
+    return {
+      type: 'link',
+      text: settings.postSuggestionsButtonText.trim() || 'Открыть',
+      url,
+    };
   }
 
   private renderMassActionConfirmation(pendingMassAction: PendingMassAction): PrivateView {
