@@ -533,6 +533,7 @@ function createHarness(
       return [...chats, ...channels];
     }),
     listChats: jest.fn().mockResolvedValue(chats),
+    listChatsForMassBroadcast: jest.fn().mockResolvedValue(chats),
     getChatHeader: jest.fn().mockResolvedValue({ id: chats[0].id, title: chats[0].title }),
     getChannelHeader: jest.fn().mockResolvedValue({ id: channels[0].id, title: channels[0].title }),
     getSettings: jest.fn().mockResolvedValue(overrides.settings ?? defaultSettings),

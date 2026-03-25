@@ -257,6 +257,7 @@ const MANAGED_ENTITIES_REFRESH_CURSOR_TTL_SEC = 60 * 60;
 const MANAGED_ENTITIES_REFRESH_CURSOR_DONE_TTL_SEC = 60;
 const MANAGED_ENTITIES_REFRESH_SUCCESS_COOLDOWN_MS = 30_000;
 const MANAGED_ENTITIES_REFRESH_BACKOFF_MS = 60_000;
+const MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES = 25;
 const CHANNEL_DIALOG_MESSAGES_LIMIT = 80;
 const CHANNEL_DIALOG_ACTION_COMMENT = 'CHANNEL_DIALOG_COMMENT';
 const CHANNEL_DIALOG_ACTION_SUGGEST = 'CHANNEL_DIALOG_SUGGESTION';
@@ -584,6 +585,10 @@ export class AdminService {
     return result.items;
   }
 
+  async listChatsForMassBroadcast(user: AuthUser): Promise<ChatSummary[]> {
+    return this.collectManagedEntitiesForMassAction(user, 'chat');
+  }
+
   async listChannels(user: AuthUser, options: { refresh?: boolean } = {}): Promise<ChatSummary[]> {
     const result = await this.listManagedEntitiesDetailed(user, 'channel', options);
     return result.items;
@@ -710,6 +715,56 @@ export class AdminService {
     }
 
     return merged;
+  }
+
+  private async collectManagedEntitiesForMassAction(
+    user: AuthUser,
+    entityType: ManagedEntityType,
+  ): Promise<ChatSummary[]> {
+    try {
+      await this.chatContextCache.clearManagedEntitiesRefreshCursor?.(user.userId, entityType);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          entityType,
+          userId: user.userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to reset managed entities refresh cursor before mass action scan',
+      );
+    }
+
+    const collected = new Map<string, ChatSummary>();
+    let refreshState: ManagedEntitiesRefreshState | null = null;
+
+    for (let pass = 0; pass < MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES; pass += 1) {
+      const result = await this.listManagedEntitiesDetailed(user, entityType, {
+        refresh: true,
+        includeRefreshState: true,
+      });
+      for (const item of result.items) {
+        collected.set(item.id, item);
+      }
+
+      refreshState = result.refresh;
+      if (!refreshState || refreshState.complete || refreshState.backoffActive) {
+        break;
+      }
+    }
+
+    if (refreshState && !refreshState.complete && !refreshState.backoffActive) {
+      this.logger.warn(
+        {
+          entityType,
+          userId: user.userId,
+          cursor: refreshState.cursor,
+          passes: MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES,
+        },
+        'Managed entities mass action scan stopped before completion',
+      );
+    }
+
+    return [...collected.values()];
   }
 
   private async bootstrapRecentBotAddedEntities(
@@ -3592,7 +3647,7 @@ export class AdminService {
     return this.sendManagedBroadcast(sourceChatId, user, body, {
       entityType: 'chat',
       source,
-      resolveTargets: (actor) => this.listChats(actor),
+      resolveTargets: (actor) => this.listChatsForMassBroadcast(actor),
     });
   }
 
@@ -3807,7 +3862,8 @@ export class AdminService {
 
     const request = await this.prepareManagedBroadcastRequest(sourceChatId, user, body, {
       entityType,
-      resolveTargets: entityType === 'chat' ? (actor) => this.listChats(actor) : undefined,
+      resolveTargets:
+        entityType === 'chat' ? (actor) => this.listChatsForMassBroadcast(actor) : undefined,
     });
 
     const currentOccurrence = this.getCurrentManagedBroadcastOccurrence(existing);
@@ -7177,7 +7233,10 @@ export class AdminService {
     }
 
     try {
-      const targetAccess = await maxClientWithMemberAccess.getChatMemberAccess(chatId, targetUserId);
+      const targetAccess = await maxClientWithMemberAccess.getChatMemberAccess(
+        chatId,
+        targetUserId,
+      );
       return targetAccess ? 'ACTIVE_BAN_RELEASE' : 'MAX_UNBLOCK';
     } catch (error: unknown) {
       this.logger.debug(

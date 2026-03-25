@@ -3537,7 +3537,7 @@ export class PrivateControlService {
         }
 
         if (session.selectedEntityType !== 'channel' && session.broadcastDraft.applyToAllChats) {
-          const availableChats = await this.adminService.listChats(context.actor);
+          const availableChats = await this.adminService.listChatsForMassBroadcast(context.actor);
           const targetChats = Array.from(
             new Set([session.selectedChatId!, ...availableChats.map((chat) => chat.id)]),
           ).length;

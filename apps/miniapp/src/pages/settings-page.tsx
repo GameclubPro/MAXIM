@@ -3638,6 +3638,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const areChatsSyncing = chatsQuery.phase === 'loading' || chatsQuery.phase === 'syncing';
   const chatListsReady = chatsQuery.isSyncComplete;
   const canApplyToAllChats = chatListsReady && chatsCount > 1;
+  const canApplyMailingToAllChats = chatsCount > 1 || !chatListsReady;
   const managedBroadcasts = managedBroadcastsQuery.data ?? [];
   const orderedManagedBroadcasts = useMemo(() => {
     const priority = (item: ManagedBroadcastListItem): number => {
@@ -3709,16 +3710,14 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   const commentsCardSummary = !draft?.commentsEnabled
     ? 'обсуждение выключено'
     : commentsTargetSummary || 'не выбрано, где бот публикует кнопку';
-  const mailingTargetLabel = areChatsSyncing
-    ? 'Синхронизируем чаты...'
-    : mailingApplyToAllChats
-      ? `Во все чаты (${chatsCount})`
+  const mailingTargetLabel = mailingApplyToAllChats
+    ? areChatsSyncing
+      ? 'Во все чаты · список уточняем'
+      : `Во все чаты (${chatsCount})`
+    : areChatsSyncing
+      ? 'Текущий чат · список уточняем'
       : 'Текущий чат';
-  const mailingHeaderTargetLabel = areChatsSyncing
-    ? 'Синхронизация'
-    : mailingApplyToAllChats
-      ? 'Все чаты'
-      : 'Текущий чат';
+  const mailingHeaderTargetLabel = mailingApplyToAllChats ? 'Все чаты' : 'Текущий чат';
   const mailingSlotsLabel = formatRussianCountLabel(
     mailingScheduledSlots.length,
     'слот',
@@ -8495,16 +8494,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 <div
                                   className={cn(
                                     'mailing-target-card',
-                                    !canApplyToAllChats && 'is-single-chat',
+                                    !canApplyMailingToAllChats && 'is-single-chat',
                                   )}
                                 >
                                   <div className="mailing-target-card__row">
                                     <span className="mailing-target-card__title">
-                                      {areChatsSyncing
-                                        ? 'Синхронизируем чаты'
-                                        : canApplyToAllChats
-                                          ? 'Все чаты'
-                                          : 'Только этот чат'}
+                                      {canApplyMailingToAllChats ? 'Все чаты' : 'Только этот чат'}
                                     </span>
 
                                     <label
@@ -8517,9 +8512,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                         onChange={(event) =>
                                           setMailingApplyToAllChats(event.target.checked)
                                         }
-                                        disabled={
-                                          areChatsSyncing || !canApplyToAllChats || isMailingBusy
-                                        }
+                                        disabled={!canApplyMailingToAllChats || isMailingBusy}
                                       />
                                       <span className="toggle-switch" aria-hidden>
                                         <span className="toggle-switch__thumb" />
