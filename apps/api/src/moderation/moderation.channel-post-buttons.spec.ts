@@ -28,6 +28,34 @@ function createChannelPostUpdate(): MaxUpdate {
   };
 }
 
+function createChannelPostUpdateWithoutSender(): MaxUpdate {
+  return {
+    updateId: 'upd-channel-no-sender-1',
+    type: 'message_created',
+    message: {
+      messageId: 'mid-channel-no-sender-1',
+      chatId: 'channel-1',
+      senderId: '',
+      senderName: '',
+      text: 'Новый пост без senderId',
+      createdAt: new Date('2026-03-06T15:10:00.000Z').toISOString(),
+    },
+    raw: {
+      message: {
+        recipient: {
+          chat_id: 'channel-1',
+          chat_type: 'channel',
+        },
+        timestamp: 1772810100000,
+        body: {
+          mid: 'mid-channel-no-sender-1',
+          text: 'Новый пост без senderId',
+        },
+      },
+    },
+  };
+}
+
 function createConfigMock() {
   return {
     get: jest.fn((key: string) => {
@@ -147,6 +175,76 @@ describe('ModerationService channel auto post buttons', () => {
       }),
     );
     expect(ruleEngine.detect).not.toHaveBeenCalled();
+  });
+
+  it('auto-attaches buttons when MAX omits sender metadata for a channel post', async () => {
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'channel-1',
+          title: 'Ищу модель | Ростов',
+          entityType: 'CHANNEL',
+          channelSettings: {
+            autoPostButtonsMode: 'OFF',
+            postSuggestionsEnabled: true,
+            postSuggestionsButtonText: '📰 Предложить пост',
+            commentsEnabled: false,
+          },
+          admins: [],
+        }),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = createAdminServiceMock();
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createChannelPostUpdateWithoutSender());
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-no-sender-1',
+      'Новый пост без senderId',
+      expect.objectContaining({
+        buttons: [
+          [
+            expect.objectContaining({
+              type: 'link',
+              text: '📰 Предложить пост',
+            }),
+          ],
+        ],
+      }),
+    );
   });
 
   it('does not auto-attach when the channel mode is off and comments are disabled', async () => {
@@ -532,6 +630,91 @@ describe('ModerationService channel auto post buttons', () => {
 
     expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
     expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('allows polled channel posts when MAX does not provide sender metadata', async () => {
+    const prisma = {
+      channelSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'channel-1',
+            autoPostButtonsMode: 'OFF',
+            postSuggestionsEnabled: true,
+            postSuggestionsButtonText: '📰 Предложить пост',
+            commentsEnabled: false,
+            updatedAt: new Date('2026-03-06T15:00:00.000Z'),
+            chat: {
+              admins: [
+                {
+                  userId: 'admin-1',
+                },
+              ],
+            },
+          },
+        ]),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      listMessages: jest.fn().mockResolvedValue([
+        {
+          timestamp: 1772810100000,
+          body: {
+            mid: 'mid-polled-unknown-author-1',
+            text: 'Пост без sender metadata',
+            attachments: [],
+          },
+        },
+      ]),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      getChatAdminIds: jest.fn(),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = createAdminServiceMock();
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await (service as any).processChannelAutoPostButtons();
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-polled-unknown-author-1',
+      'Пост без sender metadata',
+      expect.objectContaining({
+        buttons: [
+          [
+            expect.objectContaining({
+              type: 'link',
+              text: '📰 Предложить пост',
+            }),
+          ],
+        ],
+      }),
+    );
   });
 
   it('backs off channel polling after MAX API rate limit errors', async () => {

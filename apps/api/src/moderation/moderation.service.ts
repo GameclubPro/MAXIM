@@ -7590,25 +7590,27 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     const { chatId, senderId, messageId, text } = update.message;
-    if (!senderId || !messageId) {
+    if (!messageId) {
       return;
     }
 
     if (
-      this.isOwnBotSender(senderId) ||
+      (senderId ? this.isOwnBotSender(senderId) : false) ||
       this.isBotAuthoredMessage(update) ||
       this.isServiceAuthoredMessage(update)
     ) {
       return;
     }
 
-    const senderAdminCheck = await this.resolveSenderChatAdminCheck(
-      chatId,
-      managedChannel.adminUserIds,
-      senderId,
-    );
-    if (!senderAdminCheck.isAdmin) {
-      return;
+    if (senderId) {
+      const senderAdminCheck = await this.resolveSenderChatAdminCheck(
+        chatId,
+        managedChannel.adminUserIds,
+        senderId,
+      );
+      if (!senderAdminCheck.isAdmin) {
+        return;
+      }
     }
 
     await this.tryAutoAttachChannelMessageButtons({
@@ -7705,7 +7707,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (!normalized) {
         continue;
       }
-      if (!normalized.senderId || !managedChannel.adminUserIds.includes(normalized.senderId)) {
+      if (normalized.senderId && !managedChannel.adminUserIds.includes(normalized.senderId)) {
         continue;
       }
       if (normalized.timestampMs < managedChannel.channelSettings.updatedAt.getTime()) {
