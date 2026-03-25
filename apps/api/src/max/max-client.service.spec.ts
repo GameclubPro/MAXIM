@@ -461,6 +461,87 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('omits text when editing inline keyboard on forwarded messages with empty body text', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              messages: [
+                {
+                  body: {
+                    text: '',
+                    attachments: [],
+                  },
+                  link: {
+                    type: 'forward',
+                    message: {
+                      text: 'Пересланный текст',
+                    },
+                  },
+                },
+              ],
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              success: true,
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService);
+
+    await service.editMessageInlineKeyboard(
+      'chat-1',
+      'mid-edit-forward-1',
+      'Пересланный текст',
+      {
+        button: {
+          text: 'Открыть',
+          url: 'https://maxim.play-team.ru/app/',
+        },
+      },
+    );
+
+    expect(httpService.request).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({
+        method: 'put',
+        url: 'https://platform-api.max.ru/messages',
+        params: {
+          chat_id: 'chat-1',
+          message_id: 'mid-edit-forward-1',
+        },
+        data: {
+          attachments: [
+            {
+              type: 'inline_keyboard',
+              payload: {
+                buttons: [
+                  [
+                    {
+                      type: 'link',
+                      text: 'Открыть',
+                      url: 'https://maxim.play-team.ru/app/',
+                    },
+                  ],
+                ],
+              },
+            },
+          ],
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('publishes message and resolves post link via follow-up message fetch', async () => {
     const httpService = {
       request: jest

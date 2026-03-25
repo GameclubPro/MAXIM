@@ -532,7 +532,7 @@ export class MaxClientService implements OnModuleDestroy {
     const message = await this.getMessageById(messageId);
     const attachments = this.buildEditableMessageAttachments(message, options);
     const messageTextPayload =
-      typeof text === 'string'
+      typeof text === 'string' && !this.shouldSkipTextUpdateForInlineKeyboardEdit(message)
         ? this.buildOutgoingMessageTextPayload(message, text, options?.textFormat ?? null)
         : null;
 
@@ -1979,6 +1979,16 @@ export class MaxClientService implements OnModuleDestroy {
           mid,
         }
       : null;
+  }
+
+  private shouldSkipTextUpdateForInlineKeyboardEdit(
+    message: Record<string, unknown> | null,
+  ): boolean {
+    const body = this.asRecord(message?.body);
+    const link = this.asRecord(message?.link);
+    const bodyText = typeof body?.text === 'string' ? body.text : null;
+
+    return bodyText === '' && this.readLowerString(link?.type) === 'forward';
   }
 
   private extractMessageTextFormat(message: Record<string, unknown> | null): MaxTextFormat | null {
