@@ -1656,28 +1656,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     refetchOnWindowFocus: false,
   });
 
-  const chatsList = useManagedEntitiesSync({
-    api,
-    entityType: 'chat',
-    enabled: Boolean(chatId),
-    resumeOnVisibilityReturn: true,
-  });
+  const shouldLoadRequiredSubscriptionChannels =
+    Boolean(chatId) &&
+    (expandedSections.requiredSubscription || focusSection === 'requiredSubscription');
   const channelsList = useManagedEntitiesSync({
     api,
     entityType: 'channel',
-    enabled: Boolean(chatId),
+    enabled: shouldLoadRequiredSubscriptionChannels,
     resumeOnVisibilityReturn: true,
+    skipInitialSyncIfCached: true,
   });
-  const chatsQuery = {
-    data: chatsList.data,
-    isLoading: chatsList.isLoading,
-    error: chatsList.error,
-    isSuccess: chatsList.data !== null && chatsList.error === null,
-    isSyncComplete: chatsList.isSyncComplete,
-    isBackoffActive: chatsList.isBackoffActive,
-    isSyncing: chatsList.isRefreshing,
-    phase: chatsList.phase,
-  };
   const channelsQuery = {
     data: channelsList.data,
     isLoading: channelsList.isLoading,
@@ -1759,18 +1747,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       );
   }, [availableRequiredSubscriptionChannelById, draft?.requiredSubscriptionChannelIds]);
   const staleRequiredSubscriptionChannelIds = useMemo(() => {
-    if (!channelsQuery.isSyncComplete) {
-      return [];
-    }
-
     return (draft?.requiredSubscriptionChannelIds ?? []).filter(
       (channelId) => !availableRequiredSubscriptionChannelById.has(channelId),
     );
-  }, [
-    availableRequiredSubscriptionChannelById,
-    channelsQuery.isSyncComplete,
-    draft?.requiredSubscriptionChannelIds,
-  ]);
+  }, [availableRequiredSubscriptionChannelById, draft?.requiredSubscriptionChannelIds]);
   const availableRequiredSubscriptionChannelChoices = useMemo(() => {
     const selectedIds = new Set(draft?.requiredSubscriptionChannelIds ?? []);
     return availableRequiredSubscriptionChannels.filter((channel) => !selectedIds.has(channel.id));
@@ -1786,17 +1766,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return fromHeader;
     }
 
-    const fromList = chatsQuery.data?.find((chat) => chat.id === chatId)?.title?.trim();
-    if (fromList) {
-      return fromList;
-    }
-
     if (routeChatTitle) {
       return routeChatTitle;
     }
 
     return readChatTitle(chatId);
-  }, [chatHeaderQuery.data?.title, chatId, chatsQuery.data, routeChatTitle]);
+  }, [chatHeaderQuery.data?.title, chatId, routeChatTitle]);
 
   useEffect(() => {
     if (!chatId || !chatTitle) {
@@ -3608,7 +3583,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     draft?.requiredSubscriptionBanEnabled,
     draft?.requiredSubscriptionKickEnabled,
   ].filter(Boolean).length;
-  const areChannelsSyncing = channelsQuery.phase === 'loading' || channelsQuery.phase === 'syncing';
+  const areChannelsSyncing =
+    shouldLoadRequiredSubscriptionChannels &&
+    (channelsQuery.phase === 'loading' || channelsQuery.phase === 'syncing');
   const requiredSubscriptionHeaderSummary = draft?.requiredSubscriptionEnabled
     ? areChannelsSyncing
       ? 'Синхронизируем каналы...'
@@ -3632,11 +3609,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   ].filter(Boolean).length;
   const extraHeaderSummary =
     extraEnabledCount > 0 ? `${extraEnabledCount} опции включено` : 'Выключено';
-  const chatsCount = chatsQuery.data?.length ?? 0;
-  const areChatsSyncing = chatsQuery.phase === 'loading' || chatsQuery.phase === 'syncing';
-  const chatListsReady = chatsQuery.isSyncComplete || chatsQuery.isBackoffActive;
-  const canApplyToAllChats = chatListsReady && chatsCount > 1;
-  const canApplyMailingToAllChats = chatsCount > 1 || !chatListsReady;
+  const canApplyToAllChats = true;
+  const canApplyMailingToAllChats = true;
   const managedBroadcasts = managedBroadcastsQuery.data ?? [];
   const orderedManagedBroadcasts = useMemo(() => {
     const priority = (item: ManagedBroadcastListItem): number => {
@@ -3709,12 +3683,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     ? 'обсуждение выключено'
     : commentsTargetSummary || 'не выбрано, где бот публикует кнопку';
   const mailingTargetLabel = mailingApplyToAllChats
-    ? areChatsSyncing
-      ? 'Во все чаты · список уточняем'
-      : `Во все чаты (${chatsCount})`
-    : areChatsSyncing
-      ? 'Текущий чат · список уточняем'
-      : 'Текущий чат';
+    ? 'Во все чаты'
+    : 'Текущий чат';
   const mailingHeaderTargetLabel = mailingApplyToAllChats ? 'Все чаты' : 'Текущий чат';
   const mailingSlotsLabel = formatRussianCountLabel(
     mailingScheduledSlots.length,
@@ -3920,18 +3890,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    if (!canApplyToAllChats) {
-      pushToast({
-        title: chatsQuery.isBackoffActive
-          ? 'Список чатов временно ограничен'
-          : 'Нет других чатов для применения',
-        description: chatsQuery.isBackoffActive
-          ? 'MAX временно ограничил синхронизацию списка. Повторите попытку чуть позже.'
-          : 'Откройте миниапп в другом чате, чтобы добавить его в список.',
-      });
-      return;
-    }
-
     const payload = buildSectionPayload(section);
     if (!payload) {
       pushToast({
@@ -3994,15 +3952,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     const footerNote =
       options?.note !== undefined
         ? options.note
-        : areChatsSyncing
-          ? 'Синхронизируем список чатов. Массовое применение станет доступно после завершения.'
-          : chatsQuery.isBackoffActive
-            ? canApplyToAllChats
-              ? 'MAX временно ограничил синхронизацию. Применение доступно для уже найденных чатов.'
-              : 'MAX временно ограничил синхронизацию списка чатов. Повторите попытку чуть позже.'
-          : canApplyToAllChats
-            ? 'Сохраняется только текущий блок. При необходимости его можно сразу применить во все чаты.'
-            : 'Пока доступен только текущий чат. Для массового применения нужен хотя бы ещё один чат.';
+        : 'Сохраняется только текущий блок. При необходимости его можно сразу применить во все чаты.';
 
     return (
       <>
@@ -9052,11 +9002,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 summary={requiredSubscriptionHeaderSummary}
                 onClose={() => toggleSection('requiredSubscription')}
                 footer={renderSectionSaveFooter('requiredSubscription', {
-                  note: areChatsSyncing
-                    ? 'Сначала дождитесь синхронизации списка чатов.'
-                    : canApplyToAllChats
-                      ? 'Сначала сохраните в этом чате.'
-                      : 'Сначала сохраните здесь.',
+                  note: 'Сначала сохраните в этом чате, затем при необходимости примените во все чаты.',
                   applyToAllLabel: 'Применить во всех чатах',
                   emphasize: 'save',
                 })}

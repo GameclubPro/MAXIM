@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ChatSummary,
   ManagedEntitiesListResponse,
@@ -17,6 +18,13 @@ type ManagedEntitiesSyncState = {
   error: Error | null;
   refreshState: ManagedEntitiesRefreshState | null;
   phase: ManagedEntitiesSyncPhase;
+};
+
+const EMPTY_SYNC_STATE: ManagedEntitiesSyncState = {
+  data: null,
+  error: null,
+  refreshState: null,
+  phase: 'loading',
 };
 
 export type ManagedEntitiesSyncResult = ManagedEntitiesSyncState & {
@@ -58,21 +66,33 @@ export function useManagedEntitiesSync({
   enabled = true,
   reloadNonce = 0,
   resumeOnVisibilityReturn = false,
+  skipInitialSyncIfCached = false,
 }: {
   api: ApiTransport;
   entityType: ManagedEntityKind;
   enabled?: boolean;
   reloadNonce?: number;
   resumeOnVisibilityReturn?: boolean;
+  skipInitialSyncIfCached?: boolean;
 }): ManagedEntitiesSyncResult {
-  const [state, setState] = useState<ManagedEntitiesSyncState>({
-    data: null,
-    error: null,
-    refreshState: null,
-    phase: 'loading',
-  });
+  const queryClient = useQueryClient();
+  const cacheKey = useMemo(
+    () => ['managed-entities-sync', entityType] as const,
+    [entityType],
+  );
+  const [state, setState] = useState<ManagedEntitiesSyncState>(
+    () =>
+      queryClient.getQueryData<ManagedEntitiesSyncState>(cacheKey) ?? {
+        ...EMPTY_SYNC_STATE,
+      },
+  );
   const [visibilityResumeNonce, setVisibilityResumeNonce] = useState(0);
-  const latestDataRef = useRef<ChatSummary[] | null>(null);
+  const latestDataRef = useRef<ChatSummary[] | null>(state.data);
+  const skippedInitialSyncRef = useRef(false);
+
+  useEffect(() => {
+    queryClient.setQueryData(cacheKey, state);
+  }, [cacheKey, queryClient, state]);
 
   useEffect(() => {
     if (!enabled || !resumeOnVisibilityReturn || typeof document === 'undefined') {
@@ -110,6 +130,26 @@ export function useManagedEntitiesSync({
     if (!enabled) {
       return;
     }
+
+    if (
+      skipInitialSyncIfCached &&
+      !skippedInitialSyncRef.current &&
+      latestDataRef.current !== null
+    ) {
+      skippedInitialSyncRef.current = true;
+      setState((current) => ({
+        ...current,
+        error: null,
+        phase: current.refreshState?.complete
+          ? 'complete'
+          : current.refreshState?.backoffActive
+            ? 'backoff'
+            : 'idle',
+      }));
+      return;
+    }
+
+    skippedInitialSyncRef.current = true;
 
     let cancelled = false;
     const hasCachedData = latestDataRef.current !== null;
@@ -203,7 +243,14 @@ export function useManagedEntitiesSync({
     return () => {
       cancelled = true;
     };
-  }, [api, enabled, entityType, reloadNonce, visibilityResumeNonce]);
+  }, [
+    api,
+    enabled,
+    entityType,
+    reloadNonce,
+    skipInitialSyncIfCached,
+    visibilityResumeNonce,
+  ]);
 
   return {
     ...state,
