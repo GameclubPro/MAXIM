@@ -2233,9 +2233,40 @@ async function handleChatRequest(
     return null;
   }
 
+  if (tail[0] === 'domain-allowlist' && tail.length === 1 && method === 'DELETE') {
+    const domain = url.searchParams.get('domain')?.trim();
+    if (!domain) {
+      throw new Error('Preview domain is required');
+    }
+    state.chatDomains = state.chatDomains.filter((item) => item.normalizedValue !== domain);
+    return null;
+  }
+
   if (tail[0] === 'domain-allowlist' && tail[1] && tail.length === 2 && method === 'DELETE') {
     const domain = decodeURIComponent(tail[1]);
     state.chatDomains = state.chatDomains.filter((item) => item.normalizedValue !== domain);
+    return null;
+  }
+
+  if (
+    tail[0] === 'domain-allowlist' &&
+    tail[1] === 'removal-schedule' &&
+    tail.length === 2 &&
+    method === 'PUT'
+  ) {
+    const domain = url.searchParams.get('domain')?.trim();
+    if (!domain) {
+      throw new Error('Preview domain is required');
+    }
+    const payload = parseJsonBody(init) as { removeAfterAt?: string | null } | null;
+    state.chatDomains = state.chatDomains.map((item) =>
+      item.normalizedValue === domain
+        ? domainAllowlistEntrySchema.parse({
+            ...item,
+            removeAfterAt: payload?.removeAfterAt ?? null,
+          })
+        : item,
+    );
     return null;
   }
 

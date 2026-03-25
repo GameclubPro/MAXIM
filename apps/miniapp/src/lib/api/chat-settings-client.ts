@@ -279,7 +279,7 @@ export async function removeDomain(
   chatId: string,
   domain: string,
 ): Promise<void> {
-  await api.request(`/chats/${chatId}/domain-allowlist/${encodeURIComponent(domain)}`, {
+  await api.request(`/chats/${chatId}/domain-allowlist?domain=${encodeURIComponent(domain)}`, {
     method: 'DELETE',
   });
 }
@@ -292,7 +292,7 @@ export async function scheduleDomainRemoval(
 ): Promise<void> {
   const payload = scheduleDomainRemovalRequestSchema.parse({ removeAfterAt });
   await api.request(
-    `/chats/${chatId}/domain-allowlist/${encodeURIComponent(domain)}/removal-schedule`,
+    `/chats/${chatId}/domain-allowlist/removal-schedule?domain=${encodeURIComponent(domain)}`,
     {
       method: 'PUT',
       body: JSON.stringify(payload),

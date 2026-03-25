@@ -1,4 +1,15 @@
-import { Body, Controller, Delete, Get, Param, Post, Put, Query, UseGuards } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Put,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { InitDataGuard } from '../auth/init-data.guard';
 import { CurrentUser, type AuthUser } from '../common/decorators/current-user.decorator';
 import { AdminService } from './admin.service';
@@ -697,22 +708,74 @@ export class AdminController {
     return this.adminService.getDomainAllowlistDetails(chatId, user);
   }
 
+  @Delete('chats/:chatId/domain-allowlist')
+  removeDomainByQuery(
+    @Param('chatId') chatId: string,
+    @Query('domain') domainQuery: string | undefined,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.adminService.removeDomain(chatId, user, this.resolveAllowlistDomain(domainQuery));
+  }
+
   @Delete('chats/:chatId/domain-allowlist/:domain')
   removeDomain(
     @Param('chatId') chatId: string,
     @Param('domain') domain: string,
+    @Query('domain') domainQuery: string | undefined,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.adminService.removeDomain(chatId, user, domain);
+    return this.adminService.removeDomain(
+      chatId,
+      user,
+      this.resolveAllowlistDomain(domainQuery, domain),
+    );
+  }
+
+  @Put('chats/:chatId/domain-allowlist/removal-schedule')
+  scheduleDomainRemovalByQuery(
+    @Param('chatId') chatId: string,
+    @Query('domain') domainQuery: string | undefined,
+    @CurrentUser() user: AuthUser,
+    @Body() body: unknown,
+  ) {
+    return this.adminService.scheduleDomainRemoval(
+      chatId,
+      user,
+      this.resolveAllowlistDomain(domainQuery),
+      body,
+    );
   }
 
   @Put('chats/:chatId/domain-allowlist/:domain/removal-schedule')
   scheduleDomainRemoval(
     @Param('chatId') chatId: string,
     @Param('domain') domain: string,
+    @Query('domain') domainQuery: string | undefined,
     @CurrentUser() user: AuthUser,
     @Body() body: unknown,
   ) {
-    return this.adminService.scheduleDomainRemoval(chatId, user, domain, body);
+    return this.adminService.scheduleDomainRemoval(
+      chatId,
+      user,
+      this.resolveAllowlistDomain(domainQuery, domain),
+      body,
+    );
+  }
+
+  private resolveAllowlistDomain(
+    queryDomain: string | undefined,
+    pathDomain?: string | undefined,
+  ): string {
+    const normalizedQueryDomain = queryDomain?.trim();
+    if (normalizedQueryDomain) {
+      return normalizedQueryDomain;
+    }
+
+    const normalizedPathDomain = pathDomain?.trim();
+    if (normalizedPathDomain) {
+      return normalizedPathDomain;
+    }
+
+    throw new BadRequestException('Allowlist domain is required');
   }
 }
