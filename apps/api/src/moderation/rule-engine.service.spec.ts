@@ -1214,6 +1214,32 @@ describe('RuleEngineService', () => {
     expect(second.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
   });
 
+  it('tracks duplicates for long repeated messages with allowlisted links when body text is substantial', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const text =
+      'Подробно разбираю ситуацию по заявке: сроки сдвинулись, новые условия уже согласованы, финальный статус и контакты оставляю ниже https://max.ru/channel/news/post-1';
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text,
+      settings: buildSettings(),
+      domainAllowlist: ['https://max.ru/channel/news/post-1'],
+    });
+
+    const second = await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text,
+      settings: buildSettings(),
+      domainAllowlist: ['https://max.ru/channel/news/post-1'],
+    });
+
+    expect(second.duplicateHit?.count).toBe(1);
+    expect(second.duplicateDecision).toBeUndefined();
+    expect(second.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
+  });
+
   it('does not track duplicates for repeated messages with blocked links', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const text = 'смотри https://example.com/news это важно';

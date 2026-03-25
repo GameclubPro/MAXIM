@@ -6,10 +6,7 @@ import {
 } from '@maxim/contracts';
 import { CommercialAdsSensitivity, LinkPolicy, type ChatSettings } from '@prisma/client';
 import { createHash } from 'node:crypto';
-import {
-  extractUrlsFromText as extractTextUrls,
-  stripUrlsFromText,
-} from '../common/url-text.util';
+import { extractUrlsFromText as extractTextUrls, stripUrlsFromText } from '../common/url-text.util';
 import { RedisCounterService } from './redis-counter.service';
 
 export type CommercialDecisionBand = 'LOW' | 'MEDIUM' | 'HIGH';
@@ -440,13 +437,7 @@ export class RuleEngineService {
     }
 
     const compactText = normalized.replace(/\s+/g, ' ').trim();
-    const hasOnlyAllowlistedLinks = this.hasOnlyAllowlistedLinks(
-      text,
-      settings.linkPolicy,
-      domainAllowlist,
-    );
-    const duplicateCandidate =
-      !hasOnlyAllowlistedLinks && this.shouldTrackDuplicate(text, compactText);
+    const duplicateCandidate = !linkViolation && this.shouldTrackDuplicate(text, compactText);
     const duplicateState =
       settings.antiDuplicateEnabled && duplicateCandidate
         ? await this.detectDuplicateState({
@@ -624,9 +615,7 @@ export class RuleEngineService {
       const normalizedLatinCandidate = this.normalizeProfanityLatinCandidate(candidate);
       if (
         normalizedLatinCandidate &&
-        PROFANITY_LATIN_TOKEN_PATTERNS.some((pattern) =>
-          pattern.test(normalizedLatinCandidate),
-        )
+        PROFANITY_LATIN_TOKEN_PATTERNS.some((pattern) => pattern.test(normalizedLatinCandidate))
       ) {
         return true;
       }
@@ -652,63 +641,35 @@ export class RuleEngineService {
   }
 
   private shouldTrackDuplicate(rawText: string, compactText: string): boolean {
-    if (!compactText) {
+    const hasUrl = this.extractUrlsFromText(rawText).length > 0;
+    if (DUPLICATE_EXCLUDED_PHONE_PATTERN.test(rawText)) {
       return false;
     }
 
-    const hasUrl = this.extractUrlsFromText(rawText).length > 0;
-    if (hasUrl || DUPLICATE_EXCLUDED_PHONE_PATTERN.test(rawText)) {
+    const candidateText = hasUrl
+      ? this.normalizeForDetection(stripUrlsFromText(rawText))
+      : compactText;
+    if (!candidateText) {
       return false;
     }
 
     const hasAdMarker =
-      ADS_INTENT_MARKERS.some((marker) => compactText.includes(marker)) ||
-      ADS_CONTACT_MARKERS.some((marker) => compactText.includes(marker)) ||
-      ADS_PROMO_MARKERS.some((marker) => compactText.includes(marker)) ||
-      ADS_PRICE_PATTERN.test(compactText) ||
-      ADS_TRANSACTIONAL_PATTERN.test(compactText);
+      ADS_INTENT_MARKERS.some((marker) => candidateText.includes(marker)) ||
+      ADS_CONTACT_MARKERS.some((marker) => candidateText.includes(marker)) ||
+      ADS_PROMO_MARKERS.some((marker) => candidateText.includes(marker)) ||
+      ADS_PRICE_PATTERN.test(candidateText) ||
+      ADS_TRANSACTIONAL_PATTERN.test(candidateText);
     if (hasAdMarker) {
       return true;
     }
 
-    const tokens = this.extractTokens(compactText);
-    if (tokens.length < DUPLICATE_MIN_TOKEN_COUNT || compactText.length < DUPLICATE_MIN_LENGTH) {
+    const tokens = this.extractTokens(candidateText);
+    if (tokens.length < DUPLICATE_MIN_TOKEN_COUNT || candidateText.length < DUPLICATE_MIN_LENGTH) {
       return false;
     }
 
     const uniqueLongTokens = new Set(tokens.filter((token) => token.length >= 4)).size;
     return uniqueLongTokens >= DUPLICATE_MIN_UNIQUE_LONG_TOKENS;
-  }
-
-  private hasOnlyAllowlistedLinks(text: string, policy: LinkPolicy, allowlist: string[]): boolean {
-    if (policy !== LinkPolicy.ALLOWLIST_ONLY) {
-      return false;
-    }
-
-    const links = this.extractUrlsFromText(text);
-    if (links.length === 0) {
-      return false;
-    }
-
-    const matchers = this.buildAllowlistMatchers(allowlist);
-
-    let checkedLinks = 0;
-    for (const link of links) {
-      if (!this.shouldCheckExactAllowlistLink(link)) {
-        continue;
-      }
-
-      if (!this.resolveAllowlistMatch(link)) {
-        continue;
-      }
-
-      checkedLinks += 1;
-      if (!this.isAllowlistedLink(link, matchers)) {
-        return false;
-      }
-    }
-
-    return checkedLinks > 0;
   }
 
   private hasBlockedLink(text: string, policy: LinkPolicy, allowlist: string[]): string | null {
@@ -1279,5 +1240,4 @@ export class RuleEngineService {
     const token = fragments.join('');
     return token.length >= 2 && token.length <= 32 ? token : null;
   }
-
 }
