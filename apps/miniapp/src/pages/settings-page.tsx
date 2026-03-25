@@ -4215,6 +4215,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                 summary={linksHeaderSummary}
                 onClose={() => toggleSection('links')}
                 footer={renderSectionSaveFooter('links')}
+                keepFooterVisibleWhenKeyboardOpen
               >
                 <div
                   id="settings-links-content"

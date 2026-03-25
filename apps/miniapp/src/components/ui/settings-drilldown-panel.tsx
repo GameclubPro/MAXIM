@@ -12,6 +12,7 @@ type SettingsDrilldownPanelProps = {
   children: ReactNode;
   className?: string;
   footer?: ReactNode;
+  keepFooterVisibleWhenKeyboardOpen?: boolean;
 };
 
 function CloseIcon() {
@@ -37,6 +38,7 @@ export function SettingsDrilldownPanel({
   children,
   className,
   footer,
+  keepFooterVisibleWhenKeyboardOpen = false,
 }: SettingsDrilldownPanelProps) {
   const backdropRef = useRef<HTMLButtonElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -98,6 +100,8 @@ export function SettingsDrilldownPanel({
 
   const titleId = `${id}-title`;
   const summaryId = summary ? `${id}-summary` : undefined;
+  const shouldRenderFooter =
+    Boolean(footer) && (!isKeyboardOpen || keepFooterVisibleWhenKeyboardOpen);
 
   return createPortal(
     <div className="settings-drilldown" aria-hidden={!open}>
@@ -139,7 +143,16 @@ export function SettingsDrilldownPanel({
 
         <div className="settings-drilldown__content">
           <div className="settings-drilldown__body">{children}</div>
-          {footer && !isKeyboardOpen ? <div className="settings-drilldown__footer">{footer}</div> : null}
+          {shouldRenderFooter ? (
+            <div
+              className={cn(
+                'settings-drilldown__footer',
+                isKeyboardOpen && 'settings-drilldown__footer--keyboard-open',
+              )}
+            >
+              {footer}
+            </div>
+          ) : null}
         </div>
       </section>
     </div>,
