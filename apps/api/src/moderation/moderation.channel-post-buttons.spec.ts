@@ -345,7 +345,11 @@ describe('ModerationService channel auto post buttons', () => {
             commentsEnabled: true,
             updatedAt: new Date('2026-03-06T15:00:00.000Z'),
             chat: {
-              admins: [],
+              admins: [
+                {
+                  userId: 'admin-1',
+                },
+              ],
             },
           },
         ]),
@@ -365,6 +369,9 @@ describe('ModerationService channel auto post buttons', () => {
       listMessages: jest.fn().mockResolvedValue([
         {
           timestamp: 1772810100000,
+          sender: {
+            user_id: 'admin-1',
+          },
           body: {
             mid: 'mid-polled-1',
             text: 'Пост из канала',
@@ -450,6 +457,81 @@ describe('ModerationService channel auto post buttons', () => {
         },
       }),
     );
+  });
+
+  it('skips polled channel posts from non-admin authors', async () => {
+    const prisma = {
+      channelSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'channel-1',
+            autoPostButtonsMode: 'BOTH',
+            postSuggestionsEnabled: true,
+            postSuggestionsButtonText: '📰 Предложить пост',
+            commentsEnabled: true,
+            updatedAt: new Date('2026-03-06T15:00:00.000Z'),
+            chat: {
+              admins: [
+                {
+                  userId: 'admin-1',
+                },
+              ],
+            },
+          },
+        ]),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      listMessages: jest.fn().mockResolvedValue([
+        {
+          timestamp: 1772810100000,
+          sender: {
+            user_id: 'user-2',
+          },
+          body: {
+            mid: 'mid-polled-non-admin-1',
+            text: 'Пост не админа',
+            attachments: [],
+          },
+        },
+      ]),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      getChatAdminIds: jest.fn(),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = createAdminServiceMock();
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await (service as any).processChannelAutoPostButtons();
+
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
   });
 
   it('backs off channel polling after MAX API rate limit errors', async () => {

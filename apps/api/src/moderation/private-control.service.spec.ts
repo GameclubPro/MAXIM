@@ -622,14 +622,6 @@ function createHarness(
     getChannelSettings: jest
       .fn()
       .mockResolvedValue(overrides.channelSettings ?? defaultChannelSettings),
-    getChannelSuggestionButtonSettings: jest.fn().mockResolvedValue({
-      postSuggestionsButtonEnabled:
-        (overrides.channelSettings ?? defaultChannelSettings).postSuggestionsButtonEnabled,
-      postSuggestionsButtonText:
-        (overrides.channelSettings ?? defaultChannelSettings).postSuggestionsButtonText,
-      postSuggestionsButtonUrl:
-        (overrides.channelSettings ?? defaultChannelSettings).postSuggestionsButtonUrl,
-    }),
     updateChannelSettings: jest
       .fn()
       .mockResolvedValue(overrides.channelSettings ?? defaultChannelSettings),
@@ -1880,68 +1872,6 @@ describe('PrivateControlService', () => {
       }),
     );
     expect(getLastSentText(maxClient)).toContain('Материал отправлен');
-  });
-
-  it('attaches the configured transition button to suggestion flow messages when enabled', async () => {
-    const { service, maxClient, channels } = createHarness({
-      channelSettings: {
-        ...defaultChannelSettings,
-        postSuggestionsButtonEnabled: true,
-        postSuggestionsButtonText: 'Открыть канал',
-        postSuggestionsButtonUrl: 'https://max.ru/test-channel',
-      },
-    });
-    const startPayload = encodeChannelSuggestionStartPayload(channels[0].id, 'cdt-suggest-token-3');
-
-    await service.handleBotStarted(createBotStartedPrivateUpdate(startPayload));
-
-    expect(getLastButtons(maxClient).flat()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'link',
-          text: 'Открыть канал',
-          url: 'https://max.ru/test-channel',
-        }),
-        expect.objectContaining({ type: 'callback', text: 'Что отправить' }),
-        expect.objectContaining({ type: 'callback', text: 'Отмена' }),
-      ]),
-    );
-
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|suggest_help'));
-
-    expect(getLastButtons(maxClient).flat()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'link',
-          text: 'Открыть канал',
-          url: 'https://max.ru/test-channel',
-        }),
-      ]),
-    );
-
-    await service.handleUpdate(createPrivateTextUpdate('Ещё один вариант поста'));
-
-    expect(getLastButtons(maxClient).flat()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'link',
-          text: 'Открыть канал',
-          url: 'https://max.ru/test-channel',
-        }),
-      ]),
-    );
-
-    await service.handleUpdate(createPrivateCallbackUpdate('pc2|input_cancel'));
-
-    expect(getLastButtons(maxClient).flat()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'link',
-          text: 'Открыть канал',
-          url: 'https://max.ru/test-channel',
-        }),
-      ]),
-    );
   });
 
   it('shows only channel discussion status on the handoff broadcast screen without footer links', async () => {

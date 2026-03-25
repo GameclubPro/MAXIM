@@ -7705,6 +7705,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       if (!normalized) {
         continue;
       }
+      if (!normalized.senderId || !managedChannel.adminUserIds.includes(normalized.senderId)) {
+        continue;
+      }
       if (normalized.timestampMs < managedChannel.channelSettings.updatedAt.getTime()) {
         continue;
       }
@@ -7728,6 +7731,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     text: string | null;
     timestampMs: number;
     hasInlineKeyboard: boolean;
+    senderId: string | null;
   } | null {
     const body = this.asRecord(message.body);
     const messageIdCandidate = body?.mid;
@@ -7756,6 +7760,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       text: typeof body?.text === 'string' && body.text.trim() ? body.text : null,
       timestampMs,
       hasInlineKeyboard,
+      senderId: (() => {
+        const senderId = this.asRecord(message.sender)?.user_id ?? message.sender_id;
+        return typeof senderId === 'string' && senderId.trim() ? senderId.trim() : null;
+      })(),
     };
   }
 
