@@ -486,7 +486,9 @@ export class AdminService {
       username: this.readTrimmedString(user.username) ?? null,
       displayName: this.readTrimmedString(user.displayName) ?? null,
       avatarUrl: this.readTrimmedString(user.avatarUrl) ?? null,
-      profileUrl: this.buildUserProfileUrl(this.readTrimmedString(user.username) ?? null),
+      profileUrl:
+        this.normalizeMaxProfileUrl(this.readTrimmedString(user.profileUrl) ?? null) ??
+        this.buildUserProfileUrl(this.readTrimmedString(user.username) ?? null),
     };
     const contextChatId =
       this.readTrimmedString(options.chatId) ?? this.readTrimmedString(user.chatId);
@@ -509,7 +511,10 @@ export class AdminService {
       const displayName =
         fallback.displayName ?? this.readTrimmedString(profile?.displayName) ?? null;
       const avatarUrl = fallback.avatarUrl ?? this.readTrimmedString(profile?.avatarUrl) ?? null;
-      const profileUrl = this.buildUserProfileUrl(username);
+      const profileUrl =
+        this.normalizeMaxProfileUrl(this.readTrimmedString(profile?.profileUrl) ?? null) ??
+        fallback.profileUrl ??
+        this.buildUserProfileUrl(username);
 
       return {
         userId: user.userId,
@@ -7779,7 +7784,12 @@ export class AdminService {
     const displayNames = await this.resolveUserDisplayNames(chatId, normalizedUserIds);
     let chatMemberProfiles = new Map<
       string,
-      { displayName: string | null; username: string | null; avatarUrl: string | null }
+      {
+        displayName: string | null;
+        username: string | null;
+        avatarUrl: string | null;
+        profileUrl: string | null;
+      }
     >();
 
     const loadProfiles = this.maxClient.getChatMemberProfiles?.bind(this.maxClient);
@@ -7806,7 +7816,9 @@ export class AdminService {
         displayName:
           displayNames.get(userId) ?? this.readTrimmedString(profile?.displayName) ?? null,
         avatarUrl: this.readTrimmedString(profile?.avatarUrl) ?? null,
-        profileUrl: this.buildUserProfileUrl(username),
+        profileUrl:
+          this.normalizeMaxProfileUrl(this.readTrimmedString(profile?.profileUrl) ?? null) ??
+          this.buildUserProfileUrl(username),
         profileHandoffUrl: this.buildProfileMentionHandoffUrl(
           chatId,
           entityType,
@@ -7826,6 +7838,29 @@ export class AdminService {
     }
 
     return `https://max.ru/${encodeURIComponent(normalizedUsername)}`;
+  }
+
+  private normalizeMaxProfileUrl(value: string | null): string | null {
+    if (!value) {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(value);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return null;
+      }
+
+      const hostname = parsed.hostname.toLowerCase();
+      if (hostname !== 'max.ru' && hostname !== 'www.max.ru') {
+        return null;
+      }
+
+      parsed.hash = '';
+      return parsed.toString();
+    } catch {
+      return null;
+    }
   }
 
   private extractLegacyMaxUserId(url: string | null | undefined): string | null {

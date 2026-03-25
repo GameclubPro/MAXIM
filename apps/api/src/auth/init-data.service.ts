@@ -74,6 +74,12 @@ export class InitDataService {
         : parsedUser.photoUrl
           ? String(parsedUser.photoUrl)
           : null,
+      profileUrl: this.readProfileUrl(
+        parsedUser.profile_url,
+        parsedUser.profileUrl,
+        parsedUser.url,
+        parsedUser.link,
+      ),
       ...(parsedChat ? parsedChat : {}),
     };
   }
@@ -117,6 +123,45 @@ export class InitDataService {
         chatId: String(chatId),
         chatTitle: typeof chatTitle === 'string' ? chatTitle : null,
       };
+    } catch {
+      return null;
+    }
+  }
+
+  private readProfileUrl(...candidates: unknown[]): string | null {
+    for (const candidate of candidates) {
+      if (typeof candidate !== 'string') {
+        continue;
+      }
+
+      const normalized = this.normalizeMaxProfileUrl(candidate);
+      if (normalized) {
+        return normalized;
+      }
+    }
+
+    return null;
+  }
+
+  private normalizeMaxProfileUrl(value: string): string | null {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return null;
+      }
+
+      const hostname = parsed.hostname.toLowerCase();
+      if (hostname !== 'max.ru' && hostname !== 'www.max.ru') {
+        return null;
+      }
+
+      parsed.hash = '';
+      return parsed.toString();
     } catch {
       return null;
     }

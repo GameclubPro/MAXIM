@@ -226,15 +226,30 @@ export function ManagedLinkButtonFields({
   });
 
   const profileUsername = meQuery.data?.username?.trim() ?? '';
-  const profileSubtitle = profileUsername ? `@${profileUsername}` : 'Публичная ссылка недоступна';
-  const profileQuickActionSubtitle = profileUsername
-    ? `@${profileUsername}`
-    : 'Нужен публичный username';
-  const profileUnavailableHint =
-    'Быстрая вставка доступна только если в профиле MAX задан публичный username. Иначе вставьте ссылку вручную.';
-  const profileDisplayName =
-    meQuery.data?.displayName?.trim() || (profileUsername ? `@${profileUsername}` : 'Профиль');
   const profileUrl = meQuery.data?.profileUrl?.trim() ?? '';
+  const isProfileLoading = meQuery.isLoading || meQuery.isFetching;
+  const profileSubtitle = profileUsername
+    ? `@${profileUsername}`
+    : profileUrl
+      ? formatUrlPreview(profileUrl)
+      : 'Публичная ссылка недоступна';
+  const profileQuickActionSubtitle = isProfileLoading
+    ? 'Проверяем профиль...'
+    : profileUsername
+      ? `@${profileUsername}`
+      : profileUrl
+        ? formatUrlPreview(profileUrl)
+        : meQuery.error
+          ? 'Не удалось проверить'
+          : 'Публичная ссылка недоступна';
+  const profileUnavailableHint = isProfileLoading
+    ? 'Проверяем публичную ссылку профиля MAX...'
+    : meQuery.error
+      ? 'Не удалось проверить публичную ссылку профиля MAX. Можно вставить её вручную.'
+      : 'Не удалось определить публичную ссылку профиля MAX автоматически. Вставьте её вручную.';
+  const profileDisplayName =
+    meQuery.data?.displayName?.trim() ||
+    (profileUsername ? `@${profileUsername}` : profileUrl ? 'Публичный профиль' : 'Профиль');
   const chatOptions = useMemo(
     () => buildManagedLinkOptions(chatsQuery.data, 'chat', urlValue),
     [chatsQuery.data, urlValue],
@@ -377,7 +392,7 @@ export function ManagedLinkButtonFields({
         type="button"
         className={cn('managed-link-picker__quick-action', isProfileActive && 'is-active')}
         onClick={() => applyPreset(profileUrl, 'Профиль')}
-        disabled={disabled || !profileUrl}
+        disabled={disabled || isProfileLoading || !profileUrl}
       >
         <strong>Мой профиль MAX</strong>
         <small>{profileQuickActionSubtitle}</small>

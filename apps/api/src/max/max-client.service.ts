@@ -53,6 +53,7 @@ export type MaxChatMemberProfile = {
   displayName: string | null;
   username: string | null;
   avatarUrl: string | null;
+  profileUrl: string | null;
 };
 
 export type MaxChatMemberAccess = {
@@ -1428,7 +1429,52 @@ export class MaxClientService implements OnModuleDestroy {
           nestedUser?.avatar_url ??
           nestedUser?.avatarUrl,
       ),
+      profileUrl: this.readProfileUrl(
+        row.profile_url,
+        row.profileUrl,
+        row.url,
+        row.link,
+        nestedUser?.profile_url,
+        nestedUser?.profileUrl,
+        nestedUser?.url,
+        nestedUser?.link,
+      ),
     };
+  }
+
+  private readProfileUrl(...candidates: unknown[]): string | null {
+    for (const candidate of candidates) {
+      const value = this.readTrimmedString(candidate);
+      if (!value) {
+        continue;
+      }
+
+      const normalized = this.normalizeMaxProfileUrl(value);
+      if (normalized) {
+        return normalized;
+      }
+    }
+
+    return null;
+  }
+
+  private normalizeMaxProfileUrl(value: string): string | null {
+    try {
+      const parsed = new URL(value);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        return null;
+      }
+
+      const hostname = parsed.hostname.toLowerCase();
+      if (hostname !== 'max.ru' && hostname !== 'www.max.ru') {
+        return null;
+      }
+
+      parsed.hash = '';
+      return parsed.toString();
+    } catch {
+      return null;
+    }
   }
 
   private parseChatLink(row: Record<string, unknown>): string | null {

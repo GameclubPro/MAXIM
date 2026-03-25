@@ -43,6 +43,23 @@ describe('InitDataService', () => {
     expect(user.avatarUrl).toBe('https://cdn.max.ru/u/42/avatar.jpg');
   });
 
+  it('extracts direct MAX profile url from user payload', () => {
+    const service = new InitDataService(configService);
+    const params = new URLSearchParams();
+    params.set(
+      'user',
+      JSON.stringify({
+        id: '42',
+        url: 'https://max.ru/designer',
+      }),
+    );
+    params.set('auth_date', '1700000000');
+    params.set('hash', sign(params));
+
+    const user = service.validate(params.toString());
+    expect(user.profileUrl).toBe('https://max.ru/designer');
+  });
+
   it('throws on invalid hash', () => {
     const service = new InitDataService(configService);
     const params = new URLSearchParams();

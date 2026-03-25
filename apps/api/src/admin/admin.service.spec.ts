@@ -591,6 +591,38 @@ describe('AdminService getMe', () => {
       trafficClass: 'interactive',
     });
   });
+
+  it('keeps direct MAX profile url when init data already has it without username', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatMemberProfiles: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.getMe({
+        userId: 'admin-1',
+        username: null,
+        displayName: 'Designer',
+        avatarUrl: 'https://cdn.max/avatar.png',
+        profileUrl: 'https://max.ru/designer-direct',
+      }),
+    ).resolves.toEqual({
+      userId: 'admin-1',
+      username: null,
+      displayName: 'Designer',
+      avatarUrl: 'https://cdn.max/avatar.png',
+      profileUrl: 'https://max.ru/designer-direct',
+    });
+    expect(maxClient.getChatMemberProfiles).not.toHaveBeenCalled();
+  });
+
   it('keeps profile url empty when username is unavailable', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
@@ -632,6 +664,54 @@ describe('AdminService getMe', () => {
       displayName: 'Designer Max',
       avatarUrl: 'https://cdn.max/designer.png',
       profileUrl: null,
+    });
+    expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
+      trafficClass: 'interactive',
+    });
+  });
+
+  it('returns direct MAX profile url from member data when username is unavailable', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatMemberProfiles: jest.fn().mockResolvedValue(
+        new Map([
+          [
+            'admin-1',
+            {
+              userId: 'admin-1',
+              username: null,
+              displayName: 'Designer Max',
+              avatarUrl: 'https://cdn.max/designer.png',
+              profileUrl: 'https://max.ru/designer-direct',
+            },
+          ],
+        ]),
+      ),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.getMe(
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          avatarUrl: null,
+        },
+        { chatId: 'chat-1', entityType: 'chat' },
+      ),
+    ).resolves.toEqual({
+      userId: 'admin-1',
+      username: null,
+      displayName: 'Designer Max',
+      avatarUrl: 'https://cdn.max/designer.png',
+      profileUrl: 'https://max.ru/designer-direct',
     });
     expect(maxClient.getChatMemberProfiles).toHaveBeenCalledWith('chat-1', ['admin-1'], {
       trafficClass: 'interactive',

@@ -1093,12 +1093,60 @@ describe('MaxClientService inline keyboard guardrails', () => {
       displayName: 'Алексей',
       username: 'aleksey',
       avatarUrl: 'https://cdn.max.ru/u/1/avatar-full.jpg',
+      profileUrl: null,
     });
     expect(result.get('user-2')).toEqual({
       userId: 'user-2',
       displayName: 'Марина',
       username: 'marina',
       avatarUrl: 'https://cdn.max.ru/u/2/avatar-small.jpg',
+      profileUrl: null,
+    });
+
+    await service.onModuleDestroy();
+  });
+
+  it('returns direct profile urls from chat member payloads', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            members: [
+              {
+                user_id: 'user-1',
+                first_name: 'Алексей',
+                url: 'https://max.ru/aleksey-profile',
+              },
+              {
+                user: {
+                  user_id: 'user-2',
+                  first_name: 'Марина',
+                  profile_url: 'https://max.ru/marina-profile',
+                },
+              },
+            ],
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    const result = await service.getChatMemberProfiles('chat-1', ['user-1', 'user-2']);
+
+    expect(result.get('user-1')).toEqual({
+      userId: 'user-1',
+      displayName: 'Алексей',
+      username: null,
+      avatarUrl: null,
+      profileUrl: 'https://max.ru/aleksey-profile',
+    });
+    expect(result.get('user-2')).toEqual({
+      userId: 'user-2',
+      displayName: 'Марина',
+      username: null,
+      avatarUrl: null,
+      profileUrl: 'https://max.ru/marina-profile',
     });
 
     await service.onModuleDestroy();
