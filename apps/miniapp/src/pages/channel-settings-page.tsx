@@ -97,26 +97,17 @@ function buildAutoPostButtonsMode(
   return 'OFF';
 }
 
-function modeHasComments(mode: ChannelAutoPostButtonsMode): boolean {
-  return mode === 'COMMENTS' || mode === 'BOTH';
-}
-
 function sanitizeAutoPostButtonsMode(
-  mode: ChannelAutoPostButtonsMode,
+  _mode: ChannelAutoPostButtonsMode,
   commentsEnabled: boolean,
   suggestEnabled: boolean,
 ): ChannelAutoPostButtonsMode {
-  return buildAutoPostButtonsMode(commentsEnabled && modeHasComments(mode), suggestEnabled);
+  return buildAutoPostButtonsMode(commentsEnabled, suggestEnabled);
 }
 
 function resolveManualPublishButtons(settings: ChannelSettings) {
   return {
-    includeCommentsButton:
-      settings.autoPostButtonsMode === 'COMMENTS' || settings.autoPostButtonsMode === 'BOTH'
-        ? true
-        : settings.autoPostButtonsMode === 'OFF'
-          ? settings.commentsEnabled
-          : false,
+    includeCommentsButton: settings.commentsEnabled,
     includeSuggestButton: true,
   };
 }

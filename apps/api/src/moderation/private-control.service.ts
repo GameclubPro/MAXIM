@@ -2366,10 +2366,7 @@ export class PrivateControlService {
           throw new BadRequestException('Channel is not selected');
         }
         const settings = await this.adminService.getChannelSettings(chatId, context.actor);
-        const includeCommentsButton =
-          settings.autoPostButtonsMode === 'COMMENTS' ||
-          settings.autoPostButtonsMode === 'BOTH' ||
-          (settings.autoPostButtonsMode === 'OFF' && settings.commentsEnabled);
+        const includeCommentsButton = settings.commentsEnabled;
         const includeSuggestButton = true;
 
         await this.adminService.publishChannelEngagementMessage(chatId, context.actor, {

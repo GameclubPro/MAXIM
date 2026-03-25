@@ -4850,7 +4850,7 @@ describe('AdminService.getChannelStats', () => {
 });
 
 describe('AdminService.updateChannelSettings', () => {
-  it('syncs auto post suggestion mode with the suggestion toggle', async () => {
+  it('syncs auto post buttons mode with the comments and suggestion toggles', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
       entityType: 'CHANNEL',
@@ -4884,7 +4884,7 @@ describe('AdminService.updateChannelSettings', () => {
       },
     );
 
-    expect(result.autoPostButtonsMode).toBe('SUGGEST');
+    expect(result.autoPostButtonsMode).toBe('BOTH');
     expect(prisma.chat.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         update: {
@@ -4892,7 +4892,7 @@ describe('AdminService.updateChannelSettings', () => {
           channelSettings: {
             upsert: expect.objectContaining({
               update: expect.objectContaining({
-                autoPostButtonsMode: 'SUGGEST',
+                autoPostButtonsMode: 'BOTH',
               }),
             }),
           },

@@ -247,6 +247,83 @@ describe('ModerationService channel auto post buttons', () => {
     );
   });
 
+  it('auto-attaches comments even when a legacy channel record still stores suggestion-only mode', async () => {
+    const prisma = {
+      chat: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'channel-1',
+          title: 'Ищу модель | Ростов',
+          entityType: 'CHANNEL',
+          channelSettings: {
+            autoPostButtonsMode: 'SUGGEST',
+            postSuggestionsEnabled: true,
+            postSuggestionsButtonText: '📰 Предложить пост',
+            commentsEnabled: true,
+          },
+          admins: [],
+        }),
+      },
+      auditLog: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(undefined),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn(),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn(),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+    const adminService = createAdminServiceMock();
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+      undefined,
+      undefined,
+      createConfigMock() as never,
+      undefined,
+      undefined,
+      adminService as never,
+    );
+
+    await service.handleUpdate(createChannelPostUpdate());
+
+    expect(maxClient.editMessageInlineKeyboard).toHaveBeenCalledWith(
+      'channel-1',
+      'mid-channel-1',
+      'Новый пост в канале',
+      expect.objectContaining({
+        buttons: [
+          [expect.objectContaining({ text: '💬 Комментарии · 0' })],
+          [expect.objectContaining({ text: '📰 Предложить пост' })],
+        ],
+      }),
+    );
+    expect(prisma.auditLog.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          payload: expect.objectContaining({
+            includeCommentsButton: true,
+            includeSuggestButton: true,
+            autoPostButtonsMode: 'BOTH',
+          }),
+        }),
+      }),
+    );
+  });
+
   it('does not auto-attach when the channel mode is off and comments are disabled', async () => {
     const prisma = {
       chat: {

@@ -5664,11 +5664,7 @@ export class AdminService {
     });
     const threadId = randomUUID();
 
-    if (
-      channelSettings.autoPostButtonsMode === 'COMMENTS' ||
-      channelSettings.autoPostButtonsMode === 'BOTH' ||
-      (channelSettings.autoPostButtonsMode === 'OFF' && channelSettings.commentsEnabled)
-    ) {
+    if (channelSettings.commentsEnabled) {
       rows.push([
         this.buildChannelDialogButton(
           chatId,
@@ -8286,9 +8282,7 @@ export class AdminService {
       'autoPostButtonsMode' | 'commentsEnabled' | 'postSuggestionsEnabled'
     >,
   ): ChannelSettings['autoPostButtonsMode'] {
-    const includeComments =
-      settings.commentsEnabled &&
-      (settings.autoPostButtonsMode === 'COMMENTS' || settings.autoPostButtonsMode === 'BOTH');
+    const includeComments = settings.commentsEnabled;
     const includeSuggest = settings.postSuggestionsEnabled;
 
     if (includeComments && includeSuggest) {
