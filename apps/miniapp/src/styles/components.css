@@ -4705,7 +4705,9 @@
   border: 1.5px solid rgba(62, 96, 127, 0.24);
   background: rgba(255, 255, 255, 0.86);
   flex: 0 0 auto;
-  transition: border-color 0.2s ease, background-color 0.2s ease;
+  transition:
+    border-color 0.2s ease,
+    background-color 0.2s ease;
 }
 
 .policy-card--alert {
@@ -5515,6 +5517,14 @@
   opacity: 0.56;
   cursor: default;
   box-shadow: none;
+}
+
+.managed-link-picker__note {
+  margin: 0;
+  padding: 0 2px;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  color: var(--text-secondary);
 }
 
 .managed-link-picker__selection {

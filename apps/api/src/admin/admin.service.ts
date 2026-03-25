@@ -218,8 +218,7 @@ const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 1;
 const MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 120;
-const MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS =
-  process.env.NODE_ENV === 'test' ? 0 : 180;
+const MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 180;
 const MANAGED_ENTITIES_REFRESH_UNCACHED_LIMIT = 100;
 const MANAGED_ENTITIES_REFRESH_SCAN_WINDOW_SIZE = 120;
 const MANAGED_ENTITIES_REFRESH_CURSOR_DONE = -1;
@@ -250,9 +249,24 @@ const CHAT_SETTINGS_BUTTON_URL_KEYS = [
   'messageLimitsBotButtonUrl',
   'nightModeBotButtonUrl',
 ] as const satisfies readonly (keyof ChatSettings)[];
+const CHAT_SETTINGS_BUTTON_ENABLED_BY_URL_KEY = {
+  linkBotButtonUrl: 'linkBotButtonEnabled',
+  greetingBotButtonUrl: 'greetingBotButtonEnabled',
+  textFiltersBotButtonUrl: 'textFiltersBotButtonEnabled',
+  thematicFiltersBotButtonUrl: 'thematicFiltersBotButtonEnabled',
+  duplicateBotButtonUrl: 'duplicateBotButtonEnabled',
+  messageLimitsBotButtonUrl: 'messageLimitsBotButtonEnabled',
+  nightModeBotButtonUrl: 'nightModeBotButtonEnabled',
+} as const satisfies Record<(typeof CHAT_SETTINGS_BUTTON_URL_KEYS)[number], keyof ChatSettings>;
 const CHANNEL_SETTINGS_BUTTON_URL_KEYS = [
   'postSuggestionsButtonUrl',
 ] as const satisfies readonly (keyof ChannelSettings)[];
+const CHANNEL_SETTINGS_BUTTON_ENABLED_BY_URL_KEY = {
+  postSuggestionsButtonUrl: 'postSuggestionsButtonEnabled',
+} as const satisfies Record<
+  (typeof CHANNEL_SETTINGS_BUTTON_URL_KEYS)[number],
+  keyof ChannelSettings
+>;
 const SETTINGS_SECTION_KEYS = {
   links: [
     'linkPolicy',
@@ -700,7 +714,8 @@ export class AdminService {
 
     const filtered: ChatSummary[] = [];
     for (const chat of chats) {
-      const cachedAccess = (await this.chatContextCache.getAdminAccess?.(chat.id, user.userId)) ?? null;
+      const cachedAccess =
+        (await this.chatContextCache.getAdminAccess?.(chat.id, user.userId)) ?? null;
       if (cachedAccess !== 'user_denied' && cachedAccess !== 'bot_denied') {
         filtered.push(chat);
         continue;
@@ -789,8 +804,10 @@ export class AdminService {
       );
       const storedCursor =
         options.fullScan === true
-          ? ((await this.chatContextCache.getManagedEntitiesRefreshCursor?.(user.userId, entityType)) ??
-            0)
+          ? ((await this.chatContextCache.getManagedEntitiesRefreshCursor?.(
+              user.userId,
+              entityType,
+            )) ?? 0)
           : null;
       const fullScanAlreadyCompleted = storedCursor === MANAGED_ENTITIES_REFRESH_CURSOR_DONE;
       const fullScanStartIndex =
@@ -878,7 +895,9 @@ export class AdminService {
           return {
             chat,
             lastEventTime: remoteChat.lastEventTime ?? 0,
-            remoteIndex: supportedCandidateChats.findIndex((chat) => chat.chatId === remoteChat.chatId),
+            remoteIndex: supportedCandidateChats.findIndex(
+              (chat) => chat.chatId === remoteChat.chatId,
+            ),
           };
         },
       );
@@ -912,7 +931,11 @@ export class AdminService {
         }
       }
 
-      await this.activateManagedEntitiesRefreshCooldown(user.userId, entityType, refreshCooldownKey);
+      await this.activateManagedEntitiesRefreshCooldown(
+        user.userId,
+        entityType,
+        refreshCooldownKey,
+      );
 
       mergedChats.sort((a, b) => {
         if (a.remoteIndex !== b.remoteIndex) {
@@ -924,7 +947,8 @@ export class AdminService {
       return mergedChats.map((item) => item.chat);
     } catch (error: unknown) {
       if (this.isManagedEntitiesRefreshThrottledError(error) || this.isMaxApiThrottleError(error)) {
-        const rootError = error instanceof ManagedEntitiesRefreshThrottledError ? error.cause : error;
+        const rootError =
+          error instanceof ManagedEntitiesRefreshThrottledError ? error.cause : error;
         const backoffMs = await this.activateManagedEntitiesRefreshBackoff(
           user.userId,
           entityType,
@@ -1304,13 +1328,14 @@ export class AdminService {
       throw new Error('Chat settings missing after upsert');
     }
 
-    const parsed = chatSettingsSchema.safeParse(chat.settings);
+    const sanitizedStoredSettings = this.sanitizeStoredChatSettings(chat.settings);
+    const parsed = chatSettingsSchema.safeParse(sanitizedStoredSettings);
     if (parsed.success) {
       const normalizedSettings = this.normalizeChatSettings(parsed.data, undefined, chatId);
-      const normalizationChanges = this.getChatSettingsNormalizationChanges(
-        parsed.data,
-        normalizedSettings,
-      );
+      const normalizationChanges = {
+        ...this.getStoredChatSettingsSanitizationChanges(chat.settings, parsed.data),
+        ...this.getChatSettingsNormalizationChanges(parsed.data, normalizedSettings),
+      };
       if (Object.keys(normalizationChanges).length > 0) {
         await this.prisma.chatSettings.update({
           where: { chatId },
@@ -1765,15 +1790,18 @@ export class AdminService {
       throw new Error('Channel settings missing after upsert');
     }
 
-    const parsed = channelSettingsSchema.safeParse(chat.channelSettings);
+    const sanitizedStoredSettings = this.sanitizeStoredChannelSettings(chat.channelSettings);
+    const parsed = channelSettingsSchema.safeParse(sanitizedStoredSettings);
     if (parsed.success) {
       const normalized = this.normalizeChannelSettings(parsed.data, chatId);
-      if (this.hasChannelSettingsNormalizationChanges(parsed.data, normalized)) {
+      const normalizationChanges = {
+        ...this.getStoredChannelSettingsSanitizationChanges(chat.channelSettings, parsed.data),
+        ...this.getChannelSettingsNormalizationChanges(parsed.data, normalized),
+      };
+      if (Object.keys(normalizationChanges).length > 0) {
         await this.prisma.channelSettings.update({
           where: { chatId },
-          data: {
-            ...normalized,
-          },
+          data: normalizationChanges,
         });
       }
       return normalized;
@@ -2691,15 +2719,70 @@ export class AdminService {
     };
   }
 
+  private sanitizeStoredChatSettings(settings: unknown): unknown {
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+      return settings;
+    }
+
+    let normalizedSettings = settings as Record<string, unknown>;
+
+    for (const key of CHAT_SETTINGS_BUTTON_URL_KEYS) {
+      const normalizedUrl = this.normalizeLegacyProfileButtonUrl(
+        normalizedSettings[key] as string | null | undefined,
+      );
+      const enabledKey = CHAT_SETTINGS_BUTTON_ENABLED_BY_URL_KEY[key];
+      const shouldDisableButton =
+        normalizedUrl.length === 0 && normalizedSettings[enabledKey] === true;
+      if (normalizedUrl !== normalizedSettings[key] || shouldDisableButton) {
+        normalizedSettings = {
+          ...normalizedSettings,
+          [key]: normalizedUrl,
+          ...(shouldDisableButton ? { [enabledKey]: false } : {}),
+        };
+      }
+    }
+
+    return normalizedSettings;
+  }
+
+  private sanitizeStoredChannelSettings(settings: unknown): unknown {
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) {
+      return settings;
+    }
+
+    let normalizedSettings = settings as Record<string, unknown>;
+
+    for (const key of CHANNEL_SETTINGS_BUTTON_URL_KEYS) {
+      const normalizedUrl = this.normalizeLegacyProfileButtonUrl(
+        normalizedSettings[key] as string | null | undefined,
+      );
+      const enabledKey = CHANNEL_SETTINGS_BUTTON_ENABLED_BY_URL_KEY[key];
+      const shouldDisableButton =
+        normalizedUrl.length === 0 && normalizedSettings[enabledKey] === true;
+      if (normalizedUrl !== normalizedSettings[key] || shouldDisableButton) {
+        normalizedSettings = {
+          ...normalizedSettings,
+          [key]: normalizedUrl,
+          ...(shouldDisableButton ? { [enabledKey]: false } : {}),
+        };
+      }
+    }
+
+    return normalizedSettings;
+  }
+
   private normalizeChatSettingsButtonUrls(chatId: string, settings: ChatSettings): ChatSettings {
     let normalizedSettings = settings;
 
     for (const key of CHAT_SETTINGS_BUTTON_URL_KEYS) {
       const normalizedUrl = this.normalizeLegacyProfileButtonUrl(settings[key]);
-      if (normalizedUrl !== normalizedSettings[key]) {
+      const enabledKey = CHAT_SETTINGS_BUTTON_ENABLED_BY_URL_KEY[key];
+      const shouldDisableButton = normalizedUrl.length === 0 && normalizedSettings[enabledKey];
+      if (normalizedUrl !== normalizedSettings[key] || shouldDisableButton) {
         normalizedSettings = {
           ...normalizedSettings,
           [key]: normalizedUrl,
+          ...(shouldDisableButton ? { [enabledKey]: false } : {}),
         };
       }
     }
@@ -2715,10 +2798,13 @@ export class AdminService {
 
     for (const key of CHANNEL_SETTINGS_BUTTON_URL_KEYS) {
       const normalizedUrl = this.normalizeLegacyProfileButtonUrl(settings[key]);
-      if (normalizedUrl !== normalizedSettings[key]) {
+      const enabledKey = CHANNEL_SETTINGS_BUTTON_ENABLED_BY_URL_KEY[key];
+      const shouldDisableButton = normalizedUrl.length === 0 && normalizedSettings[enabledKey];
+      if (normalizedUrl !== normalizedSettings[key] || shouldDisableButton) {
         normalizedSettings = {
           ...normalizedSettings,
           [key]: normalizedUrl,
+          ...(shouldDisableButton ? { [enabledKey]: false } : {}),
         };
       }
     }
@@ -3176,6 +3262,33 @@ export class AdminService {
     }
     if (current.nightModeForceCloseUntil !== normalized.nightModeForceCloseUntil) {
       changes.nightModeForceCloseUntil = normalized.nightModeForceCloseUntil;
+    }
+
+    return changes;
+  }
+
+  private getStoredChatSettingsSanitizationChanges(
+    current: unknown,
+    sanitized: ChatSettings,
+  ): Partial<ChatSettings> {
+    if (!current || typeof current !== 'object' || Array.isArray(current)) {
+      return {};
+    }
+
+    const currentSettings = current as Record<string, unknown>;
+    const changes: Partial<ChatSettings> = {};
+
+    for (const key of CHAT_SETTINGS_BUTTON_URL_KEYS) {
+      const currentUrl = this.readTrimmedString(currentSettings[key]) ?? '';
+      if (currentUrl !== sanitized[key]) {
+        changes[key] = sanitized[key];
+      }
+
+      const enabledKey = CHAT_SETTINGS_BUTTON_ENABLED_BY_URL_KEY[key];
+      const currentEnabled = currentSettings[enabledKey] === true;
+      if (currentEnabled !== sanitized[enabledKey]) {
+        changes[enabledKey] = sanitized[enabledKey];
+      }
     }
 
     return changes;
@@ -4249,9 +4362,7 @@ export class AdminService {
           textFormat: this.normalizeBroadcastTextFormat(row.textFormat),
           applyToAllChats: row.applyToAllChats,
           buttonEnabled: row.buttonEnabled,
-          buttonUrl: row.buttonEnabled
-            ? this.normalizeLegacyProfileButtonUrl(row.buttonUrl)
-            : '',
+          buttonUrl: row.buttonEnabled ? this.normalizeLegacyProfileButtonUrl(row.buttonUrl) : '',
           buttonText: row.buttonText,
           imageEnabled: row.imageEnabled,
           imageBase64: row.imageBase64,
@@ -5258,9 +5369,7 @@ export class AdminService {
       applyToAllChats: row.applyToAllChats,
       targetChatIds,
       buttonEnabled: row.buttonEnabled,
-      buttonUrl: row.buttonEnabled
-        ? this.normalizeLegacyProfileButtonUrl(row.buttonUrl)
-        : '',
+      buttonUrl: row.buttonEnabled ? this.normalizeLegacyProfileButtonUrl(row.buttonUrl) : '',
       buttonText: row.buttonText,
       imageEnabled: row.imageEnabled,
       imageBase64: row.imageBase64,
@@ -5493,7 +5602,9 @@ export class AdminService {
     const rows: MaxMessageButton[][] = [];
 
     if (options.includeCustomButton) {
-      const normalizedCustomButtonUrl = this.normalizeLegacyProfileButtonUrl(options.customButtonUrl);
+      const normalizedCustomButtonUrl = this.normalizeLegacyProfileButtonUrl(
+        options.customButtonUrl,
+      );
       rows.push([
         {
           type: 'link',
@@ -7756,7 +7867,10 @@ export class AdminService {
 
   private normalizeLegacyProfileButtonUrl(url: string | null | undefined): string {
     const normalizedUrl = typeof url === 'string' ? url.trim() : '';
-    if (this.extractLegacyMaxUserId(normalizedUrl) || this.isLegacyProfileHandoffUrl(normalizedUrl)) {
+    if (
+      this.extractLegacyMaxUserId(normalizedUrl) ||
+      this.isLegacyProfileHandoffUrl(normalizedUrl)
+    ) {
       return '';
     }
 
@@ -7981,8 +8095,7 @@ export class AdminService {
           return 1;
         }
         if (leftEntry.removeAfterAt !== null && rightEntry.removeAfterAt !== null) {
-          const byTime =
-            leftEntry.removeAfterAt.getTime() - rightEntry.removeAfterAt.getTime();
+          const byTime = leftEntry.removeAfterAt.getTime() - rightEntry.removeAfterAt.getTime();
           if (byTime !== 0) {
             return byTime;
           }
@@ -8073,8 +8186,10 @@ export class AdminService {
       return DEFAULT_CHANNEL_SETTINGS;
     }
 
-    const parsed = channelSettingsSchema.safeParse(settings);
-    return parsed.success ? this.normalizeChannelSettings(parsed.data, chatId) : DEFAULT_CHANNEL_SETTINGS;
+    const parsed = channelSettingsSchema.safeParse(this.sanitizeStoredChannelSettings(settings));
+    return parsed.success
+      ? this.normalizeChannelSettings(parsed.data, chatId)
+      : DEFAULT_CHANNEL_SETTINGS;
   }
 
   private normalizeChannelSettings(settings: ChannelSettings, chatId?: string): ChannelSettings {
@@ -8112,7 +8227,7 @@ export class AdminService {
       };
     }
 
-    const parsed = chatSettingsSchema.safeParse(settings);
+    const parsed = chatSettingsSchema.safeParse(this.sanitizeStoredChatSettings(settings));
     const normalized = parsed.success
       ? this.normalizeChatSettings(parsed.data, undefined, chatId)
       : DEFAULT_CHAT_SETTINGS;
@@ -8153,14 +8268,58 @@ export class AdminService {
     return 'OFF';
   }
 
-  private hasChannelSettingsNormalizationChanges(
-    current: Pick<ChannelSettings, 'autoPostButtonsMode' | 'postSuggestionsButtonUrl'>,
-    normalized: Pick<ChannelSettings, 'autoPostButtonsMode' | 'postSuggestionsButtonUrl'>,
-  ): boolean {
-    return (
-      current.autoPostButtonsMode !== normalized.autoPostButtonsMode ||
-      current.postSuggestionsButtonUrl !== normalized.postSuggestionsButtonUrl
-    );
+  private getStoredChannelSettingsSanitizationChanges(
+    current: unknown,
+    sanitized: ChannelSettings,
+  ): Partial<ChannelSettings> {
+    if (!current || typeof current !== 'object' || Array.isArray(current)) {
+      return {};
+    }
+
+    const currentSettings = current as Record<string, unknown>;
+    const changes: Partial<ChannelSettings> = {};
+
+    for (const key of CHANNEL_SETTINGS_BUTTON_URL_KEYS) {
+      const currentUrl = this.readTrimmedString(currentSettings[key]) ?? '';
+      if (currentUrl !== sanitized[key]) {
+        changes[key] = sanitized[key];
+      }
+
+      const enabledKey = CHANNEL_SETTINGS_BUTTON_ENABLED_BY_URL_KEY[key];
+      const currentEnabled = currentSettings[enabledKey] === true;
+      if (currentEnabled !== sanitized[enabledKey]) {
+        changes[enabledKey] = sanitized[enabledKey];
+      }
+    }
+
+    return changes;
+  }
+
+  private getChannelSettingsNormalizationChanges(
+    current: Pick<
+      ChannelSettings,
+      'autoPostButtonsMode' | 'postSuggestionsButtonEnabled' | 'postSuggestionsButtonUrl'
+    >,
+    normalized: Pick<
+      ChannelSettings,
+      'autoPostButtonsMode' | 'postSuggestionsButtonEnabled' | 'postSuggestionsButtonUrl'
+    >,
+  ): Partial<ChannelSettings> {
+    const changes: Partial<ChannelSettings> = {};
+
+    if (current.autoPostButtonsMode !== normalized.autoPostButtonsMode) {
+      changes.autoPostButtonsMode = normalized.autoPostButtonsMode;
+    }
+
+    if (current.postSuggestionsButtonUrl !== normalized.postSuggestionsButtonUrl) {
+      changes.postSuggestionsButtonUrl = normalized.postSuggestionsButtonUrl;
+    }
+
+    if (current.postSuggestionsButtonEnabled !== normalized.postSuggestionsButtonEnabled) {
+      changes.postSuggestionsButtonEnabled = normalized.postSuggestionsButtonEnabled;
+    }
+
+    return changes;
   }
 
   private async assertChannelCommentAllowed(params: {

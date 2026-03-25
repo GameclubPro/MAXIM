@@ -706,7 +706,7 @@ describe('AdminService night mode settings normalization', () => {
     );
   });
 
-  it('drops legacy profile handoff button urls on update', async () => {
+  it('rejects legacy profile handoff button urls on update', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
       getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
@@ -722,35 +722,170 @@ describe('AdminService night mode settings normalization', () => {
       createConfigMock() as never,
     );
 
-    const result = await service.updateSettings(
-      'chat-1',
-      {
-        userId: 'admin-1',
-        username: null,
-        displayName: null,
-        chatTitle: null,
-      },
-      {
+    await expect(
+      service.updateSettings(
+        'chat-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        {
+          greetingEnabled: true,
+          greetingBotMessageEnabled: true,
+          greetingBotButtonEnabled: true,
+          greetingBotButtonUrl: 'https://max.ru/777000_bot?start=pmh-legacy',
+          greetingBotButtonText: 'Профиль',
+        },
+      ),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        greetingBotButtonUrl: expect.objectContaining({
+          _errors: expect.arrayContaining(['Укажите корректную ссылку для кнопки (http/https).']),
+        }),
+      }),
+    });
+    expect(prisma.chatSettings.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('rejects max user deeplinks in new button urls on update', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await expect(
+      service.updateSettings(
+        'chat-1',
+        {
+          userId: 'admin-1',
+          username: null,
+          displayName: null,
+          chatTitle: null,
+        },
+        {
+          greetingEnabled: true,
+          greetingBotMessageEnabled: true,
+          greetingBotButtonEnabled: true,
+          greetingBotButtonUrl: 'max://user/user-42',
+          greetingBotButtonText: 'Профиль',
+        },
+      ),
+    ).rejects.toMatchObject({
+      response: expect.objectContaining({
+        greetingBotButtonUrl: expect.objectContaining({
+          _errors: expect.arrayContaining(['Укажите корректную ссылку для кнопки (http/https).']),
+        }),
+      }),
+    });
+    expect(prisma.chatSettings.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('drops legacy profile handoff button urls from stored settings', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      createdAt: new Date('2026-03-01T00:00:00.000Z'),
+      settings: {
         greetingEnabled: true,
         greetingBotMessageEnabled: true,
         greetingBotButtonEnabled: true,
         greetingBotButtonUrl: 'https://max.ru/777000_bot?start=pmh-legacy',
         greetingBotButtonText: 'Профиль',
       },
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
     );
 
+    const result = await service.getSettings('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(result.greetingBotButtonEnabled).toBe(false);
     expect(result.greetingBotButtonUrl).toBe('');
-    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+    expect(prisma.chatSettings.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        update: {
-          settings: {
-            upsert: expect.objectContaining({
-              update: expect.objectContaining({
-                greetingBotButtonUrl: '',
-              }),
-            }),
-          },
-        },
+        where: { chatId: 'chat-1' },
+        data: expect.objectContaining({
+          greetingBotButtonEnabled: false,
+          greetingBotButtonUrl: '',
+        }),
+      }),
+    );
+  });
+
+  it('drops legacy max user button urls from stored settings', async () => {
+    const prisma = createPrismaMock();
+    prisma.chat.upsert.mockResolvedValue({
+      id: 'chat-1',
+      title: 'Команда MAX',
+      createdAt: new Date('2026-03-01T00:00:00.000Z'),
+      settings: {
+        greetingEnabled: true,
+        greetingBotMessageEnabled: true,
+        greetingBotButtonEnabled: true,
+        greetingBotButtonUrl: 'max://user/user-42',
+        greetingBotButtonText: 'Профиль',
+      },
+    });
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.getSettings('chat-1', {
+      userId: 'admin-1',
+      username: null,
+      displayName: null,
+      chatTitle: null,
+    });
+
+    expect(result.greetingBotButtonEnabled).toBe(false);
+    expect(result.greetingBotButtonUrl).toBe('');
+    expect(prisma.chatSettings.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { chatId: 'chat-1' },
+        data: expect.objectContaining({
+          greetingBotButtonEnabled: false,
+          greetingBotButtonUrl: '',
+        }),
       }),
     );
   });
@@ -2112,7 +2247,9 @@ describe('AdminService.applyManualModerationAction', () => {
         },
         { action: 'BAN', banDurationHours: 6 },
       ),
-    ).rejects.toThrow('У бота нет права MAX add_remove_members, поэтому он не может банить участников.');
+    ).rejects.toThrow(
+      'У бота нет права MAX add_remove_members, поэтому он не может банить участников.',
+    );
 
     expect(maxClient.banMember).not.toHaveBeenCalled();
   });
@@ -2719,7 +2856,7 @@ describe('AdminService.listChannels', () => {
         entityType: 'CHANNEL',
       },
     };
-    let allowlistRows: typeof cachedChannel[] = [];
+    let allowlistRows: (typeof cachedChannel)[] = [];
     prisma.chat.upsert.mockResolvedValue({
       id: 'channel-1',
       title: 'Новости MAX',
@@ -2817,9 +2954,7 @@ describe('AdminService.listChannels', () => {
           link: 'https://max.ru/remote-channel-1',
         },
       ]),
-      getChatAdminIds: jest
-        .fn()
-        .mockRejectedValue(new Error('MAX API global rate limit exceeded')),
+      getChatAdminIds: jest.fn().mockRejectedValue(new Error('MAX API global rate limit exceeded')),
     };
 
     const chatContextCache = createChatContextCacheMock();
@@ -3040,7 +3175,7 @@ describe('AdminService.listChannels', () => {
         entityType: 'CHANNEL',
       },
     };
-    let allowlistRows: typeof cachedChannel[] = [];
+    let allowlistRows: (typeof cachedChannel)[] = [];
     prisma.chat.upsert.mockResolvedValue({
       id: 'channel-1',
       title: 'Новости MAX',
@@ -3050,9 +3185,11 @@ describe('AdminService.listChannels', () => {
     prisma.chatAdminAllowlist.findMany.mockImplementation(async (args?: { where?: unknown }) => {
       const where = args?.where as { chatId?: string } | undefined;
       if (where?.chatId) {
-        return allowlistRows.filter((row) => row.chat.id === where.chatId).map((row) => ({
-          chatId: row.chat.id,
-        }));
+        return allowlistRows
+          .filter((row) => row.chat.id === where.chatId)
+          .map((row) => ({
+            chatId: row.chat.id,
+          }));
       }
 
       return allowlistRows;

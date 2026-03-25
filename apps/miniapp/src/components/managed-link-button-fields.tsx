@@ -63,6 +63,7 @@ const DEFAULT_BUTTON_TEXT_AUTOFILL_VALUES = new Set([
   '',
   'открыть',
   'профиль',
+  'мой профиль max',
   'чат',
   'канал',
   'мой профиль',
@@ -72,29 +73,6 @@ const DEFAULT_BUTTON_TEXT_AUTOFILL_VALUES = new Set([
   'открыть чат',
   'открыть канал',
 ]);
-
-function buildProfileIdUrl(userId: string): string {
-  return `max://user/${encodeURIComponent(userId)}`;
-}
-
-function isLegacyProfileHandoffUrl(value: string): boolean {
-  const trimmed = value.trim();
-  if (!trimmed) {
-    return false;
-  }
-
-  try {
-    const parsed = new URL(trimmed);
-    const hostname = parsed.hostname.trim().toLowerCase();
-    if (hostname !== 'max.ru' && hostname !== 'www.max.ru') {
-      return false;
-    }
-
-    return (parsed.searchParams.get('start')?.trim() ?? '').startsWith('pmh-');
-  } catch {
-    return false;
-  }
-}
 
 function normalizeComparableUrl(value: string): string {
   const trimmed = value.trim();
@@ -248,17 +226,15 @@ export function ManagedLinkButtonFields({
   });
 
   const profileUsername = meQuery.data?.username?.trim() ?? '';
-  const profileUserId = meQuery.data?.userId?.trim() ?? '';
-  const profileSubtitle = profileUsername ? `@${profileUsername}` : 'Нет публичной ссылки';
+  const profileSubtitle = profileUsername ? `@${profileUsername}` : 'Публичная ссылка недоступна';
+  const profileQuickActionSubtitle = profileUsername
+    ? `@${profileUsername}`
+    : 'Нужен публичный username';
+  const profileUnavailableHint =
+    'Быстрая вставка доступна только если в профиле MAX задан публичный username. Иначе вставьте ссылку вручную.';
   const profileDisplayName =
     meQuery.data?.displayName?.trim() || (profileUsername ? `@${profileUsername}` : 'Профиль');
   const profileUrl = meQuery.data?.profileUrl?.trim() ?? '';
-  const legacyProfileIdUrl = profileUserId ? buildProfileIdUrl(profileUserId) : '';
-  const hasLegacyProfileUrl = Boolean(
-    (legacyProfileIdUrl &&
-      normalizeComparableUrl(urlValue) === normalizeComparableUrl(legacyProfileIdUrl)) ||
-      isLegacyProfileHandoffUrl(urlValue),
-  );
   const chatOptions = useMemo(
     () => buildManagedLinkOptions(chatsQuery.data, 'chat', urlValue),
     [chatsQuery.data, urlValue],
@@ -303,21 +279,6 @@ export function ManagedLinkButtonFields({
     }
   }, [sheetOpen]);
 
-  useEffect(() => {
-    if (!hasLegacyProfileUrl) {
-      return;
-    }
-
-    if (profileUrl && normalizeComparableUrl(urlValue) !== normalizeComparableUrl(profileUrl)) {
-      onUrlChange(profileUrl);
-      return;
-    }
-
-    if (!profileUrl && urlValue.trim()) {
-      onUrlChange('');
-    }
-  }, [hasLegacyProfileUrl, onUrlChange, profileUrl, urlValue]);
-
   const activeOptions = sheetTab === 'channel' ? channelOptions : chatOptions;
   const filteredOptions = useMemo(() => {
     const normalizedSearch = deferredSearchValue.trim().toLowerCase();
@@ -341,7 +302,7 @@ export function ManagedLinkButtonFields({
     if (profileUrl && normalizeComparableUrl(profileUrl) === comparableUrlValue) {
       return {
         kind: 'profile',
-        label: 'Профиль',
+        label: 'Мой профиль MAX',
         title: profileDisplayName,
         subtitle: profileSubtitle,
         tab: null,
@@ -380,7 +341,8 @@ export function ManagedLinkButtonFields({
 
   const hasEntityLinks = chatOptions.length > 0 || channelOptions.length > 0;
   const isSheetLoading =
-    (sheetTab === 'chat' && chatsQuery.isLoading) || (sheetTab === 'channel' && channelsQuery.isLoading);
+    (sheetTab === 'chat' && chatsQuery.isLoading) ||
+    (sheetTab === 'channel' && channelsQuery.isLoading);
   const sheetError = sheetTab === 'chat' ? chatsQuery.error : channelsQuery.error;
   const isProfileActive = Boolean(
     profileUrl && normalizeComparableUrl(profileUrl) === comparableUrlValue,
@@ -417,8 +379,8 @@ export function ManagedLinkButtonFields({
         onClick={() => applyPreset(profileUrl, 'Профиль')}
         disabled={disabled || !profileUrl}
       >
-        <strong>Профиль</strong>
-        <small>{profileSubtitle}</small>
+        <strong>Мой профиль MAX</strong>
+        <small>{profileQuickActionSubtitle}</small>
       </button>
 
       <button
@@ -457,10 +419,18 @@ export function ManagedLinkButtonFields({
         <div className="managed-link-picker">
           {quickActions}
 
+          {!profileUrl ? (
+            <p className="managed-link-picker__note" role="note">
+              {profileUnavailableHint}
+            </p>
+          ) : null}
+
           {selectedManagedLink ? (
             <div className="managed-link-picker__selection">
               <div className="managed-link-picker__selection-copy">
-                <span className="managed-giveaway__badge is-muted">{selectedManagedLink.label}</span>
+                <span className="managed-giveaway__badge is-muted">
+                  {selectedManagedLink.label}
+                </span>
                 <strong>{selectedManagedLink.title}</strong>
                 <small>{selectedManagedLink.subtitle}</small>
               </div>
@@ -492,7 +462,9 @@ export function ManagedLinkButtonFields({
               <small className="field__hint">{urlError}</small>
             ) : (
               <small className="field__hint">
-                Можно выбрать вариант сверху или вставить свою ссылку max.ru.
+                {profileUrl
+                  ? 'Можно выбрать вариант сверху или вставить свою ссылку max.ru.'
+                  : profileUnavailableHint}
               </small>
             )}
           </label>
@@ -611,7 +583,10 @@ export function ManagedLinkButtonFields({
                           <button
                             key={`${option.entityType}-${option.id}`}
                             type="button"
-                            className={cn('managed-giveaway-modal__option', selected && 'is-selected')}
+                            className={cn(
+                              'managed-giveaway-modal__option',
+                              selected && 'is-selected',
+                            )}
                             aria-pressed={selected}
                             onClick={() =>
                               applyPreset(

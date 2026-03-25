@@ -13,7 +13,10 @@ function isValidBotButtonUrl(value) {
   }
   try {
     const parsed = new globalThis.URL(normalized);
-    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      return false;
+    }
+    return !(parsed.searchParams.get('start')?.trim() ?? '').startsWith('pmh-');
   } catch {
     return false;
   }

@@ -224,15 +224,11 @@ function isValidBotButtonUrl(value: string): boolean {
 
   try {
     const parsed = new URL(normalized);
-    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
-      return true;
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+      return false;
     }
 
-    return (
-      parsed.protocol === 'max:' &&
-      parsed.hostname.trim().toLowerCase() === 'user' &&
-      parsed.pathname.replace(/^\/+/u, '').trim().length > 0
-    );
+    return !(parsed.searchParams.get('start')?.trim() ?? '').startsWith('pmh-');
   } catch {
     return false;
   }
@@ -1584,32 +1580,34 @@ export const addAdminRequestSchema = z.object({
   userId: z.string(),
 });
 
-export const addDomainRequestSchema = z.object({
-  domain: z.string().trim().min(3).max(2_048),
-  matchType: allowlistMatchTypeSchema.optional(),
-}).superRefine((value, ctx) => {
-  const normalized =
-    value.matchType === 'DOMAIN'
-      ? normalizeAllowlistDomain(value.domain)
-      : value.matchType === 'EXACT'
-        ? normalizeAllowlistLink(value.domain)
-        : normalizeAllowlistLink(value.domain) ?? normalizeAllowlistDomain(value.domain);
-
-  if (normalized) {
-    return;
-  }
-
-  ctx.addIssue({
-    code: z.ZodIssueCode.custom,
-    message:
+export const addDomainRequestSchema = z
+  .object({
+    domain: z.string().trim().min(3).max(2_048),
+    matchType: allowlistMatchTypeSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    const normalized =
       value.matchType === 'DOMAIN'
-        ? 'Укажите корректный домен.'
+        ? normalizeAllowlistDomain(value.domain)
         : value.matchType === 'EXACT'
-          ? 'Укажите корректную ссылку (http/https).'
-          : 'Укажите корректную ссылку или домен.',
-    path: ['domain'],
+          ? normalizeAllowlistLink(value.domain)
+          : (normalizeAllowlistLink(value.domain) ?? normalizeAllowlistDomain(value.domain));
+
+    if (normalized) {
+      return;
+    }
+
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message:
+        value.matchType === 'DOMAIN'
+          ? 'Укажите корректный домен.'
+          : value.matchType === 'EXACT'
+            ? 'Укажите корректную ссылку (http/https).'
+            : 'Укажите корректную ссылку или домен.',
+      path: ['domain'],
+    });
   });
-});
 
 export const domainAllowlistEntrySchema = z.object({
   domain: z.string().trim().min(3).max(2_048),
