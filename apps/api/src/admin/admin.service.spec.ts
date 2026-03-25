@@ -592,6 +592,55 @@ describe('AdminService getMe', () => {
 });
 
 describe('AdminService night mode settings normalization', () => {
+  it('accepts max user deep links for chat button urls', async () => {
+    const prisma = createPrismaMock();
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.updateSettings(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        greetingEnabled: true,
+        greetingBotMessageEnabled: true,
+        greetingBotButtonEnabled: true,
+        greetingBotButtonUrl: 'max://user/123456789',
+        greetingBotButtonText: 'Профиль',
+      },
+    );
+
+    expect(result.greetingBotButtonUrl).toBe('max://user/123456789');
+    expect(prisma.chat.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        update: {
+          settings: {
+            upsert: expect.objectContaining({
+              update: expect.objectContaining({
+                greetingBotButtonUrl: 'max://user/123456789',
+              }),
+            }),
+          },
+        },
+      }),
+    );
+  });
+
   it('forces night bot message toggles off when night mode is disabled on update', async () => {
     const prisma = createPrismaMock();
     const maxClient = {

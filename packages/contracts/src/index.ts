@@ -224,7 +224,17 @@ function isValidBotButtonUrl(value: string): boolean {
 
   try {
     const parsed = new URL(normalized);
-    return parsed.protocol === 'https:' || parsed.protocol === 'http:';
+    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+      return true;
+    }
+
+    if (parsed.protocol !== 'max:') {
+      return false;
+    }
+
+    const normalizedHost = parsed.hostname.trim().toLowerCase();
+    const normalizedTarget = parsed.pathname.replace(/^\/+/u, '').trim();
+    return normalizedHost === 'user' && normalizedTarget.length > 0;
   } catch {
     return false;
   }
@@ -636,7 +646,7 @@ export const chatSettingsSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['linkBotButtonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
+        message: 'Укажите корректную ссылку для кнопки (http/https или max://user/...).',
       });
     }
 
@@ -661,7 +671,7 @@ export const chatSettingsSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['greetingBotButtonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
+        message: 'Укажите корректную ссылку для кнопки (http/https или max://user/...).',
       });
     }
 
@@ -694,7 +704,7 @@ export const chatSettingsSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['duplicateBotButtonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
+        message: 'Укажите корректную ссылку для кнопки (http/https или max://user/...).',
       });
     }
 
@@ -718,7 +728,7 @@ export const chatSettingsSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['messageLimitsBotButtonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
+        message: 'Укажите корректную ссылку для кнопки (http/https или max://user/...).',
       });
     }
 
@@ -766,7 +776,7 @@ export const chatSettingsSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['textFiltersBotButtonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
+        message: 'Укажите корректную ссылку для кнопки (http/https или max://user/...).',
       });
     }
 
@@ -790,7 +800,7 @@ export const chatSettingsSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['thematicFiltersBotButtonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
+        message: 'Укажите корректную ссылку для кнопки (http/https или max://user/...).',
       });
     }
 
@@ -860,7 +870,7 @@ export const chatSettingsSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['nightModeBotButtonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
+        message: 'Укажите корректную ссылку для кнопки (http/https или max://user/...).',
       });
     }
 
@@ -980,7 +990,7 @@ export const channelSettingsSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['postSuggestionsButtonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
+        message: 'Укажите корректную ссылку для кнопки (http/https или max://user/...).',
       });
     }
 
@@ -1668,7 +1678,7 @@ export const sendBroadcastRequestSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['buttonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
+        message: 'Укажите корректную ссылку для кнопки (http/https или max://user/...).',
       });
     }
 
@@ -1756,7 +1766,7 @@ export const broadcastHandoffRequestSchema = z
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['buttonUrl'],
-        message: 'Укажите корректную ссылку для кнопки (http/https).',
+        message: 'Укажите корректную ссылку для кнопки (http/https или max://user/...).',
       });
     }
 

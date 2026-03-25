@@ -130,6 +130,21 @@ function isHttpUrl(value: string): boolean {
   }
 }
 
+function isValidManagedButtonUrl(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return (
+      parsed.protocol === 'http:' ||
+      parsed.protocol === 'https:' ||
+      (parsed.protocol === 'max:' &&
+        parsed.hostname.trim().toLowerCase() === 'user' &&
+        parsed.pathname.replace(/^\/+/u, '').trim().length > 0)
+    );
+  } catch {
+    return false;
+  }
+}
+
 function getRouteState(state: unknown): ChannelRouteState {
   if (!state || typeof state !== 'object') {
     return { chatTitle: '', chatLink: '' };
@@ -923,7 +938,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
   const broadcastContentReady = broadcastBotHasContent;
   const broadcastButtonDraftValid =
     !broadcastButtonEnabled ||
-    (isHttpUrl(normalizedBroadcastButtonUrl) &&
+    (isValidManagedButtonUrl(normalizedBroadcastButtonUrl) &&
       normalizedBroadcastButtonText.length > 0 &&
       normalizedBroadcastButtonText.length <= 32);
   const broadcastPlannerPending =
@@ -1051,8 +1066,10 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     setBroadcastButtonTextError('');
 
     if (broadcastButtonEnabled) {
-      if (!isHttpUrl(normalizedButtonUrl)) {
-        setBroadcastButtonUrlError('Укажите корректную ссылку (http/https).');
+      if (!isValidManagedButtonUrl(normalizedButtonUrl)) {
+        setBroadcastButtonUrlError(
+          'Укажите корректную ссылку (http/https или max://user/...).',
+        );
         hasError = true;
       }
       if (!normalizedButtonText || normalizedButtonText.length > 32) {

@@ -76,6 +76,10 @@ function buildProfileUrl(username: string): string {
   return `https://max.ru/${encodeURIComponent(username)}`;
 }
 
+function buildProfileIdUrl(userId: string): string {
+  return `max://user/${encodeURIComponent(userId)}`;
+}
+
 function normalizeComparableUrl(value: string): string {
   const trimmed = value.trim();
   if (!trimmed) {
@@ -84,8 +88,13 @@ function normalizeComparableUrl(value: string): string {
 
   try {
     const parsed = new URL(trimmed);
-    parsed.hash = '';
-    return `${parsed.origin}${parsed.pathname}`.replace(/\/+$/u, '').toLowerCase();
+    const normalizedPath = parsed.pathname.replace(/\/+$/u, '');
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      parsed.hash = '';
+      return `${parsed.origin}${normalizedPath}`.replace(/\/+$/u, '').toLowerCase();
+    }
+
+    return `${parsed.protocol}//${parsed.host}${normalizedPath}`.replace(/\/+$/u, '').toLowerCase();
   } catch {
     return trimmed.replace(/\/+$/u, '').toLowerCase();
   }
@@ -99,6 +108,11 @@ function formatUrlPreview(value: string): string {
 
   try {
     const parsed = new URL(trimmed);
+    if (parsed.protocol === 'max:' && parsed.hostname.toLowerCase() === 'user') {
+      const targetUserId = decodeURIComponent(parsed.pathname.replace(/^\/+/u, '').trim());
+      return targetUserId ? `MAX ID ${targetUserId}` : 'MAX профиль';
+    }
+
     const pathname = decodeURIComponent(parsed.pathname).replace(/\/+$/u, '') || '/';
     return `${parsed.hostname}${pathname}`;
   } catch {
@@ -216,8 +230,20 @@ export function ManagedLinkButtonFields({
   });
 
   const profileUsername = meQuery.data?.username?.trim() ?? '';
-  const profileDisplayName = meQuery.data?.displayName?.trim() || `@${profileUsername}`;
-  const profileUrl = profileUsername ? buildProfileUrl(profileUsername) : '';
+  const profileUserId = meQuery.data?.userId?.trim() ?? '';
+  const profileSubtitle = profileUsername
+    ? `@${profileUsername}`
+    : profileUserId
+      ? `ID ${profileUserId}`
+      : 'Профиль недоступен';
+  const profileDisplayName =
+    meQuery.data?.displayName?.trim() ||
+    (profileUsername ? `@${profileUsername}` : profileUserId ? 'Профиль по ID' : 'Профиль');
+  const profileUrl = profileUsername
+    ? buildProfileUrl(profileUsername)
+    : profileUserId
+      ? buildProfileIdUrl(profileUserId)
+      : '';
   const chatOptions = useMemo(
     () => buildManagedLinkOptions(chatsQuery.data, 'chat', urlValue),
     [chatsQuery.data, urlValue],
@@ -287,7 +313,7 @@ export function ManagedLinkButtonFields({
         kind: 'profile',
         label: 'Профиль',
         title: profileDisplayName,
-        subtitle: `@${profileUsername}`,
+        subtitle: profileSubtitle,
         tab: null,
       };
     }
@@ -316,6 +342,7 @@ export function ManagedLinkButtonFields({
   }, [
     comparableUrlValue,
     profileDisplayName,
+    profileSubtitle,
     profileUrl,
     profileUsername,
     selectedEntity,
@@ -362,7 +389,7 @@ export function ManagedLinkButtonFields({
         disabled={disabled || !profileUrl}
       >
         <strong>Профиль</strong>
-        <small>{profileUsername ? `@${profileUsername}` : 'Нет публичного имени'}</small>
+        <small>{profileSubtitle}</small>
       </button>
 
       <button
@@ -436,7 +463,7 @@ export function ManagedLinkButtonFields({
               <small className="field__hint">{urlError}</small>
             ) : (
               <small className="field__hint">
-                Можно выбрать вариант сверху или вставить свою ссылку max.ru.
+                Можно выбрать вариант сверху или вставить свою ссылку max.ru или max://user/...
               </small>
             )}
           </label>
