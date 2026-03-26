@@ -122,16 +122,14 @@ const REQUIRED_SUBSCRIPTION_RULE_CODE = 'REQUIRED_SUBSCRIPTION';
 const NIGHT_MODE_NOTICE_LOCK_TTL_MS = 2 * 60 * 1_000;
 const NIGHT_MODE_NOTICE_MARKER_TTL_SEC = 2 * 24 * 60 * 60;
 const NIGHT_MODE_SESSION_MARKER_TTL_SEC = 2 * 24 * 60 * 60;
+const NIGHT_MODE_DELIVERY_TERMINAL_TTL_SEC = 2 * 60 * 60;
 const CHAT_ADMIN_CACHE_TTL_MS = 60_000;
 const CHAT_ADMIN_CACHE_TTL_SEC = Math.ceil(CHAT_ADMIN_CACHE_TTL_MS / 1_000);
 const BACKGROUND_WORK_PAUSE_LOG_INTERVAL_MS = 60_000;
 const MODERATION_CONCURRENCY_SPLIT = resolveModerationConcurrencySplit(
   readPositiveInt(process.env.MODERATION_CONCURRENCY, 24),
 );
-const LEGACY_MODERATION_CONCURRENCY = readPositiveInt(
-  process.env.MODERATION_CONCURRENCY_LEGACY,
-  1,
-);
+const LEGACY_MODERATION_CONCURRENCY = readPositiveInt(process.env.MODERATION_CONCURRENCY_LEGACY, 1);
 const CRITICAL_MODERATION_CONCURRENCY = readPositiveInt(
   process.env.MODERATION_CONCURRENCY_CRITICAL,
   MODERATION_CONCURRENCY_SPLIT.critical,
@@ -246,6 +244,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
   private readonly ownBotUserIdVariants: Set<string>;
   private readonly nightModeNoticeMemoryLocks = new Map<string, string>();
   private readonly nightModeSessionMemoryMarkers = new Map<string, number>();
+  private readonly nightModeDeliveryTerminalMemoryMarkers = new Map<string, number>();
   private nightModeAnnounceTimer: NodeJS.Timeout | null = null;
   private nightModeAnnounceInFlight = false;
   private channelAutoPostTimer: NodeJS.Timeout | null = null;
@@ -2264,7 +2263,8 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       botSpeechStyle,
     } = params;
 
-    const noticeText = sanctionNoticeText ?? this.buildPermanentBanNotice(userLabel, botSpeechStyle);
+    const noticeText =
+      sanctionNoticeText ?? this.buildPermanentBanNotice(userLabel, botSpeechStyle);
     try {
       await this.sendBotMessageWithOptionalAutoDelete({
         chatId,
@@ -4717,9 +4717,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
     }
 
-    return rows
-      .map((row) => row.userId)
-      .filter((userId) => !exemptUserIds.has(userId));
+    return rows.map((row) => row.userId).filter((userId) => !exemptUserIds.has(userId));
   }
 
   private async kickAndLogKnownSpammerEvent(params: {
@@ -4778,8 +4776,15 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       return baseResult;
     }
 
-    const { chatId, userId, userLabel, messageId, text, deleteSpammersEnabled, exemptFromEnforcement } =
-      params;
+    const {
+      chatId,
+      userId,
+      userLabel,
+      messageId,
+      text,
+      deleteSpammersEnabled,
+      exemptFromEnforcement,
+    } = params;
 
     try {
       const uniqueChatsState = await this.redisCounter.addToSetWithTtl(
@@ -5357,6 +5362,9 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           timezone,
           'current',
         );
+        if (await this.readNightModeDeliveryTerminalMarker(settings.chatId)) {
+          continue;
+        }
 
         if (nightModeActiveNow) {
           await this.writeNightModeSessionMarker(
@@ -7397,11 +7405,25 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         params.botSpeechStyle,
       );
       const nightModeMessageOptions = this.buildNightModeClosedNoticeOptions(params);
-      const noticeMessageId = await this.sendScheduledBotMessage({
-        chatId: params.chatId,
-        text: messageText,
-        messageOptions: nightModeMessageOptions ?? undefined,
-      });
+      let noticeMessageId: string | null = null;
+      try {
+        noticeMessageId = await this.sendScheduledBotMessage({
+          chatId: params.chatId,
+          text: messageText,
+          messageOptions: nightModeMessageOptions ?? undefined,
+        });
+      } catch (error: unknown) {
+        if (
+          await this.suppressNightModeDeliveryAfterTerminalError(
+            params.chatId,
+            error,
+            'scheduled_closed_notice',
+          )
+        ) {
+          return;
+        }
+        throw error;
+      }
 
       await this.writeNightModeNoticeMarker(
         this.buildNightModeNoticeMarkerKey(
@@ -7476,6 +7498,16 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           await this.maxClient.deleteMessage(params.chatId, closedNoticeMessageId);
           closedNoticeDeleted = true;
         } catch (error: unknown) {
+          if (
+            await this.suppressNightModeDeliveryAfterTerminalError(
+              params.chatId,
+              error,
+              'scheduled_open_notice_delete_previous',
+              this.isNightModeTerminalDeleteError(error),
+            )
+          ) {
+            return;
+          }
           this.logger.warn(
             {
               chatId: params.chatId,
@@ -7497,10 +7529,23 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           params.botSpeechStyle,
         );
 
-        reopenNoticeMessageId = await this.sendScheduledBotMessage({
-          chatId: params.chatId,
-          text: messageText,
-        });
+        try {
+          reopenNoticeMessageId = await this.sendScheduledBotMessage({
+            chatId: params.chatId,
+            text: messageText,
+          });
+        } catch (error: unknown) {
+          if (
+            await this.suppressNightModeDeliveryAfterTerminalError(
+              params.chatId,
+              error,
+              'scheduled_open_notice',
+            )
+          ) {
+            return;
+          }
+          throw error;
+        }
       }
 
       await this.writeNightModeNoticeMarker(
@@ -7622,6 +7667,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return `night-notice-sent:v1:${ruleCode}:${chatId}:${nightSessionKey}`;
   }
 
+  private buildNightModeDeliveryTerminalKey(chatId: string): string {
+    return `night-notice-terminal:v1:${chatId}`;
+  }
+
   private buildNightModeSessionMarkerKey(chatId: string, nightSessionKey: string): string {
     return `night-session-seen:v1:${chatId}:${nightSessionKey}`;
   }
@@ -7673,6 +7722,66 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           error: error instanceof Error ? error.message : 'Unknown error',
         },
         'Failed to write night mode session marker to redis',
+      );
+    }
+  }
+
+  private async readNightModeDeliveryTerminalMarker(chatId: string): Promise<boolean> {
+    const key = this.buildNightModeDeliveryTerminalKey(chatId);
+    const getString = (this.redisCounter as Partial<RedisCounterService> | undefined)?.getString;
+    if (getString && this.redisCounter) {
+      try {
+        if ((await getString.call(this.redisCounter, key)) === '1') {
+          return true;
+        }
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            key,
+            error: error instanceof Error ? error.message : 'Unknown error',
+          },
+          'Failed to read night mode delivery suppression marker from redis',
+        );
+      }
+    }
+
+    const expiresAt = this.nightModeDeliveryTerminalMemoryMarkers.get(key);
+    if (!expiresAt) {
+      return false;
+    }
+    if (expiresAt <= Date.now()) {
+      this.nightModeDeliveryTerminalMemoryMarkers.delete(key);
+      return false;
+    }
+
+    return true;
+  }
+
+  private async writeNightModeDeliveryTerminalMarker(chatId: string): Promise<void> {
+    const key = this.buildNightModeDeliveryTerminalKey(chatId);
+    const expiresAt = Date.now() + NIGHT_MODE_DELIVERY_TERMINAL_TTL_SEC * 1_000;
+    this.nightModeDeliveryTerminalMemoryMarkers.set(key, expiresAt);
+
+    const setStringWithTtl = (this.redisCounter as Partial<RedisCounterService> | undefined)
+      ?.setStringWithTtl;
+    if (!setStringWithTtl || !this.redisCounter) {
+      return;
+    }
+
+    try {
+      await setStringWithTtl.call(
+        this.redisCounter,
+        key,
+        '1',
+        NIGHT_MODE_DELIVERY_TERMINAL_TTL_SEC,
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          key,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+        'Failed to write night mode delivery suppression marker to redis',
       );
     }
   }
@@ -7788,6 +7897,29 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         'Failed to release redis night mode notice lock',
       );
     }
+  }
+
+  private async suppressNightModeDeliveryAfterTerminalError(
+    chatId: string,
+    error: unknown,
+    operation: string,
+    isTerminal = this.isNightModeTerminalDeliveryError(error),
+  ): Promise<boolean> {
+    if (!isTerminal) {
+      return false;
+    }
+
+    await this.writeNightModeDeliveryTerminalMarker(chatId);
+    this.logger.warn(
+      {
+        chatId,
+        operation,
+        status: this.extractStatusCode(error),
+        error: error instanceof Error ? error.message : 'Unknown error',
+      },
+      'Suppressing repeated scheduled night mode delivery after terminal MAX API error',
+    );
+    return true;
   }
 
   private buildNightModeClosedNoticeOptions(params: {
@@ -8383,16 +8515,21 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
     try {
       if (linkType === 'forward') {
-        const sent = await this.maxClient.sendMessageCopyWithInlineKeyboard(chatId, messageId, text, {
-          buttons,
-          debugContext: {
-            screen: 'channel-auto-post',
-            action:
-              source === 'poll'
-                ? 'scan-replace-forward-with-bot-copy'
-                : 'replace-forward-with-bot-copy',
+        const sent = await this.maxClient.sendMessageCopyWithInlineKeyboard(
+          chatId,
+          messageId,
+          text,
+          {
+            buttons,
+            debugContext: {
+              screen: 'channel-auto-post',
+              action:
+                source === 'poll'
+                  ? 'scan-replace-forward-with-bot-copy'
+                  : 'replace-forward-with-bot-copy',
+            },
           },
-        });
+        );
         replacementMessageId = sent.messageId;
         deliveryMode = 'replace_with_bot_message';
 
@@ -9330,17 +9467,64 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     return typeof maybeStatus === 'number' ? maybeStatus : null;
   }
 
+  private extractMaxErrorCode(error: unknown): string | null {
+    const maybeCode = (error as { response?: { data?: { code?: unknown } } })?.response?.data?.code;
+    return typeof maybeCode === 'string' && maybeCode.trim().length > 0
+      ? maybeCode.trim().toLowerCase()
+      : null;
+  }
+
+  private extractMaxErrorMessage(error: unknown): string {
+    const responseMessage = (error as { response?: { data?: { message?: unknown } } })?.response
+      ?.data?.message;
+    if (typeof responseMessage === 'string' && responseMessage.trim().length > 0) {
+      return responseMessage.trim().toLowerCase();
+    }
+
+    return error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+  }
+
+  private isNightModeTerminalDeliveryError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    if (status === 403 || status === 404) {
+      return true;
+    }
+
+    const code = this.extractMaxErrorCode(error);
+    if (code === 'chat.denied' || code === 'chat.not.found' || code === 'message.not.found') {
+      return true;
+    }
+
+    const message = this.extractMaxErrorMessage(error);
+    return (
+      message.includes('bot is not a chat member') ||
+      message.includes('not accessible') ||
+      message.includes('chat not found')
+    );
+  }
+
+  private isNightModeTerminalDeleteError(error: unknown): boolean {
+    const status = this.extractStatusCode(error);
+    if (status === 403) {
+      return true;
+    }
+
+    const code = this.extractMaxErrorCode(error);
+    if (code === 'chat.denied' || code === 'chat.not.found') {
+      return true;
+    }
+
+    const message = this.extractMaxErrorMessage(error);
+    return message.includes('bot is not a chat member') || message.includes('not accessible');
+  }
+
   private isMaxApiThrottleError(error: unknown): boolean {
     const status = this.extractStatusCode(error);
     if (status === 429) {
       return true;
     }
 
-    if (!(error instanceof Error)) {
-      return false;
-    }
-
-    const message = error.message.toLowerCase();
+    const message = this.extractMaxErrorMessage(error);
     return message.includes('rate limit exceeded') || message.includes('circuit breaker');
   }
 

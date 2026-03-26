@@ -34,6 +34,8 @@ const envSchema = z.object({
   MAX_API_GLOBAL_RPS_INTERACTIVE: z.coerce.number().int().positive().optional(),
   MAX_API_GLOBAL_RPS_BACKGROUND: z.coerce.number().int().positive().optional(),
   MAX_API_CHAT_RPS: z.coerce.number().int().positive().default(10),
+  MAX_API_LIST_BOT_CHATS_CACHE_SEC: z.coerce.number().int().min(0).default(15),
+  MAX_API_CHAT_SNAPSHOT_CACHE_SEC: z.coerce.number().int().min(0).default(10),
   MAX_API_CIRCUIT_FAILURE_THRESHOLD: z.coerce.number().int().positive().default(30),
   MAX_API_CIRCUIT_WINDOW_SEC: z.coerce.number().int().positive().default(30),
   MAX_API_CIRCUIT_OPEN_SEC: z.coerce.number().int().positive().default(20),

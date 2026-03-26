@@ -66,10 +66,7 @@ function majorExplanation(
   return `Товарищ ${boldUser(name)}, сообщение изъял 👮‍♂️ Причина: ${reason}. Поправьте по форме и разъедемся красиво.`;
 }
 
-function duplicateExplanation(
-  name: string,
-  sanction: string,
-): string {
+function duplicateExplanation(name: string, sanction: string): string {
   return `Товарищ ${boldUser(name)}, у нас тут не ксерокс 👮‍♂️ Повтор зафиксирован. ${sanction}`;
 }
 
@@ -111,6 +108,18 @@ function nightModeNotice(window: string, timezone: string): string {
 
 function nightModeOpenNotice(): string {
   return 'Доброе утро, граждане ☀️ Группа снова открыта. Возвращаемся в эфир без нарушений.';
+}
+
+function createMaxApiError(status: number, message: string, code?: string): Error {
+  return Object.assign(new Error(message), {
+    response: {
+      status,
+      data: {
+        ...(code ? { code } : {}),
+        message,
+      },
+    },
+  });
 }
 
 function createSettings(overrides: Record<string, unknown> = {}) {
@@ -4233,16 +4242,13 @@ describe('ModerationService', () => {
       },
     };
 
-    const service = new ModerationService(
-      prisma as never,
-      {} as never,
-      {} as never,
-      {} as never,
-    );
+    const service = new ModerationService(prisma as never, {} as never, {} as never, {} as never);
 
-    const result = await (service as unknown as {
-      countRecentLinkViolations: (chatId: string, userId: string) => Promise<number>;
-    }).countRecentLinkViolations('chat-1', 'user-1');
+    const result = await (
+      service as unknown as {
+        countRecentLinkViolations: (chatId: string, userId: string) => Promise<number>;
+      }
+    ).countRecentLinkViolations('chat-1', 'user-1');
 
     expect(result).toBe(1);
     expect(prisma.violation.count).toHaveBeenCalledWith({
@@ -5079,6 +5085,70 @@ describe('ModerationService', () => {
     });
   });
 
+  it('suppresses repeated scheduled night closed notice after terminal MAX error', async () => {
+    const prisma = {
+      chatSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'chat-1',
+            botSpeechStyle: null,
+            nightModeStartTimeMinutes: 10 * 60,
+            nightModeEndTimeMinutes: 11 * 60,
+            nightModeTimezone: 'Europe/Moscow',
+            nightModeBotMessageEnabled: true,
+            nightModeBotMessageText: '',
+            nightModeOpenMessageEnabled: true,
+            nightModeOpenMessageText: '',
+            nightModeBotButtonEnabled: false,
+            nightModeBotButtonUrl: '',
+            nightModeBotButtonText: 'Открыть',
+          },
+        ]),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const maxClient = {
+      sendMessageImmediateWithId: jest
+        .fn()
+        .mockRejectedValue(
+          createMaxApiError(404, 'Request failed with status code 404', 'chat.not.found'),
+        ),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+    (
+      service as unknown as {
+        getCurrentMinutesInTimeZone: (timeZone: string) => number | null;
+      }
+    ).getCurrentMinutesInTimeZone = jest.fn(() => 10 * 60 + 15);
+
+    await (
+      service as unknown as { processNightModeAnnouncements: () => Promise<void> }
+    ).processNightModeAnnouncements();
+    await (
+      service as unknown as { processNightModeAnnouncements: () => Promise<void> }
+    ).processNightModeAnnouncements();
+
+    expect(maxClient.sendMessageImmediateWithId).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
+  });
+
   it('sends scheduled night closed notice even when startup missed the exact start minute', async () => {
     const nowParts = new Intl.DateTimeFormat('en-GB', {
       timeZone: 'Europe/Moscow',
@@ -5365,6 +5435,85 @@ describe('ModerationService', () => {
         }),
       }),
     });
+  });
+
+  it('suppresses repeated scheduled night open notice after terminal MAX error', async () => {
+    const prisma = {
+      chatSettings: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            chatId: 'chat-1',
+            botSpeechStyle: null,
+            nightModeStartTimeMinutes: 10 * 60,
+            nightModeEndTimeMinutes: 11 * 60,
+            nightModeTimezone: 'Europe/Moscow',
+            nightModeBotMessageEnabled: true,
+            nightModeBotMessageText: '',
+            nightModeOpenMessageEnabled: true,
+            nightModeOpenMessageText: '',
+            nightModeBotButtonEnabled: false,
+            nightModeBotButtonUrl: '',
+            nightModeBotButtonText: 'Открыть',
+          },
+        ]),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockImplementation((query: { where?: Record<string, unknown> }) => {
+          if (query.where?.ruleCode === 'NIGHT_MODE_OPEN_NOTICE') {
+            return Promise.resolve(null);
+          }
+
+          if (query.where?.ruleCode === 'NIGHT_MODE_NOTICE') {
+            return Promise.resolve({
+              metadata: {
+                noticeMessageId: 'msg-night-close-1',
+              },
+            });
+          }
+
+          return Promise.resolve(null);
+        }),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const maxClient = {
+      sendMessageImmediateWithResolvedLink: jest
+        .fn()
+        .mockRejectedValue(
+          createMaxApiError(403, 'Request failed with status code 403', 'chat.denied'),
+        ),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      { detect: jest.fn() } as never,
+      { resolveAction: jest.fn() } as never,
+      maxClient as never,
+    );
+    (
+      service as unknown as {
+        getCurrentMinutesInTimeZone: (timeZone: string) => number | null;
+      }
+    ).getCurrentMinutesInTimeZone = jest.fn(() => 11 * 60 + 5);
+
+    await (
+      service as unknown as { processNightModeAnnouncements: () => Promise<void> }
+    ).processNightModeAnnouncements();
+    await (
+      service as unknown as { processNightModeAnnouncements: () => Promise<void> }
+    ).processNightModeAnnouncements();
+
+    expect(maxClient.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledTimes(1);
+    expect(prisma.moderationEvent.create).not.toHaveBeenCalled();
   });
 
   it('sends scheduled night open notice after missing the exact end minute when session was observed', async () => {
@@ -5736,7 +5885,10 @@ describe('ModerationService', () => {
         findFirst: jest
           .fn()
           .mockImplementation(
-            async (query: { where?: Record<string, unknown>; select?: Record<string, unknown> }) => {
+            async (query: {
+              where?: Record<string, unknown>;
+              select?: Record<string, unknown>;
+            }) => {
               await sleep(25);
               if (query.where?.ruleCode === 'NIGHT_MODE_OPEN_NOTICE') {
                 return openNoticeCreated ? { id: 'evt-night-open-1' } : null;

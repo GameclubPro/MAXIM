@@ -216,10 +216,14 @@ export type MaxActionDispatchOptions = {
 
 type MaxApiRequestOptions = {
   trafficClass?: MaxApiTrafficClass;
+  bypassCache?: boolean;
 };
 
 const MAX_ACTION_DELAY_MS = 14 * 24 * 60 * 60 * 1000;
 const MAX_INLINE_KEYBOARD_BUTTONS = 210;
+const DEFAULT_MAX_API_GLOBAL_RPS = 30;
+const DEFAULT_MAX_API_LIST_BOT_CHATS_CACHE_SEC = 15;
+const DEFAULT_MAX_API_CHAT_SNAPSHOT_CACHE_SEC = 10;
 
 @Injectable()
 export class MaxClientService implements OnModuleDestroy {
@@ -232,6 +236,8 @@ export class MaxClientService implements OnModuleDestroy {
   private readonly interactiveGlobalRpsLimit: number;
   private readonly backgroundGlobalRpsLimit: number;
   private readonly chatRpsLimit: number;
+  private readonly listBotChatsCacheTtlSec: number;
+  private readonly chatSnapshotCacheTtlSec: number;
   private readonly circuitFailureThreshold: number;
   private readonly circuitWindowSec: number;
   private readonly circuitOpenSec: number;
@@ -254,26 +260,42 @@ export class MaxClientService implements OnModuleDestroy {
     this.baseUrl = configService.getOrThrow<string>('MAX_API_BASE_URL');
     this.token = configService.getOrThrow<string>('MAX_BOT_TOKEN');
     this.dispatchEnabled = configService.get<boolean>('MAX_ACTION_DISPATCH_ENABLED', true);
-    this.globalRpsLimit = configService.get<number>('MAX_API_GLOBAL_RPS', 120);
-    this.criticalGlobalRpsLimit = configService.get<number>(
-      'MAX_API_GLOBAL_RPS_CRITICAL',
+    this.globalRpsLimit = this.readConfigInt(
+      configService.get('MAX_API_GLOBAL_RPS'),
+      DEFAULT_MAX_API_GLOBAL_RPS,
+    );
+    this.criticalGlobalRpsLimit = this.readConfigInt(
+      configService.get('MAX_API_GLOBAL_RPS_CRITICAL'),
       Math.max(1, Math.floor(this.globalRpsLimit * 0.45)),
     );
-    this.interactiveGlobalRpsLimit = configService.get<number>(
-      'MAX_API_GLOBAL_RPS_INTERACTIVE',
+    this.interactiveGlobalRpsLimit = this.readConfigInt(
+      configService.get('MAX_API_GLOBAL_RPS_INTERACTIVE'),
       Math.max(1, Math.floor(this.globalRpsLimit * 0.35)),
     );
-    this.backgroundGlobalRpsLimit = configService.get<number>(
-      'MAX_API_GLOBAL_RPS_BACKGROUND',
-      Math.max(1, this.globalRpsLimit - this.criticalGlobalRpsLimit - this.interactiveGlobalRpsLimit),
+    this.backgroundGlobalRpsLimit = this.readConfigInt(
+      configService.get('MAX_API_GLOBAL_RPS_BACKGROUND'),
+      Math.max(
+        1,
+        this.globalRpsLimit - this.criticalGlobalRpsLimit - this.interactiveGlobalRpsLimit,
+      ),
     );
-    this.chatRpsLimit = configService.get<number>('MAX_API_CHAT_RPS', 10);
-    this.circuitFailureThreshold = configService.get<number>(
-      'MAX_API_CIRCUIT_FAILURE_THRESHOLD',
+    this.chatRpsLimit = this.readConfigInt(configService.get('MAX_API_CHAT_RPS'), 10);
+    this.listBotChatsCacheTtlSec = this.readConfigInt(
+      configService.get('MAX_API_LIST_BOT_CHATS_CACHE_SEC'),
+      DEFAULT_MAX_API_LIST_BOT_CHATS_CACHE_SEC,
+      0,
+    );
+    this.chatSnapshotCacheTtlSec = this.readConfigInt(
+      configService.get('MAX_API_CHAT_SNAPSHOT_CACHE_SEC'),
+      DEFAULT_MAX_API_CHAT_SNAPSHOT_CACHE_SEC,
+      0,
+    );
+    this.circuitFailureThreshold = this.readConfigInt(
+      configService.get('MAX_API_CIRCUIT_FAILURE_THRESHOLD'),
       30,
     );
-    this.circuitWindowSec = configService.get<number>('MAX_API_CIRCUIT_WINDOW_SEC', 30);
-    this.circuitOpenSec = configService.get<number>('MAX_API_CIRCUIT_OPEN_SEC', 20);
+    this.circuitWindowSec = this.readConfigInt(configService.get('MAX_API_CIRCUIT_WINDOW_SEC'), 30);
+    this.circuitOpenSec = this.readConfigInt(configService.get('MAX_API_CIRCUIT_OPEN_SEC'), 20);
     this.webhookUrl = this.buildWebhookUrl(
       configService.get<string>('APP_BASE_URL'),
       configService.get<string>('MAX_BOT_ID'),
@@ -409,12 +431,11 @@ export class MaxClientService implements OnModuleDestroy {
     text: string,
     options?: MaxSendMessageOptions,
   ): Promise<MaxPublishedMessage> {
-    const { messageId, url: directUrl, chatId: resolvedChatId } =
-      await this.sendMessageImmediateWithId(
-      chatId,
-      text,
-      options,
-      );
+    const {
+      messageId,
+      url: directUrl,
+      chatId: resolvedChatId,
+    } = await this.sendMessageImmediateWithId(chatId, text, options);
     if (directUrl) {
       return {
         messageId,
@@ -1054,16 +1075,27 @@ export class MaxClientService implements OnModuleDestroy {
     chatId: string,
     options: MaxApiRequestOptions = {},
   ): Promise<MaxChatSnapshot> {
+    const normalizedChatId = chatId.trim();
+    if (!options.bypassCache) {
+      const cachedSnapshot = await this.readJsonCache(
+        this.buildChatSnapshotCacheKey(normalizedChatId),
+        this.isMaxChatSnapshot.bind(this),
+      );
+      if (cachedSnapshot) {
+        return { ...cachedSnapshot };
+      }
+    }
+
     const data = await this.executeChatRequest(
-      chatId,
-      async () => this.request<Record<string, unknown>>('get', `/chats/${chatId}`),
+      normalizedChatId,
+      async () => this.request<Record<string, unknown>>('get', `/chats/${normalizedChatId}`),
       options.trafficClass,
     );
     const link = this.parseChatLink(data);
     const isPublic = this.readBoolean(data.is_public ?? data.isPublic ?? data.public);
 
-    return {
-      chatId,
+    const snapshot: MaxChatSnapshot = {
+      chatId: normalizedChatId,
       title: this.readTrimmedString(data.title ?? data.name),
       participantsCount: this.readNullableInteger(
         data.participants_count ??
@@ -1079,12 +1111,19 @@ export class MaxClientService implements OnModuleDestroy {
       ),
       entityType: this.parseChatEntityType(data),
     };
+
+    if (!options.bypassCache) {
+      await this.writeJsonCache(
+        this.buildChatSnapshotCacheKey(normalizedChatId),
+        snapshot,
+        this.chatSnapshotCacheTtlSec,
+      );
+    }
+
+    return snapshot;
   }
 
-  async getChatAdminIds(
-    chatId: string,
-    options: MaxApiRequestOptions = {},
-  ): Promise<string[]> {
+  async getChatAdminIds(chatId: string, options: MaxApiRequestOptions = {}): Promise<string[]> {
     const data = await this.executeChatRequest(
       chatId,
       async () => this.request<Record<string, unknown>>('get', `/chats/${chatId}/members/admins`),
@@ -1266,6 +1305,16 @@ export class MaxClientService implements OnModuleDestroy {
   }
 
   async listBotChats(options: MaxApiRequestOptions = {}): Promise<MaxBotChat[]> {
+    if (!options.bypassCache) {
+      const cachedChats = await this.readJsonCache(
+        this.buildListBotChatsCacheKey(),
+        this.isMaxBotChatList.bind(this),
+      );
+      if (cachedChats) {
+        return cachedChats.map((chat) => ({ ...chat }));
+      }
+    }
+
     const results: MaxBotChat[] = [];
     const seenMarkers = new Set<string>();
     let marker: string | number | null = null;
@@ -1329,7 +1378,90 @@ export class MaxClientService implements OnModuleDestroy {
       marker = nextMarker;
     }
 
+    if (!options.bypassCache) {
+      await this.writeJsonCache(
+        this.buildListBotChatsCacheKey(),
+        results,
+        this.listBotChatsCacheTtlSec,
+      );
+    }
+
     return results;
+  }
+
+  private buildListBotChatsCacheKey(): string {
+    return 'maxapi:cache:v1:list-bot-chats';
+  }
+
+  private buildChatSnapshotCacheKey(chatId: string): string {
+    return `maxapi:cache:v1:chat-snapshot:${chatId}`;
+  }
+
+  private async readJsonCache<T>(
+    key: string,
+    guard: (value: unknown) => value is T,
+  ): Promise<T | null> {
+    const rawValue = await this.limiterRedis.get(key);
+    if (!rawValue) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(rawValue) as unknown;
+      if (guard(parsed)) {
+        return parsed;
+      }
+    } catch {
+      // Ignore malformed cache entries and refresh them from MAX.
+    }
+
+    await this.limiterRedis.del(key);
+    return null;
+  }
+
+  private async writeJsonCache(key: string, value: unknown, ttlSec: number): Promise<void> {
+    if (!Number.isFinite(ttlSec) || ttlSec <= 0) {
+      return;
+    }
+
+    await this.limiterRedis.set(key, JSON.stringify(value), 'EX', Math.trunc(ttlSec));
+  }
+
+  private isMaxBotChatList(value: unknown): value is MaxBotChat[] {
+    return Array.isArray(value) && value.every((item) => this.isMaxBotChat(item));
+  }
+
+  private isMaxBotChat(value: unknown): value is MaxBotChat {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return false;
+    }
+
+    const row = value as Record<string, unknown>;
+    return (
+      typeof row.chatId === 'string' &&
+      (typeof row.title === 'string' || row.title === null) &&
+      (typeof row.lastEventTime === 'number' || row.lastEventTime === null) &&
+      (row.entityType === 'chat' || row.entityType === 'channel') &&
+      (typeof row.link === 'string' || row.link === null)
+    );
+  }
+
+  private isMaxChatSnapshot(value: unknown): value is MaxChatSnapshot {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return false;
+    }
+
+    const row = value as Record<string, unknown>;
+    return (
+      typeof row.chatId === 'string' &&
+      (typeof row.title === 'string' || row.title === null) &&
+      (typeof row.participantsCount === 'number' || row.participantsCount === null) &&
+      (typeof row.status === 'string' || row.status === null) &&
+      (typeof row.isPublic === 'boolean' || row.isPublic === null) &&
+      (typeof row.link === 'string' || row.link === null) &&
+      (typeof row.lastEventAt === 'string' || row.lastEventAt === null) &&
+      (row.entityType === 'chat' || row.entityType === 'channel')
+    );
   }
 
   private async getMessageById(messageId: string): Promise<Record<string, unknown> | null> {
@@ -2040,7 +2172,7 @@ export class MaxClientService implements OnModuleDestroy {
       typeof fallbackText === 'string' &&
       fallbackText.length > 0 &&
       this.readLowerString(link?.type) === 'forward';
-    const text = preferFallbackText ? fallbackText : sourceText ?? fallbackText;
+    const text = preferFallbackText ? fallbackText : (sourceText ?? fallbackText);
 
     if (fallbackTextFormat && typeof fallbackText === 'string') {
       return {
@@ -2661,6 +2793,20 @@ export class MaxClientService implements OnModuleDestroy {
     }
 
     return null;
+  }
+
+  private readConfigInt(value: unknown, fallback: number, min = 1): number {
+    const numericValue =
+      typeof value === 'number'
+        ? value
+        : typeof value === 'string' && value.trim().length > 0
+          ? Number(value)
+          : Number.NaN;
+    if (Number.isFinite(numericValue) && numericValue >= min) {
+      return Math.trunc(numericValue);
+    }
+
+    return fallback;
   }
 
   private async enforceRateLimit(chatId: string | null, trafficClass: MaxApiTrafficClass) {

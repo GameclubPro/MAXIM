@@ -1,16 +1,45 @@
 import { MaxClientService } from './max-client.service';
 import { of } from 'rxjs';
+import Redis from 'ioredis';
 
-jest.mock('ioredis', () => ({
-  __esModule: true,
-  default: jest.fn().mockImplementation(() => ({
-    incr: jest.fn().mockResolvedValue(1),
-    expire: jest.fn().mockResolvedValue(1),
-    quit: jest.fn().mockResolvedValue(undefined),
-  })),
-}));
+jest.mock('ioredis', () => {
+  const store = new Map<string, string>();
+  const RedisMock = Object.assign(
+    jest.fn().mockImplementation(() => ({
+      incr: jest.fn().mockResolvedValue(1),
+      expire: jest.fn().mockResolvedValue(1),
+      get: jest.fn().mockImplementation(async (key: string) => store.get(key) ?? null),
+      set: jest.fn().mockImplementation(async (key: string, value: string) => {
+        store.set(key, value);
+        return 'OK';
+      }),
+      del: jest.fn().mockImplementation(async (...keys: string[]) => {
+        let deleted = 0;
+        for (const key of keys) {
+          if (store.delete(key)) {
+            deleted += 1;
+          }
+        }
+        return deleted;
+      }),
+      quit: jest.fn().mockResolvedValue(undefined),
+    })),
+    {
+      __store: store,
+    },
+  );
+
+  return {
+    __esModule: true,
+    default: RedisMock,
+  };
+});
 
 describe('MaxClientService inline keyboard guardrails', () => {
+  beforeEach(() => {
+    (Redis as unknown as { __store: Map<string, string> }).__store.clear();
+  });
+
   function createService(
     httpService: { request?: jest.Mock } = {},
     configOverrides: Partial<Record<string, string>> = {},
@@ -640,17 +669,12 @@ describe('MaxClientService inline keyboard guardrails', () => {
     };
     const service = createService(httpService);
 
-    await service.editMessageInlineKeyboard(
-      'chat-1',
-      'mid-edit-forward-1',
-      'Пересланный текст',
-      {
-        button: {
-          text: 'Открыть',
-          url: 'https://maxim.play-team.ru/app/',
-        },
+    await service.editMessageInlineKeyboard('chat-1', 'mid-edit-forward-1', 'Пересланный текст', {
+      button: {
+        text: 'Открыть',
+        url: 'https://maxim.play-team.ru/app/',
       },
-    );
+    });
 
     expect(httpService.request).toHaveBeenNthCalledWith(
       2,
@@ -698,17 +722,12 @@ describe('MaxClientService inline keyboard guardrails', () => {
     };
     const service = createService(httpService);
 
-    await service.sendMessageReplyWithInlineKeyboard(
-      'chat-1',
-      'mid-source-1',
-      'Действия к посту',
-      {
-        button: {
-          text: 'Открыть',
-          url: 'https://maxim.play-team.ru/app/',
-        },
+    await service.sendMessageReplyWithInlineKeyboard('chat-1', 'mid-source-1', 'Действия к посту', {
+      button: {
+        text: 'Открыть',
+        url: 'https://maxim.play-team.ru/app/',
       },
-    );
+    });
 
     expect(httpService.request).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1449,9 +1468,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
       MAX_API_GLOBAL_RPS: '30',
     });
 
-    ((service as unknown as { limiterRedis: { incr: jest.Mock } }).limiterRedis.incr).mockResolvedValueOnce(
-      31,
-    );
+    (
+      service as unknown as { limiterRedis: { incr: jest.Mock } }
+    ).limiterRedis.incr.mockResolvedValueOnce(31);
 
     await expect(service.listMessages('chat-1', 10)).rejects.toThrow(
       'MAX API global rate limit exceeded',
@@ -1479,6 +1498,95 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('reuses Redis cache for bot chat discovery across service instances', async () => {
+    const firstHttpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            chats: [
+              {
+                chat_id: 'chat-1',
+                title: 'Chat 1',
+                last_event_time: 1710000000000,
+                type: 'chat',
+                link: 'https://max.ru/chat-1',
+              },
+            ],
+            marker: null,
+          },
+        }),
+      ),
+    };
+    const firstService = createService(firstHttpService, {
+      MAX_API_LIST_BOT_CHATS_CACHE_SEC: '15',
+    });
+
+    const firstResult = await firstService.listBotChats();
+
+    const secondHttpService = {
+      request: jest.fn(),
+    };
+    const secondService = createService(secondHttpService, {
+      MAX_API_LIST_BOT_CHATS_CACHE_SEC: '15',
+    });
+
+    const secondResult = await secondService.listBotChats();
+
+    expect(firstResult).toEqual(secondResult);
+    expect(firstHttpService.request).toHaveBeenCalledTimes(1);
+    expect(secondHttpService.request).not.toHaveBeenCalled();
+
+    await firstService.onModuleDestroy();
+    await secondService.onModuleDestroy();
+  });
+
+  it('bypasses cached chat snapshot when explicitly requested', async () => {
+    const httpService = {
+      request: jest
+        .fn()
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              title: 'Chat 1',
+              participants_count: 10,
+              status: 'active',
+              is_public: false,
+              last_event_time: '2026-03-26T10:00:00.000Z',
+            },
+          }),
+        )
+        .mockReturnValueOnce(
+          of({
+            status: 200,
+            data: {
+              title: 'Chat 1 Updated',
+              participants_count: 12,
+              status: 'active',
+              is_public: true,
+              link: 'https://max.ru/chat-1',
+              last_event_time: '2026-03-26T10:00:05.000Z',
+            },
+          }),
+        ),
+    };
+    const service = createService(httpService, {
+      MAX_API_CHAT_SNAPSHOT_CACHE_SEC: '10',
+    });
+
+    const firstSnapshot = await service.getChatSnapshot('chat-1');
+    const cachedSnapshot = await service.getChatSnapshot('chat-1');
+    const freshSnapshot = await service.getChatSnapshot('chat-1', { bypassCache: true });
+
+    expect(firstSnapshot.title).toBe('Chat 1');
+    expect(cachedSnapshot.title).toBe('Chat 1');
+    expect(freshSnapshot.title).toBe('Chat 1 Updated');
+    expect(httpService.request).toHaveBeenCalledTimes(2);
+
+    await service.onModuleDestroy();
+  });
+
   it('applies background MAX API rate limit to background snapshot reads', async () => {
     const httpService = {
       request: jest.fn(),
@@ -1491,9 +1599,9 @@ describe('MaxClientService inline keyboard guardrails', () => {
     const limiterRedis = (service as unknown as { limiterRedis: { incr: jest.Mock } }).limiterRedis;
     limiterRedis.incr.mockResolvedValueOnce(1).mockResolvedValueOnce(3);
 
-    await expect(
-      service.getChatSnapshot('chat-1', { trafficClass: 'background' }),
-    ).rejects.toThrow('MAX API background rate limit exceeded');
+    await expect(service.getChatSnapshot('chat-1', { trafficClass: 'background' })).rejects.toThrow(
+      'MAX API background rate limit exceeded',
+    );
     expect(httpService.request).not.toHaveBeenCalled();
 
     await service.onModuleDestroy();
