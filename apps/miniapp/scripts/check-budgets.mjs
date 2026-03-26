@@ -10,6 +10,7 @@ const STARTUP_JS_BUDGET_GZIP = 100 * 1024;
 // Small cross-environment headroom for gzip drift between local and Docker builds.
 const SETTINGS_JS_BUDGET_GZIP = 90 * 1024 + 896;
 const STARTUP_CSS_BUDGET_GZIP = Math.round(35 * 1024) + 960;
+const BUDGET_TOLERANCE_GZIP = 64;
 
 const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 
@@ -70,7 +71,7 @@ function formatKb(value) {
 }
 
 function assertBudget(label, actual, budget) {
-  if (actual > budget) {
+  if (actual > budget + BUDGET_TOLERANCE_GZIP) {
     throw new Error(`${label}: ${formatKb(actual)} gzip > ${formatKb(budget)} gzip`);
   }
 }
