@@ -696,7 +696,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         createdAt,
         decision: detection.duplicateDecision,
         userLabel,
-        muteDurationHours: settings.muteDurationHours,
+        muteDurationHours: settings.duplicateMuteDurationHours,
         botSpeechStyle: settings.botSpeechStyle,
         duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
         duplicateBotMessageText: settings.duplicateBotMessageText,
@@ -888,7 +888,10 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       });
 
     let action: SanctionAction = SanctionAction.NONE;
-    const actionBanDurationHours = settings.muteDurationHours;
+    const actionMuteDurationHours = this.resolveAutomaticMuteDurationHours(
+      topViolation.ruleCode,
+      settings,
+    );
 
     if (topViolation.ruleCode === 'LINK_BLOCKED') {
       action = this.resolveLinkEscalationAction(linkViolationCount24h ?? 1, {
@@ -1154,7 +1157,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         action,
         userLabel,
         messageId,
-        muteDurationHours: actionBanDurationHours,
+        muteDurationHours: actionMuteDurationHours,
         deleteBotMessagesEnabled: settings.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: settings.deleteBotMessagesDelayMinutes,
         botMessageOptions:
@@ -1170,7 +1173,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             ? this.buildMessageLimitsBanExplanation(
                 userLabel,
                 topViolation.ruleCode,
-                actionBanDurationHours,
+                actionMuteDurationHours,
                 messageLimitsBlockedWord,
                 settings.botSpeechStyle,
               )
@@ -1178,7 +1181,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
               ? this.buildTopicFilterBanExplanation(
                   userLabel,
                   this.extractTopicFilterRequiredCodeword(topViolation.metadata),
-                  actionBanDurationHours,
+                  actionMuteDurationHours,
                   settings.botSpeechStyle,
                 )
               : undefined,
@@ -2478,6 +2481,34 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       banEnabled: settings.textFiltersBanEnabled,
       muteEnabled: settings.textFiltersMuteEnabled,
     };
+  }
+
+  private resolveAutomaticMuteDurationHours(ruleCode: string, settings: ChatSettings): number {
+    if (ruleCode === 'LINK_BLOCKED') {
+      return settings.linkMuteDurationHours;
+    }
+
+    if (ruleCode === REQUIRED_SUBSCRIPTION_RULE_CODE) {
+      return settings.requiredSubscriptionMuteDurationHours;
+    }
+
+    if (ruleCode === 'PROFANITY') {
+      return settings.profanityMuteDurationHours;
+    }
+
+    if (this.isTextFilterViolation(ruleCode)) {
+      return settings.textFiltersMuteDurationHours;
+    }
+
+    if (this.isTopicFilterViolation(ruleCode)) {
+      return settings.thematicFiltersMuteDurationHours;
+    }
+
+    if (this.isMessageLimitsViolation(ruleCode)) {
+      return settings.messageLimitsMuteDurationHours;
+    }
+
+    return settings.duplicateMuteDurationHours;
   }
 
   private isMessageLimitsViolation(ruleCode: string): boolean {
@@ -5653,6 +5684,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       | 'requiredSubscriptionWarnMessageText'
       | 'requiredSubscriptionBanEnabled'
       | 'requiredSubscriptionMuteEnabled'
+      | 'requiredSubscriptionMuteDurationHours'
       | 'botSpeechStyle'
       | 'rulesAttachViolationsEnabled'
       | 'deleteBotMessagesEnabled'
@@ -5825,7 +5857,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         action,
         userLabel: params.userLabel,
         messageId: params.messageId,
-        muteDurationHours: params.settings.muteDurationHours,
+        muteDurationHours: params.settings.requiredSubscriptionMuteDurationHours,
         deleteBotMessagesEnabled: params.settings.deleteBotMessagesEnabled,
         deleteBotMessagesDelayMinutes: params.settings.deleteBotMessagesDelayMinutes,
         botMessageOptions: requiredSubscriptionMessageOptions,
@@ -5834,7 +5866,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             ? this.buildRequiredSubscriptionBanExplanation(
                 params.userLabel,
                 missingChannelTitles,
-                params.settings.muteDurationHours,
+                params.settings.requiredSubscriptionMuteDurationHours,
                 params.settings.botSpeechStyle,
               )
             : undefined,

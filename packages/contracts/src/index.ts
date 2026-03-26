@@ -93,6 +93,7 @@ export const DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES = Object.freeze([
 
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
 const duplicateMaxCountSchema = z.number().int().min(2).max(20);
+const autoMuteDurationHoursSchema = z.number().int().min(1).max(168).default(6);
 const botButtonUrlSchema = z.string().trim().max(2_048).default('');
 const botButtonTextSchema = z.string().trim().max(32).default('Открыть');
 const botMessageTextSchema = z.string().max(1_000).default('');
@@ -453,8 +454,41 @@ function isValidIanaTimeZone(value: string): boolean {
   }
 }
 
+const AUTO_MUTE_DURATION_FIELD_KEYS = [
+  'duplicateMuteDurationHours',
+  'linkMuteDurationHours',
+  'messageLimitsMuteDurationHours',
+  'profanityMuteDurationHours',
+  'requiredSubscriptionMuteDurationHours',
+  'textFiltersMuteDurationHours',
+  'thematicFiltersMuteDurationHours',
+] as const;
+
 export const chatSettingsSchema = z
-  .object({
+  .preprocess((input) => {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) {
+      return input;
+    }
+
+    const value = input as Record<string, unknown>;
+    const legacyMuteDurationHours =
+      typeof value.muteDurationHours === 'number' && Number.isFinite(value.muteDurationHours)
+        ? value.muteDurationHours
+        : null;
+
+    if (legacyMuteDurationHours === null) {
+      return value;
+    }
+
+    const nextValue = { ...value };
+    for (const key of AUTO_MUTE_DURATION_FIELD_KEYS) {
+      if (nextValue[key] === undefined) {
+        nextValue[key] = legacyMuteDurationHours;
+      }
+    }
+
+    return nextValue;
+  }, z.object({
     duplicateWarnEnabled: z.boolean().default(true),
     duplicateMuteEnabled: z.boolean().default(true),
     duplicateBanEnabled: z.boolean().default(true),
@@ -463,6 +497,7 @@ export const chatSettingsSchema = z
     duplicateWarnMaxCount: duplicateMaxCountSchema.default(2),
     duplicateMuteWindowSec: duplicateWindowSecSchema.default(86_400),
     duplicateMuteMaxCount: duplicateMaxCountSchema.default(3),
+    duplicateMuteDurationHours: autoMuteDurationHoursSchema,
     duplicateBanWindowSec: duplicateWindowSecSchema.default(172_800),
     duplicateBanMaxCount: duplicateMaxCountSchema.default(4),
     linkPolicy: linkPolicySchema.default('ALLOWLIST_ONLY'),
@@ -483,6 +518,7 @@ export const chatSettingsSchema = z
     requiredSubscriptionWarnMessageText: botMessageTextSchema,
     requiredSubscriptionBanEnabled: z.boolean().default(false),
     requiredSubscriptionMuteEnabled: z.boolean().default(false),
+    requiredSubscriptionMuteDurationHours: autoMuteDurationHoursSchema,
     commentsEnabled: z.boolean().default(false),
     commentsAdminsEnabled: z.boolean().default(true),
     commentsAllEnabled: z.boolean().default(false),
@@ -517,6 +553,7 @@ export const chatSettingsSchema = z
     messageLimitsWarnEnabled: z.boolean().default(false),
     messageLimitsBanEnabled: z.boolean().default(false),
     messageLimitsMuteEnabled: z.boolean().default(false),
+    messageLimitsMuteDurationHours: autoMuteDurationHoursSchema,
     messageLimitsBotButtonEnabled: z.boolean().default(false),
     messageLimitsBotButtonUrl: botButtonUrlSchema,
     messageLimitsBotButtonText: botButtonTextSchema,
@@ -529,12 +566,14 @@ export const chatSettingsSchema = z
     profanityWarnEnabled: z.boolean().default(false),
     profanityBanEnabled: z.boolean().default(false),
     profanityMuteEnabled: z.boolean().default(false),
+    profanityMuteDurationHours: autoMuteDurationHoursSchema,
     textFiltersBotMessageEnabled: z.boolean().default(false),
     textFiltersBotMessageText: botMessageTextSchema,
     textFiltersWarnEnabled: z.boolean().default(false),
     textFiltersWarnMessageText: botMessageTextSchema,
     textFiltersBanEnabled: z.boolean().default(false),
     textFiltersMuteEnabled: z.boolean().default(false),
+    textFiltersMuteDurationHours: autoMuteDurationHoursSchema,
     textFiltersBotButtonEnabled: z.boolean().default(false),
     textFiltersBotButtonUrl: botButtonUrlSchema,
     textFiltersBotButtonText: botButtonTextSchema,
@@ -545,6 +584,7 @@ export const chatSettingsSchema = z
     thematicFiltersWarnEnabled: z.boolean().default(false),
     thematicFiltersBanEnabled: z.boolean().default(false),
     thematicFiltersMuteEnabled: z.boolean().default(false),
+    thematicFiltersMuteDurationHours: autoMuteDurationHoursSchema,
     thematicFiltersBotButtonEnabled: z.boolean().default(false),
     thematicFiltersBotButtonUrl: botButtonUrlSchema,
     thematicFiltersBotButtonText: botButtonTextSchema,
@@ -583,6 +623,7 @@ export const chatSettingsSchema = z
     linkWarnMessageText: botMessageTextSchema,
     linkBanEnabled: z.boolean().default(false),
     linkMuteEnabled: z.boolean().default(false),
+    linkMuteDurationHours: autoMuteDurationHoursSchema,
     linkBotButtonEnabled: z.boolean().default(false),
     linkBotButtonUrl: botButtonUrlSchema,
     linkBotButtonText: botButtonTextSchema,
@@ -595,9 +636,9 @@ export const chatSettingsSchema = z
     duplicateRulesButtonEnabled: z.boolean().default(false),
     messageLimitsRulesButtonEnabled: z.boolean().default(false),
     rulesAttachViolationsEnabled: z.boolean().default(true),
-    muteDurationHours: z.number().int().min(1).max(36).default(6),
+    muteDurationHours: autoMuteDurationHoursSchema,
     warnThreshold: z.number().int().min(1).max(10).default(3),
-  })
+  }))
   .superRefine((value, ctx) => {
     const warnEnabled = value.antiDuplicateEnabled && value.duplicateWarnEnabled;
     const banEnabled = value.antiDuplicateEnabled && value.duplicateBanEnabled;

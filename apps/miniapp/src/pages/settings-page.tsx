@@ -107,8 +107,9 @@ type MailingWorkspaceView = 'compose' | 'active';
 const LazyManagedLinkButtonFields = lazy(() => import('../components/managed-link-button-fields'));
 
 const AUTO_SAVE_DELAY_MS = 650;
-const BAN_DURATION_MIN_HOURS = 1;
-const BAN_DURATION_MAX_HOURS = 36;
+const AUTO_MUTE_DURATION_MIN_HOURS = 1;
+const AUTO_MUTE_DURATION_MAX_HOURS = 168;
+const AUTO_MUTE_DURATION_PRESET_HOURS = [1, 6, 24, 168] as const;
 const DUPLICATE_COUNT_MIN = 2;
 const DUPLICATE_COUNT_MAX = 20;
 const MESSAGE_COUNT_LIMIT_MIN = 1;
@@ -247,6 +248,22 @@ type DuplicateMaxCountKey =
   | 'duplicateWarnMaxCount'
   | 'duplicateMuteMaxCount'
   | 'duplicateBanMaxCount';
+type AutoMuteDurationKey =
+  | 'duplicateMuteDurationHours'
+  | 'linkMuteDurationHours'
+  | 'messageLimitsMuteDurationHours'
+  | 'profanityMuteDurationHours'
+  | 'requiredSubscriptionMuteDurationHours'
+  | 'textFiltersMuteDurationHours'
+  | 'thematicFiltersMuteDurationHours';
+type AutoMuteEnabledKey =
+  | 'duplicateMuteEnabled'
+  | 'linkMuteEnabled'
+  | 'messageLimitsMuteEnabled'
+  | 'profanityMuteEnabled'
+  | 'requiredSubscriptionMuteEnabled'
+  | 'textFiltersMuteEnabled'
+  | 'thematicFiltersMuteEnabled';
 type HintKey =
   | 'antiSpam'
   | 'deleteSpammers'
@@ -270,7 +287,6 @@ type HintKey =
   | 'textFiltersBotButton'
   | 'duplicateBotMessage'
   | 'duplicateBotButton'
-  | 'banDuration'
   | 'maxMessageLength'
   | 'messageCountLimit'
   | 'photoCooldown'
@@ -366,8 +382,9 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'linkBotMessageText',
     'linkWarnEnabled',
     'linkWarnMessageText',
-    'linkBanEnabled',
     'linkMuteEnabled',
+    'linkMuteDurationHours',
+    'linkBanEnabled',
     'linkBotButtonEnabled',
     'linkBotButtonUrl',
     'linkBotButtonText',
@@ -385,8 +402,9 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'russianProfanityFilterEnabled',
     'profanityBotMessageEnabled',
     'profanityWarnEnabled',
-    'profanityBanEnabled',
     'profanityMuteEnabled',
+    'profanityMuteDurationHours',
+    'profanityBanEnabled',
   ],
   commercialFilter: [
     'commercialAdsFilterEnabled',
@@ -397,8 +415,9 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'textFiltersBotMessageText',
     'textFiltersWarnEnabled',
     'textFiltersWarnMessageText',
-    'textFiltersBanEnabled',
     'textFiltersMuteEnabled',
+    'textFiltersMuteDurationHours',
+    'textFiltersBanEnabled',
     'textFiltersBotButtonEnabled',
     'textFiltersBotButtonUrl',
     'textFiltersBotButtonText',
@@ -408,8 +427,9 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'thematicCodeword',
     'thematicFiltersBotMessageEnabled',
     'thematicFiltersWarnEnabled',
-    'thematicFiltersBanEnabled',
     'thematicFiltersMuteEnabled',
+    'thematicFiltersMuteDurationHours',
+    'thematicFiltersBanEnabled',
     'thematicFiltersBotButtonEnabled',
     'thematicFiltersBotButtonUrl',
     'thematicFiltersBotButtonText',
@@ -423,6 +443,7 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'duplicateWarnMaxCount',
     'duplicateMuteWindowSec',
     'duplicateMuteMaxCount',
+    'duplicateMuteDurationHours',
     'duplicateBanWindowSec',
     'duplicateBanMaxCount',
     'duplicateBotMessageEnabled',
@@ -430,7 +451,6 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'duplicateBotButtonEnabled',
     'duplicateBotButtonUrl',
     'duplicateBotButtonText',
-    'muteDurationHours',
   ],
   limits: [
     'antiSpamEnabled',
@@ -452,10 +472,10 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'messageLimitsWarnEnabled',
     'messageLimitsBanEnabled',
     'messageLimitsMuteEnabled',
+    'messageLimitsMuteDurationHours',
     'messageLimitsBotButtonEnabled',
     'messageLimitsBotButtonUrl',
     'messageLimitsBotButtonText',
-    'muteDurationHours',
   ],
   night: [
     ...NIGHT_SECTION_SETTING_KEYS,
@@ -467,8 +487,9 @@ const SECTION_SETTING_KEYS: Record<ApplySectionKey, readonly (keyof ChatSettings
     'requiredSubscriptionBotMessageText',
     'requiredSubscriptionWarnEnabled',
     'requiredSubscriptionWarnMessageText',
-    'requiredSubscriptionBanEnabled',
     'requiredSubscriptionMuteEnabled',
+    'requiredSubscriptionMuteDurationHours',
+    'requiredSubscriptionBanEnabled',
   ],
   extra: [
     'deleteSpammersEnabled',
@@ -490,6 +511,7 @@ const DUPLICATE_STAGE_OPTIONS: Array<{
   enabledKey: DuplicateEnabledKey;
   windowKey: DuplicateWindowKey;
   maxCountKey: DuplicateMaxCountKey;
+  durationKey?: AutoMuteDurationKey;
 }> = [
   {
     id: 'WARN',
@@ -504,6 +526,7 @@ const DUPLICATE_STAGE_OPTIONS: Array<{
     enabledKey: 'duplicateMuteEnabled',
     windowKey: 'duplicateMuteWindowSec',
     maxCountKey: 'duplicateMuteMaxCount',
+    durationKey: 'duplicateMuteDurationHours',
   },
   {
     id: 'BAN',
@@ -1569,6 +1592,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   >({});
   const [rulesFailedSnapshot, setRulesFailedSnapshot] = useState('');
   const [openHintKey, setOpenHintKey] = useState<HintKey | null>(null);
+  const [openMuteDurationKey, setOpenMuteDurationKey] = useState<AutoMuteDurationKey | null>(
+    null,
+  );
   const [openBotEditorKey, setOpenBotEditorKey] = useState<BotMessageEditorKey | null>(null);
   const [openWarnEditorKey, setOpenWarnEditorKey] = useState<WarnMessageEditorKey | null>(null);
   const [pendingSpeechStyle, setPendingSpeechStyle] = useState<BotSpeechStyle | null>(null);
@@ -2760,17 +2786,24 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     });
   }
 
-  function adjustBanDuration(deltaHours: number) {
+  function formatMuteDurationCompact(hours: number) {
+    return hours >= 24 && hours % 24 === 0 ? `${hours / 24}д` : `${hours}ч`;
+  }
+
+  function setMuteDurationValue(key: AutoMuteDurationKey, nextValue: number) {
+    const safeValue = Math.min(
+      AUTO_MUTE_DURATION_MAX_HOURS,
+      Math.max(AUTO_MUTE_DURATION_MIN_HOURS, Math.round(nextValue)),
+    );
+    setFieldValue(key, safeValue as ChatSettings[AutoMuteDurationKey]);
+  }
+
+  function adjustMuteDuration(key: AutoMuteDurationKey, deltaHours: number) {
     if (!draft) {
       return;
     }
 
-    const next = Math.min(
-      BAN_DURATION_MAX_HOURS,
-      Math.max(BAN_DURATION_MIN_HOURS, Number(draft.muteDurationHours) + deltaHours),
-    );
-
-    setFieldValue('muteDurationHours', next as ChatSettings['muteDurationHours']);
+    setMuteDurationValue(key, Number(draft[key]) + deltaHours);
   }
 
   function adjustDeleteBotMessagesDelay(direction: number) {
@@ -3302,6 +3335,10 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     setOpenHintKey((current) => (current === key ? null : key));
   }
 
+  function toggleMuteDurationEditor(key: AutoMuteDurationKey) {
+    setOpenMuteDurationKey((current) => (current === key ? null : key));
+  }
+
   function renderInlineHint(hintKey: HintKey, hintId: string, text: string, hidden = false) {
     if (hidden || openHintKey !== hintKey) {
       return null;
@@ -3311,6 +3348,150 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       <p id={hintId} className="settings-native-toggle__hint settings-native-toggle__hint--inline">
         {text}
       </p>
+    );
+  }
+
+  function renderMuteDurationEditor(key: AutoMuteDurationKey, label: string) {
+    if (!draft || openMuteDurationKey !== key) {
+      return null;
+    }
+
+    const value = Number(draft[key]);
+
+    return (
+      <div id={`mute-duration-${key}`} className="logs-violation-item__ban-config">
+        <div className="settings-native-toggle__row">
+          <div className="settings-native-toggle__title-wrap">
+            <ClockIcon />
+            <span className="settings-native-toggle__title">{label}</span>
+          </div>
+          <output className="ban-duration-stepper__value" aria-live="polite">
+            {formatMuteDurationCompact(value)}
+          </output>
+        </div>
+
+        <div className="logs-violation-item__ban-presets">
+          {AUTO_MUTE_DURATION_PRESET_HOURS.map((hours) => (
+            <button
+              key={hours}
+              type="button"
+              className={cn('logs-violation-item__ban-preset', value === hours && 'is-active')}
+              onClick={() => setMuteDurationValue(key, hours)}
+            >
+              {formatMuteDurationCompact(hours)}
+            </button>
+          ))}
+        </div>
+
+        <div className="logs-violation-item__ban-config-controls">
+          <div className="ban-duration-stepper">
+            <button
+              type="button"
+              className="ban-duration-stepper__button"
+              onClick={() => adjustMuteDuration(key, -1)}
+              disabled={value <= AUTO_MUTE_DURATION_MIN_HOURS}
+            >
+              -
+            </button>
+            <output className="ban-duration-stepper__value" aria-live="polite">
+              {value}ч
+            </output>
+            <button
+              type="button"
+              className="ban-duration-stepper__button"
+              onClick={() => adjustMuteDuration(key, 1)}
+              disabled={value >= AUTO_MUTE_DURATION_MAX_HOURS}
+            >
+              +
+            </button>
+          </div>
+
+          <label className="logs-violation-item__hours-input">
+            <span>Часы</span>
+            <input
+              type="number"
+              min={AUTO_MUTE_DURATION_MIN_HOURS}
+              max={AUTO_MUTE_DURATION_MAX_HOURS}
+              step={1}
+              value={value}
+              onChange={(event) => {
+                const nextValue = Number(event.target.value);
+                if (!Number.isFinite(nextValue)) {
+                  return;
+                }
+
+                setMuteDurationValue(key, nextValue);
+              }}
+            />
+            <small>
+              {AUTO_MUTE_DURATION_MIN_HOURS}–{AUTO_MUTE_DURATION_MAX_HOURS}ч
+            </small>
+          </label>
+        </div>
+      </div>
+    );
+  }
+
+  function renderMuteStageToggle(params: {
+    enabledKey: AutoMuteEnabledKey;
+    durationKey: AutoMuteDurationKey;
+    title: string;
+    onEnable: () => void;
+  }) {
+    if (!draft) {
+      return null;
+    }
+
+    const enabled = draft[params.enabledKey];
+    const durationValue = Number(draft[params.durationKey]);
+    const isOpen = openMuteDurationKey === params.durationKey;
+    const error = fieldErrors[params.durationKey];
+
+    return (
+      <div
+        className={cn(
+          'settings-native-toggle',
+          'settings-native-toggle--nested',
+          error && 'field--error',
+        )}
+      >
+        <div className="settings-native-toggle__row">
+          <div className="settings-native-toggle__title-wrap">
+            <span className="settings-native-toggle__title">{params.title}</span>
+            <div className="settings-native-toggle__title-actions">
+              <button
+                type="button"
+                className={cn('logs-violation-item__ban-preset', isOpen && 'is-active')}
+                onClick={() => toggleMuteDurationEditor(params.durationKey)}
+              >
+                <ClockIcon />
+                <span>{formatMuteDurationCompact(durationValue)}</span>
+              </button>
+            </div>
+          </div>
+
+          <label className="settings-native-switch" aria-label={params.title}>
+            <input
+              type="checkbox"
+              checked={enabled}
+              onChange={(event) => {
+                const nextEnabled = event.target.checked;
+                setFieldValue(params.enabledKey, nextEnabled as ChatSettings[AutoMuteEnabledKey]);
+                if (nextEnabled) {
+                  params.onEnable();
+                }
+              }}
+            />
+            <span className="toggle-switch" aria-hidden>
+              <span className="toggle-switch__thumb" />
+            </span>
+          </label>
+        </div>
+
+        {renderMuteDurationEditor(params.durationKey, 'Срок мута')}
+
+        {error ? <small className="field__hint">{error}</small> : null}
+      </div>
     );
   }
 
@@ -4143,7 +4324,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                 <div className="settings-native-toggle settings-native-toggle--nested">
                   <div className="settings-native-toggle__row">
-                    <span className="settings-native-toggle__title">3. Мут на 24ч</span>
+                    <span className="settings-native-toggle__title">3. Мут</span>
                   </div>
                   <p className="settings-native-toggle__hint">{pendingSpeechStyleSamples.mute}</p>
                 </div>
@@ -4641,7 +4822,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                 >
                                   Санкции усиливаются по ступеням, если пользователь повторно
                                   отправляет ссылки в течение 24 часов: сначала объяснение, затем
-                                  предупреждение, потом мут на 6 часов и далее бан.
+                                  предупреждение, потом мут и далее бан.
                                 </p>
                               ) : null}
 
@@ -4736,9 +4917,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               ) : null}
                             </div>
 
+                            {renderMuteStageToggle({
+                              enabledKey: 'linkMuteEnabled',
+                              durationKey: 'linkMuteDurationHours',
+                              title: '3. Мут',
+                              onEnable: () => {
+                                setFieldValue('linkWarnEnabled', true);
+                                setFieldValue('linkBotMessageEnabled', true);
+                              },
+                            })}
+
                             <div className="settings-native-toggle settings-native-toggle--nested">
                               <div className="settings-native-toggle__row">
-                                <span className="settings-native-toggle__title">Бан</span>
+                                <span className="settings-native-toggle__title">4. Бан</span>
 
                                 <label
                                   className="settings-native-switch"
@@ -4750,35 +4941,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     onChange={(event) => {
                                       const enabled = event.target.checked;
                                       setFieldValue('linkBanEnabled', enabled);
-                                      if (enabled) {
-                                        setFieldValue('linkWarnEnabled', true);
-                                        setFieldValue('linkBotMessageEnabled', true);
-                                      }
-                                    }}
-                                  />
-                                  <span className="toggle-switch" aria-hidden>
-                                    <span className="toggle-switch__thumb" />
-                                  </span>
-                                </label>
-                              </div>
-                            </div>
-
-                            <div className="settings-native-toggle settings-native-toggle--nested">
-                              <div className="settings-native-toggle__row">
-                                <span className="settings-native-toggle__title">
-                                  Мут на {draft.muteDurationHours}ч
-                                </span>
-
-                                <label
-                                  className="settings-native-switch"
-                                  aria-label="Включить мут за четвертую ссылку в 24 часа"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={draft.linkMuteEnabled}
-                                    onChange={(event) => {
-                                      const enabled = event.target.checked;
-                                      setFieldValue('linkMuteEnabled', enabled);
                                       if (enabled) {
                                         setFieldValue('linkWarnEnabled', true);
                                         setFieldValue('linkBotMessageEnabled', true);
@@ -5633,9 +5795,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </div>
                           </div>
 
+                          {renderMuteStageToggle({
+                            enabledKey: 'profanityMuteEnabled',
+                            durationKey: 'profanityMuteDurationHours',
+                            title: '3. Мут',
+                            onEnable: () => {
+                              setFieldValue('profanityWarnEnabled', true);
+                              setFieldValue('profanityBotMessageEnabled', true);
+                            },
+                          })}
+
                           <div className="settings-native-toggle settings-native-toggle--nested">
                             <div className="settings-native-toggle__row">
-                              <span className="settings-native-toggle__title">Бан</span>
+                              <span className="settings-native-toggle__title">4. Бан</span>
 
                               <label
                                 className="settings-native-switch"
@@ -5647,35 +5819,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   onChange={(event) => {
                                     const enabled = event.target.checked;
                                     setFieldValue('profanityBanEnabled', enabled);
-                                    if (enabled) {
-                                      setFieldValue('profanityWarnEnabled', true);
-                                      setFieldValue('profanityBotMessageEnabled', true);
-                                    }
-                                  }}
-                                />
-                                <span className="toggle-switch" aria-hidden>
-                                  <span className="toggle-switch__thumb" />
-                                </span>
-                              </label>
-                            </div>
-                          </div>
-
-                          <div className="settings-native-toggle settings-native-toggle--nested">
-                            <div className="settings-native-toggle__row">
-                              <span className="settings-native-toggle__title">
-                                Мут на {draft.muteDurationHours}ч
-                              </span>
-
-                              <label
-                                className="settings-native-switch"
-                                aria-label="Включить мут за нецензурную лексику"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={draft.profanityMuteEnabled}
-                                  onChange={(event) => {
-                                    const enabled = event.target.checked;
-                                    setFieldValue('profanityMuteEnabled', enabled);
                                     if (enabled) {
                                       setFieldValue('profanityWarnEnabled', true);
                                       setFieldValue('profanityBotMessageEnabled', true);
@@ -6007,9 +6150,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             ) : null}
                           </div>
 
+                          {renderMuteStageToggle({
+                            enabledKey: 'textFiltersMuteEnabled',
+                            durationKey: 'textFiltersMuteDurationHours',
+                            title: '3. Мут',
+                            onEnable: () => {
+                              setFieldValue('textFiltersWarnEnabled', true);
+                              setFieldValue('textFiltersBotMessageEnabled', true);
+                            },
+                          })}
+
                           <div className="settings-native-toggle settings-native-toggle--nested">
                             <div className="settings-native-toggle__row">
-                              <span className="settings-native-toggle__title">Бан</span>
+                              <span className="settings-native-toggle__title">4. Бан</span>
 
                               <label
                                 className="settings-native-switch"
@@ -6021,35 +6174,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                   onChange={(event) => {
                                     const enabled = event.target.checked;
                                     setFieldValue('textFiltersBanEnabled', enabled);
-                                    if (enabled) {
-                                      setFieldValue('textFiltersWarnEnabled', true);
-                                      setFieldValue('textFiltersBotMessageEnabled', true);
-                                    }
-                                  }}
-                                />
-                                <span className="toggle-switch" aria-hidden>
-                                  <span className="toggle-switch__thumb" />
-                                </span>
-                              </label>
-                            </div>
-                          </div>
-
-                          <div className="settings-native-toggle settings-native-toggle--nested">
-                            <div className="settings-native-toggle__row">
-                              <span className="settings-native-toggle__title">
-                                Мут на {draft.muteDurationHours}ч
-                              </span>
-
-                              <label
-                                className="settings-native-switch"
-                                aria-label="Включить мут за четвертое нарушение коммерческого фильтра"
-                              >
-                                <input
-                                  type="checkbox"
-                                  checked={draft.textFiltersMuteEnabled}
-                                  onChange={(event) => {
-                                    const enabled = event.target.checked;
-                                    setFieldValue('textFiltersMuteEnabled', enabled);
                                     if (enabled) {
                                       setFieldValue('textFiltersWarnEnabled', true);
                                       setFieldValue('textFiltersBotMessageEnabled', true);
@@ -6367,9 +6491,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </div>
                             </div>
 
+                            {renderMuteStageToggle({
+                              enabledKey: 'thematicFiltersMuteEnabled',
+                              durationKey: 'thematicFiltersMuteDurationHours',
+                              title: '3. Мут',
+                              onEnable: () => {
+                                setFieldValue('thematicFiltersWarnEnabled', true);
+                                setFieldValue('thematicFiltersBotMessageEnabled', true);
+                              },
+                            })}
+
                             <div className="settings-native-toggle settings-native-toggle--nested">
                               <div className="settings-native-toggle__row">
-                                <span className="settings-native-toggle__title">Бан</span>
+                                <span className="settings-native-toggle__title">4. Бан</span>
 
                                 <label
                                   className="settings-native-switch"
@@ -6381,35 +6515,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     onChange={(event) => {
                                       const enabled = event.target.checked;
                                       setFieldValue('thematicFiltersBanEnabled', enabled);
-                                      if (enabled) {
-                                        setFieldValue('thematicFiltersWarnEnabled', true);
-                                        setFieldValue('thematicFiltersBotMessageEnabled', true);
-                                      }
-                                    }}
-                                  />
-                                  <span className="toggle-switch" aria-hidden>
-                                    <span className="toggle-switch__thumb" />
-                                  </span>
-                                </label>
-                              </div>
-                            </div>
-
-                            <div className="settings-native-toggle settings-native-toggle--nested">
-                              <div className="settings-native-toggle__row">
-                                <span className="settings-native-toggle__title">
-                                  Мут на {draft.muteDurationHours}ч
-                                </span>
-
-                                <label
-                                  className="settings-native-switch"
-                                  aria-label="Включить мут для тематического фильтра"
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={draft.thematicFiltersMuteEnabled}
-                                    onChange={(event) => {
-                                      const enabled = event.target.checked;
-                                      setFieldValue('thematicFiltersMuteEnabled', enabled);
                                       if (enabled) {
                                         setFieldValue('thematicFiltersWarnEnabled', true);
                                         setFieldValue('thematicFiltersBotMessageEnabled', true);
@@ -6492,157 +6597,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         ) : null}
                       </div>
 
-                      {draft.antiDuplicateEnabled && draft.duplicateMuteEnabled ? (
-                        <div
-                          className={cn(
-                            'settings-native-toggle',
-                            fieldErrors.muteDurationHours && 'field--error',
-                          )}
-                        >
-                          <div className="settings-native-toggle__row">
-                            <div className="settings-native-toggle__title-wrap">
-                              <span className="settings-native-toggle__title">
-                                Длительность мута
-                              </span>
-                              <div className="settings-native-toggle__title-actions">
-                                <button
-                                  type="button"
-                                  className={cn(
-                                    'settings-info-button',
-                                    openHintKey === 'banDuration' && 'is-open',
-                                  )}
-                                  aria-label="Пояснение для длительности мута"
-                                  aria-controls="ban-duration-hint"
-                                  aria-expanded={openHintKey === 'banDuration'}
-                                  onClick={() => toggleHint('banDuration')}
-                                >
-                                  <span aria-hidden>i</span>
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="logs-violation-item__ban-config">
-                            <div className="settings-native-toggle__row">
-                              <div className="settings-native-toggle__title-wrap">
-                                <ClockIcon />
-                                <div>
-                                  <span className="settings-native-toggle__title">Срок мута</span>
-                                  <br />
-                                  <small className="settings-native-toggle__title settings-native-toggle__title--sub">
-                                    Участник останется в чате, а новые сообщения будут скрываться
-                                    до конца срока.
-                                  </small>
-                                </div>
-                              </div>
-                              <output className="ban-duration-stepper__value" aria-live="polite">
-                                {draft.muteDurationHours >= 24 && draft.muteDurationHours % 24 === 0
-                                  ? `${draft.muteDurationHours / 24}д`
-                                  : `${draft.muteDurationHours}ч`}
-                              </output>
-                            </div>
-
-                            <div className="logs-violation-item__ban-presets">
-                              {[1, 6, 24, 168].map((hours) => (
-                                <button
-                                  key={hours}
-                                  type="button"
-                                  className={cn(
-                                    'logs-violation-item__ban-preset',
-                                    draft.muteDurationHours === hours && 'is-active',
-                                  )}
-                                  onClick={() =>
-                                    setFieldValue(
-                                      'muteDurationHours',
-                                      hours as ChatSettings['muteDurationHours'],
-                                    )
-                                  }
-                                >
-                                  {hours >= 24 && hours % 24 === 0 ? `${hours / 24}д` : `${hours}ч`}
-                                </button>
-                              ))}
-                            </div>
-
-                            <div className="logs-violation-item__ban-config-controls">
-                              <div
-                                className="ban-duration-stepper"
-                                role="group"
-                                aria-label="Длительность мута"
-                              >
-                                <button
-                                  type="button"
-                                  className="ban-duration-stepper__button"
-                                  onClick={() => adjustBanDuration(-1)}
-                                  disabled={draft.muteDurationHours <= BAN_DURATION_MIN_HOURS}
-                                  aria-label="Уменьшить длительность мута"
-                                >
-                                  -
-                                </button>
-                                <output className="ban-duration-stepper__value" aria-live="polite">
-                                  {draft.muteDurationHours}ч
-                                </output>
-                                <button
-                                  type="button"
-                                  className="ban-duration-stepper__button"
-                                  onClick={() => adjustBanDuration(1)}
-                                  disabled={draft.muteDurationHours >= BAN_DURATION_MAX_HOURS}
-                                  aria-label="Увеличить длительность мута"
-                                >
-                                  +
-                                </button>
-                              </div>
-
-                              <label className="logs-violation-item__hours-input">
-                                <span>Часы</span>
-                                <input
-                                  type="number"
-                                  min={BAN_DURATION_MIN_HOURS}
-                                  max={BAN_DURATION_MAX_HOURS}
-                                  step={1}
-                                  value={draft.muteDurationHours}
-                                  onChange={(event) => {
-                                    const nextValue = Number(event.target.value);
-                                    if (!Number.isFinite(nextValue)) {
-                                      return;
-                                    }
-
-                                    setFieldValue(
-                                      'muteDurationHours',
-                                      Math.min(
-                                        BAN_DURATION_MAX_HOURS,
-                                        Math.max(BAN_DURATION_MIN_HOURS, nextValue),
-                                      ) as ChatSettings['muteDurationHours'],
-                                    );
-                                  }}
-                                />
-                                <small>
-                                  {BAN_DURATION_MIN_HOURS}–{BAN_DURATION_MAX_HOURS}ч
-                                </small>
-                              </label>
-                            </div>
-                          </div>
-
-                          {openHintKey === 'banDuration' ? (
-                            <p id="ban-duration-hint" className="settings-native-toggle__hint">
-                              После выдачи мута новые сообщения пользователя удаляются автоматически в
-                              течение этого времени.
-                            </p>
-                          ) : null}
-
-                          {fieldErrors.muteDurationHours ? (
-                            <small className="field__hint">{fieldErrors.muteDurationHours}</small>
-                          ) : null}
-                        </div>
-                      ) : null}
-
                       {draft.antiDuplicateEnabled ? (
                         <div className="duplicate-stage-list">
                           {DUPLICATE_STAGE_OPTIONS.map((stage) => {
                             const enabled = draft[stage.enabledKey];
                             const windowSec = draft[stage.windowKey];
                             const maxCount = draft[stage.maxCountKey];
+                            const durationKey = stage.durationKey ?? null;
                             const windowError = fieldErrors[stage.windowKey];
                             const maxCountError = fieldErrors[stage.maxCountKey];
+                            const durationError = durationKey ? fieldErrors[durationKey] : undefined;
 
                             return (
                               <article
@@ -6670,6 +6634,21 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                     </span>
                                     <span className="duplicate-stage__title">{stage.label}</span>
                                   </label>
+                                  {durationKey ? (
+                                    <button
+                                      type="button"
+                                      className={cn(
+                                        'logs-violation-item__ban-preset',
+                                        openMuteDurationKey === durationKey && 'is-active',
+                                      )}
+                                      onClick={() => toggleMuteDurationEditor(durationKey)}
+                                    >
+                                      <ClockIcon />
+                                      <span>
+                                        {formatMuteDurationCompact(Number(draft[durationKey]))}
+                                      </span>
+                                    </button>
+                                  ) : null}
                                 </div>
 
                                 <div className="duplicate-stage__controls">
@@ -6777,6 +6756,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                                       <small className="field__hint">{maxCountError}</small>
                                     ) : null}
                                   </div>
+                                ) : null}
+
+                                {durationKey ? renderMuteDurationEditor(durationKey, 'Срок мута') : null}
+
+                                {durationError ? (
+                                  <small className="field__hint">{durationError}</small>
                                 ) : null}
                               </article>
                             );
@@ -7678,11 +7663,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         </div>
                       </div>
 
+                      {renderMuteStageToggle({
+                        enabledKey: 'messageLimitsMuteEnabled',
+                        durationKey: 'messageLimitsMuteDurationHours',
+                        title: '3. Мут',
+                        onEnable: () => {
+                          setFieldValue('messageLimitsWarnEnabled', true);
+                          setFieldValue('messageLimitsBotMessageEnabled', true);
+                        },
+                      })}
+
                       <div className="settings-native-toggle settings-native-toggle--nested">
                         <div className="settings-native-toggle__row">
-                          <span className="settings-native-toggle__title">
-                            Бан
-                          </span>
+                          <span className="settings-native-toggle__title">4. Бан</span>
 
                           <label
                             className="settings-native-switch"
@@ -7694,35 +7687,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               onChange={(event) => {
                                 const enabled = event.target.checked;
                                 setFieldValue('messageLimitsBanEnabled', enabled);
-                                if (enabled) {
-                                  setFieldValue('messageLimitsWarnEnabled', true);
-                                  setFieldValue('messageLimitsBotMessageEnabled', true);
-                                }
-                              }}
-                            />
-                            <span className="toggle-switch" aria-hidden>
-                              <span className="toggle-switch__thumb" />
-                            </span>
-                          </label>
-                        </div>
-                      </div>
-
-                      <div className="settings-native-toggle settings-native-toggle--nested">
-                        <div className="settings-native-toggle__row">
-                          <span className="settings-native-toggle__title">
-                            Мут на {draft.muteDurationHours}ч
-                          </span>
-
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Включить мут за четвертое нарушение ограничений сообщений за 12 часов"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={draft.messageLimitsMuteEnabled}
-                              onChange={(event) => {
-                                const enabled = event.target.checked;
-                                setFieldValue('messageLimitsMuteEnabled', enabled);
                                 if (enabled) {
                                   setFieldValue('messageLimitsWarnEnabled', true);
                                   setFieldValue('messageLimitsBotMessageEnabled', true);
@@ -9412,7 +9376,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           >
                             Санкции усиливаются по ступеням, если пользователь повторно пишет без
                             подписки в течение 24 часов: сначала объяснение, затем предупреждение,
-                            потом мут на 6 часов и далее бан.
+                            потом мут и далее бан.
                           </p>
                         ) : null}
 
@@ -9506,9 +9470,19 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                         ) : null}
                       </div>
 
+                      {renderMuteStageToggle({
+                        enabledKey: 'requiredSubscriptionMuteEnabled',
+                        durationKey: 'requiredSubscriptionMuteDurationHours',
+                        title: '3. Мут',
+                        onEnable: () => {
+                          setFieldValue('requiredSubscriptionWarnEnabled', true);
+                          setFieldValue('requiredSubscriptionBotMessageEnabled', true);
+                        },
+                      })}
+
                       <div className="settings-native-toggle settings-native-toggle--nested">
                         <div className="settings-native-toggle__row">
-                          <span className="settings-native-toggle__title">Бан</span>
+                          <span className="settings-native-toggle__title">4. Бан</span>
 
                           <label
                             className="settings-native-switch"
@@ -9520,35 +9494,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               onChange={(event) => {
                                 const enabled = event.target.checked;
                                 setFieldValue('requiredSubscriptionBanEnabled', enabled);
-                                if (enabled) {
-                                  setFieldValue('requiredSubscriptionWarnEnabled', true);
-                                  setFieldValue('requiredSubscriptionBotMessageEnabled', true);
-                                }
-                              }}
-                            />
-                            <span className="toggle-switch" aria-hidden>
-                              <span className="toggle-switch__thumb" />
-                            </span>
-                          </label>
-                        </div>
-                      </div>
-
-                      <div className="settings-native-toggle settings-native-toggle--nested">
-                        <div className="settings-native-toggle__row">
-                          <span className="settings-native-toggle__title">
-                            Мут на {draft.muteDurationHours}ч
-                          </span>
-
-                          <label
-                            className="settings-native-switch"
-                            aria-label="Включить мут за четвертое сообщение без подписки"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={draft.requiredSubscriptionMuteEnabled}
-                              onChange={(event) => {
-                                const enabled = event.target.checked;
-                                setFieldValue('requiredSubscriptionMuteEnabled', enabled);
                                 if (enabled) {
                                   setFieldValue('requiredSubscriptionWarnEnabled', true);
                                   setFieldValue('requiredSubscriptionBotMessageEnabled', true);

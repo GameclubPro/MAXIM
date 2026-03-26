@@ -495,8 +495,17 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'linkBotMessageText', label: 'Текст сообщения бота', type: 'text' },
     { key: 'linkWarnEnabled', label: 'Выдавать предупреждение', type: 'boolean' },
     { key: 'linkWarnMessageText', label: 'Текст предупреждения', type: 'text' },
-    { key: 'linkBanEnabled', label: 'Банить нарушителя', type: 'boolean' },
     { key: 'linkMuteEnabled', label: 'Выдавать мут', type: 'boolean' },
+    {
+      key: 'linkMuteDurationHours',
+      label: 'Срок мута (часы)',
+      type: 'number',
+      min: 1,
+      max: 168,
+      step: 1,
+      presets: [1, 6, 24, 168],
+    },
+    { key: 'linkBanEnabled', label: 'Банить нарушителя', type: 'boolean' },
     { key: 'linkBotButtonEnabled', label: 'Показывать кнопку', type: 'boolean' },
     { key: 'linkBotButtonUrl', label: 'Ссылка кнопки', type: 'url' },
     { key: 'linkBotButtonText', label: 'Текст кнопки', type: 'text' },
@@ -519,6 +528,15 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'profanityBotMessageEnabled', label: 'Показывать сообщение бота', type: 'boolean' },
     { key: 'profanityWarnEnabled', label: 'Выдавать предупреждение', type: 'boolean' },
     { key: 'profanityMuteEnabled', label: 'Выдавать мут', type: 'boolean' },
+    {
+      key: 'profanityMuteDurationHours',
+      label: 'Срок мута (часы)',
+      type: 'number',
+      min: 1,
+      max: 168,
+      step: 1,
+      presets: [1, 6, 24, 168],
+    },
     { key: 'profanityBanEnabled', label: 'Банить нарушителя', type: 'boolean' },
   ],
   commercialFilter: [
@@ -552,6 +570,15 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'textFiltersWarnEnabled', label: 'Выдавать предупреждение', type: 'boolean' },
     { key: 'textFiltersWarnMessageText', label: 'Текст предупреждения', type: 'text' },
     { key: 'textFiltersMuteEnabled', label: 'Выдавать мут', type: 'boolean' },
+    {
+      key: 'textFiltersMuteDurationHours',
+      label: 'Срок мута (часы)',
+      type: 'number',
+      min: 1,
+      max: 168,
+      step: 1,
+      presets: [1, 6, 24, 168],
+    },
     { key: 'textFiltersBanEnabled', label: 'Банить нарушителя', type: 'boolean' },
     { key: 'textFiltersBotButtonEnabled', label: 'Показывать кнопку', type: 'boolean' },
     { key: 'textFiltersBotButtonUrl', label: 'Ссылка кнопки', type: 'url' },
@@ -579,13 +606,22 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
       type: 'boolean',
     },
     {
-      key: 'thematicFiltersBanEnabled',
-      label: 'Шаг 3: бан',
+      key: 'thematicFiltersMuteEnabled',
+      label: 'Шаг 3: мут',
       type: 'boolean',
     },
     {
-      key: 'thematicFiltersMuteEnabled',
-      label: 'Шаг 4: мут',
+      key: 'thematicFiltersMuteDurationHours',
+      label: 'Срок мута (часы)',
+      type: 'number',
+      min: 1,
+      max: 168,
+      step: 1,
+      presets: [1, 6, 24, 168],
+    },
+    {
+      key: 'thematicFiltersBanEnabled',
+      label: 'Шаг 4: бан',
       type: 'boolean',
     },
     {
@@ -669,13 +705,13 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'duplicateBotButtonUrl', label: 'Ссылка кнопки', type: 'url' },
     { key: 'duplicateBotButtonText', label: 'Текст кнопки', type: 'text' },
     {
-      key: 'muteDurationHours',
-      label: 'Длительность мута (часы)',
+      key: 'duplicateMuteDurationHours',
+      label: 'Срок мута (часы)',
       type: 'number',
       min: 1,
-      max: 336,
+      max: 168,
       step: 1,
-      presets: [1, 6, 24],
+      presets: [1, 6, 24, 168],
     },
   ],
   limits: [
@@ -737,19 +773,19 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
     { key: 'messageLimitsBotMessageText', label: 'Текст сообщения бота', type: 'text' },
     { key: 'messageLimitsWarnEnabled', label: 'Штраф: предупреждение', type: 'boolean' },
     { key: 'messageLimitsMuteEnabled', label: 'Штраф: мут', type: 'boolean' },
+    {
+      key: 'messageLimitsMuteDurationHours',
+      label: 'Срок мута (часы)',
+      type: 'number',
+      min: 1,
+      max: 168,
+      step: 1,
+      presets: [1, 6, 24, 168],
+    },
     { key: 'messageLimitsBanEnabled', label: 'Штраф: бан', type: 'boolean' },
     { key: 'messageLimitsBotButtonEnabled', label: 'Показывать кнопку', type: 'boolean' },
     { key: 'messageLimitsBotButtonUrl', label: 'Ссылка кнопки', type: 'url' },
     { key: 'messageLimitsBotButtonText', label: 'Текст кнопки', type: 'text' },
-    {
-      key: 'muteDurationHours',
-      label: 'Длительность мута (часы)',
-      type: 'number',
-      min: 1,
-      max: 336,
-      step: 1,
-      presets: [1, 6, 24],
-    },
   ],
   night: [
     { key: 'nightModeEnabled', label: 'Включить ночной режим', type: 'boolean' },
@@ -819,6 +855,7 @@ const SECTION_CARD_FIELDS: Record<
       'linkPolicy',
       'linkWarnEnabled',
       'linkMuteEnabled',
+      'linkMuteDurationHours',
       'linkBanEnabled',
       'linkBotMessageEnabled',
     ],
@@ -844,6 +881,7 @@ const SECTION_CARD_FIELDS: Record<
       'russianProfanityFilterEnabled',
       'profanityWarnEnabled',
       'profanityMuteEnabled',
+      'profanityMuteDurationHours',
       'profanityBanEnabled',
     ],
     advanced: ['profanityBotMessageEnabled'],
@@ -861,6 +899,7 @@ const SECTION_CARD_FIELDS: Record<
       'textFiltersWarnEnabled',
       'textFiltersWarnMessageText',
       'textFiltersMuteEnabled',
+      'textFiltersMuteDurationHours',
       'textFiltersBanEnabled',
       'textFiltersBotButtonEnabled',
       'textFiltersBotButtonText',
@@ -873,8 +912,9 @@ const SECTION_CARD_FIELDS: Record<
       'thematicCodeword',
       'thematicFiltersBotMessageEnabled',
       'thematicFiltersWarnEnabled',
-      'thematicFiltersBanEnabled',
       'thematicFiltersMuteEnabled',
+      'thematicFiltersMuteDurationHours',
+      'thematicFiltersBanEnabled',
     ],
     advanced: [
       'thematicFiltersBotButtonEnabled',
@@ -887,8 +927,8 @@ const SECTION_CARD_FIELDS: Record<
       'antiDuplicateEnabled',
       'duplicateWarnEnabled',
       'duplicateMuteEnabled',
+      'duplicateMuteDurationHours',
       'duplicateBanEnabled',
-      'muteDurationHours',
     ],
     advanced: [
       'duplicateWarnWindowSec',
@@ -926,11 +966,11 @@ const SECTION_CARD_FIELDS: Record<
       'messageLimitsBotMessageText',
       'messageLimitsWarnEnabled',
       'messageLimitsMuteEnabled',
+      'messageLimitsMuteDurationHours',
       'messageLimitsBanEnabled',
       'messageLimitsBotButtonEnabled',
       'messageLimitsBotButtonText',
       'messageLimitsBotButtonUrl',
-      'muteDurationHours',
     ],
   },
   night: {
@@ -7106,7 +7146,8 @@ export class PrivateControlService {
       button: ['кнопка', 'url'],
       message: ['сообщение', 'текст'],
       ban: ['бан'],
-      kick: ['кик', 'мут', 'мью', 'mute'],
+      mute: ['мут', 'мью', 'mute'],
+      kick: ['кик'],
       warn: ['предупреждение'],
       timezone: ['часовой пояс', 'timezone'],
     };
@@ -7148,7 +7189,7 @@ export class PrivateControlService {
       case 'links':
         return [
           `Политика: ${this.describeLinkPolicy(settings.linkPolicy)}`,
-          `Санкции: WARN ${this.describeBooleanCompact(settings.linkWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.linkMuteEnabled)} • BAN ${this.describeBooleanCompact(settings.linkBanEnabled)}`,
+          `Санкции: WARN ${this.describeBooleanCompact(settings.linkWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.linkMuteEnabled)} (${settings.linkMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.linkBanEnabled)}`,
           `Сообщение бота: ${this.describeBooleanCompact(settings.linkBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.linkBotButtonEnabled)}`,
           ...(view === 'advanced'
             ? ['Allowlist и тексты предупреждений доступны в расширенном режиме ниже.']
@@ -7162,26 +7203,27 @@ export class PrivateControlService {
       case 'profanityFilter':
         return [
           `Фильтр: ${this.describeBooleanCompact(settings.russianProfanityFilterEnabled)}`,
-          `Санкции: WARN ${this.describeBooleanCompact(settings.profanityWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.profanityMuteEnabled)} • BAN ${this.describeBooleanCompact(settings.profanityBanEnabled)}`,
+          `Санкции: WARN ${this.describeBooleanCompact(settings.profanityWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.profanityMuteEnabled)} (${settings.profanityMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.profanityBanEnabled)}`,
           `Сообщение бота: ${this.describeBooleanCompact(settings.profanityBotMessageEnabled)}`,
         ];
       case 'commercialFilter':
         return [
           `Фильтр: ${this.describeBooleanCompact(settings.commercialAdsFilterEnabled)} • строгость ${this.formatEnumValue(settings.commercialAdsSensitivity)}`,
           `Пороги: WARN ${settings.commercialAdsWarnThreshold} • DELETE ${settings.commercialAdsDeleteThreshold}`,
-          `Сообщение: ${this.describeBooleanCompact(settings.textFiltersBotMessageEnabled)} • WARN ${this.describeBooleanCompact(settings.textFiltersWarnEnabled)} • кнопка ${this.describeBooleanCompact(settings.textFiltersBotButtonEnabled)}`,
+          `Санкции: WARN ${this.describeBooleanCompact(settings.textFiltersWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.textFiltersMuteEnabled)} (${settings.textFiltersMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.textFiltersBanEnabled)}`,
+          `Сообщение: ${this.describeBooleanCompact(settings.textFiltersBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.textFiltersBotButtonEnabled)}`,
         ];
       case 'thematicFilters':
         return [
           `Кодовое слово: ${settings.thematicCodewordEnabled ? settings.thematicCodeword || 'не задано' : 'выключено'}`,
-          `Санкции: объяснение ${this.describeBooleanCompact(settings.thematicFiltersBotMessageEnabled)} • WARN ${this.describeBooleanCompact(settings.thematicFiltersWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.thematicFiltersMuteEnabled)} • BAN ${this.describeBooleanCompact(settings.thematicFiltersBanEnabled)}`,
+          `Санкции: объяснение ${this.describeBooleanCompact(settings.thematicFiltersBotMessageEnabled)} • WARN ${this.describeBooleanCompact(settings.thematicFiltersWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.thematicFiltersMuteEnabled)} (${settings.thematicFiltersMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.thematicFiltersBanEnabled)}`,
           `Кнопка: ${this.describeBooleanCompact(settings.thematicFiltersBotButtonEnabled)}`,
         ];
       case 'duplicates':
         return [
-          `Антидубли: ${this.describeBooleanCompact(settings.antiDuplicateEnabled)} • мут ${settings.muteDurationHours}ч`,
+          `Антидубли: ${this.describeBooleanCompact(settings.antiDuplicateEnabled)} • мут ${settings.duplicateMuteDurationHours}ч`,
           `WARN: ${this.describeBooleanCompact(settings.duplicateWarnEnabled)} / ${settings.duplicateWarnMaxCount} повт. за ${settings.duplicateWarnWindowSec}с`,
-          `MUTE: ${this.describeBooleanCompact(settings.duplicateMuteEnabled)} / ${settings.duplicateMuteMaxCount} повт. за ${settings.duplicateMuteWindowSec}с`,
+          `MUTE: ${this.describeBooleanCompact(settings.duplicateMuteEnabled)} / ${settings.duplicateMuteMaxCount} повт. за ${settings.duplicateMuteWindowSec}с • ${settings.duplicateMuteDurationHours}ч`,
           `BAN: ${this.describeBooleanCompact(settings.duplicateBanEnabled)} / ${settings.duplicateBanMaxCount} повт. за ${settings.duplicateBanWindowSec}с`,
         ];
       case 'limits':
@@ -7190,6 +7232,7 @@ export class PrivateControlService {
           `Лимит сообщений: ${settings.messageCountLimitEnabled ? `${settings.messageCountLimitMessages} за ${settings.messageCountLimitWindowHours}ч` : 'выкл'}`,
           `Медиа: видео ${this.describeBooleanCompact(settings.videoMessagesEnabled)} • файлы ${this.describeBooleanCompact(settings.fileMessagesEnabled)} • голосовые ${this.describeBooleanCompact(settings.voiceMessagesEnabled)}`,
           `Стоп-слова: ${settings.messageLimitsBlockedWords.length > 0 ? settings.messageLimitsBlockedWords.length : 'выкл'}`,
+          `Санкции: WARN ${this.describeBooleanCompact(settings.messageLimitsWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.messageLimitsMuteEnabled)} (${settings.messageLimitsMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.messageLimitsBanEnabled)}`,
           `Сообщение: ${this.describeBooleanCompact(settings.messageLimitsBotMessageEnabled)} • кнопка ${this.describeBooleanCompact(settings.messageLimitsBotButtonEnabled)}`,
         ];
       case 'night':
