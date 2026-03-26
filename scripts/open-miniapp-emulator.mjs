@@ -3,25 +3,13 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { chromium, devices } from 'playwright';
+import previewDevicePresets from '../apps/miniapp/src/lib/preview-device-presets.json' with { type: 'json' };
 
 const ROOT_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DEFAULT_BASE_URL = 'http://127.0.0.1:3000/app/';
 const DEFAULT_WAIT_MS = 30_000;
 
-const deviceProfiles = {
-  android: {
-    queryDevice: 'android',
-    viewportName: 'Pixel 7',
-  },
-  iphone: {
-    queryDevice: 'iphone',
-    viewportName: 'iPhone 15',
-  },
-  'iphone-se': {
-    queryDevice: 'iphone',
-    viewportName: 'iPhone SE',
-  },
-};
+const deviceProfiles = previewDevicePresets;
 
 function printUsage() {
   console.log(`Usage:

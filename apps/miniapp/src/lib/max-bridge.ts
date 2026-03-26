@@ -1,12 +1,101 @@
+import { getPreviewDevicePreset, type PreviewDevice } from './preview-device';
+
 export type MaxSharePayload = {
   mid: string;
   chatType?: 'DIALOG' | 'CHAT';
 };
 
 type MaxBackButtonHandler = () => void;
+export type MaxPlatform = 'ios' | 'android' | 'unknown';
 
 function resolveBridge() {
   return window.MAX?.WebApp ?? window.WebApp;
+}
+
+function resolveViewportSize() {
+  const viewport = window.visualViewport;
+  return {
+    width: Math.round(viewport?.width ?? window.innerWidth),
+    height: Math.round(viewport?.height ?? window.innerHeight),
+  };
+}
+
+function normalizePlatform(
+  value: string | undefined,
+  previewDevice: PreviewDevice | null | undefined,
+): MaxPlatform {
+  if (previewDevice) {
+    return getPreviewDevicePreset(previewDevice).platform === 'ios' ? 'ios' : 'android';
+  }
+
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === 'ios' || normalized === 'iphone') {
+    return 'ios';
+  }
+  if (normalized === 'android') {
+    return 'android';
+  }
+
+  return 'unknown';
+}
+
+function applyRootEnvironment(options: { previewDevice?: PreviewDevice | null } = {}) {
+  const root = document.documentElement;
+  const bridge = resolveBridge();
+  const { height } = resolveViewportSize();
+  const previewPreset = options.previewDevice
+    ? getPreviewDevicePreset(options.previewDevice)
+    : null;
+  const platform = normalizePlatform(bridge?.platform, options.previewDevice);
+
+  root.dataset.maxPlatform = platform;
+  root.dataset.maxClient = previewPreset ? 'preview' : bridge ? 'native' : 'browser';
+
+  if (platform === 'ios') {
+    root.style.setProperty('--app-shell-max-width', '560px');
+    root.style.setProperty('--app-topbar-radius', '24px');
+    root.style.setProperty('--app-bottom-nav-radius', '26px');
+  } else if (platform === 'android') {
+    root.style.setProperty('--app-shell-max-width', '520px');
+    root.style.setProperty('--app-topbar-radius', '20px');
+    root.style.setProperty('--app-bottom-nav-radius', '20px');
+  } else {
+    root.style.setProperty('--app-shell-max-width', '540px');
+    root.style.setProperty('--app-topbar-radius', '22px');
+    root.style.setProperty('--app-bottom-nav-radius', '24px');
+  }
+
+  if (options.previewDevice) {
+    root.dataset.maxPreviewDevice = options.previewDevice;
+  } else {
+    delete root.dataset.maxPreviewDevice;
+  }
+
+  root.style.setProperty('--app-viewport-height', `${height}px`);
+}
+
+export function syncMaxNativeEnvironment(
+  options: { previewDevice?: PreviewDevice | null } = {},
+): () => void {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return () => undefined;
+  }
+
+  const apply = () => {
+    applyRootEnvironment(options);
+  };
+
+  apply();
+
+  window.addEventListener('resize', apply, { passive: true });
+  window.visualViewport?.addEventListener('resize', apply);
+  window.visualViewport?.addEventListener('scroll', apply);
+
+  return () => {
+    window.removeEventListener('resize', apply);
+    window.visualViewport?.removeEventListener('resize', apply);
+    window.visualViewport?.removeEventListener('scroll', apply);
+  };
 }
 
 function parseMaxUrl(url: string): URL | null {

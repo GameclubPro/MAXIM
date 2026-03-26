@@ -1,0 +1,35 @@
+{
+  "android": {
+    "label": "Android",
+    "queryDevice": "android",
+    "viewportName": "Pixel 7",
+    "outputDirName": "android",
+    "frameWidth": 430,
+    "screenHeight": 852,
+    "safeTop": 0,
+    "safeBottom": 0,
+    "platform": "android"
+  },
+  "iphone": {
+    "label": "iPhone 15",
+    "queryDevice": "iphone",
+    "viewportName": "iPhone 15",
+    "outputDirName": "iphone",
+    "frameWidth": 430,
+    "screenHeight": 852,
+    "safeTop": 59,
+    "safeBottom": 34,
+    "platform": "ios"
+  },
+  "iphone-se": {
+    "label": "iPhone SE",
+    "queryDevice": "iphone-se",
+    "viewportName": "iPhone SE",
+    "outputDirName": "iphone-se",
+    "frameWidth": 384,
+    "screenHeight": 667,
+    "safeTop": 20,
+    "safeBottom": 0,
+    "platform": "ios"
+  }
+}

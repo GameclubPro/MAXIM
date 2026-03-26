@@ -17,7 +17,7 @@ import { createApiTransport } from './lib/api/transport';
 import { getPreviewBootstrap } from './lib/design-preview';
 import { getInitData } from './lib/init-data';
 import { resolveLaunchRoute } from './lib/launch-route';
-import { readyMaxMiniApp } from './lib/max-bridge';
+import { readyMaxMiniApp, syncMaxNativeEnvironment } from './lib/max-bridge';
 import {
   LazyChannelDialogPage,
   LazyChannelSettingsPage,
@@ -106,7 +106,10 @@ function AppRoutes({
               path="/channel/:chatId/dialog/:mode"
               element={<LazyChannelDialogPage api={apiClient} />}
             />
-            <Route path="/chat/:chatId/dialog/:mode" element={<LazyChannelDialogPage api={apiClient} />} />
+            <Route
+              path="/chat/:chatId/dialog/:mode"
+              element={<LazyChannelDialogPage api={apiClient} />}
+            />
             <Route path="/chat/:chatId/events" element={<LazyEventsPage api={apiClient} />} />
             <Route path="/giveaways/:giveawayId" element={<LazyGiveawayPage api={apiClient} />} />
             <Route path="*" element={<Navigate to="/" replace />} />
@@ -124,8 +127,12 @@ export function App() {
   const [previewRuntime, setPreviewRuntime] = useState<PreviewRuntime | null>(null);
 
   useEffect(() => {
+    const cleanup = syncMaxNativeEnvironment({
+      previewDevice: preview.enabled ? preview.device : null,
+    });
     readyMaxMiniApp();
-  }, []);
+    return cleanup;
+  }, [preview.device, preview.enabled]);
 
   useEffect(() => {
     if (!preview.enabled || previewRuntime) {

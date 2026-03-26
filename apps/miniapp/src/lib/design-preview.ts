@@ -3,10 +3,10 @@ export const PREVIEW_CHANNEL_ID = 'preview-channel';
 export const PREVIEW_CHAT_TITLE = 'Садоводы Южного';
 export const PREVIEW_CHANNEL_TITLE = 'Новости Южного';
 
+import { normalizePreviewDevice, type PreviewDevice } from './preview-device';
+
 const PREVIEW_SESSION_KEY = 'maxim:design-preview';
 const PREVIEW_DEVICE_KEY = 'maxim:design-preview-device';
-
-export type PreviewDevice = 'android' | 'iphone';
 
 export type PreviewBootstrap = {
   enabled: boolean;
@@ -51,10 +51,6 @@ function writeLocal(key: string, value: string): void {
   } catch {
     // Ignore unavailable storage in preview helpers.
   }
-}
-
-export function normalizePreviewDevice(value: string | null | undefined): PreviewDevice {
-  return value === 'iphone' ? 'iphone' : 'android';
 }
 
 export function getPreviewBootstrap(initData: string): PreviewBootstrap {

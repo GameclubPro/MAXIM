@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { cn } from '../../lib/cn';
 import {
@@ -8,8 +8,12 @@ import {
   disablePreviewMode,
   persistPreviewDevice,
   stripPreviewSearch,
-  type PreviewDevice,
 } from '../../lib/design-preview';
+import {
+  getPreviewDevicePreset,
+  listPreviewDevices,
+  type PreviewDevice,
+} from '../../lib/preview-device';
 
 type DesignPreviewScaffoldProps = {
   children: ReactNode;
@@ -44,17 +48,17 @@ const previewLinks = [
   },
 ] as const;
 
+const previewDevices = listPreviewDevices();
+
 function buildPreviewHref(pathname: string, device: PreviewDevice): string {
   return `${pathname}${buildPreviewSearch('', device)}`;
 }
 
-export function DesignPreviewScaffold({
-  children,
-  initialDevice,
-}: DesignPreviewScaffoldProps) {
+export function DesignPreviewScaffold({ children, initialDevice }: DesignPreviewScaffoldProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const [device, setDevice] = useState<PreviewDevice>(initialDevice);
+  const devicePreset = getPreviewDevicePreset(device);
 
   useEffect(() => {
     setDevice(initialDevice);
@@ -92,24 +96,23 @@ export function DesignPreviewScaffold({
         <div className="design-preview__dock-head">
           <span className="design-preview__eyebrow">Design preview</span>
           <h2>MAX-like mobile frame</h2>
-          <p>Не 1:1 клиент MAX, но удобно править layout, safe-area и шапки.</p>
+          <p>Не 1:1 клиент MAX, но удобно править layout, safe-area, плотность и нативную рамку.</p>
         </div>
 
         <div className="design-preview__device-switch" role="tablist" aria-label="Устройство">
-          <button
-            type="button"
-            className={cn('design-preview__device-pill', device === 'android' && 'is-active')}
-            onClick={() => handleDeviceChange('android')}
-          >
-            Android
-          </button>
-          <button
-            type="button"
-            className={cn('design-preview__device-pill', device === 'iphone' && 'is-active')}
-            onClick={() => handleDeviceChange('iphone')}
-          >
-            iPhone
-          </button>
+          {previewDevices.map((item) => {
+            const preset = getPreviewDevicePreset(item);
+            return (
+              <button
+                key={item}
+                type="button"
+                className={cn('design-preview__device-pill', device === item && 'is-active')}
+                onClick={() => handleDeviceChange(item)}
+              >
+                {preset.label}
+              </button>
+            );
+          })}
         </div>
 
         <nav className="design-preview__nav" aria-label="Экраны preview">
@@ -138,11 +141,17 @@ export function DesignPreviewScaffold({
       </aside>
 
       <div className="design-preview__stage">
-        <div className={cn('design-preview__device', `design-preview__device--${device}`)}>
-          <div className="design-preview__device-chrome" aria-hidden>
-            <span className="design-preview__device-speaker" />
-            <span className="design-preview__device-camera" />
-          </div>
+        <div
+          className="design-preview__device"
+          style={
+            {
+              '--design-preview-frame-width': `${devicePreset.frameWidth}px`,
+              '--design-preview-screen-height': `${devicePreset.screenHeight}px`,
+              '--design-preview-safe-top': `${devicePreset.safeTop}px`,
+              '--design-preview-safe-bottom': `${devicePreset.safeBottom}px`,
+            } as CSSProperties
+          }
+        >
           <div className="design-preview__device-screen">{children}</div>
         </div>
       </div>

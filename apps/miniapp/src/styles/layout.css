@@ -1,14 +1,15 @@
 .app-shell {
-  --bottom-nav-height: 78px;
+  --bottom-nav-height: var(--app-bottom-nav-height);
   --bottom-nav-offset: 3px;
-  min-height: 100vh;
-  min-height: 100dvh;
+  width: min(100%, var(--app-shell-max-width));
+  min-height: var(--app-viewport-height);
   display: grid;
   grid-template-rows: auto 1fr;
   gap: var(--space-3);
-  padding: var(--space-4);
+  margin-inline: auto;
+  padding: calc(var(--app-safe-top) + var(--space-4)) var(--app-page-gutter) 0;
   padding-bottom: calc(
-    var(--bottom-nav-height) + var(--safe-bottom) + var(--bottom-nav-offset) + var(--space-4)
+    var(--bottom-nav-height) + var(--app-safe-bottom) + var(--bottom-nav-offset) + var(--space-4)
   );
 }
 
@@ -18,15 +19,16 @@
 
 .app-shell--centered {
   place-items: center;
-  padding-top: max(20vh, 80px);
+  padding-top: max(20vh, calc(var(--app-safe-top) + 80px));
 }
 
 .app-shell--immersive {
   gap: 0;
+  width: 100%;
+  max-width: none;
   padding: 0;
   padding-bottom: 0;
-  height: 100vh;
-  height: 100dvh;
+  height: var(--app-viewport-height);
   overflow: hidden;
 }
 
@@ -42,6 +44,7 @@
 .shell-topbar {
   display: grid;
   gap: var(--space-2);
+  border-radius: var(--app-topbar-radius);
 }
 
 .shell-topbar__brand-row {
@@ -83,11 +86,11 @@
 .bottom-nav {
   position: fixed;
   left: 50%;
-  bottom: calc(var(--safe-bottom) + var(--bottom-nav-offset));
+  bottom: calc(var(--app-safe-bottom) + var(--bottom-nav-offset));
   transform: translate(-50%, 0);
-  width: min(calc(100% - (var(--space-2) * 2)), 500px);
+  width: min(calc(100% - (var(--app-page-gutter) * 2)), var(--app-shell-max-width));
   padding: 6px;
-  border-radius: 24px;
+  border-radius: var(--app-bottom-nav-radius);
   border: 1px solid rgba(255, 255, 255, 0.9);
   background:
     linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(229, 241, 255, 0.88)),
@@ -123,7 +126,7 @@ body.settings-drilldown-open .bottom-nav {
 
 .bottom-nav__item {
   min-height: 62px;
-  border-radius: 18px;
+  border-radius: calc(var(--app-bottom-nav-radius) - 6px);
   text-decoration: none;
   display: grid;
   place-items: center;
@@ -626,6 +629,9 @@ body.settings-home-page-open .bottom-nav__label {
   height: 100%;
   width: 100%;
   max-width: 100%;
+  padding-top: 0;
+  padding-left: 0;
+  padding-right: 0;
   overflow-y: auto;
   background:
     radial-gradient(circle at top, rgba(120, 175, 255, 0.14), transparent 40%),

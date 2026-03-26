@@ -22,6 +22,7 @@ body {
 body {
   font-family: var(--font-body);
   color: var(--text-primary);
+  min-height: var(--app-viewport-height);
   background:
     radial-gradient(circle at 14% 15%, rgba(189, 229, 255, 0.9), transparent 40%),
     radial-gradient(circle at 86% 5%, rgba(203, 245, 236, 0.72), transparent 34%),

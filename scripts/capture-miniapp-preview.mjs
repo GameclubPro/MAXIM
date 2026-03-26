@@ -1,28 +1,13 @@
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { chromium, devices } from 'playwright';
+import previewDevicePresets from '../apps/miniapp/src/lib/preview-device-presets.json' with { type: 'json' };
 
 const DEFAULT_BASE_URL = 'https://maxim.play-team.ru/app/';
 const OUTPUT_ROOT = path.resolve(process.cwd(), 'artifacts/miniapp-screenshots');
 const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
 
-const deviceProfiles = {
-  android: {
-    queryDevice: 'android',
-    viewportName: 'Pixel 7',
-    outputDirName: 'android',
-  },
-  iphone: {
-    queryDevice: 'iphone',
-    viewportName: 'iPhone 15',
-    outputDirName: 'iphone',
-  },
-  'iphone-se': {
-    queryDevice: 'iphone',
-    viewportName: 'iPhone SE',
-    outputDirName: 'iphone-se',
-  },
-};
+const deviceProfiles = previewDevicePresets;
 
 const screenshotTarget = (process.env.MINIAPP_SCREENSHOT_TARGET ?? 'device').trim().toLowerCase();
 
