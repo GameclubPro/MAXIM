@@ -19,16 +19,17 @@ export type ChatContext = {
 
 @Injectable()
 export class ChatContextCacheService implements OnModuleDestroy {
+  private static readonly CHAT_CONTEXT_TTL_SEC = 60;
+  private static readonly ADMIN_ACCESS_TTL_SEC = 60;
+  private static readonly MANAGED_ENTITY_HEADER_TTL_SEC = 10 * 60;
   private readonly logger = new Logger(ChatContextCacheService.name);
   private readonly redis: Redis;
-  private readonly ttlSec: number;
 
   constructor(
     private readonly prisma: PrismaService,
     configService: ConfigService,
   ) {
     this.redis = new Redis(configService.getOrThrow<string>('REDIS_URL'));
-    this.ttlSec = 60;
   }
 
   async onModuleDestroy() {
@@ -124,7 +125,7 @@ export class ChatContextCacheService implements OnModuleDestroy {
       ChatContextCacheService.adminAccessKey(chatId, userId),
       state,
       'EX',
-      this.ttlSec,
+      ChatContextCacheService.ADMIN_ACCESS_TTL_SEC,
     );
   }
 
@@ -153,7 +154,7 @@ export class ChatContextCacheService implements OnModuleDestroy {
       ChatContextCacheService.managedEntityHeaderKey(header.id, header.entityType),
       JSON.stringify(header),
       'EX',
-      this.ttlSec,
+      ChatContextCacheService.MANAGED_ENTITY_HEADER_TTL_SEC,
     );
   }
 
@@ -306,7 +307,7 @@ export class ChatContextCacheService implements OnModuleDestroy {
       ChatContextCacheService.cacheKey(chatId),
       JSON.stringify(value),
       'EX',
-      this.ttlSec,
+      ChatContextCacheService.CHAT_CONTEXT_TTL_SEC,
     );
     return value;
   }

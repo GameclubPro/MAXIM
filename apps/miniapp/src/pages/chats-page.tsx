@@ -53,12 +53,14 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     entityType: 'chat',
     enabled: activeTab === 'chat',
     reloadNonce: refreshNonceByTab.chat,
+    resumeOnVisibilityReturn: true,
   });
   const channelsState = useManagedEntitiesSync({
     api,
     entityType: 'channel',
     enabled: activeTab === 'channel',
     reloadNonce: refreshNonceByTab.channel,
+    resumeOnVisibilityReturn: true,
   });
 
   const activeEntities = useMemo(() => {

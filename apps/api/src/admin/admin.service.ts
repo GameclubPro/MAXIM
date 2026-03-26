@@ -12319,12 +12319,56 @@ export class AdminService {
     });
   }
 
+  private async primeManagedEntityHeaders(
+    chats: ChatSummary[],
+    remoteChats: readonly MaxBotChat[],
+  ): Promise<void> {
+    if (
+      !Array.isArray(remoteChats) ||
+      remoteChats.length === 0 ||
+      typeof this.chatContextCache.setManagedEntityHeader !== 'function'
+    ) {
+      return;
+    }
+
+    const remoteByChatId = new Map(remoteChats.map((chat) => [chat.chatId, chat]));
+    await Promise.all(
+      chats.map(async (chat) => {
+        const remoteChat = remoteByChatId.get(chat.id);
+        if (!remoteChat) {
+          return;
+        }
+
+        const title = remoteChat.title?.trim() || chat.title;
+        const link = remoteChat.link ?? chat.link ?? null;
+        const avatarUrl =
+          this.readTrimmedString(remoteChat.avatarUrl) ?? this.readTrimmedString(chat.avatarUrl);
+
+        if (link === null && avatarUrl === null && title === chat.title) {
+          return;
+        }
+
+        await this.chatContextCache.setManagedEntityHeader({
+          id: chat.id,
+          title,
+          entityType: chat.entityType,
+          link,
+          participantsCount: null,
+          avatarUrl,
+        });
+      }),
+    );
+  }
+
   private async hydrateManagedEntities(
     chats: ChatSummary[],
     options: {
       remoteChats?: readonly MaxBotChat[];
     } = {},
   ): Promise<ChatSummary[]> {
+    if (Array.isArray(options.remoteChats) && options.remoteChats.length > 0) {
+      await this.primeManagedEntityHeaders(chats, options.remoteChats);
+    }
     const withAvatars = await this.attachManagedEntityAvatars(chats, options);
     return this.attachChannelOverview(withAvatars);
   }

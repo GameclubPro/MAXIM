@@ -256,7 +256,7 @@ describe('ChatContextCacheService', () => {
       ChatContextCacheService.managedEntityHeaderKey('chat-1', 'chat'),
       JSON.stringify(header),
       'EX',
-      60,
+      600,
     );
 
     redisInstance.get.mockResolvedValueOnce(JSON.stringify(header));
