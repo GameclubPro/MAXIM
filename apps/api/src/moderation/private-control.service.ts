@@ -338,6 +338,21 @@ const SEARCH_RESULT_LIMIT = 8;
 const BUTTON_TEXT_MAX_SINGLE_COLUMN = 36;
 const BUTTON_TEXT_MAX_TWO_COLUMNS = 14;
 const SUPPORT_CHAT_URL = 'https://max.ru/join/qX7U_Hj-L-xMJG8V7wlF6dD-6a6cXIzTBGRtU2mRMzk';
+const DUPLICATE_ALLOWED_COUNT_MIN = 0;
+const DUPLICATE_ALLOWED_COUNT_MAX = 16;
+const DUPLICATE_THRESHOLD_MAX = 20;
+const DUPLICATE_FLOW_SETTING_KEYS = [
+  'duplicateBotMessageEnabled',
+  'duplicateWarnEnabled',
+  'duplicateMuteEnabled',
+  'duplicateBanEnabled',
+  'duplicateWarnWindowSec',
+  'duplicateWarnMaxCount',
+  'duplicateMuteWindowSec',
+  'duplicateMuteMaxCount',
+  'duplicateBanWindowSec',
+  'duplicateBanMaxCount',
+] as const satisfies readonly (keyof ChatSettings)[];
 const MINIAPP_ROUTE_START_PARAM_PREFIX = 'mr-';
 const MAX_CALLBACK_PREFIX = 'pc2';
 const LEGACY_CALLBACK_PREFIX = 'pc';
@@ -640,68 +655,9 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
   ],
   duplicates: [
     { key: 'antiDuplicateEnabled', label: 'Включить антидубли', type: 'boolean' },
-    { key: 'duplicateWarnEnabled', label: 'Штраф: предупреждение', type: 'boolean' },
-    {
-      key: 'duplicateWarnWindowSec',
-      label: 'Период для WARN (сек)',
-      type: 'number',
-      min: 60,
-      max: 604800,
-      step: 300,
-      presets: [300, 600, 1800],
-    },
-    {
-      key: 'duplicateWarnMaxCount',
-      label: 'Лимит повторов для WARN',
-      type: 'number',
-      min: 1,
-      max: 100,
-      step: 1,
-      presets: [2, 3, 5],
-    },
-    { key: 'duplicateMuteEnabled', label: 'Штраф: мут', type: 'boolean' },
-    {
-      key: 'duplicateMuteWindowSec',
-      label: 'Период для MUTE (сек)',
-      type: 'number',
-      min: 60,
-      max: 604800,
-      step: 600,
-      presets: [600, 1800, 3600],
-    },
-    {
-      key: 'duplicateMuteMaxCount',
-      label: 'Лимит повторов для MUTE',
-      type: 'number',
-      min: 1,
-      max: 100,
-      step: 1,
-      presets: [3, 5, 7],
-    },
-    { key: 'duplicateBanEnabled', label: 'Штраф: бан', type: 'boolean' },
-    {
-      key: 'duplicateBanWindowSec',
-      label: 'Период для BAN (сек)',
-      type: 'number',
-      min: 60,
-      max: 1209600,
-      step: 3600,
-      presets: [3600, 21600, 86400],
-    },
-    {
-      key: 'duplicateBanMaxCount',
-      label: 'Лимит повторов для BAN',
-      type: 'number',
-      min: 1,
-      max: 100,
-      step: 1,
-      presets: [4, 6, 8],
-    },
-    { key: 'duplicateBotMessageEnabled', label: 'Показывать сообщение бота', type: 'boolean' },
-    { key: 'duplicateBotMessageText', label: 'Текст сообщения бота', type: 'text' },
-    { key: 'duplicateBotButtonEnabled', label: 'Показывать кнопку', type: 'boolean' },
-    { key: 'duplicateBotButtonUrl', label: 'Ссылка кнопки', type: 'url' },
-    { key: 'duplicateBotButtonText', label: 'Текст кнопки', type: 'text' },
+    { key: 'duplicateBotMessageEnabled', label: 'Шаг 1: объяснение', type: 'boolean' },
+    { key: 'duplicateWarnEnabled', label: 'Шаг 2: предупреждение', type: 'boolean' },
+    { key: 'duplicateMuteEnabled', label: 'Шаг 3: мут', type: 'boolean' },
     {
       key: 'duplicateMuteDurationHours',
       label: 'Срок мута (часы)',
@@ -711,6 +667,29 @@ const SECTION_FIELDS: Record<PrivateSectionKey, SettingFieldConfig[]> = {
       step: 1,
       presets: [1, 6, 24, 168],
     },
+    { key: 'duplicateBanEnabled', label: 'Шаг 4: бан', type: 'boolean' },
+    {
+      key: 'duplicateWarnWindowSec',
+      label: 'Окно дублей (сек)',
+      type: 'number',
+      min: 3600,
+      max: 604800,
+      step: 3600,
+      presets: [3600, 21600, 86400],
+    },
+    {
+      key: 'duplicateWarnMaxCount',
+      label: 'Разрешено дублей',
+      type: 'number',
+      min: 0,
+      max: DUPLICATE_ALLOWED_COUNT_MAX,
+      step: 1,
+      presets: [0, 1, 3, 5],
+    },
+    { key: 'duplicateBotMessageText', label: 'Текст сообщения бота', type: 'text' },
+    { key: 'duplicateBotButtonEnabled', label: 'Показывать кнопку', type: 'boolean' },
+    { key: 'duplicateBotButtonUrl', label: 'Ссылка кнопки', type: 'url' },
+    { key: 'duplicateBotButtonText', label: 'Текст кнопки', type: 'text' },
   ],
   limits: [
     { key: 'antiSpamEnabled', label: 'Включить антиспам', type: 'boolean' },
@@ -923,6 +902,7 @@ const SECTION_CARD_FIELDS: Record<
   duplicates: {
     basic: [
       'antiDuplicateEnabled',
+      'duplicateBotMessageEnabled',
       'duplicateWarnEnabled',
       'duplicateMuteEnabled',
       'duplicateMuteDurationHours',
@@ -931,11 +911,6 @@ const SECTION_CARD_FIELDS: Record<
     advanced: [
       'duplicateWarnWindowSec',
       'duplicateWarnMaxCount',
-      'duplicateMuteWindowSec',
-      'duplicateMuteMaxCount',
-      'duplicateBanWindowSec',
-      'duplicateBanMaxCount',
-      'duplicateBotMessageEnabled',
       'duplicateBotMessageText',
       'duplicateBotButtonEnabled',
       'duplicateBotButtonText',
@@ -4855,12 +4830,161 @@ export class PrivateControlService {
     value: ChatSettings[keyof ChatSettings],
   ): Promise<void> {
     const current = await this.adminService.getSettings(chatId, actor);
-    const nextSettings: ChatSettings = {
+    const nextSettingsBase: ChatSettings = {
       ...current,
       [key]: value,
     };
+    const nextSettings = this.isDuplicateFlowSettingKey(key)
+      ? this.normalizeDuplicateFlowSettings(nextSettingsBase)
+      : nextSettingsBase;
 
     await this.adminService.updateSettings(chatId, actor, nextSettings, 'private_bot');
+  }
+
+  private isDuplicateFlowSettingKey(key: keyof ChatSettings): boolean {
+    return (DUPLICATE_FLOW_SETTING_KEYS as readonly (keyof ChatSettings)[]).includes(key);
+  }
+
+  private resolveDuplicateSharedWindowSec(
+    settings: Pick<
+      ChatSettings,
+      | 'duplicateWarnEnabled'
+      | 'duplicateMuteEnabled'
+      | 'duplicateBanEnabled'
+      | 'duplicateWarnWindowSec'
+      | 'duplicateMuteWindowSec'
+      | 'duplicateBanWindowSec'
+    >,
+  ): number {
+    if (settings.duplicateWarnEnabled) {
+      return settings.duplicateWarnWindowSec;
+    }
+
+    if (settings.duplicateMuteEnabled) {
+      return settings.duplicateMuteWindowSec;
+    }
+
+    if (settings.duplicateBanEnabled) {
+      return settings.duplicateBanWindowSec;
+    }
+
+    return settings.duplicateWarnWindowSec;
+  }
+
+  private resolveDuplicateFirstThreshold(
+    settings: Pick<
+      ChatSettings,
+      | 'duplicateWarnEnabled'
+      | 'duplicateMuteEnabled'
+      | 'duplicateBanEnabled'
+      | 'duplicateWarnMaxCount'
+      | 'duplicateMuteMaxCount'
+      | 'duplicateBanMaxCount'
+    >,
+  ): number {
+    if (settings.duplicateWarnEnabled) {
+      return settings.duplicateWarnMaxCount;
+    }
+
+    if (settings.duplicateMuteEnabled) {
+      return settings.duplicateMuteMaxCount;
+    }
+
+    if (settings.duplicateBanEnabled) {
+      return settings.duplicateBanMaxCount;
+    }
+
+    return settings.duplicateWarnMaxCount;
+  }
+
+  private resolveDuplicateAllowedCountMax(
+    settings: Pick<
+      ChatSettings,
+      | 'duplicateBotMessageEnabled'
+      | 'duplicateWarnEnabled'
+      | 'duplicateMuteEnabled'
+      | 'duplicateBanEnabled'
+    >,
+  ): number {
+    const duplicateThresholdOffset =
+      (settings.duplicateBotMessageEnabled ? 2 : 1) +
+      (settings.duplicateWarnEnabled ? 1 : 0) +
+      (settings.duplicateMuteEnabled ? 1 : 0);
+
+    return Math.max(DUPLICATE_ALLOWED_COUNT_MIN, DUPLICATE_THRESHOLD_MAX - duplicateThresholdOffset);
+  }
+
+  private resolveDuplicateAllowedCount(
+    settings: Pick<
+      ChatSettings,
+      | 'duplicateBotMessageEnabled'
+      | 'duplicateWarnEnabled'
+      | 'duplicateMuteEnabled'
+      | 'duplicateBanEnabled'
+      | 'duplicateWarnMaxCount'
+      | 'duplicateMuteMaxCount'
+      | 'duplicateBanMaxCount'
+    >,
+  ): number {
+    const rawAllowedCount =
+      this.resolveDuplicateFirstThreshold(settings) - (settings.duplicateBotMessageEnabled ? 2 : 1);
+    return Math.max(
+      DUPLICATE_ALLOWED_COUNT_MIN,
+      Math.min(this.resolveDuplicateAllowedCountMax(settings), rawAllowedCount),
+    );
+  }
+
+  private buildDuplicateFlowSettings(
+    settings: Pick<
+      ChatSettings,
+      | 'duplicateBotMessageEnabled'
+      | 'duplicateWarnEnabled'
+      | 'duplicateMuteEnabled'
+      | 'duplicateBanEnabled'
+    > & {
+      allowedCount: number;
+      windowSec: number;
+    },
+  ): Pick<
+    ChatSettings,
+    | 'duplicateWarnWindowSec'
+    | 'duplicateMuteWindowSec'
+    | 'duplicateBanWindowSec'
+    | 'duplicateWarnMaxCount'
+    | 'duplicateMuteMaxCount'
+    | 'duplicateBanMaxCount'
+  > {
+    const allowedCount = Math.max(
+      DUPLICATE_ALLOWED_COUNT_MIN,
+      Math.min(this.resolveDuplicateAllowedCountMax(settings), Math.round(settings.allowedCount)),
+    );
+    const windowSec = Math.max(3_600, Math.min(604_800, Math.round(settings.windowSec)));
+    const warnThreshold = allowedCount + (settings.duplicateBotMessageEnabled ? 2 : 1);
+    const muteThreshold = warnThreshold + (settings.duplicateWarnEnabled ? 1 : 0);
+    const banThreshold = muteThreshold + (settings.duplicateMuteEnabled ? 1 : 0);
+
+    return {
+      duplicateWarnWindowSec: windowSec,
+      duplicateMuteWindowSec: windowSec,
+      duplicateBanWindowSec: windowSec,
+      duplicateWarnMaxCount: warnThreshold,
+      duplicateMuteMaxCount: muteThreshold,
+      duplicateBanMaxCount: banThreshold,
+    };
+  }
+
+  private normalizeDuplicateFlowSettings(settings: ChatSettings): ChatSettings {
+    return {
+      ...settings,
+      ...this.buildDuplicateFlowSettings({
+        duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
+        duplicateWarnEnabled: settings.duplicateWarnEnabled,
+        duplicateMuteEnabled: settings.duplicateMuteEnabled,
+        duplicateBanEnabled: settings.duplicateBanEnabled,
+        allowedCount: this.resolveDuplicateAllowedCount(settings),
+        windowSec: this.resolveDuplicateSharedWindowSec(settings),
+      }),
+    };
   }
 
   private async updateSingleChannelSetting(
@@ -7308,13 +7432,15 @@ export class PrivateControlService {
           `Санкции: объяснение ${this.describeBooleanCompact(settings.thematicFiltersBotMessageEnabled)} • WARN ${this.describeBooleanCompact(settings.thematicFiltersWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.thematicFiltersMuteEnabled)} (${settings.thematicFiltersMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.thematicFiltersBanEnabled)}`,
           `Кнопка: ${this.describeBooleanCompact(settings.thematicFiltersBotButtonEnabled)}`,
         ];
-      case 'duplicates':
+      case 'duplicates': {
+        const duplicateWindowSec = this.resolveDuplicateSharedWindowSec(settings);
+        const duplicateAllowedCount = this.resolveDuplicateAllowedCount(settings);
         return [
-          `Антидубли: ${this.describeBooleanCompact(settings.antiDuplicateEnabled)} • мут ${settings.duplicateMuteDurationHours}ч`,
-          `WARN: ${this.describeBooleanCompact(settings.duplicateWarnEnabled)} / ${settings.duplicateWarnMaxCount} повт. за ${settings.duplicateWarnWindowSec}с`,
-          `MUTE: ${this.describeBooleanCompact(settings.duplicateMuteEnabled)} / ${settings.duplicateMuteMaxCount} повт. за ${settings.duplicateMuteWindowSec}с • ${settings.duplicateMuteDurationHours}ч`,
-          `BAN: ${this.describeBooleanCompact(settings.duplicateBanEnabled)} / ${settings.duplicateBanMaxCount} повт. за ${settings.duplicateBanWindowSec}с`,
+          `Антидубли: ${this.describeBooleanCompact(settings.antiDuplicateEnabled)} • ${duplicateAllowedCount === 0 ? 'с первого дубля' : `после ${duplicateAllowedCount} дубл.`} • окно ${duplicateWindowSec}с`,
+          `Этапы: объяснение ${this.describeBooleanCompact(settings.duplicateBotMessageEnabled)} • WARN ${this.describeBooleanCompact(settings.duplicateWarnEnabled)} • MUTE ${this.describeBooleanCompact(settings.duplicateMuteEnabled)} (${settings.duplicateMuteDurationHours}ч) • BAN ${this.describeBooleanCompact(settings.duplicateBanEnabled)}`,
+          `Кнопка: ${this.describeBooleanCompact(settings.duplicateBotButtonEnabled)}`,
         ];
+      }
       case 'limits':
         return [
           `Антиспам: ${this.describeBooleanCompact(settings.antiSpamEnabled)} • макс. длина ${settings.maxMessageLengthEnabled ? settings.maxMessageLength : 'выкл'}`,

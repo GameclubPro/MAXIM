@@ -7,7 +7,7 @@ import {
 import { CommercialAdsSensitivity, LinkPolicy, type ChatSettings } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { extractUrlsFromText as extractTextUrls, stripUrlsFromText } from '../common/url-text.util';
-import { buildDuplicateHitKey, buildDuplicateStageKey } from './duplicate-state';
+import { buildDuplicateStageKey } from './duplicate-state';
 import { RedisCounterService } from './redis-counter.service';
 
 export type CommercialDecisionBand = 'LOW' | 'MEDIUM' | 'HIGH';
@@ -42,13 +42,8 @@ export type DetectionResult = {
   duplicateDecision?: DuplicateDecision;
 };
 
-type DuplicateStageName = 'warn' | 'mute' | 'ban';
-
-type DuplicateStage = {
-  name: DuplicateStageName;
-  action: DuplicateAction;
-  windowSec: number;
-  threshold: number;
+type DuplicateReactionStage = {
+  action: DuplicateAction | null;
 };
 
 type CommercialDetection = {
@@ -222,7 +217,6 @@ const ADS_PHONE_PATTERN = /\b(?:\+7|8)\s*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?
 const DUPLICATE_EXCLUDED_PHONE_PATTERN =
   /(?:^|[^\d])(?:\+7|8)\s*\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{2}[\s-]?\d{2}(?:$|[^\d])/u;
 const THEMATIC_CODEWORD_MIN_LENGTH = 90;
-const DEFAULT_DUPLICATE_WINDOW_SEC = 60;
 const DUPLICATE_MIN_LENGTH = 50;
 const DUPLICATE_MIN_TOKEN_COUNT = 6;
 const DUPLICATE_MIN_UNIQUE_LONG_TOKENS = 4;
@@ -489,114 +483,107 @@ export class RuleEngineService {
   }> {
     const { chatId, userId, compactText, settings } = params;
     const hash = createHash('sha256').update(compactText).digest('hex').slice(0, 20);
-    const hitKey = buildDuplicateHitKey(chatId, userId, hash);
-    const hitTotal = await this.redisCounter.incrementWithTtl(
-      hitKey,
-      DEFAULT_DUPLICATE_WINDOW_SEC + 1,
-    );
-    const hitCount = Math.max(0, hitTotal - 1);
-    const hit =
-      hitCount > 0
-        ? {
-            count: hitCount,
-            windowSec: DEFAULT_DUPLICATE_WINDOW_SEC,
-            hash,
-          }
-        : undefined;
+    const flow = this.getDuplicateFlowConfig(settings);
+    const flowKey = buildDuplicateStageKey(chatId, userId, hash, 'flow');
+    const total = await this.redisCounter.incrementWithTtl(flowKey, flow.windowSec + 1);
+    const repeatCount = Math.max(0, total - 1);
 
-    const stages = this.getEnabledDuplicateStages(settings);
-    if (stages.length === 0) {
+    if (repeatCount <= flow.allowedCount) {
+      return {};
+    }
+
+    const hit: DuplicateHit = {
+      count: repeatCount,
+      windowSec: flow.windowSec,
+      hash,
+    };
+
+    if (flow.reactions.length === 0) {
+      return {};
+    }
+
+    const reactionIndex = Math.min(flow.reactions.length - 1, repeatCount - flow.allowedCount - 1);
+    const reaction = flow.reactions[reactionIndex];
+
+    if (!reaction || reaction.action === null) {
       return { hit };
     }
 
-    const repeatCounts = new Map<DuplicateStageName, number>();
-
-    for (const stage of stages) {
-      const key = buildDuplicateStageKey(chatId, userId, hash, stage.name);
-      const count = await this.redisCounter.incrementWithTtl(key, stage.windowSec + 1);
-      repeatCounts.set(stage.name, Math.max(0, count - 1));
-    }
-
-    const priority: DuplicateStageName[] = ['ban', 'mute', 'warn'];
-    for (const stageName of priority) {
-      const stage = stages.find((candidate) => candidate.name === stageName);
-      if (!stage) {
-        continue;
-      }
-
-      const count = repeatCounts.get(stageName) ?? 0;
-      if (count < stage.threshold) {
-        continue;
-      }
-
-      return {
-        hit,
-        decision: {
-          action: stage.action,
-          count,
-          threshold: stage.threshold,
-          windowSec: stage.windowSec,
-          hash,
-          nextAction: this.resolveNextDuplicateAction(stages, stageName),
-        },
-      };
-    }
-
-    return { hit };
+    return {
+      hit,
+      decision: {
+        action: reaction.action,
+        count: repeatCount,
+        threshold: flow.allowedCount + reactionIndex + 1,
+        windowSec: flow.windowSec,
+        hash,
+        nextAction: this.resolveNextDuplicateAction(flow.reactions, reactionIndex),
+      },
+    };
   }
 
-  private getEnabledDuplicateStages(settings: ChatSettings): DuplicateStage[] {
-    const stages: Array<DuplicateStage | null> = [
-      settings.duplicateWarnEnabled
-        ? {
-            name: 'warn',
-            action: 'WARN',
-            windowSec: settings.duplicateWarnWindowSec,
-            threshold: settings.duplicateWarnMaxCount,
-          }
-        : null,
-      settings.duplicateMuteEnabled
-        ? {
-            name: 'mute',
-            action: 'MUTE',
-            windowSec: settings.duplicateMuteWindowSec,
-            threshold: settings.duplicateMuteMaxCount,
-          }
-        : null,
-      settings.duplicateBanEnabled
-        ? {
-            name: 'ban',
-            action: 'BAN',
-            windowSec: settings.duplicateBanWindowSec,
-            threshold: settings.duplicateBanMaxCount,
-          }
-        : null,
-    ];
+  private getDuplicateFlowConfig(settings: ChatSettings): {
+    allowedCount: number;
+    windowSec: number;
+    reactions: DuplicateReactionStage[];
+  } {
+    const firstThreshold = settings.duplicateWarnEnabled
+      ? settings.duplicateWarnMaxCount
+      : settings.duplicateMuteEnabled
+        ? settings.duplicateMuteMaxCount
+        : settings.duplicateBanEnabled
+          ? settings.duplicateBanMaxCount
+          : settings.duplicateWarnMaxCount;
+    const windowSec = settings.duplicateWarnEnabled
+      ? settings.duplicateWarnWindowSec
+      : settings.duplicateMuteEnabled
+        ? settings.duplicateMuteWindowSec
+        : settings.duplicateBanEnabled
+          ? settings.duplicateBanWindowSec
+          : settings.duplicateWarnWindowSec;
+    const allowedCount = Math.max(
+      0,
+      firstThreshold - (settings.duplicateBotMessageEnabled ? 2 : 1),
+    );
 
-    return stages.filter((item): item is DuplicateStage => item !== null);
+    return {
+      allowedCount,
+      windowSec,
+      reactions: this.getEnabledDuplicateReactions(settings),
+    };
+  }
+
+  private getEnabledDuplicateReactions(settings: ChatSettings): DuplicateReactionStage[] {
+    const reactions: DuplicateReactionStage[] = [];
+
+    if (settings.duplicateBotMessageEnabled) {
+      reactions.push({ action: null });
+    }
+
+    if (settings.duplicateWarnEnabled) {
+      reactions.push({ action: 'WARN' });
+    }
+
+    if (settings.duplicateMuteEnabled) {
+      reactions.push({ action: 'MUTE' });
+    }
+
+    if (settings.duplicateBanEnabled) {
+      reactions.push({ action: 'BAN' });
+    }
+
+    return reactions;
   }
 
   private resolveNextDuplicateAction(
-    stages: DuplicateStage[],
-    actionName: DuplicateStageName,
+    reactions: DuplicateReactionStage[],
+    currentIndex: number,
   ): DuplicateAction | null {
-    const order: DuplicateStageName[] = ['warn', 'mute', 'ban'];
-    const stageNames = stages.map((stage) => stage.name);
-    const currentIndex = order.indexOf(actionName);
-
-    for (let index = currentIndex + 1; index < order.length; index += 1) {
-      const nextName = order[index];
-      if (!stageNames.includes(nextName)) {
-        continue;
+    for (let index = currentIndex + 1; index < reactions.length; index += 1) {
+      const nextAction = reactions[index]?.action;
+      if (nextAction) {
+        return nextAction;
       }
-
-      if (nextName === 'warn') {
-        return 'WARN';
-      }
-      if (nextName === 'mute') {
-        return 'MUTE';
-      }
-      return 'BAN';
     }
 
     return null;

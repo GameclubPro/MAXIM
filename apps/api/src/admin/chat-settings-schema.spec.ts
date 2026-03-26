@@ -1,7 +1,22 @@
 import { chatSettingsSchema } from '@maxim/contracts';
 
-describe('chatSettingsSchema duplicate stage validation', () => {
-  it('rejects BAN thresholds that are lower than MUTE thresholds', () => {
+describe('chatSettingsSchema duplicate flow validation', () => {
+  it('allows duplicate thresholds to start from the first duplicate', () => {
+    const result = chatSettingsSchema.safeParse({
+      antiDuplicateEnabled: true,
+      duplicateBotMessageEnabled: false,
+      duplicateWarnEnabled: true,
+      duplicateWarnMaxCount: 1,
+      duplicateMuteEnabled: true,
+      duplicateMuteMaxCount: 2,
+      duplicateBanEnabled: true,
+      duplicateBanMaxCount: 3,
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it('does not require BAN thresholds to stay above MUTE thresholds', () => {
     const result = chatSettingsSchema.safeParse({
       antiDuplicateEnabled: true,
       duplicateWarnEnabled: false,
@@ -13,12 +28,6 @@ describe('chatSettingsSchema duplicate stage validation', () => {
       duplicateBanMaxCount: 4,
     });
 
-    expect(result.success).toBe(false);
-    expect(result.error?.issues).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ path: ['duplicateBanWindowSec'] }),
-        expect.objectContaining({ path: ['duplicateBanMaxCount'] }),
-      ]),
-    );
+    expect(result.success).toBe(true);
   });
 });

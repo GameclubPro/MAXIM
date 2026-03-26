@@ -110,8 +110,8 @@ const AUTO_SAVE_DELAY_MS = 650;
 const AUTO_MUTE_DURATION_MIN_HOURS = 1;
 const AUTO_MUTE_DURATION_MAX_HOURS = 168;
 const AUTO_MUTE_DURATION_PRESET_HOURS = [1, 6, 24, 168] as const;
-const DUPLICATE_COUNT_MIN = 2;
-const DUPLICATE_COUNT_MAX = 20;
+const DUPLICATE_ALLOWED_COUNT_MIN = 0;
+const DUPLICATE_ALLOWED_COUNT_MAX = 16;
 const MESSAGE_COUNT_LIMIT_MIN = 1;
 const MESSAGE_COUNT_LIMIT_MAX = 10;
 const MESSAGE_COUNT_LIMIT_WINDOW_MIN_HOURS = 1;
@@ -239,15 +239,6 @@ function splitMessageLimitsBlockedWordsInput(value: string): string[] {
     .filter((item): item is string => Boolean(item));
 }
 
-type DuplicateEnabledKey = 'duplicateWarnEnabled' | 'duplicateMuteEnabled' | 'duplicateBanEnabled';
-type DuplicateWindowKey =
-  | 'duplicateWarnWindowSec'
-  | 'duplicateMuteWindowSec'
-  | 'duplicateBanWindowSec';
-type DuplicateMaxCountKey =
-  | 'duplicateWarnMaxCount'
-  | 'duplicateMuteMaxCount'
-  | 'duplicateBanMaxCount';
 type AutoMuteDurationKey =
   | 'duplicateMuteDurationHours'
   | 'linkMuteDurationHours'
@@ -505,37 +496,143 @@ const COMMENTS_SETTING_KEYS = [
   'commentsChatBroadcastsEnabled',
 ] as const satisfies ReadonlyArray<keyof ChatSettings>;
 
-const DUPLICATE_STAGE_OPTIONS: Array<{
-  id: 'WARN' | 'MUTE' | 'BAN';
-  label: string;
-  enabledKey: DuplicateEnabledKey;
-  windowKey: DuplicateWindowKey;
-  maxCountKey: DuplicateMaxCountKey;
-  durationKey?: AutoMuteDurationKey;
-}> = [
-  {
-    id: 'WARN',
-    label: 'Предупреждение',
-    enabledKey: 'duplicateWarnEnabled',
-    windowKey: 'duplicateWarnWindowSec',
-    maxCountKey: 'duplicateWarnMaxCount',
+function resolveDuplicateSharedWindowSec(
+  settings: Pick<
+    ChatSettings,
+    | 'duplicateWarnEnabled'
+    | 'duplicateMuteEnabled'
+    | 'duplicateBanEnabled'
+    | 'duplicateWarnWindowSec'
+    | 'duplicateMuteWindowSec'
+    | 'duplicateBanWindowSec'
+  >,
+): number {
+  if (settings.duplicateWarnEnabled) {
+    return settings.duplicateWarnWindowSec;
+  }
+
+  if (settings.duplicateMuteEnabled) {
+    return settings.duplicateMuteWindowSec;
+  }
+
+  if (settings.duplicateBanEnabled) {
+    return settings.duplicateBanWindowSec;
+  }
+
+  return settings.duplicateWarnWindowSec;
+}
+
+function resolveDuplicateFirstThreshold(
+  settings: Pick<
+    ChatSettings,
+    | 'duplicateWarnEnabled'
+    | 'duplicateMuteEnabled'
+    | 'duplicateBanEnabled'
+    | 'duplicateWarnMaxCount'
+    | 'duplicateMuteMaxCount'
+    | 'duplicateBanMaxCount'
+  >,
+): number {
+  if (settings.duplicateWarnEnabled) {
+    return settings.duplicateWarnMaxCount;
+  }
+
+  if (settings.duplicateMuteEnabled) {
+    return settings.duplicateMuteMaxCount;
+  }
+
+  if (settings.duplicateBanEnabled) {
+    return settings.duplicateBanMaxCount;
+  }
+
+  return settings.duplicateWarnMaxCount;
+}
+
+function resolveDuplicateAllowedCount(
+  settings: Pick<
+    ChatSettings,
+    | 'duplicateBotMessageEnabled'
+    | 'duplicateWarnEnabled'
+    | 'duplicateMuteEnabled'
+    | 'duplicateBanEnabled'
+    | 'duplicateWarnMaxCount'
+    | 'duplicateMuteMaxCount'
+    | 'duplicateBanMaxCount'
+  >,
+): number {
+  return Math.max(
+    DUPLICATE_ALLOWED_COUNT_MIN,
+    Math.min(
+      DUPLICATE_ALLOWED_COUNT_MAX,
+      resolveDuplicateFirstThreshold(settings) - (settings.duplicateBotMessageEnabled ? 2 : 1),
+    ),
+  );
+}
+
+function buildDuplicateFlowSettings(
+  settings: Pick<
+    ChatSettings,
+    | 'duplicateBotMessageEnabled'
+    | 'duplicateWarnEnabled'
+    | 'duplicateMuteEnabled'
+    | 'duplicateBanEnabled'
+  > & {
+    allowedCount: number;
+    windowSec: number;
   },
-  {
-    id: 'MUTE',
-    label: 'Мут',
-    enabledKey: 'duplicateMuteEnabled',
-    windowKey: 'duplicateMuteWindowSec',
-    maxCountKey: 'duplicateMuteMaxCount',
-    durationKey: 'duplicateMuteDurationHours',
-  },
-  {
-    id: 'BAN',
-    label: 'Бан',
-    enabledKey: 'duplicateBanEnabled',
-    windowKey: 'duplicateBanWindowSec',
-    maxCountKey: 'duplicateBanMaxCount',
-  },
-];
+): Pick<
+  ChatSettings,
+  | 'duplicateWarnWindowSec'
+  | 'duplicateMuteWindowSec'
+  | 'duplicateBanWindowSec'
+  | 'duplicateWarnMaxCount'
+  | 'duplicateMuteMaxCount'
+  | 'duplicateBanMaxCount'
+> {
+  const allowedCount = Math.max(
+    DUPLICATE_ALLOWED_COUNT_MIN,
+    Math.min(DUPLICATE_ALLOWED_COUNT_MAX, Math.round(settings.allowedCount)),
+  );
+  const windowSec = Math.max(3_600, Math.min(604_800, Math.round(settings.windowSec)));
+  const warnThreshold = allowedCount + (settings.duplicateBotMessageEnabled ? 2 : 1);
+  const muteThreshold = warnThreshold + (settings.duplicateWarnEnabled ? 1 : 0);
+  const banThreshold = muteThreshold + (settings.duplicateMuteEnabled ? 1 : 0);
+
+  return {
+    duplicateWarnWindowSec: windowSec,
+    duplicateMuteWindowSec: windowSec,
+    duplicateBanWindowSec: windowSec,
+    duplicateWarnMaxCount: warnThreshold,
+    duplicateMuteMaxCount: muteThreshold,
+    duplicateBanMaxCount: banThreshold,
+  };
+}
+
+function normalizeDuplicateFlowSettings(settings: ChatSettings): ChatSettings {
+  return {
+    ...settings,
+    ...buildDuplicateFlowSettings({
+      duplicateBotMessageEnabled: settings.duplicateBotMessageEnabled,
+      duplicateWarnEnabled: settings.duplicateWarnEnabled,
+      duplicateMuteEnabled: settings.duplicateMuteEnabled,
+      duplicateBanEnabled: settings.duplicateBanEnabled,
+      allowedCount: resolveDuplicateAllowedCount(settings),
+      windowSec: resolveDuplicateSharedWindowSec(settings),
+    }),
+  };
+}
+
+function formatDuplicateAllowanceLabel(count: number): string {
+  if (count === 0) {
+    return 'с первого дубля';
+  }
+
+  if (count === 1) {
+    return 'после 1 дубля';
+  }
+
+  return `после ${count} дублей`;
+}
 
 const LINK_POLICY_OPTIONS: Array<{
   value: ChatSettings['linkPolicy'];
@@ -1587,9 +1684,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     useState<ManagedBroadcastDetails | null>(null);
   const [mailingNowMs, setMailingNowMs] = useState(() => Date.now());
   const [mailingWorkspaceView, setMailingWorkspaceView] = useState<MailingWorkspaceView>('compose');
-  const [duplicateWindowInputValues, setDuplicateWindowInputValues] = useState<
-    Partial<Record<DuplicateWindowKey, string>>
-  >({});
+  const [duplicateWindowInputValue, setDuplicateWindowInputValue] = useState('');
   const [rulesFailedSnapshot, setRulesFailedSnapshot] = useState('');
   const [openHintKey, setOpenHintKey] = useState<HintKey | null>(null);
   const [openMuteDurationKey, setOpenMuteDurationKey] = useState<AutoMuteDurationKey | null>(
@@ -1679,7 +1774,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     resetMailingPlanner();
     setEditingManagedBroadcast(null);
     setMailingWorkspaceView('compose');
-    setDuplicateWindowInputValues({});
+    setDuplicateWindowInputValue('');
     setPendingSpeechStyle(null);
   }, [chatId]);
 
@@ -1843,9 +1938,9 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
       return;
     }
 
-    setDraft(normalizeLegacyChatCommentScope(settingsQuery.data));
+    setDraft(normalizeDuplicateFlowSettings(normalizeLegacyChatCommentScope(settingsQuery.data)));
     setFieldErrors({});
-    setDuplicateWindowInputValues({});
+    setDuplicateWindowInputValue('');
   }, [settingsQuery.data]);
 
   useEffect(() => {
@@ -2746,8 +2841,54 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     return Math.max(1, Math.round(value / 3600));
   }
 
-  function handleDuplicateWindowHoursChange(key: DuplicateWindowKey, rawValue: string) {
-    setDuplicateWindowInputValues((current) => ({ ...current, [key]: rawValue }));
+  function applyDuplicateFlowConfig(overrides: {
+    allowedCount?: number;
+    windowSec?: number;
+    duplicateBotMessageEnabled?: boolean;
+    duplicateWarnEnabled?: boolean;
+    duplicateMuteEnabled?: boolean;
+    duplicateBanEnabled?: boolean;
+  }) {
+    setDraft((current) => {
+      if (!current) {
+        return current;
+      }
+
+      const duplicateBotMessageEnabled =
+        overrides.duplicateBotMessageEnabled ?? current.duplicateBotMessageEnabled;
+      const duplicateWarnEnabled = overrides.duplicateWarnEnabled ?? current.duplicateWarnEnabled;
+      const duplicateMuteEnabled = overrides.duplicateMuteEnabled ?? current.duplicateMuteEnabled;
+      const duplicateBanEnabled = overrides.duplicateBanEnabled ?? current.duplicateBanEnabled;
+      const allowedCount = overrides.allowedCount ?? resolveDuplicateAllowedCount(current);
+      const windowSec = overrides.windowSec ?? resolveDuplicateSharedWindowSec(current);
+
+      return {
+        ...current,
+        duplicateBotMessageEnabled,
+        duplicateWarnEnabled,
+        duplicateMuteEnabled,
+        duplicateBanEnabled,
+        ...buildDuplicateFlowSettings({
+          duplicateBotMessageEnabled,
+          duplicateWarnEnabled,
+          duplicateMuteEnabled,
+          duplicateBanEnabled,
+          allowedCount,
+          windowSec,
+        }),
+      };
+    });
+
+    clearFieldError('duplicateWarnWindowSec');
+    clearFieldError('duplicateWarnMaxCount');
+    clearFieldError('duplicateMuteWindowSec');
+    clearFieldError('duplicateMuteMaxCount');
+    clearFieldError('duplicateBanWindowSec');
+    clearFieldError('duplicateBanMaxCount');
+  }
+
+  function handleDuplicateWindowHoursChange(rawValue: string) {
+    setDuplicateWindowInputValue(rawValue);
 
     const normalized = rawValue.trim();
     if (normalized.length === 0) {
@@ -2760,30 +2901,18 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     }
 
     const safeHours = Math.min(168, Math.max(1, hours));
-    setFieldValue(key, (safeHours * 3600) as ChatSettings[DuplicateWindowKey]);
+    applyDuplicateFlowConfig({ windowSec: safeHours * 3600 });
   }
 
-  function handleDuplicateWindowHoursBlur(key: DuplicateWindowKey) {
-    const rawValue = duplicateWindowInputValues[key];
-    if (rawValue === undefined) {
-      return;
-    }
-
+  function handleDuplicateWindowHoursBlur() {
+    const rawValue = duplicateWindowInputValue;
     const normalized = rawValue.trim();
     const parsed = Number.parseInt(normalized, 10);
 
-    const fallbackHours = draft ? secondsToHours(Number(draft[key])) : 1;
+    const fallbackHours = draft ? secondsToHours(resolveDuplicateSharedWindowSec(draft)) : 1;
     const safeHours = Number.isNaN(parsed) ? fallbackHours : Math.min(168, Math.max(1, parsed));
-    setFieldValue(key, (safeHours * 3600) as ChatSettings[DuplicateWindowKey]);
-
-    setDuplicateWindowInputValues((current) => {
-      if (!(key in current)) {
-        return current;
-      }
-      const next = { ...current };
-      delete next[key];
-      return next;
-    });
+    applyDuplicateFlowConfig({ windowSec: safeHours * 3600 });
+    setDuplicateWindowInputValue('');
   }
 
   function formatMuteDurationCompact(hours: number) {
@@ -2841,12 +2970,12 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     );
   }
 
-  function adjustDuplicateMaxCount(key: DuplicateMaxCountKey, currentValue: number, delta: number) {
+  function adjustDuplicateAllowedCount(currentValue: number, delta: number) {
     const next = Math.min(
-      DUPLICATE_COUNT_MAX,
-      Math.max(DUPLICATE_COUNT_MIN, Number(currentValue) + delta),
+      DUPLICATE_ALLOWED_COUNT_MAX,
+      Math.max(DUPLICATE_ALLOWED_COUNT_MIN, Number(currentValue) + delta),
     );
-    setFieldValue(key, next as ChatSettings[DuplicateMaxCountKey]);
+    applyDuplicateFlowConfig({ allowedCount: next });
   }
 
   function addMessageLimitsBlockedWords() {
@@ -3705,13 +3834,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         : 'Только сообщение'
       : 'Сообщение выключено'
     : 'Выключено';
+  const duplicateAllowedCount = draft ? resolveDuplicateAllowedCount(draft) : 1;
+  const duplicateSharedWindowHours = draft ? secondsToHours(resolveDuplicateSharedWindowSec(draft)) : 12;
   const duplicateStagesEnabledCount = [
+    draft?.duplicateBotMessageEnabled,
     draft?.duplicateWarnEnabled,
     draft?.duplicateMuteEnabled,
     draft?.duplicateBanEnabled,
   ].filter(Boolean).length;
   const duplicatesHeaderSummary = draft?.antiDuplicateEnabled
-    ? `Автоудаление + ${duplicateStagesEnabledCount}/3 санкций`
+    ? `${formatDuplicateAllowanceLabel(duplicateAllowedCount)} • ${duplicateSharedWindowHours}ч • ${duplicateStagesEnabledCount}/4 этапа`
     : 'Выключено';
   const profanityStagesEnabledCount = draft?.russianProfanityFilterEnabled
     ? [
@@ -6592,42 +6724,31 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
                       {draft.antiDuplicateEnabled ? (
                         <div className="settings-native-toggle">
-                          <div className="settings-native-toggle__row">
-                            <div className="settings-native-toggle__title-wrap">
-                              <span className="settings-native-toggle__title">1. Объяснение</span>
-                              <div className="settings-native-toggle__title-actions">
-                                <EditToggleButton
-                                  label="Редактировать текст сообщения о дублях"
-                                  onClick={() => toggleBotMessageEditor('duplicate')}
-                                  disabled={!draft.duplicateBotMessageEnabled}
-                                  isOpen={openBotEditorKey === 'duplicate'}
-                                />
-                                <button
-                                  type="button"
-                                  className={cn(
-                                    'settings-info-button',
-                                    openHintKey === 'duplicateBotMessage' && 'is-open',
-                                  )}
-                                  aria-label="Пояснение для тумблера сообщений о дублях"
-                                  aria-controls="duplicate-bot-message-hint"
-                                  aria-expanded={openHintKey === 'duplicateBotMessage'}
-                                  onClick={() => toggleHint('duplicateBotMessage')}
-                                >
-                                  <span aria-hidden>i</span>
-                                </button>
+                            <div className="settings-native-toggle__row">
+                              <div className="settings-native-toggle__title-wrap">
+                                <span className="settings-native-toggle__title">1. Объяснение</span>
+                                <div className="settings-native-toggle__title-actions">
+                                  <EditToggleButton
+                                    label="Текст о дублях"
+                                    onClick={() => toggleBotMessageEditor('duplicate')}
+                                    disabled={!draft.duplicateBotMessageEnabled}
+                                    isOpen={openBotEditorKey === 'duplicate'}
+                                  />
+                                </div>
                               </div>
-                            </div>
 
                             <label
                               className="settings-native-switch"
-                              aria-label="Включить сообщение от бота для дублей сообщений"
+                              aria-label="Сообщение о дублях"
                             >
                               <input
                                 type="checkbox"
                                 checked={draft.duplicateBotMessageEnabled}
                                 onChange={(event) => {
                                   const enabled = event.target.checked;
-                                  setFieldValue('duplicateBotMessageEnabled', enabled);
+                                  applyDuplicateFlowConfig({
+                                    duplicateBotMessageEnabled: enabled,
+                                  });
                                   if (!enabled) {
                                     setFieldValue('duplicateBotButtonEnabled', false);
                                     clearFieldError('duplicateBotButtonUrl');
@@ -6640,15 +6761,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </span>
                             </label>
                           </div>
-
-                          {openHintKey === 'duplicateBotMessage' ? (
-                            <p
-                              id="duplicate-bot-message-hint"
-                              className="settings-native-toggle__hint"
-                            >
-                              При срабатывании правила дублей бот публикует поясняющее сообщение.
-                            </p>
-                          ) : null}
 
                           {draft.duplicateBotMessageEnabled && openBotEditorKey === 'duplicate' ? (
                             <BotMessageEditor
@@ -6676,26 +6788,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                           )}
                         >
                           <div className="settings-native-toggle__row">
-                            <div className="settings-native-toggle__title-wrap">
-                              <span className="settings-native-toggle__title">Добавить кнопку</span>
-                              <button
-                                type="button"
-                                className={cn(
-                                  'settings-info-button',
-                                  openHintKey === 'duplicateBotButton' && 'is-open',
-                                )}
-                                aria-label="Пояснение для кнопки в сообщении о дублях"
-                                aria-controls="duplicate-bot-button-hint"
-                                aria-expanded={openHintKey === 'duplicateBotButton'}
-                                onClick={() => toggleHint('duplicateBotButton')}
-                              >
-                                <span aria-hidden>i</span>
-                              </button>
-                            </div>
+                            <span className="settings-native-toggle__title">Добавить кнопку</span>
 
                             <label
                               className="settings-native-switch"
-                              aria-label="Добавить кнопку в сообщение бота для дублей сообщений"
+                              aria-label="Кнопка в сообщении о дублях"
                             >
                               <input
                                 type="checkbox"
@@ -6714,13 +6811,6 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                               </span>
                             </label>
                           </div>
-
-                          {renderInlineHint(
-                            'duplicateBotButton',
-                            'duplicate-bot-button-hint',
-                            'Добавляет кнопку в сообщение бота. Можно отправить пользователя в нужный чат, канал или профиль.',
-                            hasDuplicateBotButtonError,
-                          )}
 
                           {draft.duplicateBotButtonEnabled ? (
                             <ManagedLinkButtonFieldsSlot
@@ -6743,178 +6833,229 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                       ) : null}
 
                       {draft.antiDuplicateEnabled ? (
-                        <div className="duplicate-stage-list">
-                          {DUPLICATE_STAGE_OPTIONS.map((stage, index) => {
-                            const enabled = draft[stage.enabledKey];
-                            const windowSec = draft[stage.windowKey];
-                            const maxCount = draft[stage.maxCountKey];
-                            const durationKey = stage.durationKey ?? null;
-                            const windowError = fieldErrors[stage.windowKey];
-                            const maxCountError = fieldErrors[stage.maxCountKey];
-                            const durationError = durationKey ? fieldErrors[durationKey] : undefined;
-                            const stageTitle = `${index + 2}. ${stage.label}`;
+                        <>
+                          <article
+                            className={cn(
+                              'duplicate-stage',
+                              (fieldErrors.duplicateWarnWindowSec ||
+                                fieldErrors.duplicateWarnMaxCount) &&
+                                'field--error',
+                            )}
+                          >
+                            <div className="duplicate-stage__top">
+                              <span className="duplicate-stage__title">
+                                Когда включать модерацию
+                              </span>
+                            </div>
 
-                            return (
-                              <article
-                                key={stage.id}
-                                className={cn('duplicate-stage', !enabled && 'is-disabled')}
+                            <div className="duplicate-stage__controls">
+                              <label
+                                className={cn(
+                                  'duplicate-stage__field',
+                                  fieldErrors.duplicateWarnWindowSec && 'field--error',
+                                )}
                               >
-                                <div className="duplicate-stage__top">
-                                  <label className="duplicate-stage__toggle">
-                                    <input
-                                      type="checkbox"
-                                      checked={enabled}
-                                      onChange={(event) => {
-                                        const stageEnabled = event.target.checked;
-                                        setFieldValue(
-                                          stage.enabledKey,
-                                          stageEnabled as ChatSettings[DuplicateEnabledKey],
-                                        );
-                                        if (stageEnabled) {
-                                          setFieldValue('duplicateBotMessageEnabled', true);
-                                        }
-                                      }}
-                                    />
-                                    <span className="toggle-switch" aria-hidden>
-                                      <span className="toggle-switch__thumb" />
-                                    </span>
-                                    <span className="duplicate-stage__title">{stageTitle}</span>
-                                  </label>
-                                  {durationKey ? (
-                                    <button
-                                      type="button"
-                                      className={cn(
-                                        'logs-violation-item__ban-preset',
-                                        openMuteDurationKey === durationKey && 'is-active',
+                                <span className="duplicate-stage__field-label">Интервал</span>
+                                <div className="duplicate-stage__input-wrap">
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={168}
+                                    step={1}
+                                    value={
+                                      duplicateWindowInputValue ||
+                                      String(duplicateSharedWindowHours)
+                                    }
+                                    onChange={(event) =>
+                                      handleDuplicateWindowHoursChange(event.target.value)
+                                    }
+                                    onBlur={handleDuplicateWindowHoursBlur}
+                                    aria-label="Интервал дублей, часы"
+                                  />
+                                  <span className="duplicate-stage__suffix" aria-hidden>
+                                    часы
+                                  </span>
+                                </div>
+                              </label>
+
+                              <div
+                                className={cn(
+                                  'duplicate-stage__field',
+                                  fieldErrors.duplicateWarnMaxCount && 'field--error',
+                                )}
+                              >
+                                <span className="duplicate-stage__field-label">
+                                  Разрешено дублей
+                                </span>
+                                <div
+                                  className="duplicate-count-stepper"
+                                  role="group"
+                                  aria-label="Разрешено дублей"
+                                >
+                                  <button
+                                    type="button"
+                                    className="duplicate-count-stepper__button"
+                                    onClick={() =>
+                                      adjustDuplicateAllowedCount(duplicateAllowedCount, -1)
+                                    }
+                                    disabled={
+                                      duplicateAllowedCount <= DUPLICATE_ALLOWED_COUNT_MIN
+                                    }
+                                    aria-label="Меньше дублей"
+                                  >
+                                    -
+                                  </button>
+
+                                  <output
+                                    className="duplicate-count-stepper__value"
+                                    aria-live="polite"
+                                  >
+                                    {duplicateAllowedCount}
+                                  </output>
+
+                                  <button
+                                    type="button"
+                                    className="duplicate-count-stepper__button"
+                                    onClick={() =>
+                                      adjustDuplicateAllowedCount(duplicateAllowedCount, 1)
+                                    }
+                                    disabled={
+                                      duplicateAllowedCount >= DUPLICATE_ALLOWED_COUNT_MAX
+                                    }
+                                    aria-label="Больше дублей"
+                                  >
+                                    +
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+
+                            {fieldErrors.duplicateWarnWindowSec || fieldErrors.duplicateWarnMaxCount ? (
+                              <div className="duplicate-stage__errors">
+                                {fieldErrors.duplicateWarnWindowSec ? (
+                                  <small className="field__hint">
+                                    {fieldErrors.duplicateWarnWindowSec}
+                                  </small>
+                                ) : null}
+                                {fieldErrors.duplicateWarnMaxCount ? (
+                                  <small className="field__hint">
+                                    {fieldErrors.duplicateWarnMaxCount}
+                                  </small>
+                                ) : null}
+                              </div>
+                            ) : null}
+                          </article>
+
+                          <div className="settings-native-toggle settings-native-toggle--nested">
+                            <div className="settings-native-toggle__row">
+                              <span className="settings-native-toggle__title">
+                                2. Предупреждение
+                              </span>
+
+                              <label
+                                className="settings-native-switch"
+                                aria-label="Включить предупреждение за повторы"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={draft.duplicateWarnEnabled}
+                                  onChange={(event) =>
+                                    applyDuplicateFlowConfig({
+                                      duplicateWarnEnabled: event.target.checked,
+                                    })
+                                  }
+                                />
+                                <span className="toggle-switch" aria-hidden>
+                                  <span className="toggle-switch__thumb" />
+                                </span>
+                              </label>
+                            </div>
+                          </div>
+
+                          <div
+                            className={cn(
+                              'settings-native-toggle',
+                              'settings-native-toggle--nested',
+                              fieldErrors.duplicateMuteDurationHours && 'field--error',
+                            )}
+                          >
+                            <div className="settings-native-toggle__row">
+                              <div className="settings-native-toggle__title-wrap">
+                                <span className="settings-native-toggle__title">3. Мут</span>
+                                <div className="settings-native-toggle__title-actions">
+                                  <button
+                                    type="button"
+                                    className={cn(
+                                      'logs-violation-item__ban-preset',
+                                      openMuteDurationKey === 'duplicateMuteDurationHours' &&
+                                        'is-active',
+                                    )}
+                                    onClick={() =>
+                                      toggleMuteDurationEditor('duplicateMuteDurationHours')
+                                    }
+                                  >
+                                    <ClockIcon />
+                                    <span>
+                                      {formatMuteDurationCompact(
+                                        Number(draft.duplicateMuteDurationHours),
                                       )}
-                                      onClick={() => toggleMuteDurationEditor(durationKey)}
-                                    >
-                                      <ClockIcon />
-                                      <span>
-                                        {formatMuteDurationCompact(Number(draft[durationKey]))}
-                                      </span>
-                                    </button>
-                                  ) : null}
-                                </div>
-
-                                <div className="duplicate-stage__controls">
-                                  <label
-                                    className={cn(
-                                      'duplicate-stage__field',
-                                      windowError && 'field--error',
-                                    )}
-                                  >
-                                    <span className="duplicate-stage__field-label">Интервал</span>
-                                    <div className="duplicate-stage__input-wrap">
-                                      <input
-                                        type="number"
-                                        min={1}
-                                        max={168}
-                                        step={1}
-                                        value={
-                                          duplicateWindowInputValues[stage.windowKey] ??
-                                          String(secondsToHours(Number(windowSec)))
-                                        }
-                                        onChange={(event) =>
-                                          handleDuplicateWindowHoursChange(
-                                            stage.windowKey,
-                                            event.target.value,
-                                          )
-                                        }
-                                        onBlur={() =>
-                                          handleDuplicateWindowHoursBlur(stage.windowKey)
-                                        }
-                                        disabled={!enabled}
-                                        aria-label={`Интервал для ступени ${stage.label} в часах`}
-                                      />
-                                      <span className="duplicate-stage__suffix" aria-hidden>
-                                        часы
-                                      </span>
-                                    </div>
-                                  </label>
-
-                                  <div
-                                    className={cn(
-                                      'duplicate-stage__field',
-                                      maxCountError && 'field--error',
-                                    )}
-                                  >
-                                    <span className="duplicate-stage__field-label">
-                                      Количество дублей
                                     </span>
-                                    <div
-                                      className="duplicate-count-stepper"
-                                      role="group"
-                                      aria-label={`Количество дублей для ступени ${stage.label}`}
-                                    >
-                                      <button
-                                        type="button"
-                                        className="duplicate-count-stepper__button"
-                                        onClick={() =>
-                                          adjustDuplicateMaxCount(
-                                            stage.maxCountKey,
-                                            Number(maxCount),
-                                            -1,
-                                          )
-                                        }
-                                        disabled={
-                                          !enabled || Number(maxCount) <= DUPLICATE_COUNT_MIN
-                                        }
-                                        aria-label={`Уменьшить количество дублей для ${stage.label}`}
-                                      >
-                                        -
-                                      </button>
-
-                                      <output
-                                        className="duplicate-count-stepper__value"
-                                        aria-live="polite"
-                                      >
-                                        {Number(maxCount)}
-                                      </output>
-
-                                      <button
-                                        type="button"
-                                        className="duplicate-count-stepper__button"
-                                        onClick={() =>
-                                          adjustDuplicateMaxCount(
-                                            stage.maxCountKey,
-                                            Number(maxCount),
-                                            1,
-                                          )
-                                        }
-                                        disabled={
-                                          !enabled || Number(maxCount) >= DUPLICATE_COUNT_MAX
-                                        }
-                                        aria-label={`Увеличить количество дублей для ${stage.label}`}
-                                      >
-                                        +
-                                      </button>
-                                    </div>
-                                  </div>
+                                  </button>
                                 </div>
+                              </div>
 
-                                {windowError || maxCountError ? (
-                                  <div className="duplicate-stage__errors">
-                                    {windowError ? (
-                                      <small className="field__hint">{windowError}</small>
-                                    ) : null}
-                                    {maxCountError ? (
-                                      <small className="field__hint">{maxCountError}</small>
-                                    ) : null}
-                                  </div>
-                                ) : null}
+                              <label
+                                className="settings-native-switch"
+                                aria-label="Включить мут за повторы"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={draft.duplicateMuteEnabled}
+                                  onChange={(event) =>
+                                    applyDuplicateFlowConfig({
+                                      duplicateMuteEnabled: event.target.checked,
+                                    })
+                                  }
+                                />
+                                <span className="toggle-switch" aria-hidden>
+                                  <span className="toggle-switch__thumb" />
+                                </span>
+                              </label>
+                            </div>
 
-                                {durationKey
-                                  ? renderMuteDurationEditor(durationKey, 'Срок мута')
-                                  : null}
+                            {renderMuteDurationEditor('duplicateMuteDurationHours', 'Срок мута')}
 
-                                {durationError ? (
-                                  <small className="field__hint">{durationError}</small>
-                                ) : null}
-                              </article>
-                            );
-                          })}
-                        </div>
+                            {fieldErrors.duplicateMuteDurationHours ? (
+                              <small className="field__hint">
+                                {fieldErrors.duplicateMuteDurationHours}
+                              </small>
+                            ) : null}
+                          </div>
+
+                          <div className="settings-native-toggle settings-native-toggle--nested">
+                            <div className="settings-native-toggle__row">
+                              <span className="settings-native-toggle__title">4. Бан</span>
+
+                              <label
+                                className="settings-native-switch"
+                                aria-label="Включить бан за повторы"
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={draft.duplicateBanEnabled}
+                                  onChange={(event) =>
+                                    applyDuplicateFlowConfig({
+                                      duplicateBanEnabled: event.target.checked,
+                                    })
+                                  }
+                                />
+                                <span className="toggle-switch" aria-hidden>
+                                  <span className="toggle-switch__thumb" />
+                                </span>
+                              </label>
+                            </div>
+                          </div>
+                        </>
                       ) : null}
                     </div>
                   ) : null}

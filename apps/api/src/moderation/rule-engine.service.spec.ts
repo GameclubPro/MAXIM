@@ -1052,7 +1052,7 @@ describe('RuleEngineService', () => {
     expect(disabledResult.violations.some((item) => item.ruleCode === 'FLOOD')).toBe(false);
   });
 
-  it('escalates duplicate action to WARN/MUTE/BAN for 12h/24h/48h windows', async () => {
+  it('allows one duplicate, then escalates to WARN/MUTE/BAN in sequence', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
 
     await service.detect({
@@ -1092,14 +1092,78 @@ describe('RuleEngineService', () => {
       domainAllowlist: [],
     });
 
-    expect(second.duplicateHit?.count).toBe(1);
+    expect(second.duplicateHit).toBeUndefined();
     expect(second.duplicateDecision).toBeUndefined();
     expect(third.duplicateDecision?.action).toBe('WARN');
     expect(third.duplicateDecision?.windowSec).toBe(12 * 60 * 60);
     expect(fourth.duplicateDecision?.action).toBe('MUTE');
-    expect(fourth.duplicateDecision?.windowSec).toBe(24 * 60 * 60);
+    expect(fourth.duplicateDecision?.windowSec).toBe(12 * 60 * 60);
     expect(fifth.duplicateDecision?.action).toBe('BAN');
-    expect(fifth.duplicateDecision?.windowSec).toBe(48 * 60 * 60);
+    expect(fifth.duplicateDecision?.windowSec).toBe(12 * 60 * 60);
+  });
+
+  it('starts with explanation when duplicate bot message stage is enabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({ duplicateBotMessageEnabled: true });
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: DUPLICATE_SPAM_TEXT,
+      settings,
+      domainAllowlist: [],
+    });
+
+    const second = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: DUPLICATE_SPAM_TEXT,
+      settings,
+      domainAllowlist: [],
+    });
+    const third = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: DUPLICATE_SPAM_TEXT,
+      settings,
+      domainAllowlist: [],
+    });
+
+    expect(second.duplicateHit?.count).toBe(1);
+    expect(second.duplicateDecision).toBeUndefined();
+    expect(third.duplicateDecision?.action).toBe('WARN');
+  });
+
+  it('can warn on the first duplicate when no duplicates are allowed', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      duplicateBotMessageEnabled: false,
+      duplicateWarnEnabled: true,
+      duplicateWarnMaxCount: 1,
+      duplicateMuteEnabled: true,
+      duplicateMuteMaxCount: 2,
+      duplicateBanEnabled: true,
+      duplicateBanMaxCount: 3,
+    });
+
+    const first = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: DUPLICATE_SPAM_TEXT,
+      settings,
+      domainAllowlist: [],
+    });
+    const second = await service.detect({
+      chatId: 'chat-1',
+      userId: 'u-1',
+      text: DUPLICATE_SPAM_TEXT,
+      settings,
+      domainAllowlist: [],
+    });
+
+    expect(first.duplicateDecision).toBeUndefined();
+    expect(second.duplicateDecision?.action).toBe('WARN');
+    expect(second.duplicateDecision?.threshold).toBe(1);
   });
 
   it('falls back to MUTE when BAN stage is disabled', async () => {
@@ -1167,9 +1231,41 @@ describe('RuleEngineService', () => {
       domainAllowlist: [],
     });
 
-    expect(user1Second.duplicateHit?.count).toBe(1);
+    expect(user1Second.duplicateHit).toBeUndefined();
     expect(user1Second.duplicateDecision).toBeUndefined();
     expect(user2First.duplicateDecision).toBeUndefined();
+  });
+
+  it('does not react to duplicates when all duplicate stages are disabled', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      duplicateBotMessageEnabled: false,
+      duplicateWarnEnabled: false,
+      duplicateMuteEnabled: false,
+      duplicateBanEnabled: false,
+      duplicateWarnMaxCount: 1,
+      duplicateMuteMaxCount: 1,
+      duplicateBanMaxCount: 1,
+    });
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: DUPLICATE_SPAM_TEXT,
+      settings,
+      domainAllowlist: [],
+    });
+
+    const second = await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: DUPLICATE_SPAM_TEXT,
+      settings,
+      domainAllowlist: [],
+    });
+
+    expect(second.duplicateHit).toBeUndefined();
+    expect(second.duplicateDecision).toBeUndefined();
   });
 
   it('does not process duplicate moderation when anti-duplicate toggle is disabled', async () => {
@@ -1242,7 +1338,7 @@ describe('RuleEngineService', () => {
       domainAllowlist: ['https://max.ru/channel/news/post-1'],
     });
 
-    expect(second.duplicateHit?.count).toBe(1);
+    expect(second.duplicateHit).toBeUndefined();
     expect(second.duplicateDecision).toBeUndefined();
     expect(second.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(false);
   });

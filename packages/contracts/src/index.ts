@@ -92,7 +92,7 @@ export const DELETE_BOT_MESSAGES_DELAY_ALLOWED_MINUTES = Object.freeze([
 ]);
 
 const duplicateWindowSecSchema = z.number().int().min(3_600).max(604_800);
-const duplicateMaxCountSchema = z.number().int().min(2).max(20);
+const duplicateMaxCountSchema = z.number().int().min(1).max(20);
 const autoMuteDurationHoursSchema = z.number().int().min(1).max(168).default(6);
 const botButtonUrlSchema = z.string().trim().max(2_048).default('');
 const botButtonTextSchema = z.string().trim().max(32).default('Открыть');
@@ -640,64 +640,6 @@ export const chatSettingsSchema = z
     warnThreshold: z.number().int().min(1).max(10).default(3),
   }))
   .superRefine((value, ctx) => {
-    const warnEnabled = value.antiDuplicateEnabled && value.duplicateWarnEnabled;
-    const banEnabled = value.antiDuplicateEnabled && value.duplicateBanEnabled;
-    const muteEnabled = value.antiDuplicateEnabled && value.duplicateMuteEnabled;
-
-    if (warnEnabled && banEnabled) {
-      if (value.duplicateBanWindowSec < value.duplicateWarnWindowSec) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['duplicateBanWindowSec'],
-          message: 'Окно должно быть не меньше предыдущей ступени.',
-        });
-      }
-
-      if (value.duplicateBanMaxCount < value.duplicateWarnMaxCount) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['duplicateBanMaxCount'],
-          message: 'Лимит должен быть не меньше предыдущей ступени.',
-        });
-      }
-    }
-
-    if (warnEnabled && muteEnabled) {
-      if (value.duplicateMuteWindowSec < value.duplicateWarnWindowSec) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['duplicateMuteWindowSec'],
-          message: 'Окно должно быть не меньше предыдущей ступени.',
-        });
-      }
-
-      if (value.duplicateMuteMaxCount < value.duplicateWarnMaxCount) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['duplicateMuteMaxCount'],
-          message: 'Лимит должен быть не меньше предыдущей ступени.',
-        });
-      }
-    }
-
-    if (muteEnabled && banEnabled) {
-      if (value.duplicateBanWindowSec < value.duplicateMuteWindowSec) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['duplicateBanWindowSec'],
-          message: 'Окно бана должно быть не меньше ступени мута.',
-        });
-      }
-
-      if (value.duplicateBanMaxCount < value.duplicateMuteMaxCount) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          path: ['duplicateBanMaxCount'],
-          message: 'Лимит бана должен быть не меньше ступени мута.',
-        });
-      }
-    }
-
     if (
       value.linkBotMessageEnabled &&
       value.linkBotButtonEnabled &&
