@@ -251,6 +251,7 @@ const LOGS_DASHBOARD_VIOLATIONS_LIMIT = 30;
 const MEMBERSHIP_ACTIVITY_PAGE_LIMIT = 50;
 const ONE_HOUR_MS = 60 * 60 * 1000;
 const TWENTY_FOUR_HOURS_MS = 24 * ONE_HOUR_MS;
+const MANUAL_BAN_RECENT_MESSAGE_DELETE_LIMIT = 1000;
 const LIST_CHATS_ADMIN_CHECK_CONCURRENCY = 1;
 const MANAGED_ENTITIES_DELTA_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 120;
 const MANAGED_ENTITIES_FULL_SCAN_ADMIN_CHECK_SPACING_MS = process.env.NODE_ENV === 'test' ? 0 : 180;
@@ -7294,6 +7295,57 @@ export class AdminService {
 
     await this.deleteAdminGlobalSpammerExemption(user.userId, targetUserId);
 
+    let sourceCleanup = {
+      candidateMessageIds: [] as string[],
+      deletedMessageIds: [] as string[],
+      failedMessageIds: [] as string[],
+    };
+    try {
+      sourceCleanup = await this.deleteRecentTrackedMessagesForManualBan(chatId, targetUserId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          targetUserId,
+          actorUserId: user.userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to run recent message cleanup after manual system ban',
+      );
+    }
+
+    let fanout = {
+      removedChatIds: [] as string[],
+      skippedChatIds: [] as string[],
+      failedChatIds: [] as string[],
+      deletedMessageCount: 0,
+      failedMessageDeleteCount: 0,
+    };
+    try {
+      fanout = await this.applyManualSystemBanFanout({
+        sourceChatId: chatId,
+        targetUserId,
+        actor: user,
+      });
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          targetUserId,
+          actorUserId: user.userId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to run manual system ban fanout after source chat ban',
+      );
+    }
+    const recentMessageCleanup = this.summarizeManualBanCleanup(sourceCleanup);
+    const crossChatFanout = this.summarizeManualBanFanout(fanout);
+    const resultMessage = this.buildManualSystemBanResultMessage(
+      'Участник забанен в чате.',
+      recentMessageCleanup,
+      crossChatFanout,
+    );
+
     await this.recordManualModerationAction({
       chatId,
       targetUserId,
@@ -7309,11 +7361,15 @@ export class AdminService {
             ? 'Постоянный ручной бан участника через команду в чате'
             : 'Постоянный ручной бан участника через команду в личке',
         mode: 'MAX_BLOCK_PERMANENT',
+        recentMessageCleanup,
+        crossChatFanout,
       },
       auditPayload: {
         userId: targetUserId,
         source,
         permanent: true,
+        recentMessageCleanup,
+        crossChatFanout,
       },
     });
 
@@ -7323,8 +7379,316 @@ export class AdminService {
       userId: targetUserId,
       muteDurationHours: null,
       muteExpiresAt: null,
-      message: 'Участник забанен в чате.',
+      message: resultMessage,
     });
+  }
+
+  private async applyManualSystemBanFanout(params: {
+    sourceChatId: string;
+    targetUserId: string;
+    actor: AuthUser;
+  }): Promise<{
+    removedChatIds: string[];
+    skippedChatIds: string[];
+    failedChatIds: string[];
+    deletedMessageCount: number;
+    failedMessageDeleteCount: number;
+  }> {
+    const { sourceChatId, targetUserId, actor } = params;
+    const result = {
+      removedChatIds: [] as string[],
+      skippedChatIds: [] as string[],
+      failedChatIds: [] as string[],
+      deletedMessageCount: 0,
+      failedMessageDeleteCount: 0,
+    };
+    const chats = await this.resolveManualBanFanoutChats(actor, sourceChatId);
+
+    for (const chat of chats) {
+      try {
+        await this.assertBotCanManageMembers(chat.id, 'BAN');
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId: chat.id,
+            targetUserId,
+            actorUserId: actor.userId,
+            err: this.extractHttpErrorMessage(error) || String(error),
+          },
+          'Skipped manual ban fanout because the bot cannot manage members in chat',
+        );
+        result.failedChatIds.push(chat.id);
+        continue;
+      }
+
+      const targetState = await this.resolveManualFanoutTargetState(chat.id, targetUserId);
+      if (targetState !== 'present') {
+        result.skippedChatIds.push(chat.id);
+        continue;
+      }
+
+      try {
+        await this.maxClient.cancelScheduledUnban(chat.id, targetUserId);
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId: chat.id,
+            targetUserId,
+            err: error instanceof Error ? error.message : String(error),
+          },
+          'Failed to cancel scheduled auto-unban before manual ban fanout',
+        );
+      }
+
+      try {
+        const executionMode = await this.resolveManualBanExecutionMode(chat.id);
+        if (executionMode === 'MAX_REMOVE_ONLY') {
+          await this.maxClient.kickMember(chat.id, targetUserId, { immediate: true });
+        } else {
+          await this.maxClient.banMember(chat.id, targetUserId, { immediate: true });
+        }
+      } catch (error: unknown) {
+        this.logger.warn(
+          {
+            chatId: chat.id,
+            targetUserId,
+            actorUserId: actor.userId,
+            err:
+              this.extractMaxApiErrorMessage(error) ||
+              this.extractHttpErrorMessage(error) ||
+              String(error),
+          },
+          'Failed to apply manual ban fanout in managed chat',
+        );
+        result.failedChatIds.push(chat.id);
+        continue;
+      }
+
+      const cleanup = await this.deleteRecentTrackedMessagesForManualBan(chat.id, targetUserId);
+      result.removedChatIds.push(chat.id);
+      result.deletedMessageCount += cleanup.deletedMessageIds.length;
+      result.failedMessageDeleteCount += cleanup.failedMessageIds.length;
+    }
+
+    return result;
+  }
+
+  private async resolveManualBanFanoutChats(
+    actor: AuthUser,
+    sourceChatId: string,
+  ): Promise<ChatSummary[]> {
+    const maxClientWithChatListing = this.maxClient as MaxClientService & {
+      listBotChats?: MaxClientService['listBotChats'];
+    };
+
+    try {
+      const chats =
+        typeof maxClientWithChatListing.listBotChats === 'function'
+          ? await this.listChatsForMassBroadcast(actor)
+          : await this.listChatsFromAllowlist(actor.userId, 'chat');
+      return chats.filter((chat) => chat.entityType === 'chat' && chat.id !== sourceChatId);
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          actorUserId: actor.userId,
+          sourceChatId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve manual ban fanout chats; falling back to allowlist cache',
+      );
+      const cached = await this.listChatsFromAllowlist(actor.userId, 'chat');
+      return cached.filter((chat) => chat.id !== sourceChatId);
+    }
+  }
+
+  private async resolveManualFanoutTargetState(
+    chatId: string,
+    targetUserId: string,
+  ): Promise<'present' | 'absent' | 'protected'> {
+    const maxClientWithMemberAccess = this.maxClient as MaxClientService & {
+      getChatMemberAccess?: (chatId: string, userId: string) => Promise<MaxChatMemberAccess | null>;
+    };
+    if (typeof maxClientWithMemberAccess.getChatMemberAccess !== 'function') {
+      return 'present';
+    }
+
+    try {
+      const targetAccess = await maxClientWithMemberAccess.getChatMemberAccess(chatId, targetUserId);
+      if (!targetAccess) {
+        return 'absent';
+      }
+      if (targetAccess.isOwner || targetAccess.isAdmin) {
+        return 'protected';
+      }
+      return 'present';
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          targetUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to resolve target state for manual ban fanout; will attempt removal anyway',
+      );
+      return 'present';
+    }
+  }
+
+  private async deleteRecentTrackedMessagesForManualBan(
+    chatId: string,
+    targetUserId: string,
+  ): Promise<{
+    candidateMessageIds: string[];
+    deletedMessageIds: string[];
+    failedMessageIds: string[];
+  }> {
+    const candidateMessageIds = await this.findRecentTrackedMessageIdsForUser(chatId, targetUserId);
+    const deletedMessageIds: string[] = [];
+    const failedMessageIds: string[] = [];
+
+    for (const messageId of candidateMessageIds) {
+      try {
+        await this.maxClient.deleteMessage(chatId, messageId, { immediate: true });
+        deletedMessageIds.push(messageId);
+      } catch (error: unknown) {
+        if (this.isMaxMessageMissingError(error)) {
+          deletedMessageIds.push(messageId);
+          continue;
+        }
+
+        failedMessageIds.push(messageId);
+        this.logger.warn(
+          {
+            chatId,
+            targetUserId,
+            messageId,
+            err:
+              this.extractMaxApiErrorMessage(error) ||
+              this.extractHttpErrorMessage(error) ||
+              String(error),
+          },
+          'Failed to delete tracked recent message during manual ban cleanup',
+        );
+      }
+    }
+
+    return {
+      candidateMessageIds,
+      deletedMessageIds,
+      failedMessageIds,
+    };
+  }
+
+  private async findRecentTrackedMessageIdsForUser(
+    chatId: string,
+    targetUserId: string,
+  ): Promise<string[]> {
+    const since = new Date(Date.now() - TWENTY_FOUR_HOURS_MS);
+    const rows = await this.prisma.$queryRaw<Array<{ message_id: string | null }>>`
+      SELECT message_id
+      FROM (
+        SELECT DISTINCT ON (message_id)
+          message_id,
+          message_created_at
+        FROM (
+          SELECT
+            NULLIF(BTRIM(normalized_payload->'message'->>'messageId'), '') AS message_id,
+            COALESCE(
+              NULLIF(BTRIM(normalized_payload->'message'->>'createdAt'), '')::timestamptz,
+              created_at
+            ) AS message_created_at
+          FROM webhook_events
+          WHERE normalized_payload->>'type' = 'message_created'
+            AND NULLIF(BTRIM(normalized_payload->'message'->>'chatId'), '') = ${chatId}
+            AND NULLIF(BTRIM(normalized_payload->'message'->>'senderId'), '') = ${targetUserId}
+        ) AS source_rows
+        WHERE message_id IS NOT NULL
+          AND message_created_at >= ${since}
+        ORDER BY message_id, message_created_at DESC
+      ) AS deduped_rows
+      ORDER BY message_created_at DESC
+      LIMIT ${MANUAL_BAN_RECENT_MESSAGE_DELETE_LIMIT}
+    `;
+
+    return Array.from(
+      new Set(
+        (Array.isArray(rows) ? rows : [])
+          .map((row) => (typeof row.message_id === 'string' ? row.message_id.trim() : ''))
+          .filter(Boolean),
+      ),
+    );
+  }
+
+  private summarizeManualBanCleanup(result: {
+    candidateMessageIds: string[];
+    deletedMessageIds: string[];
+    failedMessageIds: string[];
+  }) {
+    return {
+      candidateCount: result.candidateMessageIds.length,
+      deletedCount: result.deletedMessageIds.length,
+      failedCount: result.failedMessageIds.length,
+    };
+  }
+
+  private summarizeManualBanFanout(result: {
+    removedChatIds: string[];
+    skippedChatIds: string[];
+    failedChatIds: string[];
+    deletedMessageCount: number;
+    failedMessageDeleteCount: number;
+  }) {
+    return {
+      removedChatsCount: result.removedChatIds.length,
+      removedChatIds: result.removedChatIds,
+      skippedChatsCount: result.skippedChatIds.length,
+      skippedChatIds: result.skippedChatIds,
+      failedChatsCount: result.failedChatIds.length,
+      failedChatIds: result.failedChatIds,
+      deletedMessageCount: result.deletedMessageCount,
+      failedMessageDeleteCount: result.failedMessageDeleteCount,
+    };
+  }
+
+  private buildManualSystemBanResultMessage(
+    baseMessage: string,
+    cleanup: {
+      candidateCount: number;
+      deletedCount: number;
+      failedCount: number;
+    },
+    fanout: {
+      removedChatsCount: number;
+      failedChatsCount: number;
+      deletedMessageCount: number;
+      failedMessageDeleteCount: number;
+    },
+  ): string {
+    const details: string[] = [];
+
+    if (cleanup.deletedCount > 0) {
+      details.push(`Сообщения за последние 24 часа удалены: ${cleanup.deletedCount}.`);
+    } else if (cleanup.candidateCount > 0 && cleanup.failedCount > 0) {
+      details.push(`Сообщения за последние 24 часа удалить не удалось: ${cleanup.failedCount}.`);
+    }
+
+    if (fanout.removedChatsCount > 0) {
+      details.push(
+        `Дополнительно удалён из других групп администратора: ${fanout.removedChatsCount}.`,
+      );
+    }
+
+    const totalFailedDeletes = cleanup.failedCount + fanout.failedMessageDeleteCount;
+    const totalDeletedMessages = cleanup.deletedCount + fanout.deletedMessageCount;
+    if (totalFailedDeletes > 0 && totalDeletedMessages > 0) {
+      details.push(`Часть сообщений удалить не удалось: ${totalFailedDeletes}.`);
+    }
+
+    if (fanout.failedChatsCount > 0) {
+      details.push(`В других группах с ошибкой: ${fanout.failedChatsCount}.`);
+    }
+
+    return details.length > 0 ? `${baseMessage} ${details.join(' ')}` : baseMessage;
   }
 
   private async prepareManualModerationTarget(

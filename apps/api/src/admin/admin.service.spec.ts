@@ -3102,6 +3102,105 @@ describe('AdminService.applyManualSystemBan', () => {
     });
   });
 
+  it('deletes recent tracked messages and removes the member from other managed chats of the admin', async () => {
+    const prisma = createPrismaMock();
+    prisma.chatAdminAllowlist.findMany.mockResolvedValue([
+      {
+        userId: 'admin-1',
+        chatId: 'chat-2',
+        chat: {
+          id: 'chat-2',
+          title: 'Вторая группа',
+          createdAt: new Date('2026-03-02T00:00:00.000Z'),
+          entityType: 'CHAT',
+        },
+      },
+    ]);
+    prisma.$queryRaw
+      .mockResolvedValueOnce([{ message_id: 'mid-source-1' }, { message_id: 'mid-source-2' }])
+      .mockResolvedValueOnce([{ message_id: 'mid-fanout-1' }]);
+
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      getCurrentChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'bot-1',
+        isAdmin: true,
+        isOwner: false,
+        permissions: ['add_remove_members'],
+      }),
+      getChatMemberAccess: jest.fn().mockResolvedValue({
+        userId: 'user-3',
+        isAdmin: false,
+        isOwner: false,
+        permissions: [],
+      }),
+      cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
+      banMember: jest.fn().mockResolvedValue(undefined),
+      deleteMessage: jest.fn().mockResolvedValue(undefined),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      createChatContextCacheMock() as never,
+      createConfigMock() as never,
+    );
+
+    const result = await service.applyManualSystemBan(
+      'chat-1',
+      'user-3',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      'group_command',
+    );
+
+    expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-3');
+    expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-2', 'user-3');
+    expect(maxClient.banMember).toHaveBeenCalledWith('chat-1', 'user-3', { immediate: true });
+    expect(maxClient.banMember).toHaveBeenCalledWith('chat-2', 'user-3', { immediate: true });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-source-1', {
+      immediate: true,
+    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-1', 'mid-source-2', {
+      immediate: true,
+    });
+    expect(maxClient.deleteMessage).toHaveBeenCalledWith('chat-2', 'mid-fanout-1', {
+      immediate: true,
+    });
+    expect(prisma.moderationEvent.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            recentMessageCleanup: {
+              candidateCount: 2,
+              deletedCount: 2,
+              failedCount: 0,
+            },
+            crossChatFanout: expect.objectContaining({
+              removedChatsCount: 1,
+              removedChatIds: ['chat-2'],
+              deletedMessageCount: 1,
+              failedMessageDeleteCount: 0,
+            }),
+          }),
+        }),
+      }),
+    );
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: true,
+        action: 'BAN',
+        userId: 'user-3',
+      }),
+    );
+    expect(result.message).toContain('Сообщения за последние 24 часа удалены: 2.');
+    expect(result.message).toContain('Дополнительно удалён из других групп администратора: 1.');
+  });
+
   it('still bans permanently when cancelling a stale scheduled unban fails', async () => {
     const prisma = createPrismaMock();
     const maxClient = {
