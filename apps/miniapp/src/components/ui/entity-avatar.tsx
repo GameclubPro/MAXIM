@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { cn } from '../../lib/cn';
 
 type EntityAvatarProps = {
@@ -55,6 +55,9 @@ export function EntityAvatar({
   avatarUrl = null,
 }: EntityAvatarProps) {
   const [imageBroken, setImageBroken] = useState(false);
+  useEffect(() => {
+    setImageBroken(false);
+  }, [avatarUrl]);
   const initials = useMemo(() => getEntityInitials(title), [title]);
   const palette = useMemo(() => getEntityAvatarPalette(title, entityType), [entityType, title]);
   const showImage = Boolean(avatarUrl) && !imageBroken;

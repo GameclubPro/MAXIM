@@ -673,7 +673,7 @@ export class AdminService {
       );
       if (initial.length > 0) {
         return {
-          items: await this.attachChannelOverview(initial),
+          items: await this.hydrateManagedEntities(initial),
           refresh:
             options.includeRefreshState === true
               ? await this.readManagedEntitiesRefreshState(user.userId, entityType)
@@ -710,8 +710,22 @@ export class AdminService {
       recentBotAdded,
       cached,
     );
+    const skipAvatarHydration =
+      discovered.refresh?.backoffActive ??
+      (options.refresh === true
+        ? await this.isManagedEntitiesRefreshBackoffActive(
+            user.userId,
+            entityType,
+            this.buildManagedEntitiesRefreshCooldownKey(user.userId, entityType),
+          )
+        : false);
     return {
-      items: fallback.length > 0 ? await this.attachChannelOverview(fallback) : [],
+      items:
+        fallback.length > 0
+          ? skipAvatarHydration
+            ? await this.attachChannelOverview(fallback)
+            : await this.hydrateManagedEntities(fallback)
+          : [],
       refresh: discovered.refresh,
     };
   }
@@ -12092,6 +12106,88 @@ export class AdminService {
       );
       return chats;
     }
+  }
+
+  private async attachManagedEntityAvatars(chats: ChatSummary[]): Promise<ChatSummary[]> {
+    const missingAvatarChats = chats.filter((chat) => !this.readTrimmedString(chat.avatarUrl));
+    if (missingAvatarChats.length === 0) {
+      return chats;
+    }
+
+    const avatarByChatId = new Map<string, string>();
+
+    await Promise.all(
+      missingAvatarChats.map(async (chat) => {
+        const cachedHeader = await this.chatContextCache.getManagedEntityHeader?.(
+          chat.id,
+          chat.entityType,
+        );
+        const avatarUrl = this.readTrimmedString(cachedHeader?.avatarUrl);
+        if (avatarUrl) {
+          avatarByChatId.set(chat.id, avatarUrl);
+        }
+      }),
+    );
+
+    const unresolvedChats = missingAvatarChats.filter((chat) => !avatarByChatId.has(chat.id));
+    if (
+      unresolvedChats.length > 0 &&
+      typeof this.maxClient.listBotChats === 'function'
+    ) {
+      try {
+        const remoteChats = await this.maxClient.listBotChats({ trafficClass: 'interactive' });
+        if (!Array.isArray(remoteChats)) {
+          return chats;
+        }
+        const remoteByChatId = new Map(remoteChats.map((chat) => [chat.chatId, chat]));
+
+        await Promise.all(
+          unresolvedChats.map(async (chat) => {
+            const remoteChat = remoteByChatId.get(chat.id);
+            const avatarUrl = this.readTrimmedString(remoteChat?.avatarUrl);
+            if (!avatarUrl) {
+              return;
+            }
+
+            avatarByChatId.set(chat.id, avatarUrl);
+            await this.chatContextCache.setManagedEntityHeader?.({
+              id: chat.id,
+              title: remoteChat?.title?.trim() || chat.title,
+              entityType: chat.entityType,
+              link: remoteChat?.link ?? chat.link ?? null,
+              participantsCount: null,
+              avatarUrl,
+            });
+          }),
+        );
+      } catch (error: unknown) {
+        this.logger.warn(
+          { err: error instanceof Error ? error.message : String(error) },
+          'Failed to attach managed entity avatars to managed entities list',
+        );
+      }
+    }
+
+    if (avatarByChatId.size === 0) {
+      return chats;
+    }
+
+    return chats.map((chat) => {
+      const avatarUrl = avatarByChatId.get(chat.id);
+      if (!avatarUrl) {
+        return chat;
+      }
+
+      return {
+        ...chat,
+        avatarUrl,
+      };
+    });
+  }
+
+  private async hydrateManagedEntities(chats: ChatSummary[]): Promise<ChatSummary[]> {
+    const withAvatars = await this.attachManagedEntityAvatars(chats);
+    return this.attachChannelOverview(withAvatars);
   }
 
   private async upsertUserChatAccess(

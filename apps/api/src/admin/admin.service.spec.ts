@@ -3487,7 +3487,7 @@ describe('AdminService.listChannels', () => {
         },
       },
     ]);
-    expect(maxClient.listBotChats).not.toHaveBeenCalled();
+    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
   });
 
   it('reuses cached channels during refresh and checks admin only for uncached candidates', async () => {
@@ -4449,7 +4449,7 @@ describe('AdminService.listChats', () => {
         channelOverview: null,
       },
     ]);
-    expect(maxClient.listBotChats).not.toHaveBeenCalled();
+    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
   });
 
   it('bootstraps recent bot_added chats into the default chats list without remote discovery', async () => {
@@ -4544,7 +4544,7 @@ describe('AdminService.listChats', () => {
         channelOverview: null,
       },
     ]);
-    expect(maxClient.listBotChats).not.toHaveBeenCalled();
+    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
     expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-2');
     expect(maxClient.getChatTitle).toHaveBeenCalledWith('chat-2');
     expect(prisma.chatAdminAllowlist.upsert).toHaveBeenCalledWith(
@@ -4679,7 +4679,7 @@ describe('AdminService.listChats', () => {
       },
     ]);
 
-    expect(maxClient.listBotChats).not.toHaveBeenCalled();
+    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
     expect(maxClient.getChatAdminIds).toHaveBeenCalledWith('chat-2');
     expect(prisma.chatAdminAllowlist.deleteMany).toHaveBeenCalledWith({
       where: {
@@ -4752,7 +4752,7 @@ describe('AdminService.listChats', () => {
         },
       },
     });
-    expect(maxClient.listBotChats).not.toHaveBeenCalled();
+    expect(maxClient.listBotChats).toHaveBeenCalledTimes(1);
     expect(maxClient.getChatAdminIds).not.toHaveBeenCalled();
   });
 
