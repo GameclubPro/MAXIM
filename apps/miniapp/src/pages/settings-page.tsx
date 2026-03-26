@@ -28,7 +28,16 @@ import {
   type ManagedEntityHeader,
 } from '@maxim/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Suspense, lazy, startTransition, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  Suspense,
+  lazy,
+  startTransition,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent,
+} from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import botSpeechRobotImage from '../../../../bot.webp';
 import botSpeechFriendlyImage from '../../../../frendly.webp';
@@ -138,6 +147,21 @@ const MAX_BROADCAST_CYCLE_HOURS = 14 * 24;
 const THEMATIC_FILTERS_OWNER_USER_ID = '98315271';
 const MAX_CHAT_RULES_TEXT_LENGTH = 2_000;
 const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
+const DESKTOP_TOGGLE_ROW_BLOCKERS = [
+  'a',
+  'button',
+  'input',
+  'label',
+  'select',
+  'summary',
+  'textarea',
+  '[role="button"]',
+  '[role="link"]',
+  '[contenteditable="true"]',
+  '.channel-settings-hint-anchor',
+  '.channel-settings-hint-popover',
+  '.settings-native-toggle__hint',
+].join(', ');
 
 type MaxMessageLengthSliderProps = {
   value: ChatSettings['maxMessageLength'];
@@ -1341,6 +1365,38 @@ function getRouteChatTitle(state: unknown): string {
   }
 
   return '';
+}
+
+function resolveDesktopToggleRowLabel(target: EventTarget | null): HTMLLabelElement | null {
+  if (
+    typeof window === 'undefined' ||
+    typeof window.matchMedia !== 'function' ||
+    !window.matchMedia('(hover: hover) and (pointer: fine)').matches ||
+    !(target instanceof HTMLElement)
+  ) {
+    return null;
+  }
+
+  if (window.getSelection()?.type === 'Range') {
+    return null;
+  }
+
+  if (target.closest(DESKTOP_TOGGLE_ROW_BLOCKERS)) {
+    return null;
+  }
+
+  const row = target.closest('.settings-native-toggle__row');
+  if (!row) {
+    return null;
+  }
+
+  const switchLabel = row.querySelector<HTMLLabelElement>('.settings-native-switch');
+  const switchInput = switchLabel?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+  if (!switchLabel || !switchInput || switchInput.disabled) {
+    return null;
+  }
+
+  return switchLabel;
 }
 
 function EditIcon() {
@@ -4309,6 +4365,16 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     );
   }
 
+  function handleDesktopToggleRowClick(event: MouseEvent<HTMLElement>) {
+    const switchLabel = resolveDesktopToggleRowLabel(event.target);
+    if (!switchLabel) {
+      return;
+    }
+
+    event.preventDefault();
+    switchLabel.click();
+  }
+
   return (
     <div className="page-stack page-enter">
       {settingsQuery.isLoading ? (
@@ -4342,6 +4408,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
         <section
           className="settings-sections settings-sections--chat-home"
           aria-label="Настройки модерации"
+          onClickCapture={handleDesktopToggleRowClick}
         >
           <CompactStickyHeader
             backTo={buildManagedEntitiesRoute('chat')}

@@ -1,6 +1,6 @@
 import type { ChannelAutoPostButtonsMode, ChannelSettings } from '@maxim/contracts';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { startTransition, useEffect, useMemo, useRef, useState } from 'react';
+import { startTransition, useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   BroadcastSchedulePlanner,
@@ -57,6 +57,21 @@ type ChannelSettingsHintKey =
 const MIN_BROADCAST_CYCLE_HOURS = 1;
 const BROADCAST_HOUR_MS = 60 * 60 * 1_000;
 const CHANNEL_SUGGESTION_DAILY_LIMIT_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] as const;
+const DESKTOP_TOGGLE_ROW_BLOCKERS = [
+  'a',
+  'button',
+  'input',
+  'label',
+  'select',
+  'summary',
+  'textarea',
+  '[role="button"]',
+  '[role="link"]',
+  '[contenteditable="true"]',
+  '.channel-settings-hint-anchor',
+  '.channel-settings-hint-popover',
+  '.settings-native-toggle__hint',
+].join(', ');
 const INITIAL_EXPANDED_CHANNEL_SECTIONS: Record<ChannelSettingsSectionKey, boolean> = {
   comments: false,
   postSuggestions: false,
@@ -125,6 +140,38 @@ function getRouteState(state: unknown): ChannelRouteState {
   const chatLink = isHttpUrl(candidateLink) ? candidateLink : '';
 
   return { chatTitle, chatLink };
+}
+
+function resolveDesktopToggleRowLabel(target: EventTarget | null): HTMLLabelElement | null {
+  if (
+    typeof window === 'undefined' ||
+    typeof window.matchMedia !== 'function' ||
+    !window.matchMedia('(hover: hover) and (pointer: fine)').matches ||
+    !(target instanceof HTMLElement)
+  ) {
+    return null;
+  }
+
+  if (window.getSelection()?.type === 'Range') {
+    return null;
+  }
+
+  if (target.closest(DESKTOP_TOGGLE_ROW_BLOCKERS)) {
+    return null;
+  }
+
+  const row = target.closest('.settings-native-toggle__row');
+  if (!row) {
+    return null;
+  }
+
+  const switchLabel = row.querySelector<HTMLLabelElement>('.settings-native-switch');
+  const switchInput = switchLabel?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+  if (!switchLabel || !switchInput || switchInput.disabled) {
+    return null;
+  }
+
+  return switchLabel;
 }
 
 function normalizeApiError(error: unknown): string {
@@ -1034,8 +1081,21 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
     handoffBroadcastMutation.mutate(buildBroadcastHandoffPayload());
   }
 
+  function handleDesktopToggleRowClick(event: MouseEvent<HTMLElement>) {
+    const switchLabel = resolveDesktopToggleRowLabel(event.target);
+    if (!switchLabel) {
+      return;
+    }
+
+    event.preventDefault();
+    switchLabel.click();
+  }
+
   return (
-    <div className="channel-settings-screen page-enter">
+    <div
+      className="channel-settings-screen page-enter"
+      onClickCapture={handleDesktopToggleRowClick}
+    >
       <CompactStickyHeader
         backTo={buildManagedEntitiesRoute('channel')}
         backLabel="Назад к каналам"
