@@ -6812,6 +6812,12 @@
   color: #0b66b6;
 }
 
+.broadcast-planner__time-chip.is-busy {
+  border-color: rgba(190, 119, 16, 0.28);
+  background: rgba(255, 246, 225, 0.96);
+  color: #915400;
+}
+
 .broadcast-planner__time-chip.is-disabled {
   border-style: dashed;
   border-color: rgba(122, 137, 153, 0.26);

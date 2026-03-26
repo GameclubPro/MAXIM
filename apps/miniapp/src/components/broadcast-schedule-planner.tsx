@@ -310,12 +310,13 @@ export function BroadcastSchedulePlanner({
     onChange(sortAndUniqueBroadcastSlots(nextSlots));
   }
 
-  function isSlotUnavailable(dayKey: string, minutes: number): boolean {
+  function isSlotInPast(dayKey: string, minutes: number): boolean {
     const slotIso = buildBroadcastScheduleSlotIso(dayKey, minutes);
-    if (new Date(slotIso).getTime() < minimumTime) {
-      return true;
-    }
+    return new Date(slotIso).getTime() < minimumTime;
+  }
 
+  function isSlotBusy(dayKey: string, minutes: number): boolean {
+    const slotIso = buildBroadcastScheduleSlotIso(dayKey, minutes);
     return occupiedSet.has(slotIso) && !selectedSet.has(slotIso);
   }
 
@@ -412,10 +413,10 @@ export function BroadcastSchedulePlanner({
       return;
     }
 
-    const hasConflict = targetDayKeys.some(
-      (dayKey) => isSlotUnavailable(dayKey, minutes) && !isSlotSelectedForDay(dayKey, minutes),
+    const hasPastRestriction = targetDayKeys.some(
+      (dayKey) => isSlotInPast(dayKey, minutes) && !isSlotSelectedForDay(dayKey, minutes),
     );
-    if (hasConflict) {
+    if (hasPastRestriction) {
       return;
     }
 
@@ -700,7 +701,7 @@ export function BroadcastSchedulePlanner({
                   <div className="broadcast-planner__sheet-head">
                     <div>
                       <strong id="broadcast-planner-sheet-title">Шаг 2. Выберите время</strong>
-                      <small>Отмечайте слоты сразу.</small>
+                      <small>Отмечайте слоты сразу. Занятые слоты перезапишутся новой рассылкой.</small>
                     </div>
 
                     <div className="broadcast-planner__sheet-facts">
@@ -788,14 +789,21 @@ export function BroadcastSchedulePlanner({
                           const selectedCountForTargets = targetDayKeys.filter((dayKey) =>
                             isSlotSelectedForDay(dayKey, minutes),
                           ).length;
-                          const conflictTargetCount = targetDayKeys.filter((dayKey) =>
-                            isSlotUnavailable(dayKey, minutes),
+                          const busyTargetCount = targetDayKeys.filter((dayKey) =>
+                            isSlotBusy(dayKey, minutes),
+                          ).length;
+                          const pastRestrictionCount = targetDayKeys.filter(
+                            (dayKey) =>
+                              isSlotInPast(dayKey, minutes) &&
+                              !isSlotSelectedForDay(dayKey, minutes),
                           ).length;
                           const isSelected = selectedCountForTargets === targetDayKeys.length;
                           const isMixed =
                             selectedCountForTargets > 0 &&
                             selectedCountForTargets < targetDayKeys.length;
-                          const hasConflict = conflictTargetCount > 0 && !isSelected && !isMixed;
+                          const hasBusy = busyTargetCount > 0 && !isSelected && !isMixed;
+                          const hasPastRestriction =
+                            pastRestrictionCount > 0 && !isSelected && !isMixed;
 
                           return (
                             <button
@@ -805,10 +813,11 @@ export function BroadcastSchedulePlanner({
                                 'broadcast-planner__time-chip',
                                 isSelected && 'is-selected',
                                 isMixed && 'is-mixed',
-                                hasConflict && !isSelected && !isMixed && 'is-disabled',
+                                hasBusy && 'is-busy',
+                                hasPastRestriction && 'is-disabled',
                               )}
                               onClick={() => toggleSlot(minutes)}
-                              disabled={disabled || (hasConflict && !isSelected && !isMixed)}
+                              disabled={disabled || hasPastRestriction}
                             >
                               <strong>{formatMinuteLabel(minutes)}</strong>
                             </button>
