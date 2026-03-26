@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
+import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { SkeletonCard } from '../components/ui/skeleton';
@@ -1171,6 +1172,13 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
         backLabel="К списку каналов"
         title={resolvedTitle}
         subtitle="Статистика канала"
+        avatar={
+          <EntityAvatar
+            title={resolvedTitle}
+            entityType="channel"
+            className="compact-page-header__entity-avatar"
+          />
+        }
         compact={isHeaderCompact}
         hidden={isHeaderHidden}
         className="channel-insights__sticky-header"

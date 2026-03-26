@@ -51,6 +51,7 @@ import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import type { ManagedLinkButtonFieldsProps } from '../components/managed-link-button-fields';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
+import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
 import { SegmentedControl } from '../components/ui/segmented-control';
 import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
@@ -4415,6 +4416,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
             backLabel="Назад к чатам"
             title={chatTitle || chatId || 'Настройки'}
             subtitle="Настройки чата"
+            avatar={
+              <EntityAvatar
+                title={chatTitle || chatId || 'Настройки'}
+                entityType="chat"
+                className="compact-page-header__entity-avatar"
+              />
+            }
             compact={isHeaderCompact}
             hidden={isHeaderHidden}
             className="settings-home-sticky-header stagger-in"

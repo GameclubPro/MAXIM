@@ -11,6 +11,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { type KeyboardEvent, type MouseEvent, useEffect, useMemo, useState } from 'react';
 import { Link, useLocation, useParams } from 'react-router-dom';
 import { MembershipActivityFeed } from '../components/dashboard/membership-activity-feed';
+import { EntityAvatar } from '../components/ui/entity-avatar';
 import { PersonAvatar } from '../components/ui/person-avatar';
 import { BackChevronIcon } from '../components/ui/entity-header-icons';
 import { GlassCard } from '../components/ui/glass-card';
@@ -959,9 +960,16 @@ export function EventsPage({ api }: { api: ApiTransport }) {
               <BackChevronIcon />
             </Link>
 
-            <div className="events-stage__appbar-copy">
-              <strong>События</strong>
-              <span className="events-stage__appbar-label">{chatTitle}</span>
+            <div className="events-stage__appbar-identity">
+              <EntityAvatar
+                title={chatTitle}
+                entityType="chat"
+                className="events-stage__entity-avatar"
+              />
+              <div className="events-stage__appbar-copy">
+                <strong>События</strong>
+                <span className="events-stage__appbar-label">{chatTitle}</span>
+              </div>
             </div>
 
             <div className="events-stage__appbar-side">

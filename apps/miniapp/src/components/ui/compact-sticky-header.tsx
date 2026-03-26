@@ -8,6 +8,7 @@ type CompactStickyHeaderProps = {
   backLabel: string;
   title: string;
   subtitle?: string;
+  avatar?: ReactNode;
   aside?: ReactNode;
   hidden?: boolean;
   compact?: boolean;
@@ -19,6 +20,7 @@ export function CompactStickyHeader({
   backLabel,
   title,
   subtitle,
+  avatar = null,
   aside = null,
   hidden = false,
   compact = false,
@@ -38,9 +40,13 @@ export function CompactStickyHeader({
           <BackChevronIcon />
         </Link>
 
-        <div className="compact-page-header__title-wrap">
-          {subtitle ? <span className="compact-page-header__subtitle">{subtitle}</span> : null}
-          <h1 className="compact-page-header__title">{title}</h1>
+        <div className="compact-page-header__identity">
+          {avatar ? <div className="compact-page-header__avatar-wrap">{avatar}</div> : null}
+
+          <div className="compact-page-header__title-wrap">
+            {subtitle ? <span className="compact-page-header__subtitle">{subtitle}</span> : null}
+            <h1 className="compact-page-header__title">{title}</h1>
+          </div>
         </div>
 
         <div className="compact-page-header__aside">{aside}</div>

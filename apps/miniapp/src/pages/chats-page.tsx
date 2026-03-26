@@ -2,6 +2,7 @@ import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState
 import { Link, useSearchParams } from 'react-router-dom';
 import addBotToChatImage from '../assets/onboarding/add-bot-to-chat.jpg';
 import grantBotAdminRightsImage from '../assets/onboarding/grant-bot-admin-rights.jpg';
+import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { StatusState } from '../components/ui/status-state';
@@ -388,7 +389,14 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
               style={{ animationDelay: `${index * 55}ms` }}
             >
               <div className="chat-card__header">
-                <h3>{entity.title}</h3>
+                <div className="chat-card__identity">
+                  <EntityAvatar
+                    title={entity.title}
+                    entityType={activeTab}
+                    className="chat-card__avatar"
+                  />
+                  <h3>{entity.title}</h3>
+                </div>
               </div>
 
               {activeTab === 'chat' ? (

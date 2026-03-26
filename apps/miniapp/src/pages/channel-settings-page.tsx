@@ -10,6 +10,7 @@ import { ManagedGiveawayCard } from '../components/managed-giveaway-card';
 import { ManagedLinkButtonFields } from '../components/managed-link-button-fields';
 import { ManagedPollCard } from '../components/managed-poll-card';
 import { CompactStickyHeader } from '../components/ui/compact-sticky-header';
+import { EntityAvatar } from '../components/ui/entity-avatar';
 import { GlassCard } from '../components/ui/glass-card';
 import { SkeletonCard } from '../components/ui/skeleton';
 import { SettingsDrilldownPanel } from '../components/ui/settings-drilldown-panel';
@@ -1101,6 +1102,13 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
         backLabel="Назад к каналам"
         title={resolvedTitle || 'Настройки'}
         subtitle="Настройки канала"
+        avatar={
+          <EntityAvatar
+            title={resolvedTitle || 'Настройки'}
+            entityType="channel"
+            className="compact-page-header__entity-avatar"
+          />
+        }
         compact={isHeaderCompact}
         hidden={isHeaderHidden}
         className="channel-settings-screen__sticky-header"
