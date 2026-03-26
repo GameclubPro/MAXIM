@@ -1,3 +1,4 @@
+import { useQueryClient } from '@tanstack/react-query';
 import { startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import addBotToChatImage from '../assets/onboarding/add-bot-to-chat.jpg';
@@ -28,12 +29,15 @@ const LIST_VISIBILITY_REFRESH_MIN_INTERVAL_MS = 15_000;
 const CHAT_CARD_STAGGER_STEP_MS = 45;
 const CHAT_CARD_STAGGER_LIMIT = 10;
 const CHAT_CARD_STAGGER_THRESHOLD = 24;
+const DEFAULT_DASHBOARD_RANGE = '7d';
+const DEFAULT_CHANNEL_STATS_RANGE = '7d';
 
 function getEntitiesKey(tab: ManagedTab): 'chats' | 'channels' {
   return tab === 'chat' ? 'chats' : 'channels';
 }
 
 export function ChatsPage({ api }: { api: ApiTransport }) {
+  const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const [query, setQuery] = useState('');
   const [refreshNonceByTab, setRefreshNonceByTab] = useState<Record<ManagedTab, number>>({
@@ -54,6 +58,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     enabled: activeTab === 'chat',
     reloadNonce: refreshNonceByTab.chat,
     resumeOnVisibilityReturn: true,
+    skipInitialSyncIfCached: true,
   });
   const channelsState = useManagedEntitiesSync({
     api,
@@ -61,6 +66,7 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
     enabled: activeTab === 'channel',
     reloadNonce: refreshNonceByTab.channel,
     resumeOnVisibilityReturn: true,
+    skipInitialSyncIfCached: true,
   });
 
   const activeEntities = useMemo(() => {
@@ -172,6 +178,52 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
   useEffect(() => {
     saveLastEntityType(activeTab);
   }, [activeTab]);
+
+  function prefetchChatSettings(chatId: string) {
+    preloadSettingsPage();
+    void queryClient
+      .prefetchQuery({
+        queryKey: ['settings-screen', chatId],
+        queryFn: () => api.request(`/chats/${chatId}/settings-screen`),
+      })
+      .catch(() => undefined);
+  }
+
+  function prefetchChatEvents(chatId: string) {
+    preloadEventsPage();
+    void queryClient
+      .prefetchQuery({
+        queryKey: ['logs-dashboard', chatId, DEFAULT_DASHBOARD_RANGE],
+        queryFn: () =>
+          api.request(
+            `/chats/${chatId}/logs-dashboard?range=${encodeURIComponent(DEFAULT_DASHBOARD_RANGE)}`,
+          ),
+      })
+      .catch(() => undefined);
+  }
+
+  function prefetchChannelSettings(chatId: string) {
+    preloadChannelSettingsPage();
+    void queryClient
+      .prefetchQuery({
+        queryKey: ['channel-settings-screen', chatId],
+        queryFn: () => api.request(`/channels/${chatId}/settings-screen`),
+      })
+      .catch(() => undefined);
+  }
+
+  function prefetchChannelStats(chatId: string) {
+    preloadChannelStatsPage();
+    void queryClient
+      .prefetchQuery({
+        queryKey: ['channel-stats', chatId, DEFAULT_CHANNEL_STATS_RANGE],
+        queryFn: () =>
+          api.request(
+            `/channels/${chatId}/stats?range=${encodeURIComponent(DEFAULT_CHANNEL_STATS_RANGE)}`,
+          ),
+      })
+      .catch(() => undefined);
+  }
 
   const tabLabel = activeTab === 'chat' ? 'Чаты' : 'Каналы';
   const searchLabel = activeTab === 'chat' ? 'Поиск чата' : 'Поиск канала';
@@ -426,8 +478,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                       saveLastEntityId('chat', entity.id);
                       saveChatTitle(entity.id, entity.title);
                     }}
-                    onPointerEnter={preloadSettingsPage}
-                    onTouchStart={preloadSettingsPage}
+                    onPointerEnter={() => prefetchChatSettings(entity.id)}
+                    onTouchStart={() => prefetchChatSettings(entity.id)}
                   >
                     Настройки
                   </Link>
@@ -439,8 +491,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                       saveLastEntityId('chat', entity.id);
                       saveChatTitle(entity.id, entity.title);
                     }}
-                    onPointerEnter={preloadEventsPage}
-                    onTouchStart={preloadEventsPage}
+                    onPointerEnter={() => prefetchChatEvents(entity.id)}
+                    onTouchStart={() => prefetchChatEvents(entity.id)}
                   >
                     События
                   </Link>
@@ -459,8 +511,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                       saveLastEntityId('channel', entity.id);
                       saveChatTitle(entity.id, entity.title);
                     }}
-                    onPointerEnter={preloadChannelSettingsPage}
-                    onTouchStart={preloadChannelSettingsPage}
+                    onPointerEnter={() => prefetchChannelSettings(entity.id)}
+                    onTouchStart={() => prefetchChannelSettings(entity.id)}
                   >
                     Настройки
                   </Link>
@@ -472,8 +524,8 @@ export function ChatsPage({ api }: { api: ApiTransport }) {
                       saveLastEntityId('channel', entity.id);
                       saveChatTitle(entity.id, entity.title);
                     }}
-                    onPointerEnter={preloadChannelStatsPage}
-                    onTouchStart={preloadChannelStatsPage}
+                    onPointerEnter={() => prefetchChannelStats(entity.id)}
+                    onTouchStart={() => prefetchChannelStats(entity.id)}
                   >
                     Статистика
                   </Link>

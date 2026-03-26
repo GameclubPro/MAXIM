@@ -27,7 +27,6 @@ import {
   handoffChatMemberProfile,
   handoffChatMemberProfileKeepalive,
 } from '../lib/api/events-client';
-import { getChats } from '../lib/api/root-client';
 import type { ApiTransport } from '../lib/api/transport';
 import { readChatTitle, saveChatTitle } from '../lib/chat-titles';
 import { buildManagedEntitiesRoute, saveLastEntityId } from '../lib/last-chat';
@@ -711,14 +710,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     }
   }, [chatId]);
 
-  const chatsQuery = useQuery({
-    queryKey: ['chats'],
-    queryFn: () => getChats(api),
-    enabled: Boolean(chatId),
-    staleTime: 30_000,
-    refetchOnWindowFocus: false,
-  });
-
   const dashboardQuery = useQuery({
     queryKey: ['logs-dashboard', chatId, range],
     queryFn: () => getLogsDashboard(api, chatId ?? '', range),
@@ -730,11 +721,6 @@ export function EventsPage({ api }: { api: ApiTransport }) {
   const chatTitle = useMemo(() => {
     if (!chatId) {
       return '';
-    }
-
-    const fromList = chatsQuery.data?.find((chat) => chat.id === chatId)?.title?.trim();
-    if (fromList) {
-      return fromList;
     }
 
     if (routeChatTitle) {
@@ -752,16 +738,11 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     }
 
     return 'Чат без названия';
-  }, [chatId, chatsQuery.data, dashboardQuery.data?.chat.title, routeChatTitle]);
+  }, [chatId, dashboardQuery.data?.chat.title, routeChatTitle]);
 
   const chatAvatarUrl = useMemo(() => {
     if (!chatId) {
       return null;
-    }
-
-    const fromList = chatsQuery.data?.find((chat) => chat.id === chatId)?.avatarUrl;
-    if (typeof fromList === 'string' && fromList.trim()) {
-      return fromList.trim();
     }
 
     if (routeChatAvatarUrl) {
@@ -774,7 +755,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
     }
 
     return null;
-  }, [chatId, chatsQuery.data, dashboardQuery.data?.chat.avatarUrl, routeChatAvatarUrl]);
+  }, [chatId, dashboardQuery.data?.chat.avatarUrl, routeChatAvatarUrl]);
 
   useEffect(() => {
     if (!chatId || !chatTitle) {
