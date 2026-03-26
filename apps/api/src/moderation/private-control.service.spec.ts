@@ -61,7 +61,7 @@ function createPrivateTextUpdate(text: string): MaxUpdate {
   };
 }
 
-function createPrivateForwardedBanUpdate(text = 'бан'): MaxUpdate {
+function createPrivateForwardedModerationUpdate(text = 'бан'): MaxUpdate {
   return {
     updateId: `upd-forwarded-ban-${Date.now()}`,
     type: 'message_created',
@@ -1096,7 +1096,7 @@ describe('PrivateControlService', () => {
       },
     });
 
-    await service.handleUpdate(createPrivateForwardedBanUpdate());
+    await service.handleUpdate(createPrivateForwardedModerationUpdate());
 
     expect(adminService.applyManualSystemBan).toHaveBeenCalledWith(
       chats[0].id,
@@ -1113,6 +1113,70 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).toContain('Пользователь: Нарушитель (user-77)');
   });
 
+  it('mutes a forwarded sender from private chat for 6 hours by default', async () => {
+    const { service, adminService, maxClient, chats } = createHarness();
+    adminService.applyManualModerationAction.mockResolvedValueOnce({
+      ok: true,
+      action: 'MUTE',
+      userId: 'user-77',
+      muteDurationHours: 6,
+      muteExpiresAt: '2026-03-26T12:00:00.000Z',
+      message: 'Участник замьючен на 6ч. Новые сообщения будут удаляться до конца срока.',
+    });
+
+    await service.handleUpdate(createPrivateForwardedModerationUpdate('мут'));
+
+    expect(adminService.applyManualModerationAction).toHaveBeenCalledWith(
+      chats[0].id,
+      'user-77',
+      expect.objectContaining({
+        userId: 'user-1',
+        chatId: '152517912',
+      }),
+      {
+        action: 'MUTE',
+        muteDurationHours: 6,
+      },
+      'private_command',
+    );
+    expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
+    expect(getLastSentText(maxClient)).toContain('Участник замьючен на 6ч.');
+    expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
+    expect(getLastSentText(maxClient)).toContain('Пользователь: Нарушитель (user-77)');
+  });
+
+  it('mutes a forwarded sender from private chat for the requested number of hours', async () => {
+    const { service, adminService, maxClient, chats } = createHarness();
+    adminService.applyManualModerationAction.mockResolvedValueOnce({
+      ok: true,
+      action: 'MUTE',
+      userId: 'user-77',
+      muteDurationHours: 12,
+      muteExpiresAt: '2026-03-26T18:00:00.000Z',
+      message: 'Участник замьючен на 12ч. Новые сообщения будут удаляться до конца срока.',
+    });
+
+    await service.handleUpdate(createPrivateForwardedModerationUpdate('мут 12'));
+
+    expect(adminService.applyManualModerationAction).toHaveBeenCalledWith(
+      chats[0].id,
+      'user-77',
+      expect.objectContaining({
+        userId: 'user-1',
+        chatId: '152517912',
+      }),
+      {
+        action: 'MUTE',
+        muteDurationHours: 12,
+      },
+      'private_command',
+    );
+    expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
+    expect(getLastSentText(maxClient)).toContain('Участник замьючен на 12ч.');
+    expect(getLastSentText(maxClient)).toContain(`Чат: ${chats[0].title}`);
+    expect(getLastSentText(maxClient)).toContain('Пользователь: Нарушитель (user-77)');
+  });
+
   it('rejects explicit duration in the forwarded ban command', async () => {
     const { service, adminService, maxClient } = createHarness({
       settings: {
@@ -1121,7 +1185,7 @@ describe('PrivateControlService', () => {
       },
     });
 
-    await service.handleUpdate(createPrivateForwardedBanUpdate('бан 24'));
+    await service.handleUpdate(createPrivateForwardedModerationUpdate('бан 24'));
 
     expect(adminService.applyManualSystemBan).not.toHaveBeenCalled();
     expect(getLastSentText(maxClient)).toContain(

@@ -309,9 +309,14 @@ type DownloadedImageAsset = {
   fileName: string;
 };
 
-type ForwardedModerationCommand = {
-  action: 'BAN';
-};
+type ForwardedModerationCommand =
+  | {
+      action: 'BAN';
+    }
+  | {
+      action: 'MUTE';
+      muteDurationHours: number;
+    };
 
 type ForwardedModerationTarget = {
   chatId: string;
@@ -337,6 +342,8 @@ const PAGE_SIZE_MANUAL_USERS = 8;
 const SEARCH_RESULT_LIMIT = 8;
 const BUTTON_TEXT_MAX_SINGLE_COLUMN = 36;
 const BUTTON_TEXT_MAX_TWO_COLUMNS = 14;
+const FORWARDED_MUTE_DURATION_HOURS_DEFAULT = 6;
+const FORWARDED_MUTE_DURATION_HOURS_MAX = 336;
 const SUPPORT_CHAT_URL = 'https://max.ru/join/qX7U_Hj-L-xMJG8V7wlF6dD-6a6cXIzTBGRtU2mRMzk';
 const DUPLICATE_ALLOWED_COUNT_MIN = 0;
 const DUPLICATE_ALLOWED_COUNT_MAX = 16;
@@ -1541,7 +1548,12 @@ export class PrivateControlService {
     if (forwardedModerationCommand) {
       const forwardedTargets = this.extractForwardedModerationTargets(context.update);
       if (forwardedTargets.length > 0) {
-        await this.handleForwardedModerationCommand(context, session, forwardedTargets);
+        await this.handleForwardedModerationCommand(
+          context,
+          session,
+          forwardedTargets,
+          forwardedModerationCommand,
+        );
         return;
       }
     }
@@ -1639,21 +1651,34 @@ export class PrivateControlService {
     context: PrivateContext,
     session: PrivateSession,
     targets: ForwardedModerationTarget[],
+    command: ForwardedModerationCommand,
   ): Promise<void> {
     const uniqueTargets = this.dedupeForwardedModerationTargets(targets);
     if (uniqueTargets.length !== 1) {
       throw new BadRequestException(
-        'Перешлите одно сообщение из нужной группы одним сообщением и добавьте слово «бан».',
+        'Перешлите одно сообщение из нужной группы одним сообщением и добавьте слово «бан» или «мут».',
       );
     }
 
     const target = uniqueTargets[0];
-    const result = await this.adminService.applyManualSystemBan(
-      target.chatId,
-      target.userId,
-      context.actor,
-      'private_command',
-    );
+    const result =
+      command.action === 'BAN'
+        ? await this.adminService.applyManualSystemBan(
+            target.chatId,
+            target.userId,
+            context.actor,
+            'private_command',
+          )
+        : await this.adminService.applyManualModerationAction(
+            target.chatId,
+            target.userId,
+            context.actor,
+            {
+              action: 'MUTE',
+              muteDurationHours: command.muteDurationHours,
+            },
+            'private_command',
+          );
 
     await this.saveSession(context.actor.userId, session);
 
@@ -1693,7 +1718,35 @@ export class PrivateControlService {
     }
 
     if (!/^(?:бан|ban)[.!]?$/u.test(normalized)) {
-      return null;
+      if (/^(?:мут|мьют|мью|mute)[.!]?$/u.test(normalized)) {
+        return {
+          action: 'MUTE',
+          muteDurationHours: FORWARDED_MUTE_DURATION_HOURS_DEFAULT,
+        };
+      }
+
+      const muteDurationMatch = normalized.match(
+        /^(?:мут|мьют|мью|mute)\s+(\d{1,3})(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.!]?$/u,
+      );
+      if (!muteDurationMatch) {
+        return null;
+      }
+
+      const muteDurationHours = Number.parseInt(muteDurationMatch[1], 10);
+      if (
+        !Number.isInteger(muteDurationHours) ||
+        muteDurationHours < 1 ||
+        muteDurationHours > FORWARDED_MUTE_DURATION_HOURS_MAX
+      ) {
+        throw new BadRequestException(
+          `Длительность мута должна быть от 1 до ${FORWARDED_MUTE_DURATION_HOURS_MAX} часов.`,
+        );
+      }
+
+      return {
+        action: 'MUTE',
+        muteDurationHours,
+      };
     }
 
     return {

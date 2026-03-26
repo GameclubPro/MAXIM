@@ -7168,7 +7168,7 @@ export class AdminService {
         auditAction: 'MANUAL_MUTE_MEMBER',
         metadata: {
           ...metadataBase,
-          reason: 'Ручной мут участника через miniapp',
+          reason: `Ручной мут участника ${this.describeManualModerationActionSource(source)}`,
           muteDurationHours,
           muteExpiresAt: muteExpiresAt.toISOString(),
         },
@@ -7234,7 +7234,7 @@ export class AdminService {
         auditAction: 'MANUAL_BAN_MEMBER',
         metadata: {
           ...metadataBase,
-          reason: 'Ручной бан участника через miniapp',
+          reason: `Ручной бан участника ${this.describeManualModerationActionSource(source)}`,
           mode: executionMode,
           permanent: true,
         },
@@ -7271,7 +7271,7 @@ export class AdminService {
         auditAction: 'MANUAL_UNMUTE_MEMBER',
         metadata: {
           ...metadataBase,
-          reason: 'Ручное снятие мута участника через miniapp',
+          reason: `Ручное снятие мута участника ${this.describeManualModerationActionSource(source)}`,
         },
         auditPayload: {
           userId: targetUserId,
@@ -7317,7 +7317,7 @@ export class AdminService {
       auditAction: 'MANUAL_UNBAN_MEMBER',
       metadata: {
         ...metadataBase,
-        reason: 'Ручной разбан участника через miniapp',
+        reason: `Ручной разбан участника ${this.describeManualModerationActionSource(source)}`,
         mode: unbanMode,
       },
       auditPayload: {
@@ -7338,6 +7338,19 @@ export class AdminService {
           ? 'Блокировка снята. Участник уже состоит в чате, повторное добавление не потребовалось.'
           : 'Участник возвращён в чат и разблокирован.',
     });
+  }
+
+  private describeManualModerationActionSource(source: AdminActionSource): string {
+    switch (source) {
+      case 'private_command':
+        return 'через команду в личке';
+      case 'group_command':
+        return 'через команду в чате';
+      case 'private_bot':
+        return 'через личный бот';
+      default:
+        return 'через miniapp';
+    }
   }
 
   async applyManualSystemBan(
