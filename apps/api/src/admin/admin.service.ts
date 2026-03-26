@@ -726,7 +726,9 @@ export class AdminService {
       items:
         fallback.length > 0
           ? skipAvatarHydration
-            ? await this.attachChannelOverview(fallback)
+            ? await this.attachChannelOverview(
+                await this.attachManagedEntityAvatars(fallback, { skipRemoteFetch: true }),
+              )
             : await this.hydrateManagedEntities(fallback)
           : [],
       refresh: discovered.refresh,
@@ -12149,6 +12151,7 @@ export class AdminService {
     chats: ChatSummary[],
     options: {
       remoteChats?: readonly MaxBotChat[];
+      skipRemoteFetch?: boolean;
     } = {},
   ): Promise<ChatSummary[]> {
     const missingAvatarChats = chats.filter((chat) => !this.readTrimmedString(chat.avatarUrl));
@@ -12176,6 +12179,7 @@ export class AdminService {
       Array.isArray(options.remoteChats) && options.remoteChats.length > 0
         ? options.remoteChats
         : null;
+    const allowRemoteFetch = options.skipRemoteFetch !== true;
 
     if (unresolvedChats.length > 0 && remoteChatsSource) {
       const remoteByChatId = new Map(remoteChatsSource.map((chat) => [chat.chatId, chat]));
@@ -12200,6 +12204,7 @@ export class AdminService {
         }),
       );
     } else if (
+      allowRemoteFetch &&
       unresolvedChats.length > 0 &&
       typeof this.maxClient.listBotChats === 'function'
     ) {
@@ -12237,15 +12242,17 @@ export class AdminService {
       }
     }
 
-    const snapshotFallbackChats = unresolvedChats
-      .filter((chat) => !avatarByChatId.has(chat.id))
-      .sort((left, right) => {
-        if (left.entityType === right.entityType) {
-          return 0;
-        }
-        return left.entityType === 'channel' ? -1 : 1;
-      })
-      .slice(0, MANAGED_ENTITY_AVATAR_SNAPSHOT_LIMIT);
+    const snapshotFallbackChats = allowRemoteFetch
+      ? unresolvedChats
+          .filter((chat) => !avatarByChatId.has(chat.id))
+          .sort((left, right) => {
+            if (left.entityType === right.entityType) {
+              return 0;
+            }
+            return left.entityType === 'channel' ? -1 : 1;
+          })
+          .slice(0, MANAGED_ENTITY_AVATAR_SNAPSHOT_LIMIT)
+      : [];
 
     if (
       snapshotFallbackChats.length > 0 &&

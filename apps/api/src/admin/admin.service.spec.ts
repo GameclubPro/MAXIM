@@ -3779,7 +3779,16 @@ describe('AdminService.listChannels', () => {
       getChatAdminIds: jest.fn().mockRejectedValue(new Error('MAX API global rate limit exceeded')),
     };
 
-    const chatContextCache = createChatContextCacheMock();
+    const chatContextCache = createChatContextCacheMock({
+      getManagedEntityHeader: jest.fn().mockResolvedValue({
+        id: 'cached-channel-1',
+        title: 'Кэш канала',
+        entityType: 'channel',
+        link: null,
+        participantsCount: null,
+        avatarUrl: 'https://i.oneme.ru/cached-channel-1.webp',
+      }),
+    });
     const service = new AdminService(
       prisma as never,
       maxClient as never,
@@ -3801,6 +3810,7 @@ describe('AdminService.listChannels', () => {
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'channel',
         link: null,
+        avatarUrl: 'https://i.oneme.ru/cached-channel-1.webp',
         channelOverview: {
           enabledScenariosCount: 1,
           commentsEnabled: true,
@@ -3817,6 +3827,7 @@ describe('AdminService.listChannels', () => {
         createdAt: '2026-03-02T10:00:00.000Z',
         entityType: 'channel',
         link: null,
+        avatarUrl: 'https://i.oneme.ru/cached-channel-1.webp',
         channelOverview: {
           enabledScenariosCount: 1,
           commentsEnabled: true,

@@ -44,6 +44,37 @@ function normalizeError(error: unknown): Error {
   return error instanceof Error ? error : new Error('Не удалось загрузить список.');
 }
 
+function mergeManagedEntityPresentation(
+  previous: ChatSummary[] | null,
+  next: ChatSummary[],
+): ChatSummary[] {
+  if (!previous || previous.length === 0 || next.length === 0) {
+    return next;
+  }
+
+  const previousById = new Map(previous.map((item) => [item.id, item]));
+  let changed = false;
+
+  const merged = next.map((item) => {
+    if (item.avatarUrl) {
+      return item;
+    }
+
+    const previousItem = previousById.get(item.id);
+    if (!previousItem?.avatarUrl) {
+      return item;
+    }
+
+    changed = true;
+    return {
+      ...item,
+      avatarUrl: previousItem.avatarUrl,
+    };
+  });
+
+  return changed ? merged : next;
+}
+
 async function loadManagedEntities(
   api: ApiTransport,
   entityType: ManagedEntityKind,
@@ -163,11 +194,12 @@ export function useManagedEntitiesSync({
           return;
         }
 
-        latestDataRef.current = initial;
+        const initialData = mergeManagedEntityPresentation(latestDataRef.current, initial);
+        latestDataRef.current = initialData;
         const documentVisible =
           typeof document === 'undefined' || document.visibilityState === 'visible';
         setState({
-          data: initial,
+          data: initialData,
           error: null,
           refreshState: null,
           phase: documentVisible ? 'syncing' : 'idle',
@@ -195,14 +227,15 @@ export function useManagedEntitiesSync({
             return;
           }
 
-          latestDataRef.current = next.items;
+          const nextData = mergeManagedEntityPresentation(latestDataRef.current, next.items);
+          latestDataRef.current = nextData;
           const phase = next.refresh.complete
             ? 'complete'
             : next.refresh.backoffActive
               ? 'backoff'
               : 'syncing';
           setState({
-            data: next.items,
+            data: nextData,
             error: null,
             refreshState: next.refresh,
             phase,
