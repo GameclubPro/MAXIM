@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   ForbiddenException,
+  HttpCode,
   HttpException,
   HttpStatus,
   Param,
@@ -29,6 +30,7 @@ export class WebhookController {
   ) {}
 
   @Post(':botId/:secretPath')
+  @HttpCode(HttpStatus.OK)
   async receive(
     @Param() params: WebhookParams,
     @Body() payload: Record<string, unknown>,

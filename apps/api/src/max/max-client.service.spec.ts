@@ -192,6 +192,54 @@ describe('MaxClientService inline keyboard guardrails', () => {
     await service.onModuleDestroy();
   });
 
+  it('answers callback with notification and inline keyboard update in one request', async () => {
+    const httpService = {
+      request: jest.fn().mockReturnValueOnce(
+        of({
+          status: 200,
+          data: {
+            success: true,
+          },
+        }),
+      ),
+    };
+    const service = createService(httpService);
+
+    await service.answerCallback('callback-1', 'Голос учтён', {
+      text: 'Опрос\n\n1. Соло - 1 (100%)',
+      options: {
+        buttons: [[{ type: 'callback', text: 'Соло (1)', payload: 'poll|poll-1|1|0' }]],
+      },
+    });
+
+    expect(httpService.request).toHaveBeenCalledTimes(1);
+    expect(httpService.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'post',
+        url: 'https://platform-api.max.ru/answers',
+        params: {
+          callback_id: 'callback-1',
+        },
+        data: {
+          notification: 'Голос учтён',
+          message: {
+            text: 'Опрос\n\n1. Соло - 1 (100%)',
+            attachments: [
+              {
+                type: 'inline_keyboard',
+                payload: {
+                  buttons: [[{ type: 'callback', text: 'Соло (1)', payload: 'poll|poll-1|1|0' }]],
+                },
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    await service.onModuleDestroy();
+  });
+
   it('sends direct messages via user_id when notifying a private user', async () => {
     const httpService = {
       request: jest.fn().mockReturnValueOnce(

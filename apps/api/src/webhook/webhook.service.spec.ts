@@ -54,4 +54,66 @@ describe('WebhookService', () => {
       data: { status: WebhookStatus.DUPLICATE },
     });
   });
+
+  it('retries webhook storage with sanitized payload when Prisma rejects malformed JSON input', async () => {
+    const prisma = {
+      webhookEvent: {
+        create: jest
+          .fn()
+          .mockRejectedValueOnce({
+            code: 'InvalidArg',
+            message: 'unexpected end of hex escape at line 1 column 581',
+          })
+          .mockResolvedValueOnce({ id: 'evt-2' }),
+        updateMany: jest.fn(),
+      },
+    };
+
+    const config = {
+      get: jest.fn().mockReturnValue(1),
+    };
+
+    const service = new WebhookService(prisma as never, config as never);
+    const result = await service.ingest(
+      {
+        updateId: 'u-2',
+        type: 'message_callback',
+        message: {
+          messageId: 'mid-1',
+          chatId: 'chat-1',
+          senderId: 'user-1',
+          text: 'broken-\ud800-text',
+          createdAt: new Date('2026-03-26T12:00:00.000Z').toISOString(),
+        },
+        raw: {
+          callback: {
+            callback_id: 'callback-1',
+            payload: 'poll|poll-1|1|0',
+            user: {
+              user_id: 'user-1',
+            },
+          },
+          weird: 'broken-\ud800-text',
+        },
+      },
+      '127.0.0.1',
+    );
+
+    expect(result).toEqual({ accepted: true, duplicate: false });
+    expect(prisma.webhookEvent.create).toHaveBeenCalledTimes(2);
+    expect(prisma.webhookEvent.create.mock.calls[1][0]).toEqual(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          normalizedPayload: expect.objectContaining({
+            message: expect.objectContaining({
+              text: 'broken-\ufffd-text',
+            }),
+            raw: expect.objectContaining({
+              weird: 'broken-\ufffd-text',
+            }),
+          }),
+        }),
+      }),
+    );
+  });
 });

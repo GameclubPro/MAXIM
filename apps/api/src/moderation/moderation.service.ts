@@ -6513,26 +6513,31 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         ? 'Вы уже выбрали этот вариант'
         : 'Голос учтён';
 
-    if (!existingVote || existingVote.optionIndex !== pollCallback.optionIndex) {
-      await this.prisma.managedPollVote.upsert({
-        where: {
-          pollId_pollVersion_userId: {
-            pollId: poll.id,
-            pollVersion: poll.activeVersion,
-            userId: voterUserId,
-          },
-        },
-        create: {
+    if (existingVote && existingVote.optionIndex === pollCallback.optionIndex) {
+      if (callbackId) {
+        await this.answerCallbackSafe(callbackId, notification);
+      }
+      return;
+    }
+
+    await this.prisma.managedPollVote.upsert({
+      where: {
+        pollId_pollVersion_userId: {
           pollId: poll.id,
           pollVersion: poll.activeVersion,
           userId: voterUserId,
-          optionIndex: pollCallback.optionIndex,
         },
-        update: {
-          optionIndex: pollCallback.optionIndex,
-        },
-      });
-    }
+      },
+      create: {
+        pollId: poll.id,
+        pollVersion: poll.activeVersion,
+        userId: voterUserId,
+        optionIndex: pollCallback.optionIndex,
+      },
+      update: {
+        optionIndex: pollCallback.optionIndex,
+      },
+    });
 
     const voteCounts = await this.loadManagedPollVoteCounts(
       poll.id,
@@ -6545,8 +6550,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       summary.optionResults,
       'ACTIVE',
     );
-
-    await this.maxClient.editMessageInlineKeyboard(chatId, sourceMessageId, text, {
+    const editOptions: Pick<MaxSendMessageOptions, 'buttons' | 'debugContext'> = {
       buttons: buildManagedPollButtons(
         poll.id,
         poll.activeVersion,
@@ -6557,11 +6561,17 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
         screen: 'managed-poll',
         action: 'vote',
       },
-    });
+    };
 
     if (callbackId) {
-      await this.answerCallbackSafe(callbackId, notification);
+      await this.maxClient.answerCallback(callbackId, notification, {
+        text,
+        options: editOptions,
+      });
+      return;
     }
+
+    await this.maxClient.editMessageInlineKeyboard(chatId, sourceMessageId, text, editOptions);
   }
 
   private extractCallbackNode(update: MaxUpdate): Record<string, unknown> | null {

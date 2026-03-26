@@ -10785,8 +10785,8 @@ describe('ModerationService', () => {
       resolveAction: jest.fn(),
     };
     const maxClient = {
-      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       answerCallback: jest.fn().mockResolvedValue(undefined),
+      editMessageInlineKeyboard: jest.fn().mockResolvedValue(undefined),
       deleteMessage: jest.fn(),
       sendMessage: jest.fn(),
       kickMember: jest.fn(),
@@ -10821,22 +10821,20 @@ describe('ModerationService', () => {
         optionIndex: 0,
       },
     });
-    const votePollCall = (maxClient.editMessageInlineKeyboard as jest.Mock).mock.calls.at(-1);
-    expect(votePollCall).toBeDefined();
-    expect(votePollCall?.[0]).toBe('channel-1');
-    expect(votePollCall?.[1]).toBe('mid-poll-1');
-    expect(votePollCall?.[2]).toContain('Соло - 1 (100%)');
-    expect(votePollCall?.[2]).not.toContain('Всего голосов:');
-    expect(votePollCall?.[2]).not.toContain('Статус:');
-    expect(votePollCall?.[3]).toEqual(
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
+    expect(maxClient.answerCallback).toHaveBeenCalledWith(
+      'callback-poll-1',
+      'Голос учтён',
       expect.objectContaining({
-        buttons: [
-          [expect.objectContaining({ text: 'Соло (1)' })],
-          [expect.objectContaining({ text: 'Сквад (0)' })],
-        ],
+        text: expect.stringContaining('Соло - 1 (100%)'),
+        options: expect.objectContaining({
+          buttons: [
+            [expect.objectContaining({ text: 'Соло (1)' })],
+            [expect.objectContaining({ text: 'Сквад (0)' })],
+          ],
+        }),
       }),
     );
-    expect(maxClient.answerCallback).toHaveBeenCalledWith('callback-poll-1', 'Голос учтён');
   });
 
   it('does not rewrite the vote when the same option is pressed again', async () => {
@@ -10895,6 +10893,8 @@ describe('ModerationService', () => {
     await service.handleUpdate(createManagedPollCallbackUpdate('poll|poll-1|1|0'));
 
     expect(prisma.managedPollVote.upsert).not.toHaveBeenCalled();
+    expect(prisma.managedPollVote.findMany).not.toHaveBeenCalled();
+    expect(maxClient.editMessageInlineKeyboard).not.toHaveBeenCalled();
     expect(maxClient.answerCallback).toHaveBeenCalledWith(
       'callback-poll-1',
       'Вы уже выбрали этот вариант',
