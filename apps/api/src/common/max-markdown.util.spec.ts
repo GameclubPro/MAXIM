@@ -51,6 +51,14 @@ describe('renderSupportedMarkdownAsHtml', () => {
     ).toBe('<p><u><strong><em><u>MAX Docs</u></em></strong></u></p>');
   });
 
+  it('preserves paragraphs, indentation and repeated spaces in html output', () => {
+    expect(
+      renderSupportedMarkdownAsHtml('**Анонс**\n\n  Второй абзац с  двойным пробелом\tи табом'),
+    ).toBe(
+      '<p><strong>Анонс</strong></p><p>&nbsp;&nbsp;Второй абзац с&nbsp;&nbsp;двойным пробелом&nbsp;&nbsp;&nbsp;&nbsp;и табом</p>',
+    );
+  });
+
   it('strips supported markdown to plain text', () => {
     expect(
       stripSupportedMarkdownToPlainText(

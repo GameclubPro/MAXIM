@@ -20,8 +20,8 @@ export function renderSupportedMarkdownAsHtml(
   source: string,
   options: RenderMarkdownOptions = {},
 ): string {
-  const normalized = source.replace(/\r/g, '').trim();
-  if (!normalized) {
+  const normalized = source.replace(/\r/g, '');
+  if (!normalized.trim()) {
     return '';
   }
 
@@ -222,9 +222,9 @@ function renderInlineTokens(tokens: InlineToken[], options: RenderMarkdownOption
     .map((token) => {
       switch (token.type) {
         case 'text':
-          return escapeHtml(token.content);
+          return escapeHtmlPreservingWhitespace(token.content);
         case 'code':
-          return `<code>${escapeHtml(token.content)}</code>`;
+          return `<code>${escapeHtmlPreservingWhitespace(token.content)}</code>`;
         case 'bold':
           return `<strong>${renderInlineTokens(token.children, options)}</strong>`;
         case 'italic':
@@ -310,6 +310,12 @@ function escapeHtml(value: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+}
+
+function escapeHtmlPreservingWhitespace(value: string): string {
+  return escapeHtml(value)
+    .replace(/\t/g, '&nbsp;&nbsp;&nbsp;&nbsp;')
+    .replace(/ {2,}/g, (match) => '&nbsp;'.repeat(match.length));
 }
 
 function escapeAttribute(value: string): string {

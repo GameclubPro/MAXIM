@@ -1743,7 +1743,6 @@ export const sendBroadcastRequestSchema = z
   .object({
     text: z
       .string()
-      .trim()
       .max(2_000, 'Текст рассылки слишком длинный. Максимум 2000 символов.')
       .default(''),
     textFormat: broadcastTextFormatSchema.default('plain'),
@@ -1770,7 +1769,7 @@ export const sendBroadcastRequestSchema = z
     cycleCount: z.number().int().min(1).max(100).default(1),
   })
   .superRefine((value, ctx) => {
-    if (value.text.length === 0 && !value.imageEnabled) {
+    if (value.text.trim().length === 0 && !value.imageEnabled) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['text'],

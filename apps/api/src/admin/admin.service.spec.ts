@@ -7451,6 +7451,10 @@ describe('AdminService.sendBroadcast', () => {
 });
 
 describe('AdminService.sendChannelBroadcast', () => {
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it('sends immediate broadcast to channel with button and image', async () => {
     const prisma = createPrismaMock();
     prisma.chat.findUnique.mockResolvedValue({
@@ -7593,7 +7597,7 @@ describe('AdminService.sendChannelBroadcast', () => {
         chatTitle: null,
       },
       {
-        text: '**Новый выпуск** уже в [канале](https://max.ru/channel/maxim).',
+        text: '**Новый выпуск** уже в [канале](https://max.ru/channel/maxim).\n\n  Второй абзац с  отступом',
         textFormat: 'markdown',
         applyToAllChats: false,
         buttonEnabled: false,
@@ -7612,12 +7616,69 @@ describe('AdminService.sendChannelBroadcast', () => {
 
     expect(maxClient.sendMessage).toHaveBeenCalledWith(
       'channel-1',
-      '<p><strong>Новый выпуск</strong> уже в <a href="https://max.ru/channel/maxim">канале</a>.</p>',
+      '<p><strong>Новый выпуск</strong> уже в <a href="https://max.ru/channel/maxim">канале</a>.</p><p>&nbsp;&nbsp;Второй абзац с&nbsp;&nbsp;отступом</p>',
       {
         textFormat: 'html',
       },
       { immediate: true },
     );
+  });
+
+  it('stores scheduled broadcast text without trimming surrounding whitespace', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-03-03T10:00:00.000Z'));
+
+    const prisma = createPrismaMock();
+    wireManagedBroadcastDeliveryStore(prisma);
+    wireManagedBroadcastOccurrenceStore(prisma, []);
+    const maxClient = {
+      getChatAdminIds: jest.fn().mockResolvedValue(['admin-1']),
+      sendMessage: jest.fn(),
+    };
+    const chatContextCache = {
+      invalidate: jest.fn(),
+    };
+
+    const service = new AdminService(
+      prisma as never,
+      maxClient as never,
+      chatContextCache as never,
+      createConfigMock() as never,
+    );
+
+    await service.sendBroadcast(
+      'chat-1',
+      {
+        userId: 'admin-1',
+        username: null,
+        displayName: null,
+        chatTitle: null,
+      },
+      {
+        text: '\n  **Новая рассылка**\n\n  Второй абзац с  пробелом\n',
+        textFormat: 'markdown',
+        applyToAllChats: false,
+        buttonEnabled: false,
+        buttonUrl: '',
+        buttonText: 'Открыть',
+        imageEnabled: false,
+        imageBase64: '',
+        imageMimeType: '',
+        imageFileName: '',
+        scheduleMode: 'calendar',
+        scheduleTimezone: 'Europe/Moscow',
+        scheduledSlots: ['2026-03-03T12:00:00.000Z'],
+        sendAt: null,
+        cycleEnabled: false,
+        cycleEveryHours: 1,
+        cycleCount: 1,
+      },
+    );
+
+    expect(prisma.managedBroadcast.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        text: '\n  **Новая рассылка**\n\n  Второй абзац с  пробелом\n',
+      }),
+    });
   });
 
   it('publishes nested bold italic underline links in channel broadcasts', async () => {

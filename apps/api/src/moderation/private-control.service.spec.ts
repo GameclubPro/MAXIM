@@ -1514,6 +1514,7 @@ describe('PrivateControlService', () => {
 
   it('preserves incoming MAX text markup when sending broadcast from private bot', async () => {
     const { service, adminService, maxClient, channels } = createHarness();
+    const sourceText = 'Важный анонс\n\n  Второй абзац с  пробелом';
 
     await service.handleUpdate(
       createPrivateCallbackUpdate(`pc2|chat_select|channel|${channels[0].id}`),
@@ -1521,7 +1522,7 @@ describe('PrivateControlService', () => {
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|open_broadcast'));
     await service.handleUpdate(createPrivateCallbackUpdate('pc2|broadcast_input_prompt|text'));
     await service.handleUpdate(
-      createPrivateFormattedTextUpdate('Важный анонс', [
+      createPrivateFormattedTextUpdate(sourceText, [
         {
           type: 'strong',
           from: 0,
@@ -1539,6 +1540,9 @@ describe('PrivateControlService', () => {
     expect(getLastSentText(maxClient)).toContain('<strong>Контент:</strong>');
     expect(getLastSentText(maxClient)).toContain('<strong>Важный</strong>');
     expect(getLastSentText(maxClient)).toContain(
+      '<p>&nbsp;&nbsp;Второй абзац с&nbsp;&nbsp;пробелом</p>',
+    );
+    expect(getLastSentText(maxClient)).toContain(
       '<strong>Дальше:</strong> Пришлите новый текст или фото.',
     );
     expect(getLastSentText(maxClient)).not.toContain('**Важный**');
@@ -1549,7 +1553,7 @@ describe('PrivateControlService', () => {
       channels[0].id,
       expect.objectContaining({ userId: 'user-1' }),
       expect.objectContaining({
-        text: '**Важный** анонс',
+        text: '**Важный** анонс\n\n  Второй абзац с  пробелом',
         textFormat: 'markdown',
         applyToAllChats: false,
       }),

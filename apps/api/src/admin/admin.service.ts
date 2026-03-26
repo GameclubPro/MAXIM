@@ -3949,7 +3949,7 @@ export class AdminService {
         where: { id: existing.id },
         data: {
           actorUserId: user.userId,
-          text: request.payload.text.trim(),
+          text: request.payload.text,
           textFormat: request.payload.textFormat,
           applyToAllChats: request.payload.applyToAllChats,
           targetChatIds: request.targetChatIds as Prisma.InputJsonValue,
@@ -4363,7 +4363,7 @@ export class AdminService {
     return {
       payload: parsed.data,
       targetChatIds,
-      normalizedSourceText: parsed.data.text.trim(),
+      normalizedSourceText: parsed.data.text,
     };
   }
 
@@ -4535,7 +4535,7 @@ export class AdminService {
           sourceChatId,
           entityType: this.mapManagedEntityTypeToChatEntityType(entityType),
           actorUserId: user.userId,
-          text: request.payload.text.trim(),
+          text: request.payload.text,
           textFormat: request.payload.textFormat,
           applyToAllChats: request.payload.applyToAllChats,
           targetChatIds: request.targetChatIds as Prisma.InputJsonValue,
@@ -4751,7 +4751,7 @@ export class AdminService {
           cycleCount: row.cycleCount,
         },
         targetChatIds: this.parseManagedBroadcastTargetChatIds(row.targetChatIds),
-        normalizedSourceText: row.text.trim(),
+        normalizedSourceText: row.text,
       };
 
       const sentChatIds: string[] = [];
@@ -4955,10 +4955,13 @@ export class AdminService {
       customButtonText: payload.buttonText.trim(),
       customButtonUrl: payload.buttonUrl.trim(),
     });
-    const shouldUseRichText = payload.textFormat === 'markdown' && normalizedSourceText.length > 0;
+    const hasMeaningfulText = normalizedSourceText.trim().length > 0;
+    const shouldUseRichText = payload.textFormat === 'markdown' && hasMeaningfulText;
     const messageText = shouldUseRichText
       ? renderSupportedMarkdownAsHtml(normalizedSourceText)
-      : normalizedSourceText || (payload.imageEnabled ? ' ' : '');
+      : hasMeaningfulText
+        ? normalizedSourceText
+        : (payload.imageEnabled ? ' ' : '');
     const textFormat: MaxSendMessageOptions['textFormat'] = shouldUseRichText ? 'html' : undefined;
     const messageOptions =
       broadcastButtons.length > 0 || imagePayload || textFormat
