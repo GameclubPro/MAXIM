@@ -26,10 +26,12 @@ export async function getLogsDashboard(
   api: ApiTransport,
   chatId: string,
   range: LogsDashboardRange = '7d',
+  request: Pick<RequestInit, 'signal'> = {},
 ): Promise<LogsDashboardResponse> {
   const validatedRange = logsDashboardRangeSchema.parse(range);
   const response = await api.request(
     `/chats/${chatId}/logs-dashboard?range=${encodeURIComponent(validatedRange)}`,
+    request,
   );
   return logsDashboardResponseSchema.parse(response);
 }

@@ -987,7 +987,7 @@ export function ChannelStatsPage({ api }: { api: ApiTransport }) {
 
   const statsQuery = useQuery({
     queryKey: ['channel-stats', chatId, range],
-    queryFn: () => getChannelStats(api, chatId, range),
+    queryFn: ({ signal }) => getChannelStats(api, chatId, range, { signal }),
     enabled: Boolean(chatId),
   });
 

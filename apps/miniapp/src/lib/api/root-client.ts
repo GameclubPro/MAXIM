@@ -127,7 +127,7 @@ function buildManagedEntitiesPath(
 
 export async function getMe(
   api: ApiTransport,
-  options: { chatId?: string; entityType?: 'chat' | 'channel' } = {},
+  options: { chatId?: string; entityType?: 'chat' | 'channel'; signal?: AbortSignal } = {},
 ): Promise<Me> {
   const query = new URLSearchParams();
   if (options.chatId?.trim()) {
@@ -137,7 +137,9 @@ export async function getMe(
     query.set('entityType', options.entityType);
   }
 
-  const response = await api.request(`/me${query.size > 0 ? `?${query.toString()}` : ''}`);
+  const response = await api.request(`/me${query.size > 0 ? `?${query.toString()}` : ''}`, {
+    signal: options.signal,
+  });
   return parseMe(response);
 }
 

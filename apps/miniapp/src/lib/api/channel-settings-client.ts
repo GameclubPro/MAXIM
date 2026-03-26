@@ -44,8 +44,9 @@ export async function getChannelSettings(
 export async function getChannelSettingsScreen(
   api: ApiTransport,
   chatId: string,
+  request: Pick<RequestInit, 'signal'> = {},
 ): Promise<ChannelSettingsScreenResponse> {
-  const response = await api.request(`/channels/${chatId}/settings-screen`);
+  const response = await api.request(`/channels/${chatId}/settings-screen`, request);
   return channelSettingsScreenResponseSchema.parse(response);
 }
 

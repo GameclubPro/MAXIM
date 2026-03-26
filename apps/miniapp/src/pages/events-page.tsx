@@ -712,7 +712,7 @@ export function EventsPage({ api }: { api: ApiTransport }) {
 
   const dashboardQuery = useQuery({
     queryKey: ['logs-dashboard', chatId, range],
-    queryFn: () => getLogsDashboard(api, chatId ?? '', range),
+    queryFn: ({ signal }) => getLogsDashboard(api, chatId ?? '', range, { signal }),
     enabled: Boolean(chatId),
     refetchInterval: () => (document.hidden ? false : 10_000),
     refetchOnWindowFocus: true,

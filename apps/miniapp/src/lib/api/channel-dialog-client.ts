@@ -52,8 +52,12 @@ export async function getEntityDialog(
   chatId: string,
   dialogType: ChannelDialogType,
   token: string,
+  request: Pick<RequestInit, 'signal'> = {},
 ): Promise<ChannelDialogResponse> {
-  const response = await api.request(buildDialogApiPath(entityType, chatId, dialogType, token));
+  const response = await api.request(
+    buildDialogApiPath(entityType, chatId, dialogType, token),
+    request,
+  );
   return channelDialogResponseSchema.parse(response);
 }
 
@@ -96,8 +100,9 @@ export async function getChannelDialog(
   chatId: string,
   dialogType: ChannelDialogType,
   token: string,
+  request: Pick<RequestInit, 'signal'> = {},
 ): Promise<ChannelDialogResponse> {
-  return getEntityDialog(api, 'channel', chatId, dialogType, token);
+  return getEntityDialog(api, 'channel', chatId, dialogType, token, request);
 }
 
 export async function createChannelDialogMessage(
@@ -124,8 +129,9 @@ export async function getChatDialog(
   chatId: string,
   dialogType: ChannelDialogType,
   token: string,
+  request: Pick<RequestInit, 'signal'> = {},
 ): Promise<ChannelDialogResponse> {
-  return getEntityDialog(api, 'chat', chatId, dialogType, token);
+  return getEntityDialog(api, 'chat', chatId, dialogType, token, request);
 }
 
 export async function createChatDialogMessage(

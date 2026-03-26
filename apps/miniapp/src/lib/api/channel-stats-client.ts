@@ -18,10 +18,12 @@ export async function getChannelStats(
   api: ApiTransport,
   chatId: string,
   range: ChannelStatsRange = '7d',
+  request: Pick<RequestInit, 'signal'> = {},
 ): Promise<ChannelStatsResponse> {
   const validatedRange = channelStatsRangeSchema.parse(range);
   const response = await api.request(
     `/channels/${chatId}/stats?range=${encodeURIComponent(validatedRange)}`,
+    request,
   );
   return channelStatsResponseSchema.parse(response);
 }

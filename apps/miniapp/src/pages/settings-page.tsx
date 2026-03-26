@@ -1848,7 +1848,7 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
 
   const settingsScreenQuery = useQuery({
     queryKey: ['settings-screen', chatId],
-    queryFn: () => getSettingsScreen(api, chatId ?? ''),
+    queryFn: ({ signal }) => getSettingsScreen(api, chatId ?? '', { signal }),
     enabled: Boolean(chatId),
     refetchOnWindowFocus: false,
   });
@@ -1860,7 +1860,8 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
   });
   const meQuery = useQuery({
     queryKey: ['me', chatId ?? null],
-    queryFn: () => getMe(api, { chatId: chatId ?? undefined, entityType: 'chat' }),
+    queryFn: ({ signal }) =>
+      getMe(api, { chatId: chatId ?? undefined, entityType: 'chat', signal }),
     staleTime: 30_000,
     refetchOnWindowFocus: false,
   });

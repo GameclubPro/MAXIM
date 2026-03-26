@@ -9,16 +9,18 @@ import type { ApiTransport } from './transport';
 export async function getPublicGiveaway(
   api: ApiTransport,
   giveawayId: string,
+  request: Pick<RequestInit, 'signal'> = {},
 ): Promise<ManagedGiveawayPublic> {
-  const response = await api.request(`/giveaways/${giveawayId}`);
+  const response = await api.request(`/giveaways/${giveawayId}`, request);
   return managedGiveawayPublicSchema.parse(response);
 }
 
 export async function getGiveawayParticipantState(
   api: ApiTransport,
   giveawayId: string,
+  request: Pick<RequestInit, 'signal'> = {},
 ): Promise<ManagedGiveawayParticipantState> {
-  const response = await api.request(`/giveaways/${giveawayId}/me`);
+  const response = await api.request(`/giveaways/${giveawayId}/me`, request);
   return managedGiveawayParticipantStateSchema.parse(response);
 }
 

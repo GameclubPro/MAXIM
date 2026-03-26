@@ -828,7 +828,7 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
   const dialogQueryKey = ['entity-dialog', entityType, chatId, dialogType, token] as const;
   const meQuery = useQuery({
     queryKey: ['me'],
-    queryFn: () => getMe(api),
+    queryFn: ({ signal }) => getMe(api, { signal }),
   });
 
   useEffect(() => {
@@ -848,10 +848,10 @@ export function ChannelDialogPage({ api }: { api: ApiTransport }) {
 
   const dialogQuery = useQuery({
     queryKey: dialogQueryKey,
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       entityType === 'channel'
-        ? getChannelDialog(api, chatId, dialogType, token)
-        : getChatDialog(api, chatId, dialogType, token),
+        ? getChannelDialog(api, chatId, dialogType, token, { signal })
+        : getChatDialog(api, chatId, dialogType, token, { signal }),
     enabled: Boolean(chatId && token),
     refetchInterval: dialogType === 'comments' ? 8_000 : dialogType === 'suggest' ? 15_000 : false,
   });

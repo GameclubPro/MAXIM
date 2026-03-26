@@ -475,7 +475,7 @@ export function ChannelSettingsPage({ api }: { api: ApiTransport }) {
 
   const settingsScreenQuery = useQuery({
     queryKey: ['channel-settings-screen', chatId],
-    queryFn: () => getChannelSettingsScreen(api, chatId),
+    queryFn: ({ signal }) => getChannelSettingsScreen(api, chatId, { signal }),
     enabled: Boolean(chatId),
     refetchOnWindowFocus: false,
   });

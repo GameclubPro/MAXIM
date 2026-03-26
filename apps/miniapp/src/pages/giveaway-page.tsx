@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ManagedGiveawayParticipantState, ManagedGiveawayPublic } from '@maxim/contracts';
 import type { CSSProperties } from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useToast } from '../components/ui/toast';
 import {
@@ -338,10 +338,15 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
+  const participantQueryKey = useMemo(
+    () => ['public-giveaway-participant', giveawayId] as const,
+    [giveawayId],
+  );
   const subscriptionCheckInFlightRef = useRef(false);
   const [awaitingSubscriptionReturn, setAwaitingSubscriptionReturn] = useState(false);
   const [subscriptionRecheckPending, setSubscriptionRecheckPending] = useState(false);
   const [subscriptionNeedsManualRetry, setSubscriptionNeedsManualRetry] = useState(false);
+  const [participantBootstrapReady, setParticipantBootstrapReady] = useState(false);
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   const closePage = () => {
@@ -376,20 +381,49 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
     maxImpact('soft');
   }, []);
 
+  useEffect(() => {
+    if (!giveawayId) {
+      setParticipantBootstrapReady(false);
+      return;
+    }
+
+    setParticipantBootstrapReady(
+      queryClient.getQueryData<ManagedGiveawayParticipantState>(participantQueryKey) !== undefined,
+    );
+  }, [giveawayId, participantQueryKey, queryClient]);
+
   const giveawayQuery = useQuery({
     queryKey: ['public-giveaway', giveawayId] as const,
-    queryFn: () => getPublicGiveaway(api, giveawayId),
+    queryFn: ({ signal }) => getPublicGiveaway(api, giveawayId, { signal }),
     enabled: Boolean(giveawayId),
     refetchOnWindowFocus: false,
   });
 
-  const participantQueryKey = ['public-giveaway-participant', giveawayId] as const;
   const participantQuery = useQuery({
     queryKey: participantQueryKey,
-    queryFn: () => getGiveawayParticipantState(api, giveawayId),
-    enabled: Boolean(giveawayId),
+    queryFn: ({ signal }) => getGiveawayParticipantState(api, giveawayId, { signal }),
+    enabled: Boolean(giveawayId) && giveawayQuery.isSuccess && participantBootstrapReady,
     refetchOnWindowFocus: false,
   });
+
+  useEffect(() => {
+    if (!giveawayQuery.data || participantBootstrapReady) {
+      return undefined;
+    }
+
+    if (typeof window === 'undefined') {
+      setParticipantBootstrapReady(true);
+      return undefined;
+    }
+
+    const frameId = window.requestAnimationFrame(() => {
+      setParticipantBootstrapReady(true);
+    });
+
+    return () => {
+      window.cancelAnimationFrame(frameId);
+    };
+  }, [giveawayQuery.data, participantBootstrapReady]);
 
   const enterMutation = useMutation({
     mutationFn: () => enterGiveaway(api, giveawayId),
@@ -425,6 +459,11 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
   const totalChannelSteps = giveaway ? buildGiveawayChannels(giveaway).length : 0;
   const completedChannelSteps = Math.max(0, totalChannelSteps - missingChannelCards.length);
   const nextMissingChannel = missingChannelCards[0] ?? null;
+  const isParticipantStatusPending =
+    Boolean(giveaway) &&
+    !participant &&
+    !participantQuery.error &&
+    (!participantBootstrapReady || participantQuery.isLoading);
   const isSubscriptionFlow =
     participant?.eligibilityState === 'REJECTED' && missingChannelCards.length > 0;
 
@@ -448,11 +487,20 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
     title: 'Не удалось открыть розыгрыш',
     description: formatApiError(giveawayQuery.error),
   };
+  const participantLoadingPresentation: GiveawayModalPresentation = {
+    tone: 'muted',
+    glyph: 'clock',
+    badge: 'Проверяем статус',
+    title: 'Уточняем участие',
+    description: 'Проверяем, вступали ли вы раньше и выполнены ли условия.',
+  };
 
   const presentation = giveawayQuery.error
     ? errorPresentation
     : giveawayQuery.isLoading || !giveaway
       ? loadingPresentation
+      : isParticipantStatusPending
+        ? participantLoadingPresentation
       : buildModalPresentation({
           giveaway,
           participant,
@@ -540,6 +588,12 @@ export function GiveawayPage({ api }: { api: ApiTransport }) {
       }
     : !giveaway
       ? null
+      : isParticipantStatusPending
+        ? {
+            label: 'Проверяем статус…',
+            disabled: true,
+            onClick: () => undefined,
+          }
       : participantQuery.error
         ? {
             label: 'Обновить статус',

@@ -57,8 +57,9 @@ export async function getSettings(api: ApiTransport, chatId: string): Promise<Ch
 export async function getSettingsScreen(
   api: ApiTransport,
   chatId: string,
+  request: Pick<RequestInit, 'signal'> = {},
 ): Promise<ChatSettingsScreenResponse> {
-  const response = await api.request(`/chats/${chatId}/settings-screen`);
+  const response = await api.request(`/chats/${chatId}/settings-screen`, request);
   return chatSettingsScreenResponseSchema.parse(response);
 }
 
