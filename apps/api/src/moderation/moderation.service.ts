@@ -91,9 +91,14 @@ type RulesButtonReference = {
 
 type ChannelDialogType = 'comments' | 'suggest';
 
-type AdminForwardedModerationCommand = {
-  action: 'BAN';
-};
+type AdminForwardedModerationCommand =
+  | {
+      action: 'BAN';
+    }
+  | {
+      action: 'MUTE';
+      muteDurationHours: number;
+    };
 
 type ForwardedModerationTarget = {
   chatId: string;
@@ -3690,7 +3695,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       await this.sendGroupAdminCommandNotice({
         chatId,
         settings,
-        text: 'Перешлите одно сообщение из этого чата и добавьте слово `бан`.',
+        text: 'Перешлите или ответьте на одно сообщение из этого чата и добавьте слово `бан` или `мут`.',
       });
       return true;
     }
@@ -3700,7 +3705,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       await this.sendGroupAdminCommandNotice({
         chatId,
         settings,
-        text: 'Команда `бан` работает только для пересланных сообщений из этого чата.',
+        text: 'Команда `бан` или `мут` работает только для сообщений из этого чата.',
       });
       return true;
     }
@@ -3725,12 +3730,24 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       chatTitle: chatTitle?.trim() || null,
     };
     try {
-      const result = await this.adminService.applyManualSystemBan(
-        chatId,
-        target.userId,
-        actor,
-        'group_command',
-      );
+      const result =
+        command.action === 'BAN'
+          ? await this.adminService.applyManualSystemBan(
+              chatId,
+              target.userId,
+              actor,
+              'group_command',
+            )
+          : await this.adminService.applyManualModerationAction(
+              chatId,
+              target.userId,
+              actor,
+              {
+                action: 'MUTE',
+                muteDurationHours: command.muteDurationHours,
+              },
+              'group_command',
+            );
 
       await this.deleteAdminCommandMessage(chatId, messageId);
       await this.sendGroupAdminCommandNotice({
@@ -3752,7 +3769,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       await this.sendGroupAdminCommandNotice({
         chatId,
         settings,
-        text: `Не удалось применить бан: ${this.escapeMaxMarkdownText(
+        text: `Не удалось применить ${command.action === 'BAN' ? 'бан' : 'мут'}: ${this.escapeMaxMarkdownText(
           this.extractGroupAdminCommandErrorMessage(error),
         )}`,
       });
@@ -3791,7 +3808,35 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (!/^(?:бан|ban)[.!]?$/u.test(normalized)) {
-      return null;
+      if (/^(?:мут|мьют|мью|mute)[.!]?$/u.test(normalized)) {
+        return {
+          action: 'MUTE',
+          muteDurationHours: DEFAULT_MUTE_DURATION_HOURS,
+        };
+      }
+
+      const muteDurationMatch = normalized.match(
+        /^(?:мут|мьют|мью|mute)\s+(\d{1,3})(?:\s*(?:ч|час|часа|часов|h|hr|hrs|hour|hours))?[.!]?$/u,
+      );
+      if (!muteDurationMatch) {
+        return null;
+      }
+
+      const muteDurationHours = Number.parseInt(muteDurationMatch[1], 10);
+      if (
+        !Number.isInteger(muteDurationHours) ||
+        muteDurationHours < 1 ||
+        muteDurationHours > MAX_ACTIVE_MUTE_DURATION_HOURS
+      ) {
+        throw new BadRequestException(
+          `Длительность мута должна быть от 1 до ${MAX_ACTIVE_MUTE_DURATION_HOURS} часов.`,
+        );
+      }
+
+      return {
+        action: 'MUTE',
+        muteDurationHours,
+      };
     }
 
     return {
