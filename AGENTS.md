@@ -7,6 +7,18 @@
   - Local push: `./infra/scripts/local-commit-push.sh "<message>" main`
   - VPS update: `./infra/scripts/vps-pull-build-up.sh main [services...]`
 - Rebuild only changed services. In this repo that is usually `api` and/or `miniapp-static`.
+- Prefer workspace-scoped validation before full repo runs:
+  - `npm run typecheck --workspace @maxim/api`
+  - `npm run typecheck --workspace @maxim/miniapp`
+  - targeted `npm test --workspace @maxim/api -- <spec-or-pattern>`
+
+## Fast mini app loop
+- For layout, interaction, and native-feel work, prefer the local emulator before full screenshots:
+  - `npm run emulator:miniapp -- --device iphone --reuse-server`
+  - `npm run emulator:miniapp:android -- --reuse-server`
+  - add `--route '<path>'` to jump directly to the screen under work
+- Use screenshots after the layout is close, not as the first feedback loop.
+- Avoid full Docker rebuilds for mini app CSS/TSX iteration unless the task specifically needs container parity.
 
 ## VPS
 - SSH alias: `ssh maxim-vps`
@@ -34,6 +46,14 @@
   4. `https://github.com/max-messenger`
 - When onboarding, moderation entry flows, or webhook behavior are in scope, inspect `GET /subscriptions`.
 - Minimum expected webhook events are `message_created`, `user_added`, `bot_added`; in practice also check `bot_started`.
+- Treat `initDataUnsafe` as convenience only. Authentication, user identity, and server trust must rely on validated `initData`.
+- Keep MAX API client behavior aligned with current docs:
+  - production uses Webhook, development/testing may use Long Polling,
+  - Webhook endpoint must return HTTP `200` within `30s`,
+  - recommended `platform-api.max.ru` ceiling is `30 rps`.
+- For mini app deep links, keep `startapp` payload within the documented MAX constraints: up to `512` chars, only `A-Z`, `a-z`, `0-9`, `_`, `-`.
+- Use `openMaxLink` only for MAX deep links like `https://max.ru/<botName>?startapp=...`; use `openLink` or normal browser navigation for external URLs.
+- When content already exists as a bot message and the UX is share-first, prefer native `shareMaxContent()` over custom “copy/send” flows.
 
 ## Managed entities diagnostics
 - The mini app shows only the intersection where the user is admin and the bot also has admin access to the same chat/channel.
@@ -50,6 +70,12 @@
 - Prefer the newest screenshots in `artifacts/miniapp-screenshots/<timestamp>`.
 - If local Playwright/browser deps are unavailable, use the VPS flow:
   - `cd /var/www/Chat_bot && ./infra/scripts/vps-miniapp-preview-screenshots.sh`
+- Default quality bar for MAX-native mobile UI:
+  - verify both iPhone and Android profiles,
+  - respect safe-area and keyboard behavior,
+  - avoid desktop-density layouts on 375px width,
+  - prefer bridge-backed native actions like haptics, back button, close confirmation, and in-app MAX navigation where appropriate.
+- Use MAX UI docs as a reference for spacing, hierarchy, and component behavior. Do not mix `@maxhub/max-ui` into isolated screens casually; adopt it deliberately and coherently.
 
 ## Repo hygiene
 - Keep the repo root focused on source, docs, infra, and stable config.
