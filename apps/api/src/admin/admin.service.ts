@@ -5247,9 +5247,7 @@ export class AdminService {
         scheduledAt: {
           in: options.slots,
         },
-        ...(options.excludeBroadcastId
-          ? { broadcastId: { not: options.excludeBroadcastId } }
-          : {}),
+        ...(options.excludeBroadcastId ? { broadcastId: { not: options.excludeBroadcastId } } : {}),
       },
       select: {
         broadcastId: true,
@@ -10208,20 +10206,19 @@ export class AdminService {
     const imageMimeType = this.readTrimmedString(payload.imageMimeType);
     const imageFileName = this.readTrimmedString(payload.imageFileName);
     const buttonContext = await this.buildPublishedChannelSuggestionButtonContext(chatId, payload);
+    const messageText = this.buildPublishedChannelSuggestionMessageText(payload, text);
 
     if (!text && !imageBase64) {
       throw new BadRequestException('В предложке нет текста или фото для публикации.');
     }
 
-    const messageOptions =
-      buttonContext.buttons.length > 0 || imageBase64
-        ? {
-            ...(buttonContext.buttons.length > 0 ? { buttons: buttonContext.buttons } : {}),
-          }
-        : undefined;
+    const messageOptions: Pick<MaxSendMessageOptions, 'buttons' | 'imagePayload' | 'textFormat'> = {
+      ...(buttonContext.buttons.length > 0 ? { buttons: buttonContext.buttons } : {}),
+      textFormat: 'markdown',
+    };
 
     if (!imageBase64) {
-      const published = await this.publishMessageWithRetry(chatId, text, messageOptions);
+      const published = await this.publishMessageWithRetry(chatId, messageText, messageOptions);
       return {
         messageId: published.messageId,
         url: published.url,
@@ -10242,8 +10239,8 @@ export class AdminService {
       throw new BadRequestException('Не удалось подготовить фото предложки для публикации.');
     }
 
-    const published = await this.publishMessageWithRetry(chatId, text || ' ', {
-      ...(messageOptions ?? {}),
+    const published = await this.publishMessageWithRetry(chatId, messageText, {
+      ...messageOptions,
       imagePayload: uploadedImagePayload,
     });
 
@@ -10256,6 +10253,24 @@ export class AdminService {
       suggestButtonText: buttonContext.suggestButtonText,
       autoPostButtonsMode: buttonContext.autoPostButtonsMode,
     };
+  }
+
+  private buildPublishedChannelSuggestionMessageText(
+    payload: Record<string, unknown>,
+    suggestionText: string,
+  ): string {
+    const actorUserId = this.readTrimmedString(payload.actorUserId);
+    const actorName = this.readTrimmedString(payload.authorDisplayName) ?? actorUserId ?? '';
+    const attribution = actorUserId
+      ? `От подписчика [${this.escapeMarkdown(actorName || 'подписчика')}](max://user/${encodeURIComponent(actorUserId)})`
+      : actorName
+        ? `От подписчика ${this.escapeMarkdown(actorName)}`
+        : 'От подписчика';
+    const normalizedSuggestionText = suggestionText.trim();
+
+    return normalizedSuggestionText
+      ? `${attribution}\n\n${this.escapeMarkdown(normalizedSuggestionText)}`
+      : attribution;
   }
 
   private async buildPublishedChannelSuggestionButtonContext(

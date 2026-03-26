@@ -213,11 +213,7 @@ function createPrismaMock() {
   };
 
   prisma.$transaction = jest.fn(
-    (
-      input:
-        | unknown[]
-        | ((tx: typeof prisma) => Promise<unknown> | unknown),
-    ) => {
+    (input: unknown[] | ((tx: typeof prisma) => Promise<unknown> | unknown)) => {
       if (typeof input === 'function') {
         return Promise.resolve(input(prisma));
       }
@@ -444,10 +440,7 @@ function wireManagedBroadcastOccurrenceStore(
       return true;
     }
 
-    if (
-      typeof where.sourceChatId === 'string' &&
-      occurrence.sourceChatId !== where.sourceChatId
-    ) {
+    if (typeof where.sourceChatId === 'string' && occurrence.sourceChatId !== where.sourceChatId) {
       return false;
     }
     if (typeof where.entityType === 'string' && occurrence.entityType !== where.entityType) {
@@ -458,10 +451,16 @@ function wireManagedBroadcastOccurrenceStore(
     }
     if (where.broadcastId && typeof where.broadcastId === 'object') {
       const broadcastFilter = where.broadcastId as { in?: string[]; not?: string };
-      if (Array.isArray(broadcastFilter.in) && !broadcastFilter.in.includes(occurrence.broadcastId)) {
+      if (
+        Array.isArray(broadcastFilter.in) &&
+        !broadcastFilter.in.includes(occurrence.broadcastId)
+      ) {
         return false;
       }
-      if (typeof broadcastFilter.not === 'string' && occurrence.broadcastId === broadcastFilter.not) {
+      if (
+        typeof broadcastFilter.not === 'string' &&
+        occurrence.broadcastId === broadcastFilter.not
+      ) {
         return false;
       }
     }
@@ -6294,13 +6293,7 @@ describe('AdminService.sendBroadcast', () => {
         where?.id?.in?.includes(conflictBroadcast.id) ? [conflictBroadcast] : [],
     );
     prisma.managedBroadcast.update.mockImplementation(
-      async ({
-        where,
-        data,
-      }: {
-        where: { id: string };
-        data: Record<string, unknown>;
-      }) => {
+      async ({ where, data }: { where: { id: string }; data: Record<string, unknown> }) => {
         if (where.id === conflictBroadcast.id) {
           Object.assign(conflictBroadcast, data);
           return conflictBroadcast;
@@ -9972,8 +9965,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     });
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'channel-1',
-      'Готовый пост для канала',
+      'От подписчика [Пользователь](max://user/user-1)\n\nГотовый пост для канала',
       expect.objectContaining({
+        textFormat: 'markdown',
         buttons: [
           [
             expect.objectContaining({
@@ -10123,8 +10117,9 @@ describe('AdminService.publishChannelEngagementMessage', () => {
     );
     expect(maxClient.sendMessageImmediateWithResolvedLink).toHaveBeenCalledWith(
       'channel-1',
-      'Фото с подписью',
+      'От подписчика [Фотограф](max://user/user-9)\n\nФото с подписью',
       expect.objectContaining({
+        textFormat: 'markdown',
         imagePayload: { token: 'uploaded-photo-1' },
         buttons: [
           [
