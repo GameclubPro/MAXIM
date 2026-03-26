@@ -265,6 +265,8 @@ const MANAGED_ENTITIES_REFRESH_BACKOFF_MS = 60_000;
 const MANAGED_ENTITIES_REFRESH_NEXT_POLL_AFTER_MS = 250;
 const MANAGED_ENTITIES_REFRESH_IDLE_NEXT_POLL_AFTER_MS = 1_500;
 const MANAGED_ENTITIES_MASS_ACTION_FULL_SCAN_MAX_PASSES = 75;
+const MANAGED_ENTITY_AVATAR_SNAPSHOT_LIMIT = 12;
+const MANAGED_ENTITY_AVATAR_SNAPSHOT_CONCURRENCY = 3;
 const APPLY_SETTINGS_TO_ALL_CHATS_CONCURRENCY = 6;
 const CHANNEL_DIALOG_MESSAGES_LIMIT = 80;
 const CHANNEL_DIALOG_ACTION_COMMENT = 'CHANNEL_DIALOG_COMMENT';
@@ -12166,6 +12168,51 @@ export class AdminService {
           'Failed to attach managed entity avatars to managed entities list',
         );
       }
+    }
+
+    const snapshotFallbackChats = unresolvedChats
+      .filter((chat) => !avatarByChatId.has(chat.id))
+      .sort((left, right) => {
+        if (left.entityType === right.entityType) {
+          return 0;
+        }
+        return left.entityType === 'channel' ? -1 : 1;
+      })
+      .slice(0, MANAGED_ENTITY_AVATAR_SNAPSHOT_LIMIT);
+
+    if (
+      snapshotFallbackChats.length > 0 &&
+      typeof this.maxClient.getChatSnapshot === 'function'
+    ) {
+      await this.mapWithConcurrencyLimit(
+        snapshotFallbackChats,
+        MANAGED_ENTITY_AVATAR_SNAPSHOT_CONCURRENCY,
+        async (chat) => {
+          try {
+            const snapshot = await this.maxClient.getChatSnapshot(chat.id, {
+              trafficClass: 'interactive',
+            });
+            const avatarUrl = this.readTrimmedString(snapshot.avatarUrl);
+            if (!avatarUrl) {
+              return null;
+            }
+
+            avatarByChatId.set(chat.id, avatarUrl);
+            await this.chatContextCache.setManagedEntityHeader?.({
+              id: chat.id,
+              title: snapshot.title?.trim() || chat.title,
+              entityType: chat.entityType,
+              link: snapshot.link ?? chat.link ?? null,
+              participantsCount: snapshot.participantsCount ?? null,
+              avatarUrl,
+            });
+          } catch {
+            return null;
+          }
+
+          return null;
+        },
+      );
     }
 
     if (avatarByChatId.size === 0) {
