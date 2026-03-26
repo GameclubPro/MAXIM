@@ -9,6 +9,7 @@ import { ManagedGiveawayRunnerService } from './managed-giveaway-runner.service'
 import { ManagedGiveawayService } from './managed-giveaway.service';
 import { AdminService } from './admin.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
+import { RedisCounterService } from '../moderation/redis-counter.service';
 
 @Module({
   imports: [AuthModule, MaxModule, ChatContextModule, SystemModule],
@@ -16,6 +17,7 @@ import { ChannelStatsCollectorService } from './channel-stats-collector.service'
   providers: [
     AdminService,
     ChannelStatsCollectorService,
+    RedisCounterService,
     ManagedBroadcastRunnerService,
     ManagedGiveawayService,
     ManagedGiveawayRunnerService,

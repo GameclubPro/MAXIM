@@ -1265,6 +1265,33 @@ describe('RuleEngineService', () => {
     expect(second.violations.some((item) => item.ruleCode === 'LINK_BLOCKED')).toBe(true);
   });
 
+  it('does not track duplicates for repeated messages blocked by message limits', async () => {
+    const service = new RuleEngineService(new MockRedisCounterService() as never);
+    const settings = buildSettings({
+      messageLimitsBlockedWords: ['скидка'],
+    });
+
+    await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: DUPLICATE_SPAM_TEXT,
+      settings,
+      domainAllowlist: [],
+    });
+
+    const second = await service.detect({
+      chatId: 'chat-1',
+      userId: 'user-1',
+      text: DUPLICATE_SPAM_TEXT,
+      settings,
+      domainAllowlist: [],
+    });
+
+    expect(second.duplicateHit).toBeUndefined();
+    expect(second.duplicateDecision).toBeUndefined();
+    expect(second.violations.some((item) => item.ruleCode === 'MESSAGE_BLOCKED_WORD')).toBe(true);
+  });
+
   it('does not track duplicates for repeated messages with phone numbers', async () => {
     const service = new RuleEngineService(new MockRedisCounterService() as never);
     const text = 'звоните +7 (999) 123-45-67, расскажу подробнее';

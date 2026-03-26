@@ -632,6 +632,24 @@ export const chatSettingsSchema = z
       }
     }
 
+    if (kickEnabled && banEnabled) {
+      if (value.duplicateBanWindowSec < value.duplicateKickWindowSec) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['duplicateBanWindowSec'],
+          message: 'Окно бана должно быть не меньше ступени удаления участника.',
+        });
+      }
+
+      if (value.duplicateBanMaxCount < value.duplicateKickMaxCount) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['duplicateBanMaxCount'],
+          message: 'Лимит бана должен быть не меньше ступени удаления участника.',
+        });
+      }
+    }
+
     if (
       value.linkBotMessageEnabled &&
       value.linkBotButtonEnabled &&

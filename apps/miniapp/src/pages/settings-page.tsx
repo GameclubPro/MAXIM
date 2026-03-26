@@ -499,18 +499,18 @@ const DUPLICATE_STAGE_OPTIONS: Array<{
     maxCountKey: 'duplicateWarnMaxCount',
   },
   {
-    id: 'BAN',
-    label: 'Бан',
-    enabledKey: 'duplicateBanEnabled',
-    windowKey: 'duplicateBanWindowSec',
-    maxCountKey: 'duplicateBanMaxCount',
-  },
-  {
     id: 'KICK',
     label: 'Удаление участника',
     enabledKey: 'duplicateKickEnabled',
     windowKey: 'duplicateKickWindowSec',
     maxCountKey: 'duplicateKickMaxCount',
+  },
+  {
+    id: 'BAN',
+    label: 'Бан',
+    enabledKey: 'duplicateBanEnabled',
+    windowKey: 'duplicateBanWindowSec',
+    maxCountKey: 'duplicateBanMaxCount',
   },
 ];
 
@@ -3506,11 +3506,11 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
     : 'Выключено';
   const duplicateStagesEnabledCount = [
     draft?.duplicateWarnEnabled,
-    draft?.duplicateBanEnabled,
     draft?.duplicateKickEnabled,
+    draft?.duplicateBanEnabled,
   ].filter(Boolean).length;
   const duplicatesHeaderSummary = draft?.antiDuplicateEnabled
-    ? `${duplicateStagesEnabledCount}/3 ступени включено`
+    ? `Автоудаление + ${duplicateStagesEnabledCount}/3 санкций`
     : 'Выключено';
   const profanityStagesEnabledCount = draft?.russianProfanityFilterEnabled
     ? [
@@ -6463,6 +6463,13 @@ export function SettingsPage({ api }: { api: ApiTransport }) {
                             </span>
                           </label>
                         </div>
+
+                        {draft.antiDuplicateEnabled ? (
+                          <p className="settings-native-toggle__hint">
+                            Первый повтор такого же текста удаляется автоматически. Дальше
+                            включаются предупреждение, удаление участника и бан по вашим порогам.
+                          </p>
+                        ) : null}
                       </div>
 
                       {draft.antiDuplicateEnabled && draft.duplicateBanEnabled ? (

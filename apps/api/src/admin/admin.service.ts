@@ -132,6 +132,8 @@ import { formatCommentsButtonText } from '../common/dialog-button-label.util';
 import { renderSupportedMarkdownAsHtml } from '../common/max-markdown.util';
 import { PrismaService } from '../prisma/prisma.service';
 import { ChannelStatsCollectorService } from './channel-stats-collector.service';
+import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
+import { RedisCounterService } from '../moderation/redis-counter.service';
 
 type ApplySettingsToAllChatsResult = {
   sourceChatId: string;
@@ -514,6 +516,7 @@ export class AdminService {
     configService: ConfigService,
     @Optional()
     private readonly channelStatsCollector?: ChannelStatsCollectorService,
+    @Optional() private readonly redisCounter?: RedisCounterService,
   ) {
     this.maxBotToken = configService.getOrThrow<string>('MAX_BOT_TOKEN');
     this.appBaseUrl = this.normalizeAppBaseUrl(configService.get<string>('APP_BASE_URL'));
@@ -7193,6 +7196,7 @@ export class AdminService {
     }
 
     await this.upsertAdminGlobalSpammerExemption(user.userId, targetUserId, chatId);
+    await this.resetDuplicateModerationState(chatId, targetUserId);
 
     await this.recordManualModerationAction({
       chatId,
@@ -7589,6 +7593,30 @@ export class AdminService {
         userId: normalizedTargetUserId,
       },
     });
+  }
+
+  private async resetDuplicateModerationState(chatId: string, targetUserId: string): Promise<void> {
+    const deleteKeysByPattern = (this.redisCounter as Partial<RedisCounterService> | undefined)
+      ?.deleteKeysByPattern;
+    if (typeof deleteKeysByPattern !== 'function') {
+      return;
+    }
+
+    try {
+      await deleteKeysByPattern.call(
+        this.redisCounter,
+        buildDuplicateUserPattern(chatId, targetUserId),
+      );
+    } catch (error: unknown) {
+      this.logger.warn(
+        {
+          chatId,
+          userId: targetUserId,
+          err: error instanceof Error ? error.message : String(error),
+        },
+        'Failed to reset duplicate moderation state after manual unban',
+      );
+    }
   }
 
   private async recordManualModerationAction(params: {

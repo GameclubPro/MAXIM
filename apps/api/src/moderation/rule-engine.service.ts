@@ -7,6 +7,7 @@ import {
 import { CommercialAdsSensitivity, LinkPolicy, type ChatSettings } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { extractUrlsFromText as extractTextUrls, stripUrlsFromText } from '../common/url-text.util';
+import { buildDuplicateHitKey, buildDuplicateStageKey } from './duplicate-state';
 import { RedisCounterService } from './redis-counter.service';
 
 export type CommercialDecisionBand = 'LOW' | 'MEDIUM' | 'HIGH';
@@ -437,7 +438,8 @@ export class RuleEngineService {
     }
 
     const compactText = normalized.replace(/\s+/g, ' ').trim();
-    const duplicateCandidate = !linkViolation && this.shouldTrackDuplicate(text, compactText);
+    const duplicateCandidate =
+      violations.length === 0 && !linkViolation && this.shouldTrackDuplicate(text, compactText);
     const duplicateState =
       settings.antiDuplicateEnabled && duplicateCandidate
         ? await this.detectDuplicateState({
@@ -487,7 +489,7 @@ export class RuleEngineService {
   }> {
     const { chatId, userId, compactText, settings } = params;
     const hash = createHash('sha256').update(compactText).digest('hex').slice(0, 20);
-    const hitKey = `dup:v3:${chatId}:${userId}:${hash}:hit`;
+    const hitKey = buildDuplicateHitKey(chatId, userId, hash);
     const hitTotal = await this.redisCounter.incrementWithTtl(
       hitKey,
       DEFAULT_DUPLICATE_WINDOW_SEC + 1,
@@ -510,7 +512,7 @@ export class RuleEngineService {
     const repeatCounts = new Map<DuplicateStageName, number>();
 
     for (const stage of stages) {
-      const key = `dup:v3:${chatId}:${userId}:${hash}:${stage.name}`;
+      const key = buildDuplicateStageKey(chatId, userId, hash, stage.name);
       const count = await this.redisCounter.incrementWithTtl(key, stage.windowSec + 1);
       repeatCounts.set(stage.name, Math.max(0, count - 1));
     }

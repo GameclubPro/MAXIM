@@ -678,20 +678,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     });
 
     const { violations } = detection;
-    const hasBlockingDeleteViolation = violations.some(
-      (item) =>
-        item.ruleCode === 'LINK_BLOCKED' ||
-        item.ruleCode === 'PROFANITY' ||
-        item.ruleCode === 'COMMERCIAL_AD' ||
-        item.ruleCode === 'TOPIC_FILTER_MISMATCH' ||
-        item.ruleCode === 'MESSAGE_TOO_LONG' ||
-        item.ruleCode === 'MESSAGE_COUNT_LIMIT' ||
-        item.ruleCode === 'VIDEO_BLOCKED' ||
-        item.ruleCode === 'FILE_BLOCKED' ||
-        item.ruleCode === 'VOICE_BLOCKED' ||
-        item.ruleCode === 'PHOTO_RATE_LIMIT' ||
-        item.ruleCode === 'STICKER_RATE_LIMIT',
-    );
+    const hasCompetingViolation = violations.length > 0;
     const latestManualUnbanAt =
       detection.duplicateDecision || detection.duplicateHit
         ? await this.resolveLatestManualUnbanCreatedAt(chatId, senderId)
@@ -700,7 +687,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       detection.duplicateDecision && latestManualUnbanAt
         ? this.isWithinWindowFromDate(latestManualUnbanAt, detection.duplicateDecision.windowSec)
         : false;
-    if (!hasBlockingDeleteViolation && detection.duplicateDecision && !duplicateDecisionSuppressed) {
+    if (!hasCompetingViolation && detection.duplicateDecision && !duplicateDecisionSuppressed) {
       await this.handleDuplicateDecision({
         chatId,
         userId: senderId,
@@ -729,7 +716,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       detection.duplicateHit && latestManualUnbanAt
         ? this.isWithinWindowFromDate(latestManualUnbanAt, detection.duplicateHit.windowSec)
         : false;
-    if (!hasBlockingDeleteViolation && detection.duplicateHit && !duplicateHitSuppressed) {
+    if (!hasCompetingViolation && detection.duplicateHit && !duplicateHitSuppressed) {
       await this.handleDuplicateHit({
         chatId,
         userId: senderId,
@@ -1382,10 +1369,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     } = params;
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
+    let messageDeleted = false;
 
     if (canDeleteMessage) {
       try {
         await this.maxClient.deleteMessage(chatId, messageId);
+        messageDeleted = true;
         await this.prisma.moderationEvent.create({
           data: {
             chatId,
@@ -1441,6 +1430,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
             userLabel,
             decision,
             banDurationHours,
+            messageDeleted,
             duplicateBotMessageText,
             botSpeechStyle,
           ),
@@ -1539,10 +1529,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     } = params;
     const messageAgeMs = Date.now() - new Date(createdAt).getTime();
     const canDeleteMessage = messageAgeMs <= 24 * 60 * 60 * 1000;
+    let messageDeleted = false;
 
     if (canDeleteMessage) {
       try {
         await this.maxClient.deleteMessage(chatId, messageId);
+        messageDeleted = true;
         await this.prisma.moderationEvent.create({
           data: {
             chatId,
@@ -1595,7 +1587,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
           chatId,
           text: this.buildDuplicateHitExplanation(
             userLabel,
-            canDeleteMessage,
+            messageDeleted,
             duplicateBotMessageText,
             botSpeechStyle,
           ),
@@ -1892,11 +1884,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
     userLabel: string,
     decision: DuplicateDecision,
     banDurationHours: number,
+    messageDeleted: boolean,
     templateText: string,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
     const banDurationLabel = this.formatBanDurationLabel(banDurationHours);
-    const baseContext = this.buildDuplicateContextLabel(true);
+    const baseContext = this.buildDuplicateContextLabel(messageDeleted);
     const sanction = this.buildDuplicateSanctionLabel(
       botSpeechStyle,
       decision.action,
@@ -1909,7 +1902,7 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
       overrideText: templateText,
       replacements: {
         user: userLabel,
-        message_status: this.buildMessageStatusLabel(true),
+        message_status: this.buildMessageStatusLabel(messageDeleted),
         reason: 'в этом чате серийные повторы не проходят',
         duplicate_context: baseContext,
         sanction,
@@ -1920,12 +1913,12 @@ export class ModerationService implements OnModuleInit, OnModuleDestroy {
 
   private buildDuplicateHitExplanation(
     userLabel: string,
-    canDeleteMessage: boolean,
+    messageDeleted: boolean,
     templateText: string,
     botSpeechStyle: BotSpeechStyle | null,
   ): string {
-    const duplicateContext = this.buildDuplicateContextLabel(canDeleteMessage);
-    const messageStatus = this.buildMessageStatusLabel(canDeleteMessage);
+    const duplicateContext = this.buildDuplicateContextLabel(messageDeleted);
+    const messageStatus = this.buildMessageStatusLabel(messageDeleted);
 
     return this.renderEditableBotSpeechTemplate({
       style: botSpeechStyle,

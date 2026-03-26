@@ -9024,6 +9024,71 @@ describe('ModerationService', () => {
     });
   });
 
+  it('renders duplicate explanation with actual message status when duplicate deletion fails', async () => {
+    const prisma = {
+      chat: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'chat-1',
+          title: 'Chat 1',
+          settings: createSettings({
+            duplicateBotMessageEnabled: true,
+            duplicateBotMessageText:
+              'Статус: {message_status}. Контекст: {duplicate_context}. {sanction}',
+          }),
+          domains: [],
+        }),
+      },
+      violation: {
+        create: jest.fn(),
+      },
+      moderationEvent: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+      webhookEvent: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    const ruleEngine = {
+      detect: jest.fn().mockResolvedValue({
+        violations: [],
+        duplicateDecision: {
+          action: 'WARN',
+          count: 2,
+          threshold: 2,
+          windowSec: 12 * 60 * 60,
+          hash: 'hash-status-1',
+          nextAction: 'KICK',
+        },
+      }),
+    };
+    const sanctionService = {
+      resolveAction: jest.fn(),
+    };
+    const maxClient = {
+      deleteMessage: jest.fn().mockRejectedValue(new Error('delete failed')),
+      sendMessage: jest.fn(),
+      kickMember: jest.fn(),
+      banMember: jest.fn(),
+      notifyModerators: jest.fn(),
+    };
+
+    const service = new ModerationService(
+      prisma as never,
+      ruleEngine as never,
+      sanctionService as never,
+      maxClient as never,
+    );
+
+    await service.handleUpdate(createUpdate());
+
+    (expect(maxClient.sendMessage) as any).toHaveBeenCalledWithPrefix(
+      'chat-1',
+      'Статус: не по форме. Контекст: идёт повтором. Предупреждение оформил.',
+    );
+  });
+
   it('counts forwarded text length for MESSAGE_TOO_LONG and skips sanctions', async () => {
     const prisma = {
       chat: {

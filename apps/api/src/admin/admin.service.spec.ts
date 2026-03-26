@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import { buildDuplicateUserPattern } from '../moderation/duplicate-state';
 import { AdminService } from './admin.service';
 
 function createPrismaMock() {
@@ -2874,12 +2875,17 @@ describe('AdminService.applyManualModerationAction', () => {
       cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
       unbanMember: jest.fn().mockResolvedValue(undefined),
     };
+    const redisCounter = {
+      deleteKeysByPattern: jest.fn().mockResolvedValue(4),
+    };
 
     const service = new AdminService(
       prisma as never,
       maxClient as never,
       createChatContextCacheMock() as never,
       createConfigMock() as never,
+      undefined,
+      redisCounter as never,
     );
 
     const result = await service.applyManualModerationAction(
@@ -2896,6 +2902,9 @@ describe('AdminService.applyManualModerationAction', () => {
 
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-4');
     expect(maxClient.unbanMember).toHaveBeenCalledWith('chat-1', 'user-4', { immediate: true });
+    expect(redisCounter.deleteKeysByPattern).toHaveBeenCalledWith(
+      buildDuplicateUserPattern('chat-1', 'user-4'),
+    );
     expect(prisma.adminGlobalSpammerExemption.upsert).toHaveBeenCalledWith({
       where: {
         adminUserId_userId: {
@@ -2957,12 +2966,17 @@ describe('AdminService.applyManualModerationAction', () => {
       cancelScheduledUnban: jest.fn().mockResolvedValue(undefined),
       unbanMember: jest.fn(),
     };
+    const redisCounter = {
+      deleteKeysByPattern: jest.fn().mockResolvedValue(2),
+    };
 
     const service = new AdminService(
       prisma as never,
       maxClient as never,
       createChatContextCacheMock() as never,
       createConfigMock() as never,
+      undefined,
+      redisCounter as never,
     );
 
     const result = await service.applyManualModerationAction(
@@ -2979,6 +2993,9 @@ describe('AdminService.applyManualModerationAction', () => {
 
     expect(maxClient.cancelScheduledUnban).toHaveBeenCalledWith('chat-1', 'user-4');
     expect(maxClient.unbanMember).not.toHaveBeenCalled();
+    expect(redisCounter.deleteKeysByPattern).toHaveBeenCalledWith(
+      buildDuplicateUserPattern('chat-1', 'user-4'),
+    );
     expect(prisma.adminGlobalSpammerExemption.upsert).toHaveBeenCalledWith({
       where: {
         adminUserId_userId: {

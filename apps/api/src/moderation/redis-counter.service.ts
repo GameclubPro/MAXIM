@@ -63,6 +63,35 @@ export class RedisCounterService {
     await this.redis.set(key, value, 'EX', Math.trunc(ttlSeconds));
   }
 
+  async deleteKeysByPattern(pattern: string, scanCount = 200): Promise<number> {
+    const normalizedPattern = pattern.trim();
+    if (!normalizedPattern) {
+      return 0;
+    }
+
+    let deleted = 0;
+    let cursor = '0';
+    const normalizedScanCount =
+      Number.isFinite(scanCount) && scanCount > 0 ? Math.trunc(scanCount) : 200;
+
+    do {
+      const [nextCursor, keys] = await this.redis.scan(
+        cursor,
+        'MATCH',
+        normalizedPattern,
+        'COUNT',
+        String(normalizedScanCount),
+      );
+      cursor = nextCursor;
+
+      if (keys.length > 0) {
+        deleted += await this.redis.del(...keys);
+      }
+    } while (cursor !== '0');
+
+    return deleted;
+  }
+
   async acquireLock(key: string, ttlMs: number): Promise<string | null> {
     if (!key.trim() || !Number.isFinite(ttlMs) || ttlMs <= 0) {
       return null;
